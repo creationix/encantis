@@ -34,19 +34,34 @@ A tuple is simply a fixed amount of multiple types combined.  The syntax is `(` 
 (i32 i32)
 ```
 
-Values that are of type tuple can be destructured or accessed like an array with `[index]` and `.len`.  For example:
+Values that are of type tuple can be destructured or accessed using numberical properties (`.1`, `.2`, etc).  For example:
 
 ```haskell
 -- point has inferred type `(i32 i32)`
 var point = (10 20)
 -- a and b have inferred type `i32`
 var (a b) = point
--- .len is 2 and has type `u32`
-point.len
 -- This is the first value
-point[0]
+point.1
 -- This is the second value
-point[1]
+point.2
+```
+
+This compiles roughly to:
+
+```wat
+;; point has inferred type `(i32 i32)`
+(local $point_1 i32)
+(local $point_2 i32)
+;; a and b have inferred type `i32`
+(local $a i32)
+(local $b i32)
+(set_local $a (get_local $point_1))
+(set_local $b (get_local $point_2))
+;; This is the first value
+get_local $point_1
+;; This is the second value
+get_local $point_2
 ```
 
 ### Struct Type
@@ -79,10 +94,8 @@ i32.const 5
 set_local $point_y
 ;; .x is type `i32` and value 3
 get_local $point_x
-drop
 ;; .y is type `i32` and value 5
 get_local $point_y
-drop
 ;; x and y are inferred type i32
 (local $x i32)
 (local $y i32)
@@ -109,12 +122,9 @@ This compiles roughly to:
 (local $point_x f32)
 (local $point_y f32)
 (local $point_z f32)
-f32.const 1
-set_local $point_x
-f32.const 2
-set_local $point_y
-f32.const 3
-set_local $point_z
+(set_local $point_x (f32.const 1))
+(set_local $point_y (f32.const 2))
+(set_local $point_z (f32.const 3))
 ;; but 2dDistance accepts `{x:f32 y:f32}` and simply passes the 
 ;; matching subset ignoring the `z` property.
 (call $2dDistance 
@@ -131,7 +141,7 @@ A pointer is encoded in wasm as a simple `u32` offset into the linear memory, bu
 -- pointer to a number
 var a: *i32
 -- Reference and dereference the pointer
-test(a *a)
+test(a, *a)
 ```
 
 ```wat
@@ -348,7 +358,7 @@ Another idea is implicit inputs with `@` and outputs with `return`.
 
 ```haskell
 fn add-sub (i32 i32) -> (i32 i32) {
-    return (@[0] + @[1], @[0] - @[1])
+    return (@.1 + @.2, @.1 - @.2)
 }
 
 fn negate i32 -> i32 {
@@ -398,4 +408,38 @@ add-sub(1 2)
 
 ```haskell
 loop ()
+```
+
+## Iterators
+
+The iterator interface is a generic function pointer type:
+
+```haskell
+interface Iterator<Value Entry State>: (Value State) -> ?(Entry State)
+```
+
+This is consumed with the `for` syntax:
+
+```haskell
+-- Define the interface for an iterator that loops over i32 slices
+-- The State value always starts out 0
+let i32SliceIter: (<i32> u32) -> ?(i32 u32) =
+  (list, index) => index < list.len ?
+    (list[index], index + 1)
+
+for entry in list using i32SliceIter {
+    -- entry it each `i32` in the slice
+}
+```
+
+This generates to roughly:
+```wat
+;; Interface for iterator
+(type (;0;) (func (param i32 i32 i32)(result i32 i32 i32)))
+
+()
+
+```
+
+NOTE: This might not be a good idea if we can't optimize away the cost using manual inlining or binaryen.
 ```
