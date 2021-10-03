@@ -1,0 +1,401 @@
+
+# Syntax
+
+## Comments
+
+Line comments are the same as Lua and Haskell with `--`.  For example:
+
+```haskell
+-- This is a comment
+```
+
+## Types
+
+Despute being a very simple language that only generates wat, there is a powerful and zero-cost type system to help writing code.
+
+Most type annotations follow a `:` character.  In many places the type annotation can be omitted and will be inferred.  For example:
+
+```haskell
+-- Declare a variable with a type
+var x: i64
+-- Declare and initialize a variable with `i32` inferred as the type
+var y = 10
+```
+
+### Builtin Types
+
+The builtin types are numeric types `i32`, `u32`, `i64`, `u64`, `f32`, and `f64`.  Note that the signedness only matters to the type system.  In wasm it's just `i32` for both.
+
+### Tuple Type
+
+A tuple is simply a fixed amount of multiple types combined.  The syntax is `(` followed by the types and ended with `)`. For example:
+
+```haskell
+(i32 i32)
+```
+
+Values that are of type tuple can be destructured or accessed like an array with `[index]` and `.len`.  For example:
+
+```haskell
+-- point has inferred type `(i32 i32)`
+var point = (10 20)
+-- a and b have inferred type `i32`
+var (a b) = point
+-- .len is 2 and has type `u32`
+point.len
+-- This is the first value
+point[0]
+-- This is the second value
+point[1]
+```
+
+### Struct Type
+
+A struct is just like a tuple, except each value is named and it's framed with `{` and `}`.  These can be destructured or accessed using properties. For example:
+
+```haskell
+-- point has inferred type `{ x:i32 y:i32 }`
+var point = {
+  x = 3
+  y = 5
+}
+-- .x is type `i32` and value 3
+point.x
+-- .y is type `i32` and value 5
+point.y
+-- x and y are inferred type i32
+var {x y} = point
+```
+
+This compiles roughly to:
+
+```wat
+;; point has inferred type `{ x:i32 y:i32 }`
+(local $point_x i32)
+(local $point_y i32)
+i32.const 3
+set_local $point_x
+i32.const 5
+set_local $point_y
+;; .x is type `i32` and value 3
+get_local $point_x
+drop
+;; .y is type `i32` and value 5
+get_local $point_y
+drop
+;; x and y are inferred type i32
+(local $x i32)
+(local $y i32)
+get_local $point_x
+set_local $x
+get_local $point_y
+set_local $y
+```
+
+Structs have structural matching.  A superset of matching properties can be used for a struct that is a subset.  For example:
+
+```haskell
+-- point has inferred type `{x:f32 y:f32 z:f32}`
+var point = { x=1f y=2f z=3f}
+-- but 2dDistance accepts `{x:f32 y:f32}` and simply passes the 
+-- matching subset ignoring the `z` property.
+2dDistance(point)
+```
+
+This compiles roughly to:
+
+```wat
+;; point has inferred type `{x:f32 y:f32 z:f32}`
+(local $point_x f32)
+(local $point_y f32)
+(local $point_z f32)
+f32.const 1
+set_local $point_x
+f32.const 2
+set_local $point_y
+f32.const 3
+set_local $point_z
+;; but 2dDistance accepts `{x:f32 y:f32}` and simply passes the 
+;; matching subset ignoring the `z` property.
+(call $2dDistance 
+  (get_local $point_x)
+  (get_local $point_y)
+)
+```
+
+### Pointer Type
+
+A pointer is encoded in wasm as a simple `u32` offset into the linear memory, but the type tells us the shape of what it's pointing to.  The syntax is `*` followed by the type.  This allows small types as well as complex types. For example:
+
+```haskell
+-- pointer to a number
+var a: *i32
+-- Reference and dereference the pointer
+test(a *a)
+```
+
+```wat
+;; pointer to a number
+(local $a u32)
+;; Reference and dereference the pointer
+(call $test
+  (get_local $a)
+  (i32.load (get_local $a))
+)
+```
+
+```haskell
+-- ponter to a small number
+var b: *u8
+-- Reference and dereference the pointer
+test(b *b)
+```
+
+```wat
+;; ponter to a small number
+(local $b u32)
+;; Reference and dereference the pointer
+(call $test
+  (get_local $b)
+  (i32.load8_u get_local $b)
+)
+```
+
+```haskell
+-- pointer to a complex type
+var c: *(u8 u16 u8)
+-- access property directoy
+c[1]
+```
+
+```wat
+-- pointer to a complex type
+(local $c u32)
+-- access property directoy
+(i32.load16_u (u32.add
+    (get_local $c)
+    (i32.const 2)
+))
+```
+
+### Array Pointer Type
+
+An array pointer is a pointer that's allowed to be treated like an array.  It does not have a length or bounds check, so be careful.  The syntax is `*[` type `]`.  In this context, the smaller types may also be used such as `u8`, `i8`, `u16`, and `i16`. For example:
+
+```haskell
+var a: *[u8]
+a[0]
+a[1]
+```
+
+```wat
+(local $a u32)
+(i32.load8_u 
+    (local_get $a)
+)
+(i32.load8_u (u32.add
+    (local_get $a)
+    (i32.const 1)
+))
+```
+
+### Function Pointers
+
+Functions can be first class values thanks to indirect call in wasm.  The pointer itself is a table index.
+
+```haskell
+-- Function Pointers have types of inputs and outputs.
+-- This points to a function that accepts two numbers
+-- and returns one.
+var ptr: (a:i32 b:i32) -> i32
+-- Call the function pointer.
+ptr(1 2)
+```
+
+```wat
+;; Generated type at module level
+(type (;0;) (func (param i32 i32)(result i32)))
+
+;; Function Pointers have types of inputs and outputs.
+;; This points to a function that accepts two numbers
+;; and returns one.
+(local $ptr u32)
+;; Call the function pointer.
+(i32.const 1)
+(i32.const 2)
+(local_get $ptr)
+(call_indirect (type 0))
+```
+
+### Pointers to Any Type
+
+It's also possible to combined pointers with container types such as tuples and structs.
+
+```haskell
+-- Pointer to 5 bytes in memory containing pointer to null terminated
+-- string and single byte age.
+var a: *{name:*[u8] age:u8}
+-- Load pointer to name
+a.name
+-- Load age
+a.age
+```
+
+```wat
+-- Pointer to 5 bytes in memory containing pointer to null terminated
+-- string and single byte age.
+(local $a u32)
+-- Load pointer to name
+(i32.load (local_get $a))
+a.name
+-- Load age
+(i32.load8_u (i32.add
+    (local_get $a)
+    (i32.const 4)
+))
+```
+
+Pointers can point to any type, including pointers, array pointers, even function pointers.
+
+### Slice Type
+
+A slice is an array pointer that also has a known length.  It's actually two `i32` values in wasm. The syntax is `<` type `>`. Just like array pointers, the small integer types can be used.  A common type for strings is `<u8>`.
+
+This can be used like an array and has a `.len` property and a `.base` property.  There is no generated bounds checking at runtime.
+
+```haskell
+-- Declare the variable
+var word: <u8>
+-- .len is type `u32`
+word.len
+-- .base is type `*[u8]`
+word.base
+-- The lookup is `u8`, but `first` is `i32`.
+var first = word[0]
+```
+
+The generated wat for this looks roughy like:
+
+```wat
+;; Declare the variable
+(local $word_base u32)
+(local $word_len u32)
+;; .len is type `u32`
+local_get $word_len
+drop
+-- .base is type `*[u8]`
+local_get $word_base
+drop
+;; The lookup is `u8`, but `first` is `i32`.
+(local $first i32)
+local_get $word_base
+i32.const 0
+i32.add
+i32.load8_u
+local_set $first
+```
+
+### Interface Type
+
+Interface types are simply shorthand names for types, they are identical to the fullly written out type.
+
+```haskell
+interface Pair: (f32 f32)
+```
+
+Values and function parameters with type `Pair` are identical to `(f32 f32)` and can be used interchangibily.
+
+### Unique Types
+
+Unique types are like interface types, except they are not considered the same type and are a new type that requires manual casting in the compiler type system
+
+```haskell
+-- Define a unique type for String that is implemented using a byte slice.
+unique String: <u8>
+```
+
+Then if a function accepts `String` type, a raw `variable` with type `<u8>` cannot be passed in, it needs to be explicitly cast using `String(variable)`.  This works for simple types too.
+
+
+```haskell
+-- An index for a specefic use in the app, so it can't be mixed
+-- with other indices in the app and be type safe.
+unique GameIndex: u32
+```
+
+## Functions
+
+### Defining Functions
+
+One idea is named params and results:
+
+```haskell
+fn add-sub (a:i32 b:i32) -> (c:i32 d:i32) {
+    c = a + b
+    d = a - b
+}
+```
+
+This also works for non-tuple types
+
+```haskell
+fn negate a:i32 -> b:i32 {
+    b = -a
+}
+```
+
+Another idea is implicit inputs with `@` and outputs with `return`.
+
+```haskell
+fn add-sub (i32 i32) -> (i32 i32) {
+    return (@[0] + @[1], @[0] - @[1])
+}
+
+fn negate i32 -> i32 {
+    return -@
+}
+```
+
+We can have function literals with arrow style as long as it doesn't include
+closure variables.
+
+```haskell
+let add-sub: (i32 i32) -> (i32 i32) = 
+    (a, b) => (a + b, a - b)
+
+let negate: i32 -> i32 = 
+    a => -a
+```
+
+These will generate anonymous global functions that are not exported.  Multiple functions with identical ASTs will be stored once and reused.
+
+This makes higher-order functions possible.
+
+```haskell
+fn fold(list: <i32>, fn: (i32 i32) -> i32) -> sum:i32 {
+    -- Call fn over and over and return sum
+}
+
+-- Pass an anonymous function to convert `fold` into `sum`
+var list: <i32>
+var sum = fold(list, (accum, item) => accum + item)
+```
+
+### Function Application
+
+```haskell
+add-sub(1 2)
+```
+
+### Function Pipine
+
+```haskell
+(1 2)
+    |add-sub
+```
+
+## Loops
+
+```haskell
+loop ()
+```
