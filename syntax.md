@@ -481,3 +481,50 @@ for x in (decr, 10) {
 
 }
 ```
+
+## Control Flow Wasm Style
+
+Wasm has 3 low-level control flow block types `block/end`, `loop/end`, and `if/else/end`.  In each of these you can `break` and `break-if` to arbitrary numbers of nested levels.  Breaks targetting `block` and `if/else` jump to end but breaks within `loop` jump to the start.
+
+```lua
+-- A simple while loop using low-level control flow
+block
+    loop
+        break-1-if exp -- jump to end of `block` if true
+        -- body of loop
+        break-0 -- jump to start of loop
+    end
+end
+
+-- The above can be represented with while sugar
+while exp do
+  -- body of loop
+  continue-if expr -- jump to start of loop if expression is true
+  break -- jump to end of loop
+  -- skipped body
+end
+
+-- A do..while loop using low-level control flow
+block
+    loop
+        -- body of loop
+        break-1-if exp -- jump to end of `block` if true
+        break-0 -- jump to start of loop
+    end
+end
+
+-- if/else
+if cond then
+  -- `then` is used to delimit between condition from the first body
+  -- body of true
+elseif cond2 then
+  -- elseif is just nested if blocks, but with less nesting and visual ends
+  -- body of alternate truth
+else
+  -- body of false
+  break-0-if cond -- jump to end if true
+  -- more body
+end
+
+
+```
