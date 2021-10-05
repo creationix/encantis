@@ -24,7 +24,7 @@ var y = 10
 
 ### Builtin Types
 
-The builtin types are numeric types `i32`, `u32`, `i64`, `u64`, `f32`, and `f64`.  Note that the signedness only matters to the type system.  In wasm it's just `i32` for both.
+The builtin types are numeric types `i32`, `u32`, `i64`, `u64`, `f32`, and `f64`.  Note that the signedness only matters to the type system.  In wasm it's just `i32` and `i64` for integers.
 
 ### Tuple Type
 
@@ -34,7 +34,7 @@ A tuple is simply a fixed amount of multiple types combined.  The syntax is `(` 
 (i32 i32)
 ```
 
-Values that are of type tuple can be destructured or accessed using numberical properties (`.1`, `.2`, etc).  For example:
+Values that are of type tuple can be destructured or accessed using numerical properties (`.1`, `.2`, etc).  For example:
 
 ```haskell
 -- point has inferred type `(i32 i32)`
@@ -412,34 +412,72 @@ loop ()
 
 ## Iterators
 
-The iterator interface is a generic function pointer type:
+NOTE: this is a crazy idea and probably doesn't fit with the language, but it's interesting to see if it can fit.
+
+The iterator interface is like a generic function pointer type.  The language doesn't have generics (yet), but this is a way to think about it.
 
 ```haskell
-interface Iterator<Value Entry State>: (Value State) -> ?(Entry State)
+interface Iterator<Value Entry State>: (Value State) -> (Entry State)
 ```
 
-This is consumed with the `for` syntax:
+The definition itself is a kind of macro to allow defining custom iterators that look like keywords.
 
 ```haskell
 -- Define the interface for an iterator that loops over i32 slices
--- The State value always starts out 0
-let i32SliceIter: (<i32> u32) -> ?(i32 u32) =
-  (list, index) => index < list.len ?
-    (list[index], index + 1)
+-- The State value always starts out 0.  When it returns zero again
+-- iteration is done.
+iterator each = (list, index) => (list[index], (index + 1) % list.len)
 
-for entry in list using i32SliceIter {
+-- Consume using iterator name as if it was a keyword
+each entry in list {
     -- entry it each `i32` in the slice
 }
 ```
 
 This generates to roughly:
 ```wat
-;; Interface for iterator
-(type (;0;) (func (param i32 i32 i32)(result i32 i32 i32)))
-
+(local $index u32)
+(set_local $index 0)
 ()
-
+...
 ```
 
 NOTE: This might not be a good idea if we can't optimize away the cost using manual inlining or binaryen.
+
+
+Two-Phase Iterator:
+
+A iterator function returns a function pointer and a start state. The returned function returns each entry and a new state. It returns 0 for state when iteration should be done.
+
+```haskell
+-- Just an idea, you wouldn't really do this for a struct
+-- This made up function returns a tuple for each entry which
+-- we then destructure
+for (key, value) in pairs(struct) {
+
+}
+-- name is a byte array (aka string)
+var: <u8> name
+-- iterate over the bytes with indices
+for (i, byte) in ipairs(name) {
+
+}
+
+-- An iterator function
+var decr: i32->(i32 i32) =
+  (i) => (i-1, i-1)
+
+-- A function that generates an iterator (fn and state)
+var range: i32 -> (i32->(i32 i32) i32) =
+  i => (decr, i)
+
+-- Using range
+for i in range(10) {
+    -- i iterates from 0 to 9
+}
+
+-- You can also pass in the iterator function and initial state directly.
+for x in (decr, 10) {
+
+}
 ```
