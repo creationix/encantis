@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "dependencies": {
+    "binaryen": "^102.0.0"
+  }
+}
