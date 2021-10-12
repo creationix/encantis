@@ -1,18 +1,34 @@
--- Add two numbers together.
-export func add: (a:i32 b:i32) -> i32 {
-    return a + b
+
+imports: {
+    print: String -> void
 }
 
+exports: {
+    idiv: (i32 i32) -> (i32 i32)
+    main: void -> f32
+}
 
--- Custom type for 2d point
-interface Point: (f32 f32)
+internal: {
+    add: (Point Point) -> Point
+    distance: Point -> f32
+}
+
+type Point: (f32 f32)
+type String: <u8>
+
+-- Add two points together.
+func add (a, b) => (a.1 + b.1, a.2 + b.2)
 
 -- Distance to a point
-export func distance: p:Point -> f32 {
-    return sqrt(p.1*p.1 + p.2*p.2)
-}
+func distance (x, y) => sqrt(x * x + y * y)
 
 -- Multiple return values using tuple
-export func idiv: (a:i32 b:i32) -> (i32 i32) {
-    return (a / b, a % b)
-}
+func idiv (a, b) => (a / b, a % b)
+
+func main ()
+    print("Hello 🌍🌎🌏")
+    let add = (a, b) => (a.1 + b.1, a.2 + b.2)
+    let a = Point(1, 2)
+    let b = Point(2, 3)
+    return distance(a + b)
+end
