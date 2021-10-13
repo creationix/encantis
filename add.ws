@@ -1,14 +1,14 @@
 
-imports: {
+import {
     print: String -> void
 }
 
-exports: {
+export {
     idiv: (i32 i32) -> (i32 i32)
     main: void -> f32
 }
 
-internal: {
+internal {
     add: (Point Point) -> Point
     distance: Point -> f32
 }
@@ -32,3 +32,4 @@ func main ()
     let b = Point(2, 3)
     return distance(a + b)
 end
+

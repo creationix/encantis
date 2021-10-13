@@ -1,0 +1,89 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "wasmscript",
+    "patterns": [
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#variables"
+        },
+        {
+            "include": "#constants"
+        }
+    ],
+    "repository": {
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.wasmscript",
+                    "match": "\\b(func|end|block|loop|for|if|elif|else|continue|break|return)\\b"
+                },
+                {
+                    "name": "keyword.other.wasmscript",
+                    "match": "\\b(import|export|internal|type|interface)\\b"
+                }
+            ]
+        },
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-dash.wasmscript",
+                    "begin": "--",
+                    "end": "\n"
+                },
+                {
+                    "name": "comment.block.wasmscript",
+                    "begin": "-<",
+                    "end": ">-"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.single.wasmscript",
+                    "begin": "'",
+                    "end": "'"
+                },
+                {
+                    "name": "string.quoted.double.wasmscript",
+                    "begin": "\"",
+                    "end": "\""
+                }
+            ]
+        },
+        "variables": {
+            "patterns": [
+                {
+                    "name": "storage.type.wasmscript",
+                    "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|void)\\b"
+                },
+                {
+                    "name": "support.type.wasmscript",
+                    "match": "\\b([A-Z][a-z]+)\\b"
+                }
+
+            ]
+        },
+        "constants": {
+            "patterns": [
+                {
+                    "name": "constant.character",
+                    "match": "(<|>|=|!)"
+                },
+                {
+                    "name": "constant.numeric",
+                    "match": "[0-9]"
+                }
+            ]
+        }
+    },
+    "scopeName": "source.wasmscript"
+}
