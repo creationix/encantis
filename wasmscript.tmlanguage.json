@@ -119,18 +119,18 @@
                 {
                     "name": "punctuation.accessor.tuple.wasmscript",
                     "match": "(?<=[a-z])\\.[0-9]+"
+                },
+                {
+                    "name": "variable.wasmscript",
+                    "match": "\\b[a-z][a-zA-Z0-9-]*\\b"
                 }
             ]
         },
         "constants": {
             "patterns": [
                 {
-                    "name": "constant.character",
-                    "match": "(<|>|=|!)"
-                },
-                {
                     "name": "constant.numeric",
-                    "match": "[0-9]"
+                    "match": "[0-9]+"
                 }
             ]
         }
