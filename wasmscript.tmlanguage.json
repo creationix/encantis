@@ -3,10 +3,13 @@
     "name": "wasmscript",
     "patterns": [
         {
-            "include": "#keywords"
+            "include": "#comments"
         },
         {
-            "include": "#comments"
+            "include": "#operators"
+        },
+        {
+            "include": "#keywords"
         },
         {
             "include": "#strings"
@@ -19,18 +22,6 @@
         }
     ],
     "repository": {
-        "keywords": {
-            "patterns": [
-                {
-                    "name": "keyword.control.wasmscript",
-                    "match": "\\b(func|end|block|loop|for|if|elif|else|continue|break|return)\\b"
-                },
-                {
-                    "name": "keyword.other.wasmscript",
-                    "match": "\\b(import|export|internal|type|interface)\\b"
-                }
-            ]
-        },
         "comments": {
             "patterns": [
                 {
@@ -42,6 +33,58 @@
                     "name": "comment.block.wasmscript",
                     "begin": "-<",
                     "end": ">-"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.property.wasmscript",
+                    "match": "=>|\\->"
+                },
+                {
+                    "name": "keyword.operator.lambda.wasmscript",
+                    "match": "=>|\\->"
+                },
+                {
+                    "name": "keyword.operator.logical.wasmscript",
+                    "match": "&&|\\|\\||\\?\\?"
+                },
+                {
+                    "name": "keyword.operator.assignment.augmented.wasmscript",
+                    "match": "%=|&=|\\*=|\\+=|-=|/=|\\^=|\\|=|<<=|>>=|\\|\\|=|\\?\\?="
+                },
+                {
+                    "name": "keyword.operator.bitwise.wasmscript",
+                    "match": "<<|>>|&|\\^|\\|"
+                },
+                {
+                    "name": "keyword.operator.comparison.wasmscript",
+                    "match": "<=|<|>=|>"
+                },
+                {
+                    "name": "keyword.operator.comparison.wasmscript",
+                    "match": "==|!="
+                },
+                {
+                    "name": "keyword.operator.assignment.wasmscript",
+                    "match": "="
+                },
+                {
+                    "name": "keyword.operator.arithmetic.wasmscript",
+                    "match": "/|%|\\*|\\+|-"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.wasmscript",
+                    "match": "\\b(func|end|block|loop|for|if|elif|else|continue|break|return|=>)\\b"
+                },
+                {
+                    "name": "keyword.other.wasmscript",
+                    "match": "\\b(import|export|internal|type|interface|let|var)\\b"
                 }
             ]
         },
@@ -68,8 +111,15 @@
                 {
                     "name": "support.type.wasmscript",
                     "match": "\\b([A-Z][a-z]+)\\b"
+                },
+                {
+                    "name": "support.function.wasmscript",
+                    "match": "\\b(sqrt|ceil|floor|round)\\b"
+                },
+                {
+                    "name": "punctuation.accessor.tuple.wasmscript",
+                    "match": "(?<=[a-z])\\.[0-9]+"
                 }
-
             ]
         },
         "constants": {
