@@ -12,8 +12,14 @@ export {
 
 -- Interface is a non-unique type.
 interface Point: (f32 f32)
--- Type is a unique type.
-type String: <u8>
+
+-- Unique is a unique type.
+unique String: <u8>
+
+internal {
+    add: (Point Point) -> Point
+    distance: Point -> f32
+}
 
 -<
  | Add two points together, pass points by value.

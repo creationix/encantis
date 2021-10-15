@@ -190,10 +190,10 @@ c[1]
 
 ### Array Pointer Type
 
-An array pointer is a pointer that's allowed to be treated like an array.  It does not have a length or bounds check, so be careful.  The syntax is `*[` type `]`.  In this context, the smaller types may also be used such as `u8`, `i8`, `u16`, and `i16`. For example:
+An array pointer is a pointer that's allowed to be treated like an array.  It does not have a length or bounds check, so be careful.  The syntax is `#` type.  In this context, the smaller types may also be used such as `u8`, `i8`, `u16`, and `i16`. For example:
 
 ```haskell
-var a: *[u8]
+var a: #u8
 a[0]
 a[1]
 ```
