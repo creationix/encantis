@@ -9,6 +9,18 @@
     "Programming Languages"
   ],
   "contributes": {
+    "themes": [
+      {
+        "label": "Notebook Dark",
+        "uiTheme": "vs-dark",
+        "path": "./dark-color-theme.json"
+      },
+      {
+        "label": "Notebook Light",
+        "uiTheme": "vs",
+        "path": "./light-color-theme.json"
+      }
+    ],
     "languages": [
       {
         "id": "wasmscript",
