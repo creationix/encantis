@@ -59,3 +59,46 @@ func main ()
     return distance(c)
 end
 
+
+-<
+  Given a number and a slice of memory, write out the decimal
+  digits using ASCII encoding.
+>-
+func digits(num: u32, mem: <u8>) -> u32
+    var i = 0
+    block
+        loop
+            br 1 if num == 0 or i >= mem.len
+            mem[i] = num % 10 + '0'
+            i += 1
+            num /=10
+            br 0
+        end
+    end
+    return i
+end
+
+func digits(num: u32, mem: <u8>) -> u32
+    var i = 0
+    while num != 0 and i < mem.len do
+        mem[i] = num % 10 + '0'
+        i += 1
+        num /=10
+    end
+    return i
+end
+
+
+func digits(num: u32, mem: <u8>) -> u32
+    var i = 0
+    loop
+        if num == 0 or i >= mem.len then
+            return i
+        end
+        mem[i] = num % 10 + '0'
+        i += 1
+        num /=10
+        br 0
+    end
+end
+
