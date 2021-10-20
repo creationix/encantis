@@ -76,7 +76,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.wasmscript",
-                    "match": "\\b(func|block|loop|if|elif|else|br|return|=>)\\b"
+                    "match": "\\b(func|block|loop|if|elif|else|br|while|break|continue|return|=>)\\b"
                 },
                 {
                     "name": "keyword.other.wasmscript",

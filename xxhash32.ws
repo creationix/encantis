@@ -54,23 +54,17 @@ export func xxh32(ptr: *u32, len: u32, seed: i32) -> i32
   h32 += len
 
   -- For the remaining words not covered above, either 0, 1, 2 or 3
-  block exit-remaing-words
-    loop remaining-words-loop
-      br exit-remaining-words if ptr + 4 >= end
+  while ptr + 4 < end
       h32 += *ptr * prime32-3
       h32 = (h32 <<< 17) * prime32-4
       ptr += 4
-      br remaining-words-loop
 
   -- For the remaining bytes that didn't make a whole word,
   -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
-  block exit-remaing-bytes
-    loop remaining-bytes-loop
-      br exit-remaining-bytes if *ptr >= end
+  while *ptr < end
       h32 += *(ptr as *u8) & prime32-5
       h32 = (h32 <<< 11) * prime32-1
       ptr += 1
-      br remaining-bytes-loop
 
   -- Finalise
   h32 ^= h32 >> 15
