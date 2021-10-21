@@ -1,30 +1,29 @@
 
 memory mem 1
 
-global prime32-1: i32 = 2654435761
-global prime32-2: i32 = 2246822519
-global prime32-3: i32 = 3266489917
-global prime32-4: i32 =  668265263
-global prime32-5: i32 =  374761393
+global prime32-1: u32 = 2654435761
+global prime32-2: u32 = 2246822519
+global prime32-3: u32 = 3266489917
+global prime32-4: u32 =  668265263
+global prime32-5: u32 =  374761393
 
-global prime64-1: i64 = 11400714785074694791
-global prime64-2: i64 = 14029467366897019727
-global prime64-3: i64 =  1609587929392839161
-global prime64-4: i64 =  9650029242287828579
-global prime64-5: i64 =  2870177450012600261
+global prime64-1: u64 = 11400714785074694791
+global prime64-2: u64 = 14029467366897019727
+global prime64-3: u64 =  1609587929392839161
+global prime64-4: u64 =  9650029242287828579
+global prime64-5: u64 =  2870177450012600261
 
-export func xxh32(ptr: *u32, len: u32, seed: i32) -> i32
-  local h32: i32
-  local end: i32
-  local limit: i32
-  local v1: i32
-  local v2: i32
-  local v3: i32
-  local v4: i32
-
+export func xxh32(ptr: *u32, len: u32, seed: u32) -> u32 |>
+  local h32: u32
+  local end: u32
+  local limit: u32
+  local v1: u32
+  local v2: u32
+  local v3: u32
+  local v4: u32
   end = ptr + len
 
-  if len >= 16
+  if len >= 16 |>
     limit = end - 16
     v1 = seed + prime32-1 + prime32-2
     v2 = seed + prime32-2
@@ -32,7 +31,7 @@ export func xxh32(ptr: *u32, len: u32, seed: i32) -> i32
     v4 = seed - prime32-1
 
     -- For every chunk of 4 words, so 4 * 32bits = 16 bytes
-    loop words-loop
+    loop |>
       v1 = round32(v1, *ptr)
       ptr += 4
       v2 = round32(v2, *ptr)
@@ -41,7 +40,7 @@ export func xxh32(ptr: *u32, len: u32, seed: i32) -> i32
       ptr += 4
       v4 = round32(v4, *ptr)
       ptr += 4
-      br words-loop if ptr <= limit
+      br-if ptr <= limit
 
     h32 = (v1 <<< 1)
         + (v2 <<< 7)
@@ -55,16 +54,16 @@ export func xxh32(ptr: *u32, len: u32, seed: i32) -> i32
 
   -- For the remaining words not covered above, either 0, 1, 2 or 3
   while ptr + 4 < end
-      h32 += *ptr * prime32-3
-      h32 = (h32 <<< 17) * prime32-4
-      ptr += 4
+    h32 += *ptr * prime32-3
+    h32 = (h32 <<< 17) * prime32-4
+    ptr += 4
 
   -- For the remaining bytes that didn't make a whole word,
   -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
   while *ptr < end
-      h32 += *(ptr as *u8) & prime32-5
-      h32 = (h32 <<< 11) * prime32-1
-      ptr += 1
+    h32 += *(ptr as *u8) & prime32-5
+    h32 = (h32 <<< 11) * prime32-1
+    ptr += 1
 
   -- Finalise
   h32 ^= h32 >> 15
