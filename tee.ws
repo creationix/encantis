@@ -1,6 +1,12 @@
 -- poor man's tee
 -- Outputs to stderr and stdout whatever comes in stdin
 
+import "wasi_unstable" (
+  "fd_read"   func wasi_fd_read   (Fd IoVec OutSize) -> Result
+  "fd_write"  func wasi_fd_write  (Fd IoVec OutSize) -> Result
+  "proc_exit" func wasi_proc_exit (ExitCode)
+)
+
 type Fd: i32
 type Size: u32
 type IoVec: <<u8>>
@@ -11,18 +17,14 @@ type ExitCode: i32
 define stdin = 0 as Fd
 define stdout = 1 as Fd
 
-import "wasi_unstable" (
-  "fd_read"   => func wasi_fd_read (Fd IoVec OutSize) -> Result
-  "fd_write"  => func wasi_fd_write (Fd IoVec OutSize) -> Result
-  "proc_exit" => func wasi_proc_exit (ExitCode)
-)
-
-export "memory" memory 1
+export "memory"
+memory 1
 
 global ioVec: *<u8> = 0
 global ioBuffer: <u8> = (8, 1024)
 
-export "_start" func main() -> i32
+export "_start"
+func main () -> i32
 
   local res: Result
 
@@ -44,6 +46,10 @@ export "_start" func main() -> i32
       res = wasi_fd_write(stderr, IoVec(ioVec, 1), ioVec.len)
       br-if res != 0
 
-    br:start
+      br:start
+    end
+  end
 
   wasi_proc_exit(res)
+
+end

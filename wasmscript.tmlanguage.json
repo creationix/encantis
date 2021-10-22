@@ -76,7 +76,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.block.wasmscript",
-                    "match": "\\b(block|loop|if|while|br-if|br)(:[A-Za-z0-9]+)?\\b"
+                    "match": "\\b(block|loop|if|while|end|br-if|br)(:[a-z][0-9A-Za-z_-]*)?\\b"
                 },
                 {
                     "name": "keyword.control.wasmscript",
@@ -114,7 +114,7 @@
                 },
                 {
                     "name": "support.type.wasmscript",
-                    "match": "\\b([A-Z][a-zA-Z0-9-]*)\\b"
+                    "match": "\\b([A-Z][0-9A-Za-z_-]*)\\b"
                 },
                 {
                     "name": "support.function.wasmscript",
@@ -126,7 +126,7 @@
                 },
                 {
                     "name": "variable.wasmscript",
-                    "match": "\\b[a-z][a-zA-Z0-9-]*\\b"
+                    "match": "\\b[a-z][0-9A-Za-z_-]*\\b"
                 }
             ]
         },
