@@ -6,10 +6,10 @@
             "include": "#comments"
         },
         {
-            "include": "#operators"
+            "include": "#keywords"
         },
         {
-            "include": "#keywords"
+            "include": "#operators"
         },
         {
             "include": "#strings"
@@ -39,8 +39,8 @@
         "operators": {
             "patterns": [
                 {
-                    "name": "keyword.operator.lambda.wasmscript",
-                    "match": "\\->"
+                    "name": "keyword.operator.arrow.wasmscript",
+                    "match": "\\->|=>"
                 },
                 {
                     "name": "keyword.operator.logical.wasmscript",
@@ -75,15 +75,19 @@
         "keywords": {
             "patterns": [
                 {
+                    "name": "keyword.control.block.wasmscript",
+                    "match": "\\b(block|loop|if|while|br-if|br)(:[A-Za-z0-9]+)?\\b"
+                },
+                {
                     "name": "keyword.control.wasmscript",
-                    "match": "\\b(func|block|loop|if|elif|else|br-if|br|while|break|continue|return|=>)\\b"
+                    "match": "\\b(block|loop|if|elif|else|while|break|continue|return)\\b"
                 },
                 {
-                    "name": "keyword.other.wasmscript",
-                    "match": "\\b(memory|import|export|type|interface|global|local)\\b"
+                    "name": "storage.type.wasmscript",
+                    "match": "\\b(func|param|result|memory|import|export|define|type|interface|global|local)\\b"
                 },
                 {
-                    "name": "keyword.operator.wasmscript",
+                    "name": "keyword.logic.wasmscript",
                     "match": "\\b(or|and|not|xor|as)\\b"
                 }
             ]
@@ -105,12 +109,12 @@
         "variables": {
             "patterns": [
                 {
-                    "name": "storage.type.wasmscript",
+                    "name": "entity.name.type.wasmscript",
                     "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|void)\\b"
                 },
                 {
                     "name": "support.type.wasmscript",
-                    "match": "\\b([A-Z][a-z]+)\\b"
+                    "match": "\\b([A-Z][a-zA-Z0-9-]*)\\b"
                 },
                 {
                     "name": "support.function.wasmscript",

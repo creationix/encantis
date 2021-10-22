@@ -26,7 +26,7 @@ export "_start" func main() -> i32
 
   local res: Result
 
-  loop
+  loop:start
     block
       *ioVec = ioBuffer
 
@@ -34,16 +34,16 @@ export "_start" func main() -> i32
       res = wasi_fd_read(stdin, IoVec(ioVec, 1), ioVec.len)
 
       -- Break out of the loop if fd_read returned an error, or 0 bytes were read.
-      br-if result != 0 or ioVec.len == 0
+      br-if res != 0 or ioVec.len == 0
 
       -- Write the bytes read from stdin to stdout.
       res = wasi_fd_write(stdout, IoVec(ioVec, 1), ioVec.len)
-      br-if result != 0
+      br-if res != 0
 
       -- Write the bytes read from stdin to stderr.
       res = wasi_fd_write(stderr, IoVec(ioVec, 1), ioVec.len)
-      br-if result != 0
+      br-if res != 0
 
-    br
+    br:start
 
   wasi_proc_exit(res)

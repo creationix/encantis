@@ -47,16 +47,26 @@ export func xxh32(ptr: *u32, len: u32, seed: u32) -> u32 |>
         + (v3 <<< 12)
         + (v4 <<< 18)
 
-  else -- when input is smaller than 16 bytes
+  else |>-- when input is smaller than 16 bytes
     h32 = seed + prime32-5
   
   h32 += len
 
   -- For the remaining words not covered above, either 0, 1, 2 or 3
-  while ptr + 4 < end
+  while ptr + 4 < end |>
     h32 += *ptr * prime32-3
     h32 = (h32 <<< 17) * prime32-4
     ptr += 4
+
+
+  -- Same thing, but without `while` syntax sugar
+  block:outer |>
+    loop |>
+      br-if:outer ptr + 4 >= end
+      h32 += *ptr * prime32-3
+      h32 = (h32 <<< 17) * prime32-4
+      ptr += 4
+      br
 
   -- For the remaining bytes that didn't make a whole word,
   -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
