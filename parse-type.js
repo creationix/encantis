@@ -5,7 +5,8 @@ const tests = [
     `<u8>`, `<(i32 i32)>`,
     `*i64`, `#u8`, `?i32`,
     `Point`, `*Point`, `(Color Size)`,
-    `(i32 i32) -> i32`
+    `(i32 i32) -> i32`,
+    `i32 -> u32 -> f32`
 ]
 
 const builtinType = token(/^[iuf](32|64)(?![A-Za-z0-9_-])/, 'builtin')
@@ -24,21 +25,25 @@ const arrayType = match('#', tag('array', extendedType))
 
 const maybeType = match('?', tag('maybe', parseType))
 
-const functionType = tag('function', match(parseType, '->', parseType))
-
 const userType = token(/^[A-Z][A-Za-z0-9_-]*/, 'usertype')
+
+const baseType = union(
+    builtinType,
+    tupleType,
+    sliceType,
+    pointerType,
+    arrayType,
+    maybeType,
+    userType,
+)
+
+const functionType = tag('function', match(baseType, '->', parseType))
 
 function parseType(code, pos) {
     // console.log("TYPE", code, pos)
     return or([
-        builtinType,
-        tupleType,
-        sliceType,
-        pointerType,
-        arrayType,
-        maybeType,
-        // functionType,
-        userType,
+        functionType,
+        baseType,
     ], code, pos)
 }
 
