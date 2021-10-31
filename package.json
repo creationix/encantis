@@ -2,6 +2,7 @@
   "name": "wasmscript-vscode-ext",
   "displayName": "wasmscript-vscode-ext",
   "version": "0.0.1",
+  "type": "module",
   "engines": {
     "vscode": "^1.40.0"
   },
