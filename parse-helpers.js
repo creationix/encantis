@@ -47,7 +47,7 @@ export function token(regexp, name) {
     }
 }
 
-export function star(entry) {
+export function star(entry, flatten = false) {
     return function (code, pos) {
         // console.log("STAR", code, pos)
         const list = []
@@ -55,7 +55,7 @@ export function star(entry) {
         for (; ;) {
             position = skipEmpty(code, position)
             const { type, expected, pos } = entry(code, position)
-            if (!type) return { type: list, pos }
+            if (!type) return { type: (flatten && list.length === 1) ? list[0] : list, pos }
             position = pos
             list.push(type)
         }

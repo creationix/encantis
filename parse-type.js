@@ -7,7 +7,7 @@ const smallType = token(/^[iu](8|16)(?![A-Za-z0-9_-])/)
 
 const extendedType = union(parseType, smallType)
 
-const tupleType = match('(', star(parseType), ')')
+const tupleType = match('(', star(parseType, true), ')')
 
 const sliceType = match('<', tag('slice', extendedType), '>')
 
