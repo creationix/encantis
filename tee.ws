@@ -28,7 +28,7 @@ func main () -> i32
 
   local res: Result
 
-  loop:start
+  loop-start
     block
       *ioVec = ioBuffer
 
@@ -46,7 +46,7 @@ func main () -> i32
       res = wasi_fd_write(stderr, IoVec(ioVec, 1), ioVec.len)
       br-if res != 0
 
-      br:start
+      br-start
     end
   end
 

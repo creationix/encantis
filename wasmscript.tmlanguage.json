@@ -76,11 +76,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.block.wasmscript",
-                    "match": "\\b(block|loop|if|while|end|br-if|br)(:[a-z][0-9A-Za-z_-]*)?\\b"
+                    "match": "\\b(block|loop|if|while|br-if|br|break|continue)(-[0-9A-Za-z_-]*)?\\b"
                 },
                 {
                     "name": "keyword.control.wasmscript",
-                    "match": "\\b(block|loop|if|elif|else|while|break|continue|return)\\b"
+                    "match": "\\b(func|then|elif|else|end|do|return)\\b"
                 },
                 {
                     "name": "storage.type.wasmscript",
@@ -134,7 +134,7 @@
             "patterns": [
                 {
                     "name": "constant.numeric",
-                    "match": "[0-9]+"
+                    "match": "[0-9]+(UL|U|L)?"
                 }
             ]
         }
