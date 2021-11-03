@@ -67,6 +67,10 @@
                     "match": "="
                 },
                 {
+                    "name": "keyword.operator.bracket.wasmscript",
+                    "match": "\\[|\\]"
+                },
+                {
                     "name": "keyword.operator.arithmetic.wasmscript",
                     "match": "/|%|\\*|\\+|-"
                 }
@@ -76,11 +80,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.block.wasmscript",
-                    "match": "\\b(block|loop|if|while|br-if|br|break|continue)(-[0-9A-Za-z_-]*)?\\b"
+                    "match": "\\b(block|loop|if|while|for|br-if|br|break|continue)(-[0-9A-Za-z_-]*)?\\b"
                 },
                 {
                     "name": "keyword.control.wasmscript",
-                    "match": "\\b(func|then|elif|else|end|do|return)\\b"
+                    "match": "\\b(func|then|elif|else|end|in|do|return-if|return)\\b"
                 },
                 {
                     "name": "storage.type.wasmscript",

@@ -28,12 +28,12 @@ func distance (x: f32, y: f32) -> f32
 -< Multiple return values using tuple.
  | No inline type annotations needed since it
  | was defined above in the export block.
- >- 
-export "idiv" func idiv (a: i32 b: i32) -> (i32 i32)
-  => (a / b, a % b)
+ >-
+export "idiv" func (a: i32 b: i32) => (a / b, a % b)
 
 -- Block syntax is also allowed for longer functions
-export "_start" func main () -> f32
+export "_start"
+func main () -> f32
     print("Hello 🌍🌎🌏")
 
     local a = Point(1, 2)
@@ -51,8 +51,8 @@ end
   Given a number and a slice of memory, write out the decimal
   digits using ASCII encoding.
 >-
-func digits(num: u32, mem: <u8>) -> u32
-    local i = 0
+func digits(num: u32, mem: <u8>) -> (i: u32)
+    i = 0
     block-outer
         loop
             br-if-outer num == 0 or i >= mem.len
@@ -62,29 +62,54 @@ func digits(num: u32, mem: <u8>) -> u32
             br
         end
     end
-    return i
 end
 
-func digits(num: u32, mem: <u8>) -> u32
-    local i = 0
+func digits(num: u32, mem: <u8>) -> (i: u32)
+    i = 0
     while num != 0 and i < mem.len do
         mem[i] = num % 10 + '0'
         i += 1
         num /=10
     end
-    return i
 end
 
 
-func digits(num: u32, mem: <u8>) -> u32
-    local i = 0
+func digits(num: u32, mem: <u8>) -> (i: u32)
+    i = 0
     loop
-        if num == 0 or i >= mem.len then
-            return i
-        end
+        return-if num == 0 or i >= mem.len
         mem[i] = num % 10 + '0'
         i += 1
         num /=10
         br
+    end
+end
+
+-- for..in sugar works on integers
+-- it iterates from 0 to n-1
+func sum (n: u32) -> (s: u32)
+    s = 0
+    for i in n do
+        s += i
+    end
+end
+
+-- for..in also works on slices
+-- it iterates on the values and automatically stops
+func iterate (list: <<u8>>)
+    for str in list do
+      for char in str do
+        -- Do something
+      end
+    end
+end
+
+
+-- for..in also works on zero terminated arrays
+func iterate (list: [[u8]])
+    for str in list do
+      for char in str do
+        -- Do something
+      end
     end
 end

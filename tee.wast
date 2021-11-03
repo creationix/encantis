@@ -12,7 +12,7 @@
   (global $ioVecAddress i32 (i32.const 0))
   (global $ioBufferAddress i32 (i32.const 8))
   (global $ioBufferNumBytes i32 (i32.const 1024))
-  
+
   (func $main (export "_start")
     (local $result i32)
     (loop $loop

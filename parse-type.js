@@ -11,6 +11,8 @@ const tupleType = match('(', star(parseType, true), ')')
 
 const sliceType = match('<', tag('slice', extendedType), '>')
 
+const terminatedType = match('[', tag('term', extendedType), ']')
+
 const pointerType = match('*', tag('pointer', extendedType))
 
 const arrayType = match('#', tag('array', extendedType))
@@ -23,6 +25,7 @@ const baseType = union(
     builtinType,
     tupleType,
     sliceType,
+    terminatedType,
     pointerType,
     arrayType,
     maybeType,
