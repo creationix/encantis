@@ -1,34 +1,19 @@
 grammar Encantis;
 
 WS: [ \t\r\n]+ -> skip; // skip spaces, tabs, newlines
+ARRAY_LEN: [*][0-9]+;
+USERTYPE: [A-Z][A-Za-z0-9-]*;
+IDENT: [a-z][a-zA-Z0-9-]*;
 
 type:
 	USERTYPE
-	| tupleType
-	| sliceType
-	| pointerType
-	| maybeType
-	| 'i32'
-	| 'u32'
-	| 'i64'
-	| 'u64'
-	| 'f32'
-	| 'f64'
-	| 'void'
+	| ('*'|'?') type
+	| 'i8' | 'i16' | 'i32' | 'i64'
+	| 'u8' | 'u16' | 'u32' | 'u64'
+	| 'f32'| 'f64'
 	| 'externref'
 	| 'funcref'
-	| type '->' type;
+	| '[' type ('/0' | ARRAY_LEN)? ']'
+	| '(' ((IDENT ':')? type)* ')'
+	| <assoc=right> type '->' type;
 
-tupleType: '(' type* ')';
-
-NUM: [0-9]+;
-
-sliceType: '[' (type | virtualType) ('/0' | '*' NUM)? ']';
-
-pointerType: '*' (type | virtualType);
-
-maybeType: '?' (type | virtualType);
-
-virtualType: 'i8' | 'u8' | 'i16' | 'u16';
-
-USERTYPE: [A-Z][A-Za-z0-9-]*;
