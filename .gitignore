@@ -1,6 +1,0 @@
-*.interp
-*.tokens
-*.class
-*.java
-*.test
-/.antlr

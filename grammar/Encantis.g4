@@ -1,6 +1,7 @@
 grammar Encantis;
 
 WS: [ \t\r\n]+ -> skip; // skip spaces, tabs, newlines
+
 ARRAY_LEN: [*][0-9]+;
 USERTYPE: [A-Z][A-Za-z0-9-]*;
 IDENT: [a-z][a-zA-Z0-9-]*;
