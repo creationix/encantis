@@ -5,7 +5,7 @@
 
 Line comments are the same as Lua and Haskell with `--`.  For example:
 
-```haskell
+```ents
 -- This is a comment
 ```
 
@@ -15,7 +15,7 @@ Despute being a very simple language that only generates wat, there is a powerfu
 
 Most type annotations follow a `:` character.  In many places the type annotation can be omitted and will be inferred.  For example:
 
-```haskell
+```ents
 -- Declare a variable with a type
 var x: i64
 -- Declare and initialize a variable with `i32` inferred as the type
@@ -30,13 +30,13 @@ The builtin types are numeric types `i32`, `u32`, `i64`, `u64`, `f32`, and `f64`
 
 A tuple is simply a fixed amount of multiple types combined.  The syntax is `(` followed by the types and ended with `)`. For example:
 
-```haskell
+```ents
 (i32 i32)
 ```
 
 Values that are of type tuple can be destructured or accessed using numerical properties (`.1`, `.2`, etc).  For example:
 
-```haskell
+```ents
 -- point has inferred type `(i32 i32)`
 var point = (10 20)
 -- a and b have inferred type `i32`
@@ -68,7 +68,7 @@ get_local $point_2
 
 A struct is just like a tuple, except each value is named and it's framed with `{` and `}`.  These can be destructured or accessed using properties. For example:
 
-```haskell
+```ents
 -- point has inferred type `{ x:i32 y:i32 }`
 var point = {
   x = 3
@@ -107,9 +107,9 @@ set_local $y
 
 Structs have structural matching.  A superset of matching properties can be used for a struct that is a subset.  For example:
 
-```haskell
+```ents
 -- point has inferred type `{x:f32 y:f32 z:f32}`
-var point = { x=1f y=2f z=3f}
+local point = ( x=1f y=2f z=3f)
 -- but 2dDistance accepts `{x:f32 y:f32}` and simply passes the 
 -- matching subset ignoring the `z` property.
 2dDistance(point)
@@ -137,7 +137,7 @@ This compiles roughly to:
 
 A pointer is encoded in wasm as a simple `u32` offset into the linear memory, but the type tells us the shape of what it's pointing to.  The syntax is `*` followed by the type.  This allows small types as well as complex types. For example:
 
-```haskell
+```ents
 -- pointer to a number
 var a: *i32
 -- Reference and dereference the pointer
@@ -154,11 +154,11 @@ test(a, *a)
 )
 ```
 
-```haskell
+```ents
 -- ponter to a small number
-var b: *u8
+local b: *u8
 -- Reference and dereference the pointer
-test(b *b)
+test(b, *b)
 ```
 
 ```wat
@@ -171,9 +171,9 @@ test(b *b)
 )
 ```
 
-```haskell
+```ents
 -- pointer to a complex type
-var c: *(u8 u16 u8)
+local c: *(u8 u16 u8)
 -- access property directoy
 c[1]
 ```
@@ -188,38 +188,17 @@ c[1]
 ))
 ```
 
-### Array Pointer Type
-
-An array pointer is a pointer that's allowed to be treated like an array.  It does not have a length or bounds check, so be careful.  The syntax is `#` type.  In this context, the smaller types may also be used such as `u8`, `i8`, `u16`, and `i16`. For example:
-
-```haskell
-var a: #u8
-a[0]
-a[1]
-```
-
-```wat
-(local $a u32)
-(i32.load8_u 
-    (local_get $a)
-)
-(i32.load8_u (u32.add
-    (local_get $a)
-    (i32.const 1)
-))
-```
-
 ### Function Pointers
 
 Functions can be first class values thanks to indirect call in wasm.  The pointer itself is a table index.
 
-```haskell
+```ents
 -- Function Pointers have types of inputs and outputs.
 -- This points to a function that accepts two numbers
 -- and returns one.
-var ptr: (a:i32 b:i32) -> i32
+local ptr: (a:i32 b:i32) -> i32
 -- Call the function pointer.
-ptr(1 2)
+ptr(1, 2)
 ```
 
 ```wat
@@ -241,10 +220,10 @@ ptr(1 2)
 
 It's also possible to combined pointers with container types such as tuples and structs.
 
-```haskell
+```ents
 -- Pointer to 5 bytes in memory containing pointer to null terminated
 -- string and single byte age.
-var a: *{name:*[u8] age:u8}
+local a: *(name:[u8/0] age:u8)
 -- Load pointer to name
 a.name
 -- Load age
@@ -269,19 +248,19 @@ Pointers can point to any type, including pointers, array pointers, even functio
 
 ### Slice Type
 
-A slice is an array pointer that also has a known length.  It's actually two `i32` values in wasm. The syntax is `<` type `>`. Just like array pointers, the small integer types can be used.  A common type for strings is `<u8>`.
+A slice is an array pointer that also has a known length.  It's actually two `i32` values in wasm. The syntax is `[` type `]`. Just like array pointers, the small integer types can be used.  A common type for strings is `[u8]`.
 
 This can be used like an array and has a `.len` property and a `.base` property.  There is no generated bounds checking at runtime.
 
-```haskell
+```ents
 -- Declare the variable
-var word: <u8>
+local word: [u8]
 -- .len is type `u32`
 word.len
--- .base is type `*[u8]`
+-- .base is type `[u8*?]`
 word.base
 -- The lookup is `u8`, but `first` is `i32`.
-var first = word[0]
+local first = word[0]
 ```
 
 The generated wat for this looks roughy like:
@@ -309,7 +288,7 @@ local_set $first
 
 Interface types are simply shorthand names for types, they are identical to the fullly written out type.
 
-```haskell
+```ents
 interface Pair: (f32 f32)
 ```
 
@@ -319,18 +298,17 @@ Values and function parameters with type `Pair` are identical to `(f32 f32)` and
 
 Unique types are like interface types, except they are not considered the same type and are a new type that requires manual casting in the compiler type system
 
-```haskell
+```ents
 -- Define a unique type for String that is implemented using a byte slice.
-unique String: <u8>
+type String: [u8]
 ```
 
 Then if a function accepts `String` type, a raw `variable` with type `<u8>` cannot be passed in, it needs to be explicitly cast using `String(variable)`.  This works for simple types too.
 
-
-```haskell
+```ents
 -- An index for a specefic use in the app, so it can't be mixed
 -- with other indices in the app and be type safe.
-unique GameIndex: u32
+type GameIndex: u32
 ```
 
 ## Functions
@@ -339,29 +317,29 @@ unique GameIndex: u32
 
 One idea is named params and results:
 
-```haskell
-fn add-sub (a:i32 b:i32) -> (c:i32 d:i32) {
-    c = a + b
-    d = a - b
+```ents
+func add-sub (a:i32 b:i32) -> (c:i32 d:i32) {
+  c = a + b
+  d = a - b
 }
 ```
 
 This also works for non-tuple types
 
-```haskell
-fn negate a:i32 -> b:i32 {
-    b = -a
+```ents
+func negate a:i32 -> b:i32 {
+  b = -a
 }
 ```
 
 Another idea is implicit inputs with `@` and outputs with `return`.
 
-```haskell
-fn add-sub (i32 i32) -> (i32 i32) {
+```ents
+func add-sub (i32 i32) -> (i32 i32) {
     return (@.1 + @.2, @.1 - @.2)
 }
 
-fn negate i32 -> i32 {
+func negate i32 -> i32 {
     return -@
 }
 ```
@@ -369,11 +347,11 @@ fn negate i32 -> i32 {
 We can have function literals with arrow style as long as it doesn't include
 closure variables.
 
-```haskell
-let add-sub: (i32 i32) -> (i32 i32) = 
+```ents
+local add-sub: (i32 i32) -> (i32 i32) = 
     (a, b) => (a + b, a - b)
 
-let negate: i32 -> i32 = 
+local negate: i32 -> i32 = 
     a => -a
 ```
 
@@ -381,7 +359,7 @@ These will generate anonymous global functions that are not exported.  Multiple 
 
 This makes higher-order functions possible.
 
-```haskell
+```ents
 fn fold(list: <i32>, fn: (i32 i32) -> i32) -> sum:i32 {
     -- Call fn over and over and return sum
 }
@@ -393,20 +371,20 @@ var sum = fold(list, (accum, item) => accum + item)
 
 ### Function Application
 
-```haskell
+```ents
 add-sub(1 2)
 ```
 
 ### Function Pipine
 
-```haskell
+```ents
 (1 2)
     |add-sub
 ```
 
 ## Loops
 
-```haskell
+```ents
 loop ()
 ```
 
@@ -416,13 +394,13 @@ NOTE: this is a crazy idea and probably doesn't fit with the language, but it's 
 
 The iterator interface is like a generic function pointer type.  The language doesn't have generics (yet), but this is a way to think about it.
 
-```haskell
+```ents
 interface Iterator<Value Entry State>: (Value State) -> (Entry State)
 ```
 
 The definition itself is a kind of macro to allow defining custom iterators that look like keywords.
 
-```haskell
+```ents
 -- Define the interface for an iterator that loops over i32 slices
 -- The State value always starts out 0.  When it returns zero again
 -- iteration is done.
@@ -435,6 +413,7 @@ each entry in list {
 ```
 
 This generates to roughly:
+
 ```wat
 (local $index u32)
 (set_local $index 0)
@@ -444,12 +423,11 @@ This generates to roughly:
 
 NOTE: This might not be a good idea if we can't optimize away the cost using manual inlining or binaryen.
 
-
 Two-Phase Iterator:
 
 A iterator function returns a function pointer and a start state. The returned function returns each entry and a new state. It returns 0 for state when iteration should be done.
 
-```haskell
+```ents
 -- Just an idea, you wouldn't really do this for a struct
 -- This made up function returns a tuple for each entry which
 -- we then destructure
@@ -457,7 +435,7 @@ for (key, value) in pairs(struct) {
 
 }
 -- name is a byte array (aka string)
-var: <u8> name
+local name: [u8]
 -- iterate over the bytes with indices
 for (i, byte) in ipairs(name) {
 
@@ -486,13 +464,13 @@ for x in (decr, 10) {
 
 Wasm has 3 low-level control flow block types `block/end`, `loop/end`, and `if/else/end`.  In each of these you can `break` and `break-if` to arbitrary numbers of nested levels.  Breaks targetting `block` and `if/else` jump to end but breaks within `loop` jump to the start.
 
-```lua
+```ents
 -- A simple while loop using low-level control flow
-block
+block-top
     loop
-        break-1-if exp -- jump to end of `block` if true
+        br-if-top exp -- jump to end of `block` if true
         -- body of loop
-        break-0 -- jump to start of loop
+        br -- jump to start of loop
     end
 end
 
@@ -517,14 +495,13 @@ end
 if cond then
   -- `then` is used to delimit between condition from the first body
   -- body of true
-elseif cond2 then
+elif cond2 then
   -- elseif is just nested if blocks, but with less nesting and visual ends
   -- body of alternate truth
 else
   -- body of false
-  break-0-if cond -- jump to end if true
+  br-if cond -- jump to end if true
   -- more body
 end
-
 
 ```

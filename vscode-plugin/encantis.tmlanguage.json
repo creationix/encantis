@@ -1,6 +1,6 @@
 {
     "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-    "name": "wasmscript",
+    "name": "encantis",
     "patterns": [
         {
             "include": "#comments"
@@ -25,12 +25,12 @@
         "comments": {
             "patterns": [
                 {
-                    "name": "comment.line.double-dash.wasmscript",
+                    "name": "comment.line.double-dash.encantis",
                     "begin": "--",
                     "end": "\n"
                 },
                 {
-                    "name": "comment.block.wasmscript",
+                    "name": "comment.block.encantis",
                     "begin": "-<",
                     "end": ">-"
                 }
@@ -39,39 +39,39 @@
         "operators": {
             "patterns": [
                 {
-                    "name": "keyword.operator.arrow.wasmscript",
+                    "name": "keyword.operator.arrow.encantis",
                     "match": "\\->|=>"
                 },
                 {
-                    "name": "keyword.operator.logical.wasmscript",
+                    "name": "keyword.operator.logical.encantis",
                     "match": "&&|\\|\\||\\?\\?"
                 },
                 {
-                    "name": "keyword.operator.assignment.augmented.wasmscript",
+                    "name": "keyword.operator.assignment.augmented.encantis",
                     "match": "%=|&=|\\*=|\\+=|-=|/=|\\^=|\\|=|<<=|>>=|\\|\\|=|\\?\\?="
                 },
                 {
-                    "name": "keyword.operator.bitwise.wasmscript",
+                    "name": "keyword.operator.bitwise.encantis",
                     "match": "<<|>>|&|\\^|\\|"
                 },
                 {
-                    "name": "keyword.operator.comparison.wasmscript",
+                    "name": "keyword.operator.comparison.encantis",
                     "match": "<=|<|>=|>"
                 },
                 {
-                    "name": "keyword.operator.comparison.wasmscript",
+                    "name": "keyword.operator.comparison.encantis",
                     "match": "==|!="
                 },
                 {
-                    "name": "keyword.operator.assignment.wasmscript",
+                    "name": "keyword.operator.assignment.encantis",
                     "match": "="
                 },
                 {
-                    "name": "keyword.operator.bracket.wasmscript",
+                    "name": "keyword.operator.bracket.encantis",
                     "match": "\\[|\\]"
                 },
                 {
-                    "name": "keyword.operator.arithmetic.wasmscript",
+                    "name": "keyword.operator.arithmetic.encantis",
                     "match": "/|%|\\*|\\+|-"
                 }
             ]
@@ -79,19 +79,19 @@
         "keywords": {
             "patterns": [
                 {
-                    "name": "keyword.control.block.wasmscript",
+                    "name": "keyword.control.block.encantis",
                     "match": "\\b(block|loop|if|while|for|br-if|br|break|continue)(-[0-9A-Za-z_-]*)?\\b"
                 },
                 {
-                    "name": "keyword.control.wasmscript",
+                    "name": "keyword.control.encantis",
                     "match": "\\b(func|then|elif|else|end|in|do|return-if|return)\\b"
                 },
                 {
-                    "name": "storage.type.wasmscript",
+                    "name": "storage.type.encantis",
                     "match": "\\b(func|param|result|memory|import|export|define|type|interface|global|local)\\b"
                 },
                 {
-                    "name": "keyword.logic.wasmscript",
+                    "name": "keyword.logic.encantis",
                     "match": "\\b(or|and|not|xor|as)\\b"
                 }
             ]
@@ -99,12 +99,12 @@
         "strings": {
             "patterns": [
                 {
-                    "name": "string.quoted.single.wasmscript",
+                    "name": "string.quoted.single.encantis",
                     "begin": "'",
                     "end": "'"
                 },
                 {
-                    "name": "string.quoted.double.wasmscript",
+                    "name": "string.quoted.double.encantis",
                     "begin": "\"",
                     "end": "\""
                 }
@@ -113,23 +113,23 @@
         "variables": {
             "patterns": [
                 {
-                    "name": "entity.name.type.wasmscript",
+                    "name": "entity.name.type.encantis",
                     "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|void)\\b"
                 },
                 {
-                    "name": "support.type.wasmscript",
+                    "name": "support.type.encantis",
                     "match": "\\b([A-Z][0-9A-Za-z_-]*)\\b"
                 },
                 {
-                    "name": "support.function.wasmscript",
+                    "name": "support.function.encantis",
                     "match": "\\b(sqrt|ceil|floor|round)\\b"
                 },
                 {
-                    "name": "punctuation.accessor.tuple.wasmscript",
+                    "name": "punctuation.accessor.tuple.encantis",
                     "match": "(?<=[a-z])\\.[0-9]+"
                 },
                 {
-                    "name": "variable.wasmscript",
+                    "name": "variable.encantis",
                     "match": "\\b[a-z][0-9A-Za-z_-]*\\b"
                 }
             ]
@@ -143,5 +143,5 @@
             ]
         }
     },
-    "scopeName": "source.wasmscript"
+    "scopeName": "source.encantis"
 }

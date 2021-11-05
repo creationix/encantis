@@ -1,6 +1,6 @@
 {
-  "name": "wasmscript-vscode-ext",
-  "displayName": "wasmscript-vscode-ext",
+  "name": "encantis-vscode-ext",
+  "displayName": "encantis-vscode-ext",
   "version": "0.0.1",
   "type": "module",
   "engines": {
@@ -24,23 +24,37 @@
     ],
     "languages": [
       {
-        "id": "wasmscript",
+        "id": "encantis",
         "aliases": [
-          "wasmscript",
-          "ws"
+          "encantis",
+          "ents"
         ],
         "extensions": [
-          ".ws",
-          ".wasmscript"
+          ".ents",
+          ".encantis"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "encantis-injection"
       }
     ],
     "grammars": [
       {
-        "language": "wasmscript",
-        "scopeName": "source.wasmscript",
-        "path": "wasmscript.tmlanguage.json"
+        "language": "encantis",
+        "scopeName": "source.encantis",
+        "path": "encantis.tmlanguage.json"
+      },
+      {
+        "language": "encantis-injection",
+        "scopeName": "markdown.encantis.codeblock",
+        "path": "./codeblock.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.encantis": "encantis"
+        }
       }
     ]
   }
