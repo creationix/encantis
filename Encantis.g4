@@ -14,6 +14,7 @@ type:
 	| 'u64'
 	| 'f32'
 	| 'f64'
+	| 'void'
 	| 'externref'
 	| 'funcref'
 	| type '->' type;
