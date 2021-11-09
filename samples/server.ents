@@ -1,6 +1,6 @@
--- Use opaque struct pointers for C ABI
-type Loop = *void
-type Handle = *void
+-- Use opaque interfaces
+type Loop = externref
+type Handle = externref
 
 import "uv" (
   "tcp" (

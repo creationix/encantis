@@ -1,16 +1,16 @@
 memory mem 1
 
-global prime32-1 = 2654435761U
-global prime32-2 = 2246822519U
-global prime32-3 = 3266489917U
-global prime32-4 =  668265263U
-global prime32-5 =  374761393U
+global prime32-1 = 2654435761:u32
+global prime32-2 = 2246822519:u32
+global prime32-3 = 3266489917:u32
+global prime32-4 =  668265263:u32
+global prime32-5 =  374761393:u32
 
-global prime64-1 = 11400714785074694791UL
-global prime64-2 = 14029467366897019727UL
-global prime64-3 =  1609587929392839161UL
-global prime64-4 =  9650029242287828579UL
-global prime64-5 =  2870177450012600261UL
+global prime64-1 = 11400714785074694791:u64
+global prime64-2 = 14029467366897019727:u64
+global prime64-3 =  1609587929392839161:u64
+global prime64-4 =  9650029242287828579:u64
+global prime64-5 =  2870177450012600261:u64
 
 export "xxh32"
 func (ptr: *u32, len: u32, seed: u32) -> u32
@@ -87,7 +87,7 @@ end
 
 -- This is the actual WebAssembly implementation.
 -- It cannot be used directly from JavaScript because of the lack of support
--- for i64.
+-- for u64.
 func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
   local last: *u64
   local limit: u32

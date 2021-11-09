@@ -9,7 +9,7 @@ import "wasi_unstable" (
 
 type Fd: i32
 type Size: u32
-type IoVec: <<u8>>
+type IoVec: [[u8]]
 type OutSize: *Size
 type Result: i32
 type ExitCode: i32
@@ -20,8 +20,8 @@ define stdout = 1 as Fd
 export "memory"
 memory 1
 
-global ioVec: *<u8> = 0
-global ioBuffer: <u8> = (8, 1024)
+global ioVec: *[u8] = 0
+global ioBuffer: [u8] = (8, 1024)
 
 export "_start"
 func main () -> i32

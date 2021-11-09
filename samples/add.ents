@@ -51,7 +51,7 @@ end
   Given a number and a slice of memory, write out the 
   decimal digits using ASCII encoding.
 >-
-func digits(num: u32, mem: <u8>) -> (i: u32)
+func digits(num: u32, mem: [u8]) -> (i: u32)
   i = 0
   block-outer
     loop
@@ -64,7 +64,7 @@ func digits(num: u32, mem: <u8>) -> (i: u32)
   end
 end
 
-func digits(num: u32, mem: <u8>) -> (i: u32)
+func digits(num: u32, mem: [u8]) -> (i: u32)
   i = 0
   while num != 0 and i < mem.len do
     mem[i] = num % 10 + '0'
@@ -74,7 +74,7 @@ func digits(num: u32, mem: <u8>) -> (i: u32)
 end
 
 
-func digits(num: u32, mem: <u8>) -> (i: u32)
+func digits(num: u32, mem: [u8]) -> (i: u32)
   i = 0
   loop
     return-if num == 0 or i >= mem.len
@@ -96,9 +96,9 @@ end
 
 -- for..in also works on slices
 -- it iterates on the values and automatically stops
-func iterate (list: <<u8>>)
+func iterate (list: [[u8]])
   for str in list do
-    -- str is type <u8>
+    -- str is type [u8]
     for char in str do
       -- char is type u8
     end
@@ -107,9 +107,9 @@ end
 
 
 -- for..in also works on zero terminated arrays
-func iterate (list: [[u8]])
+func iterate (list: [[u8/0]/0])
   for str in list do
-    -- str is type [u8]
+    -- str is type [u8/0]
     for char in str do
       -- char is type u8
     end
