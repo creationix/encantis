@@ -1,6 +1,5 @@
-
-export "gimli"
-func (state: #u32) -> void
+export "gimlix"
+func gimlix (state: #u32) -> void
 
   local x: u32
   local y: u32
@@ -36,8 +35,6 @@ func (state: #u32) -> void
   end
 end
 
-#include "gimli_hash.h"
-
 define min(a b) = a < b ? a : b
 
 define rate-in-bytes = 16:u64
@@ -46,7 +43,7 @@ export "gimli_hash"
 func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> void
 
   local state-8 = state:[u8*48]
-  local block-size = 0:u64
+  local blockSize = 0:u64
   
   -- === Initialize the state ===
   state.fill(0)
@@ -66,21 +63,22 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> void
     end
   end
 
-    -- === Do the padding and switch to the squeezing phase ===
-    state_8[blockSize] ^= 0x1F;
-    -- Add the second bit of padding
-    state_8[rateInBytes-1] ^= 0x80;
-    -- Switch to the squeezing phase
-    gimlix(state);
+  -- === Do the padding and switch to the squeezing phase ===
+  state-8[blockSize] ^= 0x1F
+  -- Add the second bit of padding
+  state-8[rate-in-bytes - 1] ^= 0x80
+  -- Switch to the squeezing phase
+  gimlix(state)
 
-    -- === Squeeze out all the output blocks ===
-    while(outputByteLen > 0) {
-        blockSize = MIN(outputByteLen, rateInBytes);
-        memcpy(output, state, blockSize);
-        output += blockSize;
-        outputByteLen -= blockSize;
+  -- === Squeeze out all the output blocks ===
+  while outputByteLen > 0
+    blockSize = min(outputByteLen, rateInBytes)
+    memcpy(output, state, blockSize)
+    output += blockSize
+    outputByteLen -= blockSize
 
-        if (outputByteLen > 0)
-            gimlix(state);
-    }
-}
+    if outputByteLen > 0
+      gimlix(state)
+    end
+  end
+end
