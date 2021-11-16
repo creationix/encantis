@@ -115,3 +115,17 @@ func iterate (list: [[u8/0]/0])
     end
   end
 end
+
+-- for..in also works on fixed length (comptime) arrays
+func iterate (list: [[u8*8]*4])
+  for str in list do
+    -- str is type [u8*8]
+    for char in str do
+      -- char is type u8
+    end
+  end
+end
+
+wasm (
+  
+)

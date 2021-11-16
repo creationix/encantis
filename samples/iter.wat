@@ -43,11 +43,11 @@
 
 ;; for..in also works on zero terminated arrays
 ;; it iterates on the values and automatically stops
-;; func iterate (str: [u8]) -> void
+;; func iterate (str: [u8/0]) -> void
 (func $iterate (param $ptr i32)
 
   ;; for char in str do
-  (local $1)
+  (local $1 i32)
   (block
     (loop
       (local.set $1 (i32.load8_u $str_ptr))
@@ -55,6 +55,25 @@
 
       ;; print(char)
       (call $print (local.get $1))
+
+      (local.set $ptr (i32.add (local.get $ptr) (i32.const 1)))
+      (br 0)
+    )
+  )
+  ;; end
+)
+
+;; func iterate (str: [u8*12]) -> void
+(func $iterate (param $ptr i32)
+  ;; for char in str do
+  (local $end i32)
+  (local.set $end (i32.add (local.get $ptr) (i32.const 12)))
+  (block
+    (loop
+      (br_if 1 (i32.ge_u (local.get $ptr) (local.get $end)))
+
+      ;; print(char)
+      (call $print (local.get $ptr))
 
       (local.set $ptr (i32.add (local.get $ptr) (i32.const 1)))
       (br 0)
