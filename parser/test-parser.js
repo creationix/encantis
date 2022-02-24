@@ -1,9 +1,9 @@
 import { inspect } from "util"
-import peggy from "peggy";
+import peggy from "peggy"
 import { readFileSync } from "fs"
 const grammarSource = readFileSync('Encantis.peggy', 'utf8')
 const parser = peggy.generate(grammarSource)
-const filename = "../samples/xxhash.ents"
+const filename = "../samples/trie.ents"
 const source = readFileSync(filename, 'utf8')
 try {
     const ast = parser.parse(source, { grammarSource: filename })
@@ -18,6 +18,7 @@ try {
         const line = lines[start.line - 1]
         const error = `${message}\n    ${line}\n    ${" ".repeat(start.column - 1)}^`
         console.error(error)
+        console.error(err.location)
         process.exit(-1)
     } else {
         throw err
