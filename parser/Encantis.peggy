@@ -13,11 +13,15 @@ exportable
     = func
     / global
 
+params 
+    = '(' _ @(@variable _ ','? _)* ')'
+    / t:type { return [["slot", t]] }
+
 func
-    = f:FUNC _ name:(@lowername _)? args:('(' @(@target _ ','? _)* ')') _ out:("->" _ @type _)? body:block END { 
+    = f:FUNC _ name:(@lowername _)? ins:params  _ outs:("->" _ @params _)? body:block END { 
         return [f]
-            .concat(args.map(arg=>['param', arg]))
-            .concat(out?[['result',out]]:[])
+            .concat(ins.map(p=>['param', p]))
+            .concat(outs?outs.map(p=>['result', p]):[])
             .concat(body)
     }
 
@@ -53,10 +57,10 @@ singlequoted
 number = int:integer typ:(':' @type)? { return typ?[int,typ]:int }
 
 integer
-    = "0" [xX] num:[0-9a-fA-F]+ { return parseInt(num.join(''), 16) }
-    / "0" [dD] num:[0-9a-bA-B]+ { return parseInt(num.join(''), 12) }
-    / "0" [oO] num:[0-7]+ { return parseInt(num.join(''), 8) }
-    / "0" [bB] num:[0-1]+ { return parseInt(num.join(''), 2) }
+    = "0" [xX] num:[0-9a-fA-F]+ { return parseInt(n+num.join(''), 16) }
+    / "0" [dD] num:[0-9a-bA-B]+ { return parseInt(n+num.join(''), 12) }
+    / "0" [oO] num:[0-7]+ { return parseInt(n+num.join(''), 8) }
+    / "0" [bB] num:[0-1]+ { return parseInt(n+num.join(''), 2) }
     / num:[0-9]+  { return parseInt(num.join(''), 10) }
 
 uppername = a:Lu b:(Lu/Ll/[A-Za-z0-9-])* {return a+b.join('')}
@@ -74,8 +78,8 @@ type
 	/ '*' typ:type { return ['ptr', typ] }
 
 expression = @e1
-e1 = a:e2 b:(_ @('and' / 'or' / 'xor') _ @e2)* { return b.reduce((a,[o,b])=>[o,a,b], a) }
-e2 = @(@'not' _ @e3)+ / @e3
+e1 = a:e2 b:(_ @(AND / OR / XOR) _ @e2)* { return b.reduce((a,[o,b])=>[o,a,b], a) }
+e2 = @(@NOT _ @e3)+ / @e3
 e3 = a:e4 b:(_ @'|' _ @e4)* { return b.reduce((a,[o,b])=>([o,a,b]), a) }
 e4 = a:e5 b:(_ @'^' _ @e5)* { return b.reduce((a,[o,b])=>([o,a,b]), a) }
 e5 = a:e6 b:(_ @'&' _ @e6)* { return b.reduce((a,[o,b])=>([o,a,b]), a) }
@@ -88,7 +92,7 @@ e11 = a:e12 b:(_ @AS _ @type)? { return b?[b[0],a,b[1]]:a }
 e12 = a:(@('-' / '!' / '~') _)* _ b:e13 { return a.reduce((p,c)=>([c,p]),b) }
 e13 = a:e14 b:(call/index)* { return b.reduce((a,i)=>i.concat([a]),a) }
 e14
-    = '(' _ @expression _ ')' _
+    = '(' _ e:(@expression _ ','? _)* _ ')' { return e.length===1?e[0]:['tuple',...e] }
 	/ assignment
 	/ ifthenelse
 	/ loop
@@ -102,10 +106,14 @@ call
     = '(' _ a:(@expression _ ','? _)* ')' { return ['call', ...a] }
 
 index
-    = a:('.' @lowername / '[' @expression ']' / @'.*') { return ["index",a] }
+    = a:('.' @lowername / '[' @expression ']' / @'.*') { return ['index',a] }
+
+
+destructure = '(' a:(@target _ ','? _)* ')' { return ['destructure', ...a] }
 
 target
-    = a:variable b: index* { return b.reduce((a,i)=>([i,a]),a) }
+    = a:variable b:index* { return b.reduce((a,i)=>([i,a]),a) }
+    / destructure
 
 assignment
     = a:target _ b:('='
@@ -115,9 +123,9 @@ assignment
 	) _ c: expression { return [b,a,c] }
 
 ifthenelse =
-    IF expression THEN block
-    (ELIF expression THEN block)*
-    (ELSE block)?
+    IF _ expression _ THEN _ block _
+    (ELIF _ expression _ THEN _ block _)*
+    (ELSE _ block _)?
     END
 
 loop = a:(FOREVER / LOOP / BLOCK) _ b:block _ END { return [a, ...b] }
@@ -135,7 +143,7 @@ statement
     / assignment when
 
 local
-    = @LOCAL _ @variable @(_ "=" _ @expression)?
+    = a:LOCAL _ b:variable c:(_ "=" _ @expression)? { return c?[a,b,c]:[a,b] }
 
 when = @(WHEN / UNLESS) _ @expression
 
@@ -145,7 +153,12 @@ IdentifierStart = Ll
 
 // Tokens
 keyword
-    = AS
+    = builtin
+    / AND
+    / OR
+    / XOR
+    / NOT
+    / AS
     / BLOCK
     / BR
     / DO
@@ -168,6 +181,10 @@ keyword
     / WHEN
     / WHILE
 
+AND = @'and' !IdentifierStart
+OR = @'or' !IdentifierStart
+XOR = @'xor' !IdentifierStart
+NOT = @'not' !IdentifierStart
 AS = @'as' !IdentifierStart
 BLOCK = @'block' !IdentifierStart
 BR = @'br' !IdentifierStart

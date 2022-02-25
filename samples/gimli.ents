@@ -1,13 +1,13 @@
 export "gimlix"
-func gimlix (state: #u32) -> void
+func gimlix (state: [u32])
 
   local x: u32
   local y: u32
   local x: u32
 
-  for round in (24,1,-1)
+  for round in (24,1,-1) do
 
-    for column in (0,3,1)
+    for column in (0,3,1) do
 
       x = state[column] <<< 24
       y = state[4 + column] <<< 9
@@ -35,50 +35,50 @@ func gimlix (state: #u32) -> void
   end
 end
 
-define min(a b) = a < b ? a : b
+-- define min(a b) = a < b ? a : b
 
-define rate-in-bytes = 16:u64
+-- define rate-in-bytes = 16:u64
 
-export "gimli_hash"
-func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> void
+-- export "gimli_hash"
+-- func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> void
 
-  local state-8 = state:[u8*48]
-  local blockSize = 0:u64
+--   local state-8 = state:[u8*48]
+--   local blockSize = 0:u64
   
-  -- === Initialize the state ===
-  state.fill(0)
+--   -- === Initialize the state ===
+--   state.fill(0)
 
-  -- === Absorb all the input blocks ===
-  while input.len > 0
-    block-size = min(input.len, rate-in-bytes)
-    for (i:u32) in block-size do
-      state-8[i] ^= input[i]
-    end
-    input.base += block-size
-    input.len -= block-size;
+--   -- === Absorb all the input blocks ===
+--   while input.len > 0
+--     block-size = min(input.len, rate-in-bytes)
+--     for (i:u32) in block-size do
+--       state-8[i] ^= input[i]
+--     end
+--     input.base += block-size
+--     input.len -= block-size;
 
-    if block-size == rate-in-bytes
-      gimli(state)
-      block-size = 0
-    end
-  end
+--     if block-size == rate-in-bytes
+--       gimli(state)
+--       block-size = 0
+--     end
+--   end
 
-  -- === Do the padding and switch to the squeezing phase ===
-  state-8[blockSize] ^= 0x1F
-  -- Add the second bit of padding
-  state-8[rate-in-bytes - 1] ^= 0x80
-  -- Switch to the squeezing phase
-  gimlix(state)
+--   -- === Do the padding and switch to the squeezing phase ===
+--   state-8[blockSize] ^= 0x1F
+--   -- Add the second bit of padding
+--   state-8[rate-in-bytes - 1] ^= 0x80
+--   -- Switch to the squeezing phase
+--   gimlix(state)
 
-  -- === Squeeze out all the output blocks ===
-  while outputByteLen > 0
-    blockSize = min(outputByteLen, rateInBytes)
-    memcpy(output, state, blockSize)
-    output += blockSize
-    outputByteLen -= blockSize
+--   -- === Squeeze out all the output blocks ===
+--   while outputByteLen > 0
+--     blockSize = min(outputByteLen, rateInBytes)
+--     memcpy(output, state, blockSize)
+--     output += blockSize
+--     outputByteLen -= blockSize
 
-    if outputByteLen > 0
-      gimlix(state)
-    end
-  end
-end
+--     if outputByteLen > 0
+--       gimlix(state)
+--     end
+--   end
+-- end
