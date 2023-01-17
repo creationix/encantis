@@ -13,23 +13,29 @@ export
     = @EXPORT _ @string _ @exportable
 
 import
-    = @IMPORT _ @string _ @exportable
+    = @IMPORT _ @string _ @importable
 
 exportable
     = func
     / global
+    / memory
+
+importable
+    = '(' _ @(@string _ @importable _)+ ')'
+    / funcdef
+
+func
+    = f:funcdef body:block END { return f.concat(body) }
+
+funcdef = f:FUNC _ name:(@lowername _)? ins:params  _ outs:("->" _ @params _)? {
+    return [f]
+        .concat(ins.map(p=>['param', p]))
+        .concat(outs?outs.map(p=>['result', p]):[])
+}
 
 params 
     = '(' _ @(@variable _ ','? _)* ')'
     / t:type { return [["slot", t]] }
-
-func
-    = f:FUNC _ name:(@lowername _)? ins:params  _ outs:("->" _ @params _)? body:block END { 
-        return [f]
-            .concat(ins.map(p=>['param', p]))
-            .concat(outs?outs.map(p=>['result', p]):[])
-            .concat(body)
-    }
 
 global
     = @GLOBAL _ @variable @(_ "=" _ @number)?
@@ -38,7 +44,7 @@ variable
     =  !keyword v:lowername typ:(':' _ @type)? { return ['var',v].concat(typ?[typ]:[]) }
 
 memory
-    = @MEMORY _ @lowername _ @number
+    = @MEMORY _ @lowername? _ @number
 
 define
     = @DEFINE _ @lowername @(params)? _ "=" _ @expression
