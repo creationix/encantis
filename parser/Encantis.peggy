@@ -2,13 +2,18 @@ start = _ @(@toplevel _)*
 
 toplevel
     = export
+    / import
     / func
     / global
     / memory
     / define
+    / typedef
 
 export
     = @EXPORT _ @string _ @exportable
+
+import
+    = @IMPORT _ @string _ @exportable
 
 exportable
     = func
@@ -37,6 +42,10 @@ memory
 
 define
     = @DEFINE _ @lowername @(params)? _ "=" _ @expression
+
+typedef
+    = @TYPE _ @uppername _ "=" _ @type
+    / @INTERFACE _ @uppername _ "=" _ @type
 
 string = doublequoted / singlequoted
 
@@ -73,15 +82,19 @@ lowername = a:Ll b:(Lu/Ll/[0-9-])* {return a+b.join('')}
 builtin
     = t:[ui] s:('8' / '16' / '32' / '64') { return t + s }
     / t:'f' s:('32' / '64') { return t + s }
+    / EXTERNREF
 
 type
     = uppername
 	/ builtin
 	/ '(' _ a:(@type _ ','? _)* ')' { return ['tuple', ...a] }
 	/ '[' typ:type size:('*' @integer)? ']' { return size?['array',typ,size]:['slice',typ] }
+	/ '{' fields:(_ @lowername _ ':' _ @type _ ','?)* _ '}' { return ["struct",...fields] }
 	/ '*' typ:type { return ['ptr', typ] }
 
-expression = @e1
+expression = @e0
+e0 = a:e1 _ "?" _ b:e1 _ ":" _ c:e1 { return ["?:",a,b,c] }
+   / @e1 
 e1 = a:e2 b:(_ @(AND / OR / XOR) _ @e2)* { return b.reduce((a,[o,b])=>[o,a,b], a) }
 e2 = @(@NOT _ @e3)+ / @e3
 e3 = a:e4 b:(_ @'|' _ @e4)* { return b.reduce((a,[o,b])=>([o,a,b]), a) }
@@ -148,6 +161,7 @@ return = a:(RETURN / BR) _ b:expression? _ c:when? { return (c||[]).concat(a).co
 // Tokens
 keyword
     = builtin
+    / EXTERNREF
     / AND
     / OR
     / XOR
@@ -160,6 +174,7 @@ keyword
     / ELSE
     / END
     / EXPORT
+    / IMPORT
     / FOR
     / FOREVER
     / FUNC
@@ -169,6 +184,8 @@ keyword
     / LOCAL
     / LOOP
     / MEMORY
+    / TYPE
+    / INTERFACE
     / DEFINE
     / RETURN
     / THEN
@@ -180,6 +197,7 @@ keyword
 
 IdentifierMiddle = (Lu / Ll / "-" / [0-9] )
 
+EXTERNREF = @'externref' !IdentifierMiddle
 AND = @'and' !IdentifierMiddle
 OR = @'or' !IdentifierMiddle
 XOR = @'xor' !IdentifierMiddle
@@ -192,6 +210,7 @@ ELIF = @'elif' !IdentifierMiddle
 ELSE = @'else' !IdentifierMiddle
 END = @'end' !IdentifierMiddle
 EXPORT = @'export' !IdentifierMiddle
+IMPORT = @'import' !IdentifierMiddle
 FOR = @'for' !IdentifierMiddle
 FOREVER = @'forever' !IdentifierMiddle
 FUNC = @'func' !IdentifierMiddle
@@ -202,6 +221,8 @@ LOCAL = @'local' !IdentifierMiddle
 LOOP = @'loop' !IdentifierMiddle
 MEMORY = @'memory' !IdentifierMiddle
 DEFINE = @'define' !IdentifierMiddle
+TYPE = @'type' !IdentifierMiddle
+INTERFACE = @'interface' !IdentifierMiddle
 RETURN = @'return' !IdentifierMiddle
 THEN = @'then' !IdentifierMiddle
 UNLESS = @'unless' !IdentifierMiddle

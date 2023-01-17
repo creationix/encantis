@@ -34,7 +34,7 @@ func gimlix (state: [u32])
   end
 end
 
-define min(a b) = a < b and a or b
+define min(a b) = a < b ? a : b
 
 define rate-in-bytes = 16:u64
 
