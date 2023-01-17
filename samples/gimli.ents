@@ -18,17 +18,17 @@ func gimlix (state: [u32])
       state[column]     = z ^ y        ^ ((x & y) << 3)
     end
 
-    if (round & 3) == 0  -- small swap: pattern s...s...s... etc.
+    if (round & 3) == 0 then -- small swap: pattern s...s...s... etc.
       (state[0], state[1]) = (state[1], state[0])
       (state[2], state[3]) = (state[3], state[2])
     end
 
-    if (round & 3) == 2 -- big swap: pattern ..S...S...S. etc.
+    if (round & 3) == 2 then -- big swap: pattern ..S...S...S. etc.
       (state[0], state[2]) = (state[2], state[0])
       (state[1], state[3]) = (state[3], state[1])
     end
 
-    if (round & 3) == 0 - add constant: pattern c...c...c... etc.
+    if (round & 3) == 0 then -- add constant: pattern c...c...c... etc.
       state[0] ^= 0x9e377900 | round
     end
 

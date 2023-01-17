@@ -57,10 +57,10 @@ singlequoted
 number = int:integer typ:(':' @type)? { return typ?[int,typ]:int }
 
 integer
-    = "0" [xX] num:[0-9a-fA-F]+ { return parseInt(n+num.join(''), 16) }
-    / "0" [dD] num:[0-9a-bA-B]+ { return parseInt(n+num.join(''), 12) }
-    / "0" [oO] num:[0-7]+ { return parseInt(n+num.join(''), 8) }
-    / "0" [bB] num:[0-1]+ { return parseInt(n+num.join(''), 2) }
+    = "0" [xX] num:[0-9a-fA-F]+ { return parseInt(num.join(''), 16) }
+    / "0" [dD] num:[0-9a-bA-B]+ { return parseInt(num.join(''), 12) }
+    / "0" [oO] num:[0-7]+ { return parseInt(num.join(''), 8) }
+    / "0" [bB] num:[0-1]+ { return parseInt(num.join(''), 2) }
     / num:[0-9]+  { return parseInt(num.join(''), 10) }
 
 uppername = a:Lu b:(Lu/Ll/[A-Za-z0-9-])* {return a+b.join('')}
@@ -93,7 +93,6 @@ e12 = a:(@('-' / '!' / '~') _)* _ b:e13 { return a.reduce((p,c)=>([c,p]),b) }
 e13 = a:e14 b:(call/index)* { return b.reduce((a,i)=>i.concat([a]),a) }
 e14
     = '(' _ e:(@expression _ ','? _)* _ ')' { return e.length===1?e[0]:['tuple',...e] }
-	/ assignment
 	/ ifthenelse
 	/ loop
 	/ while
@@ -108,20 +107,6 @@ call
 index
     = a:('.' @lowername / '[' @expression ']' / @'.*') { return ['index',a] }
 
-
-destructure = '(' a:(@target _ ','? _)* ')' { return ['destructure', ...a] }
-
-target
-    = a:variable b:index* { return b.reduce((a,i)=>([i,a]),a) }
-    / destructure
-
-assignment
-    = a:target _ b:('='
-        / '+=' / '-=' / '*=' / '/=' / '%='
-        / '<<<=' / '>>>=' / '<<=' / '>>='
-        / '&=' / '^='
-	) _ c: expression { return [b,a,c] }
-
 ifthenelse =
     IF _ expression _ THEN _ block _
     (ELIF _ expression _ THEN _ block _)*
@@ -132,15 +117,21 @@ loop = a:(FOREVER / LOOP / BLOCK) _ b:block _ END { return [a, ...b] }
 
 while = a:WHILE _ b:expression _ DO _ c:block _ END { return [a, b, ...c] }
 
-for = a:FOR _ b:target _ IN _ c:expression _ DO _ d:block _ END { return [a, b, c, ...d] }
+for = a:FOR _ b:expression _ IN _ c:expression _ DO _ d:block _ END { return [a, b, c, ...d] }
 
 block = @(@statement _)*
 
+assignment = a:expression _ b:('='
+        / '+=' / '-=' / '*=' / '/=' / '%='
+        / '<<<=' / '>>>=' / '<<=' / '>>='
+        / '&=' / '^='
+	) _ c:expression d:return? { return d?[b,a,c,d]:[b,a,c] }
+
 statement
-    = expression
+    = assignment
+    / expression
     / local
     / return
-    / assignment when
 
 local
     = a:LOCAL _ b:variable c:(_ "=" _ @expression)? { return c?[a,b,c]:[a,b] }

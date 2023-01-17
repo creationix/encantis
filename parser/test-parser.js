@@ -56,7 +56,7 @@ try {
         depth: 100,
         colors: true
     }))
-    const [literals, processed] = process(ast)
+    const [literals, processed] = processIt(ast)
     console.log(inspect({ literals, processed }, {
         depth: 100,
         colors: true
@@ -76,7 +76,7 @@ try {
 }
 
 
-function process(ast) {
+function processIt(ast) {
     const literals = []
     return [literals, walk(ast)]
     function walk(node) {
