@@ -56,11 +56,11 @@ try {
         depth: 100,
         colors: true
     }))
-    const [literals, processed] = processIt(ast)
-    console.log(inspect({ literals, processed }, {
-        depth: 100,
-        colors: true
-    }))
+    // const [literals, processed] = processIt(ast)
+    // console.log(inspect({ literals, processed }, {
+    //     depth: 100,
+    //     colors: true
+    // }))
 } catch (err) {
     if (err instanceof parser.SyntaxError) {
         const { message, location: { start } } = err
@@ -89,7 +89,7 @@ function processIt(ast) {
         if (index >= 0) return index
 
         const type = typeof node
-        if (type === "number" || type === "string" && node.length > 3) {
+        if (type === "number" || type === "string") {
             index = literals.indexOf(node)
             if (index >= 0) return index + keywords.length
             return literals.push(node) - 1
