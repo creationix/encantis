@@ -50,7 +50,9 @@ const grammarSource = readFileSync('Encantis.peggy', 'utf8')
 const parser = peggy.generate(grammarSource)
 // const filename = "../samples/gimli.ents"
 // const filename = "../samples/server.ents"
-const filename = "../samples/tee.ents"
+// const filename = "../samples/tee.ents"
+// const filename = "../samples/trie.ents"
+const filename = "../samples/xxhash.ents"
 const source = readFileSync(filename, 'utf8')
 try {
     const ast = parser.parse(source, { grammarSource: filename })
