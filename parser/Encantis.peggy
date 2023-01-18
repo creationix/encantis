@@ -26,6 +26,7 @@ importable
 
 func
     = f:funcdef body:block END { return f.concat(body) }
+    / f:funcdef _ "=>" _ e:expression { return f.concat([e]) }
 
 funcdef = f:FUNC _ name:(@lowername _)? ins:params  _ outs:("->" _ @params _)? {
     return [f]
@@ -122,14 +123,17 @@ e14
 	/ for
     / TRUE / FALSE
 	/ a:number
+    / constructor
 	/ func
 	/ variable
+
+constructor = n:uppername _ '(' _ a:(@expression _ ','? _)* ')' { return [n,...a] }
 
 call
     = '(' _ a:(@expression _ ','? _)* ')' { return ['call', ...a] }
 
 index
-    = a:('.' @lowername / '[' @expression ']' / @'.*') { return ['index',a] }
+    = a:('.' @lowername / '.' @integer / '[' @expression ']' / @('.*' builtin?)) { return ['index',a] }
 
 ifthenelse =
     IF _ cond:expression _ THEN _ body:block _
@@ -148,8 +152,8 @@ block = @(@statement _)*
 assignment = a:expression _ b:('='
         / '+=' / '-=' / '*=' / '/=' / '%='
         / '<<<=' / '>>>=' / '<<=' / '>>='
-        / '&=' / '^='
-	) _ c:expression d:return? { return d?[b,a,c,d]:[b,a,c] }
+        / '&=' / '^=' / '|='
+	) _ c:expression d:when? { return (d|[]).concat([b,a,c]) }
 
 statement
     = assignment
@@ -238,7 +242,7 @@ TRUE = @'true' !IdentifierMiddle
 FALSE = @'false' !IdentifierMiddle
 
 // Whitespace
-_ = ([ \t\n\r\b]+ / "--" [^\n]* )* { }
+_ = ([ \t\n\r\b]+ / "--" [^\n]* / "-<" ([^>]+ / ">" [^-])* ">-" )* { }
 
 
 // Letter, Uppercase

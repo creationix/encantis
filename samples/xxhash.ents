@@ -69,7 +69,7 @@ func (ptr: *u32, len: u32, seed: u32) -> u32
     ptr += 1
   end
 
-  -- Finalise
+  -- Finalize
   h32 ^= h32 >> 15
   h32 *= prime32-2
   h32 ^= h32 >> 13

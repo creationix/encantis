@@ -1,12 +1,12 @@
 
 -- Declare types of imported functions
-import "print" func print (String) -> void
+import "print" func print (String) -> ()
 
 -- Interface is a non-unique type.
-interface Point: (f32 f32)
+interface Point = (f32 f32)
 
 -- Unique is a unique type.
-type String: [u8]
+type String = [u8]
 
 -<
  | Add two points together, pass points by value.
