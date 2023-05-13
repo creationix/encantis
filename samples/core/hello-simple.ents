@@ -1,0 +1,12 @@
+export "memory"
+memory 1
+
+import "print"
+func print (str:[u8])
+
+export "_start"
+func ()
+    -- This string literal is actually written to the data section
+    -- as [u8] since that's the type of the argument.
+    print("Hello World")
+end
