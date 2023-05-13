@@ -2,10 +2,10 @@ export "memory"
 memory 1
 
 import "wasi_snapshot_preview1" (
-  -<< 
+  -<<
     fd:u32       -> i32
-    iovec:[[u8]] -> iovec.ptr:*[u8] iovec.len:u32 
-                 -> i32 i32
+    iovec:[[u8]] -> iovec.ptr:*[u8] iovec.len:u32
+                  -> i32 i32
     outsize:*u32 -> i32
     result:i32   -> i32
   >>-
@@ -15,15 +15,17 @@ import "wasi_snapshot_preview1" (
 -- This writes 24 bytes starting at zero
 data 0 (
     -- automatic: define message = 0 as *[u8]
+    -- and write message to memory starting at 8
     message  -> "Hello World\n":[u8]
     -- automatic: define out-size = 20 as *u32
-    out-size -> 0:u32
+    -- but don't initialize value
+    out-size -> u32
 )
 
--- Define a macro for `stdout` that becomes 
+-- Define a macro for `stdout` that becomes
 -- an integer when used.
 define stdout = 1 as u32
--- Define a macro for `iovec` that becomes 
+-- Define a macro for `iovec` that becomes
 -- two integers when used.
 define iovec = (message 1) as [[u8]]
 
