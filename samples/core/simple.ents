@@ -1,3 +1,15 @@
--- Distance to a point destructuring Point type
-func distance (x: f32, y: f32) -> f32
-  => sqrt(x * x + y * y)
+(func $distance
+  (export "distance")
+  (param $x f32 $y f32))
+  (result f32)
+  (sqrt (add
+      (mul $x $x)
+      (mul $y $y)
+  ))
+)
+
+(func $print
+  (import "print")
+  (param $message [u8])
+)
+

@@ -1,5 +1,3 @@
-export "memory"
-memory 1
 
 import "wasi_snapshot_preview1" (
   -<<
@@ -10,18 +8,6 @@ import "wasi_snapshot_preview1" (
     result:i32   -> i32
   >>-
   "fd_write" func fd-write (fd:u32 iovec:[[u8]] outsize:*u32) -> result:i32
-)
-
--- This writes 24 bytes starting at zero
-data 0 (
-    -- automatic: define message = 0 as *[u8]
-    --   write *u8 pointer at 0 (pointing to 8)
-    --   write u32 length at 4 (12 bytes long)
-    --   write 12 byte message to memory starting at 8
-    message  -> "Hello World\n":[u8]
-    -- automatic: define out-size = 20 as *u32
-    --   but don't initialize value
-    out-size -> u32
 )
 
 -- Define a macro for `stdout` that becomes
@@ -35,3 +21,18 @@ export "_start"
 func ()
     fd-write(stdout iovec outsize)
 end
+
+export "memory"
+memory 1
+
+-- This writes 24 bytes starting at zero
+data 0 (
+    -- automatic: define message = 0 as *[u8]
+    --   write *u8 pointer at 0 (pointing to 8)
+    --   write u32 length at 4 (12 bytes long)
+    --   write 12 byte message to memory starting at 8
+    message  -> "Hello World\n":[u8]
+    -- automatic: define out-size = 20 as *u32
+    --   but don't initialize value
+    out-size -> u32
+)

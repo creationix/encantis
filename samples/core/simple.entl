@@ -1,0 +1,21 @@
+;; Define a library function and export it
+(func $distance
+  (export "distance")
+  (param $x f32 $y f32)
+  (result f32)
+  (sqrt (add
+      (mul $x $x)
+      (mul $y $y)
+  ))
+)
+
+;; Import a system API
+(func $print
+  (import "print")
+  (param $message [u8])
+)
+
+;; Print Hello World in _start
+(func (export "_start")
+  ($print "Hello World")
+)

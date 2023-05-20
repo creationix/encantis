@@ -1,0 +1,14 @@
+// Import a system API
+import "sys" (
+    fun print(message:[u8])
+)
+
+// Define a library function and export it
+export fun distance(x:f32, y:f32):f32 {
+    return sqrt(x * x + y * y)
+}
+
+// Print Hello World in _start
+export "_start" func() {
+    print("Hello World")
+}

@@ -1,0 +1,5 @@
+-- This is called for every request
+export "on-request"
+func()
+
+end
