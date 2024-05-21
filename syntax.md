@@ -11,7 +11,7 @@ Line comments are the same as Lua and Haskell with `--`.  For example:
 
 ## Types
 
-Despute being a very simple language that only generates wat, there is a powerful and zero-cost type system to help writing code.
+Despite being a very simple language that only generates [wat](https://webassembly.github.io/spec/core/text/index.html), there is a powerful and zero-cost type system to help writing code.
 
 Most type annotations follow a `:` character.  In many places the type annotation can be omitted and will be inferred.  For example:
 
