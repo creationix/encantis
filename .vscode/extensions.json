@@ -1,7 +1,6 @@
 {
     "recommendations": [
         "creationix.encantis-vscode-ext",
-        "sdras.night-owl",
-        "alan.webassembly"
+        "dtsvet.vscode-wasm"
     ]
 }
