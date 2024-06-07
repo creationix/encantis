@@ -24,32 +24,38 @@
         (local.set $end (i32.add (local.get $ptr) (local.get $len)))
         (if
           (i32.ge_u (local.get $len) (i32.const 16))
-          (block
-            (local.set $limit (i32.sub (local.get $end) (i32.const 16)))
-            (local.set $v1 (i32.add (i32.add (local.get $seed) (global.get $PRIME32_1)) (global.get $PRIME32_2)))
-            (local.set $v2 (i32.add (local.get $seed) (global.get $PRIME32_2)))
-            (local.set $v3 (i32.add (local.get $seed) (i32.const 0)))
-            (local.set $v4 (i32.sub (local.get $seed) (global.get $PRIME32_1)))
-            ;; For every chunk of 4 words, so 4 * 32bits = 16 bytes
-            (loop $4words-loop
-                  (local.set $v1 (call $round32 (local.get $v1) (i32.load (local.get $ptr))))
-                  (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
-                  (local.set $v2 (call $round32 (local.get $v2) (i32.load (local.get $ptr))))
-                  (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
-                  (local.set $v3 (call $round32 (local.get $v3) (i32.load (local.get $ptr))))
-                  (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
-                  (local.set $v4 (call $round32 (local.get $v4) (i32.load (local.get $ptr))))
-                  (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
-                  (br_if $4words-loop (i32.le_u (local.get $ptr) (local.get $limit))))
-            (local.set $h32 (i32.add
-                              (i32.rotl (local.get $v1) (i32.const 1))
-                              (i32.add
-                                (i32.rotl (local.get $v2) (i32.const 7))
+          (then
+            (block
+              (local.set $limit (i32.sub (local.get $end) (i32.const 16)))
+              (local.set $v1 (i32.add (i32.add (local.get $seed) (global.get $PRIME32_1)) (global.get $PRIME32_2)))
+              (local.set $v2 (i32.add (local.get $seed) (global.get $PRIME32_2)))
+              (local.set $v3 (i32.add (local.get $seed) (i32.const 0)))
+              (local.set $v4 (i32.sub (local.get $seed) (global.get $PRIME32_1)))
+              ;; For every chunk of 4 words, so 4 * 32bits = 16 bytes
+              (loop $4words-loop
+                    (local.set $v1 (call $round32 (local.get $v1) (i32.load (local.get $ptr))))
+                    (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
+                    (local.set $v2 (call $round32 (local.get $v2) (i32.load (local.get $ptr))))
+                    (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
+                    (local.set $v3 (call $round32 (local.get $v3) (i32.load (local.get $ptr))))
+                    (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
+                    (local.set $v4 (call $round32 (local.get $v4) (i32.load (local.get $ptr))))
+                    (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
+                    (br_if $4words-loop (i32.le_u (local.get $ptr) (local.get $limit))))
+              (local.set $h32 (i32.add
+                                (i32.rotl (local.get $v1) (i32.const 1))
                                 (i32.add
-                                  (i32.rotl (local.get $v3) (i32.const 12))
-                                  (i32.rotl (local.get $v4) (i32.const 18)))))))
-          ;; else block, when input is smaller than 16 bytes
-          (local.set $h32 (i32.add (local.get $seed) (global.get $PRIME32_5))))
+                                  (i32.rotl (local.get $v2) (i32.const 7))
+                                  (i32.add
+                                    (i32.rotl (local.get $v3) (i32.const 12))
+                                    (i32.rotl (local.get $v4) (i32.const 18)))))))
+          )
+          (else
+            ;; else block, when input is smaller than 16 bytes
+            (local.set $h32 (i32.add (local.get $seed) (global.get $PRIME32_5)))
+          )
+
+        )
         (local.set $h32 (i32.add (local.get $h32) (local.get $len)))
         ;; For the remaining words not covered above, either 0, 1, 2 or 3
         (block $exit-remaining-words
@@ -96,7 +102,7 @@
         (local.set $end (i32.add (local.get $ptr) (local.get $len)))
         (if
           (i32.ge_u (local.get $len) (i32.const 32))
-          (block
+          (then (block
             (local.set $limit (i32.sub (local.get $end) (i32.const 32)))
             (local.set $v1 (i64.add (i64.add (local.get $seed) (global.get $PRIME64_1)) (global.get $PRIME64_2)))
             (local.set $v2 (i64.add (local.get $seed) (global.get $PRIME64_2)))
@@ -124,8 +130,10 @@
             (local.set $h64 (call $merge-round64 (local.get $h64) (local.get $v2)))
             (local.set $h64 (call $merge-round64 (local.get $h64) (local.get $v3)))
             (local.set $h64 (call $merge-round64 (local.get $h64) (local.get $v4))))
+          )
           ;; else block, when input is smaller than 32 bytes
-          (local.set $h64 (i64.add (local.get $seed) (global.get $PRIME64_5))))
+          (else (local.set $h64 (i64.add (local.get $seed) (global.get $PRIME64_5))))
+        )
         (local.set $h64 (i64.add (local.get $h64) (i64.extend_i32_u (local.get $len))))
         ;; For the remaining words not covered above, either 0, 1, 2 or 3
         (block $exit-remaining-words
@@ -143,14 +151,20 @@
         ;; remaining which didn't make a whole word.
         (if
           (i32.le_u (i32.add (local.get $ptr) (i32.const 4)) (local.get $end))
-          (block
-            (local.set $h64 (i64.xor (local.get $h64) (i64.mul (i64.load32_u (local.get $ptr)) (global.get $PRIME64_1))))
-            (local.set $h64 (i64.add
-                              (i64.mul
-                                (i64.rotl (local.get $h64) (i64.const 23))
-                                (global.get $PRIME64_2))
-                              (global.get $PRIME64_3)))
-            (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))))
+          (then
+            (block
+              (local.set $h64 (i64.xor (local.get $h64) (i64.mul (i64.load32_u (local.get $ptr)) (global.get $PRIME64_1))))
+              (local.set $h64 (i64.add
+                                (i64.mul
+                                  (i64.rotl (local.get $h64) (i64.const 23))
+                                  (global.get $PRIME64_2)
+                                )
+                                (global.get $PRIME64_3)
+              ))
+              (local.set $ptr (i32.add (local.get $ptr) (i32.const 4)))
+            )
+          )
+        )
         ;; For the remaining bytes that didn't make a half a word (32bits),
         ;; either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1/2 word.
         (block $exit-remaining-bytes
