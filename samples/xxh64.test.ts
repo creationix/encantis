@@ -3,18 +3,11 @@ import { xxh64 } from "./xxh64.js"
 import { expect, test } from 'bun:test'
 
 test('generates expected hashes', () => {
-
-  const tests = [
-    { input: "", seed: 0n, expected: 17241709254077376921n },
-    { input: "/blog/[slug]", seed: 0n, expected: 11543890388787685454n },
-    { input: '10.0.0.50', seed: 11543890388787685454n, expected: 1808859848229981302n },
-    { input: '10.0.0.51', seed: 11543890388787685454n, expected: 2633157285878140008n },
-    { input: '10.0.0.52', seed: 11543890388787685454n, expected: 5884625354243948638n },
-    { input: '10.0.0.53', seed: 11543890388787685454n, expected: 3237206721917912246n },
-    { input: '10.0.0.54', seed: 11543890388787685454n, expected: 899835752484592491n },
-  ]
-  for (const { input, seed, expected } of tests) {
-    const actual = xxh64(input, seed)
-    expect(actual).toBe(expected)
-  }
+  expect(xxh64("")).toBe(0xef46db3751d8e999n)
+  expect(xxh64("/blog/[slug]")).toBe(0xa03423257dbc684en)
+  expect(xxh64('10.0.0.50', 0xa03423257dbc684en)).toBe(0x191a5c72be370c76n)
+  expect(xxh64('10.0.0.51', 0xa03423257dbc684en)).toBe(0x248ada99b67f8c68n)
+  expect(xxh64('10.0.0.52', 0xa03423257dbc684en)).toBe(0x51aa6394e3f7c05en)
+  expect(xxh64('10.0.0.53', 0xa03423257dbc684en)).toBe(0x2cecde5cb46c84b6n)
+  expect(xxh64('10.0.0.54', 0xa03423257dbc684en)).toBe(0x0c7cdbd96f0a5b6bn)
 })
