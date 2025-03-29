@@ -6,10 +6,10 @@ import "math" (
   "atan2" func (y:f32, x:f32) -> f32
 )
 
-export "to-polar"
+export "to_polar"
 func (x:f32, y:f32) -> (d:f32, a:f32)
   => (sqrt(x * x + y * y), atan2(y, x))
 
-export "from-polar"
+export "from_polar"
 func (d:f32, a:f32) -> (x:f32, y:f32)
   => (cos(a) * d, sin(a) * d)
