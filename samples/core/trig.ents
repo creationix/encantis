@@ -1,15 +1,18 @@
 
-
+-- Import some math functions
+-- from the standard library
 import "math" (
   "sin" func (angle:f32) -> f32
   "cos" func (angle:f32) -> f32
   "atan2" func (y:f32, x:f32) -> f32
 )
 
+-- Convert from cartesian to polar coordinates
 export "to_polar"
 func (x:f32, y:f32) -> (d:f32, a:f32)
   => (sqrt(x * x + y * y), atan2(y, x))
 
+-- Convert from polar to cartesian coordinates
 export "from_polar"
 func (d:f32, a:f32) -> (x:f32, y:f32)
   => (cos(a) * d, sin(a) * d)
