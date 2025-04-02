@@ -16,3 +16,26 @@ func (x:f32, y:f32) -> (d:f32, a:f32)
 export "from_polar"
 func (d:f32, a:f32) -> (x:f32, y:f32)
   => (cos(a) * d, sin(a) * d)
+
+export "_start"
+func ()
+  -- Declare some variables
+  local x:f32 = 3.1
+  local y:f32 = 4.2
+  local d:f32
+  local a:f32
+  local c = 0xdeadbeef:u32
+  local d = 0b1010100101010011:u16
+
+  -- Convert from cartesian to polar coordinates
+  (d, a) = to_polar(x, y)
+
+  -- Print the result
+  print("Polar coordinates: (", d, ", ", a, ")")
+
+  -- Convert from polar to cartesian coordinates
+  (x, y) = from_polar(d, a)
+
+  -- Print the result
+  print("Cartesian coordinates: (", x, ", ", y, ")")
+end

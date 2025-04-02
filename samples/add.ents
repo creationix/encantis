@@ -8,12 +8,10 @@ interface Point = (f32 f32)
 -- Unique is a unique type.
 type String = [u8]
 
--<
- | Add two points together, pass points by value.
- | In wasm this is (i32 i32 i32 i32) -> (i32 i32)
- | Return type annotation is optional and will
- | be inferred if omitted.
- >-
+-- Add two points together, pass points by value.
+-- In wasm this is (i32 i32 i32 i32) -> (i32 i32)
+-- Return type annotation is optional and will
+-- be inferred if omitted.
 func add (a: Point, b: Point)
   => Point(a.1 + b.1, a.2 + b.2)
 
@@ -25,10 +23,9 @@ func distance (p: Point) -> f32
 func distance (x: f32, y: f32) -> f32
   => sqrt(x * x + y * y)
 
--< Multiple return values using tuple.
- | No return type annotation needed since it
- | is inferred from code.
- >-
+-- Multiple return values using tuple.
+-- No return type annotation needed since it
+-- is inferred from code.
 export "idiv" func (a: i32 b: i32) => (a / b, a % b)
 
 -- Block syntax is also allowed for longer functions
@@ -47,10 +44,8 @@ func main () -> f32
   return distance(c)
 end
 
--<
-  Given a number and a slice of memory, write out the 
-  decimal digits using ASCII encoding.
->-
+-- Given a number and a slice of memory, write out the 
+-- decimal digits using ASCII encoding.
 func digits(num: u32, mem: [u8]) -> (i: u32)
   i = 0
   block-outer
@@ -58,7 +53,7 @@ func digits(num: u32, mem: [u8]) -> (i: u32)
       br-if-outer num == 0 or i >= mem.len
       mem[i] = num % 10 + '0'
       i += 1
-      num /=10
+      num /= 10
       br
     end
   end

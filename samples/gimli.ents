@@ -1,5 +1,5 @@
 export "gimlix"
-func gimlix (state: [u32])
+func gimlix (state: [u32*12])
 
   local y: u32
   local x: u32
@@ -42,7 +42,7 @@ export "gimli_hash"
 func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
 
   local state-8 = state:[u8*48]
-  local blockSize = 0:u64
+  local block-size = 0:u64
   
   -- Initialize the state
   state.fill(0)
@@ -65,7 +65,7 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
   end
 
   -- Do the padding and switch to the squeezing phase
-  state-8[blockSize] ^= 0x1F
+  state-8[block-size] ^= 0x1F
   -- Add the second bit of padding
   state-8[rate-in-bytes - 1] ^= 0x80
   -- Switch to the squeezing phase
