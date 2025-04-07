@@ -67,10 +67,12 @@ const lexers = [
   ["COMMENT", /^\-\-[^\n]*/],
   ["USER_TYPE", /^([A-Z][a-zA-Z0-9_-]*)\b/],
   ["IDENT", /^([a-zA-Z_][a-zA-Z0-9_-]*)\b/],
-  ["DECIMAL", /^[+-]?[0-9]+(?:\.[0-9]+)?(?:[Ee][+-]?[0-9]+)?\b/],
-  ["HEX", /^0x[+-]?[0-9a-fA-F]+\b/],
+  ["DECIMAL", /^[+-]?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?\b/i],
+  ["BINARY", /^[+-]?0b[01]+\b/i],
+  ["OCTAL", /^[+-]?0o[0-7]+\b/i],
+  ["HEX", /^[+-]?0x[0-9a-f]+\b/i],
+  ["B36", /^[+-]?0_[0-9a-z]+\b/i],
   ["CHAR", /^'(?:[^'\\]|\\.)'/],
-  ["BINARY", /^0b[+-]?[01]+\b/],
   ["STRING", /^"(?:[^"\\]|\\.)*"/],
 ]
 const operators = [
@@ -89,10 +91,17 @@ const punctuation = [
   "(", ")", "{", "}", "[", "]",
   ";", ",", ".", ":",
 ]
-lexers.push(["PUNCTUATION", new RegExp(`^(${punctuation.map(op => op.replace(/[-\/\\^$.*+?()[\]{}|]/g, '\\$&')).join("|")})`)]);
-lexers.push(["OPERATOR", new RegExp(`^(${operators.map(op => op.replace(/[-\/\\^$.*+?()[\]{}|]/g, '\\$&')).join("|")})`)]);
+lexers.push(["PUNCTUATION", new RegExp(`^(${punctuation.map(escapeRegexp).join("|")})`)]);
+lexers.push(["OPERATOR", new RegExp(`^(${operators.map(escapeRegexp).join("|")})`)]);
 lexers.push(["UNKNOWN", /^./]) // Catch-all for any unrecognized characters
 
+/**
+ * @param {string} str 
+ * @returns {string}
+ */
+function escapeRegexp(str) {
+  return str.replace(/[-\/\\^$.*+?()[\]{}|]/g, '\\$&')
+}
 
 console.log('Lexing...')
 const lines = [...ents.matchAll(/[^\r\n]*(?:\r?\n)?/g).map(line => line[0])]
@@ -101,9 +110,9 @@ const tokens = lex(lines)
 for (const token of tokens) {
   if (token.token === "UNKNOWN") {
     throw new SyntaxError(
-      `Unrecognized token at ${filename}:${token.row}:${token.col}\n\n` +
-      `  ${highlight(lines[token.row - 1])}\n` +
-      `${" ".repeat(token.col + 1)}^`
+      `Unrecognized token at ${filename}:${token.row}:${token.col} \n\n` +
+      `  ${highlight(lines[token.row - 1])} \n` +
+      `${" ".repeat(token.col + 1)}^ `
     );
   }
 }
@@ -148,9 +157,15 @@ function* lex(lines) {
           } else if (token === "DECIMAL") {
             token = "NUMBER"
             value = parseFloat(value)
+          } else if (token === "B36") {
+            token = "NUMBER"
+            value = parseInt(value.substring(2), 36)
           } else if (token === "HEX") {
             token = "NUMBER"
             value = parseInt(value.substring(2), 16)
+          } else if (token === "OCTAL") {
+            token = "NUMBER"
+            value = parseInt(value.substring(2), 8)
           } else if (token === "BINARY") {
             token = "NUMBER"
             value = parseInt(value.substring(2), 2)
@@ -169,7 +184,7 @@ function* lex(lines) {
           continue outer
         }
       }
-      throw new SyntaxError(`Unlexable Value at ${filename}:${row}:${col}\n\n  ${line.trimEnd()}\n${" ".repeat(col + 1) + "^"}`)
+      throw new SyntaxError(`Unlexable Value at ${filename}:${row}:${col} \n\n  ${line.trimEnd()} \n${" ".repeat(col + 1) + "^"} `)
     }
   }
   yield { row, col, token: "EOF" }
@@ -247,3 +262,65 @@ function pickColorBasic(token) {
   }
 }
 
+/*
+Import namespaces can be linear
+
+  import "str1" "str2" ...
+
+Or they can be nested
+
+  import "str1" (
+    "str2" ...
+    "str3" ...
+  )
+
+Export is the same, though typically a single string
+
+  export "str" ...
+
+  export "str1" "str2" ...
+
+  export "str1" (
+    export "str2" ...
+    export "str3" ...
+  )
+
+Function definitions must have at least `func` and parmeters
+
+  func ()
+
+But they can have a local name
+
+  func name()
+
+And of course, they can have params (names are optional in imports)
+
+  func add(i32, i32)
+
+The params can have names
+
+  func add(a:i32, b:i32)
+
+They can have a return type using `->`
+
+  func add(a:i32, b: i32) -> i32
+
+There can be multiple return values 
+
+  func idiv(a:i32, b:i32) -> (i32, i32)
+
+These can also be named
+
+  func idiv(n:i32, d:i32) -> (q:i32, r:i32)
+
+Function bodies have two forms.  The first is a single expression after `=>`
+
+  func add(a: i32, b: i32) -> i32 => a + b
+
+But zero or more statements can form the body if it ends with `end`
+
+  func add(a: i32, b: i32) -> i32
+    return a + b
+  end
+  
+*/

@@ -1,5 +1,7 @@
 import "sys" "print" func print(msg:[u8])
 
+export "memory" memory 1
+
 global mut heap_ptr:*u8 = INITIAL-HEAP-OFFSET
 
 export "malloc" func malloc(size:i32) -> *u8 do

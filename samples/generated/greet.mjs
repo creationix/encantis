@@ -47,8 +47,8 @@ greet(message.byteOffset, message.byteLength);
 function wasmString(str) {
   const encoded = new TextEncoder().encode(str)
   // Allocate memory for the string using the exported malloc.
-  const messsage = new Uint8Array(memory.buffer, malloc(encoded.byteLength), encoded.byteLength);
+  const messageBuffer = new Uint8Array(memory.buffer, malloc(encoded.byteLength), encoded.byteLength);
   // Copy the string into wasm memory.
-  messsage.set(encoded)
-  return messsage
+  messageBuffer.set(encoded)
+  return messageBuffer
 }

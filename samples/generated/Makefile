@@ -1,10 +1,10 @@
-greet: greet.optimized.wasm greet.mjs
+greet: greet.wasm greet.mjs
 	node greet.mjs
 
-%.wasm: %.wat
+%.unopt.wasm: %.wat
 	wat2wasm $< -o $@
 
-%.optimized.wasm: %.wasm
+%.wasm: %.unopt.wasm
 	wasm-opt --enable-multivalue --enable-bulk-memory -Oz $< -o $@
 
 clean:
