@@ -77,7 +77,7 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
     -- Assuming memcpy(dest_ptr, src_ptr, num_bytes) or similar:
     -- Use state-8 (byte view) as source and output.ptr as destination pointer.
     memcpy(output.ptr, state-8.ptr, squeezeBlockSize)
-    output.ptr += blockSize
+    output.ptr += squeezeBlockSize
     output.len -= squeezeBlockSize
     if output.len > 0 then
       gimlix(state)
