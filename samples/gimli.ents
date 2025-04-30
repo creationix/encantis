@@ -28,7 +28,7 @@ func gimlix (state: [u32*12])
     end
 
     if (round & 3) == 0 then -- add constant: pattern c...c...c... etc.
-      state[0] ^= 0x9e377900 | round
+      state[0] ^= 0x9e377900 | (24 -round)
     end
 
   end
