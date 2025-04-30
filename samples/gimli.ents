@@ -1,10 +1,11 @@
 export "gimlix"
 func gimlix (state: [u32*12])
 
-  local y: u32
   local x: u32
+  local y: u32
+  local z: u32
 
-  for round in (24,1,-1) do
+  for round in 24 do
 
     for column in 4 do
 
@@ -28,7 +29,7 @@ func gimlix (state: [u32*12])
     end
 
     if (round & 3) == 0 then -- add constant: pattern c...c...c... etc.
-      state[0] ^= 0x9e377900 ^ (24 -round)
+      state[0] ^= 0x9e377900 ^ round
     end
 
   end
