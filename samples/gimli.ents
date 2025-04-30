@@ -6,7 +6,7 @@ func gimlix (state: [u32*12])
 
   for round in (24,1,-1) do
 
-    for column in (0,3,1) do
+    for column in 4 do
 
       x = state[column] <<< 24
       y = state[4 + column] <<< 9
