@@ -55,7 +55,7 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
     for (i:u32) in block-size do
       state-8[i] ^= input[i]
     end
-    input.base += block-size
+    input.ptr += block-size
     input.len -= block-size
 
     if block-size == rate-in-bytes then
@@ -75,8 +75,8 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
   while output.len > 0 do
     local squeezeBlockSize = min(output.len, rate-in-bytes)
     -- Assuming memcpy(dest_ptr, src_ptr, num_bytes) or similar:
-    -- Use state-8 (byte view) as source and output.base as destination pointer.
-    memcpy(output.base, state-8.base, squeezeBlockSize)
+    -- Use state-8 (byte view) as source and output.ptr as destination pointer.
+    memcpy(output.ptr, state-8.ptr, squeezeBlockSize)
     output.ptr += blockSize
     output.len -= squeezeBlockSize
     if output.len > 0 then
