@@ -1,6 +1,4 @@
-Okay, Tim! Here is the final code annotated and explained in a Markdown file format, designed for someone learning Encantis.
 
-```markdown
 # Understanding Gimli Hash in Encantis: A Code Walkthrough
 
 This document breaks down an implementation of the Gimli permutation and the Gimli-Hash algorithm written in Encantis. It's designed for learners to understand how Encantis syntax and features are used in a real-world, low-level cryptographic example.
@@ -383,4 +381,3 @@ func gimli-hash (input: [u8], output: [u8], state: [u32*12]) -> ()
 *   **Modularity:** Use of `export` to control visibility and `define` for constants/macros.
 
 This example showcases how Encantis aims to provide a more readable and structured way to write low-level, high-performance WebAssembly code by combining familiar syntax with explicit control over types and memory.
-```
