@@ -1,6 +1,0 @@
-{
-  "type": "module",
-  "dependencies": {
-    "peggy": "^1.2.0"
-  }
-}

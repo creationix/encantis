@@ -1,7 +1,7 @@
 .PHONY: test clean
 
 test:
-	$(MAKE) -C grammar test
+	$(MAKE) -C examples test
 
 clean:
-	$(MAKE) -C grammar clean
+	# No build artifacts to clean

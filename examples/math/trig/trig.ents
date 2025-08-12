@@ -1,0 +1,43 @@
+
+-- Import some math functions
+-- from the standard library
+import "math" (
+  "sin" func (angle:f64) -> f64
+  "cos" func (angle:f64) -> f64
+  "atan2" func (y:f64, x:f64) -> f64
+)
+
+-- Import a way to print things
+import "sys" "print-f64-pair"
+func print ([u8],f64,[u8],f64,[u8])
+
+-- Convert from cartesian to polar coordinates
+export "to_polar"
+func (x:f64, y:f64) -> (d:f64, a:f64)
+  => sqrt(x * x + y * y), atan2(y, x)
+
+-- Convert from polar to cartesian coordinates
+export "from_polar"
+func (d:f64, a:f64) -> (x:f64, y:f64)
+  => cos(a) * d, sin(a) * d
+
+export "_start"
+func ()
+  -- Declare some variables
+  local x:f64 = 3.1
+  local y:f64 = 4.2
+  local d:f64
+  local a:f64
+
+  -- Convert from cartesian to polar coordinates
+  d, a = to_polar(x, y)
+
+  -- Print the result
+  print("Polar coordinates: (", d, ", ", a, ")")
+
+  -- Convert from polar to cartesian coordinates
+  x, y = from_polar(d, a)
+
+  -- Print the result
+  print("Cartesian coordinates: (", x, ", ", y, ")")
+end
