@@ -8,9 +8,9 @@ global prime32-4 =  668265263:u32
 global prime32-5 =  374761393:u32
 
 export "xxh32"
-func (data: [u8], seed: u32) -> u32
+func (data: [u8], seed: u32) -> (h32: u32)
   local ptr:*u8 = data.ptr
-  local len:u8 = data.len
+  local len:u32 = data.len
   local last:*u8 = ptr + len
 
   if data.len >= 16 then
@@ -65,7 +65,6 @@ func (data: [u8], seed: u32) -> u32
   h32 ^= h32 >> 13
   h32 *= prime32-3
   h32 ^= h32 >> 16
-  h32
 end
 
 func round32(seed: i32, value: i32) -> i32

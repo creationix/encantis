@@ -1,0 +1,3 @@
+[submodule "encantis-ext"]
+	path = encantis-ext
+	url = git@github.com:creationix/encantis-ext.git

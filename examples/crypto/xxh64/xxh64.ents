@@ -9,7 +9,7 @@ global prime64-5 =  2870177450012600261:u64
 export "xxh64"
 func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
   local last: *u64
-  local limit: u32
+  local limit: *u64
   local v1: u64
   local v2: u64
   local v3: u64
