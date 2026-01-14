@@ -23,7 +23,10 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { analyze, getLineAndColumn } from '../compile';
-import type { Diagnostic } from '../types';
+import type { CheckResult, Diagnostic, Type, Symbol as EncantisSymbol } from '../types';
+
+// Cache analysis results per document for hover support
+const analysisCache = new Map<string, { text: string; result: CheckResult }>();
 
 // -----------------------------------------------------------------------------
 // Connection Setup
@@ -93,6 +96,9 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 
   // Run the Encantis analyzer
   const result = analyze(text);
+
+  // Cache the result for hover support
+  analysisCache.set(textDocument.uri, { text, result });
 
   // Convert Encantis diagnostics to LSP diagnostics
   for (const diag of result.errors) {
@@ -202,8 +208,59 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     };
   }
 
+  // Look up identifier in symbol table
+  const cached = analysisCache.get(params.textDocument.uri);
+  if (cached) {
+    const symbol = findSymbol(cached.result, word);
+    if (symbol) {
+      const typeStr = symbol.type ? typeToString(symbol.type) : 'unknown';
+      const kindLabel = symbol.kind === 'param' ? 'parameter' : symbol.kind;
+      return {
+        contents: {
+          kind: MarkupKind.Markdown,
+          value: `\`\`\`encantis\n(${kindLabel}) ${word}: ${typeStr}\n\`\`\``,
+        },
+      };
+    }
+  }
+
   return null;
 });
+
+function findSymbol(result: CheckResult, name: string): EncantisSymbol | undefined {
+  // Check global scope first
+  const globalSym = result.symbols.global.symbols.get(name);
+  if (globalSym) return globalSym;
+
+  // Check all function scopes
+  for (const [, scope] of result.symbols.scopes) {
+    const sym = scope.symbols.get(name);
+    if (sym) return sym;
+  }
+
+  return undefined;
+}
+
+function typeToString(type: Type): string {
+  switch (type.kind) {
+    case 'PrimitiveType':
+      return type.name;
+    case 'SliceType':
+      return `[${typeToString(type.element)}]`;
+    case 'PointerType':
+      return `*${typeToString(type.target)}`;
+    case 'TupleType':
+      if (type.elements.length === 0) return '()';
+      return `(${type.elements.map(typeToString).join(', ')})`;
+    case 'FunctionType': {
+      const params = type.params.map(typeToString).join(', ');
+      const ret = typeToString(type.returns);
+      return `(${params}) -> ${ret}`;
+    }
+    default:
+      return '?';
+  }
+}
 
 function getWordAtOffset(text: string, offset: number): string | null {
   // Find word boundaries

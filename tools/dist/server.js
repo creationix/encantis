@@ -10657,6 +10657,7 @@ function analyze(src) {
 }
 
 // lsp/server.ts
+var analysisCache = new Map;
 var connection = import_node.createConnection(import_node.ProposedFeatures.all);
 var documents = new import_node.TextDocuments(TextDocument);
 var hasConfigurationCapability = false;
@@ -10692,6 +10693,7 @@ async function validateTextDocument(textDocument) {
   const text = textDocument.getText();
   const diagnostics = [];
   const result = analyze(text);
+  analysisCache.set(textDocument.uri, { text, result });
   for (const diag of result.errors) {
     diagnostics.push(convertDiagnostic(text, diag));
   }
@@ -10784,8 +10786,56 @@ end
       }
     };
   }
+  const cached = analysisCache.get(params.textDocument.uri);
+  if (cached) {
+    const symbol = findSymbol(cached.result, word);
+    if (symbol) {
+      const typeStr = symbol.type ? typeToString2(symbol.type) : "unknown";
+      const kindLabel = symbol.kind === "param" ? "parameter" : symbol.kind;
+      return {
+        contents: {
+          kind: import_node.MarkupKind.Markdown,
+          value: `\`\`\`encantis
+(${kindLabel}) ${word}: ${typeStr}
+\`\`\``
+        }
+      };
+    }
+  }
   return null;
 });
+function findSymbol(result, name) {
+  const globalSym = result.symbols.global.symbols.get(name);
+  if (globalSym)
+    return globalSym;
+  for (const [, scope] of result.symbols.scopes) {
+    const sym = scope.symbols.get(name);
+    if (sym)
+      return sym;
+  }
+  return;
+}
+function typeToString2(type) {
+  switch (type.kind) {
+    case "PrimitiveType":
+      return type.name;
+    case "SliceType":
+      return `[${typeToString2(type.element)}]`;
+    case "PointerType":
+      return `*${typeToString2(type.target)}`;
+    case "TupleType":
+      if (type.elements.length === 0)
+        return "()";
+      return `(${type.elements.map(typeToString2).join(", ")})`;
+    case "FunctionType": {
+      const params = type.params.map(typeToString2).join(", ");
+      const ret = typeToString2(type.returns);
+      return `(${params}) -> ${ret}`;
+    }
+    default:
+      return "?";
+  }
+}
 function getWordAtOffset(text, offset) {
   let start = offset;
   let end = offset;
