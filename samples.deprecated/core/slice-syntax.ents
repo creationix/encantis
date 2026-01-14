@@ -1,4 +1,0 @@
--- Automatic types using [T] syntax
--- type [u8] = (*u8,u32) where the u32 is a count of u8 values
--- type [[u8]] = (*[u8],u32) where the u32 is a count of [u8] values
--- This is really (*(*u8,u32),u32) with nested counts

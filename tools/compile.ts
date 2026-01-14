@@ -292,14 +292,34 @@ function generateExpr(ctx: CodeGenContext, expr: Expr): void {
       emit(ctx, `(${getBinaryOp(expr.op)})`);
       break;
 
-    case 'CallExpr':
+    case 'CallExpr': {
+      // Check if this is a builtin function (WASM instruction)
+      const builtinOps: Record<string, string> = {
+        sqrt: 'f64.sqrt',
+        abs: 'f64.abs',
+        ceil: 'f64.ceil',
+        floor: 'f64.floor',
+        trunc: 'f64.trunc',
+        nearest: 'f64.nearest',
+        min: 'f64.min',
+        max: 'f64.max',
+        copysign: 'f64.copysign',
+      };
+
       for (const arg of expr.args) {
         generateExpr(ctx, arg);
       }
+
       if (expr.callee.kind === 'Identifier') {
-        emit(ctx, `(call $${expr.callee.name})`);
+        const builtinOp = builtinOps[expr.callee.name];
+        if (builtinOp) {
+          emit(ctx, `(${builtinOp})`);
+        } else {
+          emit(ctx, `(call $${expr.callee.name})`);
+        }
       }
       break;
+    }
 
     case 'TupleExpr':
       for (const elem of expr.elements) {
