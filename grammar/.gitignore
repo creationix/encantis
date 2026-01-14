@@ -1,8 +1,0 @@
-*.interp
-*.tokens
-*.class
-*.java
-Encantis*.js
-.antlr/
-package-lock.json
-node_modules/

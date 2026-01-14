@@ -1,0 +1,76 @@
+export "mem"
+memory 1
+
+global prime32-1 = 2654435761:u32
+global prime32-2 = 2246822519:u32
+global prime32-3 = 3266489917:u32
+global prime32-4 =  668265263:u32
+global prime32-5 =  374761393:u32
+
+export "xxh32"
+func (data: [u8], seed: u32) -> u32
+  local ptr:*u8 = data.ptr
+  local len:u8 = data.len
+  local last:*u8 = ptr + len
+
+  if data.len >= 16 then
+    local limit:*u8 = last - 16
+    local v1:u32 = seed + prime32-1 + prime32-2
+    local v2:u32 = seed + prime32-2
+    local v3:u32 = seed + 0
+    local v4:u32 = seed - prime32-1
+
+    -- For every chunk of 4 words, so 4 * 32bits = 16 bytes
+    loop
+      v1 = round32(v1, ptr.u32)
+      ptr += 4
+      v2 = round32(v2, ptr.u32)
+      ptr += 4
+      v3 = round32(v3, ptr.u32)
+      ptr += 4
+      v4 = round32(v4, ptr.u32)
+      ptr += 4
+      br when ptr <= limit
+    end
+
+    h32 = (v1 <<< 1)
+        + (v2 <<< 7)
+        + (v3 <<< 12)
+        + (v4 <<< 18)
+
+  else -- when input is smaller than 16 bytes
+    h32 = seed + prime32-5
+  end
+
+  h32 += len
+
+  -- For the remaining words not covered above, either 0, 1, 2 or 3
+  while ptr + 4 <= last do
+    h32 += ptr.u32 * prime32-3
+    h32 = (h32 <<< 17) * prime32-4
+    ptr += 4
+  end
+
+  -- For the remaining bytes that didn't make a whole word,
+  -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
+  while ptr < last do
+    h32 += ptr.u8 & prime32-5
+    h32 = (h32 <<< 11) * prime32-1
+    ptr += 1
+  end
+
+  -- Finalize
+  h32 ^= h32 >> 15
+  h32 *= prime32-2
+  h32 ^= h32 >> 13
+  h32 *= prime32-3
+  h32 ^= h32 >> 16
+  h32
+end
+
+func round32(seed: i32, value: i32) -> i32
+  seed += value * prime32-2
+  seed <<<= 13
+  seed *= prime32-1
+  return seed
+end
