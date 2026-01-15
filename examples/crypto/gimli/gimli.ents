@@ -1,0 +1,115 @@
+-- Gimli permutation and Gimli-Hash
+-- Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
+-- State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
+
+export "mem" memory 1
+
+-- State is stored at offset 0: 12 u32 words = 48 bytes
+-- Input data starts at offset 64
+
+export "gimli"
+func gimli(state: *u32)
+  local round: u32 = 24
+  local x: u32
+  local y: u32
+  local z: u32
+  local col: u32
+
+  loop
+    -- Apply SP-box to each column
+    col = 0
+    while col < 4 do
+      x = state[col] <<< 24
+      y = state[col + 4] <<< 9
+      z = state[col + 8]
+
+      -- Non-linear mixing
+      state[col + 8] = x ^ (z << 1) ^ ((y & z) << 2)
+      state[col + 4] = y ^ x ^ ((x | z) << 1)
+      state[col] = z ^ y ^ ((x & y) << 3)
+
+      col += 1
+    end
+
+    -- Linear layer: swap words based on round number
+    if (round & 3) == 0 then
+      -- Small swap: swap columns 0,1 and 2,3
+      x = state[0]
+      state[0] = state[1]
+      state[1] = x
+      x = state[2]
+      state[2] = state[3]
+      state[3] = x
+      -- Add round constant
+      state[0] ^= 0x9e377900 | round
+    else if (round & 3) == 2 then
+      -- Big swap: swap columns 0,2 and 1,3
+      x = state[0]
+      state[0] = state[2]
+      state[2] = x
+      x = state[1]
+      state[1] = state[3]
+      state[3] = x
+    end
+
+    round -= 1
+    br when round > 0
+  end
+end
+
+-- Gimli-Hash: absorb input and squeeze 32-byte output
+-- Uses rate of 16 bytes (128 bits)
+export "gimli_hash"
+func gimli_hash(input: *u8, len: u32, output: *u8)
+  local state: *u32 = 0
+  local i: u32
+  local blocklen: u32
+
+  -- Initialize state to zero
+  i = 0
+  while i < 48 do
+    (state as *u8)[i] = 0
+    i += 1
+  end
+
+  -- Absorb phase: process 16-byte blocks
+  while len >= 16 do
+    -- XOR input into rate portion of state (first 16 bytes = 4 words)
+    i = 0
+    while i < 16 do
+      (state as *u8)[i] ^= input[i]
+      i += 1
+    end
+    gimli(state)
+    input += 16
+    len -= 16
+  end
+
+  -- Absorb remaining bytes with padding
+  i = 0
+  while i < len do
+    (state as *u8)[i] ^= input[i]
+    i += 1
+  end
+  -- Pad with 0x1F at position len
+  (state as *u8)[len] ^= 0x1f
+  -- Pad with 0x80 at position 15 (end of rate)
+  (state as *u8)[15] ^= 0x80
+
+  gimli(state)
+
+  -- Squeeze phase: extract 32 bytes of output (two blocks of 16 bytes)
+  i = 0
+  while i < 16 do
+    output[i] = (state as *u8)[i]
+    i += 1
+  end
+
+  gimli(state)
+
+  i = 0
+  while i < 16 do
+    output[i + 16] = (state as *u8)[i]
+    i += 1
+  end
+end

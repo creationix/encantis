@@ -328,6 +328,312 @@ describe('integration', () => {
 });
 
 // =============================================================================
+// Code Generation Tests (WAT output verification)
+// =============================================================================
+
+describe('codegen', () => {
+  test('generates simple assignment', () => {
+    const src = `
+      func test()
+        local x: i32 = 10
+        x = 20
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(local.set $x)');
+  });
+
+  test('generates compound assignment +=', () => {
+    const src = `
+      func test()
+        local x: i32 = 10
+        x += 5
+      end
+    `;
+    const wat = compile(src);
+    // Should: get x, push 5, add, set x
+    expect(wat).toContain('(local.get $x)');
+    expect(wat).toContain('(i32.const 5)');
+    expect(wat).toContain('(i32.add)');
+    expect(wat).toContain('(local.set $x)');
+  });
+
+  test('generates compound assignment -=', () => {
+    const src = `
+      func test()
+        local x: i32 = 10
+        x -= 3
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(local.get $x)');
+    expect(wat).toContain('(i32.sub)');
+    expect(wat).toContain('(local.set $x)');
+  });
+
+  test('generates compound assignment *=', () => {
+    const src = `
+      func test()
+        local x: i32 = 10
+        x *= 2
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(local.get $x)');
+    expect(wat).toContain('(i32.mul)');
+    expect(wat).toContain('(local.set $x)');
+  });
+
+  test('generates compound assignment with expression', () => {
+    const src = `
+      func test()
+        local a: i32 = 1
+        local b: i32 = 2
+        local c: i32 = 3
+        a += b * c
+      end
+    `;
+    const wat = compile(src);
+    // a += b * c should be: get a, get b, get c, mul, add, set a
+    expect(wat).toContain('(local.get $a)');
+    expect(wat).toContain('(local.get $b)');
+    expect(wat).toContain('(local.get $c)');
+    expect(wat).toContain('(i32.mul)');
+    expect(wat).toContain('(i32.add)');
+    expect(wat).toContain('(local.set $a)');
+  });
+
+  test('generates bitwise compound assignments', () => {
+    const src = `
+      func test()
+        local x: i32 = 0xFF
+        x &= 0x0F
+        x |= 0x10
+        x ^= 0x01
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(i32.and)');
+    expect(wat).toContain('(i32.or)');
+    expect(wat).toContain('(i32.xor)');
+  });
+
+  test('generates shift compound assignments', () => {
+    const src = `
+      func test()
+        local x: i32 = 1
+        x <<= 4
+        x >>= 2
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(i32.shl)');
+    expect(wat).toContain('(i32.shr_s)');
+  });
+
+  test('generates rotate compound assignments', () => {
+    const src = `
+      func test()
+        local x: i32 = 1
+        x <<<= 13
+        x >>>= 7
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(i32.rotl)');
+    expect(wat).toContain('(i32.rotr)');
+  });
+
+  test('generates rotate binary operators', () => {
+    const src = `
+      func test(a: i32) -> i32 => (a <<< 5) >>> 3
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(i32.rotl)');
+    expect(wat).toContain('(i32.rotr)');
+  });
+
+  test('generates global declarations', () => {
+    const src = `
+      global prime = 0x9E3779B1:u32
+      func test() -> u32 => prime
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(global $prime');
+    expect(wat).toContain('(global.get $prime)');
+  });
+
+  // Type-aware codegen tests
+  test('generates f64 operations for float variables', () => {
+    const src = `
+      func test()
+        local x: f64 = 1.0
+        x += 2.0
+      end
+    `;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.add)');
+    expect(wat).not.toContain('(i32.add)');
+  });
+
+  test('generates f64 binary operations', () => {
+    const src = `func test(a: f64, b: f64) -> f64 => a + b * a - b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.add)');
+    expect(wat).toContain('(f64.mul)');
+    expect(wat).toContain('(f64.sub)');
+  });
+
+  test('generates i64 operations for 64-bit integers', () => {
+    const src = `func test(a: i64, b: i64) -> i64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(i64.add)');
+  });
+
+  test('generates correct comparison ops for floats', () => {
+    // Use a simple expression that returns 0 or 1 based on comparison
+    // (a < b) returns i32 in WAT
+    const src = `func test(a: f64, b: f64) -> i32 => a < b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.lt)');  // Not f64.lt_s (floats don't use _s suffix)
+  });
+
+  test('generates correct division for floats vs ints', () => {
+    const src1 = `func divFloat(a: f64, b: f64) -> f64 => a / b`;
+    const wat1 = compile(src1);
+    expect(wat1).toContain('(f64.div)');
+
+    const src2 = `func divInt(a: i32, b: i32) -> i32 => a / b`;
+    const wat2 = compile(src2);
+    expect(wat2).toContain('(i32.div_s)');
+  });
+
+  test('generates f64.const for float literals', () => {
+    const src = `func test() -> f64 => 3.14`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.const 3.14)');
+  });
+
+  test('generates i64.const for i64 suffix', () => {
+    const src = `func test() -> i64 => 42:i64`;
+    const wat = compile(src);
+    expect(wat).toContain('(i64.const 42)');
+  });
+
+  // Type promotion tests
+  test('promotes i32 to f64 in mixed arithmetic', () => {
+    const src = `func test(a: f64, b: i32) -> f64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.convert_i32_s)');  // Convert i32 to f64
+    expect(wat).toContain('(f64.add)');
+  });
+
+  test('promotes i32 to i64 in mixed arithmetic', () => {
+    const src = `func test(a: i64, b: i32) -> i64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(i64.extend_i32_s)');  // Extend i32 to i64
+    expect(wat).toContain('(i64.add)');
+  });
+
+  test('promotes f32 to f64 in mixed arithmetic', () => {
+    const src = `func test(a: f64, b: f32) -> f64 => a * b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.promote_f32)');  // Promote f32 to f64
+    expect(wat).toContain('(f64.mul)');
+  });
+
+  test('promotes left operand when right is wider', () => {
+    const src = `func test(a: i32, b: f64) -> f64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.convert_i32_s)');  // Convert left i32 to f64
+    expect(wat).toContain('(f64.add)');
+  });
+
+  test('uses unsigned conversion for u32 to f64', () => {
+    const src = `func test(a: f64, b: u32) -> f64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.convert_i32_u)');  // Unsigned conversion
+    expect(wat).toContain('(f64.add)');
+  });
+
+  test('chains conversions in complex expressions', () => {
+    const src = `func test(a: f64, b: i32, c: i32) -> f64 => a + b + c`;
+    const wat = compile(src);
+    // Both i32s should be converted to f64
+    expect(wat).toContain('(f64.convert_i32_s)');
+    expect(wat).toContain('(f64.add)');
+  });
+
+  // Precision-safe conversion tests
+  test('rejects i32 to f32 (lossy)', () => {
+    const src = `func test(a: f32, b: i32) -> f32 => a + b`;
+    const wat = compile(src);
+    // Should emit error comment, not conversion
+    expect(wat).toContain(';; ERROR: incompatible types');
+    expect(wat).not.toContain('(f32.convert_i32_s)');
+  });
+
+  test('rejects i64 to f64 (lossy)', () => {
+    const src = `func test(a: f64, b: i64) -> f64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain(';; ERROR: incompatible types');
+    expect(wat).not.toContain('(f64.convert_i64_s)');
+  });
+
+  test('rejects i64 to f32 (lossy)', () => {
+    const src = `func test(a: f32, b: i64) -> f32 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain(';; ERROR: incompatible types');
+  });
+
+  test('allows i16 to f32 (lossless)', () => {
+    const src = `func test(a: f32, b: i16) -> f32 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f32.convert_i32_s)');  // i16 is stored as i32 in WASM
+    expect(wat).toContain('(f32.add)');
+  });
+
+  test('allows i16 to f64 (lossless)', () => {
+    const src = `func test(a: f64, b: i16) -> f64 => a + b`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.convert_i32_s)');
+    expect(wat).toContain('(f64.add)');
+  });
+
+  // Comptime literal tests
+  test('allows small comptime literal to f32 (value fits)', () => {
+    // 42 fits in f32's 24-bit mantissa
+    const src = `func test(a: f32) -> f32 => a + 42`;
+    const wat = compile(src);
+    expect(wat).toContain('(f32.convert_i32_s)');
+    expect(wat).toContain('(f32.add)');
+  });
+
+  test('allows comptime literal at f32 boundary', () => {
+    // 16777216 (2^24) is the max exact integer in f32
+    const src = `func test(a: f32) -> f32 => a + 16777216`;
+    const wat = compile(src);
+    expect(wat).toContain('(f32.convert_i32_s)');
+    expect(wat).toContain('(f32.add)');
+  });
+
+  test('rejects comptime literal exceeding f32 precision', () => {
+    // 16777217 (2^24 + 1) exceeds f32's exact integer range
+    const src = `func test(a: f32) -> f32 => a + 16777217`;
+    const wat = compile(src);
+    expect(wat).toContain(';; ERROR: incompatible types');
+  });
+
+  test('allows large comptime literal to f64 (value fits)', () => {
+    // Large number that fits in f64's 53-bit mantissa
+    const src = `func test(a: f64) -> f64 => a + 9007199254740992`;
+    const wat = compile(src);
+    expect(wat).toContain('(f64.convert_i32_s)');
+    expect(wat).toContain('(f64.add)');
+  });
+});
+
+// =============================================================================
 // Error Message Quality Tests (for LLM-friendliness)
 // =============================================================================
 

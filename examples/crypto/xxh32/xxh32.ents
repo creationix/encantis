@@ -1,5 +1,4 @@
-export "mem"
-memory 1
+export "mem" memory 1
 
 global prime32-1 = 2654435761:u32
 global prime32-2 = 2246822519:u32

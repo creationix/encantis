@@ -836,7 +836,7 @@ function parseExprOrAssignment(p: Parser): Stmt {
   }
 
   // Check for compound assignment: a += expr
-  const compoundOps = ['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '<<<='];
+  const compoundOps = ['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '<<<=', '>>>='];
   const tok = peek(p);
   if (compoundOps.includes(tok.kind)) {
     advance(p);

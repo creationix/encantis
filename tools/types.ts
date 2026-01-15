@@ -108,6 +108,7 @@ export type TokenKind =
   | '<<='
   | '>>='
   | '<<<='
+  | '>>>='
   // Special
   | 'EOF';
 

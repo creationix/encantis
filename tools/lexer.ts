@@ -22,7 +22,7 @@ const KEYWORDS: Set<string> = new Set([
 
 const MULTI_CHAR_OPS: string[] = [
   // 4-char
-  '<<<=' ,
+  '<<<=', '>>>=',
   // 3-char
   '>>>', '<<<', '>>=', '<<=',
   // 2-char

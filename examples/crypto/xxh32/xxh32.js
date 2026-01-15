@@ -1,4 +1,4 @@
-const wasm = await Bun.file("./samples/xxh32.wasm").arrayBuffer()
+const wasm = await Bun.file(new URL("./xxh32.wasm", import.meta.url)).arrayBuffer()
 const module = await WebAssembly.compile(wasm)
 const instance = await WebAssembly.instantiate(module)
 /** @type {{mem:WebAssembly.Memory,xxh32:(ptr:number,len:number,seed:number)=>number}} */
