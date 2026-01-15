@@ -1,48 +1,48 @@
+// Trigonometry example: coordinate conversion between polar and cartesian
 
--- Import some math functions
--- from the standard library
+// Import math functions from the host environment
 import "math" (
-  "sin" func (angle: f64) -> f64
-  "cos" func (angle: f64) -> f64
-  "atan2" func (y: f64, x: f64) -> f64
+  "sin" func sin(angle:f64) -> f64
+  "cos" func cos(angle:f64) -> f64
+  "atan2" func atan2(y:f64, x:f64) -> f64
 )
 
--- Import a way to print things
+// Import a way to print things
 import "sys" "print-f64-pair"
-func print ([u8], f64, [u8], f64, [u8])
+func print(u8[], f64, u8[], f64, u8[])
 
-type PolarPoint = { d:f64, a:f64 }
-type CartesianPoint = { x:f64, y:f64 }
+type PolarPoint = (d:f64, a:f64)
+type CartesianPoint = (x:f64, y:f64)
 
--- Convert from cartesian to polar coordinates
+// Convert from cartesian to polar coordinates
 export "to_polar"
-func to_polar(point: CartesianPoint) -> (out: PolarPoint)
+func to_polar(point:CartesianPoint) -> (out:PolarPoint) {
   out.d = sqrt(point.x * point.x + point.y * point.y)
   out.a = atan2(point.y, point.x)
-end
+}
 
--- Convert from polar to cartesian coordinates
+// Convert from polar to cartesian coordinates
 export "from_polar"
-func from_polar(point: PolarPoint) -> (out: CartesianPoint)
+func from_polar(point:PolarPoint) -> (out:CartesianPoint) {
   out.x = cos(point.a) * point.d
   out.y = sin(point.a) * point.d
-end
+}
 
 export "_start"
-func main()
-  -- Declare some variables
-  let x: f64 = 3.1
-  let y: f64 = 4.2
+func main() {
+  // Declare some variables
+  let x:f64 = 3.1
+  let y:f64 = 4.2
 
-  -- Convert from cartesian to polar coordinates
-  let {d, a} = to_polar({x, y})
+  // Convert from cartesian to polar coordinates
+  let (d:, a:) = to_polar((x:, y:))
 
-  -- Print the result
+  // Print the result
   print("Polar coordinates: (", d, ", ", a, ")")
 
-  -- Convert from polar to cartesian coordinates
-  set {x, y} = from_polar({d, a})
+  // Convert from polar to cartesian coordinates
+  set (x:, y:) = from_polar((d:, a:))
 
-  -- Print the result
+  // Print the result
   print("Cartesian coordinates: (", x, ", ", y, ")")
-end
+}

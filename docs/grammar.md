@@ -46,17 +46,19 @@ literal         = number_literal | string_literal | bool_literal
 
 number_literal  = [ "-" ] ( integer_literal | float_literal )
 
-integer_literal = decimal_literal | hex_literal | binary_literal | octal_literal
+integer_literal = decimal_literal | hex_literal | binary_literal | octal_literal | dozenal_literal
 decimal_literal = digit { digit }
 hex_literal     = "0x" hex_digit { hex_digit }
 binary_literal  = "0b" binary_digit { binary_digit }
 octal_literal   = "0o" octal_digit { octal_digit }
+dozenal_literal = "0d" dozenal_digit { dozenal_digit }
 
 float_literal   = digit { digit } "." digit { digit } [ exponent ]
 exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit }
 
-string_literal  = utf8_string | hex_string | base64_string
+string_literal  = utf8_string | char_string | hex_string | base64_string
 utf8_string     = '"' { string_char | escape_seq } '"'
+char_string     = "'" { string_char | escape_seq } "'"
 hex_string      = 'x"' { hex_byte | whitespace } '"'
 base64_string   = 'b"' { base64_char | whitespace } '"'
 
@@ -71,6 +73,7 @@ digit           = '0'..'9'
 hex_digit       = '0'..'9' | 'a'..'f' | 'A'..'F'
 binary_digit    = '0' | '1'
 octal_digit     = '0'..'7'
+dozenal_digit   = '0'..'9' | 'a'..'b' | 'A'..'B'
 ```
 
 ### Comments

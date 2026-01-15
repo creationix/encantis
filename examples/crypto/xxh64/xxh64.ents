@@ -1,4 +1,7 @@
-memory mem 1
+// xxHash64 implementation
+// Based on the xxHash specification by Yann Collet
+
+export "mem" memory 1
 
 def prime64-1 = 11400714785074694791:u64
 def prime64-2 = 14029467366897019727:u64
@@ -6,38 +9,47 @@ def prime64-3 =  1609587929392839161:u64
 def prime64-4 =  9650029242287828579:u64
 def prime64-5 =  2870177450012600261:u64
 
+inline func round64(acc:u64, value:u64) -> u64 {
+  acc += value * prime64-2
+  acc <<<= 31
+  acc *= prime64-1
+  return acc
+}
+
+inline func merge-round64(acc:u64, value:u64) -> u64 {
+  let val = round64(0, value)
+  acc ^= val
+  acc = (acc * prime64-1) + prime64-4
+  return acc
+}
+
 export "xxh64"
-func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
-  local last: *u64
-  local limit: *u64
-  local v1: u64
-  local v2: u64
-  local v3: u64
-  local v4: u64
-  last = ptr + len
+func xxh64(data:u8[], seed:u64) -> (h64:u64) {
+  let ptr = data.ptr
+  let len = data.len
+  let last:*u8 = ptr + len
 
-  if len >= 32 then
+  if len >= 32 {
+    let limit:*u8 = last - 32
+    let v1:u64 = seed + prime64-1 + prime64-2
+    let v2:u64 = seed + prime64-2
+    let v3:u64 = seed + 0
+    let v4:u64 = seed - prime64-1
 
-    limit = last - 32
-    v1 = seed + prime64-1 + prime64-2
-    v2 = seed + prime64-2
-    v3 = seed + 0
-    v4 = seed - prime64-1
+    // For every chunk of 4 words, so 4 * 64bits = 32 bytes
+    loop {
+      v1 = round64(v1, ptr.u64)
+      ptr += 8
+      v2 = round64(v2, ptr.u64)
+      ptr += 8
+      v3 = round64(v3, ptr.u64)
+      ptr += 8
+      v4 = round64(v4, ptr.u64)
+      ptr += 8
+      break when ptr > limit
+    }
 
-    -- For every chunk of 4 words, so 4 * 64bits = 32 bytes
-    loop
-      v1 = round64(v1, ptr.*)
-      ptr += 8
-      v2 = round64(v2, ptr.*)
-      ptr += 8
-      v3 = round64(v3, ptr.*)
-      ptr += 8
-      v4 = round64(v4, ptr.*)
-      ptr += 8
-      continue when ptr <= limit
-    end
-
-    h64 = (v1 <<< 1) 
+    h64 = (v1 <<< 1)
         + (v2 <<< 7)
         + (v3 <<< 12)
         + (v4 <<< 18)
@@ -46,54 +58,40 @@ func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
     h64 = merge-round64(h64, v2)
     h64 = merge-round64(h64, v3)
     h64 = merge-round64(h64, v4)
-    
-  -- when input is smaller than 32 bytes
-  else 
+
+  } else {
+    // When input is smaller than 32 bytes
     h64 = seed + prime64-5
-  end
-  
-  h64 += (len as u64)
-    
-  -- For the remaining words not covered above, either 0, 1, 2 or 3
-  while ptr + 8 <= last do
-    h64 ^= round64(0, ptr.*)
+  }
+
+  h64 += len as u64
+
+  // For the remaining words not covered above, either 0, 1, 2 or 3
+  while ptr + 8 <= last {
+    h64 ^= round64(0, ptr.u64)
     h64 = (h64 <<< 27) * prime64-1 + prime64-4
     ptr += 8
-  end
+  }
 
-  -- For the remaining half word. That is when there are more than 32bits
-  -- remaining which didn't make a whole word.
-  if ptr + 4 <= last then
-    h64 ^= (ptr as *u32).* * prime64-1
+  // For the remaining half word (when there are more than 32 bits remaining)
+  if ptr + 4 <= last {
+    h64 ^= (ptr as *u32).* as u64 * prime64-1
     h64 = (h64 <<< 23) * prime64-2 + prime64-3
     ptr += 4
-  end
+  }
 
-  -- For the remaining bytes that didn't make a half a word (32bits),
-  -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1/2 word.
-  while ptr < last do
-    h64 ^= (ptr as *u8).* * prime64-5
+  // For the remaining bytes that didn't make a half word,
+  // either 0, 1, 2 or 3 bytes
+  while ptr < last {
+    h64 ^= ptr.u8 as u64 * prime64-5
     h64 = (h64 <<< 11) * prime64-1
     ptr += 1
-  end
-  
-  -- Finalise
+  }
+
+  // Finalize
   h64 ^= h64 >> 33
   h64 *= prime64-2
   h64 ^= h64 >> 29
   h64 *= prime64-3
-  h64 ^= h64 >> 32  
-
-end
-
-func round64 (acc: u64, value: u64) -> (acc: u64)
-  acc += value * prime64-2
-  acc <<<= 31
-  acc *= prime64-1
-end
-
-func merge-round64 (acc: u64, value: u64) -> (acc: u64)
-  value = round64(0, value)
-  acc ^= value
-  acc = (acc * prime64-1) + prime64-4
-end
+  h64 ^= h64 >> 32
+}
