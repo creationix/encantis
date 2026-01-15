@@ -75,7 +75,7 @@ The following identifiers are reserved keywords in Encantis:
 
 **Control Flow:** `if`, `elif`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `inline`, `unique`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`, `unique`
 
 **Operators:** `and`, `or`, `not`, `as`
 

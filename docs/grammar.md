@@ -35,14 +35,16 @@ ident_char      = 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' | '-'
 keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop"
         | "break" | "continue" | "return" | "when"
         | "func" | "let" | "set" | "global" | "def" | "type"
-        | "import" | "export" | "memory" | "inline" | "unique"
+        | "import" | "export" | "memory" | "data" | "inline" | "unique"
         | "and" | "or" | "not" | "as"
 ```
 
 ### Literals
 
 ```ebnf
-literal         = integer_literal | float_literal | string_literal | bool_literal
+literal         = number_literal | string_literal | bool_literal
+
+number_literal  = [ "-" ] ( integer_literal | float_literal ) [ ":" type ]
 
 integer_literal = decimal_literal | hex_literal | binary_literal | octal_literal
 decimal_literal = digit { digit }
@@ -54,8 +56,8 @@ float_literal   = digit { digit } "." digit { digit } [ exponent ]
 exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit }
 
 string_literal  = '"' { string_char | escape_seq } '"'
-string_char     = <any char except '"' or '\'>
-escape_seq      = '\' ( 'n' | 't' | 'r' | '\' | '"' | '0' )
+string_char     = <any UTF-8 char except '"' or '\'>
+escape_seq      = '\' ( 'n' | 't' | 'r' | '\' | '"' | 'x' hex_digit hex_digit )
 
 bool_literal    = "true" | "false"
 
@@ -138,8 +140,10 @@ unique_decl     = "unique" type_identifier "=" type
 ### Definitions
 
 ```ebnf
-def_decl        = "def" identifier "=" literal [ ":" type ]
+def_decl        = "def" identifier "=" literal
 ```
+
+Note: Type suffix is part of the literal (e.g., `def pi = 3.14159:f64`).
 
 ### Globals
 
@@ -232,20 +236,21 @@ expression_stmt = expression
 
 ```ebnf
 pattern         = identifier
-                | tuple_pattern
-                | named_pattern
+                | "(" pattern_list ")"
 
-tuple_pattern   = "(" pattern_list ")"
 pattern_list    = pattern_elem { "," pattern_elem }
-pattern_elem    = pattern
-                | identifier ":"                    -- shorthand: field name = var name
-                | identifier ":" identifier         -- explicit: field name : var name
 
-named_pattern   = "(" named_pattern_list ")"
-named_pattern_list = named_pattern_elem { "," named_pattern_elem }
-named_pattern_elem = identifier ":"                 -- shorthand
-                   | identifier ":" identifier      -- renamed
+pattern_elem    = identifier                        -- positional binding
+                | identifier ":"                    -- named shorthand (x: binds field x to var x)
+                | identifier ":" identifier         -- named explicit (x: y binds field x to var y)
+                | "(" pattern_list ")"              -- nested pattern
 ```
+
+Positional vs named patterns:
+
+- `(a, b)` — positional: binds by position
+- `(x:, y:)` — named shorthand: binds fields x, y to variables x, y
+- `(x: a, y: b)` — named explicit: binds field x to a, field y to b
 
 ## Expressions
 
@@ -274,7 +279,6 @@ mul_op          = "*" | "/" | "%"
 
 unary_expr      = "-" unary_expr
                | "~" unary_expr
-               | "!" unary_expr
                | "&" unary_expr
                | cast_expr
 
@@ -331,7 +335,7 @@ lvalue          = identifier
 | 8 | `<<` `>>` `<<<` `>>>` | left |
 | 9 | `+` `-` | left |
 | 10 | `*` `/` `%` | left |
-| 11 | `-` `~` `!` `&` (unary) | prefix |
+| 11 | `-` `~` `&` (unary) | prefix |
 | 12 | `as` | left |
 | 13 | `.` `[]` `()` | left (postfix) |
 
