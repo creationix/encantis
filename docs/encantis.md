@@ -501,18 +501,57 @@ Casts are required for:
 
 All comparisons return `bool`.
 
-### Compound Assignment
+### Assignment
 
 ```ents
-x += 1      -- x = x + 1
-x -= 1      -- x = x - 1
-x *= 2      -- x = x * 2
-x /= 2      -- x = x / 2
-x &= mask   -- x = x & mask
-x |= flags  -- x = x | flags
-x ^= bits   -- x = x ^ bits
-x <<= n     -- x = x << n
-x >>= n     -- x = x >> n
+x = 42                   -- simple variable assignment
+arr[i] = value           -- indexed assignment
+ptr.* = value            -- dereference assignment
+ptr.u32 = value          -- type-punned memory write
+(a, b) = divmod(10, 3)   -- tuple destructuring
+```
+
+Assignment targets (lvalues) can be:
+
+| Target | Description |
+|--------|-------------|
+| `name` | Local or global variable |
+| `arr[i]` | Array/slice element |
+| `ptr.*` | Dereferenced pointer |
+| `ptr.T` | Type-punned memory location |
+| `(a, b, ...)` | Tuple destructuring |
+
+Tuple destructuring unpacks multiple values in a single assignment:
+
+```ents
+(q, r) = divmod(17, 5)   -- q = 3, r = 2
+(x, y) = (y, x)          -- swap values
+(ptr, len) = slice       -- extract components from multi-value types
+```
+
+Any type with multiple underlying values can be destructured (slices, tuples, etc).
+
+### Compound Assignment
+
+Compound assignment combines an operation with assignment. Works with any valid lvalue:
+
+| Operator | Equivalent |
+|----------|------------|
+| `x += n` | `x = x + n` |
+| `x -= n` | `x = x - n` |
+| `x *= n` | `x = x * n` |
+| `x /= n` | `x = x / n` |
+| `x %= n` | `x = x % n` |
+| `x &= n` | `x = x & n` |
+| `x \|= n` | `x = x \| n` |
+| `x ^= n` | `x = x ^ n` |
+| `x <<= n` | `x = x << n` |
+| `x >>= n` | `x = x >> n` |
+
+```ents
+count += 1               -- increment variable
+arr[i] += delta          -- modify array element
+ptr.* ^= mask            -- XOR through pointer
 ```
 
 ### Unary Operators
