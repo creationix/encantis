@@ -44,7 +44,7 @@ keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop"
 ```ebnf
 literal         = number_literal | string_literal | bool_literal
 
-number_literal  = [ "-" ] ( integer_literal | float_literal ) [ ":" type ]
+number_literal  = [ "-" ] ( integer_literal | float_literal )
 
 integer_literal = decimal_literal | hex_literal | binary_literal | octal_literal
 decimal_literal = digit { digit }
@@ -118,17 +118,25 @@ exportable      = func_decl
 ```ebnf
 func_decl       = [ "inline" ] "func" [ identifier ] func_signature func_body
 
-func_signature  = "(" [ param_list ] ")" [ "->" return_type ]
+func_signature  = value_spec [ "->" value_spec ]
 
-param_list      = param { "," param }
-param           = [ identifier ":" ] type
+value_spec      = type                           -- single value
+                | "(" [ field_list ] ")"         -- zero or more values
 
-return_type     = type
-                | "(" named_field_list ")"
+field_list      = field { "," field }
+field           = type                           -- anonymous
+                | identifier ":" type            -- named
 
 func_body       = block
                 | "=>" expression
 ```
+
+Examples:
+
+- `func foo(i32) -> i32` — single anonymous input/output
+- `func foo(a:i32, b:i32) -> i32` — named inputs, single output
+- `func foo(a:i32, b:i32) -> (q:i32, r:i32)` — named inputs and outputs
+- `func foo()` — no inputs, no return
 
 ### Type Declarations
 
@@ -140,10 +148,10 @@ unique_decl     = "unique" type_identifier "=" type
 ### Definitions
 
 ```ebnf
-def_decl        = "def" identifier "=" literal
+def_decl        = "def" identifier "=" expression
 ```
 
-Note: Type suffix is part of the literal (e.g., `def pi = 3.14159:f64`).
+The expression is typically a literal with optional type annotation (e.g., `def pi = 3.14159:f64`).
 
 ### Globals
 
@@ -282,7 +290,8 @@ unary_expr      = "-" unary_expr
                | "&" unary_expr
                | cast_expr
 
-cast_expr       = postfix_expr [ "as" type ]
+cast_expr       = postfix_expr [ "as" type ]       -- runtime cast
+                | postfix_expr [ ":" type ]        -- type annotation
 
 postfix_expr    = primary_expr { postfix_op }
 postfix_op      = "." identifier                    -- field access
@@ -336,7 +345,7 @@ lvalue          = identifier
 | 9 | `+` `-` | left |
 | 10 | `*` `/` `%` | left |
 | 11 | `-` `~` `&` (unary) | prefix |
-| 12 | `as` | left |
+| 12 | `as` `:` | left |
 | 13 | `.` `[]` `()` | left (postfix) |
 
 ## Builtin Functions
