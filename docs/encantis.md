@@ -332,14 +332,14 @@ let cstr: [u8/0] = ...
 
 ### Type Aliases: Structural vs Unique
 
-Encantis supports two kinds of type aliases with different matching semantics:
+Encantis supports two kinds of type aliases with different matching semantics. All user-defined type names must start with a capital letter.
 
-#### `interface` — Structural Type
+#### `type` — Structural Type
 
 Structural types match any value with identical structure. No explicit cast needed:
 
 ```ents
-interface Point = (f32, f32)
+type Point = (f32, f32)
 
 func distance(a: Point, b: Point) -> f32
   -- implementation
@@ -354,13 +354,13 @@ distance(q, p)                     -- ERROR: (f32, f32, f32) is not (f32, f32)
 
 The structure must be exactly identical - extra or missing fields are not allowed.
 
-#### `type` — Unique Type
+#### `unique` — Unique Type
 
 Unique types require explicit casts even when the underlying structure is identical:
 
 ```ents
-type String = [u8]
-type Bytes = [u8]
+unique String = [u8]
+unique Bytes = [u8]
 
 func print(s: String)
   -- implementation
@@ -375,7 +375,7 @@ print(b)                           -- ERROR: Bytes is not String
 print(String(b))                   -- OK: explicit cast
 ```
 
-Use `type` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
+Use `unique` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
 
 ### WASM Type Mapping
 
