@@ -10,15 +10,15 @@ Encantis is a systems programming language that compiles to WebAssembly. It prov
 export "mem" memory 1
 
 -- Import JavaScript console.log
-import "env" "log" func log(msg: [u8/0])
+import "env" "log" func log(msg: [u8])
 
 export "main"
 func main()
+  -- Log "Hello, World!" to console
+  -- JavaScript host will receive the string pointer and length and read from linear memory
   log("Hello, World!\n")
 end
 ```
-
-String literals are null-terminated (`[u8/0]`) by default, stored in the data section automatically.
 
 ### Fibonacci
 
@@ -81,13 +81,15 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 ### String Literals
 
 ```ents
-"hello"           -- null-terminated [u8/0] by default
-"hello":[u8]      -- explicit slice (ptr + len)
-"hello":[u8/0]    -- explicit null-terminated
+"hello"           -- type is [u8*5/0], coerces to [u8/0], [u8*5], or [u8]
 "line1\nline2"    -- escape sequences: \n \t \r \\ \"
 ```
 
-String literals default to `[u8/0]` (null-terminated) for simpler WASM interop - just a single i32 pointer. Use `:[u8]` annotation when you need a slice with stored length.
+String literals are stored in the data section with a null terminator. Their type is `[u8*N/0]` - a comptime-known length that also guarantees null termination. This dual nature allows implicit coercion to:
+
+- `[u8/0]` - null-terminated pointer (single i32)
+- `[u8*N]` - fixed-size array (single i32, length known at compile time)
+- `[u8]` - runtime slice (i32 pointer + i32 length)
 
 ### Boolean Literals
 
