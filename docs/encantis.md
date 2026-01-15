@@ -64,7 +64,38 @@ merge-round64   -- hyphenated
 my_var_2        -- underscores and digits
 ```
 
-Hyphens in identifiers are idiomatic for constants and helper functions. User-defined type names must start with a capital letter.
+Hyphens in identifiers are idiomatic for constants and helper functions.
+
+## Reserved Keywords
+
+The following identifiers are reserved keywords in Encantis:
+
+**Control Flow:** `if`, `then`, `elif`, `else`, `end`, `while`, `do`, `for`, `in`, `loop`, `break`, `continue`, `br`, `return`, `when`
+
+**Declarations:** `func`, `local`, `let`, `set`, `global`, `def`, `define`, `type`, `import`, `export`, `memory`, `interface`, `inline`
+
+**Operators:** `and`, `or`, `not`, `as`
+
+**Modifiers:** `unique`
+
+## Type Identifiers
+
+User-defined type names must start with a capital letter. This distinguishes them from primitive types (`i32`, `f64`, etc.) and regular identifiers:
+
+```ents
+type Point = { x: f32, y: f32 }    -- OK: Point starts with capital
+type point = { x: f32, y: f32 }    -- ERROR: type names must be capitalized
+
+unique String = [u8]               -- OK: String starts with capital
+unique buffer = [u8]               -- ERROR: type names must be capitalized
+```
+
+This convention allows the parser to distinguish type references from variable references without forward declarations:
+
+```ents
+func distance(a: Point, b: Point) -> f32   -- Point is a type
+local point = Point(1.0, 2.0)              -- point is a variable, Point is a constructor
+```
 
 ## Literals
 

@@ -517,6 +517,78 @@ function checkStmt(c: Checker, stmt: Stmt): void {
       break;
     }
 
+    case 'LetStmt': {
+      // let (a, b) = expr - declares new variables with destructuring
+      const valueType = checkExpr(c, stmt.value);
+
+      // Value must be a tuple with matching arity
+      if (valueType?.kind === 'TupleType') {
+        if (valueType.elements.length !== stmt.names.length) {
+          addError(c, stmt.value.span,
+            `Cannot unpack ${valueType.elements.length} values into ${stmt.names.length} variables.`);
+        }
+
+        for (let i = 0; i < stmt.names.length; i++) {
+          const name = stmt.names[i];
+          const type = stmt.types?.[i] ?? valueType.elements[i];
+          if (type) {
+            defineSymbol(c, name, 'local', stmt.span, type, true);
+          }
+        }
+      } else {
+        addError(c, stmt.value.span,
+          `Expected a tuple value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+        // Still define the variables to avoid cascading errors
+        for (const name of stmt.names) {
+          defineSymbol(c, name, 'local', stmt.span, { kind: 'PrimitiveType', name: 'unknown', span: stmt.span }, true);
+        }
+      }
+      break;
+    }
+
+    case 'SetStmt': {
+      // set (a, b) = expr - assigns to existing variables with destructuring
+      const valueType = checkExpr(c, stmt.value);
+
+      if (valueType?.kind === 'TupleType') {
+        if (valueType.elements.length !== stmt.targets.length) {
+          addError(c, stmt.value.span,
+            `Cannot unpack ${valueType.elements.length} values into ${stmt.targets.length} targets.`);
+        }
+
+        for (let i = 0; i < stmt.targets.length; i++) {
+          const target = stmt.targets[i];
+          const expectedType = valueType.elements[i];
+
+          if (target.kind === 'Identifier') {
+            const sym = lookupSymbol(c, target.name);
+            if (!sym) {
+              addError(c, target.span, `Undefined variable '${target.name}'. Did you forget to declare it?`);
+              continue;
+            }
+            if (sym.kind !== 'local' && sym.kind !== 'param' && sym.mutable !== true) {
+              addError(c, target.span, `Cannot assign to '${target.name}' because it's not mutable.`);
+            }
+            if (expectedType && sym.type && !typesCompatible(expectedType, sym.type)) {
+              addError(c, stmt.value.span,
+                `Cannot assign '${typeToString(expectedType)}' to '${target.name}' of type '${typeToString(sym.type)}'.`);
+            }
+          } else {
+            // IndexExpr or MemberExpr - just type check
+            const targetType = checkExpr(c, target);
+            if (expectedType && targetType && !typesCompatible(expectedType, targetType)) {
+              addError(c, stmt.value.span,
+                `Cannot assign '${typeToString(expectedType)}' to target of type '${typeToString(targetType)}'.`);
+            }
+          }
+        }
+      } else {
+        addError(c, stmt.value.span,
+          `Expected a tuple value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+      }
+      break;
+    }
+
     case 'Assignment': {
       const valueType = checkExpr(c, stmt.value);
 

@@ -13,7 +13,7 @@ const KEYWORDS: Set<string> = new Set([
   'import', 'export', 'func', 'local', 'global', 'end',
   'if', 'then', 'elif', 'else', 'while', 'do', 'for', 'in',
   'loop', 'break', 'continue', 'br', 'return', 'when', 'and', 'or', 'not', 'as',
-  'memory', 'def', 'define', 'interface', 'type', 'unique',
+  'memory', 'def', 'define', 'interface', 'type', 'unique', 'let', 'set',
 ]);
 
 // -----------------------------------------------------------------------------

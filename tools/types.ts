@@ -158,6 +158,21 @@ export interface FunctionType extends Located {
   returns: Type;
 }
 
+export interface StructField extends Located {
+  name: string;
+  type: Type;
+}
+
+export interface StructType extends Located {
+  kind: 'StructType';
+  fields: StructField[];
+}
+
+export interface NamedType extends Located {
+  kind: 'NamedType';
+  name: string;             // Reference to a type alias
+}
+
 export type Type =
   | PrimitiveType
   | SliceType
@@ -165,7 +180,9 @@ export type Type =
   | NullTerminatedType
   | PointerType
   | TupleType
-  | FunctionType;
+  | FunctionType
+  | StructType
+  | NamedType;
 
 // -----------------------------------------------------------------------------
 // Expressions (AST)
@@ -277,6 +294,21 @@ export interface Assignment extends Located {
   value: Expr;
 }
 
+// let (a, b) = expr - declares new variables with destructuring
+export interface LetStmt extends Located {
+  kind: 'LetStmt';
+  names: string[];
+  types?: Type[];          // Optional type annotations
+  value: Expr;
+}
+
+// set (a, b) = expr - assigns to existing variables with destructuring
+export interface SetStmt extends Located {
+  kind: 'SetStmt';
+  targets: PlaceExpr[];
+  value: Expr;
+}
+
 export interface ExprStmt extends Located {
   kind: 'ExprStmt';
   expr: Expr;
@@ -336,6 +368,8 @@ export interface ErrorStmt extends Located {
 
 export type Stmt =
   | LocalDecl
+  | LetStmt
+  | SetStmt
   | Assignment
   | ExprStmt
   | ReturnStmt
@@ -436,6 +470,12 @@ export interface DefineDecl extends Located {
   value: Expr;
 }
 
+export interface TypeAliasDecl extends Located {
+  kind: 'TypeAliasDecl';
+  name: string;
+  type: Type;              // The aliased type (can be StructType, etc.)
+}
+
 // -----------------------------------------------------------------------------
 // Module (Top-Level AST)
 // -----------------------------------------------------------------------------
@@ -447,6 +487,7 @@ export interface Module extends Located {
   globals: GlobalDecl[];
   memories: MemoryDecl[];
   defines: DefineDecl[];
+  types: TypeAliasDecl[];  // Type aliases (type Name = ...)
   functions: FuncDecl[];   // Non-exported functions
 }
 

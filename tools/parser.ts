@@ -6,14 +6,15 @@
 import {
   Token, TokenKind, Span, Diagnostic,
   Type, PrimitiveType, SliceType, FixedArrayType, NullTerminatedType, PointerType, TupleType, FunctionType,
+  StructType, StructField, NamedType,
   Expr, NumberLiteral, StringLiteral, Identifier, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, MemberExpr, CastExpr, TupleExpr, TernaryExpr, ErrorExpr,
-  Stmt, LocalDecl, Assignment, ExprStmt, ReturnStmt, IfStmt, WhileStmt,
+  Stmt, LocalDecl, LetStmt, SetStmt, Assignment, ExprStmt, ReturnStmt, IfStmt, WhileStmt,
   ForStmt, LoopStmt, BreakStmt, ContinueStmt, BranchStmt, ErrorStmt,
   Param, NamedReturn,
   Import, ImportGroup, ImportSingle, ImportItem,
   FuncDecl, FuncBody, ArrowBody, BlockBody,
-  ExportDecl, MemoryDecl, GlobalDecl, DefineDecl,
+  ExportDecl, MemoryDecl, GlobalDecl, DefineDecl, TypeAliasDecl,
   Module, ParseResult,
   spanFrom, spanUnion,
 } from './types';
@@ -216,11 +217,50 @@ function parseType(p: Parser): Type {
     };
   }
 
-  // Primitive type: i32, u64, f64, etc.
+  // Struct type: { field: Type, ... }
+  if (match(p, '{')) {
+    const fields: StructField[] = [];
+
+    if (!at(p, '}')) {
+      // Parse first field
+      const firstName = expect(p, 'NAME', 'Expected field name.');
+      expect(p, ':', 'Expected ":" after field name.');
+      const firstType = parseType(p);
+      fields.push({ name: firstName.text, type: firstType, span: spanFrom(firstName, firstType) });
+
+      // Parse additional fields
+      while (match(p, ',')) {
+        if (at(p, '}')) break;  // Allow trailing comma
+        const fieldName = expect(p, 'NAME', 'Expected field name.');
+        expect(p, ':', 'Expected ":" after field name.');
+        const fieldType = parseType(p);
+        fields.push({ name: fieldName.text, type: fieldType, span: spanFrom(fieldName, fieldType) });
+      }
+    }
+
+    const end = expect(p, '}');
+    return {
+      kind: 'StructType',
+      fields,
+      span: spanFrom(start, end),
+    };
+  }
+
+  // Type name: primitive (i32, f64) or user-defined (Point, Color)
   if (at(p, 'NAME')) {
     const tok = advance(p);
+    // Check if it's a primitive type
+    const primitives = ['i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64', 'bool'];
+    if (primitives.includes(tok.text)) {
+      return {
+        kind: 'PrimitiveType',
+        name: tok.text,
+        span: tok.span,
+      };
+    }
+    // User-defined type reference
     return {
-      kind: 'PrimitiveType',
+      kind: 'NamedType',
       name: tok.text,
       span: tok.span,
     };
@@ -228,7 +268,7 @@ function parseType(p: Parser): Type {
 
   // Error: unexpected token
   const tok = peek(p);
-  addError(p, tok.span, `Expected a type, but found '${tok.text}'. Valid types: i32, u32, i64, u64, f32, f64, [T], *T, (T, T).`);
+  addError(p, tok.span, `Expected a type, but found '${tok.text}'. Valid types: i32, f64, [T], *T, (T, T), { field: T }.`);
   advance(p);
   return {
     kind: 'PrimitiveType',
@@ -330,6 +370,30 @@ function parseUnary(p: Parser): Expr {
     return {
       kind: 'UnaryExpr',
       op: '~',
+      operand,
+      span: spanFrom(tok, operand),
+    };
+  }
+
+  // Length operator: #expr
+  if (tok.kind === '#') {
+    advance(p);
+    const operand = parseUnary(p);
+    return {
+      kind: 'UnaryExpr',
+      op: '#',
+      operand,
+      span: spanFrom(tok, operand),
+    };
+  }
+
+  // Address-of operator: &expr
+  if (tok.kind === '&' && !isAtExprEnd(p, -1)) {
+    advance(p);
+    const operand = parseUnary(p);
+    return {
+      kind: 'UnaryExpr',
+      op: '&',
       operand,
       span: spanFrom(tok, operand),
     };
@@ -545,9 +609,19 @@ function parseStringContent(raw: string): string {
 // -----------------------------------------------------------------------------
 
 function parseStmt(p: Parser): Stmt {
-  // Local declaration: local name: type = expr
+  // Let statement: let x = expr OR let (a, b) = expr
+  if (at(p, 'let')) {
+    return parseLetStmt(p);
+  }
+
+  // Local declaration (alias for let): local name: type = expr
   if (at(p, 'local')) {
     return parseLocalDecl(p);
+  }
+
+  // Set statement: set (a, b) = expr - assigns to existing variables
+  if (at(p, 'set')) {
+    return parseSetStmt(p);
   }
 
   // Return statement: return expr [when cond]
@@ -575,10 +649,32 @@ function parseStmt(p: Parser): Stmt {
     return parseLoopStmt(p);
   }
 
-  // Break statement
+  // Break statement: break [when cond]
   if (at(p, 'break')) {
     const tok = advance(p);
-    return { kind: 'BreakStmt', span: tok.span };
+    let condition: Expr | undefined;
+    if (match(p, 'when')) {
+      condition = parseExpr(p);
+    }
+    return {
+      kind: 'BreakStmt',
+      condition,
+      span: condition ? spanFrom(tok, condition) : tok.span,
+    };
+  }
+
+  // Continue statement: continue [when cond]
+  if (at(p, 'continue')) {
+    const tok = advance(p);
+    let condition: Expr | undefined;
+    if (match(p, 'when')) {
+      condition = parseExpr(p);
+    }
+    return {
+      kind: 'ContinueStmt',
+      condition,
+      span: condition ? spanFrom(tok, condition) : tok.span,
+    };
   }
 
   // Branch statement: br [when cond]
@@ -623,6 +719,107 @@ function parseLocalDecl(p: Parser): LocalDecl {
     type,
     init,
     span: spanFrom(start, init ?? type ?? nameTok),
+  };
+}
+
+// let x = expr OR let (a, b) = expr - declares new variables
+function parseLetStmt(p: Parser): LocalDecl | LetStmt {
+  const start = expect(p, 'let');
+
+  // Check for tuple destructuring: let (a, b) = expr
+  if (at(p, '(')) {
+    advance(p);
+
+    const names: string[] = [];
+    const types: Type[] = [];
+
+    // Parse first name
+    const firstTok = expect(p, 'NAME', 'Expected variable name.');
+    names.push(firstTok.text);
+    if (match(p, ':')) {
+      types.push(parseType(p));
+    }
+
+    // Parse additional names
+    while (match(p, ',')) {
+      const nameTok = expect(p, 'NAME', 'Expected variable name.');
+      names.push(nameTok.text);
+      if (match(p, ':')) {
+        types.push(parseType(p));
+      }
+    }
+
+    expect(p, ')', 'Expected ")" after variable list.');
+    expect(p, '=', 'Expected "=" in let statement.');
+    const value = parseExpr(p);
+
+    return {
+      kind: 'LetStmt',
+      names,
+      types: types.length > 0 ? types : undefined,
+      value,
+      span: spanFrom(start, value),
+    };
+  }
+
+  // Single variable: let x = expr OR let x: type = expr
+  const nameTok = expect(p, 'NAME', 'Expected variable name after "let".');
+  const name = nameTok.text;
+
+  let type: Type | undefined;
+  let init: Expr | undefined;
+
+  if (match(p, ':')) {
+    type = parseType(p);
+  }
+
+  if (match(p, '=')) {
+    init = parseExpr(p);
+  }
+
+  return {
+    kind: 'LocalDecl',
+    name,
+    type,
+    init,
+    span: spanFrom(start, init ?? type ?? nameTok),
+  };
+}
+
+// set (a, b) = expr - assigns to existing variables with destructuring
+function parseSetStmt(p: Parser): SetStmt {
+  const start = expect(p, 'set');
+  expect(p, '(', 'Expected "(" after "set".');
+
+  const targets: (Identifier | IndexExpr | MemberExpr)[] = [];
+
+  // Parse first target
+  const first = parseExpr(p);
+  if (!isPlaceExpr(first)) {
+    addError(p, first.span, 'Set target must be a variable, index expression, or member access.');
+  } else {
+    targets.push(first);
+  }
+
+  // Parse additional targets
+  while (match(p, ',')) {
+    const target = parseExpr(p);
+    if (!isPlaceExpr(target)) {
+      addError(p, target.span, 'Set target must be a variable, index expression, or member access.');
+    } else {
+      targets.push(target);
+    }
+  }
+
+  expect(p, ')', 'Expected ")" after target list.');
+  expect(p, '=', 'Expected "=" in set statement.');
+  const value = parseExpr(p);
+
+  return {
+    kind: 'SetStmt',
+    targets,
+    value,
+    span: spanFrom(start, value),
   };
 }
 
@@ -843,7 +1040,7 @@ function parseExprOrAssignment(p: Parser): Stmt {
     const value = parseExpr(p);
 
     if (!isPlaceExpr(first)) {
-      addError(p, first.span, 'Assignment target must be a variable, index expression, or member access.');
+      addError(p, first.span, 'Assignment target must be a variable, index expression, or member access. Use "set (a, b) = expr" for tuple destructuring.');
     }
 
     return {
@@ -1176,12 +1373,45 @@ function parseMemory(p: Parser): MemoryDecl {
   };
 }
 
+function parseDefine(p: Parser): DefineDecl {
+  const start = advance(p);  // consume 'def' or 'define'
+  const nameTok = expect(p, 'NAME', 'Expected constant name after "def".');
+  const name = nameTok.text;
+
+  expect(p, '=', 'Expected "=" in constant definition.');
+  const value = parseExpr(p);
+
+  return {
+    kind: 'DefineDecl',
+    name,
+    value,
+    span: spanFrom(start, value),
+  };
+}
+
+function parseTypeAlias(p: Parser): TypeAliasDecl {
+  const start = expect(p, 'type');
+  const nameTok = expect(p, 'NAME', 'Expected type name after "type".');
+  const name = nameTok.text;
+
+  expect(p, '=', 'Expected "=" in type alias declaration.');
+  const type = parseType(p);
+
+  return {
+    kind: 'TypeAliasDecl',
+    name,
+    type,
+    span: spanFrom(start, type),
+  };
+}
+
 function parseModule(p: Parser): Module {
   const imports: Import[] = [];
   const exports: ExportDecl[] = [];
   const globals: GlobalDecl[] = [];
   const memories: MemoryDecl[] = [];
   const defines: DefineDecl[] = [];
+  const types: TypeAliasDecl[] = [];
   const functions: FuncDecl[] = [];
 
   const start = peek(p);
@@ -1197,10 +1427,14 @@ function parseModule(p: Parser): Module {
       memories.push(parseMemory(p));
     } else if (at(p, 'func')) {
       functions.push(parseFuncDecl(p));
+    } else if (atAny(p, 'def', 'define')) {
+      defines.push(parseDefine(p));
+    } else if (at(p, 'type')) {
+      types.push(parseTypeAlias(p));
     } else {
       // Unexpected token
       const tok = peek(p);
-      addError(p, tok.span, `Unexpected '${tok.text}' at module level. Expected: import, export, func, global, or memory.`);
+      addError(p, tok.span, `Unexpected '${tok.text}' at module level. Expected: import, export, func, global, def, type, or memory.`);
       synchronize(p);
     }
   }
@@ -1214,6 +1448,7 @@ function parseModule(p: Parser): Module {
     globals,
     memories,
     defines,
+    types,
     functions,
     span: { start: start.span.start, end: end.span.end },
   };
