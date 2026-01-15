@@ -53,7 +53,7 @@ func (data: [u8], seed: u32) -> (h32: u32)
   -- For the remaining bytes that didn't make a whole word,
   -- either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
   while ptr < last do
-    h32 += ptr.u8 & prime32-5
+    h32 += ptr.u8 * prime32-5
     h32 = (h32 <<< 11) * prime32-1
     ptr += 1
   end

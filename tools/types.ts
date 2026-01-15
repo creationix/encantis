@@ -316,6 +316,12 @@ export interface LoopStmt extends Located {
 
 export interface BreakStmt extends Located {
   kind: 'BreakStmt';
+  condition?: Expr;  // break when cond
+}
+
+export interface ContinueStmt extends Located {
+  kind: 'ContinueStmt';
+  condition?: Expr;  // continue when cond
 }
 
 export interface BranchStmt extends Located {
@@ -338,6 +344,7 @@ export type Stmt =
   | ForStmt
   | LoopStmt
   | BreakStmt
+  | ContinueStmt
   | BranchStmt
   | ErrorStmt;
 

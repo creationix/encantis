@@ -12,8 +12,8 @@ import { Token, TokenKind, Span, Diagnostic } from './types';
 const KEYWORDS: Set<string> = new Set([
   'import', 'export', 'func', 'local', 'global', 'end',
   'if', 'then', 'elif', 'else', 'while', 'do', 'for', 'in',
-  'loop', 'break', 'br', 'return', 'when', 'and', 'or', 'not', 'as',
-  'memory', 'define', 'interface', 'type',
+  'loop', 'break', 'continue', 'br', 'return', 'when', 'and', 'or', 'not', 'as',
+  'memory', 'def', 'define', 'interface', 'type', 'unique',
 ]);
 
 // -----------------------------------------------------------------------------
@@ -33,7 +33,7 @@ const MULTI_CHAR_OPS: string[] = [
 // Single-character punctuation and operators
 const SINGLE_CHAR_OPS: Set<string> = new Set([
   '(', ')', '[', ']', '{', '}', ':', ',', '=', '.', '*',
-  '+', '-', '/', '%', '&', '|', '^', '~', '<', '>',
+  '+', '-', '/', '%', '&', '|', '^', '~', '<', '>', '#',
 ]);
 
 // -----------------------------------------------------------------------------

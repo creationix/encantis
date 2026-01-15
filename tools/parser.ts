@@ -9,7 +9,7 @@ import {
   Expr, NumberLiteral, StringLiteral, Identifier, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, MemberExpr, CastExpr, TupleExpr, TernaryExpr, ErrorExpr,
   Stmt, LocalDecl, Assignment, ExprStmt, ReturnStmt, IfStmt, WhileStmt,
-  ForStmt, LoopStmt, BreakStmt, BranchStmt, ErrorStmt,
+  ForStmt, LoopStmt, BreakStmt, ContinueStmt, BranchStmt, ErrorStmt,
   Param, NamedReturn,
   Import, ImportGroup, ImportSingle, ImportItem,
   FuncDecl, FuncBody, ArrowBody, BlockBody,
