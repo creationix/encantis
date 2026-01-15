@@ -219,64 +219,47 @@ if x != 0 then    -- OK: explicit comparison
 if flag then      -- OK: flag is bool
 ```
 
-### While Loop
+### Loops
 
 ```ents
-while condition do
+while condition do       -- condition checked before each iteration
   -- body
 end
-```
 
-### For Loop
-
-```ents
--- Iterate 0 to n-1
-for i in n do
+for i in n do            -- iterate 0 to n-1
   process(i)
 end
 
--- Iterate over array/slice elements
-for elem in arr do
+for elem in arr do       -- iterate over array/slice elements
   process(elem)
 end
 
--- Iterate with index
-for i, elem in arr do
+for i, elem in arr do    -- iterate with index
   process(i, elem)
 end
-```
 
-The `for..in` loop works with:
-
-- **Integers** - iterates from 0 to n-1
-- **Arrays/slices** - iterates over elements
-- **Index variant** - `for i, elem in arr` provides both index and element
-
-### Infinite Loop
-
-```ents
-loop
+loop                     -- infinite loop
   -- body
-  break when done    -- conditional break
 end
 ```
 
-### Loop Control
+### Control Statements
+
+All control statements support a `when` suffix for conditional execution:
 
 ```ents
-break             -- exit loop
-break when cond   -- conditional exit (same as: if cond then break end)
-continue          -- skip to next iteration
-continue when c   -- conditional skip (same as: if c then continue end)
+break                    -- exit innermost loop
+break when cond          -- exit if condition is true
+
+continue                 -- skip to next iteration
+continue when cond       -- skip if condition is true
+
+return                   -- return from function (void)
+return value             -- return with value
+return value when cond   -- return if condition is true
 ```
 
-### Return
-
-```ents
-return            -- void return
-return value      -- return with value
-return x when c   -- conditional return (same as: if c then return x end)
-```
+The `when` form is equivalent to wrapping in `if cond then ... end`.
 
 ## Type System
 
@@ -582,6 +565,8 @@ let slice: [u8] = (ptr, 64)    -- OK: provide length
 | `if`/`elif`/`else`/`end` | `if`/`else`/`end` (nested) |
 | `while`/`do`/`end` | `block`/`loop` + `br_if` |
 | `loop`/`end` | `loop`/`end` |
-| `br` | `br` |
-| `br when` | `br_if` |
+| `break` | `br` (to enclosing block) |
+| `break when` | `br_if` |
+| `continue` | `br` (to loop head) |
+| `continue when` | `br_if` (to loop head) |
 | `return` | `return` |
