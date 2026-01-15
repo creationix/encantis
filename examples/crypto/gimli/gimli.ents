@@ -52,7 +52,7 @@ export "gimli" func gimli(state: [u32*12])
     end
 
     round -= 1
-    br when round > 0
+    continue when round > 0
   end
 end
 
@@ -64,7 +64,7 @@ export "gimli_hash"
 func gimli_hash(input: [u8], output: [u8*32])
   local state: [u32*12] = 0 -- 48 bytes state, allocated and initialized to zero
   local i: u32
-  local blocklen: u32
+  local len: u32 = #input
 
   -- Absorb phase: process 16-byte blocks
   while len >= 16 do

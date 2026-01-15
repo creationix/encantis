@@ -1,10 +1,10 @@
 memory mem 1
 
-global prime64-1 = 11400714785074694791:u64
-global prime64-2 = 14029467366897019727:u64
-global prime64-3 =  1609587929392839161:u64
-global prime64-4 =  9650029242287828579:u64
-global prime64-5 =  2870177450012600261:u64
+def prime64-1 = 11400714785074694791:u64
+def prime64-2 = 14029467366897019727:u64
+def prime64-3 =  1609587929392839161:u64
+def prime64-4 =  9650029242287828579:u64
+def prime64-5 =  2870177450012600261:u64
 
 export "xxh64"
 func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
@@ -34,7 +34,7 @@ func xxh64 (ptr: *u64, len: u32, seed: u64) -> (h64: u64)
       ptr += 8
       v4 = round64(v4, ptr.*)
       ptr += 8
-      br when ptr <= limit
+      continue when ptr <= limit
     end
 
     h64 = (v1 <<< 1) 
