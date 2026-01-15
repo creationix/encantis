@@ -137,6 +137,11 @@ export interface FixedArrayType extends Located {
   length: number;
 }
 
+export interface NullTerminatedType extends Located {
+  kind: 'NullTerminatedType';
+  element: Type;
+}
+
 export interface PointerType extends Located {
   kind: 'PointerType';
   target: Type;
@@ -157,6 +162,7 @@ export type Type =
   | PrimitiveType
   | SliceType
   | FixedArrayType
+  | NullTerminatedType
   | PointerType
   | TupleType
   | FunctionType;
@@ -261,9 +267,12 @@ export interface LocalDecl extends Located {
   init?: Expr;
 }
 
+// Place expressions: valid assignment targets (lvalues)
+export type PlaceExpr = Identifier | IndexExpr | MemberExpr;
+
 export interface Assignment extends Located {
   kind: 'Assignment';
-  targets: Identifier[];   // For multi-assign: d, a = ...
+  targets: PlaceExpr[];    // For multi-assign: d, a = ... (also supports arr[i], ptr.field)
   op?: string;             // Compound: '+=', '-=', etc. (undefined for simple =)
   value: Expr;
 }

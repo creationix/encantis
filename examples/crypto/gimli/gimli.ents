@@ -4,11 +4,10 @@
 
 export "mem" memory 1
 
--- State is stored at offset 0: 12 u32 words = 48 bytes
--- Input data starts at offset 64
-
-export "gimli"
-func gimli(state: *u32)
+-- `state` is just a simple `i32` pointer at the wasm level, 
+-- but here we can treat it as an array of 12 u32 words
+-- The state is permuted in place.
+export "gimli" func gimli(state: [u32*12])
   local round: u32 = 24
   local x: u32
   local y: u32
@@ -42,7 +41,7 @@ func gimli(state: *u32)
       state[3] = x
       -- Add round constant
       state[0] ^= 0x9e377900 | round
-    else if (round & 3) == 2 then
+    elif (round & 3) == 2 then
       -- Big swap: swap columns 0,2 and 1,3
       x = state[0]
       state[0] = state[2]
@@ -59,18 +58,13 @@ end
 
 -- Gimli-Hash: absorb input and squeeze 32-byte output
 -- Uses rate of 16 bytes (128 bits)
+-- At the wasm level, input is `i32` pointer and `i32` length and output is `i32` pointer
+-- The caller is responsible for providing the input slice and the location of the output hash
 export "gimli_hash"
-func gimli_hash(input: *u8, len: u32, output: *u8)
-  local state: *u32 = 0
+func gimli_hash(input: [u8], output: [u8*32])
+  local state: [u32*12] = 0 -- 48 bytes state, allocated and initialized to zero
   local i: u32
   local blocklen: u32
-
-  -- Initialize state to zero
-  i = 0
-  while i < 48 do
-    (state as *u8)[i] = 0
-    i += 1
-  end
 
   -- Absorb phase: process 16-byte blocks
   while len >= 16 do

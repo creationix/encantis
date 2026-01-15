@@ -691,6 +691,10 @@ function typeToWat(type: Type): string {
     }
     case 'SliceType':
       return 'i32 i32'; // ptr, len
+    case 'FixedArrayType':
+      return 'i32'; // just a pointer at runtime
+    case 'NullTerminatedType':
+      return 'i32'; // just a pointer, compiler knows to look for null
     case 'PointerType':
       return 'i32';
     case 'TupleType':

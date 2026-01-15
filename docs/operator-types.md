@@ -17,6 +17,8 @@
 | Floats | `f32`, `f64` |
 | Other | `bool`, pointers (i32), slices (ptr+len) |
 
+**Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected. No implicit truthiness - use explicit comparisons (`x != 0`).
+
 ### Future Considerations
 
 Pending operator overloading or built-in support:
@@ -114,6 +116,68 @@ f64 → f32  → ERROR
 bool + i32  → ERROR   // cast bool first
 ```
 
+## Explicit Casts
+
+Two syntaxes are supported:
+
+```encantis
+// Function-style (binds tightly)
+i32(x)              // primitive
+(*u8)(ptr)          // pointer
+([u8])(ptr)         // slice
+(MyStruct)(data)    // struct
+
+// as-style (lower precedence than arithmetic)
+x as i32
+ptr as *u8
+ptr as [u8]
+```
+
+Function-style binds tightly like a call; `as` requires parens in expressions:
+
+```encantis
+i32(x) + 1      // cast then add
+x as i32 + 1    // parses as: x as (i32 + 1) — ERROR
+(x as i32) + 1  // cast then add
+```
+
+Casts are required for:
+- Narrowing (larger → smaller type)
+- Lossy integer→float (when mantissa can't hold all values)
+- Mixed signedness operations
+- Bool→integer (`i32(flag)`)
+
+## Type-Punned Memory Access
+
+Read or write memory at a pointer as a specific type:
+
+```encantis
+ptr.u32             // read 4 bytes as u32
+ptr.u32 = value     // write u32 to 4 bytes
+ptr.f64             // read 8 bytes as f64
+ptr.f64 = value     // write f64 to 8 bytes
+```
+
+Equivalent to `(ptr as *T).*` but more ergonomic for DataView-style parsing:
+
+```encantis
+// Walking through a byte buffer
+local ptr: *u8 = data.ptr
+let header = ptr.u32      // read header as u32
+ptr += 4
+ptr.f64 = 3.14            // write f64 value
+ptr += 8
+```
+
+For primitives, the type name is used directly. For compound types, wrap in parentheses:
+
+```encantis
+ptr.u32           // primitive shorthand
+ptr.(MyStruct)    // read/write struct
+ptr.([u8])        // read/write slice (ptr + len)
+ptr.((i32, f64))  // read/write tuple
+```
+
 ## Pointer Arithmetic
 
 ### Allowed
@@ -146,25 +210,99 @@ arr[2]          // offset 8 bytes (2 × sizeof(i32))
 (arr + 8).*     // equivalent to arr[2]
 ```
 
-## Slices
+## Array and Slice Types
 
-Fat pointer: `{ ptr: *T, len: i32 }`
+Encantis has three array-like types, each with different compile-time vs runtime tradeoffs:
 
-### Operators
+### Type Summary
+
+| Syntax | WASM Representation | Length | Use Case |
+|--------|---------------------|--------|----------|
+| `[T]` | `(i32, i32)` ptr+len | runtime, stored | General-purpose slices |
+| `[T*N]` | `i32` ptr only | comptime constant N | Fixed-size buffers |
+| `[T/0]` | `i32` ptr only | runtime, scan for null | C strings, null-terminated data |
+
+### `[T]` — Runtime Slice
+
+Fat pointer containing both pointer and length:
+
+```
+{ ptr: *T, len: u32 }
+```
 
 | Operator | Result | Notes |
 |----------|--------|-------|
-| `&s` | `*T` | underlying pointer |
-| `#s` | `i32` | length |
-| `s[i]` | `T` (place) | bounds-checked |
+| `&s` | `*T` | extract underlying pointer |
+| `#s` | `u32` | stored length (O(1)) |
+| `s[i]` | `T` | element access |
 
-`&` on a place gives its address; on a slice gives its pointer. `#` also works on arrays (comptime constant).
+### `[T*N]` — Fixed-Size Array
 
-### Raw vs Checked Access
+Just a pointer at runtime, but compiler knows length N at compile time:
+
+```
+*T  (with comptime length N)
+```
+
+| Operator | Result | Notes |
+|----------|--------|-------|
+| `&arr` | `*T` | the pointer itself |
+| `#arr` | `u32` | comptime constant N |
+| `arr[i]` | `T` | element access |
+
+Useful for stack-allocated buffers, struct fields with known sizes, and WASM linear memory layouts.
+
+### `[T/0]` — Null-Terminated
+
+Just a pointer at runtime, compiler knows to look for null terminator:
+
+```
+*T  (null-terminated)
+```
+
+| Operator | Result | Notes |
+|----------|--------|-------|
+| `&s` | `*T` | the pointer itself |
+| `#s` | `u32` | runtime scan for null (O(n)) |
+| `s[i]` | `T` | element access (no bounds check) |
+
+Used for C-style strings and interop with null-terminated APIs.
+
+### Operators on All Array Types
+
+| Operator | Result | Notes |
+|----------|--------|-------|
+| `&` | `*T` | underlying pointer |
+| `#` | `u32` | length (comptime for `[T*N]`, scan for `[T/0]`) |
+| `[i]` | `T` (place) | element access |
+
+### Type Conversions
+
+| From | To | Conversion |
+|------|----|------------|
+| `[T]` | `*T` | `&slice` — extract pointer |
+| `[T*N]` | `[T]` | implicit — length becomes runtime value |
+| `[T*N]` | `*T` | `&arr` — just the pointer |
+| `[T/0]` | `*T` | `&s` — just the pointer |
+| `[T/0]` | `[T]` | `(ptr, #s)` — must compute length |
+| `(*T, uint)` | `[T]` | implicit — uint must widen to u32 |
+| `*T` | `[T]` | ERROR — requires length |
+| `*T` | `[T*N]` | explicit cast with known N |
+| `*T` | `[T/0]` | explicit cast (assert null-terminated) |
 
 ```encantis
-s[i]        // bounds-checked, traps if i >= #s
-(&s)[i]     // raw pointer, no check
+let slice: [u8] = ...
+let ptr: *u8 = &slice          // OK: extract pointer
+
+let arr: [u8*16] = ...
+let slice: [u8] = arr          // OK: fixed array → slice
+
+let cstr: [u8/0] = ...
+let slice: [u8] = (&cstr, #cstr)  // OK: compute length
+
+let ptr: *u8 = ...
+let slice: [u8] = ptr          // ERROR: need length
+let slice: [u8] = (ptr, 64)    // OK: tuple → slice
 ```
 
 ## Operator Categories

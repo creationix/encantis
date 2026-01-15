@@ -5,7 +5,7 @@
 
 import {
   Token, TokenKind, Span, Diagnostic,
-  Type, PrimitiveType, SliceType, FixedArrayType, PointerType, TupleType, FunctionType,
+  Type, PrimitiveType, SliceType, FixedArrayType, NullTerminatedType, PointerType, TupleType, FunctionType,
   Expr, NumberLiteral, StringLiteral, Identifier, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, MemberExpr, CastExpr, TupleExpr, TernaryExpr, ErrorExpr,
   Stmt, LocalDecl, Assignment, ExprStmt, ReturnStmt, IfStmt, WhileStmt,
@@ -144,7 +144,7 @@ function parseType(p: Parser): Type {
     };
   }
 
-  // Slice type: [T] or fixed array: [T*N]
+  // Slice type: [T], fixed array: [T*N], or null-terminated: [T/0]
   if (match(p, '[')) {
     const element = parseType(p);
 
@@ -157,6 +157,17 @@ function parseType(p: Parser): Type {
         kind: 'FixedArrayType',
         element,
         length,
+        span: spanFrom(start, end),
+      };
+    }
+
+    // Check for null-terminated: [T/0]
+    if (match(p, '/')) {
+      expect(p, 'NUMBER', 'Null-terminated type must use /0 syntax.');
+      const end = expect(p, ']');
+      return {
+        kind: 'NullTerminatedType',
+        element,
         span: spanFrom(start, end),
       };
     }
@@ -661,7 +672,7 @@ function isStatementStart(p: Parser): boolean {
   return atAny(p, 'local', 'return', 'if', 'while', 'for', 'loop', 'break', 'br');
 }
 
-function parseIfStmt(p: Parser): IfStmt {
+function parseIfStmt(p: Parser, consumeEnd = true): IfStmt {
   const start = expect(p, 'if');
   const condition = parseExpr(p);
   expect(p, 'then', 'Expected "then" after if condition.');
@@ -674,10 +685,10 @@ function parseIfStmt(p: Parser): IfStmt {
   let elseBody: Stmt[] | undefined;
 
   if (match(p, 'elif')) {
-    // Treat elif as nested if in else
+    // Treat elif as nested if in else, but don't consume end
     p.pos--; // Back up to re-parse as 'if'
     p.tokens[p.pos] = { ...p.tokens[p.pos], kind: 'if', text: 'if' };
-    elseBody = [parseIfStmt(p)];
+    elseBody = [parseIfStmt(p, false)]; // Nested if doesn't consume end
   } else if (match(p, 'else')) {
     elseBody = [];
     while (!atAny(p, 'end', 'EOF')) {
@@ -685,7 +696,10 @@ function parseIfStmt(p: Parser): IfStmt {
     }
   }
 
-  const end = expect(p, 'end', 'Expected "end" to close if statement.');
+  let end = start;
+  if (consumeEnd) {
+    end = expect(p, 'end', 'Expected "end" to close if statement.');
+  }
 
   return {
     kind: 'IfStmt',
@@ -784,24 +798,29 @@ function parseLoopStmt(p: Parser): LoopStmt {
   };
 }
 
+// Check if expression is a valid place expression (lvalue)
+function isPlaceExpr(expr: Expr): expr is Identifier | IndexExpr | MemberExpr {
+  return expr.kind === 'Identifier' || expr.kind === 'IndexExpr' || expr.kind === 'MemberExpr';
+}
+
 function parseExprOrAssignment(p: Parser): Stmt {
   // Parse first expression
   const first = parseExpr(p);
 
   // Check for multi-target assignment: a, b = expr
   if (at(p, ',')) {
-    const targets: Identifier[] = [];
+    const targets: (Identifier | IndexExpr | MemberExpr)[] = [];
 
-    if (first.kind !== 'Identifier') {
-      addError(p, first.span, 'Assignment target must be a variable name.');
+    if (!isPlaceExpr(first)) {
+      addError(p, first.span, 'Assignment target must be a variable, index expression, or member access.');
     } else {
       targets.push(first);
     }
 
     while (match(p, ',')) {
       const expr = parseExpr(p);
-      if (expr.kind !== 'Identifier') {
-        addError(p, expr.span, 'Assignment target must be a variable name.');
+      if (!isPlaceExpr(expr)) {
+        addError(p, expr.span, 'Assignment target must be a variable, index expression, or member access.');
       } else {
         targets.push(expr);
       }
@@ -818,37 +837,37 @@ function parseExprOrAssignment(p: Parser): Stmt {
     };
   }
 
-  // Check for simple assignment: a = expr
+  // Check for simple assignment: a = expr, arr[i] = expr, ptr.field = expr
   if (at(p, '=')) {
     advance(p);
     const value = parseExpr(p);
 
-    if (first.kind !== 'Identifier') {
-      addError(p, first.span, 'Assignment target must be a variable name.');
+    if (!isPlaceExpr(first)) {
+      addError(p, first.span, 'Assignment target must be a variable, index expression, or member access.');
     }
 
     return {
       kind: 'Assignment',
-      targets: first.kind === 'Identifier' ? [first] : [],
+      targets: isPlaceExpr(first) ? [first] : [],
       value,
       span: spanFrom(first, value),
     };
   }
 
-  // Check for compound assignment: a += expr
+  // Check for compound assignment: a += expr, arr[i] ^= expr
   const compoundOps = ['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '<<<=', '>>>='];
   const tok = peek(p);
   if (compoundOps.includes(tok.kind)) {
     advance(p);
     const value = parseExpr(p);
 
-    if (first.kind !== 'Identifier') {
-      addError(p, first.span, 'Compound assignment target must be a variable name.');
+    if (!isPlaceExpr(first)) {
+      addError(p, first.span, 'Compound assignment target must be a variable, index expression, or member access.');
     }
 
     return {
       kind: 'Assignment',
-      targets: first.kind === 'Identifier' ? [first] : [],
+      targets: isPlaceExpr(first) ? [first] : [],
       op: tok.kind,
       value,
       span: spanFrom(first, value),

@@ -276,6 +276,30 @@ describe('checker', () => {
     const errors = result.errors.filter(e => e.severity === 'error');
     expect(errors.some(e => e.message.includes('argument'))).toBe(true);
   });
+
+  test('warns on tautological unsigned comparison with zero', () => {
+    const result = analyze(`
+      func f(x: u32) -> i32 => x < 0
+    `);
+    const warnings = result.errors.filter(e => e.severity === 'warning');
+    expect(warnings.some(e => e.message.includes('always false'))).toBe(true);
+  });
+
+  test('warns on tautological unsigned comparison with negative', () => {
+    const result = analyze(`
+      func f(x: u32) -> i32 => x >= 0
+    `);
+    const warnings = result.errors.filter(e => e.severity === 'warning');
+    expect(warnings.some(e => e.message.includes('always true'))).toBe(true);
+  });
+
+  test('no warning for valid unsigned comparison', () => {
+    const result = analyze(`
+      func f(x: u32) -> i32 => x < 10
+    `);
+    const warnings = result.errors.filter(e => e.severity === 'warning');
+    expect(warnings).toHaveLength(0);
+  });
 });
 
 // =============================================================================

@@ -12,7 +12,7 @@ import { Token, TokenKind, Span, Diagnostic } from './types';
 const KEYWORDS: Set<string> = new Set([
   'import', 'export', 'func', 'local', 'global', 'end',
   'if', 'then', 'elif', 'else', 'while', 'do', 'for', 'in',
-  'loop', 'return', 'when', 'and', 'or', 'not', 'as',
+  'loop', 'break', 'br', 'return', 'when', 'and', 'or', 'not', 'as',
   'memory', 'define', 'interface', 'type',
 ]);
 

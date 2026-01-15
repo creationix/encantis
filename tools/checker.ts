@@ -99,6 +99,8 @@ function typeToString(type: Type): string {
       return `[${typeToString(type.element)}]`;
     case 'FixedArrayType':
       return `[${typeToString(type.element)}*${type.length}]`;
+    case 'NullTerminatedType':
+      return `[${typeToString(type.element)}/0]`;
     case 'PointerType':
       return `*${typeToString(type.target)}`;
     case 'TupleType':
@@ -109,6 +111,85 @@ function typeToString(type: Type): string {
     default:
       return '?';
   }
+}
+
+function isUnsignedType(type: Type | undefined): boolean {
+  if (!type || type.kind !== 'PrimitiveType') return false;
+  return type.name.startsWith('u');
+}
+
+/**
+ * Check if an expression is a numeric literal with a specific value or range.
+ * Returns the numeric value if it's a literal, undefined otherwise.
+ */
+function getLiteralValue(expr: Expr): number | undefined {
+  if (expr.kind === 'NumberLiteral') {
+    // Handle negative literals wrapped in unary minus
+    const val = parseFloat(expr.value);
+    return Number.isNaN(val) ? undefined : val;
+  }
+  if (expr.kind === 'UnaryExpr' && expr.op === '-' && expr.operand.kind === 'NumberLiteral') {
+    const val = parseFloat(expr.operand.value);
+    return Number.isNaN(val) ? undefined : -val;
+  }
+  return undefined;
+}
+
+/**
+ * Check for tautological comparisons between unsigned types and negative/zero values.
+ * Returns a warning message if the comparison is always true or always false.
+ */
+function checkTautologicalComparison(
+  op: string,
+  leftType: Type | undefined,
+  rightType: Type | undefined,
+  leftExpr: Expr,
+  rightExpr: Expr,
+): { message: string; alwaysTrue: boolean } | undefined {
+  const leftVal = getLiteralValue(leftExpr);
+  const rightVal = getLiteralValue(rightExpr);
+  const leftUnsigned = isUnsignedType(leftType);
+  const rightUnsigned = isUnsignedType(rightType);
+
+  // unsigned < 0  → always false
+  // unsigned <= -1 → always false
+  // unsigned >= 0  → always true
+  // unsigned > -1  → always true
+  if (leftUnsigned && rightVal !== undefined) {
+    if (op === '<' && rightVal <= 0) {
+      return { message: `Comparison is always false: unsigned value is never less than ${rightVal}`, alwaysTrue: false };
+    }
+    if (op === '<=' && rightVal < 0) {
+      return { message: `Comparison is always false: unsigned value is never less than or equal to ${rightVal}`, alwaysTrue: false };
+    }
+    if (op === '>=' && rightVal <= 0) {
+      return { message: `Comparison is always true: unsigned value is always greater than or equal to ${rightVal}`, alwaysTrue: true };
+    }
+    if (op === '>' && rightVal < 0) {
+      return { message: `Comparison is always true: unsigned value is always greater than ${rightVal}`, alwaysTrue: true };
+    }
+  }
+
+  // 0 > unsigned  → always false
+  // -1 >= unsigned → always false
+  // 0 <= unsigned → always true
+  // -1 < unsigned → always true
+  if (rightUnsigned && leftVal !== undefined) {
+    if (op === '>' && leftVal <= 0) {
+      return { message: `Comparison is always false: ${leftVal} is never greater than an unsigned value`, alwaysTrue: false };
+    }
+    if (op === '>=' && leftVal < 0) {
+      return { message: `Comparison is always false: ${leftVal} is never greater than or equal to an unsigned value`, alwaysTrue: false };
+    }
+    if (op === '<=' && leftVal <= 0) {
+      return { message: `Comparison is always true: ${leftVal} is always less than or equal to an unsigned value`, alwaysTrue: true };
+    }
+    if (op === '<' && leftVal < 0) {
+      return { message: `Comparison is always true: ${leftVal} is always less than an unsigned value`, alwaysTrue: true };
+    }
+  }
+
+  return undefined;
 }
 
 function typesEqual(a: Type, b: Type): boolean {
@@ -227,6 +308,11 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
       // Comparison operators return i32 (boolean)
       const comparisonOps = ['==', '!=', '<', '>', '<=', '>='];
       if (comparisonOps.includes(expr.op)) {
+        // Check for tautological comparisons with unsigned types
+        const tautology = checkTautologicalComparison(expr.op, leftType, rightType, expr.left, expr.right);
+        if (tautology) {
+          addWarning(c, expr.span, tautology.message);
+        }
         return { kind: 'PrimitiveType', name: 'i32', span: expr.span };
       }
 
@@ -307,10 +393,21 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
       }
 
       if (objType.kind === 'FixedArrayType') {
+        if (idxType && !isIntegerType(idxType)) {
+          addError(c, expr.index.span, `Array index must be an integer, but got '${typeToString(idxType)}'.`);
+        }
         return objType.element;
       }
 
-      addError(c, expr.object.span, `Cannot index into type '${typeToString(objType)}'. Expected a slice or array.`);
+      if (objType.kind === 'PointerType') {
+        // Pointer indexing: ptr[i] is equivalent to (ptr + i * sizeof(T)).*
+        if (idxType && !isIntegerType(idxType)) {
+          addError(c, expr.index.span, `Pointer index must be an integer, but got '${typeToString(idxType)}'.`);
+        }
+        return objType.target;
+      }
+
+      addError(c, expr.object.span, `Cannot index into type '${typeToString(objType)}'. Expected a slice, array, or pointer.`);
       return undefined;
     }
 
@@ -444,20 +541,38 @@ function checkStmt(c: Checker, stmt: Stmt): void {
       for (let i = 0; i < stmt.targets.length; i++) {
         const target = stmt.targets[i];
         const expectedType = targetTypes[i];
-        const sym = lookupSymbol(c, target.name);
 
-        if (!sym) {
-          addError(c, target.span, `Undefined variable '${target.name}'. Did you forget to declare it with 'local'?`);
-          continue;
-        }
+        if (target.kind === 'Identifier') {
+          // Simple variable assignment
+          const sym = lookupSymbol(c, target.name);
 
-        if (sym.kind !== 'local' && sym.kind !== 'param' && sym.mutable !== true) {
-          addError(c, target.span, `Cannot assign to '${target.name}' because it's not mutable.`);
-        }
+          if (!sym) {
+            addError(c, target.span, `Undefined variable '${target.name}'. Did you forget to declare it with 'local'?`);
+            continue;
+          }
 
-        if (expectedType && sym.type && !typesCompatible(expectedType, sym.type)) {
-          addError(c, stmt.value.span,
-            `Cannot assign '${typeToString(expectedType)}' to '${target.name}' of type '${typeToString(sym.type)}'.`);
+          if (sym.kind !== 'local' && sym.kind !== 'param' && sym.mutable !== true) {
+            addError(c, target.span, `Cannot assign to '${target.name}' because it's not mutable.`);
+          }
+
+          if (expectedType && sym.type && !typesCompatible(expectedType, sym.type)) {
+            addError(c, stmt.value.span,
+              `Cannot assign '${typeToString(expectedType)}' to '${target.name}' of type '${typeToString(sym.type)}'.`);
+          }
+        } else if (target.kind === 'IndexExpr') {
+          // Array/slice/pointer indexed assignment: arr[i] = value
+          const targetType = checkExpr(c, target);
+          if (expectedType && targetType && !typesCompatible(expectedType, targetType)) {
+            addError(c, stmt.value.span,
+              `Cannot assign '${typeToString(expectedType)}' to indexed location of type '${typeToString(targetType)}'.`);
+          }
+        } else if (target.kind === 'MemberExpr') {
+          // Member/field assignment: obj.field = value, ptr.u32 = value
+          const targetType = checkExpr(c, target);
+          if (expectedType && targetType && !typesCompatible(expectedType, targetType)) {
+            addError(c, stmt.value.span,
+              `Cannot assign '${typeToString(expectedType)}' to member of type '${typeToString(targetType)}'.`);
+          }
         }
       }
       break;
