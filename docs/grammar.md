@@ -191,8 +191,7 @@ data 40 (x: 1.0, y: 2.0)   -- struct fields serialized at address 40
 type            = primitive_type
                 | pointer_type
                 | indexed_type
-                | tuple_type
-                | struct_type
+                | composite_type
                 | type_identifier
 
 primitive_type  = "i8" | "i16" | "i32" | "i64"
@@ -204,15 +203,12 @@ pointer_type    = "*" type
 
 indexed_type    = type "[" [ integer_literal ] [ "/" "0" ] "]"
 
-tuple_type      = "(" type_list ")"
-type_list       = type { "," type }
-
-struct_type     = "(" named_field_list ")"
-named_field_list = named_field { "," named_field }
-named_field     = identifier ":" type
+composite_type  = "(" [ field_list ] ")"         -- reuses field_list from func_signature
 ```
 
 Indexed type variants: `T[]` (slice), `T[N]` (fixed-size), `T[/0]` (null-terminated), `T[N/0]` (fixed-size null-terminated).
+
+Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
 
 ## Statements
 
