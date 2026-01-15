@@ -75,7 +75,7 @@ The following identifiers are reserved keywords in Encantis:
 
 **Control Flow:** `if`, `elif`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `define`, `type`, `import`, `export`, `memory`, `interface`, `inline`, `unique`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `inline`, `unique`
 
 **Operators:** `and`, `or`, `not`, `as`
 
@@ -221,7 +221,7 @@ let hash:u32 = seed + prime32-1
 let buffer:u8[max-size]
 ```
 
-Definitions are inlined at compile time - they do not occupy memory or create runtime variables.
+Definitions are inlined at compile time, they do not create runtime variables.
 
 ### Variables
 
@@ -288,7 +288,7 @@ divmod(b: 5, a: 17)
 -- Destructure return values
 let (q, r) = divmod(17, 5)      -- by position
 let (q:, r:) = divmod(17, 5)    -- by name (trailing colon)
-let (q:quotient , r: remainder) = divmod(17, 5)    -- by with explicit names
+let (q: quotient , r: remainder) = divmod(17, 5)    -- by with explicit names
 
 ```
 
@@ -322,11 +322,10 @@ Use `def` for simple literal constants. Use `inline func` when you need type saf
 
 ```ents
 def pi = 3.14159:f64              -- simple constant
-inline func clamp(x:i32, lo:i32, hi:i32) -> i32 {
-  if x < lo { return lo }
-  if x > hi { return hi }
-  return x
-}
+inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
+  if x < lo { lo }
+  elif x > hi { hi }
+  else { x }
 ```
 
 ### Exports
@@ -417,9 +416,9 @@ if cond1 {
 Conditions must be boolean - no implicit truthiness:
 
 ```ents
-if x {            -- ERROR: x must be bool
-if x != 0 {       -- OK: explicit comparison
-if flag {         -- OK: flag is bool
+if x { ... }      -- ERROR: x must be bool
+if x != 0 { ... } -- OK: explicit comparison
+if flag { ... }   -- OK: flag is bool
 ```
 
 ### Loops
@@ -429,7 +428,7 @@ while condition {        -- condition checked before each iteration
   -- body
 }
 
-for i in n {             -- iterate 0 to n-1
+for i in num {           -- iterate 0 to n-1
   process(i)
 }
 
@@ -565,7 +564,7 @@ Pointer with compile-time known length:
 
 ```ents
 let buf:u8[64] = 0     -- 64-byte buffer
-buf.len                  -- comptime constant 64
+buf.len                -- comptime constant 64
 ```
 
 #### `T[/0]` — Null-Terminated
