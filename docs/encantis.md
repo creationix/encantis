@@ -77,7 +77,7 @@ The following identifiers are reserved keywords in Encantis:
 
 **Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`, `unique`
 
-**Operators:** `and`, `or`, `not`, `as`
+**Operators:** `as`
 
 ## Builtin Functions
 

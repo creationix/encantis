@@ -36,13 +36,13 @@ keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop"
         | "break" | "continue" | "return" | "when"
         | "func" | "let" | "set" | "global" | "def" | "type"
         | "import" | "export" | "memory" | "data" | "inline" | "unique"
-        | "and" | "or" | "not" | "as"
+        | "as"
 ```
 
 ### Literals
 
 ```ebnf
-literal         = number_literal | string_literal | bytes_literal | bool_literal
+literal         = number_literal | string_literal | bool_literal
 
 number_literal  = [ "-" ] ( integer_literal | float_literal )
 
@@ -55,12 +55,15 @@ octal_literal   = "0o" octal_digit { octal_digit }
 float_literal   = digit { digit } "." digit { digit } [ exponent ]
 exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit }
 
-string_literal  = '"' { string_char | escape_seq } '"'
+string_literal  = utf8_string | hex_string | base64_string
+utf8_string     = '"' { string_char | escape_seq } '"'
+hex_string      = 'x"' { hex_byte | whitespace } '"'
+base64_string   = 'b"' { base64_char | whitespace } '"'
+
 string_char     = <any UTF-8 char except '"' or '\'>
 escape_seq      = '\' ( 'n' | 't' | 'r' | '\' | '"' | 'x' hex_digit hex_digit )
-
-bytes_literal   = '<' { hex_byte | whitespace | comment } '>'
 hex_byte        = hex_digit hex_digit
+base64_char     = 'A'..'Z' | 'a'..'z' | '0'..'9' | '+' | '/' | '='
 
 bool_literal    = "true" | "false"
 
@@ -74,8 +77,8 @@ octal_digit     = '0'..'7'
 
 ```ebnf
 comment         = line_comment | block_comment
-line_comment    = "--" { <any char except newline> } NEWLINE
-block_comment   = "-<" { <any char> } ">-"
+line_comment    = "//" { <any char except newline> } NEWLINE
+block_comment   = "/*" { <any char> } "*/"
 ```
 
 ## Top-Level Declarations
@@ -179,7 +182,7 @@ memory 1 16           -- 1 page min, 16 pages max (1MB)
 
 data 0 "Hello"        -- UTF-8 string at address 0
 data 5 0:u8           -- null terminator at address 5
-data 16 <48 65 6C 6C 6F>   -- raw bytes at address 16
+data 16 x"48 65 6C 6C 6F"  // raw bytes at address 16
 data 32 (100:i32, 200:i32) -- two i32s serialized at address 32
 data 40 (x: 1.0, y: 2.0)   -- struct fields serialized at address 40
 ```
@@ -212,8 +215,8 @@ Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
 ## Statements
 
 ```ebnf
-block           = "{" { statement } "}"
 body            = block | "=>" expression
+block           = "{" { statement } "}"
 
 statement       = let_stmt
                 | set_stmt
@@ -277,9 +280,9 @@ Positional vs named patterns:
 ```ebnf
 expression      = or_expr
 
-or_expr         = and_expr { "or" and_expr }
-and_expr        = not_expr { "and" not_expr }
-not_expr        = "not" not_expr | comparison_expr
+or_expr         = and_expr { "||" and_expr }
+and_expr        = not_expr { "&&" not_expr }
+not_expr        = "!" not_expr | comparison_expr
 
 comparison_expr = bitor_expr { compare_op bitor_expr }
 compare_op      = "==" | "!=" | "<" | ">" | "<=" | ">="
@@ -346,9 +349,9 @@ lvalue          = identifier
 
 | Precedence | Operators | Associativity |
 |------------|-----------|---------------|
-| 1 | `or` | left |
-| 2 | `and` | left |
-| 3 | `not` | prefix |
+| 1 | `\|\|` | left |
+| 2 | `&&` | left |
+| 3 | `!` | prefix |
 | 4 | `==` `!=` `<` `>` `<=` `>=` | left |
 | 5 | `\|` | left |
 | 6 | `^` | left |
