@@ -330,6 +330,53 @@ let cstr: [u8/0] = ...
 (f64, f64, f64)      -- triple of f64
 ```
 
+### Type Aliases: Structural vs Unique
+
+Encantis supports two kinds of type aliases with different matching semantics:
+
+#### `interface` — Structural Type
+
+Structural types match any value with identical structure. No explicit cast needed:
+
+```ents
+interface Point = (f32, f32)
+
+func distance(a: Point, b: Point) -> f32
+  -- implementation
+end
+
+local p: (f32, f32) = (1.0, 2.0)
+distance(p, (3.0, 4.0))            -- OK: tuple matches Point structure
+
+local q: (f32, f32, f32) = (1.0, 2.0, 3.0)
+distance(q, p)                     -- ERROR: (f32, f32, f32) is not (f32, f32)
+```
+
+The structure must be exactly identical - extra or missing fields are not allowed.
+
+#### `type` — Unique Type
+
+Unique types require explicit casts even when the underlying structure is identical:
+
+```ents
+type String = [u8]
+type Bytes = [u8]
+
+func print(s: String)
+  -- implementation
+end
+
+local data: [u8] = ...
+print(data)                        -- ERROR: [u8] is not String
+print(String(data))                -- OK: explicit cast
+
+local b: Bytes = ...
+print(b)                           -- ERROR: Bytes is not String
+print(String(b))                   -- OK: explicit cast
+```
+
+Use `type` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
+
 ### WASM Type Mapping
 
 | Encantis | WASM |
@@ -558,7 +605,7 @@ let slice: [u8] = (ptr, 64)    -- OK: provide length
 | f32 → i64 | i64.trunc_f32_s / _u |
 | f64 → i64 | i64.trunc_f64_s / _u |
 
-### Control Flow
+### Control Flow Instructions
 
 | Encantis | WASM |
 |----------|------|
