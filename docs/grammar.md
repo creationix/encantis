@@ -42,7 +42,7 @@ keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop"
 ### Literals
 
 ```ebnf
-literal         = number_literal | string_literal | bool_literal
+literal         = number_literal | string_literal | bytes_literal | bool_literal
 
 number_literal  = [ "-" ] ( integer_literal | float_literal )
 
@@ -58,6 +58,9 @@ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit }
 string_literal  = '"' { string_char | escape_seq } '"'
 string_char     = <any UTF-8 char except '"' or '\'>
 escape_seq      = '\' ( 'n' | 't' | 'r' | '\' | '"' | 'x' hex_digit hex_digit )
+
+bytes_literal   = '<' { hex_byte | whitespace | comment } '>'
+hex_byte        = hex_digit hex_digit
 
 bool_literal    = "true" | "false"
 
@@ -134,7 +137,7 @@ func_body       = block
 
 Examples:
 
-- `func foo(i32) -> i32` — single anonymous input/output
+- `func foo i32 -> i32` — single anonymous input/output
 - `func foo(a:i32, b:i32) -> i32` — named inputs, single output
 - `func foo(a:i32, b:i32) -> (q:i32, r:i32)` — named inputs and outputs
 - `func foo()` — no inputs, no return
@@ -164,8 +167,22 @@ global_decl     = "global" identifier [ ":" type ] [ "=" expression ]
 
 ```ebnf
 memory_decl     = "memory" integer_literal [ integer_literal ]
-data_decl       = "data" integer_literal ( string_literal | "[" byte_list "]" )
-byte_list       = integer_literal { "," integer_literal }
+data_decl       = "data" integer_literal expression
+```
+
+The expression must be a compile-time constant: literals (string, bytes, number) or tuple/struct literals containing only constants. This reuses the standard expression syntax with `arg_list` for composite values.
+
+Examples:
+
+```ents
+memory 1              -- 1 page minimum (64KB)
+memory 1 16           -- 1 page min, 16 pages max (1MB)
+
+data 0 "Hello"        -- UTF-8 string at address 0
+data 5 0:u8           -- null terminator at address 5
+data 16 <48 65 6C 6C 6F>   -- raw bytes at address 16
+data 32 (100:i32, 200:i32) -- two i32s serialized at address 32
+data 40 (x: 1.0, y: 2.0)   -- struct fields serialized at address 40
 ```
 
 ## Types
@@ -173,9 +190,7 @@ byte_list       = integer_literal { "," integer_literal }
 ```ebnf
 type            = primitive_type
                 | pointer_type
-                | slice_type
-                | array_type
-                | null_term_type
+                | indexed_type
                 | tuple_type
                 | struct_type
                 | type_identifier
@@ -187,9 +202,7 @@ primitive_type  = "i8" | "i16" | "i32" | "i64"
 
 pointer_type    = "*" type
 
-slice_type      = type "[" "]"
-array_type      = type "[" expression "]"
-null_term_type  = type "[" "/" "0" "]"
+indexed_type    = type "[" [ integer_literal ] [ "/" "0" ] "]"
 
 tuple_type      = "(" type_list ")"
 type_list       = type { "," type }
@@ -198,6 +211,8 @@ struct_type     = "(" named_field_list ")"
 named_field_list = named_field { "," named_field }
 named_field     = identifier ":" type
 ```
+
+Indexed type variants: `T[]` (slice), `T[N]` (fixed-size), `T[/0]` (null-terminated), `T[N/0]` (fixed-size null-terminated).
 
 ## Statements
 
