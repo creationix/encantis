@@ -277,37 +277,68 @@ Positional vs named patterns:
 
 ## Expressions
 
+Expressions are defined by precedence level (lowest to highest).
+
+### Logical
+
 ```ebnf
 expression      = or_expr
-
 or_expr         = and_expr { "||" and_expr }
 and_expr        = not_expr { "&&" not_expr }
 not_expr        = "!" not_expr | comparison_expr
+```
 
+### Comparison
+
+```ebnf
 comparison_expr = bitor_expr { compare_op bitor_expr }
 compare_op      = "==" | "!=" | "<" | ">" | "<=" | ">="
+```
 
+### Bitwise
+
+```ebnf
 bitor_expr      = bitxor_expr { "|" bitxor_expr }
 bitxor_expr     = bitand_expr { "^" bitand_expr }
 bitand_expr     = shift_expr { "&" shift_expr }
+```
 
+### Shift
+
+```ebnf
 shift_expr      = add_expr { shift_op add_expr }
 shift_op        = "<<" | ">>" | "<<<" | ">>>"
+```
 
+### Arithmetic
+
+```ebnf
 add_expr        = mul_expr { add_op mul_expr }
 add_op          = "+" | "-"
 
 mul_expr        = unary_expr { mul_op unary_expr }
 mul_op          = "*" | "/" | "%"
+```
 
+### Unary
+
+```ebnf
 unary_expr      = "-" unary_expr
                | "~" unary_expr
                | "&" unary_expr
                | cast_expr
+```
 
+### Cast and Annotation
+
+```ebnf
 cast_expr       = postfix_expr [ "as" type ]       -- runtime cast
                 | postfix_expr [ ":" type ]        -- type annotation
+```
 
+### Postfix
+
+```ebnf
 postfix_expr    = primary_expr { postfix_op }
 postfix_op      = "." identifier                    -- field access
                | "." integer_literal                -- tuple index (.0, .1, ...)
@@ -315,7 +346,11 @@ postfix_op      = "." identifier                    -- field access
                | "." type                           -- type-punned access
                | "[" expression "]"                 -- index
                | "(" [ arg_list ] ")"               -- call
+```
 
+### Primary
+
+```ebnf
 primary_expr    = literal
                | identifier
                | type_identifier [ "(" [ arg_list ] ")" ]   -- constructor
