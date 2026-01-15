@@ -6,20 +6,19 @@ def prime32-3 = 3266489917:u32
 def prime32-4 =  668265263:u32
 def prime32-5 =  374761393:u32
 
-export "xxh32"
-func (data: [u8], seed: u32) -> (h32: u32)
-  local ptr:*u8 = &data
-  local len:u32 = #data
-  local last:*u8 = ptr + len
+export "xxh32" func (data: [u8], seed: u32) -> (h32: u32)
+  let ptr = &data
+  let len = #data
+  let last:*u8 = ptr + len
 
   if len >= 16 then
-    local limit:*u8 = last - 16
-    local v1:u32 = seed + prime32-1 + prime32-2
-    local v2:u32 = seed + prime32-2
-    local v3:u32 = seed + 0
-    local v4:u32 = seed - prime32-1
+    let v1:u32 = seed + prime32-1 + prime32-2
+    let v2:u32 = seed + prime32-2
+    let v3:u32 = seed + 0
+    let v4:u32 = seed - prime32-1
 
     -- For every chunk of 4 words, so 4 * 32bits = 16 bytes
+    let limit:*u8 = last - 16
     loop
       v1 = round32(v1, ptr.u32)
       ptr += 4

@@ -10,41 +10,45 @@ Encantis is a systems programming language that compiles to WebAssembly. It prov
 export "mem" memory 1
 
 -- Import JavaScript console.log
-import "env" "log" func log(msg: [u8])
+import "env" "log" func log(u8[])
 
 export "main"
-func main()
+func main() {
   -- Log "Hello, World!" to console
   -- JavaScript host will receive the string pointer and length and read from linear memory
   log("Hello, World!\n")
-end
+}
 ```
 
 ### Fibonacci
 
 ```ents
 export "fib"
-func fib(n: i32) -> i32
-  if n < 2 then
+func fib(n:i32) -> i32 {
+  if n < 2 {
     return n
-  end
+  }
   return fib(n - 1) + fib(n - 2)
-end
+}
+
+-- Or with expression body:
+func fib2(n:i32) -> i32 =>
+  if n < 2 { n } else { fib2(n - 1) + fib2(n - 2) }
 ```
 
 ### Sum Array
 
 ```ents
 -- Named return value, for..in iterator over slice
-func sum(arr: [i32]) -> (total: i32)
+func sum(arr:i32[]) -> (total:i32) {
   total = 0
-  for elem in arr do
+  for elem in arr {
     total += elem
-  end
-end
+  }
+}
 ```
 
-Named return values are declared in the signature and implicitly returned. The `for..in` loop iterates over elements when given an array or slice.
+Named return values are declared in the signature and implicitly returned. The `for..in` loop iterates over elements when given a slice.
 
 ## Comments
 
@@ -54,11 +58,10 @@ Named return values are declared in the signature and implicitly returned. The `
 
 ## Identifiers
 
-Identifiers can contain letters, digits, underscores, and hyphens. They must start with a letter or underscore:
+Identifiers can contain letters, digits, underscores, and hyphens. They must start with a lowercase letter:
 
 ```ents
 count           -- simple
-_private        -- leading underscore
 prime32-1       -- hyphenated
 merge-round64   -- hyphenated
 my_var_2        -- underscores and digits
@@ -70,31 +73,88 @@ Hyphens in identifiers are idiomatic for constants and helper functions.
 
 The following identifiers are reserved keywords in Encantis:
 
-**Control Flow:** `if`, `then`, `elif`, `else`, `end`, `while`, `do`, `for`, `in`, `loop`, `break`, `continue`, `br`, `return`, `when`
+**Control Flow:** `if`, `elif`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `local`, `let`, `set`, `global`, `def`, `define`, `type`, `import`, `export`, `memory`, `interface`, `inline`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `define`, `type`, `import`, `export`, `memory`, `interface`, `inline`, `unique`
 
 **Operators:** `and`, `or`, `not`, `as`
 
-**Modifiers:** `unique`
+## Builtin Functions
+
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions.
+
+### Float Builtins (f32/f64)
+
+| Function | Description |
+|----------|-------------|
+| `sqrt(x)` | Square root |
+| `abs(x)` | Absolute value |
+| `ceil(x)` | Ceiling (round up) |
+| `floor(x)` | Floor (round down) |
+| `trunc(x)` | Truncate toward zero |
+| `nearest(x)` | Round to nearest even (banker's rounding) |
+| `min(a, b)` | Minimum of two values |
+| `max(a, b)` | Maximum of two values |
+| `copysign(x, y)` | Copy sign of y to x |
+
+```ents
+let x:f64 = -3.7
+sqrt(abs(x))           -- 1.9235...
+floor(x)               -- -4.0
+ceil(x)                -- -3.0
+trunc(x)               -- -3.0
+nearest(2.5)           -- 2.0 (banker's rounding)
+min(3.0, 5.0)          -- 3.0
+copysign(5.0, -1.0)    -- -5.0
+```
+
+### Integer Builtins
+
+| Function | Description |
+|----------|-------------|
+| `clz(x)` | Count leading zeros |
+| `ctz(x)` | Count trailing zeros |
+| `popcnt(x)` | Population count (count 1 bits) |
+
+```ents
+let n:u32 = 0b00001000
+clz(n)                 -- 28 (leading zeros)
+ctz(n)                 -- 3 (trailing zeros)
+popcnt(n)              -- 1 (number of 1 bits)
+```
+
+### Memory Builtins
+
+| Function | Description |
+|----------|-------------|
+| `memory-size()` | Current memory size in pages (64KB each) |
+| `memory-grow(n)` | Grow memory by n pages, returns previous size or -1 on failure |
+
+```ents
+let pages = memory-size()    -- current page count
+let old = memory-grow(1)     -- grow by 1 page, returns old size
+if old == -1 {
+  -- allocation failed
+}
+```
 
 ## Type Identifiers
 
 User-defined type names must start with a capital letter. This distinguishes them from primitive types (`i32`, `f64`, etc.) and regular identifiers:
 
 ```ents
-type Point = { x: f32, y: f32 }    -- OK: Point starts with capital
-type point = { x: f32, y: f32 }    -- ERROR: type names must be capitalized
+type Point = (x:f32, y:f32)      -- OK: Point starts with capital
+type point = (x:f32, y:f32)      -- ERROR: type names must be capitalized
 
-unique String = [u8]               -- OK: String starts with capital
-unique buffer = [u8]               -- ERROR: type names must be capitalized
+unique String = u8[]             -- OK: String starts with capital
+unique buffer = u8[]             -- ERROR: type names must be capitalized
 ```
 
 This convention allows the parser to distinguish type references from variable references without forward declarations:
 
 ```ents
-func distance(a: Point, b: Point) -> f32   -- Point is a type
-local point = Point(1.0, 2.0)              -- point is a variable, Point is a constructor
+func distance(a:Point, b:Point) -> f32   -- Point is a type
+let point = Point(1.0, 2.0)            -- point is a variable, Point is a constructor
 ```
 
 ## Literals
@@ -126,15 +186,15 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 ### String Literals
 
 ```ents
-"hello"           -- type is [u8*5/0], coerces to [u8/0], [u8*5], or [u8]
+"hello"           -- type is u8[5/0], coerces to u8[/0], u8[5], or u8[]
 "line1\nline2"    -- escape sequences: \n \t \r \\ \"
 ```
 
-String literals are stored in the data section with a null terminator. Their type is `[u8*N/0]` - a comptime-known length that also guarantees null termination. This dual nature allows implicit coercion to:
+String literals are stored in the data section with a null terminator. Their type is `u8[N/0]` - a comptime-known length that also guarantees null termination. This dual nature allows implicit coercion to:
 
-- `[u8/0]` - null-terminated pointer (single i32)
-- `[u8*N]` - fixed-size array (single i32, length known at compile time)
-- `[u8]` - runtime slice (i32 pointer + i32 length)
+- `u8[/0]` - null-terminated pointer (single i32)
+- `u8[N]` - fixed-size array (single i32, length known at compile time)
+- `u8[]` - runtime slice (i32 pointer + i32 length)
 
 ### Boolean Literals
 
@@ -152,65 +212,85 @@ Booleans are distinct from integers. No implicit truthiness - use explicit compa
 Compile-time literal substitution. The value must be a literal - it is textually substituted at each use site:
 
 ```ents
-def prime32-1 = 2654435761:u32
-def prime32-2 = 2246822519:u32
-def max-size = 1024:u32
+def prime32-1 = 2654435761
+def prime32-2 = 2246822519
+def max-size = 1024
 
 -- Using definitions
-local hash: u32 = seed + prime32-1
-local buffer: [u8*max-size]
+let hash:u32 = seed + prime32-1
+let buffer:u8[max-size]
 ```
 
-Definitions are inlined at compile time - they do not occupy memory or create runtime variables. Use type suffixes to specify the type.
+Definitions are inlined at compile time - they do not occupy memory or create runtime variables.
 
 ### Variables
 
 ```ents
--- Mutable local variable
-local count: i32 = 0
-local ptr: *u8       -- uninitialized
+-- Mutable let variable
+let count:i32 = 0
+let ptr:*u8       -- uninitialized
 
 -- Global variable (stored in linear memory)
-global total: i32 = 0
+global total:i32 = 0
 ```
 
 Type annotations are optional when the type can be inferred from the initializer:
 
 ```ents
 global counter = 0:u32           -- type inferred from suffix
-local result = compute()         -- type inferred from return type
-local pair = (1.0, 2.0)          -- type inferred as (f64, f64)
+let result = compute()         -- type inferred from return type
+let pair = (1.0, 2.0)          -- type inferred as (f64, f64)
 ```
 
 ### Functions
 
 ```ents
--- Basic function
-func add(a: i32, b: i32) -> i32
+-- Basic function with block body
+func add(a:i32, b:i32) -> i32 {
   return a + b
-end
+}
 
 -- No return type (void)
-func greet()
+func greet() {
   log("hello")
-end
+}
 
 -- Expression body (single expression, implicit return)
-func square(x: i32) -> i32 => x * x
+func square(x:i32) -> i32 => x * x
 
 -- Named return value (implicitly returned at end)
-func double(x: i32) -> (result: i32)
+func double(x:i32) -> (result:i32) {
   result = x * 2
-end
+}
 
 -- Multiple return values
-func divmod(a: i32, b: i32) -> (q: i32, r: i32)
+func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
   q = a / b
   r = a % b
-end
+}
 ```
 
-Named return values are declared in the signature with `-> (name: type)`. They act as pre-declared locals and are implicitly returned when the function ends.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends.
+
+#### Calling Conventions
+
+Functions can be called with positional or named arguments:
+
+```ents
+-- Positional arguments (in declaration order)
+add(1, 2)
+divmod(17, 5)
+
+-- Named arguments (any order)
+add(a: 1, b: 2)
+divmod(b: 5, a: 17)
+
+-- Destructure return values
+let (q, r) = divmod(17, 5)      -- by position
+let (q:, r:) = divmod(17, 5)    -- by name (trailing colon)
+let (q:quotient , r: remainder) = divmod(17, 5)    -- by with explicit names
+
+```
 
 ### Inline Functions
 
@@ -218,15 +298,15 @@ Inline functions are guaranteed to be inlined at each call site. Unlike `def` wh
 
 ```ents
 -- Inline function with expression body
-inline func square(x: i32) -> i32 => x * x
+inline func square(x:i32) -> i32 => x * x
 
 -- Inline function with block body
-inline func round32(seed: u32, value: u32) -> u32
+inline func round32(seed:u32, value:u32) -> u32 {
   seed += value * prime32-2
   seed <<<= 13
   seed *= prime32-1
   return seed
-end
+}
 ```
 
 Key differences from `def`:
@@ -242,11 +322,11 @@ Use `def` for simple literal constants. Use `inline func` when you need type saf
 
 ```ents
 def pi = 3.14159:f64              -- simple constant
-inline func clamp(x: i32, lo: i32, hi: i32) -> i32
-  if x < lo then return lo end
-  if x > hi then return hi end
+inline func clamp(x:i32, lo:i32, hi:i32) -> i32 {
+  if x < lo { return lo }
+  if x > hi { return hi }
   return x
-end
+}
 ```
 
 ### Exports
@@ -254,26 +334,26 @@ end
 ```ents
 -- Export function with internal name
 export "add"
-func add(a: i32, b: i32) -> i32 => a + b
+func add(a:i32, b:i32) -> i32 => a + b
 
 -- Export anonymous function (no internal name needed if not called internally)
 export "hash"
-func (data: [u8], seed: u32) -> u32
+func (data:u8[], seed:u32) -> u32 {
   -- only accessible via export, no internal calls
-end
+}
 
 -- Export memory
 export "mem" memory 1      -- 1 page = 64KB
 
 -- Export global
-export "counter" global counter: i32 = 0
+export "counter" global counter:i32 = 0
 ```
 
 ### Imports
 
 ```ents
 -- Import function from host environment
-import "env" "log" func log(msg: [u8/0])
+import "env" "log" func log(msg:u8[/0])
 
 -- Import memory
 import "env" "memory" memory 1
@@ -283,9 +363,9 @@ Multiple imports from the same module can be grouped:
 
 ```ents
 import "math" (
-  "sin" func sin(angle: f64) -> f64
-  "cos" func cos(angle: f64) -> f64
-  "atan2" func atan2(y: f64, x: f64) -> f64
+  "sin" func sin(angle:f64) -> f64
+  "cos" func cos(angle:f64) -> f64
+  "atan2" func atan2(y:f64, x:f64) -> f64
 )
 ```
 
@@ -293,7 +373,7 @@ Whitespace is flexible - the import and function signature can span multiple lin
 
 ```ents
 import "sys" "print"
-func print(msg: [u8])
+func print(msg:u8[])
 ```
 
 ### Memory and Data
@@ -313,59 +393,57 @@ data 100 [1, 2, 3, 4]      -- bytes at offset 100
 ### Conditionals
 
 ```ents
-if condition then
+if condition {
   -- body
-end
+}
 
-if condition then
+if condition {
   -- body
-else
+} else {
   -- alternative
-end
+}
 
-if cond1 then
+if cond1 {
   -- first case
-elif cond2 then
+} elif cond2 {
   -- second case
-elif cond3 then
+} elif cond3 {
   -- third case
-else
+} else {
   -- default
-end
+}
 ```
-
-The `then` keyword is required. All branches share a single `end`.
 
 Conditions must be boolean - no implicit truthiness:
 
 ```ents
-if x then         -- ERROR: x must be bool
-if x != 0 then    -- OK: explicit comparison
-if flag then      -- OK: flag is bool
+if x {            -- ERROR: x must be bool
+if x != 0 {       -- OK: explicit comparison
+if flag {         -- OK: flag is bool
 ```
 
 ### Loops
 
 ```ents
-while condition do       -- condition checked before each iteration
+while condition {        -- condition checked before each iteration
   -- body
-end
+}
 
-for i in n do            -- iterate 0 to n-1
+for i in n {             -- iterate 0 to n-1
   process(i)
-end
+}
 
-for elem in arr do       -- iterate over array/slice elements
+for elem in arr {        -- iterate over array/slice elements
   process(elem)
-end
+}
 
-for i, elem in arr do    -- iterate with index
+for i, elem in arr {     -- iterate with index
   process(i, elem)
-end
+}
 
-loop                     -- infinite loop
+loop {                   -- infinite loop
   -- body
-end
+}
 ```
 
 ### Control Statements
@@ -384,9 +462,49 @@ return value             -- return with value
 return value when cond   -- return if condition is true
 ```
 
-The `when` form is equivalent to wrapping in `if cond then ... end`.
+The `when` form is equivalent to wrapping in `if cond { ... }`.
 
 ## Type System
+
+### Unified Value Model
+
+Encantis has a unified model for compound values:
+
+| Level | Description | Access |
+|-------|-------------|--------|
+| **Multiple values** | Base concept - zero or more values | positional |
+| **Tuple** | Multiple values with indices | `.0`, `.1`, ... |
+| **Struct** | Tuple with named fields | `.name` |
+| **Slice** | Struct `(ptr:*T, len:u32)` | `.ptr`, `.len` |
+
+Each level is a superset of the one above:
+
+- All slices are structs (with fields `ptr` and `len`)
+- All structs are tuples (fields have positions)
+- All tuples are multiple values
+
+This unification means the same patterns work everywhere:
+
+```ents
+-- Function calls: positional or named
+distance(p1, p2)              -- positional
+distance(a: p1, b: p2)        -- named (any order)
+
+-- Function returns: destructure either way
+let (d, a) = to_polar(point)  -- by position
+let (d:, a:) = to_polar(point)  -- by name (trailing colon)
+
+-- Slices work like structs
+let (ptr, len) = slice        -- by position
+let (ptr:, len:) = slice      -- by name
+```
+
+The `let` keyword creates new bindings, `set` assigns to existing variables:
+
+```ents
+let (x:, y:) = point          -- declares x and y (by name)
+set (x:, y:) = other_point    -- updates existing x and y
+```
 
 ### Primitive Types
 
@@ -415,37 +533,48 @@ Encantis has three array-like types:
 
 | Syntax | Representation | Length | Use Case |
 |--------|----------------|--------|----------|
-| `[T]` | ptr + len | runtime, stored | General-purpose slices |
-| `[T*N]` | ptr only | compile-time N | Fixed-size buffers |
-| `[T/0]` | ptr only | scan for null | C strings |
+| `T[]` | ptr + len | runtime, stored | General-purpose slices |
+| `T[N]` | ptr only | compile-time N | Fixed-size buffers |
+| `T[/0]` | ptr only | scan for null | C strings |
 
-#### `[T]` — Runtime Slice
+#### `T[]` — Runtime Slice
 
-Fat pointer containing pointer and length:
+Fat pointer containing pointer and length. Slices behave like a struct `(ptr:*T, len:u32)`:
 
 ```ents
-local data: [u8] = ...
-&data           -- extract pointer (*u8)
-#data           -- get length (u32), O(1)
+let data:u8[] = ...
+
+-- Property access
+data.ptr        -- extract pointer (*u8)
+data.len        -- get length (u32), O(1)
 data[i]         -- element access
+
+-- Tuple-style access (0-indexed)
+data.0          -- same as data.ptr
+data.1          -- same as data.len
+
+-- Destructuring
+let (ptr, len) = data             -- by position
+let (ptr:, len:) = data           -- by name
+let (ptr: p, len: n) = data       -- renamed bindings
 ```
 
-#### `[T*N]` — Fixed-Size Array
+#### `T[N]` — Fixed-Size Array
 
 Pointer with compile-time known length:
 
 ```ents
-local buf: [u8*64] = 0    -- 64-byte buffer
-#buf                       -- comptime constant 64
+let buf:u8[64] = 0     -- 64-byte buffer
+buf.len                  -- comptime constant 64
 ```
 
-#### `[T/0]` — Null-Terminated
+#### `T[/0]` — Null-Terminated
 
 Pointer to null-terminated data:
 
 ```ents
-local cstr: [u8/0] = ...
-#cstr                      -- runtime scan for null, O(n)
+let cstr:u8[/0] = ...
+cstr.len                 -- runtime scan for null, O(n)
 ```
 
 ### Tuple Types
@@ -466,14 +595,14 @@ Structural types match any value with identical structure. No explicit cast need
 ```ents
 type Point = (f32, f32)
 
-func distance(a: Point, b: Point) -> f32
+func distance(a:Point, b:Point) -> f32 {
   -- implementation
-end
+}
 
-local p: (f32, f32) = (1.0, 2.0)
+let p:(f32, f32) = (1.0, 2.0)
 distance(p, (3.0, 4.0))            -- OK: tuple matches Point structure
 
-local q: (f32, f32, f32) = (1.0, 2.0, 3.0)
+let q:(f32, f32, f32) = (1.0, 2.0, 3.0)
 distance(q, p)                     -- ERROR: (f32, f32, f32) is not (f32, f32)
 ```
 
@@ -484,18 +613,18 @@ The structure must be exactly identical - extra or missing fields are not allowe
 Unique types require explicit casts even when the underlying structure is identical:
 
 ```ents
-unique String = [u8]
-unique Bytes = [u8]
+unique String = u8[]
+unique Bytes = u8[]
 
-func print(s: String)
+func print(s:String) {
   -- implementation
-end
+}
 
-local data: [u8] = ...
-print(data)                        -- ERROR: [u8] is not String
+let data:u8[] = ...
+print(data)                        -- ERROR: u8[] is not String
 print(String(data))                -- OK: explicit cast
 
-local b: Bytes = ...
+let b:Bytes = ...
 print(b)                           -- ERROR: Bytes is not String
 print(String(b))                   -- OK: explicit cast
 ```
@@ -504,13 +633,13 @@ Use `unique` when you want the compiler to enforce distinctions between semantic
 
 ### Struct Types
 
-Structs define named field layouts using brace syntax:
+Structs are tuples with named fields, using the same `()` syntax:
 
 ```ents
-type Point = { x: f32, y: f32 }
-type Rect = { origin: Point, size: { w: f32, h: f32 } }
+type Point = (x:f32, y:f32)
+type Rect = (origin:Point, size:(w:f32, h:f32))
 
-unique Color = { r: u8, g: u8, b: u8, a: u8 }
+unique Color = (r:u8, g:u8, b:u8, a:u8)
 ```
 
 Like other type aliases, `type` creates structural types and `unique` creates nominal types.
@@ -521,20 +650,25 @@ Two constructor syntaxes are supported:
 
 ```ents
 -- Positional (fields in declaration order)
-local p = Point(1.0, 2.0)
+let p = Point(1.0, 2.0)
 
 -- Named (any order, self-documenting)
-local q = Point{ y: 4.0, x: 3.0 }
+let q = Point(y: 4.0, x: 3.0)
 
 -- Nested structs
-local r = Rect(Point(0.0, 0.0), { w: 100.0, h: 50.0 })
+let r = Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
+
+-- Shorthand: trailing colon when variable name matches field name
+let x = 3.0
+let y = 4.0
+let p = (x:, y:)             -- equivalent to (x: x, y: y)
 ```
 
 #### Struct Field Access
 
 ```ents
-local p: Point = Point(3.0, 4.0)
-local x = p.x              -- field read
+let p:Point = Point(3.0, 4.0)
+let x = p.x              -- field read
 p.y = 5.0                  -- field write
 ```
 
@@ -543,14 +677,14 @@ p.y = 5.0                  -- field write
 Struct parameters are passed by value—each field becomes a separate WASM argument:
 
 ```ents
-type Point = { x: f32, y: f32 }
+type Point = (x:f32, y:f32)
 
 -- This function receives two f32 WASM parameters
-func length(p: Point) -> f32
+func length(p:Point) -> f32 {
   return sqrt(p.x * p.x + p.y * p.y)
-end
+}
 
-local p = Point(3.0, 4.0)
+let p = Point(3.0, 4.0)
 length(p)                  -- passes two f32 values on the stack
 length(Point(1.0, 2.0))    -- also valid
 ```
@@ -558,7 +692,7 @@ length(Point(1.0, 2.0))    -- also valid
 You cannot pass a pointer where a by-value struct is expected:
 
 ```ents
-local ptr: *Point = ...
+let ptr:*Point = ...
 length(ptr)                -- ERROR: expected Point, got *Point
 length(ptr.*)              -- OK: dereference to get by-value Point
 ```
@@ -566,15 +700,15 @@ length(ptr.*)              -- OK: dereference to get by-value Point
 For by-reference semantics, explicitly accept a pointer. The caller must ensure the data is serialized in linear memory:
 
 ```ents
-func modify(p: *Point)
+func modify(p:*Point) {
   p.x = 0.0
   p.y = 0.0
-end
+}
 
-local p = Point(3.0, 4.0)
+let p = Point(3.0, 4.0)
 modify(&p)                 -- ERROR: p has no address (stack-allocated)
 
-local mem_p: *Point = allocate_point()
+let mem_p:*Point = allocate_point()
 modify(mem_p)              -- OK: mem_p points to linear memory
 ```
 
@@ -583,25 +717,25 @@ modify(mem_p)              -- OK: mem_p points to linear memory
 Structural struct types match any value with coercible fields at each position:
 
 ```ents
-type BigPoint = { x: i32, y: i32 }
+type BigPoint = (x:i32, y:i32)
 
-func scale(p: BigPoint, factor: i32) -> BigPoint
+func scale(p:BigPoint, factor:i32) -> BigPoint {
   return BigPoint(p.x * factor, p.y * factor)
-end
+}
 
 -- OK: fields coerce i8 → i32 (by-value, compiler inserts conversions)
-local small = { x: 10:i8, y: 20:i8 }
+let small = (x: 10:i8, y: 20:i8)
 scale(small, 2)
 ```
 
 This coercion only applies to by-value passing. For pointers, exact memory layout is required:
 
 ```ents
-func process(p: *BigPoint)
+func process(p:*BigPoint) {
   -- reads/writes memory directly, expects 8 bytes (2 x i32)
-end
+}
 
-local small: { x: i8, y: i8 } = { x: 10, y: 20 }
+let small:(x:i8, y:i8) = (x: 10, y: 20)
 process(&small)            -- ERROR: layout mismatch (2 bytes vs 8 bytes)
 ```
 
@@ -610,15 +744,15 @@ process(&small)            -- ERROR: layout mismatch (2 bytes vs 8 bytes)
 Any function can be called using method syntax. If `f(a, b, c)` is valid, then `a.f(b, c)` is also valid:
 
 ```ents
-func length(p: Point) -> f32
+func length(p:Point) -> f32 {
   return sqrt(p.x * p.x + p.y * p.y)
-end
+}
 
-func scale(p: Point, factor: f32) -> Point
+func scale(p:Point, factor:f32) -> Point {
   return Point(p.x * factor, p.y * factor)
-end
+}
 
-local p = Point(3.0, 4.0)
+let p = Point(3.0, 4.0)
 p.length()                 -- same as length(p)
 p.scale(2.0)               -- same as scale(p, 2.0)
 
@@ -629,17 +763,17 @@ p.scale(2.0).length()      -- same as length(scale(p, 2.0))
 UFCS works for all types, not just structs:
 
 ```ents
-func double(x: i32) -> i32 => x * 2
-func to_hex(data: [u8]) -> [u8] => ...
+func double(x:i32) -> i32 => x * 2
+func to_hex(data:u8[]) -> u8[] => ...
 
-local n = 21
+let n = 21
 n.double()                 -- 42
 
-local bytes: [u8] = ...
+let bytes:u8[] = ...
 bytes.to_hex()             -- works on slices too
 ```
 
-Note: There are no implicit built-in methods except for operators that already look like function calls (ex: `sqrt(n)` can be written as `n.sqrt()`). Operations like `#slice` for length remain operators, not method calls.
+Note: There are no implicit built-in methods except for operators that already look like function calls (ex: `sqrt(n)` can be written as `n.sqrt()`). Slice properties like `slice.len` and `slice.ptr` are built-in field access, not method calls.
 
 ### Stack vs Memory Allocation
 
@@ -647,26 +781,26 @@ Encantis distinguishes between stack-allocated values (WASM locals) and memory-a
 
 | Declaration | Storage | Address |
 |-------------|---------|---------|
-| `local x: i32` | WASM local | None (no `&x`) |
-| `local p: Point` | Multiple WASM locals | None |
-| `local ptr: *Point` | Single WASM local (i32) | Points to memory |
-| `local arr: [u8*64]` | Linear memory | Has address |
-| `global g: i32` | Linear memory | Has address |
+| `let x:i32` | WASM local | None (no `&x`) |
+| `let p:Point` | Multiple WASM locals | None |
+| `let ptr:*Point` | Single WASM local (i32) | Points to memory |
+| `let arr:u8[64]` | Linear memory | Has address |
+| `global g:i32` | Linear memory | Has address |
 
-Primitives and small structs declared as `local` are stored in WASM locals—fast registers with no memory address. Pointers like `*Point` are single i32 values pointing to data serialized in linear memory.
+Primitives and small structs declared as `let` are stored in WASM locals—fast registers with no memory address. Pointers like `*Point` are single i32 values pointing to data serialized in linear memory.
 
 ```ents
-local p: Point = Point(1.0, 2.0)   -- two f32 WASM locals, no address
-local ptr: *Point = &heap_point    -- one i32 local pointing to 8 bytes in memory
+let p:Point = Point(1.0, 2.0)   -- two f32 WASM locals, no address
+let ptr:*Point = &heap_point    -- one i32 local pointing to 8 bytes in memory
 
 -- Stack allocation: fields are separate values
-local a = p.x                      -- reads from WASM local
+let a = p.x                      -- reads from WASM local
 
 -- Memory allocation: fields are serialized
-local b = ptr.x                    -- reads from linear memory at ptr+0
+let b = ptr.x                    -- reads from linear memory at ptr+0
 ```
 
-Fixed-size arrays (`[T*N]`) and globals are always memory-allocated and have addresses.
+Fixed-size arrays (`T[N]`) and globals are always memory-allocated and have addresses.
 
 ### WASM Type Mapping
 
@@ -677,9 +811,9 @@ Fixed-size arrays (`[T*N]`) and globals are always memory-allocated and have add
 | f32 | f32 |
 | f64 | f64 |
 | `*T` | i32 |
-| `[T]` | i32, i32 (ptr, len) |
-| `[T*N]`, `[T/0]` | i32 (ptr only) |
-| `{ x: T1, y: T2, ... }` | flattened fields (one WASM value per field) |
+| `T[]` | i32, i32 (ptr, len) |
+| `T[N]`, `T[/0]` | i32 (ptr only) |
+| `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
 
 ## Type Conversions
 
@@ -705,16 +839,16 @@ Integer to float is implicit only when the float's mantissa can hold all values:
 Unsuffixed literals check actual value, not type:
 
 ```ents
-local x: f32 = 1.0 + 42        -- OK: 42 fits in f32 mantissa
-local y: f32 = 1.0 + 16777216  -- OK: 2^24 is max exact integer
-local z: f32 = 1.0 + 16777217  -- ERROR: exceeds f32 precision
+let x:f32 = 1.0 + 42        -- OK: 42 fits in f32 mantissa
+let y:f32 = 1.0 + 16777216  -- OK: 2^24 is max exact integer
+let z:f32 = 1.0 + 16777217  -- ERROR: exceeds f32 precision
 ```
 
 Once a value has a concrete type, normal promotion rules apply:
 
 ```ents
-local z = 1.3            -- inferred as f64
-local a: f32 = z         -- ERROR: f64 → f32 needs explicit cast
+let z = 1.3            -- inferred as f64
+let a:f32 = z         -- ERROR: f64 → f32 needs explicit cast
 ```
 
 ### Type Errors
@@ -811,9 +945,10 @@ Assignment targets (lvalues) can be:
 | `arr[i]` | Array/slice element |
 | `ptr.*` | Dereferenced pointer |
 | `ptr.T` | Type-punned memory location |
-| `(a, b, ...)` | Tuple destructuring |
+| `(a, b, ...)` | Positional destructuring |
+| `(x:, y:, ...)` | Named destructuring (trailing colon) |
 
-Tuple destructuring unpacks multiple values in a single assignment:
+Positional destructuring unpacks multiple values in a single assignment:
 
 ```ents
 (q, r) = divmod(17, 5)   -- q = 3, r = 2
@@ -821,7 +956,25 @@ Tuple destructuring unpacks multiple values in a single assignment:
 (ptr, len) = slice       -- extract components from multi-value types
 ```
 
-Any type with multiple underlying values can be destructured (slices, tuples, etc).
+Named destructuring extracts fields by name (trailing colon):
+
+```ents
+type Point = (x:f64, y:f64)
+let p = Point(3.0, 4.0)
+
+-- Shorthand: trailing colon means variable names match field names
+let (x:, y:) = p           -- declares x = 3.0, y = 4.0
+
+-- Explicit: rename fields to different variables
+let (x: px, y: py) = p     -- declares px = 3.0, py = 4.0
+
+-- Use set to assign to existing variables
+let a:f64
+let b:f64
+set (x: a, y: b) = p       -- assigns a = 3.0, b = 4.0
+```
+
+Any type with multiple underlying values can be destructured (slices, tuples, structs, etc).
 
 ### Compound Assignment
 
@@ -855,9 +1008,9 @@ ptr.* ^= mask            -- XOR through pointer
 | `-x` | negation |
 | `!x` | logical NOT (bool only) |
 | `~x` | bitwise NOT |
-| `&x` | address-of (pointer) |
-| `#x` | length (arrays/slices) |
 | `x.*` | dereference |
+
+For slice/array length and pointer extraction, use property access: `slice.len`, `slice.ptr`.
 
 ## Pointer Operations
 
@@ -872,7 +1025,7 @@ ptr.* ^= mask            -- XOR through pointer
 ### Indexing
 
 ```ents
-local arr: *i32 = ...
+let arr:*i32 = ...
 arr[2]          -- offset by 2 elements (8 bytes for i32)
 (arr + 8).*     -- equivalent to arr[2]
 ```
@@ -890,28 +1043,34 @@ ptr.f64             -- read 8 bytes as f64
 
 -- Compound types need parentheses
 ptr.(MyStruct)
-ptr.([u8])
+ptr.(u8[])
 ```
 
 ## Array Type Conversions
 
 | From | To | How |
 |------|----|-----|
-| `[T]` | `*T` | `&slice` |
-| `[T*N]` | `[T]` | implicit |
-| `[T*N]` | `*T` | `&arr` |
-| `[T/0]` | `*T` | `&s` |
-| `[T/0]` | `[T]` | `(&s, #s)` |
-| `(*T, uint)` | `[T]` | implicit |
-| `*T` | `[T]` | ERROR - needs length |
+| `T[]` | `*T` | `slice.ptr` |
+| `T[]` | `u32` | `slice.len` |
+| `T[]` | `(*T, u32)` | `(slice.ptr, slice.len)` or destructure |
+| `T[N]` | `T[]` | implicit |
+| `T[N]` | `*T` | `arr.ptr` |
+| `T[/0]` | `*T` | `s.ptr` |
+| `T[/0]` | `T[]` | `(s.ptr, s.len)` |
+| `(*T, u32)` | `T[]` | implicit |
+| `*T` | `T[]` | ERROR - needs length |
 
 ```ents
-local arr: [u8*16] = ...
-local slice: [u8] = arr          -- OK: implicit
+let arr:u8[16] = ...
+let slice:u8[] = arr          -- OK: implicit
 
-local ptr: *u8 = ...
-local slice: [u8] = ptr          -- ERROR: need length
-local slice: [u8] = (ptr, 64)    -- OK: provide length
+let ptr:*u8 = ...
+let slice:u8[] = ptr          -- ERROR: need length
+let slice:u8[] = (ptr, 64)    -- OK: provide length
+
+-- Extract components from slice
+let (ptr, len) = slice           -- by position
+let (ptr:, len:) = slice         -- by name
 ```
 
 ## WASM Instruction Reference
@@ -942,9 +1101,9 @@ local slice: [u8] = (ptr, 64)    -- OK: provide length
 
 | Encantis | WASM |
 |----------|------|
-| `if`/`elif`/`else`/`end` | `if`/`else`/`end` (nested) |
-| `while`/`do`/`end` | `block`/`loop` + `br_if` |
-| `loop`/`end` | `loop`/`end` |
+| `if`/`elif`/`else` | `if`/`else`/`end` (nested) |
+| `while { }` | `block`/`loop` + `br_if` |
+| `loop { }` | `loop`/`end` |
 | `break` | `br` (to enclosing block) |
 | `break when` | `br_if` |
 | `continue` | `br` (to loop head) |

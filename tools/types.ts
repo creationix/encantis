@@ -254,6 +254,17 @@ export interface TernaryExpr extends Located {
   elseExpr: Expr;
 }
 
+export interface StructLiteralField extends Located {
+  name: string;
+  value?: Expr;             // If undefined, value is Identifier with same name (shorthand {x, y})
+}
+
+export interface StructLiteral extends Located {
+  kind: 'StructLiteral';
+  typeName?: string;        // Optional type name: Point{x: 1, y: 2} vs {x: 1, y: 2}
+  fields: StructLiteralField[];
+}
+
 export interface ErrorExpr extends Located {
   kind: 'ErrorExpr';
   message: string;
@@ -271,6 +282,7 @@ export type Expr =
   | CastExpr
   | TupleExpr
   | TernaryExpr
+  | StructLiteral
   | ErrorExpr;
 
 // -----------------------------------------------------------------------------
@@ -294,18 +306,28 @@ export interface Assignment extends Located {
   value: Expr;
 }
 
-// let (a, b) = expr - declares new variables with destructuring
+// Destructuring binding for struct patterns: {x, y} or {x: a, y: b}
+export interface DestructureBinding extends Located {
+  field: string;            // Field name to extract
+  variable?: string;        // Variable name (if different from field, e.g., {x: a})
+}
+
+// let (a, b) = expr OR let {x, y} = expr - declares new variables with destructuring
 export interface LetStmt extends Located {
   kind: 'LetStmt';
-  names: string[];
-  types?: Type[];          // Optional type annotations
+  pattern: 'tuple' | 'struct';
+  names: string[];          // For tuple: variable names; for struct: field names (when shorthand)
+  bindings?: DestructureBinding[];  // For struct destructuring with explicit bindings
+  types?: Type[];           // Optional type annotations (tuple only for now)
   value: Expr;
 }
 
-// set (a, b) = expr - assigns to existing variables with destructuring
+// set (a, b) = expr OR set {x, y} = expr - assigns to existing variables with destructuring
 export interface SetStmt extends Located {
   kind: 'SetStmt';
-  targets: PlaceExpr[];
+  pattern: 'tuple' | 'struct';
+  targets: PlaceExpr[];     // For tuple destructuring
+  bindings?: DestructureBinding[];  // For struct destructuring
   value: Expr;
 }
 
@@ -513,7 +535,7 @@ export interface CheckResult {
 // Symbol Table (for checker)
 // -----------------------------------------------------------------------------
 
-export type SymbolKind = 'local' | 'param' | 'global' | 'function' | 'import' | 'define' | 'builtin';
+export type SymbolKind = 'local' | 'param' | 'global' | 'function' | 'import' | 'define' | 'type' | 'builtin';
 
 export interface Symbol {
   name: string;
