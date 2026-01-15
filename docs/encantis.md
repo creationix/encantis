@@ -1,322 +1,555 @@
-# Operator Type Promotion
+# Encantis Language Reference
 
-## Core Rules
+Encantis is a systems programming language that compiles to WebAssembly. It provides direct memory control, explicit types, and zero-cost abstractions while generating compact, efficient WASM modules.
 
-1. **Implicit conversion only when lossless.** Widening within same signedness is safe. Integer→float only when mantissa can hold all values. Narrowing requires explicit cast.
+## Sample Programs
 
-2. **Mixed types widen to common type.** Compiler finds smallest type holding both without loss, or errors.
+### Hello World
 
-3. **Ambiguous cases error.** Mixed signedness (`i32 + u32`) requires explicit cast.
+```ents
+export "mem" memory 1
 
-## Numeric Types
+-- Import JavaScript console.log
+import "env" "log" func log(msg: [u8/0])
+
+export "main"
+func main()
+  log("Hello, World!\n")
+end
+```
+
+String literals are null-terminated (`[u8/0]`) by default, stored in the data section automatically.
+
+### Fibonacci
+
+```ents
+export "fib"
+func fib(n: i32) -> i32
+  if n < 2 then
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+```
+
+### Sum Array
+
+```ents
+-- Named return value, for..in iterator over slice
+func sum(arr: [i32]) -> (total: i32)
+  total = 0
+  for elem in arr do
+    total += elem
+  end
+end
+```
+
+Named return values are declared in the signature and implicitly returned. The `for..in` loop iterates over elements when given an array or slice.
+
+## Comments
+
+```ents
+-- Single line comment (Lua style)
+```
+
+## Literals
+
+### Integer Literals
+
+```ents
+42              -- decimal, inferred as i32
+0xFF            -- hexadecimal
+0b1010          -- binary
+0o755           -- octal
+
+42:i64          -- explicit type annotation
+255:u8          -- explicit type annotation
+```
+
+Unsuffixed literals are "comptime" values that adapt to their context. When no context is available, they default to either `i32` or `i64` based on size.
+
+### Float Literals
+
+```ents
+3.14            -- inferred as f64
+1.0e-10         -- scientific notation
+2.5:f32         -- explicit type annotation
+```
+
+Float literals default to `f64`. Decimal-to-binary conversion is inherently lossy, so float literals accept the closest representable approximation.
+
+### String Literals
+
+```ents
+"hello"           -- null-terminated [u8/0] by default
+"hello":[u8]      -- explicit slice (ptr + len)
+"hello":[u8/0]    -- explicit null-terminated
+"line1\nline2"    -- escape sequences: \n \t \r \\ \"
+```
+
+String literals default to `[u8/0]` (null-terminated) for simpler WASM interop - just a single i32 pointer. Use `:[u8]` annotation when you need a slice with stored length.
+
+### Boolean Literals
+
+```ents
+true
+false
+```
+
+Booleans are distinct from integers. No implicit truthiness - use explicit comparisons.  Under the hood they are represented as `u1` (0 and 1)
+
+## Declarations
+
+### Variables
+
+```ents
+-- Immutable binding (must be initialized)
+let x: i32 = 42
+let y = 3.14         -- type inferred as f64
+
+-- Mutable local variable
+local count: i32 = 0
+local ptr: *u8       -- uninitialized
+
+-- Global variable
+global total: i32 = 0
+```
+
+### Functions
+
+```ents
+-- Basic function
+func add(a: i32, b: i32) -> i32
+  return a + b
+end
+
+-- No return type (void)
+func greet()
+  log("hello")
+end
+
+-- Expression body (single expression, implicit return)
+func square(x: i32) -> i32 => x * x
+
+-- Named return value (implicitly returned at end)
+func double(x: i32) -> (result: i32)
+  result = x * 2
+end
+
+-- Multiple return values
+func divmod(a: i32, b: i32) -> (q: i32, r: i32)
+  q = a / b
+  r = a % b
+end
+```
+
+Named return values are declared in the signature with `-> (name: type)`. They act as pre-declared locals and are implicitly returned when the function ends.
+
+### Exports
+
+```ents
+-- Export function
+export "add"
+func add(a: i32, b: i32) -> i32 => a + b
+
+-- Export memory
+export "mem" memory 1      -- 1 page = 64KB
+
+-- Export global
+export "counter" global counter: i32 = 0
+```
+
+### Imports
+
+```ents
+-- Import function from host environment
+import "env" "log" func log(msg: [u8/0])
+
+-- Import memory
+import "env" "memory" memory 1
+```
+
+### Memory and Data
+
+```ents
+-- Declare memory (pages of 64KB)
+memory 1                   -- 1 page
+memory 2 16                -- min 2 pages, max 16 pages
+
+-- Store data in linear memory
+data 0 "Hello"             -- string at offset 0
+data 100 [1, 2, 3, 4]      -- bytes at offset 100
+```
+
+## Control Flow
+
+### Conditionals
+
+```ents
+if condition then
+  -- body
+end
+
+if condition then
+  -- body
+else
+  -- alternative
+end
+
+if cond1 then
+  -- first case
+elif cond2 then
+  -- second case
+elif cond3 then
+  -- third case
+else
+  -- default
+end
+```
+
+The `then` keyword is required. All branches share a single `end`.
+
+Conditions must be boolean - no implicit truthiness:
+
+```ents
+if x then         -- ERROR: x must be bool
+if x != 0 then    -- OK: explicit comparison
+if flag then      -- OK: flag is bool
+```
+
+### While Loop
+
+```ents
+while condition do
+  -- body
+end
+```
+
+### For Loop
+
+```ents
+-- Iterate 0 to n-1
+for i in n do
+  process(i)
+end
+
+-- Iterate over array/slice elements
+for elem in arr do
+  process(elem)
+end
+
+-- Iterate with index
+for i, elem in arr do
+  process(i, elem)
+end
+```
+
+The `for..in` loop works with:
+
+- **Integers** - iterates from 0 to n-1
+- **Arrays/slices** - iterates over elements
+- **Index variant** - `for i, elem in arr` provides both index and element
+
+### Infinite Loop
+
+```ents
+loop
+  -- body
+  break when done    -- conditional break
+end
+```
+
+### Loop Control
+
+```ents
+break             -- exit loop
+break when cond   -- conditional exit (same as: if cond then break end)
+continue          -- skip to next iteration
+continue when c   -- conditional skip (same as: if c then continue end)
+```
+
+### Return
+
+```ents
+return            -- void return
+return value      -- return with value
+return x when c   -- conditional return (same as: if c then return x end)
+```
+
+## Type System
+
+### Primitive Types
 
 | Category | Types |
 |----------|-------|
 | Signed integers | `i8`, `i16`, `i32`, `i64` |
 | Unsigned integers | `u8`, `u16`, `u32`, `u64` |
-| Floats | `f32`, `f64` |
-| Other | `bool`, pointers (i32), slices (ptr+len) |
+| Floating point | `f32`, `f64` |
+| Boolean | `bool` |
 
-**Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected. No implicit truthiness - use explicit comparisons (`x != 0`).
+**Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected.
 
-### Future Considerations
+### Pointer Types
 
-Pending operator overloading or built-in support:
+```ents
+*T              -- pointer to T
+*u8             -- byte pointer
+*i32            -- pointer to i32
+```
 
-- **decimal** - `(mantissa: i64, exponent: i16)` for exact decimal arithmetic
-- **rational** - `(numerator: i64, denominator: i64)` for exact fractions
+All pointers are `i32` at the WASM level (32-bit address space).
 
-## WASM Representation
+### Array and Slice Types
 
-| Encantis Type | WASM Type |
-|---------------|-----------|
+Encantis has three array-like types:
+
+| Syntax | Representation | Length | Use Case |
+|--------|----------------|--------|----------|
+| `[T]` | ptr + len | runtime, stored | General-purpose slices |
+| `[T*N]` | ptr only | compile-time N | Fixed-size buffers |
+| `[T/0]` | ptr only | scan for null | C strings |
+
+#### `[T]` — Runtime Slice
+
+Fat pointer containing pointer and length:
+
+```ents
+let data: [u8] = ...
+&data           -- extract pointer (*u8)
+#data           -- get length (u32), O(1)
+data[i]         -- element access
+```
+
+#### `[T*N]` — Fixed-Size Array
+
+Pointer with compile-time known length:
+
+```ents
+local buf: [u8*64] = 0    -- 64-byte buffer
+#buf                       -- comptime constant 64
+```
+
+#### `[T/0]` — Null-Terminated
+
+Pointer to null-terminated data:
+
+```ents
+let cstr: [u8/0] = ...
+#cstr                      -- runtime scan for null, O(n)
+```
+
+### Tuple Types
+
+```ents
+(i32, i32)           -- pair of i32
+(f64, f64, f64)      -- triple of f64
+```
+
+### WASM Type Mapping
+
+| Encantis | WASM |
+|----------|------|
 | i8, i16, i32, u8, u16, u32, bool | i32 |
 | i64, u64 | i64 |
 | f32 | f32 |
 | f64 | f64 |
+| `*T` | i32 |
+| `[T]` | i32, i32 (ptr, len) |
+| `[T*N]`, `[T/0]` | i32 (ptr only) |
 
-## Safe Promotions (Implicit)
+## Type Conversions
 
-### Integer Widening
+### Implicit Widening
+
+Encantis allows implicit widening when no precision is lost:
 
 ```
 i8 → i16 → i32 → i64
 u8 → u16 → u32 → u64
+f32 → f64
 ```
 
-Smaller type widens to larger. WASM uses `i64.extend_i32_s` (signed) or `i64.extend_i32_u` (unsigned).
-
-### Float Widening
-
-`f32 → f64` via `f64.promote_f32`
-
-### Integer to Float
-
-Only when mantissa can represent all values:
+Integer to float is implicit only when the float's mantissa can hold all values:
 
 | Float | Safe integer types | Mantissa bits |
 |-------|-------------------|---------------|
 | f32 | i8, u8, i16, u16 | 24 |
 | f64 | i8, u8, i16, u16, i32, u32 | 53 |
 
-## Comptime Literals
+### Comptime Literal Promotion
 
-### Integer Literals
+Unsuffixed literals check actual value, not type:
 
-Untyped literals check actual value, not type:
-
-```encantis
-let x: f32 = 1.0 + 42        // OK: 42 fits in f32 mantissa
-let y: f32 = 1.0 + 16777216  // OK: 2^24 is max exact integer
-let z: f32 = 1.0 + 16777217  // ERROR: exceeds f32 precision
+```ents
+let x: f32 = 1.0 + 42        -- OK: 42 fits in f32 mantissa
+let y: f32 = 1.0 + 16777216  -- OK: 2^24 is max exact integer
+let z: f32 = 1.0 + 16777217  -- ERROR: exceeds f32 precision
 ```
 
-Exact ranges: f32 ±2²⁴, f64 ±2⁵³
+Once a value has a concrete type, normal promotion rules apply:
 
-### Float Literals
-
-Decimal→binary is inherently lossy, so float literals accept closest approximation:
-
-```encantis
-let x: f32 = 1.3       // OK: closest f32 approximation
-let y: f64 = 1.3       // OK: closest f64 approximation
-let z = 1.3            // Inferred as f64
-
-let a: f32 = z         // ERROR: typed f64 → f32 needs cast
-let b = x + 1.5        // OK: 1.5 adapts to f32
+```ents
+let z = 1.3            -- inferred as f64
+let a: f32 = z         -- ERROR: f64 → f32 needs explicit cast
 ```
 
-Once typed, normal promotion rules apply.
+### Type Errors
 
-## Type Errors
-
-### Lossy Integer to Float
-
-```
-i32 + f32  → ERROR    // i32 exceeds f32's 24-bit mantissa
-i64 + f64  → ERROR    // i64 exceeds f64's 53-bit mantissa
+```ents
+i32 + f32   -- ERROR: i32 exceeds f32's mantissa
+i32 + u32   -- ERROR: mixed signedness, cast explicitly
+i64 → i32   -- ERROR: narrowing needs explicit cast
+bool + i32  -- ERROR: cast bool first
 ```
 
-### Mixed Signedness
+### Explicit Casts
 
-```
-i32 + u32  → ERROR    // ambiguous, cast explicitly
-```
+Two syntaxes:
 
-### Narrowing
+```ents
+-- Function-style (binds tightly)
+i32(x)
+f64(value)
+(*u8)(ptr)
 
-```
-i64 → i32  → ERROR    // explicit cast required
-f64 → f32  → ERROR
-```
-
-### Boolean
-
-```
-bool + i32  → ERROR   // cast bool first
-```
-
-## Explicit Casts
-
-Two syntaxes are supported:
-
-```encantis
-// Function-style (binds tightly)
-i32(x)              // primitive
-(*u8)(ptr)          // pointer
-([u8])(ptr)         // slice
-(MyStruct)(data)    // struct
-
-// as-style (lower precedence than arithmetic)
+-- as-style (lower precedence)
 x as i32
 ptr as *u8
-ptr as [u8]
 ```
 
-Function-style binds tightly like a call; `as` requires parens in expressions:
+Function-style binds like a call; `as` requires parens in expressions:
 
-```encantis
-i32(x) + 1      // cast then add
-x as i32 + 1    // parses as: x as (i32 + 1) — ERROR
-(x as i32) + 1  // cast then add
+```ents
+i32(x) + 1      -- cast then add
+x as i32 + 1    -- ERROR: parses as x as (i32 + 1)
+(x as i32) + 1  -- OK: cast then add
 ```
 
 Casts are required for:
-- Narrowing (larger → smaller type)
-- Lossy integer→float (when mantissa can't hold all values)
+
+- Narrowing (larger → smaller)
+- Lossy integer→float
 - Mixed signedness operations
-- Bool→integer (`i32(flag)`)
+- Bool→integer
 
-## Type-Punned Memory Access
+## Operators
 
-Read or write memory at a pointer as a specific type:
+### Arithmetic
 
-```encantis
-ptr.u32             // read 4 bytes as u32
-ptr.u32 = value     // write u32 to 4 bytes
-ptr.f64             // read 8 bytes as f64
-ptr.f64 = value     // write f64 to 8 bytes
+| Operator | Description | Types |
+|----------|-------------|-------|
+| `+` | addition | numeric |
+| `-` | subtraction | numeric |
+| `*` | multiplication | numeric |
+| `/` | division | numeric |
+| `%` | remainder | integers only |
+
+### Bitwise
+
+| Operator | Description | Types |
+|----------|-------------|-------|
+| `&` | bitwise AND | integers |
+| `\|` | bitwise OR | integers |
+| `^` | bitwise XOR | integers |
+| `<<` | shift left | integers |
+| `>>` | shift right | integers |
+| `<<<` | rotate left | integers |
+| `>>>` | rotate right | integers |
+
+### Comparison
+
+| Operator | Description |
+|----------|-------------|
+| `<` | less than |
+| `>` | greater than |
+| `<=` | less or equal |
+| `>=` | greater or equal |
+| `==` | equal |
+| `!=` | not equal |
+
+All comparisons return `bool`.
+
+### Compound Assignment
+
+```ents
+x += 1      -- x = x + 1
+x -= 1      -- x = x - 1
+x *= 2      -- x = x * 2
+x /= 2      -- x = x / 2
+x &= mask   -- x = x & mask
+x |= flags  -- x = x | flags
+x ^= bits   -- x = x ^ bits
+x <<= n     -- x = x << n
+x >>= n     -- x = x >> n
 ```
 
-Equivalent to `(ptr as *T).*` but more ergonomic for DataView-style parsing:
+### Unary Operators
 
-```encantis
-// Walking through a byte buffer
-local ptr: *u8 = data.ptr
-let header = ptr.u32      // read header as u32
-ptr += 4
-ptr.f64 = 3.14            // write f64 value
-ptr += 8
-```
+| Operator | Description |
+|----------|-------------|
+| `-x` | negation |
+| `!x` | logical NOT (bool only) |
+| `~x` | bitwise NOT |
+| `&x` | address-of (pointer) |
+| `#x` | length (arrays/slices) |
+| `x.*` | dereference |
 
-For primitives, the type name is used directly. For compound types, wrap in parentheses:
+## Pointer Operations
 
-```encantis
-ptr.u32           // primitive shorthand
-ptr.(MyStruct)    // read/write struct
-ptr.([u8])        // read/write slice (ptr + len)
-ptr.((i32, f64))  // read/write tuple
-```
+### Arithmetic
 
-## Pointer Arithmetic
+| Expression | Result |
+|------------|--------|
+| `ptr + n` | offset forward by n bytes |
+| `ptr - n` | offset backward by n bytes |
+| `ptr - ptr` | byte distance between pointers |
 
-### Allowed
+### Indexing
 
-| Left | Op | Right | Result |
-|------|----|-------|--------|
-| ptr  | +  | int   | ptr (offset forward) |
-| ptr  | -  | int   | ptr (offset backward) |
-| ptr  | -  | ptr   | int (byte distance) |
-
-### Errors
-
-| Expression | Error |
-|------------|-------|
-| `int + ptr` | use `ptr + int` |
-| `ptr + ptr` | meaningless |
-| `ptr * n` | only +/- allowed |
-
-### Offset Scaling
-
-| Syntax | Scaling | Notes |
-|--------|---------|-------|
-| `ptr + n` | bytes | raw byte offset |
-| `ptr[n]` | elements | scaled by element size |
-
-```encantis
+```ents
 let arr: *i32 = ...
-arr[2]          // offset 8 bytes (2 × sizeof(i32))
-(arr + 2).*     // offset 2 bytes (wrong!)
-(arr + 8).*     // equivalent to arr[2]
+arr[2]          -- offset by 2 elements (8 bytes for i32)
+(arr + 8).*     -- equivalent to arr[2]
 ```
 
-## Array and Slice Types
+Note: `ptr + n` offsets by bytes, `ptr[n]` offsets by elements.
 
-Encantis has three array-like types, each with different compile-time vs runtime tradeoffs:
+### Type-Punned Memory Access
 
-### Type Summary
+Read or write memory as a specific type:
 
-| Syntax | WASM Representation | Length | Use Case |
-|--------|---------------------|--------|----------|
-| `[T]` | `(i32, i32)` ptr+len | runtime, stored | General-purpose slices |
-| `[T*N]` | `i32` ptr only | comptime constant N | Fixed-size buffers |
-| `[T/0]` | `i32` ptr only | runtime, scan for null | C strings, null-terminated data |
+```ents
+ptr.u32             -- read 4 bytes as u32
+ptr.u32 = value     -- write u32
+ptr.f64             -- read 8 bytes as f64
 
-### `[T]` — Runtime Slice
-
-Fat pointer containing both pointer and length:
-
-```
-{ ptr: *T, len: u32 }
+-- Compound types need parentheses
+ptr.(MyStruct)
+ptr.([u8])
 ```
 
-| Operator | Result | Notes |
-|----------|--------|-------|
-| `&s` | `*T` | extract underlying pointer |
-| `#s` | `u32` | stored length (O(1)) |
-| `s[i]` | `T` | element access |
+## Array Type Conversions
 
-### `[T*N]` — Fixed-Size Array
+| From | To | How |
+|------|----|-----|
+| `[T]` | `*T` | `&slice` |
+| `[T*N]` | `[T]` | implicit |
+| `[T*N]` | `*T` | `&arr` |
+| `[T/0]` | `*T` | `&s` |
+| `[T/0]` | `[T]` | `(&s, #s)` |
+| `(*T, uint)` | `[T]` | implicit |
+| `*T` | `[T]` | ERROR - needs length |
 
-Just a pointer at runtime, but compiler knows length N at compile time:
-
-```
-*T  (with comptime length N)
-```
-
-| Operator | Result | Notes |
-|----------|--------|-------|
-| `&arr` | `*T` | the pointer itself |
-| `#arr` | `u32` | comptime constant N |
-| `arr[i]` | `T` | element access |
-
-Useful for stack-allocated buffers, struct fields with known sizes, and WASM linear memory layouts.
-
-### `[T/0]` — Null-Terminated
-
-Just a pointer at runtime, compiler knows to look for null terminator:
-
-```
-*T  (null-terminated)
-```
-
-| Operator | Result | Notes |
-|----------|--------|-------|
-| `&s` | `*T` | the pointer itself |
-| `#s` | `u32` | runtime scan for null (O(n)) |
-| `s[i]` | `T` | element access (no bounds check) |
-
-Used for C-style strings and interop with null-terminated APIs.
-
-### Operators on All Array Types
-
-| Operator | Result | Notes |
-|----------|--------|-------|
-| `&` | `*T` | underlying pointer |
-| `#` | `u32` | length (comptime for `[T*N]`, scan for `[T/0]`) |
-| `[i]` | `T` (place) | element access |
-
-### Type Conversions
-
-| From | To | Conversion |
-|------|----|------------|
-| `[T]` | `*T` | `&slice` — extract pointer |
-| `[T*N]` | `[T]` | implicit — length becomes runtime value |
-| `[T*N]` | `*T` | `&arr` — just the pointer |
-| `[T/0]` | `*T` | `&s` — just the pointer |
-| `[T/0]` | `[T]` | `(ptr, #s)` — must compute length |
-| `(*T, uint)` | `[T]` | implicit — uint must widen to u32 |
-| `*T` | `[T]` | ERROR — requires length |
-| `*T` | `[T*N]` | explicit cast with known N |
-| `*T` | `[T/0]` | explicit cast (assert null-terminated) |
-
-```encantis
-let slice: [u8] = ...
-let ptr: *u8 = &slice          // OK: extract pointer
-
+```ents
 let arr: [u8*16] = ...
-let slice: [u8] = arr          // OK: fixed array → slice
-
-let cstr: [u8/0] = ...
-let slice: [u8] = (&cstr, #cstr)  // OK: compute length
+let slice: [u8] = arr          -- OK: implicit
 
 let ptr: *u8 = ...
-let slice: [u8] = ptr          // ERROR: need length
-let slice: [u8] = (ptr, 64)    // OK: tuple → slice
+let slice: [u8] = ptr          -- ERROR: need length
+let slice: [u8] = (ptr, 64)    -- OK: provide length
 ```
 
-## Operator Categories
-
-| Category | Operators | Types | Notes |
-|----------|-----------|-------|-------|
-| Arithmetic | `+` `-` `*` `/` | all numeric | div_s/div_u by signedness |
-| Remainder | `%` | integers | rem_s/rem_u |
-| Bitwise | `&` `\|` `^` | integers | |
-| Shift | `<<` `>>` | integers | shr_s (signed) / shr_u (unsigned) |
-| Rotate | `<<<` `>>>` | integers | |
-| Comparison | `<` `>` `<=` `>=` `==` `!=` | all numeric | result is bool |
-
-## WASM Conversion Reference
+## WASM Instruction Reference
 
 ### Widening (implicit)
 
@@ -329,7 +562,7 @@ let slice: [u8] = (ptr, 64)    // OK: tuple → slice
 | i64 → f64 | f64.convert_i64_s / _u |
 | f32 → f64 | f64.promote_f32 |
 
-### Narrowing (explicit cast required)
+### Narrowing (explicit cast)
 
 | Conversion | Instruction |
 |------------|-------------|
@@ -340,158 +573,13 @@ let slice: [u8] = (ptr, 64)    // OK: tuple → slice
 | f32 → i64 | i64.trunc_f32_s / _u |
 | f64 → i64 | i64.trunc_f64_s / _u |
 
-## Control Flow
-
-### Conditionals
-
-#### `if` / `elif` / `else` / `end`
-
-```encantis
-if condition then
-  -- body
-end
-
-if condition then
-  -- body
-else
-  -- alternative
-end
-
-if condition1 then
-  -- first case
-elif condition2 then
-  -- second case
-elif condition3 then
-  -- third case
-else
-  -- default case
-end
-```
-
-The `then` keyword is required after conditions. All branches share a single `end`.
-
-Conditions must be boolean expressions - no implicit truthiness:
-
-```encantis
-if x then         // ERROR: x must be bool
-if x != 0 then    // OK: explicit comparison
-if flag then      // OK: flag is bool
-```
-
-### Loops
-
-#### `while` / `do` / `end`
-
-Standard pre-condition loop:
-
-```encantis
-while condition do
-  -- body executes while condition is true
-end
-```
-
-The `do` keyword is required after the condition.
-
-#### `loop` / `end`
-
-Infinite loop with explicit break control:
-
-```encantis
-loop
-  -- body
-  br when condition   -- conditional break
-end
-```
-
-The `loop` construct runs indefinitely until explicitly broken.
-
-### Loop Control
-
-#### `br` — Unconditional Break
-
-```encantis
-loop
-  if done then
-    br              -- exit loop immediately
-  end
-end
-```
-
-#### `br when` — Conditional Break
-
-```encantis
-loop
-  process_item()
-  br when queue_empty()   -- exit when condition is true
-end
-```
-
-Equivalent to `if condition then br end` but more concise.
-
-#### `break` — Alias for `br`
-
-`break` and `br` are synonymous:
-
-```encantis
-while running do
-  break when should_stop()
-end
-```
-
-### Function Returns
-
-#### `return`
-
-Exit a function, optionally with a value:
-
-```encantis
-func get_value() -> i32
-  return 42
-end
-
-func process()
-  if error then
-    return          -- early return (void function)
-  end
-  do_work()
-end
-```
-
-#### `return when` — Conditional Return
-
-```encantis
-func find(arr: [i32], target: i32) -> i32
-  local i: u32 = 0
-  while i < #arr do
-    return i when arr[i] == target
-    i += 1
-  end
-  return -1
-end
-```
-
-Equivalent to `if condition then return value end` but more concise.
-
-### Expression-Bodied Functions
-
-Short functions can use arrow syntax:
-
-```encantis
-func add(a: i32, b: i32) -> i32 => a + b
-
-func double(x: i32) -> i32 => x * 2
-```
-
-The expression after `=>` is implicitly returned.
-
-### WASM Control Flow Mapping
+### Control Flow
 
 | Encantis | WASM |
 |----------|------|
-| `if`/`elif`/`else`/`end` | `if`/`else`/`end` (nested for elif) |
-| `while`/`do`/`end` | `block`/`loop` with `br_if` |
+| `if`/`elif`/`else`/`end` | `if`/`else`/`end` (nested) |
+| `while`/`do`/`end` | `block`/`loop` + `br_if` |
 | `loop`/`end` | `loop`/`end` |
-| `br` | `br` (to enclosing block) |
-| `br when cond` | `br_if` |
+| `br` | `br` |
+| `br when` | `br_if` |
 | `return` | `return` |
-| `return when cond` | `if` + `return` |
