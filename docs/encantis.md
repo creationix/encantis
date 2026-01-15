@@ -339,3 +339,159 @@ let slice: [u8] = (ptr, 64)    // OK: tuple → slice
 | f64 → i32 | i32.trunc_f64_s / _u |
 | f32 → i64 | i64.trunc_f32_s / _u |
 | f64 → i64 | i64.trunc_f64_s / _u |
+
+## Control Flow
+
+### Conditionals
+
+#### `if` / `elif` / `else` / `end`
+
+```encantis
+if condition then
+  -- body
+end
+
+if condition then
+  -- body
+else
+  -- alternative
+end
+
+if condition1 then
+  -- first case
+elif condition2 then
+  -- second case
+elif condition3 then
+  -- third case
+else
+  -- default case
+end
+```
+
+The `then` keyword is required after conditions. All branches share a single `end`.
+
+Conditions must be boolean expressions - no implicit truthiness:
+
+```encantis
+if x then         // ERROR: x must be bool
+if x != 0 then    // OK: explicit comparison
+if flag then      // OK: flag is bool
+```
+
+### Loops
+
+#### `while` / `do` / `end`
+
+Standard pre-condition loop:
+
+```encantis
+while condition do
+  -- body executes while condition is true
+end
+```
+
+The `do` keyword is required after the condition.
+
+#### `loop` / `end`
+
+Infinite loop with explicit break control:
+
+```encantis
+loop
+  -- body
+  br when condition   -- conditional break
+end
+```
+
+The `loop` construct runs indefinitely until explicitly broken.
+
+### Loop Control
+
+#### `br` — Unconditional Break
+
+```encantis
+loop
+  if done then
+    br              -- exit loop immediately
+  end
+end
+```
+
+#### `br when` — Conditional Break
+
+```encantis
+loop
+  process_item()
+  br when queue_empty()   -- exit when condition is true
+end
+```
+
+Equivalent to `if condition then br end` but more concise.
+
+#### `break` — Alias for `br`
+
+`break` and `br` are synonymous:
+
+```encantis
+while running do
+  break when should_stop()
+end
+```
+
+### Function Returns
+
+#### `return`
+
+Exit a function, optionally with a value:
+
+```encantis
+func get_value() -> i32
+  return 42
+end
+
+func process()
+  if error then
+    return          -- early return (void function)
+  end
+  do_work()
+end
+```
+
+#### `return when` — Conditional Return
+
+```encantis
+func find(arr: [i32], target: i32) -> i32
+  local i: u32 = 0
+  while i < #arr do
+    return i when arr[i] == target
+    i += 1
+  end
+  return -1
+end
+```
+
+Equivalent to `if condition then return value end` but more concise.
+
+### Expression-Bodied Functions
+
+Short functions can use arrow syntax:
+
+```encantis
+func add(a: i32, b: i32) -> i32 => a + b
+
+func double(x: i32) -> i32 => x * 2
+```
+
+The expression after `=>` is implicitly returned.
+
+### WASM Control Flow Mapping
+
+| Encantis | WASM |
+|----------|------|
+| `if`/`elif`/`else`/`end` | `if`/`else`/`end` (nested for elif) |
+| `while`/`do`/`end` | `block`/`loop` with `br_if` |
+| `loop`/`end` | `loop`/`end` |
+| `br` | `br` (to enclosing block) |
+| `br when cond` | `br_if` |
+| `return` | `return` |
+| `return when cond` | `if` + `return` |
