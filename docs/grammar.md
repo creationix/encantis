@@ -98,6 +98,7 @@ import_decl     = "import" string_literal string_literal import_item
                 | "import" string_literal "(" { import_group_item } ")"
 
 import_item     = func_signature
+                | "global" identifier ":" type
                 | "memory" integer_literal
 
 import_group_item = string_literal import_item
