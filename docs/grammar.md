@@ -131,8 +131,7 @@ field_list      = field { "," field }
 field           = type                           -- anonymous
                 | identifier ":" type            -- named
 
-func_body       = block
-                | "=>" expression
+func_body       = body
 ```
 
 Examples:
@@ -203,7 +202,7 @@ pointer_type    = "*" type
 
 indexed_type    = type "[" [ integer_literal ] [ "/" "0" ] "]"
 
-composite_type  = "(" [ field_list ] ")"         -- reuses field_list from func_signature
+composite_type  = "(" [ field_list ] ")"
 ```
 
 Indexed type variants: `T[]` (slice), `T[N]` (fixed-size), `T[/0]` (null-terminated), `T[N/0]` (fixed-size null-terminated).
@@ -214,6 +213,7 @@ Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
 
 ```ebnf
 block           = "{" { statement } "}"
+body            = block | "=>" expression
 
 statement       = let_stmt
                 | set_stmt
@@ -228,18 +228,18 @@ statement       = let_stmt
                 | expression_stmt
 
 let_stmt        = "let" pattern [ ":" type ] [ "=" expression ]
-set_stmt        = "set" pattern "=" expression
+set_stmt        = "set" pattern [ ":" type ] "=" expression
 
-if_stmt         = "if" expression block { elif_clause } [ else_clause ]
-elif_clause     = "elif" expression block
-else_clause     = "else" block
+if_stmt         = "if" expression body { elif_clause } [ else_clause ]
+elif_clause     = "elif" expression body
+else_clause     = "else" body
 
-while_stmt      = "while" expression block
+while_stmt      = "while" expression body
 
-for_stmt        = "for" for_binding "in" expression block
+for_stmt        = "for" for_binding "in" expression body
 for_binding     = identifier [ "," identifier ]
 
-loop_stmt       = "loop" block
+loop_stmt       = "loop" body
 
 return_stmt     = "return" [ expression ] [ "when" expression ]
 break_stmt      = "break" [ "when" expression ]
@@ -320,9 +320,9 @@ primary_expr    = literal
                | "(" [ arg_list ] ")"                        -- tuple/struct literal
                | if_expr
 
-if_expr         = "if" expression block [ elif_expr | else_expr ]
-elif_expr       = "elif" expression block [ elif_expr | else_expr ]
-else_expr       = "else" block
+if_expr         = "if" expression body [ elif_expr | else_expr ]
+elif_expr       = "elif" expression body [ elif_expr | else_expr ]
+else_expr       = "else" body
 
 arg_list        = arg { "," arg }
 arg             = expression
