@@ -1,0 +1,6 @@
+// Test: importing and calling a function
+import "env" "luckyNumber" func luckyNumber(i32)
+
+export "main" func () {
+  luckyNumber(42)
+}

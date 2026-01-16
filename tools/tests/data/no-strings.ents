@@ -1,3 +1,0 @@
-func test() {
-  let x:i32 = 42
-}

@@ -1,5 +1,0 @@
-// Individual strings need to be null-terminated
-// But the tuple itself has a known shape/length and does not need a terminator
-export "mem" memory 1 {
-  0 => ("hello", "world"),
-}

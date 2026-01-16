@@ -1,4 +1,0 @@
-func test() {
-  let x:i32 = 5
-  let y = x
-}

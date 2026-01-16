@@ -1,5 +1,0 @@
-func test() {
-  log("hello")
-  log("hello")
-  log("hello")
-}

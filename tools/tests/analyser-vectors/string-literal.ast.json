@@ -1,0 +1,111 @@
+{
+  "$schema": "../ast-schema.json",
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ExportDecl",
+      "item": {
+        "kind": "MemoryDecl",
+        "min": 1,
+        "max": null,
+        "data": [],
+        "span": {
+          "start": 53,
+          "end": 61
+        }
+      },
+      "span": {
+        "start": 40,
+        "end": 61
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "get_greeting",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [],
+          "span": {
+            "start": 80,
+            "end": 82
+          }
+        },
+        "returns": {
+          "kind": "IndexedType",
+          "element": {
+            "kind": "PrimitiveType",
+            "name": "u8",
+            "span": {
+              "start": 86,
+              "end": 88
+            }
+          },
+          "size": null,
+          "nullTerminated": false,
+          "span": {
+            "start": 86,
+            "end": 90
+          }
+        },
+        "span": {
+          "start": 80,
+          "end": 90
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "LiteralExpr",
+              "value": {
+                "kind": "string",
+                "bytes": {
+                  "0": 72,
+                  "1": 101,
+                  "2": 108,
+                  "3": 108,
+                  "4": 111,
+                  "5": 44,
+                  "6": 32,
+                  "7": 87,
+                  "8": 111,
+                  "9": 114,
+                  "10": 108,
+                  "11": 100,
+                  "12": 33,
+                  "13": 10
+                }
+              },
+              "span": {
+                "start": 102,
+                "end": 119
+              }
+            },
+            "when": null,
+            "span": {
+              "start": 95,
+              "end": 119
+            }
+          }
+        ],
+        "span": {
+          "start": 91,
+          "end": 121
+        }
+      },
+      "span": {
+        "start": 63,
+        "end": 121
+      }
+    }
+  ],
+  "span": {
+    "start": 40,
+    "end": 122
+  }
+}

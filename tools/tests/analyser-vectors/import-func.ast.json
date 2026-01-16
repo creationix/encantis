@@ -1,0 +1,152 @@
+{
+  "$schema": "../ast-schema.json",
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ImportDecl",
+      "items": [
+        {
+          "kind": "ImportItem",
+          "item": {
+            "kind": "ImportFunc",
+            "ident": "luckyNumber",
+            "signature": {
+              "kind": "FuncSignature",
+              "params": {
+                "kind": "FieldList",
+                "fields": [
+                  {
+                    "kind": "Field",
+                    "ident": null,
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "i32",
+                      "span": {
+                        "start": 86,
+                        "end": 89
+                      }
+                    },
+                    "span": {
+                      "start": 86,
+                      "end": 89
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 85,
+                  "end": 90
+                }
+              },
+              "returns": null,
+              "span": {
+                "start": 85,
+                "end": 90
+              }
+            },
+            "span": {
+              "start": 69,
+              "end": 90
+            }
+          },
+          "span": {
+            "start": 55,
+            "end": 90
+          }
+        }
+      ],
+      "span": {
+        "start": 42,
+        "end": 90
+      }
+    },
+    {
+      "kind": "ExportDecl",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": null,
+        "signature": {
+          "kind": "FuncSignature",
+          "params": {
+            "kind": "FieldList",
+            "fields": [],
+            "span": {
+              "start": 111,
+              "end": 113
+            }
+          },
+          "returns": null,
+          "span": {
+            "start": 111,
+            "end": 113
+          }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "ExpressionStmt",
+              "expr": {
+                "kind": "CallExpr",
+                "callee": {
+                  "kind": "IdentExpr",
+                  "name": "luckyNumber",
+                  "span": {
+                    "start": 118,
+                    "end": 129
+                  }
+                },
+                "args": [
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": {
+                        "kind": "int",
+                        "value": "42",
+                        "radix": 10
+                      },
+                      "span": {
+                        "start": 130,
+                        "end": 132
+                      }
+                    },
+                    "span": {
+                      "start": 130,
+                      "end": 132
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 118,
+                  "end": 133
+                }
+              },
+              "span": {
+                "start": 118,
+                "end": 133
+              }
+            }
+          ],
+          "span": {
+            "start": 114,
+            "end": 135
+          }
+        },
+        "span": {
+          "start": 106,
+          "end": 135
+        }
+      },
+      "span": {
+        "start": 92,
+        "end": 135
+      }
+    }
+  ],
+  "span": {
+    "start": 42,
+    "end": 136
+  }
+}

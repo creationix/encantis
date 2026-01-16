@@ -1,0 +1,7 @@
+// Test: type alias definition and usage
+type Point = (x: i32, y: i32)
+
+func make_point() -> Point {
+  let p: Point = (x: 10, y: 20)
+  return p
+}

@@ -1,0 +1,195 @@
+{
+  "$schema": "../ast-schema.json",
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "TypeDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Point",
+        "span": {
+          "start": 46,
+          "end": 51
+        }
+      },
+      "type": {
+        "kind": "CompositeType",
+        "fields": [
+          {
+            "kind": "Field",
+            "ident": "x",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "i32",
+              "span": {
+                "start": 58,
+                "end": 61
+              }
+            },
+            "span": {
+              "start": 55,
+              "end": 61
+            }
+          },
+          {
+            "kind": "Field",
+            "ident": "y",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "i32",
+              "span": {
+                "start": 66,
+                "end": 69
+              }
+            },
+            "span": {
+              "start": 63,
+              "end": 69
+            }
+          }
+        ],
+        "span": {
+          "start": 54,
+          "end": 70
+        }
+      },
+      "span": {
+        "start": 41,
+        "end": 70
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "make_point",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [],
+          "span": {
+            "start": 87,
+            "end": 89
+          }
+        },
+        "returns": {
+          "kind": "TypeRef",
+          "name": "Point",
+          "span": {
+            "start": 93,
+            "end": 98
+          }
+        },
+        "span": {
+          "start": 87,
+          "end": 98
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "p",
+              "span": {
+                "start": 107,
+                "end": 108
+              }
+            },
+            "type": {
+              "kind": "TypeRef",
+              "name": "Point",
+              "span": {
+                "start": 110,
+                "end": 115
+              }
+            },
+            "value": {
+              "kind": "TupleExpr",
+              "elements": [
+                {
+                  "kind": "Arg",
+                  "name": "x",
+                  "value": {
+                    "kind": "LiteralExpr",
+                    "value": {
+                      "kind": "int",
+                      "value": "10",
+                      "radix": 10
+                    },
+                    "span": {
+                      "start": 122,
+                      "end": 124
+                    }
+                  },
+                  "span": {
+                    "start": 119,
+                    "end": 124
+                  }
+                },
+                {
+                  "kind": "Arg",
+                  "name": "y",
+                  "value": {
+                    "kind": "LiteralExpr",
+                    "value": {
+                      "kind": "int",
+                      "value": "20",
+                      "radix": 10
+                    },
+                    "span": {
+                      "start": 129,
+                      "end": 131
+                    }
+                  },
+                  "span": {
+                    "start": 126,
+                    "end": 131
+                  }
+                }
+              ],
+              "span": {
+                "start": 118,
+                "end": 132
+              }
+            },
+            "span": {
+              "start": 103,
+              "end": 132
+            }
+          },
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "p",
+              "span": {
+                "start": 142,
+                "end": 143
+              }
+            },
+            "when": null,
+            "span": {
+              "start": 135,
+              "end": 143
+            }
+          }
+        ],
+        "span": {
+          "start": 99,
+          "end": 145
+        }
+      },
+      "span": {
+        "start": 72,
+        "end": 145
+      }
+    }
+  ],
+  "span": {
+    "start": 41,
+    "end": 146
+  }
+}

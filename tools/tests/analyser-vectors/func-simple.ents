@@ -1,0 +1,5 @@
+// Test: basic function with parameters and locals
+func add(a: i32, b: i32) -> i32 {
+  let sum = a + b
+  return sum
+}

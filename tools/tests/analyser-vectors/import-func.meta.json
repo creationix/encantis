@@ -1,0 +1,18 @@
+{
+  "$schema": "../meta-schema.json",
+  "src": "file://./import-func.ents",
+  "data": [],
+  "types": [
+    { "type": "(i32)->()" },
+    { "type": "()->()" },
+    { "type": "comptime_int(42)" }
+  ],
+  "symbols": [
+    { "name": "luckyNumber", "kind": "func", "type": 0, "def": "1:32", "refs": ["4:2"], "doc": "Test: importing and calling a function" }
+  ],
+  "hints": {
+    "1:32": { "len": 11, "type": 0, "symbol": 0 },
+    "4:2": { "len": 11, "type": 0, "symbol": 0 },
+    "4:14": { "len": 2, "type": 2 }
+  }
+}

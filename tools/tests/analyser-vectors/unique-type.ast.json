@@ -1,0 +1,216 @@
+{
+  "$schema": "../ast-schema.json",
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "UniqueDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Index",
+        "span": {
+          "start": 49,
+          "end": 54
+        }
+      },
+      "type": {
+        "kind": "PrimitiveType",
+        "name": "i32",
+        "span": {
+          "start": 57,
+          "end": 60
+        }
+      },
+      "span": {
+        "start": 42,
+        "end": 60
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "use_index",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "idx",
+              "type": {
+                "kind": "TypeRef",
+                "name": "Index",
+                "span": {
+                  "start": 82,
+                  "end": 87
+                }
+              },
+              "span": {
+                "start": 77,
+                "end": 87
+              }
+            }
+          ],
+          "span": {
+            "start": 76,
+            "end": 88
+          }
+        },
+        "returns": {
+          "kind": "TypeRef",
+          "name": "Index",
+          "span": {
+            "start": 92,
+            "end": 97
+          }
+        },
+        "span": {
+          "start": 76,
+          "end": 97
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "idx",
+              "span": {
+                "start": 109,
+                "end": 112
+              }
+            },
+            "when": null,
+            "span": {
+              "start": 102,
+              "end": 112
+            }
+          }
+        ],
+        "span": {
+          "start": 98,
+          "end": 114
+        }
+      },
+      "span": {
+        "start": 62,
+        "end": 114
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "main",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [],
+          "span": {
+            "start": 125,
+            "end": 127
+          }
+        },
+        "returns": null,
+        "span": {
+          "start": 125,
+          "end": 127
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "i",
+              "span": {
+                "start": 136,
+                "end": 137
+              }
+            },
+            "type": {
+              "kind": "TypeRef",
+              "name": "Index",
+              "span": {
+                "start": 139,
+                "end": 144
+              }
+            },
+            "value": {
+              "kind": "LiteralExpr",
+              "value": {
+                "kind": "int",
+                "value": "42",
+                "radix": 10
+              },
+              "span": {
+                "start": 147,
+                "end": 149
+              }
+            },
+            "span": {
+              "start": 132,
+              "end": 149
+            }
+          },
+          {
+            "kind": "ExpressionStmt",
+            "expr": {
+              "kind": "CallExpr",
+              "callee": {
+                "kind": "IdentExpr",
+                "name": "use_index",
+                "span": {
+                  "start": 152,
+                  "end": 161
+                }
+              },
+              "args": [
+                {
+                  "kind": "Arg",
+                  "name": null,
+                  "value": {
+                    "kind": "IdentExpr",
+                    "name": "i",
+                    "span": {
+                      "start": 162,
+                      "end": 163
+                    }
+                  },
+                  "span": {
+                    "start": 162,
+                    "end": 163
+                  }
+                }
+              ],
+              "span": {
+                "start": 152,
+                "end": 164
+              }
+            },
+            "span": {
+              "start": 152,
+              "end": 164
+            }
+          }
+        ],
+        "span": {
+          "start": 128,
+          "end": 166
+        }
+      },
+      "span": {
+        "start": 116,
+        "end": 166
+      }
+    }
+  ],
+  "span": {
+    "start": 42,
+    "end": 167
+  }
+}

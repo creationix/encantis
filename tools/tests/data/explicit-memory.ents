@@ -1,8 +1,0 @@
-export "mem" memory 1 {
-  0 => "header",
-  16 => "world",
-}
-
-func test() {
-  log("auto")
-}

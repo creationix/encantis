@@ -1,4 +1,0 @@
-// Tuple of i32s: (100, 200) as 8 bytes little-endian
-export "mem" memory 1 {
-  0 => (100:i32, 200:i32),
-}

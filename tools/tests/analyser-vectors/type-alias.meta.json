@@ -1,0 +1,26 @@
+{
+  "$schema": "../meta-schema.json",
+  "src": "file://./type-alias.ents",
+  "data": [],
+  "types": [
+    { "type": "(x: i32, y: i32)", "symbol": 0 },
+    { "type": "()->Point" },
+    { "type": "comptime_int(10)" },
+    { "type": "comptime_int(20)" }
+  ],
+  "symbols": [
+    { "name": "Point", "kind": "type", "type": 0, "def": "1:5", "refs": ["3:21", "4:9"], "doc": "Test: type alias definition and usage" },
+    { "name": "make_point", "kind": "func", "type": 1, "def": "3:5", "refs": [] },
+    { "name": "p", "kind": "local", "type": 0, "def": "4:6", "refs": ["5:9"] }
+  ],
+  "hints": {
+    "1:5": { "len": 5, "type": 0, "symbol": 0 },
+    "3:5": { "len": 10, "type": 1, "symbol": 1 },
+    "3:21": { "len": 5, "type": 0, "symbol": 0 },
+    "4:6": { "len": 1, "type": 0, "symbol": 2 },
+    "4:9": { "len": 5, "type": 0, "symbol": 0 },
+    "4:21": { "len": 2, "type": 2 },
+    "4:28": { "len": 2, "type": 3 },
+    "5:9": { "len": 1, "type": 0, "symbol": 2 }
+  }
+}

@@ -1,0 +1,11 @@
+// Test: unique type definition and usage
+unique Index = i32
+
+func use_index(idx: Index) -> Index {
+  return idx
+}
+
+func main() {
+  let i: Index = 42
+  use_index(i)
+}
