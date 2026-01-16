@@ -15,17 +15,24 @@ Encantis {
               | MemoryDecl
 
   // ============================================================================
+  // Helpers
+  // ============================================================================
+
+  TypeAnnotation = ":" Type
+  Assign = "=" Expr
+
+  // ============================================================================
   // Imports
   // ============================================================================
 
   ImportDecl = import stringLiteral "(" ImportGroupItem+ ")"  -- group
-             | import stringLiteral stringLiteral ImportItem  -- single
+             | import stringLiteral ImportGroupItem           -- single
 
   ImportGroupItem = stringLiteral ImportItem
 
-  ImportItem = func ident? FuncSignature  -- func
-             | global ident ":" Type      -- global
-             | memory intLiteral          -- memory
+  ImportItem = func ident? FuncSignature   -- func
+             | global ident TypeAnnotation -- global
+             | memory intLiteral           -- memory
 
   // ============================================================================
   // Exports
@@ -41,21 +48,22 @@ Encantis {
   // Functions
   // ============================================================================
 
-  FuncDecl = inline? func ident? FuncSignature FuncBody
+  FuncDecl = inline? func ident? FuncSignature Body
 
-  FuncSignature = ValueSpec "->" ValueSpec  -- withReturn
-                | ValueSpec                 -- noReturn
+  FuncSignature = ValueSpec ReturnSpec?
+
+  ReturnSpec = "->" ValueSpec
 
   ValueSpec = "(" FieldList? ")"  -- parens
             | Type                -- single
 
   FieldList = NonemptyListOf<Field, ",">
 
-  Field = ident ":" Type  -- named
-        | Type            -- anonymous
+  Field = ident TypeAnnotation  -- named
+        | Type                  -- anonymous
 
-  FuncBody = Block       -- block
-           | "=>" Expr   -- arrow
+  Body = Block      -- block
+       | "=>" Expr  -- arrow
 
   Block = "{" Statement* "}"
 
@@ -71,57 +79,39 @@ Encantis {
   // Definitions
   // ============================================================================
 
-  DefDecl = def ident "=" Expr
+  DefDecl = def ident Assign
 
   // ============================================================================
   // Globals
   // ============================================================================
 
-  GlobalDecl = global ident ":" Type "=" Expr  -- full
-             | global ident ":" Type          -- typed
-             | global ident "=" Expr          -- init
-             | global ident                   -- bare
+  GlobalDecl = global ident TypeAnnotation? Assign?
 
   // ============================================================================
   // Memory
   // ============================================================================
 
-  MemoryDecl = memory intLiteral intLiteral "{" DataEntry* "}"  -- fullWithData
-             | memory intLiteral "{" DataEntry* "}"             -- minWithData
-             | memory intLiteral intLiteral                     -- fullNoData
-             | memory intLiteral                                -- minNoData
-
+  MemoryDecl = memory intLiteral intLiteral? DataBlock?
+  DataBlock = "{" DataEntry* "}"
   DataEntry = intLiteral "=>" Expr ","?
 
   // ============================================================================
   // Types
   // ============================================================================
 
-  Type = PointerType
-       | IndexedType
-       | CompositeType
-       | PrimitiveType
-       | typeIdent
+  // Left-recursive for chained indexed types like i32[][]
+  Type = Type "[" intLiteral? nullTerminator? "]"  -- indexed
+       | "*" Type                                  -- pointer
+       | "(" FieldList? ")"                        -- composite
+       | PrimitiveType                             -- primitive
+       | typeIdent                                 -- named
+
+  nullTerminator = "/" "0"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"
                 | "f32" | "f64"
                 | "bool"
-
-  PointerType = "*" Type
-
-  // type[] or type[N] or type[/0] or type[N/0]
-  IndexedType = NonIndexedType "[" intLiteral "/" "0" "]"  -- fixedNull
-              | NonIndexedType "[" "/" "0" "]"            -- sliceNull
-              | NonIndexedType "[" intLiteral "]"         -- fixed
-              | NonIndexedType "[" "]"                    -- slice
-
-  NonIndexedType = PointerType
-                 | CompositeType
-                 | PrimitiveType
-                 | typeIdent
-
-  CompositeType = "(" FieldList? ")"
 
   // ============================================================================
   // Statements
@@ -139,28 +129,24 @@ Encantis {
             | AssignmentStmt
             | ExpressionStmt
 
-  LetStmt = let Pattern ":" Type "=" Expr  -- typedInit
-          | let Pattern ":" Type          -- typed
-          | let Pattern "=" Expr          -- init
-          | let Pattern                   -- bare
+  LetStmt = let Pattern TypeAnnotation? Assign?
 
-  SetStmt = set Pattern ":" Type "=" Expr  -- typed
-          | set Pattern "=" Expr           -- untyped
+  SetStmt = set Pattern TypeAnnotation? Assign
 
-  IfStmt = if Expr FuncBody ElifClause* ElseClause?
+  IfStmt = if Expr Body ElifClause* ElseClause?
 
-  ElifClause = elif Expr FuncBody
+  ElifClause = elif Expr Body
 
-  ElseClause = else FuncBody
+  ElseClause = else Body
 
-  WhileStmt = while Expr FuncBody
+  WhileStmt = while Expr Body
 
-  ForStmt = for ForBinding in Expr FuncBody
+  ForStmt = for ForBinding in Expr Body
 
   ForBinding = ident "," ident  -- withIndex
              | ident            -- valueOnly
 
-  LoopStmt = loop FuncBody
+  LoopStmt = loop Body
 
   ReturnStmt = return Expr? WhenClause?
 
@@ -181,15 +167,16 @@ Encantis {
   ExpressionStmt = Expr
 
   // ============================================================================
-  // L-Values
+  // L-Values and Access Suffixes
   // ============================================================================
 
-  LValue = LValue "." ident         -- field
-         | LValue "." digit+        -- index
-         | LValue "." "*"           -- deref
-         | LValue "." Type          -- typePun
-         | LValue "[" Expr "]"      -- subscript
-         | ident                    -- ident
+  LValue = ident AccessSuffix*
+
+  AccessSuffix = "." ident         -- field
+               | "." digit+        -- tupleIndex
+               | "." "*"           -- deref
+               | "." PrimitiveType -- typePun
+               | "[" Expr "]"      -- index
 
   // ============================================================================
   // Patterns
@@ -266,17 +253,14 @@ Encantis {
 
   // Cast and Annotation
   CastExpr = PostfixExpr as Type   -- cast
-           | PostfixExpr ":" Type  -- annotation
+           | PostfixExpr TypeAnnotation  -- annotation
            | PostfixExpr
 
   // Postfix (highest precedence for operators)
-  PostfixExpr = PostfixExpr "." ident         -- field
-              | PostfixExpr "." digit+        -- tupleIndex
-              | PostfixExpr "." "*"           -- deref
-              | PostfixExpr "." Type          -- typePun
-              | PostfixExpr "[" Expr "]"      -- index
-              | PostfixExpr "(" ArgList? ")"  -- call
-              | PrimaryExpr
+  PostfixExpr = PrimaryExpr PostfixOp*
+
+  PostfixOp = AccessSuffix
+            | "(" ArgList? ")"  -- call
 
   // Primary (atoms)
   PrimaryExpr = IfExpr
@@ -292,11 +276,11 @@ Encantis {
   // If Expression
   // ============================================================================
 
-  IfExpr = if Expr FuncBody ElifExpr* ElseExpr?
+  IfExpr = if Expr Body ElifExpr* ElseExpr?
 
-  ElifExpr = elif Expr FuncBody
+  ElifExpr = elif Expr Body
 
-  ElseExpr = else FuncBody
+  ElseExpr = else Body
 
   // ============================================================================
   // Match Expression
@@ -332,11 +316,13 @@ Encantis {
   numberLiteral = floatLiteral
                 | intLiteral
 
-  intLiteral = "-"? hexLiteral
-             | "-"? binaryLiteral
-             | "-"? octalLiteral
-             | "-"? dozenalLiteral
-             | "-"? decimalLiteral
+  intLiteral = "-"? 
+    ( hexLiteral
+    | binaryLiteral
+    | octalLiteral
+    | dozenalLiteral
+    | decimalLiteral
+    )
 
   decimalLiteral = digit+
 

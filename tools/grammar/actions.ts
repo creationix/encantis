@@ -352,8 +352,40 @@ semantics.addOperation<any>('toAST(source)', {
   // Types
   // ============================================================================
 
-  Type(type) {
-    return type.toAST(this.args.source);
+  Type_indexed(element, _lb, sizeOpt, nullTermOpt, _rb) {
+    const sizeNode = sizeOpt.children[0];
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(this.args.source),
+      size: sizeNode ? Number(sizeNode.sourceString) : null,
+      nullTerminated: nullTermOpt.children.length > 0,
+      span: span(this, this.args.source),
+    } as AST.IndexedType;
+  },
+
+  Type_pointer(_star, type) {
+    return {
+      kind: 'PointerType',
+      pointee: type.toAST(this.args.source),
+      span: span(this, this.args.source),
+    } as AST.PointerType;
+  },
+
+  Type_composite(_lp, fieldListOpt, _rp) {
+    const fieldListNode = fieldListOpt.children[0];
+    return {
+      kind: 'CompositeType',
+      fields: fieldListNode ? fieldListNode.toAST(this.args.source) : [],
+      span: span(this, this.args.source),
+    } as AST.CompositeType;
+  },
+
+  Type_primitive(prim) {
+    return prim.toAST(this.args.source);
+  },
+
+  Type_named(typeIdent) {
+    return typeIdent.toAST(this.args.source);
   },
 
   PrimitiveType(name) {
@@ -362,71 +394,6 @@ semantics.addOperation<any>('toAST(source)', {
       name: name.sourceString as AST.PrimitiveType['name'],
       span: span(this, this.args.source),
     } as AST.PrimitiveType;
-  },
-
-  PointerType(_star, type) {
-    return {
-      kind: 'PointerType',
-      pointee: type.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.PointerType;
-  },
-
-  IndexedType_fixedNull(element, _lb, size, _slash, _zero, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(this.args.source),
-      size: Number(size.sourceString),
-      nullTerminated: true,
-      span: span(this, this.args.source),
-    } as AST.IndexedType;
-  },
-
-  IndexedType_sliceNull(element, _lb, _slash, _zero, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(this.args.source),
-      size: null,
-      nullTerminated: true,
-      span: span(this, this.args.source),
-    } as AST.IndexedType;
-  },
-
-  IndexedType_fixed(element, _lb, size, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(this.args.source),
-      size: Number(size.sourceString),
-      nullTerminated: false,
-      span: span(this, this.args.source),
-    } as AST.IndexedType;
-  },
-
-  IndexedType_slice(element, _lb, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(this.args.source),
-      size: null,
-      nullTerminated: false,
-      span: span(this, this.args.source),
-    } as AST.IndexedType;
-  },
-
-  IndexedType(type) {
-    return type.toAST(this.args.source);
-  },
-
-  NonIndexedType(type) {
-    return type.toAST(this.args.source);
-  },
-
-  CompositeType(_lp, fieldListOpt, _rp) {
-    const fieldListNode = fieldListOpt.children[0];
-    return {
-      kind: 'CompositeType',
-      fields: fieldListNode ? fieldListNode.toAST(this.args.source) : [],
-      span: span(this, this.args.source),
-    } as AST.CompositeType;
   },
 
   typeIdent(_first, _rest) {
