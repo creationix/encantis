@@ -1444,3 +1444,54 @@ describe('Match Expressions', () => {
     expect(func.body.expr.right.kind).toBe('MatchExpr');
   });
 });
+
+// =============================================================================
+// EXAMPLE FILE PARSING TESTS
+// =============================================================================
+
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { dumpAst } from './parser2';
+
+const exampleFiles = [
+  '../examples/crypto/xxh32/xxh32.ents',
+  '../examples/crypto/gimli/gimli.ents',
+  '../examples/crypto/xxh64/xxh64.ents',
+  '../examples/math/trig/trig.ents',
+  '../examples/wasi/tee/tee.ents',
+  '../examples/data/trie/trie.ents',
+];
+
+describe('Example File Parsing', () => {
+  for (const relPath of exampleFiles) {
+    const fullPath = join(__dirname, relPath);
+    const name = relPath.split('/').slice(-2).join('/');
+
+    test(`parses ${name} without errors`, () => {
+      if (!existsSync(fullPath)) {
+        console.warn(`Skipping ${name}: file not found`);
+        return;
+      }
+
+      const src = readFileSync(fullPath, 'utf8');
+      const result = parse(src);
+
+      // Write AST dump next to the source file
+      const astPath = fullPath.replace(/\.ents$/, '.ast');
+      const dump = dumpAst(result.ast);
+      writeFileSync(astPath, dump);
+
+      // Write errors if any
+      if (result.errors.length > 0) {
+        const errPath = fullPath.replace(/\.ents$/, '.errors');
+        const errDump = result.errors.map(e =>
+          `[${e.severity}] ${e.message} (${e.span.start}-${e.span.end})`
+        ).join('\n');
+        writeFileSync(errPath, errDump);
+      }
+
+      // Test expectation: no errors
+      expect(result.errors).toHaveLength(0);
+    });
+  }
+});

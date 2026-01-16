@@ -1,0 +1,907 @@
+Module
+  decls:
+    [
+      ExportDecl
+        exportName: "mem"
+        decl:
+          MemoryDecl
+            minPages: 1
+      ExportDecl
+        exportName: "gimli"
+        decl:
+          FuncDecl
+            name: "gimli"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "state"
+                      type:
+                        ArrayType
+                          element:
+                            PrimitiveType
+                              name: "u32"
+                          length: 12
+                      span:
+                        {
+                          start: 322
+                          end: 335
+                        }
+                    }
+                  ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "round"
+                      type:
+                        PrimitiveType
+                          name: "u32"
+                      init:
+                        NumberLit
+                          value: "24"
+                    LoopStmt
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              ForStmt
+                                binding: "col"
+                                iterable:
+                                  NumberLit
+                                    value: "4"
+                                body:
+                                  BlockBody
+                                    stmts:
+                                      [
+                                        LetStmt
+                                          pattern:
+                                            IdentPattern
+                                              name: "x"
+                                          init:
+                                            BinaryExpr
+                                              op: "<<<"
+                                              left:
+                                                IndexExpr
+                                                  target:
+                                                    Identifier
+                                                      name: "state"
+                                                  index:
+                                                    Identifier
+                                                      name: "col"
+                                              right:
+                                                NumberLit
+                                                  value: "24"
+                                        LetStmt
+                                          pattern:
+                                            IdentPattern
+                                              name: "y"
+                                          init:
+                                            BinaryExpr
+                                              op: "<<<"
+                                              left:
+                                                IndexExpr
+                                                  target:
+                                                    Identifier
+                                                      name: "state"
+                                                  index:
+                                                    BinaryExpr
+                                                      op: "+"
+                                                      left:
+                                                        Identifier
+                                                          name: "col"
+                                                      right:
+                                                        NumberLit
+                                                          value: "4"
+                                              right:
+                                                NumberLit
+                                                  value: "9"
+                                        LetStmt
+                                          pattern:
+                                            IdentPattern
+                                              name: "z"
+                                          init:
+                                            IndexExpr
+                                              target:
+                                                Identifier
+                                                  name: "state"
+                                              index:
+                                                BinaryExpr
+                                                  op: "+"
+                                                  left:
+                                                    Identifier
+                                                      name: "col"
+                                                  right:
+                                                    NumberLit
+                                                      value: "8"
+                                        AssignStmt
+                                          target:
+                                            IndexExpr
+                                              target:
+                                                Identifier
+                                                  name: "state"
+                                              index:
+                                                BinaryExpr
+                                                  op: "+"
+                                                  left:
+                                                    Identifier
+                                                      name: "col"
+                                                  right:
+                                                    NumberLit
+                                                      value: "8"
+                                          op: "="
+                                          value:
+                                            BinaryExpr
+                                              op: "^"
+                                              left:
+                                                BinaryExpr
+                                                  op: "^"
+                                                  left:
+                                                    Identifier
+                                                      name: "x"
+                                                  right:
+                                                    GroupExpr
+                                                      expr:
+                                                        BinaryExpr
+                                                          op: "<<"
+                                                          left:
+                                                            Identifier
+                                                              name: "z"
+                                                          right:
+                                                            NumberLit
+                                                              value: "1"
+                                              right:
+                                                GroupExpr
+                                                  expr:
+                                                    BinaryExpr
+                                                      op: "<<"
+                                                      left:
+                                                        GroupExpr
+                                                          expr:
+                                                            BinaryExpr
+                                                              op: "&"
+                                                              left:
+                                                                Identifier
+                                                                  name: "y"
+                                                              right:
+                                                                Identifier
+                                                                  name: "z"
+                                                      right:
+                                                        NumberLit
+                                                          value: "2"
+                                        AssignStmt
+                                          target:
+                                            IndexExpr
+                                              target:
+                                                Identifier
+                                                  name: "state"
+                                              index:
+                                                BinaryExpr
+                                                  op: "+"
+                                                  left:
+                                                    Identifier
+                                                      name: "col"
+                                                  right:
+                                                    NumberLit
+                                                      value: "4"
+                                          op: "="
+                                          value:
+                                            BinaryExpr
+                                              op: "^"
+                                              left:
+                                                BinaryExpr
+                                                  op: "^"
+                                                  left:
+                                                    Identifier
+                                                      name: "y"
+                                                  right:
+                                                    Identifier
+                                                      name: "x"
+                                              right:
+                                                GroupExpr
+                                                  expr:
+                                                    BinaryExpr
+                                                      op: "<<"
+                                                      left:
+                                                        GroupExpr
+                                                          expr:
+                                                            BinaryExpr
+                                                              op: "|"
+                                                              left:
+                                                                Identifier
+                                                                  name: "x"
+                                                              right:
+                                                                Identifier
+                                                                  name: "z"
+                                                      right:
+                                                        NumberLit
+                                                          value: "1"
+                                        AssignStmt
+                                          target:
+                                            IndexExpr
+                                              target:
+                                                Identifier
+                                                  name: "state"
+                                              index:
+                                                Identifier
+                                                  name: "col"
+                                          op: "="
+                                          value:
+                                            BinaryExpr
+                                              op: "^"
+                                              left:
+                                                BinaryExpr
+                                                  op: "^"
+                                                  left:
+                                                    Identifier
+                                                      name: "z"
+                                                  right:
+                                                    Identifier
+                                                      name: "y"
+                                              right:
+                                                GroupExpr
+                                                  expr:
+                                                    BinaryExpr
+                                                      op: "<<"
+                                                      left:
+                                                        GroupExpr
+                                                          expr:
+                                                            BinaryExpr
+                                                              op: "&"
+                                                              left:
+                                                                Identifier
+                                                                  name: "x"
+                                                              right:
+                                                                Identifier
+                                                                  name: "y"
+                                                      right:
+                                                        NumberLit
+                                                          value: "3"
+                                      ]
+                              ExprStmt
+                                expr:
+                                  MatchExpr
+                                    subject:
+                                      BinaryExpr
+                                        op: "&"
+                                        left:
+                                          Identifier
+                                            name: "round"
+                                        right:
+                                          NumberLit
+                                            value: "3"
+                                    arms:
+                                      [
+                                        {
+                                          patterns:
+                                            [
+                                              LiteralPattern
+                                                value:
+                                                  NumberLit
+                                                    value: "0"
+                                            ]
+                                          body:
+                                            BlockBody
+                                              stmts:
+                                                [
+                                                  LetStmt
+                                                    pattern:
+                                                      IdentPattern
+                                                        name: "x"
+                                                    init:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "0"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "0"
+                                                    op: "="
+                                                    value:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "1"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "1"
+                                                    op: "="
+                                                    value:
+                                                      Identifier
+                                                        name: "x"
+                                                  LetStmt
+                                                    pattern:
+                                                      IdentPattern
+                                                        name: "x2"
+                                                    init:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "2"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "2"
+                                                    op: "="
+                                                    value:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "3"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "3"
+                                                    op: "="
+                                                    value:
+                                                      Identifier
+                                                        name: "x2"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "0"
+                                                    op: "^="
+                                                    value:
+                                                      BinaryExpr
+                                                        op: "|"
+                                                        left:
+                                                          NumberLit
+                                                            value: "0x9e377900"
+                                                        right:
+                                                          Identifier
+                                                            name: "round"
+                                                ]
+                                          span:
+                                            {
+                                              start: 778
+                                              end: 1059
+                                            }
+                                        }
+                                        {
+                                          patterns:
+                                            [
+                                              LiteralPattern
+                                                value:
+                                                  NumberLit
+                                                    value: "2"
+                                            ]
+                                          body:
+                                            BlockBody
+                                              stmts:
+                                                [
+                                                  LetStmt
+                                                    pattern:
+                                                      IdentPattern
+                                                        name: "x"
+                                                    init:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "0"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "0"
+                                                    op: "="
+                                                    value:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "2"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "2"
+                                                    op: "="
+                                                    value:
+                                                      Identifier
+                                                        name: "x"
+                                                  LetStmt
+                                                    pattern:
+                                                      IdentPattern
+                                                        name: "x2"
+                                                    init:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "1"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "1"
+                                                    op: "="
+                                                    value:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "3"
+                                                  AssignStmt
+                                                    target:
+                                                      IndexExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "state"
+                                                        index:
+                                                          NumberLit
+                                                            value: "3"
+                                                    op: "="
+                                                    value:
+                                                      Identifier
+                                                        name: "x2"
+                                                ]
+                                          span:
+                                            {
+                                              start: 1066
+                                              end: 1276
+                                            }
+                                        }
+                                        {
+                                          patterns:
+                                            [
+                                              WildcardPattern
+                                            ]
+                                          body:
+                                            BlockBody
+                                          span:
+                                            {
+                                              start: 1283
+                                              end: 1290
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "round"
+                                op: "-="
+                                value:
+                                  NumberLit
+                                    value: "1"
+                              BreakStmt
+                                when:
+                                  BinaryExpr
+                                    op: "=="
+                                    left:
+                                      Identifier
+                                        name: "round"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                            ]
+                  ]
+      ExportDecl
+        exportName: "gimli_hash"
+        decl:
+          FuncDecl
+            name: "gimli_hash"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "input"
+                      type:
+                        SliceType
+                          element:
+                            PrimitiveType
+                              name: "u8"
+                      span:
+                        {
+                          start: 1473
+                          end: 1483
+                        }
+                    }
+                    {
+                      name: "output"
+                      type:
+                        ArrayType
+                          element:
+                            PrimitiveType
+                              name: "u8"
+                          length: 32
+                      span:
+                        {
+                          start: 1485
+                          end: 1498
+                        }
+                    }
+                  ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "state"
+                      type:
+                        ArrayType
+                          element:
+                            PrimitiveType
+                              name: "u32"
+                          length: 12
+                      init:
+                        NumberLit
+                          value: "0"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "len"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "input"
+                          member: "len"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "input_ptr"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "input"
+                          member: "ptr"
+                    WhileStmt
+                      condition:
+                        BinaryExpr
+                          op: ">="
+                          left:
+                            Identifier
+                              name: "len"
+                          right:
+                            NumberLit
+                              value: "16"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              ForStmt
+                                binding: "i"
+                                iterable:
+                                  NumberLit
+                                    value: "16"
+                                body:
+                                  BlockBody
+                                    stmts:
+                                      [
+                                        AssignStmt
+                                          target:
+                                            IndexExpr
+                                              target:
+                                                GroupExpr
+                                                  expr:
+                                                    CastExpr
+                                                      expr:
+                                                        Identifier
+                                                          name: "state"
+                                                      type:
+                                                        PointerType
+                                                          target:
+                                                            PrimitiveType
+                                                              name: "u8"
+                                              index:
+                                                Identifier
+                                                  name: "i"
+                                          op: "^="
+                                          value:
+                                            IndexExpr
+                                              target:
+                                                Identifier
+                                                  name: "input_ptr"
+                                              index:
+                                                Identifier
+                                                  name: "i"
+                                      ]
+                              ExprStmt
+                                expr:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "gimli"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "state"
+                                          span:
+                                            {
+                                              start: 1824
+                                              end: 1829
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "input_ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "16"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "len"
+                                op: "-="
+                                value:
+                                  NumberLit
+                                    value: "16"
+                            ]
+                    ForStmt
+                      binding: "i"
+                      iterable:
+                        Identifier
+                          name: "len"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  IndexExpr
+                                    target:
+                                      GroupExpr
+                                        expr:
+                                          CastExpr
+                                            expr:
+                                              Identifier
+                                                name: "state"
+                                            type:
+                                              PointerType
+                                                target:
+                                                  PrimitiveType
+                                                    name: "u8"
+                                    index:
+                                      Identifier
+                                        name: "i"
+                                op: "^="
+                                value:
+                                  IndexExpr
+                                    target:
+                                      Identifier
+                                        name: "input_ptr"
+                                    index:
+                                      Identifier
+                                        name: "i"
+                            ]
+                    AssignStmt
+                      target:
+                        IndexExpr
+                          target:
+                            GroupExpr
+                              expr:
+                                CastExpr
+                                  expr:
+                                    Identifier
+                                      name: "state"
+                                  type:
+                                    PointerType
+                                      target:
+                                        PrimitiveType
+                                          name: "u8"
+                          index:
+                            Identifier
+                              name: "len"
+                      op: "^="
+                      value:
+                        NumberLit
+                          value: "0x1f"
+                    AssignStmt
+                      target:
+                        IndexExpr
+                          target:
+                            GroupExpr
+                              expr:
+                                CastExpr
+                                  expr:
+                                    Identifier
+                                      name: "state"
+                                  type:
+                                    PointerType
+                                      target:
+                                        PrimitiveType
+                                          name: "u8"
+                          index:
+                            NumberLit
+                              value: "15"
+                      op: "^="
+                      value:
+                        NumberLit
+                          value: "0x80"
+                    ExprStmt
+                      expr:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "gimli"
+                          args:
+                            [
+                              {
+                                value:
+                                  Identifier
+                                    name: "state"
+                                span:
+                                  {
+                                    start: 2121
+                                    end: 2126
+                                  }
+                              }
+                            ]
+                    ForStmt
+                      binding: "i"
+                      iterable:
+                        NumberLit
+                          value: "16"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  IndexExpr
+                                    target:
+                                      Identifier
+                                        name: "output"
+                                    index:
+                                      Identifier
+                                        name: "i"
+                                op: "="
+                                value:
+                                  IndexExpr
+                                    target:
+                                      GroupExpr
+                                        expr:
+                                          CastExpr
+                                            expr:
+                                              Identifier
+                                                name: "state"
+                                            type:
+                                              PointerType
+                                                target:
+                                                  PrimitiveType
+                                                    name: "u8"
+                                    index:
+                                      Identifier
+                                        name: "i"
+                            ]
+                    ExprStmt
+                      expr:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "gimli"
+                          args:
+                            [
+                              {
+                                value:
+                                  Identifier
+                                    name: "state"
+                                span:
+                                  {
+                                    start: 2264
+                                    end: 2269
+                                  }
+                              }
+                            ]
+                    ForStmt
+                      binding: "i"
+                      iterable:
+                        NumberLit
+                          value: "16"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  IndexExpr
+                                    target:
+                                      Identifier
+                                        name: "output"
+                                    index:
+                                      BinaryExpr
+                                        op: "+"
+                                        left:
+                                          Identifier
+                                            name: "i"
+                                        right:
+                                          NumberLit
+                                            value: "16"
+                                op: "="
+                                value:
+                                  IndexExpr
+                                    target:
+                                      GroupExpr
+                                        expr:
+                                          CastExpr
+                                            expr:
+                                              Identifier
+                                                name: "state"
+                                            type:
+                                              PointerType
+                                                target:
+                                                  PrimitiveType
+                                                    name: "u8"
+                                    index:
+                                      Identifier
+                                        name: "i"
+                            ]
+                  ]
+    ]

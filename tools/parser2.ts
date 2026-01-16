@@ -1334,6 +1334,11 @@ function parsePrimaryExpr(p: ParserState): Expr {
       return parseMatchExpr(p);
 
     default:
+      // Allow keywords to be used as identifiers in expression context
+      if (KEYWORDS.has(tok.kind)) {
+        advance(p);
+        return { kind: 'Identifier', name: tok.text, span: tok.span };
+      }
       addError(p, tok.span, `Unexpected token: ${tok.kind}`);
       advance(p);
       return { kind: 'ErrorExpr', message: `Unexpected ${tok.kind}`, span: tok.span };
@@ -1942,7 +1947,10 @@ function parseFuncParam(p: ParserState): FuncParam {
   const start = peek(p).span;
 
   // Check for named parameter: name: type
-  if (peek(p).kind === 'IDENT' && peek(p, 1).kind === ':') {
+  // Parameter names can be identifiers or keywords (e.g., "data:u8[]")
+  const tok = peek(p);
+  const isIdentLike = tok.kind === 'IDENT' || KEYWORDS.has(tok.kind);
+  if (isIdentLike && peek(p, 1).kind === ':') {
     const name = advance(p).text;
     advance(p); // consume :
     const type = parseType(p);
@@ -2038,6 +2046,72 @@ function parseModule(p: ParserState): Module {
     : { start: 0, end: 0 };
 
   return { kind: 'Module', decls, span };
+}
+
+// =============================================================================
+// AST DUMP UTILITY
+// =============================================================================
+
+export function dumpAst(node: unknown, indent = 0): string {
+  const pad = '  '.repeat(indent);
+  const lines: string[] = [];
+
+  if (node === null || node === undefined) {
+    return `${pad}null`;
+  }
+
+  if (typeof node !== 'object') {
+    return `${pad}${JSON.stringify(node)}`;
+  }
+
+  if (Array.isArray(node)) {
+    if (node.length === 0) return `${pad}[]`;
+    lines.push(`${pad}[`);
+    for (const item of node) {
+      lines.push(dumpAst(item, indent + 1));
+    }
+    lines.push(`${pad}]`);
+    return lines.join('\n');
+  }
+
+  // Object with 'kind' property (AST node)
+  const obj = node as Record<string, unknown>;
+  const kind = obj.kind;
+  if (typeof kind === 'string') {
+    const entries = Object.entries(obj).filter(([k]) => k !== 'kind' && k !== 'span');
+    if (entries.length === 0) {
+      return `${pad}${kind}`;
+    }
+    lines.push(`${pad}${kind}`);
+    for (const [key, value] of entries) {
+      if (value === undefined) continue;
+      if (typeof value === 'object' && value !== null) {
+        if (Array.isArray(value) && value.length === 0) {
+          continue; // Skip empty arrays
+        }
+        lines.push(`${pad}  ${key}:`);
+        lines.push(dumpAst(value, indent + 2));
+      } else {
+        lines.push(`${pad}  ${key}: ${JSON.stringify(value)}`);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  // Plain object (like Span)
+  const objEntries = Object.entries(obj).filter(([, v]) => v !== undefined);
+  if (objEntries.length === 0) return `${pad}{}`;
+  lines.push(`${pad}{`);
+  for (const [key, value] of objEntries) {
+    if (typeof value === 'object' && value !== null) {
+      lines.push(`${pad}  ${key}:`);
+      lines.push(dumpAst(value, indent + 2));
+    } else {
+      lines.push(`${pad}  ${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  lines.push(`${pad}}`);
+  return lines.join('\n');
 }
 
 // =============================================================================

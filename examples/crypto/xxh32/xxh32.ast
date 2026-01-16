@@ -1,0 +1,813 @@
+Module
+  decls:
+    [
+      ExportDecl
+        exportName: "mem"
+        decl:
+          MemoryDecl
+            minPages: 1
+      DefDecl
+        name: "prime32-1"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "2654435761"
+            type:
+              PrimitiveType
+                name: "u32"
+      DefDecl
+        name: "prime32-2"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "2246822519"
+            type:
+              PrimitiveType
+                name: "u32"
+      DefDecl
+        name: "prime32-3"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "3266489917"
+            type:
+              PrimitiveType
+                name: "u32"
+      DefDecl
+        name: "prime32-4"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "668265263"
+            type:
+              PrimitiveType
+                name: "u32"
+      DefDecl
+        name: "prime32-5"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "374761393"
+            type:
+              PrimitiveType
+                name: "u32"
+      FuncDecl
+        name: "round32"
+        isInline: true
+        signature:
+          {
+            params:
+              [
+                {
+                  name: "seed"
+                  type:
+                    PrimitiveType
+                      name: "u32"
+                  span:
+                    {
+                      start: 279
+                      end: 287
+                    }
+                }
+                {
+                  name: "value"
+                  type:
+                    PrimitiveType
+                      name: "u32"
+                  span:
+                    {
+                      start: 289
+                      end: 298
+                    }
+                }
+              ]
+            returns:
+              PrimitiveType
+                name: "u32"
+          }
+        body:
+          BlockBody
+            stmts:
+              [
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "seed"
+                  op: "+="
+                  value:
+                    BinaryExpr
+                      op: "*"
+                      left:
+                        Identifier
+                          name: "value"
+                      right:
+                        Identifier
+                          name: "prime32-2"
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "seed"
+                  op: "<<<="
+                  value:
+                    NumberLit
+                      value: "13"
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "seed"
+                  op: "*="
+                  value:
+                    Identifier
+                      name: "prime32-1"
+                ReturnStmt
+                  value:
+                    Identifier
+                      name: "seed"
+              ]
+      ExportDecl
+        exportName: "xxh32"
+        decl:
+          FuncDecl
+            name: "xxh32"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "data"
+                      type:
+                        SliceType
+                          element:
+                            PrimitiveType
+                              name: "u8"
+                      span:
+                        {
+                          start: 415
+                          end: 424
+                        }
+                    }
+                    {
+                      name: "seed"
+                      type:
+                        PrimitiveType
+                          name: "u32"
+                      span:
+                        {
+                          start: 426
+                          end: 434
+                        }
+                    }
+                  ]
+                returns:
+                  NamedReturns
+                    fields:
+                      [
+                        {
+                          name: "h32"
+                          type:
+                            PrimitiveType
+                              name: "u32"
+                          span:
+                            {
+                              start: 440
+                              end: 447
+                            }
+                        }
+                      ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "ptr"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "data"
+                          member: "ptr"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "len"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "data"
+                          member: "len"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "last"
+                      type:
+                        PointerType
+                          target:
+                            PrimitiveType
+                              name: "u8"
+                      init:
+                        BinaryExpr
+                          op: "+"
+                          left:
+                            Identifier
+                              name: "ptr"
+                          right:
+                            Identifier
+                              name: "len"
+                    IfStmt
+                      condition:
+                        BinaryExpr
+                          op: ">="
+                          left:
+                            Identifier
+                              name: "len"
+                          right:
+                            NumberLit
+                              value: "16"
+                      thenBody:
+                        BlockBody
+                          stmts:
+                            [
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v1"
+                                type:
+                                  PrimitiveType
+                                    name: "u32"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "+"
+                                        left:
+                                          Identifier
+                                            name: "seed"
+                                        right:
+                                          Identifier
+                                            name: "prime32-1"
+                                    right:
+                                      Identifier
+                                        name: "prime32-2"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v2"
+                                type:
+                                  PrimitiveType
+                                    name: "u32"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime32-2"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v3"
+                                type:
+                                  PrimitiveType
+                                    name: "u32"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v4"
+                                type:
+                                  PrimitiveType
+                                    name: "u32"
+                                init:
+                                  BinaryExpr
+                                    op: "-"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime32-1"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "limit"
+                                type:
+                                  PointerType
+                                    target:
+                                      PrimitiveType
+                                        name: "u8"
+                                init:
+                                  BinaryExpr
+                                    op: "-"
+                                    left:
+                                      Identifier
+                                        name: "last"
+                                    right:
+                                      NumberLit
+                                        value: "16"
+                              LoopStmt
+                                body:
+                                  BlockBody
+                                    stmts:
+                                      [
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v1"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round32"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v1"
+                                                    span:
+                                                      {
+                                                        start: 799
+                                                        end: 801
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u32"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u32"
+                                                    span:
+                                                      {
+                                                        start: 803
+                                                        end: 810
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "4"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v2"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round32"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v2"
+                                                    span:
+                                                      {
+                                                        start: 846
+                                                        end: 848
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u32"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u32"
+                                                    span:
+                                                      {
+                                                        start: 850
+                                                        end: 857
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "4"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v3"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round32"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v3"
+                                                    span:
+                                                      {
+                                                        start: 893
+                                                        end: 895
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u32"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u32"
+                                                    span:
+                                                      {
+                                                        start: 897
+                                                        end: 904
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "4"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v4"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round32"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v4"
+                                                    span:
+                                                      {
+                                                        start: 940
+                                                        end: 942
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u32"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u32"
+                                                    span:
+                                                      {
+                                                        start: 944
+                                                        end: 951
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "4"
+                                        BreakStmt
+                                          when:
+                                            BinaryExpr
+                                              op: ">"
+                                              left:
+                                                Identifier
+                                                  name: "ptr"
+                                              right:
+                                                Identifier
+                                                  name: "limit"
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "+"
+                                        left:
+                                          BinaryExpr
+                                            op: "+"
+                                            left:
+                                              GroupExpr
+                                                expr:
+                                                  BinaryExpr
+                                                    op: "<<<"
+                                                    left:
+                                                      Identifier
+                                                        name: "v1"
+                                                    right:
+                                                      NumberLit
+                                                        value: "1"
+                                            right:
+                                              GroupExpr
+                                                expr:
+                                                  BinaryExpr
+                                                    op: "<<<"
+                                                    left:
+                                                      Identifier
+                                                        name: "v2"
+                                                    right:
+                                                      NumberLit
+                                                        value: "7"
+                                        right:
+                                          GroupExpr
+                                            expr:
+                                              BinaryExpr
+                                                op: "<<<"
+                                                left:
+                                                  Identifier
+                                                    name: "v3"
+                                                right:
+                                                  NumberLit
+                                                    value: "12"
+                                    right:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "<<<"
+                                            left:
+                                              Identifier
+                                                name: "v4"
+                                            right:
+                                              NumberLit
+                                                value: "18"
+                            ]
+                      elseBody:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime32-5"
+                            ]
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "+="
+                      value:
+                        Identifier
+                          name: "len"
+                    WhileStmt
+                      condition:
+                        BinaryExpr
+                          op: "<="
+                          left:
+                            BinaryExpr
+                              op: "+"
+                              left:
+                                Identifier
+                                  name: "ptr"
+                              right:
+                                NumberLit
+                                  value: "4"
+                          right:
+                            Identifier
+                              name: "last"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "+="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "ptr"
+                                        member: "u32"
+                                        isTypePun:
+                                          PrimitiveType
+                                            name: "u32"
+                                    right:
+                                      Identifier
+                                        name: "prime32-3"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "<<<"
+                                            left:
+                                              Identifier
+                                                name: "h32"
+                                            right:
+                                              NumberLit
+                                                value: "17"
+                                    right:
+                                      Identifier
+                                        name: "prime32-4"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "4"
+                            ]
+                    WhileStmt
+                      condition:
+                        BinaryExpr
+                          op: "<"
+                          left:
+                            Identifier
+                              name: "ptr"
+                          right:
+                            Identifier
+                              name: "last"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "+="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "ptr"
+                                        member: "u8"
+                                        isTypePun:
+                                          PrimitiveType
+                                            name: "u8"
+                                    right:
+                                      Identifier
+                                        name: "prime32-5"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h32"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "<<<"
+                                            left:
+                                              Identifier
+                                                name: "h32"
+                                            right:
+                                              NumberLit
+                                                value: "11"
+                                    right:
+                                      Identifier
+                                        name: "prime32-1"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "1"
+                            ]
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h32"
+                          right:
+                            NumberLit
+                              value: "15"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "*="
+                      value:
+                        Identifier
+                          name: "prime32-2"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h32"
+                          right:
+                            NumberLit
+                              value: "13"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "*="
+                      value:
+                        Identifier
+                          name: "prime32-3"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h32"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h32"
+                          right:
+                            NumberLit
+                              value: "16"
+                  ]
+    ]

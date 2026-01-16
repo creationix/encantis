@@ -1,0 +1,1174 @@
+Module
+  decls:
+    [
+      ExportDecl
+        exportName: "mem"
+        decl:
+          MemoryDecl
+            minPages: 1
+      DefDecl
+        name: "prime64-1"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "11400714785074694791"
+            type:
+              PrimitiveType
+                name: "u64"
+      DefDecl
+        name: "prime64-2"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "14029467366897019727"
+            type:
+              PrimitiveType
+                name: "u64"
+      DefDecl
+        name: "prime64-3"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "1609587929392839161"
+            type:
+              PrimitiveType
+                name: "u64"
+      DefDecl
+        name: "prime64-4"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "9650029242287828579"
+            type:
+              PrimitiveType
+                name: "u64"
+      DefDecl
+        name: "prime64-5"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "2870177450012600261"
+            type:
+              PrimitiveType
+                name: "u64"
+      FuncDecl
+        name: "round64"
+        isInline: true
+        signature:
+          {
+            params:
+              [
+                {
+                  name: "acc"
+                  type:
+                    PrimitiveType
+                      name: "u64"
+                  span:
+                    {
+                      start: 329
+                      end: 336
+                    }
+                }
+                {
+                  name: "value"
+                  type:
+                    PrimitiveType
+                      name: "u64"
+                  span:
+                    {
+                      start: 338
+                      end: 347
+                    }
+                }
+              ]
+            returns:
+              PrimitiveType
+                name: "u64"
+          }
+        body:
+          BlockBody
+            stmts:
+              [
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "acc"
+                  op: "+="
+                  value:
+                    BinaryExpr
+                      op: "*"
+                      left:
+                        Identifier
+                          name: "value"
+                      right:
+                        Identifier
+                          name: "prime64-2"
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "acc"
+                  op: "<<<="
+                  value:
+                    NumberLit
+                      value: "31"
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "acc"
+                  op: "*="
+                  value:
+                    Identifier
+                      name: "prime64-1"
+                ReturnStmt
+                  value:
+                    Identifier
+                      name: "acc"
+              ]
+      FuncDecl
+        name: "merge-round64"
+        isInline: true
+        signature:
+          {
+            params:
+              [
+                {
+                  name: "acc"
+                  type:
+                    PrimitiveType
+                      name: "u64"
+                  span:
+                    {
+                      start: 460
+                      end: 467
+                    }
+                }
+                {
+                  name: "value"
+                  type:
+                    PrimitiveType
+                      name: "u64"
+                  span:
+                    {
+                      start: 469
+                      end: 478
+                    }
+                }
+              ]
+            returns:
+              PrimitiveType
+                name: "u64"
+          }
+        body:
+          BlockBody
+            stmts:
+              [
+                LetStmt
+                  pattern:
+                    IdentPattern
+                      name: "val"
+                  init:
+                    CallExpr
+                      callee:
+                        Identifier
+                          name: "round64"
+                      args:
+                        [
+                          {
+                            value:
+                              NumberLit
+                                value: "0"
+                            span:
+                              {
+                                start: 509
+                                end: 510
+                              }
+                          }
+                          {
+                            value:
+                              Identifier
+                                name: "value"
+                            span:
+                              {
+                                start: 512
+                                end: 517
+                              }
+                          }
+                        ]
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "acc"
+                  op: "^="
+                  value:
+                    Identifier
+                      name: "val"
+                AssignStmt
+                  target:
+                    Identifier
+                      name: "acc"
+                  op: "="
+                  value:
+                    BinaryExpr
+                      op: "+"
+                      left:
+                        GroupExpr
+                          expr:
+                            BinaryExpr
+                              op: "*"
+                              left:
+                                Identifier
+                                  name: "acc"
+                              right:
+                                Identifier
+                                  name: "prime64-1"
+                      right:
+                        Identifier
+                          name: "prime64-4"
+                ReturnStmt
+                  value:
+                    Identifier
+                      name: "acc"
+              ]
+      ExportDecl
+        exportName: "xxh64"
+        decl:
+          FuncDecl
+            name: "xxh64"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "data"
+                      type:
+                        SliceType
+                          element:
+                            PrimitiveType
+                              name: "u8"
+                      span:
+                        {
+                          start: 612
+                          end: 621
+                        }
+                    }
+                    {
+                      name: "seed"
+                      type:
+                        PrimitiveType
+                          name: "u64"
+                      span:
+                        {
+                          start: 623
+                          end: 631
+                        }
+                    }
+                  ]
+                returns:
+                  NamedReturns
+                    fields:
+                      [
+                        {
+                          name: "h64"
+                          type:
+                            PrimitiveType
+                              name: "u64"
+                          span:
+                            {
+                              start: 637
+                              end: 644
+                            }
+                        }
+                      ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "ptr"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "data"
+                          member: "ptr"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "len"
+                      init:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "data"
+                          member: "len"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "last"
+                      type:
+                        PointerType
+                          target:
+                            PrimitiveType
+                              name: "u8"
+                      init:
+                        BinaryExpr
+                          op: "+"
+                          left:
+                            Identifier
+                              name: "ptr"
+                          right:
+                            Identifier
+                              name: "len"
+                    IfStmt
+                      condition:
+                        BinaryExpr
+                          op: ">="
+                          left:
+                            Identifier
+                              name: "len"
+                          right:
+                            NumberLit
+                              value: "32"
+                      thenBody:
+                        BlockBody
+                          stmts:
+                            [
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "limit"
+                                type:
+                                  PointerType
+                                    target:
+                                      PrimitiveType
+                                        name: "u8"
+                                init:
+                                  BinaryExpr
+                                    op: "-"
+                                    left:
+                                      Identifier
+                                        name: "last"
+                                    right:
+                                      NumberLit
+                                        value: "32"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v1"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "+"
+                                        left:
+                                          Identifier
+                                            name: "seed"
+                                        right:
+                                          Identifier
+                                            name: "prime64-1"
+                                    right:
+                                      Identifier
+                                        name: "prime64-2"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v2"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime64-2"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v3"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "v4"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  BinaryExpr
+                                    op: "-"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime64-1"
+                              LoopStmt
+                                body:
+                                  BlockBody
+                                    stmts:
+                                      [
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v1"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round64"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v1"
+                                                    span:
+                                                      {
+                                                        start: 996
+                                                        end: 998
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u64"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u64"
+                                                    span:
+                                                      {
+                                                        start: 1000
+                                                        end: 1007
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "8"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v2"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round64"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v2"
+                                                    span:
+                                                      {
+                                                        start: 1043
+                                                        end: 1045
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u64"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u64"
+                                                    span:
+                                                      {
+                                                        start: 1047
+                                                        end: 1054
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "8"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v3"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round64"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v3"
+                                                    span:
+                                                      {
+                                                        start: 1090
+                                                        end: 1092
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u64"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u64"
+                                                    span:
+                                                      {
+                                                        start: 1094
+                                                        end: 1101
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "8"
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "v4"
+                                          op: "="
+                                          value:
+                                            CallExpr
+                                              callee:
+                                                Identifier
+                                                  name: "round64"
+                                              args:
+                                                [
+                                                  {
+                                                    value:
+                                                      Identifier
+                                                        name: "v4"
+                                                    span:
+                                                      {
+                                                        start: 1137
+                                                        end: 1139
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      MemberExpr
+                                                        target:
+                                                          Identifier
+                                                            name: "ptr"
+                                                        member: "u64"
+                                                        isTypePun:
+                                                          PrimitiveType
+                                                            name: "u64"
+                                                    span:
+                                                      {
+                                                        start: 1141
+                                                        end: 1148
+                                                      }
+                                                  }
+                                                ]
+                                        AssignStmt
+                                          target:
+                                            Identifier
+                                              name: "ptr"
+                                          op: "+="
+                                          value:
+                                            NumberLit
+                                              value: "8"
+                                        BreakStmt
+                                          when:
+                                            BinaryExpr
+                                              op: ">"
+                                              left:
+                                                Identifier
+                                                  name: "ptr"
+                                              right:
+                                                Identifier
+                                                  name: "limit"
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "+"
+                                        left:
+                                          BinaryExpr
+                                            op: "+"
+                                            left:
+                                              GroupExpr
+                                                expr:
+                                                  BinaryExpr
+                                                    op: "<<<"
+                                                    left:
+                                                      Identifier
+                                                        name: "v1"
+                                                    right:
+                                                      NumberLit
+                                                        value: "1"
+                                            right:
+                                              GroupExpr
+                                                expr:
+                                                  BinaryExpr
+                                                    op: "<<<"
+                                                    left:
+                                                      Identifier
+                                                        name: "v2"
+                                                    right:
+                                                      NumberLit
+                                                        value: "7"
+                                        right:
+                                          GroupExpr
+                                            expr:
+                                              BinaryExpr
+                                                op: "<<<"
+                                                left:
+                                                  Identifier
+                                                    name: "v3"
+                                                right:
+                                                  NumberLit
+                                                    value: "12"
+                                    right:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "<<<"
+                                            left:
+                                              Identifier
+                                                name: "v4"
+                                            right:
+                                              NumberLit
+                                                value: "18"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "merge-round64"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "h64"
+                                          span:
+                                            {
+                                              start: 1312
+                                              end: 1315
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "v1"
+                                          span:
+                                            {
+                                              start: 1317
+                                              end: 1319
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "merge-round64"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "h64"
+                                          span:
+                                            {
+                                              start: 1345
+                                              end: 1348
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "v2"
+                                          span:
+                                            {
+                                              start: 1350
+                                              end: 1352
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "merge-round64"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "h64"
+                                          span:
+                                            {
+                                              start: 1378
+                                              end: 1381
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "v3"
+                                          span:
+                                            {
+                                              start: 1383
+                                              end: 1385
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "merge-round64"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "h64"
+                                          span:
+                                            {
+                                              start: 1411
+                                              end: 1414
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "v4"
+                                          span:
+                                            {
+                                              start: 1416
+                                              end: 1418
+                                            }
+                                        }
+                                      ]
+                            ]
+                      elseBody:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      Identifier
+                                        name: "seed"
+                                    right:
+                                      Identifier
+                                        name: "prime64-5"
+                            ]
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "+="
+                      value:
+                        CastExpr
+                          expr:
+                            Identifier
+                              name: "len"
+                          type:
+                            PrimitiveType
+                              name: "u64"
+                    WhileStmt
+                      condition:
+                        BinaryExpr
+                          op: "<="
+                          left:
+                            BinaryExpr
+                              op: "+"
+                              left:
+                                Identifier
+                                  name: "ptr"
+                              right:
+                                NumberLit
+                                  value: "8"
+                          right:
+                            Identifier
+                              name: "last"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "^="
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "round64"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            NumberLit
+                                              value: "0"
+                                          span:
+                                            {
+                                              start: 1641
+                                              end: 1642
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            MemberExpr
+                                              target:
+                                                Identifier
+                                                  name: "ptr"
+                                              member: "u64"
+                                              isTypePun:
+                                                PrimitiveType
+                                                  name: "u64"
+                                          span:
+                                            {
+                                              start: 1644
+                                              end: 1651
+                                            }
+                                        }
+                                      ]
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "*"
+                                        left:
+                                          GroupExpr
+                                            expr:
+                                              BinaryExpr
+                                                op: "<<<"
+                                                left:
+                                                  Identifier
+                                                    name: "h64"
+                                                right:
+                                                  NumberLit
+                                                    value: "27"
+                                        right:
+                                          Identifier
+                                            name: "prime64-1"
+                                    right:
+                                      Identifier
+                                        name: "prime64-4"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "8"
+                            ]
+                    IfStmt
+                      condition:
+                        BinaryExpr
+                          op: "<="
+                          left:
+                            BinaryExpr
+                              op: "+"
+                              left:
+                                Identifier
+                                  name: "ptr"
+                              right:
+                                NumberLit
+                                  value: "4"
+                          right:
+                            Identifier
+                              name: "last"
+                      thenBody:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "^="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      CastExpr
+                                        expr:
+                                          MemberExpr
+                                            target:
+                                              GroupExpr
+                                                expr:
+                                                  CastExpr
+                                                    expr:
+                                                      Identifier
+                                                        name: "ptr"
+                                                    type:
+                                                      PointerType
+                                                        target:
+                                                          PrimitiveType
+                                                            name: "u32"
+                                            member: "*"
+                                            isDeref: true
+                                        type:
+                                          PrimitiveType
+                                            name: "u64"
+                                    right:
+                                      Identifier
+                                        name: "prime64-1"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "*"
+                                        left:
+                                          GroupExpr
+                                            expr:
+                                              BinaryExpr
+                                                op: "<<<"
+                                                left:
+                                                  Identifier
+                                                    name: "h64"
+                                                right:
+                                                  NumberLit
+                                                    value: "23"
+                                        right:
+                                          Identifier
+                                            name: "prime64-2"
+                                    right:
+                                      Identifier
+                                        name: "prime64-3"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "4"
+                            ]
+                    WhileStmt
+                      condition:
+                        BinaryExpr
+                          op: "<"
+                          left:
+                            Identifier
+                              name: "ptr"
+                          right:
+                            Identifier
+                              name: "last"
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "^="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      CastExpr
+                                        expr:
+                                          MemberExpr
+                                            target:
+                                              Identifier
+                                                name: "ptr"
+                                            member: "u8"
+                                            isTypePun:
+                                              PrimitiveType
+                                                name: "u8"
+                                        type:
+                                          PrimitiveType
+                                            name: "u64"
+                                    right:
+                                      Identifier
+                                        name: "prime64-5"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "h64"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "*"
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "<<<"
+                                            left:
+                                              Identifier
+                                                name: "h64"
+                                            right:
+                                              NumberLit
+                                                value: "11"
+                                    right:
+                                      Identifier
+                                        name: "prime64-1"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "ptr"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "1"
+                            ]
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h64"
+                          right:
+                            NumberLit
+                              value: "33"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "*="
+                      value:
+                        Identifier
+                          name: "prime64-2"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h64"
+                          right:
+                            NumberLit
+                              value: "29"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "*="
+                      value:
+                        Identifier
+                          name: "prime64-3"
+                    AssignStmt
+                      target:
+                        Identifier
+                          name: "h64"
+                      op: "^="
+                      value:
+                        BinaryExpr
+                          op: ">>"
+                          left:
+                            Identifier
+                              name: "h64"
+                          right:
+                            NumberLit
+                              value: "32"
+                  ]
+    ]
