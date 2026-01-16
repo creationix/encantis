@@ -1,0 +1,6 @@
+{
+  "types": [
+    { "offset": 24, "source": "\"hello\"", "type": "comptime_string(\"hello\", 5)" }
+  ],
+  "errors": []
+}

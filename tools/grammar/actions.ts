@@ -994,37 +994,49 @@ semantics.addOperation<unknown>('toAST', {
   },
 
   utf8String(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('')
+    const str = chars.children.map((c: ohm.Node) => c.toAST()).join('')
+    const bytes = new TextEncoder().encode(str)
     return {
       kind: 'LiteralExpr',
-      value: { kind: 'string', value, format: 'utf8' },
+      value: { kind: 'string', bytes },
       span: span(this),
     } as AST.LiteralExpr
   },
 
   charString(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('')
+    const str = chars.children.map((c: ohm.Node) => c.toAST()).join('')
+    const bytes = new TextEncoder().encode(str)
     return {
       kind: 'LiteralExpr',
-      value: { kind: 'string', value, format: 'char' },
+      value: { kind: 'string', bytes },
       span: span(this),
     } as AST.LiteralExpr
   },
 
-  hexString(_prefix, bytes, _rq) {
-    const value = bytes.sourceString.replace(/\s+/g, '')
+  hexString(_prefix, hexChars, _rq) {
+    const hex = hexChars.sourceString.replace(/\s+/g, '')
+    const bytes = new Uint8Array(hex.length / 2)
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    }
     return {
       kind: 'LiteralExpr',
-      value: { kind: 'string', value, format: 'hex' },
+      value: { kind: 'string', bytes },
       span: span(this),
     } as AST.LiteralExpr
   },
 
-  base64String(_prefix, chars, _rq) {
-    const value = chars.sourceString.replace(/\s+/g, '')
+  base64String(_prefix, b64Chars, _rq) {
+    const b64 = b64Chars.sourceString.replace(/\s+/g, '')
+    // Decode base64 to bytes
+    const binStr = atob(b64)
+    const bytes = new Uint8Array(binStr.length)
+    for (let i = 0; i < binStr.length; i++) {
+      bytes[i] = binStr.charCodeAt(i)
+    }
     return {
       kind: 'LiteralExpr',
-      value: { kind: 'string', value, format: 'base64' },
+      value: { kind: 'string', bytes },
       span: span(this),
     } as AST.LiteralExpr
   },

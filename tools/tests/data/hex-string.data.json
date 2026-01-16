@@ -1,0 +1,10 @@
+{
+  "entries": [
+    { "offset": 0, "bytes": "48656c6c6f00", "length": 6 }
+  ],
+  "literals": [
+    { "astOffset": 20, "dataOffset": 0 }
+  ],
+  "totalSize": 6,
+  "autoDataStart": 0
+}

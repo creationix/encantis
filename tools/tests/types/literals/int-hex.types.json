@@ -1,0 +1,6 @@
+{
+  "types": [
+    { "offset": 24, "source": "0xFF", "type": "comptime_int(255)" }
+  ],
+  "errors": []
+}

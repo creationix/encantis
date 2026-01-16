@@ -1,0 +1,4 @@
+func test() {
+  log("Hello")
+  log(x"48 65 6c 6c 6f")
+}

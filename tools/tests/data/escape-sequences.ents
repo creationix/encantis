@@ -1,0 +1,4 @@
+func test() {
+  log("hello\nworld")
+  log("tab\there")
+}

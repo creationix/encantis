@@ -1,0 +1,5 @@
+func test() {
+  log("apple")
+  log("banana")
+  log("cherry")
+}

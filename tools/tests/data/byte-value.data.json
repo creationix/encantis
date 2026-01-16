@@ -1,0 +1,9 @@
+{
+  "entries": [
+    { "offset": 0, "bytes": "68656c6c6f00", "length": 6 },
+    { "offset": 6, "bytes": "00", "length": 1 }
+  ],
+  "totalSize": 7,
+  "autoDataStart": 7,
+  "errors": []
+}

@@ -1,0 +1,5 @@
+import "env" "log" func log(u8[])
+
+func test() {
+  log("hello")
+}

@@ -1,0 +1,3 @@
+func test() {
+  log(x"48 65 6c 6c 6f")
+}

@@ -1,0 +1,4 @@
+export "mem" memory 1 {
+  0 => "hello",
+  6 => "world",
+}

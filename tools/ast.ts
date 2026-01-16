@@ -390,11 +390,7 @@ export interface LiteralExpr extends BaseNode {
 export type LiteralValue =
   | { kind: 'int'; value: bigint; radix: 10 | 16 | 2 | 8 | 12 }
   | { kind: 'float'; value: number }
-  | {
-      kind: 'string'
-      value: string
-      format: 'utf8' | 'char' | 'hex' | 'base64'
-    }
+  | { kind: 'string'; bytes: Uint8Array }
   | { kind: 'bool'; value: boolean }
 
 // if expr { ... } elif ... else ...
