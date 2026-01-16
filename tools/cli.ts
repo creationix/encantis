@@ -5,7 +5,7 @@
 // =============================================================================
 
 import { readFileSync, writeFileSync } from 'fs';
-import { compile, analyze, formatDiagnostic } from './compile';
+import { compile, analyze, parse, formatDiagnostic } from './compile';
 
 const args = process.argv.slice(2);
 
@@ -15,10 +15,12 @@ function printUsage(): void {
 Commands:
   compile <file.ents>     Compile to WAT (outputs to stdout)
   compile <file.ents> -o <out.wat>  Compile to file
+  ast <file.ents>         Output parsed AST as JSON
+  ast <file.ents> -o <out.ast>  Output AST to file
   check <file.ents>       Check for errors without compiling
 
 Options:
-  -o, --output <file>     Output file (for compile)
+  -o, --output <file>     Output file (for compile/ast)
   -h, --help              Show this help
 `);
 }
@@ -83,6 +85,34 @@ function main(): void {
         } else {
           console.log(`✗ ${inputFile}: ${errors.length} error(s), ${warnings.length} warning(s)`);
           process.exit(1);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'ast': {
+      const inputFile = args.find((a, i) => i > 0 && !a.startsWith('-') && args[i - 1] !== '-o' && args[i - 1] !== '--output');
+      const outputIndex = args.findIndex(a => a === '-o' || a === '--output');
+      const outputFile = outputIndex >= 0 ? args[outputIndex + 1] : null;
+
+      if (!inputFile) {
+        console.error('Error: No input file specified');
+        process.exit(1);
+      }
+
+      try {
+        const src = readFileSync(inputFile, 'utf8');
+        const result = parse(src);
+        const astJson = JSON.stringify(result.ast, null, 2);
+
+        if (outputFile) {
+          writeFileSync(outputFile, astJson);
+          console.error(`Parsed ${inputFile} -> ${outputFile}`);
+        } else {
+          console.log(astJson);
         }
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));

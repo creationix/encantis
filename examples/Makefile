@@ -1,20 +1,30 @@
-.PHONY: all test clean wasm wat js check
+.PHONY: all test clean wasm wat ast js check
 
 # Path to the compiler
-ENCANTIS = bun run ../tools/cli.ts
+ENCANTIS = ../tools/cli.ts
 
 # Build all examples
-all: wat wasm
+all: ast wat wasm
 
-# Compile all .ents files to .wat using the Encantis compiler
-wat:
-	@echo "Compiling .ents files to .wat..."
-	@find . -name "*.ents" -exec bash -c '$(ENCANTIS) compile "$$1" -o "$${1%.ents}.wat" 2>&1 || echo "Failed: $$1"' _ {} \;
+ALL_ENT_FILES := $(shell find . -name "*.ents")
+ALL_WAT_FILES := $(patsubst %.ents,%.wat,$(ALL_ENT_FILES))
+ALL_WASM_FILES := $(patsubst %.wat,%.wasm,$(ALL_WAT_FILES))
+ALL_AST_FILES := $(patsubst %.ents,%.ast,$(ALL_ENT_FILES))
 
-# Compile all WAT files to WASM
-wasm:
-	@echo "Compiling .wat files to .wasm..."
-	@find . -name "*.wat" -exec bash -c 'wat2wasm "$$1" -o "$${1%.wat}.wasm"' _ {} \;
+# Generate AST (JSON) from .ents files
+ast: $(ALL_AST_FILES)
+%.ast: %.ents
+	$(ENCANTIS) ast $< -o $@
+
+# Compile .ents files to .wat
+wat: $(ALL_WAT_FILES)
+%.wat: %.ents
+	$(ENCANTIS) compile $< -o $@
+
+# Compile .wat files to .wasm
+wasm: $(ALL_WASM_FILES)
+%.wasm: %.wat
+	wat2wasm $< -o $@
 
 # Generate JS glue code from WASM files (for examples that need it)
 js:
@@ -56,14 +66,16 @@ compile:
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
+	@find . -name "*.ast" -delete
 	@find . -name "*.wasm" -delete
 	@find . -name "*.wat" -delete
-	@echo "Cleaned .wasm and .wat files"
+	@echo "Cleaned .ast, .wasm, and .wat files"
 
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all       - Build all examples (wat + wasm)"
+	@echo "  all       - Build all examples (ast + wat + wasm)"
+	@echo "  ast       - Parse .ents files to .ast (JSON)"
 	@echo "  wat       - Compile .ents files to .wat"
 	@echo "  wasm      - Compile .wat files to .wasm"
 	@echo "  js        - Generate JS from WASM files"

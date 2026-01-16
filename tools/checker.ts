@@ -3,14 +3,18 @@
 // Semantic analysis: symbol resolution, type inference, and error reporting
 // =============================================================================
 
-import {
+import type {
   Span, Diagnostic,
   Type, PrimitiveType, SliceType, PointerType, TupleType, FunctionType, StructType, StructField,
-  Expr, Stmt, Param, PlaceExpr,
-  Import, ImportGroup, ImportSingle,
-  FuncDecl, FuncBody, ArrowBody, BlockBody,
-  ExportDecl, GlobalDecl,
-  Module, ParseResult, CheckResult,
+  Expr, Stmt, PlaceExpr,
+  FuncDecl, FuncSignature, FuncParam, NamedReturns, Body, ArrowBody, BlockBody,
+  ImportDecl, ImportItem, ImportItemKind,
+  ExportDecl, GlobalDecl, DefDecl, TypeDecl, MemoryDecl,
+  Module, Decl,
+} from './parser2';
+
+import type {
+  ParseResult, CheckResult,
   Symbol, SymbolKind, Scope, SymbolTable,
 } from './types';
 
@@ -264,14 +268,16 @@ function resolveType(c: Checker, type: Type): Type {
 // Import Checking
 // -----------------------------------------------------------------------------
 
-function checkImport(c: Checker, imp: Import): void {
-  if (imp.kind === 'ImportGroup') {
-    for (const item of imp.items) {
-      const localName = item.localName || item.exportName;
+function checkImport(c: Checker, imp: ImportDecl): void {
+  for (const item of imp.items) {
+    if (item.item.kind === 'func') {
+      const sig = item.item.signature;
+      // Get the local function name - use item.name if available, otherwise external name
+      const localName = item.item.name || item.externalName;
 
-      // Build function type from params and return
-      const paramTypes = item.params.map(p => p.type);
-      const returnType = item.returnType || { kind: 'TupleType' as const, elements: [], span: item.span };
+      // Build function type from signature
+      const paramTypes = sig.params.map(p => p.type).filter(t => t !== undefined);
+      const returnType = getReturnType(sig.returns, item.span);
 
       const funcType: FunctionType = {
         kind: 'FunctionType',
@@ -281,12 +287,28 @@ function checkImport(c: Checker, imp: Import): void {
       };
 
       defineSymbol(c, localName, 'import', item.span, funcType);
+    } else if (item.item.kind === 'global') {
+      defineSymbol(c, item.item.name, 'import', item.span, item.item.type);
     }
-  } else {
-    // ImportSingle
-    const localName = imp.localName || imp.exportName;
-    defineSymbol(c, localName, 'import', imp.span, imp.funcType);
+    // Memory imports don't need symbol registration
   }
+}
+
+function getReturnType(returns: Type | NamedReturns | undefined, fallbackSpan: Span): Type {
+  if (!returns) {
+    return { kind: 'TupleType', elements: [], span: fallbackSpan };
+  }
+  if ('kind' in returns && returns.kind === 'NamedReturns') {
+    if (returns.fields.length === 1) {
+      return returns.fields[0].type;
+    }
+    return {
+      kind: 'TupleType',
+      elements: returns.fields.map(f => f.type),
+      span: fallbackSpan,
+    };
+  }
+  return returns as Type;
 }
 
 // -----------------------------------------------------------------------------
@@ -597,79 +619,105 @@ function checkStmt(c: Checker, stmt: Stmt): void {
     }
 
     case 'LetStmt': {
-      const valueType = checkExpr(c, stmt.value);
+      const valueType = stmt.init ? checkExpr(c, stmt.init) : undefined;
       const resolvedValueType = valueType ? resolveType(c, valueType) : undefined;
+      const declaredType = stmt.type;
 
-      if (stmt.pattern === 'struct') {
-        // let {x, y} = expr - struct destructuring (works for structs and slices)
-        if (resolvedValueType?.kind === 'StructType') {
-          for (const binding of stmt.bindings ?? []) {
-            const field = resolvedValueType.fields.find(f => f.name === binding.field);
-            const varName = binding.variable ?? binding.field;
-            if (field) {
-              defineSymbol(c, varName, 'local', binding.span, field.type, true);
-            } else {
-              addError(c, binding.span, `Struct has no field '${binding.field}'.`);
-              defineSymbol(c, varName, 'local', binding.span, { kind: 'PrimitiveType', name: 'unknown', span: binding.span }, true);
-            }
-          }
-        } else if (resolvedValueType?.kind === 'SliceType') {
-          // Slices act like { ptr: *T, len: u32 }
-          for (const binding of stmt.bindings ?? []) {
-            const varName = binding.variable ?? binding.field;
-            if (binding.field === 'ptr') {
-              defineSymbol(c, varName, 'local', binding.span, { kind: 'PointerType', target: resolvedValueType.element, span: binding.span }, true);
-            } else if (binding.field === 'len') {
-              defineSymbol(c, varName, 'local', binding.span, { kind: 'PrimitiveType', name: 'u32', span: binding.span }, true);
-            } else {
-              addError(c, binding.span, `Slice has no field '${binding.field}'. Available fields: ptr, len.`);
-              defineSymbol(c, varName, 'local', binding.span, { kind: 'PrimitiveType', name: 'unknown', span: binding.span }, true);
-            }
-          }
-        } else {
-          addError(c, stmt.value.span,
-            `Expected a struct or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
-          for (const name of stmt.names) {
-            defineSymbol(c, name, 'local', stmt.span, { kind: 'PrimitiveType', name: 'unknown', span: stmt.span }, true);
-          }
+      switch (stmt.pattern.kind) {
+        case 'IdentPattern': {
+          // Simple: let x = expr or let x:T = expr
+          const type = declaredType || valueType || { kind: 'PrimitiveType' as const, name: 'unknown', span: stmt.span };
+          defineSymbol(c, stmt.pattern.name, 'local', stmt.span, type, true);
+          break;
         }
-      } else {
-        // let (a, b) = expr - tuple destructuring (works for tuples and slices)
-        if (resolvedValueType?.kind === 'TupleType') {
-          if (resolvedValueType.elements.length !== stmt.names.length) {
-            addError(c, stmt.value.span,
-              `Cannot unpack ${resolvedValueType.elements.length} values into ${stmt.names.length} variables.`);
-          }
 
-          for (let i = 0; i < stmt.names.length; i++) {
-            const name = stmt.names[i];
-            const type = stmt.types?.[i] ?? resolvedValueType.elements[i];
-            if (type) {
-              defineSymbol(c, name, 'local', stmt.span, type, true);
+        case 'StructPattern': {
+          // let {x, y} = expr - struct destructuring
+          if (resolvedValueType?.kind === 'StructType') {
+            for (const field of stmt.pattern.fields) {
+              const structField = resolvedValueType.fields.find(f => f.name === field.fieldName);
+              const varName = field.binding ?? field.fieldName;
+              if (structField) {
+                defineSymbol(c, varName, 'local', field.span, structField.type, true);
+              } else {
+                addError(c, field.span, `Struct has no field '${field.fieldName}'.`);
+                defineSymbol(c, varName, 'local', field.span, { kind: 'PrimitiveType', name: 'unknown', span: field.span }, true);
+              }
+            }
+          } else if (resolvedValueType?.kind === 'SliceType') {
+            // Slices act like { ptr: *T, len: u32 }
+            for (const field of stmt.pattern.fields) {
+              const varName = field.binding ?? field.fieldName;
+              if (field.fieldName === 'ptr') {
+                defineSymbol(c, varName, 'local', field.span, { kind: 'PointerType', target: resolvedValueType.element, span: field.span }, true);
+              } else if (field.fieldName === 'len') {
+                defineSymbol(c, varName, 'local', field.span, { kind: 'PrimitiveType', name: 'u32', span: field.span }, true);
+              } else {
+                addError(c, field.span, `Slice has no field '${field.fieldName}'. Available fields: ptr, len.`);
+                defineSymbol(c, varName, 'local', field.span, { kind: 'PrimitiveType', name: 'unknown', span: field.span }, true);
+              }
+            }
+          } else {
+            const initSpan = stmt.init?.span || stmt.span;
+            addError(c, initSpan,
+              `Expected a struct or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+            for (const field of stmt.pattern.fields) {
+              const varName = field.binding ?? field.fieldName;
+              defineSymbol(c, varName, 'local', field.span, { kind: 'PrimitiveType', name: 'unknown', span: field.span }, true);
             }
           }
-        } else if (resolvedValueType?.kind === 'SliceType') {
-          // Slices act like (ptr, len) tuple
-          if (stmt.names.length !== 2) {
-            addError(c, stmt.value.span,
-              `Cannot unpack slice (2 values) into ${stmt.names.length} variables.`);
-          }
-          const sliceTypes: Type[] = [
-            { kind: 'PointerType', target: resolvedValueType.element, span: stmt.span },
-            { kind: 'PrimitiveType', name: 'u32', span: stmt.span },
-          ];
-          for (let i = 0; i < stmt.names.length && i < 2; i++) {
-            const name = stmt.names[i];
-            const type = stmt.types?.[i] ?? sliceTypes[i];
-            defineSymbol(c, name, 'local', stmt.span, type, true);
-          }
-        } else {
-          addError(c, stmt.value.span,
-            `Expected a tuple or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
-          for (const name of stmt.names) {
-            defineSymbol(c, name, 'local', stmt.span, { kind: 'PrimitiveType', name: 'unknown', span: stmt.span }, true);
-          }
+          break;
         }
+
+        case 'TuplePattern': {
+          // let (a, b) = expr - tuple destructuring
+          const names = stmt.pattern.elements;
+          if (resolvedValueType?.kind === 'TupleType') {
+            if (resolvedValueType.elements.length !== names.length) {
+              const initSpan = stmt.init?.span || stmt.span;
+              addError(c, initSpan,
+                `Cannot unpack ${resolvedValueType.elements.length} values into ${names.length} variables.`);
+            }
+            for (let i = 0; i < names.length; i++) {
+              const elem = names[i];
+              if (elem.pattern.kind === 'IdentPattern') {
+                const type = resolvedValueType.elements[i] || { kind: 'PrimitiveType' as const, name: 'unknown', span: elem.span };
+                defineSymbol(c, elem.pattern.name, 'local', elem.span, type, true);
+              }
+            }
+          } else if (resolvedValueType?.kind === 'SliceType') {
+            // Slices act like (ptr, len) tuple
+            if (names.length !== 2) {
+              const initSpan = stmt.init?.span || stmt.span;
+              addError(c, initSpan,
+                `Cannot unpack slice (2 values) into ${names.length} variables.`);
+            }
+            const sliceTypes: Type[] = [
+              { kind: 'PointerType', target: resolvedValueType.element, span: stmt.span },
+              { kind: 'PrimitiveType', name: 'u32', span: stmt.span },
+            ];
+            for (let i = 0; i < names.length && i < 2; i++) {
+              const elem = names[i];
+              if (elem.pattern.kind === 'IdentPattern') {
+                defineSymbol(c, elem.pattern.name, 'local', elem.span, sliceTypes[i], true);
+              }
+            }
+          } else {
+            const initSpan = stmt.init?.span || stmt.span;
+            addError(c, initSpan,
+              `Expected a tuple or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+            for (const elem of names) {
+              if (elem.pattern.kind === 'IdentPattern') {
+                defineSymbol(c, elem.pattern.name, 'local', elem.span, { kind: 'PrimitiveType', name: 'unknown', span: elem.span }, true);
+              }
+            }
+          }
+          break;
+        }
+
+        case 'ErrorPattern':
+          // Skip error patterns
+          break;
       }
       break;
     }
@@ -694,87 +742,81 @@ function checkStmt(c: Checker, stmt: Stmt): void {
         }
       };
 
-      if (stmt.pattern === 'struct') {
-        // set {x, y} = expr - struct destructuring assignment (works for structs and slices)
-        if (resolvedValueType?.kind === 'StructType') {
-          for (const binding of stmt.bindings ?? []) {
-            const field = resolvedValueType.fields.find(f => f.name === binding.field);
-            const varName = binding.variable ?? binding.field;
-            if (!field) {
-              addError(c, binding.span, `Struct has no field '${binding.field}'.`);
-              continue;
-            }
-            checkVarAssignment(varName, field.type, binding.span);
-          }
-        } else if (resolvedValueType?.kind === 'SliceType') {
-          // Slices act like { ptr: *T, len: u32 }
-          for (const binding of stmt.bindings ?? []) {
-            const varName = binding.variable ?? binding.field;
-            if (binding.field === 'ptr') {
-              checkVarAssignment(varName, { kind: 'PointerType', target: resolvedValueType.element, span: binding.span }, binding.span);
-            } else if (binding.field === 'len') {
-              checkVarAssignment(varName, { kind: 'PrimitiveType', name: 'u32', span: binding.span }, binding.span);
-            } else {
-              addError(c, binding.span, `Slice has no field '${binding.field}'. Available fields: ptr, len.`);
-            }
-          }
-        } else {
-          addError(c, stmt.value.span,
-            `Expected a struct or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
-        }
-      } else {
-        // set (a, b) = expr - tuple destructuring assignment (works for tuples and slices)
-        // Get the expected types for each position
-        let expectedTypes: (Type | undefined)[] = [];
-        let expectedCount = 0;
-
-        if (resolvedValueType?.kind === 'TupleType') {
-          expectedTypes = resolvedValueType.elements;
-          expectedCount = resolvedValueType.elements.length;
-        } else if (resolvedValueType?.kind === 'SliceType') {
-          // Slices act like (ptr, len) tuple
-          expectedTypes = [
-            { kind: 'PointerType', target: resolvedValueType.element, span: stmt.span },
-            { kind: 'PrimitiveType', name: 'u32', span: stmt.span },
-          ];
-          expectedCount = 2;
-        } else {
-          addError(c, stmt.value.span,
-            `Expected a tuple or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+      switch (stmt.pattern.kind) {
+        case 'IdentPattern': {
+          // Simple: set x = expr
+          checkVarAssignment(stmt.pattern.name, valueType || { kind: 'PrimitiveType', name: 'unknown', span: stmt.span }, stmt.span);
           break;
         }
 
-        if (expectedCount !== stmt.targets.length) {
-          addError(c, stmt.value.span,
-            `Cannot unpack ${expectedCount} values into ${stmt.targets.length} targets.`);
-        }
-
-        for (let i = 0; i < stmt.targets.length; i++) {
-          const target = stmt.targets[i];
-          const expectedType = expectedTypes[i];
-
-          if (target.kind === 'Identifier') {
-            const sym = lookupSymbol(c, target.name);
-            if (!sym) {
-              addError(c, target.span, `Undefined variable '${target.name}'. Did you forget to declare it?`);
-              continue;
+        case 'StructPattern': {
+          // set {x, y} = expr - struct destructuring assignment
+          if (resolvedValueType?.kind === 'StructType') {
+            for (const field of stmt.pattern.fields) {
+              const structField = resolvedValueType.fields.find(f => f.name === field.fieldName);
+              const varName = field.binding ?? field.fieldName;
+              if (!structField) {
+                addError(c, field.span, `Struct has no field '${field.fieldName}'.`);
+                continue;
+              }
+              checkVarAssignment(varName, structField.type, field.span);
             }
-            if (sym.kind !== 'local' && sym.kind !== 'param' && sym.mutable !== true) {
-              addError(c, target.span, `Cannot assign to '${target.name}' because it's not mutable.`);
-            }
-            if (expectedType && sym.type && !typesCompatible(expectedType, sym.type, c)) {
-              addError(c, stmt.value.span,
-                `Cannot assign '${typeToString(expectedType)}' to '${target.name}' of type '${typeToString(sym.type)}'.`);
+          } else if (resolvedValueType?.kind === 'SliceType') {
+            for (const field of stmt.pattern.fields) {
+              const varName = field.binding ?? field.fieldName;
+              if (field.fieldName === 'ptr') {
+                checkVarAssignment(varName, { kind: 'PointerType', target: resolvedValueType.element, span: field.span }, field.span);
+              } else if (field.fieldName === 'len') {
+                checkVarAssignment(varName, { kind: 'PrimitiveType', name: 'u32', span: field.span }, field.span);
+              } else {
+                addError(c, field.span, `Slice has no field '${field.fieldName}'. Available fields: ptr, len.`);
+              }
             }
           } else {
-            // IndexExpr or MemberExpr - just type check
-            const targetType = checkExpr(c, target);
-            if (expectedType && targetType && !typesCompatible(expectedType, targetType, c)) {
-              addError(c, stmt.value.span,
-                `Cannot assign '${typeToString(expectedType)}' to target of type '${typeToString(targetType)}'.`);
+            addError(c, stmt.value.span,
+              `Expected a struct or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+          }
+          break;
+        }
+
+        case 'TuplePattern': {
+          // set (a, b) = expr - tuple destructuring assignment
+          const elements = stmt.pattern.elements;
+          let expectedTypes: (Type | undefined)[] = [];
+          let expectedCount = 0;
+
+          if (resolvedValueType?.kind === 'TupleType') {
+            expectedTypes = resolvedValueType.elements;
+            expectedCount = resolvedValueType.elements.length;
+          } else if (resolvedValueType?.kind === 'SliceType') {
+            expectedTypes = [
+              { kind: 'PointerType', target: resolvedValueType.element, span: stmt.span },
+              { kind: 'PrimitiveType', name: 'u32', span: stmt.span },
+            ];
+            expectedCount = 2;
+          } else {
+            addError(c, stmt.value.span,
+              `Expected a tuple or slice value for destructuring, got '${valueType ? typeToString(valueType) : 'unknown'}'.`);
+            break;
+          }
+
+          if (expectedCount !== elements.length) {
+            addError(c, stmt.value.span,
+              `Cannot unpack ${expectedCount} values into ${elements.length} targets.`);
+          }
+
+          for (let i = 0; i < elements.length; i++) {
+            const elem = elements[i];
+            const expectedType = expectedTypes[i];
+            if (elem.pattern.kind === 'IdentPattern') {
+              checkVarAssignment(elem.pattern.name, expectedType || { kind: 'PrimitiveType', name: 'unknown', span: elem.span }, elem.span);
             }
           }
+          break;
         }
+
+        case 'ErrorPattern':
+          break;
       }
       break;
     }
@@ -939,13 +981,16 @@ function checkFunction(c: Checker, func: FuncDecl): void {
   c.functionScopes.set(func, funcScope);
 
   // Register parameters
-  for (const param of func.params) {
-    defineSymbol(c, param.name, 'param', param.span, param.type, false);
+  for (const param of func.signature.params) {
+    if (param.name) {
+      defineSymbol(c, param.name, 'param', param.span, param.type, false);
+    }
   }
 
   // Register named returns as locals
-  if (func.returnType && 'params' in func.returnType) {
-    for (const ret of func.returnType.params) {
+  const returns = func.signature.returns;
+  if (returns && 'kind' in returns && returns.kind === 'NamedReturns') {
+    for (const ret of returns.fields) {
       defineSymbol(c, ret.name, 'local', ret.span, ret.type, true);
     }
   }
@@ -972,99 +1017,83 @@ function checkFunction(c: Checker, func: FuncDecl): void {
 // -----------------------------------------------------------------------------
 
 function checkModule(c: Checker, module: Module): void {
-  // First pass: register all imports and globals
-  for (const imp of module.imports) {
-    checkImport(c, imp);
-  }
+  // Collect functions for second pass
+  const functions: Array<{ func: FuncDecl; name: string }> = [];
 
-  for (const global of module.globals) {
-    const initType = checkExpr(c, global.init);
-    const type = global.type || initType;
-    defineSymbol(c, global.name, 'global', global.span, type, global.mutable);
-  }
+  // First pass: register all declarations
+  for (const decl of module.decls) {
+    switch (decl.kind) {
+      case 'ImportDecl':
+        checkImport(c, decl);
+        break;
 
-  // Register type aliases
-  for (const typeAlias of module.types) {
-    defineSymbol(c, typeAlias.name, 'type', typeAlias.span, typeAlias.type);
-  }
-
-  // Register all exported functions
-  for (const exp of module.exports) {
-    if (exp.decl.kind === 'FuncDecl') {
-      const func = exp.decl;
-      const name = func.name || exp.exportName;
-
-      // Build function type
-      const paramTypes = func.params.map(p => p.type);
-      let returnType: Type = { kind: 'TupleType', elements: [], span: func.span };
-
-      if (func.returnType) {
-        if ('params' in func.returnType) {
-          // Named returns - unwrap single-element returns
-          if (func.returnType.params.length === 1) {
-            returnType = func.returnType.params[0].type;
-          } else {
-            returnType = {
-              kind: 'TupleType',
-              elements: func.returnType.params.map(p => p.type),
-              span: func.returnType.span,
-            };
-          }
-        } else {
-          returnType = func.returnType;
-        }
+      case 'GlobalDecl': {
+        const initType = decl.init ? checkExpr(c, decl.init) : undefined;
+        const type = decl.type || initType;
+        defineSymbol(c, decl.name, 'global', decl.span, type, true);
+        break;
       }
 
-      const funcType: FunctionType = {
-        kind: 'FunctionType',
-        params: paramTypes,
-        returns: returnType,
-        span: func.span,
-      };
-
-      defineSymbol(c, name, 'function', func.span, funcType);
-    }
-  }
-
-  // Register non-exported functions
-  for (const func of module.functions) {
-    if (func.name) {
-      const paramTypes = func.params.map(p => p.type);
-      let returnType: Type = { kind: 'TupleType', elements: [], span: func.span };
-
-      if (func.returnType) {
-        if ('params' in func.returnType) {
-          returnType = {
-            kind: 'TupleType',
-            elements: func.returnType.params.map(p => p.type),
-            span: func.returnType.span,
-          };
-        } else {
-          returnType = func.returnType;
-        }
+      case 'DefDecl': {
+        const valueType = checkExpr(c, decl.value);
+        defineSymbol(c, decl.name, 'constant', decl.span, valueType);
+        break;
       }
 
-      const funcType: FunctionType = {
-        kind: 'FunctionType',
-        params: paramTypes,
-        returns: returnType,
-        span: func.span,
-      };
+      case 'TypeDecl':
+        defineSymbol(c, decl.name, 'type', decl.span, decl.type);
+        break;
 
-      defineSymbol(c, func.name, 'function', func.span, funcType);
+      case 'ExportDecl': {
+        if (decl.decl.kind === 'FuncDecl') {
+          const func = decl.decl;
+          const name = func.name || decl.exportName;
+          registerFunction(c, func, name);
+          functions.push({ func, name });
+        } else if (decl.decl.kind === 'GlobalDecl') {
+          const global = decl.decl;
+          const initType = global.init ? checkExpr(c, global.init) : undefined;
+          const type = global.type || initType;
+          defineSymbol(c, global.name, 'global', global.span, type, true);
+        }
+        // MemoryDecl exports don't need symbol registration
+        break;
+      }
+
+      case 'FuncDecl': {
+        if (decl.name) {
+          registerFunction(c, decl, decl.name);
+          functions.push({ func: decl, name: decl.name });
+        }
+        break;
+      }
+
+      case 'MemoryDecl':
+      case 'UniqueDecl':
+      case 'ErrorDecl':
+        // These don't need symbol registration in this pass
+        break;
     }
   }
 
   // Second pass: check function bodies
-  for (const exp of module.exports) {
-    if (exp.decl.kind === 'FuncDecl') {
-      checkFunction(c, exp.decl);
-    }
-  }
-
-  for (const func of module.functions) {
+  for (const { func } of functions) {
     checkFunction(c, func);
   }
+}
+
+function registerFunction(c: Checker, func: FuncDecl, name: string): void {
+  const paramTypes = func.signature.params.map(p => p.type);
+  const returnType = getReturnType(func.signature.returns, func.span);
+
+  const funcType: FunctionType = {
+    kind: 'FunctionType',
+    params: paramTypes,
+    returns: returnType,
+    span: func.span,
+  };
+
+  defineSymbol(c, name, 'function', func.span, funcType);
 }
 
 // -----------------------------------------------------------------------------

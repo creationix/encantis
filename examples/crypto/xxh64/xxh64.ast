@@ -1,1174 +1,2869 @@
-Module
-  decls:
-    [
-      ExportDecl
-        exportName: "mem"
-        decl:
-          MemoryDecl
-            minPages: 1
-      DefDecl
-        name: "prime64-1"
-        value:
-          AnnotationExpr
-            expr:
-              NumberLit
-                value: "11400714785074694791"
-            type:
-              PrimitiveType
-                name: "u64"
-      DefDecl
-        name: "prime64-2"
-        value:
-          AnnotationExpr
-            expr:
-              NumberLit
-                value: "14029467366897019727"
-            type:
-              PrimitiveType
-                name: "u64"
-      DefDecl
-        name: "prime64-3"
-        value:
-          AnnotationExpr
-            expr:
-              NumberLit
-                value: "1609587929392839161"
-            type:
-              PrimitiveType
-                name: "u64"
-      DefDecl
-        name: "prime64-4"
-        value:
-          AnnotationExpr
-            expr:
-              NumberLit
-                value: "9650029242287828579"
-            type:
-              PrimitiveType
-                name: "u64"
-      DefDecl
-        name: "prime64-5"
-        value:
-          AnnotationExpr
-            expr:
-              NumberLit
-                value: "2870177450012600261"
-            type:
-              PrimitiveType
-                name: "u64"
-      FuncDecl
-        name: "round64"
-        isInline: true
-        signature:
-          {
-            params:
-              [
-                {
-                  name: "acc"
-                  type:
-                    PrimitiveType
-                      name: "u64"
-                  span:
-                    {
-                      start: 329
-                      end: 336
-                    }
-                }
-                {
-                  name: "value"
-                  type:
-                    PrimitiveType
-                      name: "u64"
-                  span:
-                    {
-                      start: 338
-                      end: 347
-                    }
-                }
-              ]
-            returns:
-              PrimitiveType
-                name: "u64"
+{
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ExportDecl",
+      "exportName": "mem",
+      "decl": {
+        "kind": "MemoryDecl",
+        "minPages": 1,
+        "span": {
+          "start": 93,
+          "end": 101
+        }
+      },
+      "span": {
+        "start": 80,
+        "end": 101
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "name": "prime64-1",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "NumberLit",
+          "value": "11400714785074694791",
+          "span": {
+            "start": 119,
+            "end": 139
           }
-        body:
-          BlockBody
-            stmts:
-              [
-                AssignStmt
-                  target:
-                    Identifier
-                      name: "acc"
-                  op: "+="
-                  value:
-                    BinaryExpr
-                      op: "*"
-                      left:
-                        Identifier
-                          name: "value"
-                      right:
-                        Identifier
-                          name: "prime64-2"
-                AssignStmt
-                  target:
-                    Identifier
-                      name: "acc"
-                  op: "<<<="
-                  value:
-                    NumberLit
-                      value: "31"
-                AssignStmt
-                  target:
-                    Identifier
-                      name: "acc"
-                  op: "*="
-                  value:
-                    Identifier
-                      name: "prime64-1"
-                ReturnStmt
-                  value:
-                    Identifier
-                      name: "acc"
-              ]
-      FuncDecl
-        name: "merge-round64"
-        isInline: true
-        signature:
-          {
-            params:
-              [
-                {
-                  name: "acc"
-                  type:
-                    PrimitiveType
-                      name: "u64"
-                  span:
-                    {
-                      start: 460
-                      end: 467
-                    }
-                }
-                {
-                  name: "value"
-                  type:
-                    PrimitiveType
-                      name: "u64"
-                  span:
-                    {
-                      start: 469
-                      end: 478
-                    }
-                }
-              ]
-            returns:
-              PrimitiveType
-                name: "u64"
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 140,
+            "end": 143
           }
-        body:
-          BlockBody
-            stmts:
-              [
-                LetStmt
-                  pattern:
-                    IdentPattern
-                      name: "val"
-                  init:
-                    CallExpr
-                      callee:
-                        Identifier
-                          name: "round64"
-                      args:
-                        [
-                          {
-                            value:
-                              NumberLit
-                                value: "0"
-                            span:
-                              {
-                                start: 509
-                                end: 510
-                              }
-                          }
-                          {
-                            value:
-                              Identifier
-                                name: "value"
-                            span:
-                              {
-                                start: 512
-                                end: 517
-                              }
-                          }
-                        ]
-                AssignStmt
-                  target:
-                    Identifier
-                      name: "acc"
-                  op: "^="
-                  value:
-                    Identifier
-                      name: "val"
-                AssignStmt
-                  target:
-                    Identifier
-                      name: "acc"
-                  op: "="
-                  value:
-                    BinaryExpr
-                      op: "+"
-                      left:
-                        GroupExpr
-                          expr:
-                            BinaryExpr
-                              op: "*"
-                              left:
-                                Identifier
-                                  name: "acc"
-                              right:
-                                Identifier
-                                  name: "prime64-1"
-                      right:
-                        Identifier
-                          name: "prime64-4"
-                ReturnStmt
-                  value:
-                    Identifier
-                      name: "acc"
-              ]
-      ExportDecl
-        exportName: "xxh64"
-        decl:
-          FuncDecl
-            name: "xxh64"
-            isInline: false
-            signature:
-              {
-                params:
-                  [
-                    {
-                      name: "data"
-                      type:
-                        SliceType
-                          element:
-                            PrimitiveType
-                              name: "u8"
-                      span:
-                        {
-                          start: 612
-                          end: 621
-                        }
-                    }
-                    {
-                      name: "seed"
-                      type:
-                        PrimitiveType
-                          name: "u64"
-                      span:
-                        {
-                          start: 623
-                          end: 631
-                        }
-                    }
-                  ]
-                returns:
-                  NamedReturns
-                    fields:
-                      [
-                        {
-                          name: "h64"
-                          type:
-                            PrimitiveType
-                              name: "u64"
-                          span:
-                            {
-                              start: 637
-                              end: 644
-                            }
-                        }
-                      ]
+        },
+        "span": {
+          "start": 119,
+          "end": 143
+        }
+      },
+      "span": {
+        "start": 103,
+        "end": 143
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "name": "prime64-2",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "NumberLit",
+          "value": "14029467366897019727",
+          "span": {
+            "start": 160,
+            "end": 180
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 181,
+            "end": 184
+          }
+        },
+        "span": {
+          "start": 160,
+          "end": 184
+        }
+      },
+      "span": {
+        "start": 144,
+        "end": 184
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "name": "prime64-3",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "NumberLit",
+          "value": "1609587929392839161",
+          "span": {
+            "start": 202,
+            "end": 221
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 222,
+            "end": 225
+          }
+        },
+        "span": {
+          "start": 202,
+          "end": 225
+        }
+      },
+      "span": {
+        "start": 185,
+        "end": 225
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "name": "prime64-4",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "NumberLit",
+          "value": "9650029242287828579",
+          "span": {
+            "start": 243,
+            "end": 262
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 263,
+            "end": 266
+          }
+        },
+        "span": {
+          "start": 243,
+          "end": 266
+        }
+      },
+      "span": {
+        "start": 226,
+        "end": 266
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "name": "prime64-5",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "NumberLit",
+          "value": "2870177450012600261",
+          "span": {
+            "start": 284,
+            "end": 303
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 304,
+            "end": 307
+          }
+        },
+        "span": {
+          "start": 284,
+          "end": 307
+        }
+      },
+      "span": {
+        "start": 267,
+        "end": 307
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "name": "round64",
+      "isInline": true,
+      "signature": {
+        "params": [
+          {
+            "name": "acc",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "u64",
+              "span": {
+                "start": 333,
+                "end": 336
               }
-            body:
-              BlockBody
-                stmts:
-                  [
-                    LetStmt
-                      pattern:
-                        IdentPattern
-                          name: "ptr"
-                      init:
-                        MemberExpr
-                          target:
-                            Identifier
-                              name: "data"
-                          member: "ptr"
-                    LetStmt
-                      pattern:
-                        IdentPattern
-                          name: "len"
-                      init:
-                        MemberExpr
-                          target:
-                            Identifier
-                              name: "data"
-                          member: "len"
-                    LetStmt
-                      pattern:
-                        IdentPattern
-                          name: "last"
-                      type:
-                        PointerType
-                          target:
-                            PrimitiveType
-                              name: "u8"
-                      init:
-                        BinaryExpr
-                          op: "+"
-                          left:
-                            Identifier
-                              name: "ptr"
-                          right:
-                            Identifier
-                              name: "len"
-                    IfStmt
-                      condition:
-                        BinaryExpr
-                          op: ">="
-                          left:
-                            Identifier
-                              name: "len"
-                          right:
-                            NumberLit
-                              value: "32"
-                      thenBody:
-                        BlockBody
-                          stmts:
-                            [
-                              LetStmt
-                                pattern:
-                                  IdentPattern
-                                    name: "limit"
-                                type:
-                                  PointerType
-                                    target:
-                                      PrimitiveType
-                                        name: "u8"
-                                init:
-                                  BinaryExpr
-                                    op: "-"
-                                    left:
-                                      Identifier
-                                        name: "last"
-                                    right:
-                                      NumberLit
-                                        value: "32"
-                              LetStmt
-                                pattern:
-                                  IdentPattern
-                                    name: "v1"
-                                type:
-                                  PrimitiveType
-                                    name: "u64"
-                                init:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      BinaryExpr
-                                        op: "+"
-                                        left:
-                                          Identifier
-                                            name: "seed"
-                                        right:
-                                          Identifier
-                                            name: "prime64-1"
-                                    right:
-                                      Identifier
-                                        name: "prime64-2"
-                              LetStmt
-                                pattern:
-                                  IdentPattern
-                                    name: "v2"
-                                type:
-                                  PrimitiveType
-                                    name: "u64"
-                                init:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      Identifier
-                                        name: "seed"
-                                    right:
-                                      Identifier
-                                        name: "prime64-2"
-                              LetStmt
-                                pattern:
-                                  IdentPattern
-                                    name: "v3"
-                                type:
-                                  PrimitiveType
-                                    name: "u64"
-                                init:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      Identifier
-                                        name: "seed"
-                                    right:
-                                      NumberLit
-                                        value: "0"
-                              LetStmt
-                                pattern:
-                                  IdentPattern
-                                    name: "v4"
-                                type:
-                                  PrimitiveType
-                                    name: "u64"
-                                init:
-                                  BinaryExpr
-                                    op: "-"
-                                    left:
-                                      Identifier
-                                        name: "seed"
-                                    right:
-                                      Identifier
-                                        name: "prime64-1"
-                              LoopStmt
-                                body:
-                                  BlockBody
-                                    stmts:
-                                      [
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "v1"
-                                          op: "="
-                                          value:
-                                            CallExpr
-                                              callee:
-                                                Identifier
-                                                  name: "round64"
-                                              args:
-                                                [
-                                                  {
-                                                    value:
-                                                      Identifier
-                                                        name: "v1"
-                                                    span:
-                                                      {
-                                                        start: 996
-                                                        end: 998
-                                                      }
-                                                  }
-                                                  {
-                                                    value:
-                                                      MemberExpr
-                                                        target:
-                                                          Identifier
-                                                            name: "ptr"
-                                                        member: "u64"
-                                                        isTypePun:
-                                                          PrimitiveType
-                                                            name: "u64"
-                                                    span:
-                                                      {
-                                                        start: 1000
-                                                        end: 1007
-                                                      }
-                                                  }
-                                                ]
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "ptr"
-                                          op: "+="
-                                          value:
-                                            NumberLit
-                                              value: "8"
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "v2"
-                                          op: "="
-                                          value:
-                                            CallExpr
-                                              callee:
-                                                Identifier
-                                                  name: "round64"
-                                              args:
-                                                [
-                                                  {
-                                                    value:
-                                                      Identifier
-                                                        name: "v2"
-                                                    span:
-                                                      {
-                                                        start: 1043
-                                                        end: 1045
-                                                      }
-                                                  }
-                                                  {
-                                                    value:
-                                                      MemberExpr
-                                                        target:
-                                                          Identifier
-                                                            name: "ptr"
-                                                        member: "u64"
-                                                        isTypePun:
-                                                          PrimitiveType
-                                                            name: "u64"
-                                                    span:
-                                                      {
-                                                        start: 1047
-                                                        end: 1054
-                                                      }
-                                                  }
-                                                ]
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "ptr"
-                                          op: "+="
-                                          value:
-                                            NumberLit
-                                              value: "8"
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "v3"
-                                          op: "="
-                                          value:
-                                            CallExpr
-                                              callee:
-                                                Identifier
-                                                  name: "round64"
-                                              args:
-                                                [
-                                                  {
-                                                    value:
-                                                      Identifier
-                                                        name: "v3"
-                                                    span:
-                                                      {
-                                                        start: 1090
-                                                        end: 1092
-                                                      }
-                                                  }
-                                                  {
-                                                    value:
-                                                      MemberExpr
-                                                        target:
-                                                          Identifier
-                                                            name: "ptr"
-                                                        member: "u64"
-                                                        isTypePun:
-                                                          PrimitiveType
-                                                            name: "u64"
-                                                    span:
-                                                      {
-                                                        start: 1094
-                                                        end: 1101
-                                                      }
-                                                  }
-                                                ]
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "ptr"
-                                          op: "+="
-                                          value:
-                                            NumberLit
-                                              value: "8"
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "v4"
-                                          op: "="
-                                          value:
-                                            CallExpr
-                                              callee:
-                                                Identifier
-                                                  name: "round64"
-                                              args:
-                                                [
-                                                  {
-                                                    value:
-                                                      Identifier
-                                                        name: "v4"
-                                                    span:
-                                                      {
-                                                        start: 1137
-                                                        end: 1139
-                                                      }
-                                                  }
-                                                  {
-                                                    value:
-                                                      MemberExpr
-                                                        target:
-                                                          Identifier
-                                                            name: "ptr"
-                                                        member: "u64"
-                                                        isTypePun:
-                                                          PrimitiveType
-                                                            name: "u64"
-                                                    span:
-                                                      {
-                                                        start: 1141
-                                                        end: 1148
-                                                      }
-                                                  }
-                                                ]
-                                        AssignStmt
-                                          target:
-                                            Identifier
-                                              name: "ptr"
-                                          op: "+="
-                                          value:
-                                            NumberLit
-                                              value: "8"
-                                        BreakStmt
-                                          when:
-                                            BinaryExpr
-                                              op: ">"
-                                              left:
-                                                Identifier
-                                                  name: "ptr"
-                                              right:
-                                                Identifier
-                                                  name: "limit"
-                                      ]
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      BinaryExpr
-                                        op: "+"
-                                        left:
-                                          BinaryExpr
-                                            op: "+"
-                                            left:
-                                              GroupExpr
-                                                expr:
-                                                  BinaryExpr
-                                                    op: "<<<"
-                                                    left:
-                                                      Identifier
-                                                        name: "v1"
-                                                    right:
-                                                      NumberLit
-                                                        value: "1"
-                                            right:
-                                              GroupExpr
-                                                expr:
-                                                  BinaryExpr
-                                                    op: "<<<"
-                                                    left:
-                                                      Identifier
-                                                        name: "v2"
-                                                    right:
-                                                      NumberLit
-                                                        value: "7"
-                                        right:
-                                          GroupExpr
-                                            expr:
-                                              BinaryExpr
-                                                op: "<<<"
-                                                left:
-                                                  Identifier
-                                                    name: "v3"
-                                                right:
-                                                  NumberLit
-                                                    value: "12"
-                                    right:
-                                      GroupExpr
-                                        expr:
-                                          BinaryExpr
-                                            op: "<<<"
-                                            left:
-                                              Identifier
-                                                name: "v4"
-                                            right:
-                                              NumberLit
-                                                value: "18"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  CallExpr
-                                    callee:
-                                      Identifier
-                                        name: "merge-round64"
-                                    args:
-                                      [
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "h64"
-                                          span:
-                                            {
-                                              start: 1312
-                                              end: 1315
-                                            }
-                                        }
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "v1"
-                                          span:
-                                            {
-                                              start: 1317
-                                              end: 1319
-                                            }
-                                        }
-                                      ]
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  CallExpr
-                                    callee:
-                                      Identifier
-                                        name: "merge-round64"
-                                    args:
-                                      [
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "h64"
-                                          span:
-                                            {
-                                              start: 1345
-                                              end: 1348
-                                            }
-                                        }
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "v2"
-                                          span:
-                                            {
-                                              start: 1350
-                                              end: 1352
-                                            }
-                                        }
-                                      ]
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  CallExpr
-                                    callee:
-                                      Identifier
-                                        name: "merge-round64"
-                                    args:
-                                      [
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "h64"
-                                          span:
-                                            {
-                                              start: 1378
-                                              end: 1381
-                                            }
-                                        }
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "v3"
-                                          span:
-                                            {
-                                              start: 1383
-                                              end: 1385
-                                            }
-                                        }
-                                      ]
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  CallExpr
-                                    callee:
-                                      Identifier
-                                        name: "merge-round64"
-                                    args:
-                                      [
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "h64"
-                                          span:
-                                            {
-                                              start: 1411
-                                              end: 1414
-                                            }
-                                        }
-                                        {
-                                          value:
-                                            Identifier
-                                              name: "v4"
-                                          span:
-                                            {
-                                              start: 1416
-                                              end: 1418
-                                            }
-                                        }
-                                      ]
-                            ]
-                      elseBody:
-                        BlockBody
-                          stmts:
-                            [
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      Identifier
-                                        name: "seed"
-                                    right:
-                                      Identifier
-                                        name: "prime64-5"
-                            ]
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "+="
-                      value:
-                        CastExpr
-                          expr:
-                            Identifier
-                              name: "len"
-                          type:
-                            PrimitiveType
-                              name: "u64"
-                    WhileStmt
-                      condition:
-                        BinaryExpr
-                          op: "<="
-                          left:
-                            BinaryExpr
-                              op: "+"
-                              left:
-                                Identifier
-                                  name: "ptr"
-                              right:
-                                NumberLit
-                                  value: "8"
-                          right:
-                            Identifier
-                              name: "last"
-                      body:
-                        BlockBody
-                          stmts:
-                            [
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "^="
-                                value:
-                                  CallExpr
-                                    callee:
-                                      Identifier
-                                        name: "round64"
-                                    args:
-                                      [
-                                        {
-                                          value:
-                                            NumberLit
-                                              value: "0"
-                                          span:
-                                            {
-                                              start: 1641
-                                              end: 1642
-                                            }
-                                        }
-                                        {
-                                          value:
-                                            MemberExpr
-                                              target:
-                                                Identifier
-                                                  name: "ptr"
-                                              member: "u64"
-                                              isTypePun:
-                                                PrimitiveType
-                                                  name: "u64"
-                                          span:
-                                            {
-                                              start: 1644
-                                              end: 1651
-                                            }
-                                        }
-                                      ]
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      BinaryExpr
-                                        op: "*"
-                                        left:
-                                          GroupExpr
-                                            expr:
-                                              BinaryExpr
-                                                op: "<<<"
-                                                left:
-                                                  Identifier
-                                                    name: "h64"
-                                                right:
-                                                  NumberLit
-                                                    value: "27"
-                                        right:
-                                          Identifier
-                                            name: "prime64-1"
-                                    right:
-                                      Identifier
-                                        name: "prime64-4"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "ptr"
-                                op: "+="
-                                value:
-                                  NumberLit
-                                    value: "8"
-                            ]
-                    IfStmt
-                      condition:
-                        BinaryExpr
-                          op: "<="
-                          left:
-                            BinaryExpr
-                              op: "+"
-                              left:
-                                Identifier
-                                  name: "ptr"
-                              right:
-                                NumberLit
-                                  value: "4"
-                          right:
-                            Identifier
-                              name: "last"
-                      thenBody:
-                        BlockBody
-                          stmts:
-                            [
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "^="
-                                value:
-                                  BinaryExpr
-                                    op: "*"
-                                    left:
-                                      CastExpr
-                                        expr:
-                                          MemberExpr
-                                            target:
-                                              GroupExpr
-                                                expr:
-                                                  CastExpr
-                                                    expr:
-                                                      Identifier
-                                                        name: "ptr"
-                                                    type:
-                                                      PointerType
-                                                        target:
-                                                          PrimitiveType
-                                                            name: "u32"
-                                            member: "*"
-                                            isDeref: true
-                                        type:
-                                          PrimitiveType
-                                            name: "u64"
-                                    right:
-                                      Identifier
-                                        name: "prime64-1"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  BinaryExpr
-                                    op: "+"
-                                    left:
-                                      BinaryExpr
-                                        op: "*"
-                                        left:
-                                          GroupExpr
-                                            expr:
-                                              BinaryExpr
-                                                op: "<<<"
-                                                left:
-                                                  Identifier
-                                                    name: "h64"
-                                                right:
-                                                  NumberLit
-                                                    value: "23"
-                                        right:
-                                          Identifier
-                                            name: "prime64-2"
-                                    right:
-                                      Identifier
-                                        name: "prime64-3"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "ptr"
-                                op: "+="
-                                value:
-                                  NumberLit
-                                    value: "4"
-                            ]
-                    WhileStmt
-                      condition:
-                        BinaryExpr
-                          op: "<"
-                          left:
-                            Identifier
-                              name: "ptr"
-                          right:
-                            Identifier
-                              name: "last"
-                      body:
-                        BlockBody
-                          stmts:
-                            [
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "^="
-                                value:
-                                  BinaryExpr
-                                    op: "*"
-                                    left:
-                                      CastExpr
-                                        expr:
-                                          MemberExpr
-                                            target:
-                                              Identifier
-                                                name: "ptr"
-                                            member: "u8"
-                                            isTypePun:
-                                              PrimitiveType
-                                                name: "u8"
-                                        type:
-                                          PrimitiveType
-                                            name: "u64"
-                                    right:
-                                      Identifier
-                                        name: "prime64-5"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "h64"
-                                op: "="
-                                value:
-                                  BinaryExpr
-                                    op: "*"
-                                    left:
-                                      GroupExpr
-                                        expr:
-                                          BinaryExpr
-                                            op: "<<<"
-                                            left:
-                                              Identifier
-                                                name: "h64"
-                                            right:
-                                              NumberLit
-                                                value: "11"
-                                    right:
-                                      Identifier
-                                        name: "prime64-1"
-                              AssignStmt
-                                target:
-                                  Identifier
-                                    name: "ptr"
-                                op: "+="
-                                value:
-                                  NumberLit
-                                    value: "1"
-                            ]
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "^="
-                      value:
-                        BinaryExpr
-                          op: ">>"
-                          left:
-                            Identifier
-                              name: "h64"
-                          right:
-                            NumberLit
-                              value: "33"
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "*="
-                      value:
-                        Identifier
-                          name: "prime64-2"
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "^="
-                      value:
-                        BinaryExpr
-                          op: ">>"
-                          left:
-                            Identifier
-                              name: "h64"
-                          right:
-                            NumberLit
-                              value: "29"
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "*="
-                      value:
-                        Identifier
-                          name: "prime64-3"
-                    AssignStmt
-                      target:
-                        Identifier
-                          name: "h64"
-                      op: "^="
-                      value:
-                        BinaryExpr
-                          op: ">>"
-                          left:
-                            Identifier
-                              name: "h64"
-                          right:
-                            NumberLit
-                              value: "32"
-                  ]
-    ]
+            },
+            "span": {
+              "start": 329,
+              "end": 336
+            }
+          },
+          {
+            "name": "value",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "u64",
+              "span": {
+                "start": 344,
+                "end": 347
+              }
+            },
+            "span": {
+              "start": 338,
+              "end": 347
+            }
+          }
+        ],
+        "returns": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 352,
+            "end": 355
+          }
+        }
+      },
+      "body": {
+        "kind": "BlockBody",
+        "stmts": [
+          {
+            "kind": "AssignStmt",
+            "target": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 360,
+                "end": 363
+              }
+            },
+            "op": "+=",
+            "value": {
+              "kind": "BinaryExpr",
+              "op": "*",
+              "left": {
+                "kind": "Identifier",
+                "name": "value",
+                "span": {
+                  "start": 367,
+                  "end": 372
+                }
+              },
+              "right": {
+                "kind": "Identifier",
+                "name": "prime64-2",
+                "span": {
+                  "start": 375,
+                  "end": 384
+                }
+              },
+              "span": {
+                "start": 367,
+                "end": 384
+              }
+            },
+            "span": {
+              "start": 360,
+              "end": 384
+            }
+          },
+          {
+            "kind": "AssignStmt",
+            "target": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 387,
+                "end": 390
+              }
+            },
+            "op": "<<<=",
+            "value": {
+              "kind": "NumberLit",
+              "value": "31",
+              "span": {
+                "start": 396,
+                "end": 398
+              }
+            },
+            "span": {
+              "start": 387,
+              "end": 398
+            }
+          },
+          {
+            "kind": "AssignStmt",
+            "target": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 401,
+                "end": 404
+              }
+            },
+            "op": "*=",
+            "value": {
+              "kind": "Identifier",
+              "name": "prime64-1",
+              "span": {
+                "start": 408,
+                "end": 417
+              }
+            },
+            "span": {
+              "start": 401,
+              "end": 417
+            }
+          },
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 427,
+                "end": 430
+              }
+            },
+            "span": {
+              "start": 420,
+              "end": 430
+            }
+          }
+        ],
+        "span": {
+          "start": 356,
+          "end": 432
+        }
+      },
+      "span": {
+        "start": 309,
+        "end": 432
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "name": "merge-round64",
+      "isInline": true,
+      "signature": {
+        "params": [
+          {
+            "name": "acc",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "u64",
+              "span": {
+                "start": 464,
+                "end": 467
+              }
+            },
+            "span": {
+              "start": 460,
+              "end": 467
+            }
+          },
+          {
+            "name": "value",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "u64",
+              "span": {
+                "start": 475,
+                "end": 478
+              }
+            },
+            "span": {
+              "start": 469,
+              "end": 478
+            }
+          }
+        ],
+        "returns": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 483,
+            "end": 486
+          }
+        }
+      },
+      "body": {
+        "kind": "BlockBody",
+        "stmts": [
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "val",
+              "span": {
+                "start": 495,
+                "end": 498
+              }
+            },
+            "init": {
+              "kind": "CallExpr",
+              "callee": {
+                "kind": "Identifier",
+                "name": "round64",
+                "span": {
+                  "start": 501,
+                  "end": 508
+                }
+              },
+              "args": [
+                {
+                  "value": {
+                    "kind": "NumberLit",
+                    "value": "0",
+                    "span": {
+                      "start": 509,
+                      "end": 510
+                    }
+                  },
+                  "span": {
+                    "start": 509,
+                    "end": 510
+                  }
+                },
+                {
+                  "value": {
+                    "kind": "Identifier",
+                    "name": "value",
+                    "span": {
+                      "start": 512,
+                      "end": 517
+                    }
+                  },
+                  "span": {
+                    "start": 512,
+                    "end": 517
+                  }
+                }
+              ],
+              "span": {
+                "start": 501,
+                "end": 518
+              }
+            },
+            "span": {
+              "start": 491,
+              "end": 518
+            }
+          },
+          {
+            "kind": "AssignStmt",
+            "target": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 521,
+                "end": 524
+              }
+            },
+            "op": "^=",
+            "value": {
+              "kind": "Identifier",
+              "name": "val",
+              "span": {
+                "start": 528,
+                "end": 531
+              }
+            },
+            "span": {
+              "start": 521,
+              "end": 531
+            }
+          },
+          {
+            "kind": "AssignStmt",
+            "target": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 534,
+                "end": 537
+              }
+            },
+            "op": "=",
+            "value": {
+              "kind": "BinaryExpr",
+              "op": "+",
+              "left": {
+                "kind": "GroupExpr",
+                "expr": {
+                  "kind": "BinaryExpr",
+                  "op": "*",
+                  "left": {
+                    "kind": "Identifier",
+                    "name": "acc",
+                    "span": {
+                      "start": 541,
+                      "end": 544
+                    }
+                  },
+                  "right": {
+                    "kind": "Identifier",
+                    "name": "prime64-1",
+                    "span": {
+                      "start": 547,
+                      "end": 556
+                    }
+                  },
+                  "span": {
+                    "start": 541,
+                    "end": 556
+                  }
+                },
+                "span": {
+                  "start": 540,
+                  "end": 557
+                }
+              },
+              "right": {
+                "kind": "Identifier",
+                "name": "prime64-4",
+                "span": {
+                  "start": 560,
+                  "end": 569
+                }
+              },
+              "span": {
+                "start": 540,
+                "end": 569
+              }
+            },
+            "span": {
+              "start": 534,
+              "end": 569
+            }
+          },
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "Identifier",
+              "name": "acc",
+              "span": {
+                "start": 579,
+                "end": 582
+              }
+            },
+            "span": {
+              "start": 572,
+              "end": 582
+            }
+          }
+        ],
+        "span": {
+          "start": 487,
+          "end": 584
+        }
+      },
+      "span": {
+        "start": 434,
+        "end": 584
+      }
+    },
+    {
+      "kind": "ExportDecl",
+      "exportName": "xxh64",
+      "decl": {
+        "kind": "FuncDecl",
+        "name": "xxh64",
+        "isInline": false,
+        "signature": {
+          "params": [
+            {
+              "name": "data",
+              "type": {
+                "kind": "SliceType",
+                "element": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 617,
+                    "end": 619
+                  }
+                },
+                "span": {
+                  "start": 617,
+                  "end": 621
+                }
+              },
+              "span": {
+                "start": 612,
+                "end": 621
+              }
+            },
+            {
+              "name": "seed",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u64",
+                "span": {
+                  "start": 628,
+                  "end": 631
+                }
+              },
+              "span": {
+                "start": 623,
+                "end": 631
+              }
+            }
+          ],
+          "returns": {
+            "kind": "NamedReturns",
+            "fields": [
+              {
+                "name": "h64",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 641,
+                    "end": 644
+                  }
+                },
+                "span": {
+                  "start": 637,
+                  "end": 644
+                }
+              }
+            ]
+          }
+        },
+        "body": {
+          "kind": "BlockBody",
+          "stmts": [
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "ptr",
+                "span": {
+                  "start": 654,
+                  "end": 657
+                }
+              },
+              "init": {
+                "kind": "MemberExpr",
+                "target": {
+                  "kind": "Identifier",
+                  "name": "data",
+                  "span": {
+                    "start": 660,
+                    "end": 664
+                  }
+                },
+                "member": "ptr",
+                "span": {
+                  "start": 660,
+                  "end": 668
+                }
+              },
+              "span": {
+                "start": 650,
+                "end": 668
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "len",
+                "span": {
+                  "start": 675,
+                  "end": 678
+                }
+              },
+              "init": {
+                "kind": "MemberExpr",
+                "target": {
+                  "kind": "Identifier",
+                  "name": "data",
+                  "span": {
+                    "start": 681,
+                    "end": 685
+                  }
+                },
+                "member": "len",
+                "span": {
+                  "start": 681,
+                  "end": 689
+                }
+              },
+              "span": {
+                "start": 671,
+                "end": 689
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "last",
+                "span": {
+                  "start": 696,
+                  "end": 700
+                }
+              },
+              "type": {
+                "kind": "PointerType",
+                "target": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 702,
+                    "end": 704
+                  }
+                },
+                "span": {
+                  "start": 701,
+                  "end": 704
+                }
+              },
+              "init": {
+                "kind": "BinaryExpr",
+                "op": "+",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "ptr",
+                  "span": {
+                    "start": 707,
+                    "end": 710
+                  }
+                },
+                "right": {
+                  "kind": "Identifier",
+                  "name": "len",
+                  "span": {
+                    "start": 713,
+                    "end": 716
+                  }
+                },
+                "span": {
+                  "start": 707,
+                  "end": 716
+                }
+              },
+              "span": {
+                "start": 692,
+                "end": 716
+              }
+            },
+            {
+              "kind": "IfStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": ">=",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "len",
+                  "span": {
+                    "start": 723,
+                    "end": 726
+                  }
+                },
+                "right": {
+                  "kind": "NumberLit",
+                  "value": "32",
+                  "span": {
+                    "start": 730,
+                    "end": 732
+                  }
+                },
+                "span": {
+                  "start": 723,
+                  "end": 732
+                }
+              },
+              "thenBody": {
+                "kind": "BlockBody",
+                "stmts": [
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "limit",
+                      "span": {
+                        "start": 743,
+                        "end": 748
+                      }
+                    },
+                    "type": {
+                      "kind": "PointerType",
+                      "target": {
+                        "kind": "PrimitiveType",
+                        "name": "u8",
+                        "span": {
+                          "start": 750,
+                          "end": 752
+                        }
+                      },
+                      "span": {
+                        "start": 749,
+                        "end": 752
+                      }
+                    },
+                    "init": {
+                      "kind": "BinaryExpr",
+                      "op": "-",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "last",
+                        "span": {
+                          "start": 755,
+                          "end": 759
+                        }
+                      },
+                      "right": {
+                        "kind": "NumberLit",
+                        "value": "32",
+                        "span": {
+                          "start": 762,
+                          "end": 764
+                        }
+                      },
+                      "span": {
+                        "start": 755,
+                        "end": 764
+                      }
+                    },
+                    "span": {
+                      "start": 739,
+                      "end": 764
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "v1",
+                      "span": {
+                        "start": 773,
+                        "end": 775
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 776,
+                        "end": 779
+                      }
+                    },
+                    "init": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "Identifier",
+                          "name": "seed",
+                          "span": {
+                            "start": 782,
+                            "end": 786
+                          }
+                        },
+                        "right": {
+                          "kind": "Identifier",
+                          "name": "prime64-1",
+                          "span": {
+                            "start": 789,
+                            "end": 798
+                          }
+                        },
+                        "span": {
+                          "start": 782,
+                          "end": 798
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-2",
+                        "span": {
+                          "start": 801,
+                          "end": 810
+                        }
+                      },
+                      "span": {
+                        "start": 782,
+                        "end": 810
+                      }
+                    },
+                    "span": {
+                      "start": 769,
+                      "end": 810
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "v2",
+                      "span": {
+                        "start": 819,
+                        "end": 821
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 822,
+                        "end": 825
+                      }
+                    },
+                    "init": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "seed",
+                        "span": {
+                          "start": 828,
+                          "end": 832
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-2",
+                        "span": {
+                          "start": 835,
+                          "end": 844
+                        }
+                      },
+                      "span": {
+                        "start": 828,
+                        "end": 844
+                      }
+                    },
+                    "span": {
+                      "start": 815,
+                      "end": 844
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "v3",
+                      "span": {
+                        "start": 853,
+                        "end": 855
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 856,
+                        "end": 859
+                      }
+                    },
+                    "init": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "seed",
+                        "span": {
+                          "start": 862,
+                          "end": 866
+                        }
+                      },
+                      "right": {
+                        "kind": "NumberLit",
+                        "value": "0",
+                        "span": {
+                          "start": 869,
+                          "end": 870
+                        }
+                      },
+                      "span": {
+                        "start": 862,
+                        "end": 870
+                      }
+                    },
+                    "span": {
+                      "start": 849,
+                      "end": 870
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "v4",
+                      "span": {
+                        "start": 879,
+                        "end": 881
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 882,
+                        "end": 885
+                      }
+                    },
+                    "init": {
+                      "kind": "BinaryExpr",
+                      "op": "-",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "seed",
+                        "span": {
+                          "start": 888,
+                          "end": 892
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-1",
+                        "span": {
+                          "start": 895,
+                          "end": 904
+                        }
+                      },
+                      "span": {
+                        "start": 888,
+                        "end": 904
+                      }
+                    },
+                    "span": {
+                      "start": 875,
+                      "end": 904
+                    }
+                  },
+                  {
+                    "kind": "LoopStmt",
+                    "body": {
+                      "kind": "BlockBody",
+                      "stmts": [
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "v1",
+                            "span": {
+                              "start": 983,
+                              "end": 985
+                            }
+                          },
+                          "op": "=",
+                          "value": {
+                            "kind": "CallExpr",
+                            "callee": {
+                              "kind": "Identifier",
+                              "name": "round64",
+                              "span": {
+                                "start": 988,
+                                "end": 995
+                              }
+                            },
+                            "args": [
+                              {
+                                "value": {
+                                  "kind": "Identifier",
+                                  "name": "v1",
+                                  "span": {
+                                    "start": 996,
+                                    "end": 998
+                                  }
+                                },
+                                "span": {
+                                  "start": 996,
+                                  "end": 998
+                                }
+                              },
+                              {
+                                "value": {
+                                  "kind": "MemberExpr",
+                                  "target": {
+                                    "kind": "Identifier",
+                                    "name": "ptr",
+                                    "span": {
+                                      "start": 1000,
+                                      "end": 1003
+                                    }
+                                  },
+                                  "member": "u64",
+                                  "isTypePun": {
+                                    "kind": "PrimitiveType",
+                                    "name": "u64",
+                                    "span": {
+                                      "start": 1004,
+                                      "end": 1007
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1000,
+                                    "end": 1007
+                                  }
+                                },
+                                "span": {
+                                  "start": 1000,
+                                  "end": 1007
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 988,
+                              "end": 1008
+                            }
+                          },
+                          "span": {
+                            "start": 983,
+                            "end": 1008
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "ptr",
+                            "span": {
+                              "start": 1015,
+                              "end": 1018
+                            }
+                          },
+                          "op": "+=",
+                          "value": {
+                            "kind": "NumberLit",
+                            "value": "8",
+                            "span": {
+                              "start": 1022,
+                              "end": 1023
+                            }
+                          },
+                          "span": {
+                            "start": 1015,
+                            "end": 1023
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "v2",
+                            "span": {
+                              "start": 1030,
+                              "end": 1032
+                            }
+                          },
+                          "op": "=",
+                          "value": {
+                            "kind": "CallExpr",
+                            "callee": {
+                              "kind": "Identifier",
+                              "name": "round64",
+                              "span": {
+                                "start": 1035,
+                                "end": 1042
+                              }
+                            },
+                            "args": [
+                              {
+                                "value": {
+                                  "kind": "Identifier",
+                                  "name": "v2",
+                                  "span": {
+                                    "start": 1043,
+                                    "end": 1045
+                                  }
+                                },
+                                "span": {
+                                  "start": 1043,
+                                  "end": 1045
+                                }
+                              },
+                              {
+                                "value": {
+                                  "kind": "MemberExpr",
+                                  "target": {
+                                    "kind": "Identifier",
+                                    "name": "ptr",
+                                    "span": {
+                                      "start": 1047,
+                                      "end": 1050
+                                    }
+                                  },
+                                  "member": "u64",
+                                  "isTypePun": {
+                                    "kind": "PrimitiveType",
+                                    "name": "u64",
+                                    "span": {
+                                      "start": 1051,
+                                      "end": 1054
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1047,
+                                    "end": 1054
+                                  }
+                                },
+                                "span": {
+                                  "start": 1047,
+                                  "end": 1054
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 1035,
+                              "end": 1055
+                            }
+                          },
+                          "span": {
+                            "start": 1030,
+                            "end": 1055
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "ptr",
+                            "span": {
+                              "start": 1062,
+                              "end": 1065
+                            }
+                          },
+                          "op": "+=",
+                          "value": {
+                            "kind": "NumberLit",
+                            "value": "8",
+                            "span": {
+                              "start": 1069,
+                              "end": 1070
+                            }
+                          },
+                          "span": {
+                            "start": 1062,
+                            "end": 1070
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "v3",
+                            "span": {
+                              "start": 1077,
+                              "end": 1079
+                            }
+                          },
+                          "op": "=",
+                          "value": {
+                            "kind": "CallExpr",
+                            "callee": {
+                              "kind": "Identifier",
+                              "name": "round64",
+                              "span": {
+                                "start": 1082,
+                                "end": 1089
+                              }
+                            },
+                            "args": [
+                              {
+                                "value": {
+                                  "kind": "Identifier",
+                                  "name": "v3",
+                                  "span": {
+                                    "start": 1090,
+                                    "end": 1092
+                                  }
+                                },
+                                "span": {
+                                  "start": 1090,
+                                  "end": 1092
+                                }
+                              },
+                              {
+                                "value": {
+                                  "kind": "MemberExpr",
+                                  "target": {
+                                    "kind": "Identifier",
+                                    "name": "ptr",
+                                    "span": {
+                                      "start": 1094,
+                                      "end": 1097
+                                    }
+                                  },
+                                  "member": "u64",
+                                  "isTypePun": {
+                                    "kind": "PrimitiveType",
+                                    "name": "u64",
+                                    "span": {
+                                      "start": 1098,
+                                      "end": 1101
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1094,
+                                    "end": 1101
+                                  }
+                                },
+                                "span": {
+                                  "start": 1094,
+                                  "end": 1101
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 1082,
+                              "end": 1102
+                            }
+                          },
+                          "span": {
+                            "start": 1077,
+                            "end": 1102
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "ptr",
+                            "span": {
+                              "start": 1109,
+                              "end": 1112
+                            }
+                          },
+                          "op": "+=",
+                          "value": {
+                            "kind": "NumberLit",
+                            "value": "8",
+                            "span": {
+                              "start": 1116,
+                              "end": 1117
+                            }
+                          },
+                          "span": {
+                            "start": 1109,
+                            "end": 1117
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "v4",
+                            "span": {
+                              "start": 1124,
+                              "end": 1126
+                            }
+                          },
+                          "op": "=",
+                          "value": {
+                            "kind": "CallExpr",
+                            "callee": {
+                              "kind": "Identifier",
+                              "name": "round64",
+                              "span": {
+                                "start": 1129,
+                                "end": 1136
+                              }
+                            },
+                            "args": [
+                              {
+                                "value": {
+                                  "kind": "Identifier",
+                                  "name": "v4",
+                                  "span": {
+                                    "start": 1137,
+                                    "end": 1139
+                                  }
+                                },
+                                "span": {
+                                  "start": 1137,
+                                  "end": 1139
+                                }
+                              },
+                              {
+                                "value": {
+                                  "kind": "MemberExpr",
+                                  "target": {
+                                    "kind": "Identifier",
+                                    "name": "ptr",
+                                    "span": {
+                                      "start": 1141,
+                                      "end": 1144
+                                    }
+                                  },
+                                  "member": "u64",
+                                  "isTypePun": {
+                                    "kind": "PrimitiveType",
+                                    "name": "u64",
+                                    "span": {
+                                      "start": 1145,
+                                      "end": 1148
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1141,
+                                    "end": 1148
+                                  }
+                                },
+                                "span": {
+                                  "start": 1141,
+                                  "end": 1148
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 1129,
+                              "end": 1149
+                            }
+                          },
+                          "span": {
+                            "start": 1124,
+                            "end": 1149
+                          }
+                        },
+                        {
+                          "kind": "AssignStmt",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "ptr",
+                            "span": {
+                              "start": 1156,
+                              "end": 1159
+                            }
+                          },
+                          "op": "+=",
+                          "value": {
+                            "kind": "NumberLit",
+                            "value": "8",
+                            "span": {
+                              "start": 1163,
+                              "end": 1164
+                            }
+                          },
+                          "span": {
+                            "start": 1156,
+                            "end": 1164
+                          }
+                        },
+                        {
+                          "kind": "BreakStmt",
+                          "when": {
+                            "kind": "BinaryExpr",
+                            "op": ">",
+                            "left": {
+                              "kind": "Identifier",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1182,
+                                "end": 1185
+                              }
+                            },
+                            "right": {
+                              "kind": "Identifier",
+                              "name": "limit",
+                              "span": {
+                                "start": 1188,
+                                "end": 1193
+                              }
+                            },
+                            "span": {
+                              "start": 1182,
+                              "end": 1193
+                            }
+                          },
+                          "span": {
+                            "start": 1171,
+                            "end": 1193
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 975,
+                        "end": 1199
+                      }
+                    },
+                    "span": {
+                      "start": 970,
+                      "end": 1199
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1205,
+                        "end": 1208
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "BinaryExpr",
+                          "op": "+",
+                          "left": {
+                            "kind": "GroupExpr",
+                            "expr": {
+                              "kind": "BinaryExpr",
+                              "op": "<<<",
+                              "left": {
+                                "kind": "Identifier",
+                                "name": "v1",
+                                "span": {
+                                  "start": 1212,
+                                  "end": 1214
+                                }
+                              },
+                              "right": {
+                                "kind": "NumberLit",
+                                "value": "1",
+                                "span": {
+                                  "start": 1219,
+                                  "end": 1220
+                                }
+                              },
+                              "span": {
+                                "start": 1212,
+                                "end": 1220
+                              }
+                            },
+                            "span": {
+                              "start": 1211,
+                              "end": 1221
+                            }
+                          },
+                          "right": {
+                            "kind": "GroupExpr",
+                            "expr": {
+                              "kind": "BinaryExpr",
+                              "op": "<<<",
+                              "left": {
+                                "kind": "Identifier",
+                                "name": "v2",
+                                "span": {
+                                  "start": 1233,
+                                  "end": 1235
+                                }
+                              },
+                              "right": {
+                                "kind": "NumberLit",
+                                "value": "7",
+                                "span": {
+                                  "start": 1240,
+                                  "end": 1241
+                                }
+                              },
+                              "span": {
+                                "start": 1233,
+                                "end": 1241
+                              }
+                            },
+                            "span": {
+                              "start": 1232,
+                              "end": 1242
+                            }
+                          },
+                          "span": {
+                            "start": 1211,
+                            "end": 1242
+                          }
+                        },
+                        "right": {
+                          "kind": "GroupExpr",
+                          "expr": {
+                            "kind": "BinaryExpr",
+                            "op": "<<<",
+                            "left": {
+                              "kind": "Identifier",
+                              "name": "v3",
+                              "span": {
+                                "start": 1254,
+                                "end": 1256
+                              }
+                            },
+                            "right": {
+                              "kind": "NumberLit",
+                              "value": "12",
+                              "span": {
+                                "start": 1261,
+                                "end": 1263
+                              }
+                            },
+                            "span": {
+                              "start": 1254,
+                              "end": 1263
+                            }
+                          },
+                          "span": {
+                            "start": 1253,
+                            "end": 1264
+                          }
+                        },
+                        "span": {
+                          "start": 1211,
+                          "end": 1264
+                        }
+                      },
+                      "right": {
+                        "kind": "GroupExpr",
+                        "expr": {
+                          "kind": "BinaryExpr",
+                          "op": "<<<",
+                          "left": {
+                            "kind": "Identifier",
+                            "name": "v4",
+                            "span": {
+                              "start": 1276,
+                              "end": 1278
+                            }
+                          },
+                          "right": {
+                            "kind": "NumberLit",
+                            "value": "18",
+                            "span": {
+                              "start": 1283,
+                              "end": 1285
+                            }
+                          },
+                          "span": {
+                            "start": 1276,
+                            "end": 1285
+                          }
+                        },
+                        "span": {
+                          "start": 1275,
+                          "end": 1286
+                        }
+                      },
+                      "span": {
+                        "start": 1211,
+                        "end": 1286
+                      }
+                    },
+                    "span": {
+                      "start": 1205,
+                      "end": 1286
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1292,
+                        "end": 1295
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "Identifier",
+                        "name": "merge-round64",
+                        "span": {
+                          "start": 1298,
+                          "end": 1311
+                        }
+                      },
+                      "args": [
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "h64",
+                            "span": {
+                              "start": 1312,
+                              "end": 1315
+                            }
+                          },
+                          "span": {
+                            "start": 1312,
+                            "end": 1315
+                          }
+                        },
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "v1",
+                            "span": {
+                              "start": 1317,
+                              "end": 1319
+                            }
+                          },
+                          "span": {
+                            "start": 1317,
+                            "end": 1319
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1298,
+                        "end": 1320
+                      }
+                    },
+                    "span": {
+                      "start": 1292,
+                      "end": 1320
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1325,
+                        "end": 1328
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "Identifier",
+                        "name": "merge-round64",
+                        "span": {
+                          "start": 1331,
+                          "end": 1344
+                        }
+                      },
+                      "args": [
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "h64",
+                            "span": {
+                              "start": 1345,
+                              "end": 1348
+                            }
+                          },
+                          "span": {
+                            "start": 1345,
+                            "end": 1348
+                          }
+                        },
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "v2",
+                            "span": {
+                              "start": 1350,
+                              "end": 1352
+                            }
+                          },
+                          "span": {
+                            "start": 1350,
+                            "end": 1352
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1331,
+                        "end": 1353
+                      }
+                    },
+                    "span": {
+                      "start": 1325,
+                      "end": 1353
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1358,
+                        "end": 1361
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "Identifier",
+                        "name": "merge-round64",
+                        "span": {
+                          "start": 1364,
+                          "end": 1377
+                        }
+                      },
+                      "args": [
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "h64",
+                            "span": {
+                              "start": 1378,
+                              "end": 1381
+                            }
+                          },
+                          "span": {
+                            "start": 1378,
+                            "end": 1381
+                          }
+                        },
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "v3",
+                            "span": {
+                              "start": 1383,
+                              "end": 1385
+                            }
+                          },
+                          "span": {
+                            "start": 1383,
+                            "end": 1385
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1364,
+                        "end": 1386
+                      }
+                    },
+                    "span": {
+                      "start": 1358,
+                      "end": 1386
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1391,
+                        "end": 1394
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "Identifier",
+                        "name": "merge-round64",
+                        "span": {
+                          "start": 1397,
+                          "end": 1410
+                        }
+                      },
+                      "args": [
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "h64",
+                            "span": {
+                              "start": 1411,
+                              "end": 1414
+                            }
+                          },
+                          "span": {
+                            "start": 1411,
+                            "end": 1414
+                          }
+                        },
+                        {
+                          "value": {
+                            "kind": "Identifier",
+                            "name": "v4",
+                            "span": {
+                              "start": 1416,
+                              "end": 1418
+                            }
+                          },
+                          "span": {
+                            "start": 1416,
+                            "end": 1418
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1397,
+                        "end": 1419
+                      }
+                    },
+                    "span": {
+                      "start": 1391,
+                      "end": 1419
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 733,
+                  "end": 1424
+                }
+              },
+              "elifClauses": [],
+              "elseBody": {
+                "kind": "BlockBody",
+                "stmts": [
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1479,
+                        "end": 1482
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "seed",
+                        "span": {
+                          "start": 1485,
+                          "end": 1489
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-5",
+                        "span": {
+                          "start": 1492,
+                          "end": 1501
+                        }
+                      },
+                      "span": {
+                        "start": 1485,
+                        "end": 1501
+                      }
+                    },
+                    "span": {
+                      "start": 1479,
+                      "end": 1501
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 1430,
+                  "end": 1505
+                }
+              },
+              "span": {
+                "start": 720,
+                "end": 1505
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 1509,
+                  "end": 1512
+                }
+              },
+              "op": "+=",
+              "value": {
+                "kind": "CastExpr",
+                "expr": {
+                  "kind": "Identifier",
+                  "name": "len",
+                  "span": {
+                    "start": 1516,
+                    "end": 1519
+                  }
+                },
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 1523,
+                    "end": 1526
+                  }
+                },
+                "span": {
+                  "start": 1516,
+                  "end": 1526
+                }
+              },
+              "span": {
+                "start": 1509,
+                "end": 1526
+              }
+            },
+            {
+              "kind": "WhileStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": "<=",
+                "left": {
+                  "kind": "BinaryExpr",
+                  "op": "+",
+                  "left": {
+                    "kind": "Identifier",
+                    "name": "ptr",
+                    "span": {
+                      "start": 1604,
+                      "end": 1607
+                    }
+                  },
+                  "right": {
+                    "kind": "NumberLit",
+                    "value": "8",
+                    "span": {
+                      "start": 1610,
+                      "end": 1611
+                    }
+                  },
+                  "span": {
+                    "start": 1604,
+                    "end": 1611
+                  }
+                },
+                "right": {
+                  "kind": "Identifier",
+                  "name": "last",
+                  "span": {
+                    "start": 1615,
+                    "end": 1619
+                  }
+                },
+                "span": {
+                  "start": 1604,
+                  "end": 1619
+                }
+              },
+              "body": {
+                "kind": "BlockBody",
+                "stmts": [
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1626,
+                        "end": 1629
+                      }
+                    },
+                    "op": "^=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "Identifier",
+                        "name": "round64",
+                        "span": {
+                          "start": 1633,
+                          "end": 1640
+                        }
+                      },
+                      "args": [
+                        {
+                          "value": {
+                            "kind": "NumberLit",
+                            "value": "0",
+                            "span": {
+                              "start": 1641,
+                              "end": 1642
+                            }
+                          },
+                          "span": {
+                            "start": 1641,
+                            "end": 1642
+                          }
+                        },
+                        {
+                          "value": {
+                            "kind": "MemberExpr",
+                            "target": {
+                              "kind": "Identifier",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1644,
+                                "end": 1647
+                              }
+                            },
+                            "member": "u64",
+                            "isTypePun": {
+                              "kind": "PrimitiveType",
+                              "name": "u64",
+                              "span": {
+                                "start": 1648,
+                                "end": 1651
+                              }
+                            },
+                            "span": {
+                              "start": 1644,
+                              "end": 1651
+                            }
+                          },
+                          "span": {
+                            "start": 1644,
+                            "end": 1651
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1633,
+                        "end": 1652
+                      }
+                    },
+                    "span": {
+                      "start": 1626,
+                      "end": 1652
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1657,
+                        "end": 1660
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "BinaryExpr",
+                        "op": "*",
+                        "left": {
+                          "kind": "GroupExpr",
+                          "expr": {
+                            "kind": "BinaryExpr",
+                            "op": "<<<",
+                            "left": {
+                              "kind": "Identifier",
+                              "name": "h64",
+                              "span": {
+                                "start": 1664,
+                                "end": 1667
+                              }
+                            },
+                            "right": {
+                              "kind": "NumberLit",
+                              "value": "27",
+                              "span": {
+                                "start": 1672,
+                                "end": 1674
+                              }
+                            },
+                            "span": {
+                              "start": 1664,
+                              "end": 1674
+                            }
+                          },
+                          "span": {
+                            "start": 1663,
+                            "end": 1675
+                          }
+                        },
+                        "right": {
+                          "kind": "Identifier",
+                          "name": "prime64-1",
+                          "span": {
+                            "start": 1678,
+                            "end": 1687
+                          }
+                        },
+                        "span": {
+                          "start": 1663,
+                          "end": 1687
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-4",
+                        "span": {
+                          "start": 1690,
+                          "end": 1699
+                        }
+                      },
+                      "span": {
+                        "start": 1663,
+                        "end": 1699
+                      }
+                    },
+                    "span": {
+                      "start": 1657,
+                      "end": 1699
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "ptr",
+                      "span": {
+                        "start": 1704,
+                        "end": 1707
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "NumberLit",
+                      "value": "8",
+                      "span": {
+                        "start": 1711,
+                        "end": 1712
+                      }
+                    },
+                    "span": {
+                      "start": 1704,
+                      "end": 1712
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 1620,
+                  "end": 1716
+                }
+              },
+              "span": {
+                "start": 1598,
+                "end": 1716
+              }
+            },
+            {
+              "kind": "IfStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": "<=",
+                "left": {
+                  "kind": "BinaryExpr",
+                  "op": "+",
+                  "left": {
+                    "kind": "Identifier",
+                    "name": "ptr",
+                    "span": {
+                      "start": 1801,
+                      "end": 1804
+                    }
+                  },
+                  "right": {
+                    "kind": "NumberLit",
+                    "value": "4",
+                    "span": {
+                      "start": 1807,
+                      "end": 1808
+                    }
+                  },
+                  "span": {
+                    "start": 1801,
+                    "end": 1808
+                  }
+                },
+                "right": {
+                  "kind": "Identifier",
+                  "name": "last",
+                  "span": {
+                    "start": 1812,
+                    "end": 1816
+                  }
+                },
+                "span": {
+                  "start": 1801,
+                  "end": 1816
+                }
+              },
+              "thenBody": {
+                "kind": "BlockBody",
+                "stmts": [
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1823,
+                        "end": 1826
+                      }
+                    },
+                    "op": "^=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "CastExpr",
+                        "expr": {
+                          "kind": "MemberExpr",
+                          "target": {
+                            "kind": "GroupExpr",
+                            "expr": {
+                              "kind": "CastExpr",
+                              "expr": {
+                                "kind": "Identifier",
+                                "name": "ptr",
+                                "span": {
+                                  "start": 1831,
+                                  "end": 1834
+                                }
+                              },
+                              "type": {
+                                "kind": "PointerType",
+                                "target": {
+                                  "kind": "PrimitiveType",
+                                  "name": "u32",
+                                  "span": {
+                                    "start": 1839,
+                                    "end": 1842
+                                  }
+                                },
+                                "span": {
+                                  "start": 1838,
+                                  "end": 1842
+                                }
+                              },
+                              "span": {
+                                "start": 1831,
+                                "end": 1842
+                              }
+                            },
+                            "span": {
+                              "start": 1830,
+                              "end": 1843
+                            }
+                          },
+                          "member": "*",
+                          "isDeref": true,
+                          "span": {
+                            "start": 1830,
+                            "end": 1845
+                          }
+                        },
+                        "type": {
+                          "kind": "PrimitiveType",
+                          "name": "u64",
+                          "span": {
+                            "start": 1849,
+                            "end": 1852
+                          }
+                        },
+                        "span": {
+                          "start": 1830,
+                          "end": 1852
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-1",
+                        "span": {
+                          "start": 1855,
+                          "end": 1864
+                        }
+                      },
+                      "span": {
+                        "start": 1830,
+                        "end": 1864
+                      }
+                    },
+                    "span": {
+                      "start": 1823,
+                      "end": 1864
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 1869,
+                        "end": 1872
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "BinaryExpr",
+                        "op": "*",
+                        "left": {
+                          "kind": "GroupExpr",
+                          "expr": {
+                            "kind": "BinaryExpr",
+                            "op": "<<<",
+                            "left": {
+                              "kind": "Identifier",
+                              "name": "h64",
+                              "span": {
+                                "start": 1876,
+                                "end": 1879
+                              }
+                            },
+                            "right": {
+                              "kind": "NumberLit",
+                              "value": "23",
+                              "span": {
+                                "start": 1884,
+                                "end": 1886
+                              }
+                            },
+                            "span": {
+                              "start": 1876,
+                              "end": 1886
+                            }
+                          },
+                          "span": {
+                            "start": 1875,
+                            "end": 1887
+                          }
+                        },
+                        "right": {
+                          "kind": "Identifier",
+                          "name": "prime64-2",
+                          "span": {
+                            "start": 1890,
+                            "end": 1899
+                          }
+                        },
+                        "span": {
+                          "start": 1875,
+                          "end": 1899
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-3",
+                        "span": {
+                          "start": 1902,
+                          "end": 1911
+                        }
+                      },
+                      "span": {
+                        "start": 1875,
+                        "end": 1911
+                      }
+                    },
+                    "span": {
+                      "start": 1869,
+                      "end": 1911
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "ptr",
+                      "span": {
+                        "start": 1916,
+                        "end": 1919
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "NumberLit",
+                      "value": "4",
+                      "span": {
+                        "start": 1923,
+                        "end": 1924
+                      }
+                    },
+                    "span": {
+                      "start": 1916,
+                      "end": 1924
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 1817,
+                  "end": 1928
+                }
+              },
+              "elifClauses": [],
+              "span": {
+                "start": 1798,
+                "end": 1928
+              }
+            },
+            {
+              "kind": "WhileStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": "<",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "ptr",
+                  "span": {
+                    "start": 2028,
+                    "end": 2031
+                  }
+                },
+                "right": {
+                  "kind": "Identifier",
+                  "name": "last",
+                  "span": {
+                    "start": 2034,
+                    "end": 2038
+                  }
+                },
+                "span": {
+                  "start": 2028,
+                  "end": 2038
+                }
+              },
+              "body": {
+                "kind": "BlockBody",
+                "stmts": [
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 2045,
+                        "end": 2048
+                      }
+                    },
+                    "op": "^=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "CastExpr",
+                        "expr": {
+                          "kind": "MemberExpr",
+                          "target": {
+                            "kind": "Identifier",
+                            "name": "ptr",
+                            "span": {
+                              "start": 2052,
+                              "end": 2055
+                            }
+                          },
+                          "member": "u8",
+                          "isTypePun": {
+                            "kind": "PrimitiveType",
+                            "name": "u8",
+                            "span": {
+                              "start": 2056,
+                              "end": 2058
+                            }
+                          },
+                          "span": {
+                            "start": 2052,
+                            "end": 2058
+                          }
+                        },
+                        "type": {
+                          "kind": "PrimitiveType",
+                          "name": "u64",
+                          "span": {
+                            "start": 2062,
+                            "end": 2065
+                          }
+                        },
+                        "span": {
+                          "start": 2052,
+                          "end": 2065
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-5",
+                        "span": {
+                          "start": 2068,
+                          "end": 2077
+                        }
+                      },
+                      "span": {
+                        "start": 2052,
+                        "end": 2077
+                      }
+                    },
+                    "span": {
+                      "start": 2045,
+                      "end": 2077
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "h64",
+                      "span": {
+                        "start": 2082,
+                        "end": 2085
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "GroupExpr",
+                        "expr": {
+                          "kind": "BinaryExpr",
+                          "op": "<<<",
+                          "left": {
+                            "kind": "Identifier",
+                            "name": "h64",
+                            "span": {
+                              "start": 2089,
+                              "end": 2092
+                            }
+                          },
+                          "right": {
+                            "kind": "NumberLit",
+                            "value": "11",
+                            "span": {
+                              "start": 2097,
+                              "end": 2099
+                            }
+                          },
+                          "span": {
+                            "start": 2089,
+                            "end": 2099
+                          }
+                        },
+                        "span": {
+                          "start": 2088,
+                          "end": 2100
+                        }
+                      },
+                      "right": {
+                        "kind": "Identifier",
+                        "name": "prime64-1",
+                        "span": {
+                          "start": 2103,
+                          "end": 2112
+                        }
+                      },
+                      "span": {
+                        "start": 2088,
+                        "end": 2112
+                      }
+                    },
+                    "span": {
+                      "start": 2082,
+                      "end": 2112
+                    }
+                  },
+                  {
+                    "kind": "AssignStmt",
+                    "target": {
+                      "kind": "Identifier",
+                      "name": "ptr",
+                      "span": {
+                        "start": 2117,
+                        "end": 2120
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "NumberLit",
+                      "value": "1",
+                      "span": {
+                        "start": 2124,
+                        "end": 2125
+                      }
+                    },
+                    "span": {
+                      "start": 2117,
+                      "end": 2125
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 2039,
+                  "end": 2129
+                }
+              },
+              "span": {
+                "start": 2022,
+                "end": 2129
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 2147,
+                  "end": 2150
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "h64",
+                  "span": {
+                    "start": 2154,
+                    "end": 2157
+                  }
+                },
+                "right": {
+                  "kind": "NumberLit",
+                  "value": "33",
+                  "span": {
+                    "start": 2161,
+                    "end": 2163
+                  }
+                },
+                "span": {
+                  "start": 2154,
+                  "end": 2163
+                }
+              },
+              "span": {
+                "start": 2147,
+                "end": 2163
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 2166,
+                  "end": 2169
+                }
+              },
+              "op": "*=",
+              "value": {
+                "kind": "Identifier",
+                "name": "prime64-2",
+                "span": {
+                  "start": 2173,
+                  "end": 2182
+                }
+              },
+              "span": {
+                "start": 2166,
+                "end": 2182
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 2185,
+                  "end": 2188
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "h64",
+                  "span": {
+                    "start": 2192,
+                    "end": 2195
+                  }
+                },
+                "right": {
+                  "kind": "NumberLit",
+                  "value": "29",
+                  "span": {
+                    "start": 2199,
+                    "end": 2201
+                  }
+                },
+                "span": {
+                  "start": 2192,
+                  "end": 2201
+                }
+              },
+              "span": {
+                "start": 2185,
+                "end": 2201
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 2204,
+                  "end": 2207
+                }
+              },
+              "op": "*=",
+              "value": {
+                "kind": "Identifier",
+                "name": "prime64-3",
+                "span": {
+                  "start": 2211,
+                  "end": 2220
+                }
+              },
+              "span": {
+                "start": 2204,
+                "end": 2220
+              }
+            },
+            {
+              "kind": "AssignStmt",
+              "target": {
+                "kind": "Identifier",
+                "name": "h64",
+                "span": {
+                  "start": 2223,
+                  "end": 2226
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "h64",
+                  "span": {
+                    "start": 2230,
+                    "end": 2233
+                  }
+                },
+                "right": {
+                  "kind": "NumberLit",
+                  "value": "32",
+                  "span": {
+                    "start": 2237,
+                    "end": 2239
+                  }
+                },
+                "span": {
+                  "start": 2230,
+                  "end": 2239
+                }
+              },
+              "span": {
+                "start": 2223,
+                "end": 2239
+              }
+            }
+          ],
+          "span": {
+            "start": 646,
+            "end": 2241
+          }
+        },
+        "span": {
+          "start": 601,
+          "end": 2241
+        }
+      },
+      "span": {
+        "start": 586,
+        "end": 2241
+      }
+    }
+  ],
+  "span": {
+    "start": 80,
+    "end": 2241
+  }
+}

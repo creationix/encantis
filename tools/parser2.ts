@@ -454,7 +454,7 @@ export interface ImportItem {
 }
 
 export type ImportItemKind =
-  | { kind: 'func'; signature: FuncSignature }
+  | { kind: 'func'; name?: string; signature: FuncSignature }
   | { kind: 'global'; name: string; type: Type }
   | { kind: 'memory'; pages: number };
 
