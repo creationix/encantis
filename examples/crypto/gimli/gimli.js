@@ -1,4 +1,6 @@
-const wasm = await Bun.file(new URL("./gimli.wasm", import.meta.url)).arrayBuffer()
+const wasm = await Bun.file(
+  new URL('./gimli.wasm', import.meta.url),
+).arrayBuffer()
 const module = await WebAssembly.compile(wasm)
 const instance = await WebAssembly.instantiate(module)
 /** @type {{mem:WebAssembly.Memory, gimli:(state:number)=>void, gimli_hash:(input:number,len:number,output:number)=>void}} */
@@ -11,7 +13,7 @@ const { mem, gimli: permute, gimli_hash: hash } = instance.exports
  */
 export function gimli(state) {
   if (state.length !== 12) {
-    throw new Error("Gimli state must be 12 x 32-bit words")
+    throw new Error('Gimli state must be 12 x 32-bit words')
   }
   const view = new Uint32Array(mem.buffer, 0, 12)
   view.set(state)
@@ -25,9 +27,10 @@ export function gimli(state) {
  * @returns {Uint8Array} - 32-byte hash
  */
 export function gimliHash(input) {
-  const inputArray = typeof input === 'string'
-    ? new Uint8Array(new TextEncoder().encode(input))
-    : input
+  const inputArray =
+    typeof input === 'string'
+      ? new Uint8Array(new TextEncoder().encode(input))
+      : input
 
   const inputOffset = 64
   const outputOffset = 128
@@ -48,5 +51,7 @@ export function gimliHash(input) {
  * @returns {string}
  */
 export function toHex(hash) {
-  return Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('')
+  return Array.from(hash)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
 }
