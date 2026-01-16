@@ -84,19 +84,19 @@ The following identifiers are reserved keywords in Encantis:
 
 Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions.
 
-### Float Builtins (f32/f64)
+### Float Builtins
 
-| Function | Description |
-|----------|-------------|
-| `sqrt(x)` | Square root |
-| `abs(x)` | Absolute value |
-| `ceil(x)` | Ceiling (round up) |
-| `floor(x)` | Floor (round down) |
-| `trunc(x)` | Truncate toward zero |
-| `nearest(x)` | Round to nearest even (banker's rounding) |
-| `min(a, b)` | Minimum of two values |
-| `max(a, b)` | Maximum of two values |
-| `copysign(x, y)` | Copy sign of y to x |
+| Function | Input | Returns | Description |
+|----------|-------|---------|-------------|
+| `sqrt(x)` | f32/f64 | same | Square root |
+| `abs(x)` | f32/f64 | same | Absolute value |
+| `ceil(x)` | f32/f64 | same | Ceiling (round up) |
+| `floor(x)` | f32/f64 | same | Floor (round down) |
+| `trunc(x)` | f32/f64 | same | Truncate toward zero |
+| `nearest(x)` | f32/f64 | same | Round to nearest even (banker's rounding) |
+| `min(a, b)` | f32/f64 | same | Minimum of two values |
+| `max(a, b)` | f32/f64 | same | Maximum of two values |
+| `copysign(x, y)` | f32/f64 | same | Copy sign of y to x |
 
 ```ents
 let x:f64 = -3.7
@@ -111,25 +111,31 @@ copysign(5.0, -1.0)    // -5.0
 
 ### Integer Builtins
 
-| Function | Description |
-|----------|-------------|
-| `clz(x)` | Count leading zeros |
-| `ctz(x)` | Count trailing zeros |
-| `popcnt(x)` | Population count (count 1 bits) |
+| Function | Input | Returns | Description |
+|----------|-------|---------|-------------|
+| `clz(x)` | i32/i64/u32/u64 | u8 | Count leading zeros (0 to bit width) |
+| `ctz(x)` | i32/i64/u32/u64 | u8 | Count trailing zeros (0 to bit width) |
+| `popcnt(x)` | i32/i64/u32/u64 | u8 | Population count (0 to bit width) |
+
+These functions return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type.
 
 ```ents
 let n:u32 = 0b00001000
-clz(n)                 // 28 (leading zeros)
-ctz(n)                 // 3 (trailing zeros)
-popcnt(n)              // 1 (number of 1 bits)
+clz(n)                 // 28:u8 (leading zeros)
+ctz(n)                 // 3:u8 (trailing zeros)
+popcnt(n)              // 1:u8 (number of 1 bits)
+
+// Result implicitly widens to target type
+let count:u32 = popcnt(n)    // u8 → u32 implicit
+let offset:u64 = clz(n) * 8  // u8 → u64 implicit
 ```
 
 ### Memory Builtins
 
-| Function | Description |
-|----------|-------------|
-| `memory-size()` | Current memory size in pages (64KB each) |
-| `memory-grow(n)` | Grow memory by n pages, returns previous size or -1 on failure |
+| Function | Input | Returns | Description |
+|----------|-------|---------|-------------|
+| `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
+| `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
 ```ents
 let pages = memory-size()    // current page count

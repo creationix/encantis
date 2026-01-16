@@ -106,7 +106,7 @@ declaration     = import_decl
 import_decl     = "import" string_literal string_literal import_item
                 | "import" string_literal "(" { import_group_item } ")"
 
-import_item     = func_signature
+import_item     = "func" [ identifier ] func_signature
                 | "global" identifier ":" type
                 | "memory" integer_literal
 
@@ -180,14 +180,14 @@ The expression must be a compile-time constant: literals (string, bytes, number)
 Examples:
 
 ```ents
-memory 1              -- 1 page minimum (64KB)
-memory 1 16           -- 1 page min, 16 pages max (1MB)
+memory 1              // 1 page minimum (64KB)
+memory 1 16           // 1 page min, 16 pages max (1MB)
 
-data 0 "Hello"        -- UTF-8 string at address 0
-data 5 0:u8           -- null terminator at address 5
+data 0 "Hello"        // UTF-8 string at address 0
+data 5 0:u8           // null terminator at address 5
 data 16 x"48 65 6C 6C 6F"  // raw bytes at address 16
-data 32 (100:i32, 200:i32) -- two i32s serialized at address 32
-data 40 (x: 1.0, y: 2.0)   -- struct fields serialized at address 40
+data 32 (100:i32, 200:i32) // two i32s serialized at address 32
+data 40 (x: 1.0, y: 2.0)   // struct fields serialized at address 40
 ```
 
 ## Types
