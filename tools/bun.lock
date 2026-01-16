@@ -3,6 +3,7 @@
   "workspaces": {
     "": {
       "dependencies": {
+        "@creationix/jot": "^0.1.1",
         "ohm-js": "^17.3.0",
       },
       "devDependencies": {
@@ -11,6 +12,8 @@
     },
   },
   "packages": {
+    "@creationix/jot": ["@creationix/jot@0.1.1", "", {}, "sha512-wsvFEDlPn7vD8e96Dj6Hq/95RK5gYb6VmKtO+sdvUDJwEt+jMkE5I6aqFAIQWSqQcbJQZEr0Nx0/iAMpmFCKtQ=="],
+
     "@types/bun": ["@types/bun@1.3.6", "", { "dependencies": { "bun-types": "1.3.6" } }, "sha512-uWCv6FO/8LcpREhenN1d1b6fcspAB+cefwD7uti8C8VffIv0Um08TKMn98FynpTiU38+y2dUO55T11NgDt8VAA=="],
 
     "@types/node": ["@types/node@25.0.9", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-/rpCXHlCWeqClNBwUhDcusJxXYDjZTyE8v5oTO7WbL8eij2nKhUeU89/6xgjU7N4/Vh3He0BtyhJdQbDyhiXAw=="],

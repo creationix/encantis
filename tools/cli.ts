@@ -12,7 +12,7 @@ function usage() {
 Usage: cli.ts <command> [options]
 
 Commands:
-  ast <file>              Parse file and output AST as JSON
+  ast <file>              Parse file and output AST as JOT
   check <file>            Parse and check file for errors
   compile <file> [-o out] Compile file to WAT (not yet implemented)
 
