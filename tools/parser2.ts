@@ -29,7 +29,7 @@ export type TokenKind =
   | 'if' | 'elif' | 'else' | 'while' | 'for' | 'in' | 'loop' | 'match'
   | 'break' | 'continue' | 'return' | 'when'
   | 'func' | 'let' | 'set' | 'global' | 'def' | 'type'
-  | 'import' | 'export' | 'memory' | 'data' | 'inline' | 'unique'
+  | 'import' | 'export' | 'memory' | 'inline' | 'unique'
   | 'as' | 'true' | 'false'
   // Operators
   | '+' | '-' | '*' | '/' | '%'
@@ -439,7 +439,6 @@ export type Decl =
   | DefDecl
   | GlobalDecl
   | MemoryDecl
-  | DataDecl
   | ErrorDecl;
 
 export interface ImportDecl extends AstNode {
@@ -514,16 +513,17 @@ export interface GlobalDecl extends AstNode {
   init?: Expr;
 }
 
+export interface DataEntry {
+  offset: number;
+  value: Expr;
+  span: Span;
+}
+
 export interface MemoryDecl extends AstNode {
   kind: 'MemoryDecl';
   minPages: number;
   maxPages?: number;
-}
-
-export interface DataDecl extends AstNode {
-  kind: 'DataDecl';
-  offset: number;
-  value: Expr;
+  data?: DataEntry[];
 }
 
 export interface ErrorDecl extends AstNode {
@@ -569,7 +569,7 @@ const KEYWORDS = new Set([
   'if', 'elif', 'else', 'while', 'for', 'in', 'loop', 'match',
   'break', 'continue', 'return', 'when',
   'func', 'let', 'set', 'global', 'def', 'type',
-  'import', 'export', 'memory', 'data', 'inline', 'unique',
+  'import', 'export', 'memory', 'inline', 'unique',
   'as', 'true', 'false',
 ]);
 
@@ -987,7 +987,7 @@ function synchronize(p: ParserState): void {
         kind === 'if' || kind === 'while' || kind === 'for' || kind === 'loop' ||
         kind === 'return' || kind === 'break' || kind === 'continue' ||
         kind === 'import' || kind === 'export' || kind === 'global' ||
-        kind === 'memory' || kind === 'data' || kind === 'def' || kind === 'type' ||
+        kind === 'memory' || kind === 'def' || kind === 'type' ||
         kind === 'unique' || kind === '}') {
       return;
     }
@@ -1334,11 +1334,6 @@ function parsePrimaryExpr(p: ParserState): Expr {
       return parseMatchExpr(p);
 
     default:
-      // Allow keywords to be used as identifiers in expression context
-      if (KEYWORDS.has(tok.kind)) {
-        advance(p);
-        return { kind: 'Identifier', name: tok.text, span: tok.span };
-      }
       addError(p, tok.span, `Unexpected token: ${tok.kind}`);
       advance(p);
       return { kind: 'ErrorExpr', message: `Unexpected ${tok.kind}`, span: tok.span };
@@ -1781,8 +1776,6 @@ function parseDecl(p: ParserState): Decl {
       return parseGlobalDecl(p);
     case 'memory':
       return parseMemoryDecl(p);
-    case 'data':
-      return parseDataDecl(p);
     default:
       addError(p, tok.span, `Unexpected token at top level: ${tok.kind}`);
       advance(p);  // Always advance past the unexpected token
@@ -2013,15 +2006,23 @@ function parseMemoryDecl(p: ParserState): MemoryDecl {
     maxPages = parseInt(advance(p).text, 10);
   }
 
-  const endSpan = peek(p, -1).span;
-  return { kind: 'MemoryDecl', minPages, maxPages, span: spanFrom(start, endSpan) };
-}
+  // Optional data block: { offset => value, ... }
+  let data: DataEntry[] | undefined;
+  if (match(p, '{')) {
+    data = [];
+    while (!at(p, '}') && !at(p, 'EOF')) {
+      const entryStart = peek(p).span;
+      const offset = parseInt(expect(p, 'NUMBER').text, 10);
+      expect(p, '=>');
+      const value = parseExpr(p);
+      data.push({ offset, value, span: spanFrom(entryStart, value.span) });
+      match(p, ','); // optional trailing comma
+    }
+    expect(p, '}');
+  }
 
-function parseDataDecl(p: ParserState): DataDecl {
-  const start = expect(p, 'data').span;
-  const offset = parseInt(expect(p, 'NUMBER').text, 10);
-  const value = parseExpr(p);
-  return { kind: 'DataDecl', offset, value, span: spanFrom(start, value.span) };
+  const endSpan = peek(p, -1).span;
+  return { kind: 'MemoryDecl', minPages, maxPages, data, span: spanFrom(start, endSpan) };
 }
 
 // -----------------------------------------------------------------------------

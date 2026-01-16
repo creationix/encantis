@@ -35,7 +35,7 @@ ident_char      = 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' | '-'
 keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop" | "match"
         | "break" | "continue" | "return" | "when"
         | "func" | "let" | "set" | "global" | "def" | "type"
-        | "import" | "export" | "memory" | "memory-data" | "inline" | "unique"
+        | "import" | "export" | "memory" | "inline" | "unique"
         | "as"
 ```
 
@@ -97,7 +97,6 @@ declaration     = import_decl
                 | def_decl
                 | global_decl
                 | memory_decl
-                | data_decl
 ```
 
 ### Imports
@@ -171,11 +170,11 @@ global_decl     = "global" identifier [ ":" type ] [ "=" expression ]
 ### Memory
 
 ```ebnf
-memory_decl     = "memory" integer_literal [ integer_literal ]
-data_decl       = "memory-data" integer_literal expression
+memory_decl     = "memory" integer_literal [ integer_literal ] [ "{" { data_entry } "}" ]
+data_entry      = integer_literal "=>" expression [ "," ]
 ```
 
-The expression must be a compile-time constant: literals (string, bytes, number) or tuple/struct literals containing only constants. This reuses the standard expression syntax with `arg_list` for composite values.
+The expression must be a compile-time constant: literals (string, bytes, number) or tuple/struct literals containing only constants.
 
 Examples:
 
@@ -183,11 +182,13 @@ Examples:
 memory 1              // 1 page minimum (64KB)
 memory 1 16           // 1 page min, 16 pages max (1MB)
 
-memory-data 0 "Hello"        // UTF-8 string at address 0
-memory-data 5 0:u8           // null terminator at address 5
-memory-data 16 x"48 65 6C 6C 6F"  // raw bytes at address 16
-data 32 (100:i32, 200:i32) // two i32s serialized at address 32
-data 40 (x: 1.0, y: 2.0)   // struct fields serialized at address 40
+memory 1 {
+  0 => "Hello",             // UTF-8 string at address 0
+  5 => 0:u8,                // null terminator at address 5
+  16 => x"48 65 6C 6C 6F",  // raw bytes at address 16
+  32 => (100:i32, 200:i32), // two i32s serialized at address 32
+  40 => (x: 1.0, y: 2.0),   // struct fields serialized at address 40
+}
 ```
 
 ## Types
