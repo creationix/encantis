@@ -54,5 +54,12 @@ describe('parser', () => {
       expect(mainExport).toBeDefined()
       expect(mainExport?.name).toBe('main')
     })
+
+    it('generates the expected AST snapshot', async () => {
+      const ents = await Bun.file(filePath).text()
+      const result = parse(ents, { filePath })
+      expect(result.module).toMatchSnapshot()
+    })
+      
   })
 })
