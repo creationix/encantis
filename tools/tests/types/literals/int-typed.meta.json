@@ -1,0 +1,7 @@
+{
+  "data": {},
+  "types": {},
+  "unique": {},
+  "nodes": { "24": { "type": "comptime_int(42)" } },
+  "errors": []
+}

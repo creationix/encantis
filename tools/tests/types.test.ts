@@ -7,26 +7,32 @@ import { typeToString } from '../types'
 
 const typesDir = join(import.meta.dir, 'types')
 
-interface ExpectedType {
-  offset: number
-  source: string
-  type: string
+interface NodeInfo {
+  dataOffset?: number
+  type?: string
 }
 
-interface ExpectedError {
-  offset: number
-  message: string
-}
-
-interface ExpectedOutput {
-  symbols?: Record<string, unknown>
-  types?: ExpectedType[]
-  errors?: ExpectedError[]
+interface ExpectedMeta {
+  data: Record<string, string>
+  types: Record<string, string>
+  unique: Record<string, string>
+  nodes: Record<string, NodeInfo>
+  errors: string[]
 }
 
 // Discover all test vector directories
-function discoverVectors(): { category: string; name: string; entsPath: string; jsonPath: string }[] {
-  const vectors: { category: string; name: string; entsPath: string; jsonPath: string }[] = []
+function discoverVectors(): {
+  category: string
+  name: string
+  entsPath: string
+  metaPath: string
+}[] {
+  const vectors: {
+    category: string
+    name: string
+    entsPath: string
+    metaPath: string
+  }[] = []
 
   if (!existsSync(typesDir)) {
     return vectors
@@ -44,9 +50,9 @@ function discoverVectors(): { category: string; name: string; entsPath: string; 
     for (const entsFile of entsFiles) {
       const name = basename(entsFile, '.ents')
       const entsPath = join(categoryDir, entsFile)
-      const jsonPath = join(categoryDir, `${name}.types.json`)
+      const metaPath = join(categoryDir, `${name}.meta.json`)
 
-      vectors.push({ category, name, entsPath, jsonPath })
+      vectors.push({ category, name, entsPath, metaPath })
     }
   }
 
@@ -54,7 +60,10 @@ function discoverVectors(): { category: string; name: string; entsPath: string; 
 }
 
 // Run a single test vector
-async function runVector(entsPath: string, jsonPath: string): Promise<{
+async function runVector(
+  entsPath: string,
+  metaPath: string,
+): Promise<{
   passed: boolean
   details: string[]
 }> {
@@ -79,32 +88,33 @@ async function runVector(entsPath: string, jsonPath: string): Promise<{
   const checkResult = check(parseResult.module)
 
   // Load expected output
-  if (!existsSync(jsonPath)) {
-    details.push(`Missing expected output: ${jsonPath}`)
+  if (!existsSync(metaPath)) {
+    details.push(`Missing expected output: ${metaPath}`)
     details.push('Actual types:')
     for (const [offset, type] of checkResult.types) {
-      details.push(`  ${offset}: ${typeToString(type)}`)
+      details.push(`  "${offset}": { "type": "${typeToString(type)}" }`)
     }
     return { passed: false, details }
   }
 
-  const expected: ExpectedOutput = await Bun.file(jsonPath).json()
+  const expected: ExpectedMeta = await Bun.file(metaPath).json()
 
   let passed = true
 
-  // Compare types
-  if (expected.types) {
-    for (const exp of expected.types) {
-      const actual = checkResult.types.get(exp.offset)
+  // Compare node types
+  for (const [offsetStr, nodeInfo] of Object.entries(expected.nodes)) {
+    const offset = Number(offsetStr)
+    if (nodeInfo.type !== undefined) {
+      const actual = checkResult.types.get(offset)
       if (!actual) {
-        details.push(`Missing type at offset ${exp.offset} (${exp.source})`)
-        details.push(`  Expected: ${exp.type}`)
+        details.push(`Missing type at offset ${offset}`)
+        details.push(`  Expected: ${nodeInfo.type}`)
         passed = false
       } else {
         const actualStr = typeToString(actual)
-        if (actualStr !== exp.type) {
-          details.push(`Type mismatch at offset ${exp.offset} (${exp.source})`)
-          details.push(`  Expected: ${exp.type}`)
+        if (actualStr !== nodeInfo.type) {
+          details.push(`Type mismatch at offset ${offset}`)
+          details.push(`  Expected: ${nodeInfo.type}`)
           details.push(`  Actual:   ${actualStr}`)
           passed = false
         }
@@ -113,23 +123,18 @@ async function runVector(entsPath: string, jsonPath: string): Promise<{
   }
 
   // Compare errors
-  if (expected.errors) {
-    for (const exp of expected.errors) {
-      const actual = checkResult.errors.find(
-        (e) => e.offset === exp.offset && e.message.includes(exp.message),
-      )
+  if (expected.errors.length > 0) {
+    for (const expMsg of expected.errors) {
+      const actual = checkResult.errors.find((e) => e.message.includes(expMsg))
       if (!actual) {
-        details.push(`Missing error at offset ${exp.offset}`)
-        details.push(`  Expected: ${exp.message}`)
+        details.push(`Missing error: ${expMsg}`)
         passed = false
       }
     }
 
     // Check for unexpected errors
     for (const actual of checkResult.errors) {
-      const exp = expected.errors.find(
-        (e) => e.offset === actual.offset && actual.message.includes(e.message),
-      )
+      const exp = expected.errors.find((e) => actual.message.includes(e))
       if (!exp) {
         details.push(`Unexpected error at offset ${actual.offset}`)
         details.push(`  ${actual.message}`)
@@ -154,7 +159,6 @@ const vectors = discoverVectors()
 if (vectors.length === 0) {
   describe('types', () => {
     it('has no test vectors yet', () => {
-      // Placeholder - no vectors to run
       expect(true).toBe(true)
     })
   })
@@ -170,9 +174,9 @@ if (vectors.length === 0) {
   describe('types', () => {
     for (const [category, categoryVectors] of byCategory) {
       describe(category, () => {
-        for (const { name, entsPath, jsonPath } of categoryVectors) {
+        for (const { name, entsPath, metaPath } of categoryVectors) {
           it(name, async () => {
-            const result = await runVector(entsPath, jsonPath)
+            const result = await runVector(entsPath, metaPath)
             if (!result.passed) {
               const message = result.details.join('\n')
               expect(message).toBe('')

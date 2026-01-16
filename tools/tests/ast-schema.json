@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://encantis.dev/ast-schema.json",
+  "title": "Encantis AST",
+  "description": "Parsed AST output from the Encantis parser",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Module",
+      "description": "Root AST node kind"
+    },
+    "decls": {
+      "type": "array",
+      "description": "Top-level declarations"
+    },
+    "span": {
+      "type": "object",
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["start", "end"]
+    }
+  },
+  "required": ["kind", "decls", "span"]
+}

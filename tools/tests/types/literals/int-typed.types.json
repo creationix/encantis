@@ -1,6 +1,0 @@
-{
-  "types": [
-    { "offset": 24, "source": "42", "type": "comptime_int(42)" }
-  ],
-  "errors": []
-}

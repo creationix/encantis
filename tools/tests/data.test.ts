@@ -2,36 +2,30 @@ import { describe, expect, it } from 'bun:test'
 import { readdirSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { parse } from '../parser'
-import { buildDataSection, serializeDataSection, dataToWat } from '../data'
+import { buildDataSection } from '../data'
 
 const dataDir = join(import.meta.dir, 'data')
 
-interface ExpectedEntry {
-  offset: number
-  bytes: string // hex string of bytes (without null terminator)
-  length: number
+interface NodeInfo {
+  dataOffset?: number
+  type?: number
 }
 
-interface ExpectedLiteral {
-  astOffset: number // AST node start offset
-  dataOffset: number // Where it was placed in the data section
+interface ExpectedMeta {
+  data: Record<string, string> // dataOffset → hex bytes
+  types: Record<string, string> // typeName → stringified type
+  unique: Record<string, string> // uniqueName → stringified type
+  nodes: Record<string, NodeInfo> // astOffset → node info
+  errors: string[]
 }
 
-interface ExpectedOutput {
-  entries?: ExpectedEntry[]
-  literals?: ExpectedLiteral[]
-  totalSize?: number
-  autoDataStart?: number
-  errors?: string[]
-}
-
-// Discover all test vector directories
+// Discover all test vectors
 function discoverVectors(): {
   name: string
   entsPath: string
-  jsonPath: string
+  metaPath: string
 }[] {
-  const vectors: { name: string; entsPath: string; jsonPath: string }[] = []
+  const vectors: { name: string; entsPath: string; metaPath: string }[] = []
 
   if (!existsSync(dataDir)) {
     return vectors
@@ -43,8 +37,8 @@ function discoverVectors(): {
   for (const entsFile of entsFiles) {
     const name = basename(entsFile, '.ents')
     const entsPath = join(dataDir, entsFile)
-    const jsonPath = join(dataDir, `${name}.data.json`)
-    vectors.push({ name, entsPath, jsonPath })
+    const metaPath = join(dataDir, `${name}.meta.json`)
+    vectors.push({ name, entsPath, metaPath })
   }
 
   return vectors
@@ -60,7 +54,7 @@ function bytesToHex(bytes: Uint8Array): string {
 // Run a single test vector
 async function runVector(
   entsPath: string,
-  jsonPath: string,
+  metaPath: string,
 ): Promise<{ passed: boolean; details: string[] }> {
   const details: string[] = []
 
@@ -83,97 +77,77 @@ async function runVector(
   const dataSection = buildDataSection(parseResult.module)
 
   // Load expected output
-  if (!existsSync(jsonPath)) {
-    details.push(`Missing expected output: ${jsonPath}`)
-    details.push('Actual data section:')
-    details.push(`  totalSize: ${dataSection.totalSize}`)
-    details.push(`  autoDataStart: ${dataSection.autoDataStart}`)
-    details.push('  entries:')
+  if (!existsSync(metaPath)) {
+    details.push(`Missing expected output: ${metaPath}`)
+    details.push('Actual:')
+    details.push('  data:')
     for (const entry of dataSection.entries) {
-      details.push(
-        `    offset=${entry.offset} len=${entry.length} bytes=${bytesToHex(entry.bytes)}`,
-      )
+      details.push(`    "${entry.offset}": "${bytesToHex(entry.bytes)}"`)
     }
-    details.push('  literals:')
+    details.push('  nodes:')
     for (const [astOffset, entry] of dataSection.literalMap) {
-      details.push(`    ast=${astOffset} → data=${entry.offset}`)
+      details.push(`    "${astOffset}": { "dataOffset": ${entry.offset} }`)
     }
     if (dataSection.errors.length > 0) {
       details.push('  errors:')
       for (const error of dataSection.errors) {
-        details.push(`    ${error}`)
+        details.push(`    "${error}"`)
       }
     }
     return { passed: false, details }
   }
 
-  const expected: ExpectedOutput = await Bun.file(jsonPath).json()
+  const expected: ExpectedMeta = await Bun.file(metaPath).json()
   let passed = true
 
-  // Compare totalSize
-  if (expected.totalSize !== undefined) {
-    if (dataSection.totalSize !== expected.totalSize) {
-      details.push(
-        `totalSize mismatch: expected ${expected.totalSize}, got ${dataSection.totalSize}`,
-      )
-      passed = false
-    }
+  // Build actual data map
+  const actualData: Record<string, string> = {}
+  for (const entry of dataSection.entries) {
+    actualData[String(entry.offset)] = bytesToHex(entry.bytes)
   }
 
-  // Compare autoDataStart
-  if (expected.autoDataStart !== undefined) {
-    if (dataSection.autoDataStart !== expected.autoDataStart) {
-      details.push(
-        `autoDataStart mismatch: expected ${expected.autoDataStart}, got ${dataSection.autoDataStart}`,
-      )
-      passed = false
-    }
-  }
+  // Compare data
+  const expectedDataKeys = Object.keys(expected.data).sort(
+    (a, b) => Number(a) - Number(b),
+  )
+  const actualDataKeys = Object.keys(actualData).sort(
+    (a, b) => Number(a) - Number(b),
+  )
 
-  // Compare entries
-  if (expected.entries) {
-    if (dataSection.entries.length !== expected.entries.length) {
-      details.push(
-        `Entry count mismatch: expected ${expected.entries.length}, got ${dataSection.entries.length}`,
-      )
-      passed = false
-    } else {
-      for (let i = 0; i < expected.entries.length; i++) {
-        const exp = expected.entries[i]
-        const act = dataSection.entries[i]
-        if (act.offset !== exp.offset) {
-          details.push(
-            `Entry ${i} offset mismatch: expected ${exp.offset}, got ${act.offset}`,
-          )
-          passed = false
-        }
-        if (act.length !== exp.length) {
-          details.push(
-            `Entry ${i} length mismatch: expected ${exp.length}, got ${act.length}`,
-          )
-          passed = false
-        }
-        const actHex = bytesToHex(act.bytes)
-        if (actHex !== exp.bytes) {
-          details.push(
-            `Entry ${i} bytes mismatch: expected ${exp.bytes}, got ${actHex}`,
-          )
-          passed = false
-        }
+  if (expectedDataKeys.length !== actualDataKeys.length) {
+    details.push(
+      `Data entry count mismatch: expected ${expectedDataKeys.length}, got ${actualDataKeys.length}`,
+    )
+    details.push(`  Expected offsets: ${expectedDataKeys.join(', ')}`)
+    details.push(`  Actual offsets: ${actualDataKeys.join(', ')}`)
+    passed = false
+  } else {
+    for (const offset of expectedDataKeys) {
+      const expHex = expected.data[offset]
+      const actHex = actualData[offset]
+      if (actHex === undefined) {
+        details.push(`Missing data at offset ${offset}`)
+        passed = false
+      } else if (actHex !== expHex) {
+        details.push(
+          `Data at offset ${offset} mismatch: expected ${expHex}, got ${actHex}`,
+        )
+        passed = false
       }
     }
   }
 
-  // Compare literal mappings
-  if (expected.literals) {
-    for (const exp of expected.literals) {
-      const entry = dataSection.literalMap.get(exp.astOffset)
+  // Compare nodes (literal mappings)
+  for (const [astOffsetStr, nodeInfo] of Object.entries(expected.nodes)) {
+    const astOffset = Number(astOffsetStr)
+    if (nodeInfo.dataOffset !== undefined) {
+      const entry = dataSection.literalMap.get(astOffset)
       if (!entry) {
-        details.push(`Missing literal mapping for AST offset ${exp.astOffset}`)
+        details.push(`Missing literal mapping for AST offset ${astOffset}`)
         passed = false
-      } else if (entry.offset !== exp.dataOffset) {
+      } else if (entry.offset !== nodeInfo.dataOffset) {
         details.push(
-          `Literal at AST ${exp.astOffset}: expected data offset ${exp.dataOffset}, got ${entry.offset}`,
+          `Literal at AST ${astOffset}: expected dataOffset ${nodeInfo.dataOffset}, got ${entry.offset}`,
         )
         passed = false
       }
@@ -181,28 +155,23 @@ async function runVector(
   }
 
   // Compare errors
-  if (expected.errors) {
-    if (dataSection.errors.length !== expected.errors.length) {
-      details.push(
-        `Error count mismatch: expected ${expected.errors.length}, got ${dataSection.errors.length}`,
-      )
-      if (dataSection.errors.length > 0) {
-        details.push(`  Actual errors: ${dataSection.errors.join('; ')}`)
-      }
-      passed = false
-    } else {
-      for (let i = 0; i < expected.errors.length; i++) {
-        if (!dataSection.errors[i].includes(expected.errors[i])) {
-          details.push(
-            `Error ${i} mismatch: expected to contain "${expected.errors[i]}", got "${dataSection.errors[i]}"`,
-          )
-          passed = false
-        }
+  if (expected.errors.length !== dataSection.errors.length) {
+    details.push(
+      `Error count mismatch: expected ${expected.errors.length}, got ${dataSection.errors.length}`,
+    )
+    if (dataSection.errors.length > 0) {
+      details.push(`  Actual errors: ${dataSection.errors.join('; ')}`)
+    }
+    passed = false
+  } else {
+    for (let i = 0; i < expected.errors.length; i++) {
+      if (!dataSection.errors[i].includes(expected.errors[i])) {
+        details.push(
+          `Error ${i} mismatch: expected to contain "${expected.errors[i]}", got "${dataSection.errors[i]}"`,
+        )
+        passed = false
       }
     }
-  } else if (dataSection.errors.length > 0) {
-    details.push(`Unexpected errors: ${dataSection.errors.join('; ')}`)
-    passed = false
   }
 
   return { passed, details }
@@ -219,9 +188,9 @@ if (vectors.length === 0) {
   })
 } else {
   describe('data', () => {
-    for (const { name, entsPath, jsonPath } of vectors) {
+    for (const { name, entsPath, metaPath } of vectors) {
       it(name, async () => {
-        const result = await runVector(entsPath, jsonPath)
+        const result = await runVector(entsPath, metaPath)
         if (!result.passed) {
           const message = result.details.join('\n')
           expect(message).toBe('')

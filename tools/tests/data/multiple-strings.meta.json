@@ -1,0 +1,20 @@
+{
+  "$schema": "../meta-schema.json",
+  "data": [
+    { "offset": 0, "hex": "6170706c6500" },
+    { "offset": 6, "hex": "62616e616e6100" },
+    { "offset": 13, "hex": "63686572727900" }
+  ],
+  "types": [
+    "comptime_string(\"apple\", 5)",
+    "comptime_string(\"banana\", 6)",
+    "comptime_string(\"cherry\", 6)"
+  ],
+  "unique": [],
+  "symbols": [],
+  "hints": {
+    "20": { "type": 0, "data": 0 },
+    "35": { "type": 1, "data": 1 },
+    "51": { "type": 2, "data": 2 }
+  }
+}

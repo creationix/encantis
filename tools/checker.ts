@@ -19,6 +19,7 @@ import {
   comptimeFloat,
   comptimeString,
   typeToString,
+  comptimeIntFits,
 } from './types'
 
 // === Symbol Table ===
@@ -311,14 +312,19 @@ class CheckContext {
     let type: ResolvedType
     if (stmt.type) {
       type = this.resolveType(stmt.type)
+      if (stmt.value) {
+        this.inferExpr(stmt.value)
+      }
     } else if (stmt.value) {
-      type = this.inferExpr(stmt.value)
+      const valueType = this.inferExpr(stmt.value)
+      // Concretize comptime types for variables
+      type = this.concretize(valueType)
     } else {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
     }
 
-    // Add bindings from pattern
+    // Add bindings from pattern and record types
     this.bindPattern(stmt.pattern, type)
   }
 
@@ -332,10 +338,34 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern':
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
+        // Record type at pattern offset for LSP
+        this.types.set(pattern.span.start, type)
         break
       case 'TuplePattern':
         // TODO: destructure tuple fields
         break
+    }
+  }
+
+  // Convert comptime types to concrete defaults for storage
+  concretize(type: ResolvedType): ResolvedType {
+    switch (type.kind) {
+      case 'comptime_int': {
+        // Default: i32 if it fits, otherwise i64
+        const i32Type = primitive('i32')
+        if (comptimeIntFits(type.value, i32Type)) {
+          return i32Type
+        }
+        return primitive('i64')
+      }
+      case 'comptime_float':
+        // Default: f64
+        return primitive('f64')
+      case 'comptime_string':
+        // Default: u8[N/0] (null-terminated fixed array)
+        return nullterm(primitive('u8'), type.bytes.length)
+      default:
+        return type
     }
   }
 

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://encantis.dev/meta-schema.json",
+  "title": "Encantis Test Meta",
+  "description": "Combined type and data section metadata for Encantis test vectors",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "src": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "Clickable link to source file (file:// URL)"
+    },
+    "data": {
+      "description": "Data section entries",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "offset": { "type": "integer", "minimum": 0, "description": "Memory offset" },
+          "hex": { "type": "string", "pattern": "^[0-9a-f]*$", "description": "Hex-encoded bytes" }
+        },
+        "required": ["offset", "hex"],
+        "additionalProperties": false
+      }
+    },
+    "types": {
+      "description": "Type registry (referenced by index)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "description": "Stringified structural type" },
+          "symbol": { "type": "integer", "minimum": 0, "description": "Index into symbols array (for named types)" }
+        },
+        "required": ["type"],
+        "additionalProperties": false
+      }
+    },
+    "hints": {
+      "description": "AST node metadata keyed by line:col (0-indexed, matches LSP Position)",
+      "type": "object",
+      "propertyNames": { "pattern": "^\\d+:\\d+$" },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "len": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Length of source span in characters"
+          },
+          "type": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index into types array"
+          },
+          "symbol": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index into symbols array (for identifiers)"
+          },
+          "data": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index into data array for embedded literals"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "symbols": {
+      "description": "Symbol table (for rename, go-to-definition)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Symbol name" },
+          "kind": {
+            "type": "string",
+            "enum": ["func", "type", "unique", "global", "local", "param", "def"],
+            "description": "Symbol kind"
+          },
+          "type": { "type": "integer", "minimum": 0, "description": "Index into types array" },
+          "def": { "type": "string", "pattern": "^\\d+:\\d+$", "description": "Definition position (line:col, 0-indexed)" },
+          "refs": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^\\d+:\\d+$" },
+            "description": "Reference positions (line:col, 0-indexed)"
+          },
+          "doc": {
+            "type": "string",
+            "description": "Documentation comment (from preceding // or /* */ comments)"
+          }
+        },
+        "required": ["name", "kind", "type", "def", "refs"],
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "description": "Combined type and data errors",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["data", "types", "hints", "symbols"],
+  "additionalProperties": false
+}

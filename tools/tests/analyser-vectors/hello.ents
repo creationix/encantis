@@ -1,0 +1,17 @@
+export "mem" memory 1
+
+// Import JavaScript console.log
+import "env" "log" func log(u8[])
+
+type Point = (i32, i32)
+unique Index = i32
+
+export "main"
+func main() {
+  let message = "Hello, World!\n"
+  // Log "Hello, World!" to console
+  // JavaScript host will receive the string pointer and length and read from linear memory
+  log(message)
+  let p: Point = (10, 20)
+  let idx: Index = 42
+}

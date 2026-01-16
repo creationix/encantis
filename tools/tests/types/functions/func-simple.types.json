@@ -1,7 +1,0 @@
-{
-  "types": [
-    { "offset": 41, "source": "a", "type": "i32" },
-    { "offset": 45, "source": "b", "type": "i32" }
-  ],
-  "errors": []
-}

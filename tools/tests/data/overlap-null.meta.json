@@ -1,0 +1,12 @@
+{
+  "data": {
+    "0": "68656c6c6f00",
+    "5": "776f726c6400"
+  },
+  "types": {},
+  "unique": {},
+  "nodes": {},
+  "errors": [
+    "memory data at offset 5 overlaps previous entry at offset 0 (6 bytes ends at 6)"
+  ]
+}

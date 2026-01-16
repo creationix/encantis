@@ -1,8 +1,0 @@
-{
-  "entries": [
-    { "offset": 0, "bytes": "68656c6c6f00776f726c6400", "length": 12 }
-  ],
-  "totalSize": 12,
-  "autoDataStart": 12,
-  "errors": []
-}

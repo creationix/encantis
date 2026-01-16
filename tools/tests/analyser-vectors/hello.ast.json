@@ -1,0 +1,240 @@
+{
+  "$schema": "../ast-schema.json",
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ExportDecl",
+      "item": {
+        "kind": "MemoryDecl",
+        "min": 1,
+        "max": null,
+        "data": [],
+        "span": { "start": 13, "end": 21 }
+      },
+      "span": { "start": 0, "end": 21 }
+    },
+    {
+      "kind": "ImportDecl",
+      "items": [
+        {
+          "kind": "ImportItem",
+          "item": {
+            "kind": "ImportFunc",
+            "ident": "log",
+            "signature": {
+              "kind": "FuncSignature",
+              "params": {
+                "kind": "FieldList",
+                "fields": [
+                  {
+                    "kind": "Field",
+                    "ident": null,
+                    "type": {
+                      "kind": "IndexedType",
+                      "element": {
+                        "kind": "PrimitiveType",
+                        "name": "u8",
+                        "span": { "start": 84, "end": 86 }
+                      },
+                      "size": null,
+                      "nullTerminated": false,
+                      "span": { "start": 84, "end": 88 }
+                    },
+                    "span": { "start": 84, "end": 88 }
+                  }
+                ],
+                "span": { "start": 83, "end": 89 }
+              },
+              "returns": null,
+              "span": { "start": 83, "end": 89 }
+            },
+            "span": { "start": 75, "end": 89 }
+          },
+          "span": { "start": 69, "end": 89 }
+        }
+      ],
+      "span": { "start": 56, "end": 89 }
+    },
+    {
+      "kind": "TypeDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Point",
+        "span": { "start": 96, "end": 101 }
+      },
+      "type": {
+        "kind": "CompositeType",
+        "fields": [
+          {
+            "kind": "Field",
+            "ident": null,
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "i32",
+              "span": { "start": 105, "end": 108 }
+            },
+            "span": { "start": 105, "end": 108 }
+          },
+          {
+            "kind": "Field",
+            "ident": null,
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "i32",
+              "span": { "start": 110, "end": 113 }
+            },
+            "span": { "start": 110, "end": 113 }
+          }
+        ],
+        "span": { "start": 104, "end": 114 }
+      },
+      "span": { "start": 91, "end": 114 }
+    },
+    {
+      "kind": "UniqueDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Index",
+        "span": { "start": 122, "end": 127 }
+      },
+      "type": {
+        "kind": "PrimitiveType",
+        "name": "i32",
+        "span": { "start": 130, "end": 133 }
+      },
+      "span": { "start": 115, "end": 133 }
+    },
+    {
+      "kind": "ExportDecl",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": "main",
+        "signature": {
+          "kind": "FuncSignature",
+          "params": {
+            "kind": "FieldList",
+            "fields": [],
+            "span": { "start": 158, "end": 160 }
+          },
+          "returns": null,
+          "span": { "start": 158, "end": 160 }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "message",
+                "span": { "start": 169, "end": 176 }
+              },
+              "type": null,
+              "value": {
+                "kind": "LiteralExpr",
+                "value": {
+                  "kind": "string",
+                  "bytes": [
+                    72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33,
+                    10
+                  ]
+                },
+                "span": { "start": 179, "end": 196 }
+              },
+              "span": { "start": 165, "end": 196 }
+            },
+            {
+              "kind": "ExpressionStmt",
+              "expr": {
+                "kind": "CallExpr",
+                "callee": {
+                  "kind": "IdentExpr",
+                  "name": "log",
+                  "span": { "start": 327, "end": 330 }
+                },
+                "args": [
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "value": {
+                      "kind": "IdentExpr",
+                      "name": "message",
+                      "span": { "start": 331, "end": 338 }
+                    },
+                    "span": { "start": 331, "end": 338 }
+                  }
+                ],
+                "span": { "start": 327, "end": 339 }
+              },
+              "span": { "start": 327, "end": 339 }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "p",
+                "span": { "start": 346, "end": 347 }
+              },
+              "type": {
+                "kind": "TypeRef",
+                "name": "Point",
+                "span": { "start": 349, "end": 354 }
+              },
+              "value": {
+                "kind": "TupleExpr",
+                "elements": [
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": { "kind": "int", "value": "10", "radix": 10 },
+                      "span": { "start": 358, "end": 360 }
+                    },
+                    "span": { "start": 358, "end": 360 }
+                  },
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": { "kind": "int", "value": "20", "radix": 10 },
+                      "span": { "start": 362, "end": 364 }
+                    },
+                    "span": { "start": 362, "end": 364 }
+                  }
+                ],
+                "span": { "start": 357, "end": 365 }
+              },
+              "span": { "start": 342, "end": 365 }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "idx",
+                "span": { "start": 372, "end": 375 }
+              },
+              "type": {
+                "kind": "TypeRef",
+                "name": "Index",
+                "span": { "start": 377, "end": 382 }
+              },
+              "value": {
+                "kind": "LiteralExpr",
+                "value": { "kind": "int", "value": "42", "radix": 10 },
+                "span": { "start": 385, "end": 387 }
+              },
+              "span": { "start": 368, "end": 387 }
+            }
+          ],
+          "span": { "start": 161, "end": 389 }
+        },
+        "span": { "start": 149, "end": 389 }
+      },
+      "span": { "start": 135, "end": 389 }
+    }
+  ],
+  "span": { "start": 0, "end": 390 }
+}

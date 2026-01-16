@@ -1,7 +1,0 @@
-{
-  "types": [
-    { "offset": 51, "source": "log(...)", "type": "()" },
-    { "offset": 55, "source": "\"hello\"", "type": "comptime_string(\"hello\", 5)" }
-  ],
-  "errors": []
-}
