@@ -1,0 +1,41 @@
+// 64-bit wide bitfields and tagged pointers
+// This means the payload has 63 bits of information.
+
+// Given a trie data structure and a key, find the target.
+// Returns -1 on not found, -2 on out of bounds.
+export "walk-trie"
+func walk(trie:u64[], key:u64) -> i64 {
+  let trie_offset:u32 = 0
+  let bit_offset:u8 = 0
+
+  loop {
+    // Consume 7 bits from the key bitstream
+    let index:u64 = 1 << ((key >> bit_offset) & 0x7f)
+    bit_offset = (bit_offset + 7) % 64
+
+    // Read the bitfield from the trie
+    let bitfield:u64 = trie[trie_offset]
+    trie_offset += 1
+
+    // If the index isn't in the bitfield, it's missing.
+    return -1 when (bitfield & index) == 0
+
+    // Otherwise use popcnt to jump the pointer.
+    trie_offset += popcnt(bitfield & (index - 1)) << 3
+
+    // If we go out of bounds, return -2
+    return -2 when trie_offset >= trie.len
+
+    // Read the tagged pointer
+    let pointer:u64 = trie[trie_offset]
+
+    // If low bit is zero, we're done!
+    return pointer as i64 when (pointer & 1) == 0
+
+    // Follow the pointer, but ignore the bottom bit.
+    trie_offset += (pointer >> 1) as u32
+
+    // Check bounds again
+    return -2 when trie_offset >= trie.len
+  }
+}

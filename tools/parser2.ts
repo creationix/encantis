@@ -1524,7 +1524,7 @@ function parseStructPatternContinued(p: ParserState, start: Span): StructPattern
     expect(p, ':');
 
     let binding: string | undefined;
-    if (at(p, 'IDENT') && !at(p, ',', 1) && !at(p, ')', 1)) {
+    if (at(p, 'IDENT')) {
       binding = advance(p).text;
     }
 
