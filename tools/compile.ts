@@ -955,6 +955,13 @@ function generateFuncBody(ctx: CodeGenContext, body: Body, func: FuncDecl): void
           emit(ctx, `(local.get $${ret.name})`);
         }
       }
+    } else if (returns) {
+      // Function has a return type but no named returns
+      // If the body ends with an infinite loop, the code after is unreachable
+      const lastStmt = body.stmts[body.stmts.length - 1];
+      if (lastStmt?.kind === 'LoopStmt') {
+        emit(ctx, '(unreachable)');
+      }
     }
   }
 }
@@ -1221,12 +1228,6 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
       emit(ctx, ')');
 
       ctx.loopStack.pop();
-
-      // Infinite loops only exit via return, so code after is unreachable
-      // This satisfies the type checker for functions that return values
-      if (ctx.currentFunc?.signature.returns) {
-        emit(ctx, '(unreachable)');
-      }
       break;
     }
 
