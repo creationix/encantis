@@ -1,12 +1,14 @@
-const wasm = await Bun.file(new URL("./xxh64.wasm", import.meta.url)).arrayBuffer()
+const wasm = await Bun.file(
+  new URL('./xxh64.wasm', import.meta.url),
+).arrayBuffer()
 const module = await WebAssembly.compile(wasm)
 const instance = await WebAssembly.instantiate(module)
 /** @type {{mem:WebAssembly.Memory,xxh64:(ptr:number,len:number,seed:bigint)=>bigint}} */
 const { mem, xxh64: hash } = instance.exports
 
 /**
- * @param {string} input 
- * @param {bigint} [seed] 
+ * @param {string} input
+ * @param {bigint} [seed]
  * @returns {bigint}
  */
 export function xxh64(input, seed = 0n) {
