@@ -84,6 +84,11 @@ export function compile(src: string): string {
 // WAT Code Generation (Basic Implementation)
 // -----------------------------------------------------------------------------
 
+interface LoopLabels {
+  continue: string;  // Label to branch to for continue (loop start)
+  break: string;     // Label to branch to for break (loop exit)
+}
+
 interface CodeGenContext {
   output: string[];
   indent: number;
@@ -96,6 +101,8 @@ interface CodeGenContext {
   currentFunc?: FuncDecl;  // Current function for scope lookup
   reservedNames: Set<string>;  // Names used by flattened params (e.g., input_ptr, input_len)
   localRenames: Map<string, string>;  // Map from source name to WAT name for renamed locals
+  loopStack: LoopLabels[];  // Stack of loop labels for break/continue
+  labelCounter: number;  // Counter for generating unique labels
 }
 
 function emit(ctx: CodeGenContext, line: string): void {
@@ -582,6 +589,8 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
     symbols,
     reservedNames: new Set(),
     localRenames: new Map(),
+    loopStack: [],
+    labelCounter: 0,
   };
 
   // Collect global/constant names and functions first
@@ -666,6 +675,44 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
   return ctx.output.join('\n');
 }
 
+// Recursively collect all statements from a block body, including nested blocks
+function collectAllStmts(stmts: Stmt[]): Stmt[] {
+  const allStmts: Stmt[] = [];
+
+  function collect(stmt: Stmt) {
+    allStmts.push(stmt);
+
+    // Recursively collect from nested blocks
+    if (stmt.kind === 'IfStmt') {
+      if (stmt.thenBody.kind === 'BlockBody') {
+        for (const s of stmt.thenBody.stmts) collect(s);
+      }
+      for (const elif of stmt.elifClauses || []) {
+        if (elif.body.kind === 'BlockBody') {
+          for (const s of elif.body.stmts) collect(s);
+        }
+      }
+      if (stmt.elseBody?.kind === 'BlockBody') {
+        for (const s of stmt.elseBody.stmts) collect(s);
+      }
+    } else if (stmt.kind === 'LoopStmt' || stmt.kind === 'WhileStmt') {
+      if (stmt.body.kind === 'BlockBody') {
+        for (const s of stmt.body.stmts) collect(s);
+      }
+    } else if (stmt.kind === 'ForStmt') {
+      if (stmt.body.kind === 'BlockBody') {
+        for (const s of stmt.body.stmts) collect(s);
+      }
+    }
+  }
+
+  for (const stmt of stmts) {
+    collect(stmt);
+  }
+
+  return allStmts;
+}
+
 function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: string): void {
   ctx.currentFunc = func;  // Set for type lookups in this function's scope
   ctx.reservedNames.clear();  // Reset for each function
@@ -731,9 +778,10 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
   emit(ctx, `(func $${name} ${exportClause} ${params} ${results}`.trim());
   ctx.indent++;
 
-  // Collect locals from body
+  // Collect locals from body (recursively including nested blocks)
   if (func.body?.kind === 'BlockBody') {
-    for (const stmt of func.body.stmts) {
+    const allStmts = collectAllStmts(func.body.stmts);
+    for (const stmt of allStmts) {
       if (stmt.kind === 'LetStmt') {
         if (stmt.pattern.kind === 'IdentPattern') {
           const type = stmt.type || (stmt.init ? inferExprType(ctx, stmt.init) : undefined);
@@ -774,6 +822,14 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
             const watName = getLocalName(ctx, bindingName);
             emit(ctx, `(local $${watName} ${fieldType})`);
           }
+        }
+      } else if (stmt.kind === 'ForStmt') {
+        // For loop binding variable
+        const watName = getLocalName(ctx, stmt.binding);
+        emit(ctx, `(local $${watName} i32)`);
+        if (stmt.indexBinding) {
+          const indexWatName = getLocalName(ctx, stmt.indexBinding);
+          emit(ctx, `(local $${indexWatName} i32)`);
         }
       }
     }
@@ -1034,7 +1090,22 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
     }
 
     case 'ReturnStmt':
-      if (stmt.value) {
+      if (stmt.when) {
+        // Conditional return: return value when cond
+        emit(ctx, `(if ${exprToWat(ctx, stmt.when)}`);
+        ctx.indent++;
+        emit(ctx, '(then');
+        ctx.indent++;
+        if (stmt.value) {
+          emit(ctx, `(return ${exprToWat(ctx, stmt.value)})`);
+        } else {
+          emit(ctx, '(return)');
+        }
+        ctx.indent--;
+        emit(ctx, ')');
+        ctx.indent--;
+        emit(ctx, ')');
+      } else if (stmt.value) {
         // Use folded form for return
         emit(ctx, `(return ${exprToWat(ctx, stmt.value)})`);
       } else {
@@ -1042,7 +1113,219 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
       }
       break;
 
-    // TODO: Implement other statements (if, while, for, etc.)
+    case 'LoopStmt': {
+      // Infinite loop: loop { ... break when cond }
+      // WAT: (block $break (loop $continue ... (br $continue)))
+      const breakLabel = `$loop_exit_${ctx.labelCounter}`;
+      const continueLabel = `$loop_${ctx.labelCounter}`;
+      ctx.labelCounter++;
+
+      ctx.loopStack.push({ break: breakLabel, continue: continueLabel });
+
+      emit(ctx, `(block ${breakLabel}`);
+      ctx.indent++;
+      emit(ctx, `(loop ${continueLabel}`);
+      ctx.indent++;
+
+      // Generate loop body
+      if (stmt.body.kind === 'BlockBody') {
+        for (const s of stmt.body.stmts) {
+          generateStmt(ctx, s);
+        }
+      } else {
+        generateExpr(ctx, stmt.body.expr);
+        emit(ctx, '(drop)');
+      }
+
+      // Branch back to continue (loop start)
+      emit(ctx, `(br ${continueLabel})`);
+
+      ctx.indent--;
+      emit(ctx, ')');
+      ctx.indent--;
+      emit(ctx, ')');
+
+      ctx.loopStack.pop();
+      break;
+    }
+
+    case 'WhileStmt': {
+      // While loop: while cond { ... }
+      // WAT: (block $break (loop $continue (br_if $break (i32.eqz cond)) ... (br $continue)))
+      const breakLabel = `$while_exit_${ctx.labelCounter}`;
+      const continueLabel = `$while_${ctx.labelCounter}`;
+      ctx.labelCounter++;
+
+      ctx.loopStack.push({ break: breakLabel, continue: continueLabel });
+
+      emit(ctx, `(block ${breakLabel}`);
+      ctx.indent++;
+      emit(ctx, `(loop ${continueLabel}`);
+      ctx.indent++;
+
+      // Check condition, break if false
+      emit(ctx, `(br_if ${breakLabel} (i32.eqz ${exprToWat(ctx, stmt.condition)}))`);
+
+      // Generate loop body
+      if (stmt.body.kind === 'BlockBody') {
+        for (const s of stmt.body.stmts) {
+          generateStmt(ctx, s);
+        }
+      } else {
+        generateExpr(ctx, stmt.body.expr);
+        emit(ctx, '(drop)');
+      }
+
+      // Branch back to continue (loop start)
+      emit(ctx, `(br ${continueLabel})`);
+
+      ctx.indent--;
+      emit(ctx, ')');
+      ctx.indent--;
+      emit(ctx, ')');
+
+      ctx.loopStack.pop();
+      break;
+    }
+
+    case 'ForStmt': {
+      // For loop: for i in N { ... } or for i in iterable { ... }
+      // For simple integer range: for i in N is equivalent to for i = 0; i < N; i++
+      // WAT: (local $i i32) (local.set $i 0) (block $break (loop $continue (br_if $break (i32.ge_s $i N)) ... (local.set $i (i32.add $i 1)) (br $continue)))
+      const breakLabel = `$for_exit_${ctx.labelCounter}`;
+      const continueLabel = `$for_${ctx.labelCounter}`;
+      ctx.labelCounter++;
+
+      ctx.loopStack.push({ break: breakLabel, continue: continueLabel });
+
+      // Get the loop variable name (may need renaming)
+      const loopVar = ctx.localRenames.get(stmt.binding) || stmt.binding;
+
+      // Initialize loop variable to 0
+      emit(ctx, `(local.set $${loopVar} (i32.const 0))`);
+
+      emit(ctx, `(block ${breakLabel}`);
+      ctx.indent++;
+      emit(ctx, `(loop ${continueLabel}`);
+      ctx.indent++;
+
+      // Check condition: i < N, break if false
+      emit(ctx, `(br_if ${breakLabel} (i32.ge_s (local.get $${loopVar}) ${exprToWat(ctx, stmt.iterable)}))`);
+
+      // Generate loop body
+      if (stmt.body.kind === 'BlockBody') {
+        for (const s of stmt.body.stmts) {
+          generateStmt(ctx, s);
+        }
+      } else {
+        generateExpr(ctx, stmt.body.expr);
+        emit(ctx, '(drop)');
+      }
+
+      // Increment loop variable
+      emit(ctx, `(local.set $${loopVar} (i32.add (local.get $${loopVar}) (i32.const 1)))`);
+
+      // Branch back to continue (loop start)
+      emit(ctx, `(br ${continueLabel})`);
+
+      ctx.indent--;
+      emit(ctx, ')');
+      ctx.indent--;
+      emit(ctx, ')');
+
+      ctx.loopStack.pop();
+      break;
+    }
+
+    case 'IfStmt': {
+      // If statement: if cond { ... } elif cond { ... } else { ... }
+      const hasElse = stmt.elseBody || stmt.elifClauses.length > 0;
+
+      emit(ctx, `(if ${exprToWat(ctx, stmt.condition)}`);
+      ctx.indent++;
+      emit(ctx, '(then');
+      ctx.indent++;
+
+      // Generate then body
+      if (stmt.thenBody.kind === 'BlockBody') {
+        for (const s of stmt.thenBody.stmts) {
+          generateStmt(ctx, s);
+        }
+      } else {
+        generateExpr(ctx, stmt.thenBody.expr);
+        emit(ctx, '(drop)');
+      }
+
+      ctx.indent--;
+      emit(ctx, ')');
+
+      // Handle elif clauses and else
+      if (hasElse) {
+        emit(ctx, '(else');
+        ctx.indent++;
+
+        if (stmt.elifClauses.length > 0) {
+          // Generate nested if for elif
+          const elif = stmt.elifClauses[0];
+          const remainingElifs = stmt.elifClauses.slice(1);
+          const syntheticIf: typeof stmt = {
+            ...stmt,
+            condition: elif.condition,
+            thenBody: elif.body,
+            elifClauses: remainingElifs,
+          };
+          generateStmt(ctx, syntheticIf);
+        } else if (stmt.elseBody) {
+          // Generate else body
+          if (stmt.elseBody.kind === 'BlockBody') {
+            for (const s of stmt.elseBody.stmts) {
+              generateStmt(ctx, s);
+            }
+          } else {
+            generateExpr(ctx, stmt.elseBody.expr);
+            emit(ctx, '(drop)');
+          }
+        }
+
+        ctx.indent--;
+        emit(ctx, ')');
+      }
+
+      ctx.indent--;
+      emit(ctx, ')');
+      break;
+    }
+
+    case 'BreakStmt': {
+      if (ctx.loopStack.length === 0) {
+        emit(ctx, `;; ERROR: break outside of loop`);
+        break;
+      }
+      const labels = ctx.loopStack[ctx.loopStack.length - 1];
+      if (stmt.when) {
+        // Conditional break: break when cond
+        emit(ctx, `(br_if ${labels.break} ${exprToWat(ctx, stmt.when)})`);
+      } else {
+        emit(ctx, `(br ${labels.break})`);
+      }
+      break;
+    }
+
+    case 'ContinueStmt': {
+      if (ctx.loopStack.length === 0) {
+        emit(ctx, `;; ERROR: continue outside of loop`);
+        break;
+      }
+      const labels = ctx.loopStack[ctx.loopStack.length - 1];
+      if (stmt.when) {
+        // Conditional continue: continue when cond
+        emit(ctx, `(br_if ${labels.continue} ${exprToWat(ctx, stmt.when)})`);
+      } else {
+        emit(ctx, `(br ${labels.continue})`);
+      }
+      break;
+    }
+
     default:
       emit(ctx, `;; TODO: ${stmt.kind}`);
   }
@@ -1131,14 +1414,51 @@ function exprToWat(ctx: CodeGenContext, expr: Expr): string {
       return `(local.get $${watName})`;
     }
 
-    case 'MemberExpr':
+    case 'MemberExpr': {
+      if (typeof expr.member !== 'string') {
+        return `;; TODO: MemberExpr with computed member`;
+      }
+
+      // Check if this is a pointer dereference: ptr.u32, ptr.u8, etc.
+      const targetType = inferExprType(ctx, expr.target);
+      const isPointer = targetType?.kind === 'PointerType' || targetType?.kind === 'PrimitiveType' && targetType.name.startsWith('*');
+
+      // Common dereference types
+      const derefLoads: Record<string, string> = {
+        'u8': 'i32.load8_u', 'i8': 'i32.load8_s',
+        'u16': 'i32.load16_u', 'i16': 'i32.load16_s',
+        'u32': 'i32.load', 'i32': 'i32.load',
+        'u64': 'i64.load', 'i64': 'i64.load',
+        'f32': 'f32.load', 'f64': 'f64.load',
+      };
+
+      if (isPointer && derefLoads[expr.member]) {
+        const ptrExpr = exprToWat(ctx, expr.target);
+        return `(${derefLoads[expr.member]} ${ptrExpr})`;
+      }
+
+      // Slice member access: data.ptr, data.len
+      if (targetType?.kind === 'SliceType') {
+        if (expr.target.kind === 'Identifier') {
+          const baseName = expr.target.name;
+          if (expr.member === 'ptr') {
+            const watName = ctx.localRenames.get(`${baseName}_ptr`) || `${baseName}_ptr`;
+            return `(local.get $${watName})`;
+          } else if (expr.member === 'len') {
+            const watName = ctx.localRenames.get(`${baseName}_len`) || `${baseName}_len`;
+            return `(local.get $${watName})`;
+          }
+        }
+      }
+
       // Struct fields are flattened: point.x -> $point_x
-      if (expr.target.kind === 'Identifier' && typeof expr.member === 'string') {
+      if (expr.target.kind === 'Identifier') {
         const baseName = expr.target.name;
         const flatName = `${baseName}_${expr.member}`;
         return `(local.get $${flatName})`;
       }
       return `;; TODO: MemberExpr`;
+    }
 
     case 'BinaryExpr': {
       const leftType = inferExprType(ctx, expr.left);
@@ -1325,13 +1645,8 @@ function generateExprMultiValue(ctx: CodeGenContext, expr: Expr): void {
       break;
     }
     case 'MemberExpr': {
-      if (expr.target.kind === 'Identifier' && typeof expr.member === 'string') {
-        const baseName = expr.target.name;
-        const flatName = `${baseName}_${expr.member}`;
-        // Check if this is a renamed local
-        const watName = ctx.localRenames.get(flatName) || flatName;
-        emit(ctx, `(local.get $${watName})`);
-      }
+      // Use exprToWat which handles pointer dereferences and struct fields
+      emit(ctx, exprToWat(ctx, expr));
       break;
     }
     case 'AnnotationExpr': {
