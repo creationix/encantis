@@ -1,0 +1,181 @@
+{
+  "kind": "Module",
+  "span": {
+    "end": 274,
+    "start": 0
+  },
+  "decls": [
+    {
+      "item": {
+        "data": [],
+        "kind": "MemoryDecl",
+        "max": null,
+        "min": 1,
+        "span": {
+          "end": 21,
+          "start": 13
+        }
+      },
+      "kind": "ExportDecl",
+      "name": "mem",
+      "span": {
+        "end": 21,
+        "start": 0
+      }
+    },
+    {
+      "items": [
+        {
+          "item": {
+            "ident": "log",
+            "kind": "ImportFunc",
+            "signature": {
+              "kind": "FuncSignature",
+              "params": {
+                "fields": [
+                  {
+                    "ident": null,
+                    "kind": "Field",
+                    "span": {
+                      "end": 88,
+                      "start": 84
+                    },
+                    "type": {
+                      "element": {
+                        "kind": "PrimitiveType",
+                        "name": "u8",
+                        "span": {
+                          "end": 86,
+                          "start": 84
+                        }
+                      },
+                      "kind": "IndexedType",
+                      "nullTerminated": false,
+                      "size": null,
+                      "span": {
+                        "end": 88,
+                        "start": 84
+                      }
+                    }
+                  }
+                ],
+                "kind": "FieldList",
+                "span": {
+                  "end": 89,
+                  "start": 83
+                }
+              },
+              "returns": null,
+              "span": {
+                "end": 89,
+                "start": 83
+              }
+            },
+            "span": {
+              "end": 89,
+              "start": 75
+            }
+          },
+          "kind": "ImportItem",
+          "name": "log",
+          "span": {
+            "end": 89,
+            "start": 69
+          }
+        }
+      ],
+      "kind": "ImportDecl",
+      "module": "env",
+      "span": {
+        "end": 89,
+        "start": 56
+      }
+    },
+    {
+      "item": {
+        "body": {
+          "kind": "Block",
+          "span": {
+            "end": 273,
+            "start": 117
+          },
+          "stmts": [
+            {
+              "expr": {
+                "args": [
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "span": {
+                      "end": 270,
+                      "start": 253
+                    },
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "span": {
+                        "end": 270,
+                        "start": 253
+                      },
+                      "value": {
+                        "format": "utf8",
+                        "kind": "string",
+                        "value": "Hello, World!\n"
+                      }
+                    }
+                  }
+                ],
+                "callee": {
+                  "kind": "IdentExpr",
+                  "name": "log",
+                  "span": {
+                    "end": 252,
+                    "start": 249
+                  }
+                },
+                "kind": "CallExpr",
+                "span": {
+                  "end": 271,
+                  "start": 249
+                }
+              },
+              "kind": "ExpressionStmt",
+              "span": {
+                "end": 271,
+                "start": 249
+              }
+            }
+          ]
+        },
+        "ident": "main",
+        "inline": false,
+        "kind": "FuncDecl",
+        "signature": {
+          "kind": "FuncSignature",
+          "params": {
+            "fields": [],
+            "kind": "FieldList",
+            "span": {
+              "end": 116,
+              "start": 114
+            }
+          },
+          "returns": null,
+          "span": {
+            "end": 116,
+            "start": 114
+          }
+        },
+        "span": {
+          "end": 273,
+          "start": 105
+        }
+      },
+      "kind": "ExportDecl",
+      "name": "main",
+      "span": {
+        "end": 273,
+        "start": 91
+      }
+    }
+  ]
+}
