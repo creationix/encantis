@@ -21,9 +21,9 @@ ENCANTIS_COMPILE = ./tools/cli.ts compile
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	@find . -name "*.ast.json" -delete
-	@find . -name "*.wasm" -delete
-	@find . -name "*.wat" -delete
+	@find examples -name "*.ast.json" -delete
+	@find examples -name "*.wasm" -delete
+	@find examples -name "*.wat" -delete
 	@echo "Cleaned .ast.json, .wasm, and .wat files"
 
 # Check all .ents files for errors without compiling
