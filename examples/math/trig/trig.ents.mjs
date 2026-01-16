@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 
 // Load trig.ents.wasm with fetch and compile
 async function run() {
-  const bytes = readFileSync('trig.ents.wasm')
+  const bytes = readFileSync('trig.wasm')
   const { instance: { exports: {
     from_polar, to_polar, _start, memory
   } } } = await WebAssembly.instantiate(bytes, {
@@ -21,14 +21,11 @@ async function run() {
     }
   });
 
-  // Test with same inputs as WAT _start function: (3.1, 4.2)
   console.log("=== JS Direct Function Tests ===");
-  
-  // Convert cartesian to polar coordinates (same as WAT)
+
   const [r, theta] = to_polar(3.1, 4.2);
   console.log(`Polar coordinates: r=${r}, theta=${theta}`);
 
-  // Convert back to cartesian coordinates  
   const [x, y] = from_polar(r, theta);
   console.log(`Cartesian coordinates: x=${x}, y=${y}`);
 

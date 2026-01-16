@@ -91,12 +91,41 @@ interface CodeGenContext {
   stringOffset: number;
   src: string;
   globals: Set<string>;  // Track global variable names
+  defs: Map<string, Expr>;  // Compile-time constants to inline
   symbols: SymbolTable;  // Type information from checker
   currentFunc?: FuncDecl;  // Current function for scope lookup
+  reservedNames: Set<string>;  // Names used by flattened params (e.g., input_ptr, input_len)
+  localRenames: Map<string, string>;  // Map from source name to WAT name for renamed locals
 }
 
 function emit(ctx: CodeGenContext, line: string): void {
   ctx.output.push('  '.repeat(ctx.indent) + line);
+}
+
+/**
+ * Get a unique WAT local name, renaming if necessary to avoid conflicts with params.
+ */
+function getLocalName(ctx: CodeGenContext, sourceName: string): string {
+  // Check if already renamed
+  const existing = ctx.localRenames.get(sourceName);
+  if (existing) return existing;
+
+  // If no conflict, use the source name
+  if (!ctx.reservedNames.has(sourceName)) {
+    ctx.reservedNames.add(sourceName);
+    return sourceName;
+  }
+
+  // Find a unique name by appending a suffix
+  let suffix = 2;
+  let watName = `${sourceName}_${suffix}`;
+  while (ctx.reservedNames.has(watName)) {
+    suffix++;
+    watName = `${sourceName}_${suffix}`;
+  }
+  ctx.reservedNames.add(watName);
+  ctx.localRenames.set(sourceName, watName);
+  return watName;
 }
 
 // -----------------------------------------------------------------------------
@@ -158,11 +187,27 @@ function inferExprType(ctx: CodeGenContext, expr: Expr): Type | undefined {
             if (field) {
               return field.type;
             }
+          } else if (resolved.kind === 'SliceType') {
+            // Slice members: .ptr -> pointer, .len -> i32
+            if (expr.member === 'ptr') {
+              return { kind: 'PointerType', target: resolved.element, span: expr.span };
+            } else if (expr.member === 'len') {
+              return { kind: 'PrimitiveType', name: 'i32', span: expr.span };
+            }
           }
         }
       }
       return undefined;
     }
+    case 'GroupExpr':
+      // Parenthesized expression - same type as inner expression
+      return inferExprType(ctx, expr.expr);
+    case 'CastExpr':
+      // Cast expression returns the target type
+      return expr.type;
+    case 'AnnotationExpr':
+      // Type-annotated expression returns the annotation type
+      return expr.type;
     default:
       return undefined;
   }
@@ -469,6 +514,62 @@ function generateGlobalInit(expr: Expr): string {
   return '0';
 }
 
+/**
+ * Generate WAT global declarations, flattening multi-value types (slices, structs).
+ */
+function generateGlobalDecl(ctx: CodeGenContext, decl: { name: string; type?: Type; init?: Expr }): void {
+  const type = decl.type;
+  if (!type) {
+    emit(ctx, `(global $${decl.name} (mut i32) (i32.const 0))`);
+    return;
+  }
+
+  // Handle slice types: flatten to name_ptr and name_len
+  if (type.kind === 'SliceType') {
+    let ptrInit = '0';
+    let lenInit = '0';
+    if (decl.init?.kind === 'StructLit') {
+      for (const field of decl.init.fields) {
+        if (field.name === 'ptr' && field.value.kind === 'NumberLit') {
+          ptrInit = field.value.value;
+        } else if (field.name === 'len' && field.value.kind === 'NumberLit') {
+          lenInit = field.value.value;
+        }
+      }
+    }
+    emit(ctx, `(global $${decl.name}_ptr (mut i32) (i32.const ${ptrInit}))`);
+    emit(ctx, `(global $${decl.name}_len (mut i32) (i32.const ${lenInit}))`);
+    // Also add flattened names to globals set for proper codegen
+    ctx.globals.add(`${decl.name}_ptr`);
+    ctx.globals.add(`${decl.name}_len`);
+    return;
+  }
+
+  // Handle struct types: flatten to name_field1, name_field2, etc.
+  const resolved = resolveTypeAlias(ctx, type);
+  if (resolved.kind === 'StructType') {
+    for (let i = 0; i < resolved.fields.length; i++) {
+      const field = resolved.fields[i];
+      const watType = typeToWat(field.type);
+      let initVal = '0';
+      if (decl.init?.kind === 'StructLit') {
+        const initField = decl.init.fields.find(f => f.name === field.name);
+        if (initField?.value.kind === 'NumberLit') {
+          initVal = initField.value.value;
+        }
+      }
+      emit(ctx, `(global $${decl.name}_${field.name} (mut ${watType}) (${watType}.const ${initVal}))`);
+      ctx.globals.add(`${decl.name}_${field.name}`);
+    }
+    return;
+  }
+
+  // Simple primitive type
+  const watType = typeToWat(type);
+  const initValue = decl.init ? generateGlobalInit(decl.init) : '0';
+  emit(ctx, `(global $${decl.name} (mut ${watType}) (${watType}.const ${initValue}))`);
+}
+
 function generateWat(module: Module, symbols: SymbolTable, src: string): string {
   const ctx: CodeGenContext = {
     output: [],
@@ -477,7 +578,10 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
     stringOffset: 0,
     src,
     globals: new Set(),
+    defs: new Map(),
     symbols,
+    reservedNames: new Set(),
+    localRenames: new Map(),
   };
 
   // Collect global/constant names and functions first
@@ -488,7 +592,8 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
     if (decl.kind === 'GlobalDecl') {
       ctx.globals.add(decl.name);
     } else if (decl.kind === 'DefDecl') {
-      ctx.globals.add(decl.name);
+      // Store def value for inlining (not a global)
+      ctx.defs.set(decl.name, decl.value);
     } else if (decl.kind === 'ExportDecl') {
       if (decl.decl.kind === 'GlobalDecl') {
         ctx.globals.add(decl.decl.name);
@@ -522,17 +627,12 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
     }
   }
 
-  // Generate globals
+  // Generate globals (but NOT def declarations - those are inlined)
   for (const decl of module.decls) {
     if (decl.kind === 'GlobalDecl') {
-      const watType = decl.type ? typeToWat(decl.type) : 'i32';
-      const initValue = decl.init ? generateGlobalInit(decl.init) : '0';
-      emit(ctx, `(global $${decl.name} (mut ${watType}) (${watType}.const ${initValue}))`);
+      generateGlobalDecl(ctx, decl);
     } else if (decl.kind === 'ExportDecl' && decl.decl.kind === 'GlobalDecl') {
-      const global = decl.decl;
-      const watType = global.type ? typeToWat(global.type) : 'i32';
-      const initValue = global.init ? generateGlobalInit(global.init) : '0';
-      emit(ctx, `(global $${global.name} (mut ${watType}) (${watType}.const ${initValue}))`);
+      generateGlobalDecl(ctx, decl.decl);
     }
   }
 
@@ -568,11 +668,13 @@ function generateWat(module: Module, symbols: SymbolTable, src: string): string 
 
 function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: string): void {
   ctx.currentFunc = func;  // Set for type lookups in this function's scope
+  ctx.reservedNames.clear();  // Reset for each function
+  ctx.localRenames.clear();
 
   const name = func.name || exportName || 'anonymous';
   const exportClause = exportName ? `(export "${exportName}")` : '';
 
-  // Build params - flatten struct types into multiple params
+  // Build params - flatten struct/slice types into multiple params
   const flatParams: string[] = [];
   for (const p of func.signature.params) {
     if (!p.name) continue;
@@ -580,10 +682,19 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
     if (resolvedType.kind === 'StructType') {
       // Flatten: point:CartesianPoint -> point_x:f64, point_y:f64
       for (const field of resolvedType.fields) {
-        flatParams.push(`(param $${p.name}_${field.name} ${typeToWat(field.type)})`);
+        const flatName = `${p.name}_${field.name}`;
+        flatParams.push(`(param $${flatName} ${typeToWat(field.type)})`);
+        ctx.reservedNames.add(flatName);
       }
+    } else if (resolvedType.kind === 'SliceType') {
+      // Flatten: data:u8[] -> data_ptr:i32, data_len:i32
+      flatParams.push(`(param $${p.name}_ptr i32)`);
+      flatParams.push(`(param $${p.name}_len i32)`);
+      ctx.reservedNames.add(`${p.name}_ptr`);
+      ctx.reservedNames.add(`${p.name}_len`);
     } else {
       flatParams.push(`(param $${p.name} ${typeToWat(p.type)})`);
+      ctx.reservedNames.add(p.name);
     }
   }
   const params = flatParams.join(' ');
@@ -627,7 +738,8 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
         if (stmt.pattern.kind === 'IdentPattern') {
           const type = stmt.type || (stmt.init ? inferExprType(ctx, stmt.init) : undefined);
           if (type) {
-            emit(ctx, `(local $${stmt.pattern.name} ${typeToWat(type)})`);
+            const watName = getLocalName(ctx, stmt.pattern.name);
+            emit(ctx, `(local $${watName} ${typeToWat(type)})`);
           }
         } else if (stmt.pattern.kind === 'TuplePattern') {
           // Collect locals for each element - need to infer type from init
@@ -642,7 +754,8 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
               } else if (resolvedInit?.kind === 'StructType' && resolvedInit.fields[i]) {
                 elemType = typeToWat(resolvedInit.fields[i].type);
               }
-              emit(ctx, `(local $${elem.pattern.name} ${elemType})`);
+              const watName = getLocalName(ctx, elem.pattern.name);
+              emit(ctx, `(local $${watName} ${elemType})`);
             }
           }
         } else if (stmt.pattern.kind === 'StructPattern') {
@@ -658,7 +771,8 @@ function generateFunction(ctx: CodeGenContext, func: FuncDecl, exportName?: stri
                 fieldType = typeToWat(structField.type);
               }
             }
-            emit(ctx, `(local $${bindingName} ${fieldType})`);
+            const watName = getLocalName(ctx, bindingName);
+            emit(ctx, `(local $${watName} ${fieldType})`);
           }
         }
       }
@@ -724,25 +838,31 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
       if (stmt.pattern.kind === 'IdentPattern') {
         // Simple: let x = expr
         if (stmt.init) {
-          generateExpr(ctx, stmt.init);
-          emit(ctx, `(local.set $${stmt.pattern.name})`);
+          // Use folded form for single-value expressions
+          const initWat = exprToWat(ctx, stmt.init);
+          const watName = ctx.localRenames.get(stmt.pattern.name) || stmt.pattern.name;
+          emit(ctx, `(local.set $${watName} ${initWat})`);
         }
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // let (a, b) = expr - destructuring
+        // Multi-value returns require fully flat form
         if (stmt.init) {
-          generateExpr(ctx, stmt.init);
+          generateExprMultiValue(ctx, stmt.init);
           // Values are on stack in order, assign in reverse
           for (let i = stmt.pattern.elements.length - 1; i >= 0; i--) {
             const elem = stmt.pattern.elements[i];
             if (elem.pattern.kind === 'IdentPattern') {
-              emit(ctx, `(local.set $${elem.pattern.name})`);
+              const watName = ctx.localRenames.get(elem.pattern.name) || elem.pattern.name;
+              emit(ctx, `(local.set $${watName})`);
             }
           }
         }
       } else if (stmt.pattern.kind === 'StructPattern') {
         // let { d, a } = expr - struct destructuring
+        // Multi-value returns require fully flat form
         if (stmt.init) {
-          generateExpr(ctx, stmt.init);
+          // Generate entire sequence in flat form
+          generateExprMultiValue(ctx, stmt.init);
           // Get the struct type to know field order
           const initType = inferExprType(ctx, stmt.init);
           const resolvedInit = initType ? resolveTypeAlias(ctx, initType) : undefined;
@@ -754,7 +874,8 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
               const patternField = stmt.pattern.fields.find(f => f.fieldName === structField.name);
               if (patternField) {
                 const bindingName = patternField.binding || patternField.fieldName;
-                emit(ctx, `(local.set $${bindingName})`);
+                const watName = ctx.localRenames.get(bindingName) || bindingName;
+                emit(ctx, `(local.set $${watName})`);
               } else {
                 // Field not in pattern, drop the value
                 emit(ctx, `(drop)`);
@@ -772,24 +893,28 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
 
     case 'SetStmt': {
       if (stmt.pattern.kind === 'IdentPattern') {
-        // Simple: set x = expr
-        generateExpr(ctx, stmt.value);
+        // Simple: set x = expr - use folded form
+        const valueWat = exprToWat(ctx, stmt.value);
         const isGlobal = ctx.globals.has(stmt.pattern.name);
-        emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${stmt.pattern.name})`);
+        const watName = isGlobal ? stmt.pattern.name : (ctx.localRenames.get(stmt.pattern.name) || stmt.pattern.name);
+        emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${watName} ${valueWat})`);
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // set (a, b) = expr - destructuring
-        generateExpr(ctx, stmt.value);
+        // Multi-value returns require fully flat form
+        generateExprMultiValue(ctx, stmt.value);
         // Values are on stack in order, assign in reverse
         for (let i = stmt.pattern.elements.length - 1; i >= 0; i--) {
           const elem = stmt.pattern.elements[i];
           if (elem.pattern.kind === 'IdentPattern') {
             const isGlobal = ctx.globals.has(elem.pattern.name);
-            emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${elem.pattern.name})`);
+            const watName = isGlobal ? elem.pattern.name : (ctx.localRenames.get(elem.pattern.name) || elem.pattern.name);
+            emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${watName})`);
           }
         }
       } else if (stmt.pattern.kind === 'StructPattern') {
         // set { x, y } = expr - struct destructuring to existing variables
-        generateExpr(ctx, stmt.value);
+        // Multi-value returns require fully flat form
+        generateExprMultiValue(ctx, stmt.value);
         // Get the struct type to know field order
         const valueType = inferExprType(ctx, stmt.value);
         const resolvedValue = valueType ? resolveTypeAlias(ctx, valueType) : undefined;
@@ -802,7 +927,8 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
             if (patternField) {
               const bindingName = patternField.binding || patternField.fieldName;
               const isGlobal = ctx.globals.has(bindingName);
-              emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${bindingName})`);
+              const watName = isGlobal ? bindingName : (ctx.localRenames.get(bindingName) || bindingName);
+              emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${watName})`);
             } else {
               // Field not in pattern, drop the value
               emit(ctx, `(drop)`);
@@ -831,9 +957,7 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
         }
       } else {
         // Compound assignment: target op= value -> target = target op value
-        generateLoad(ctx, target);
-        generateExpr(ctx, stmt.value);
-
+        // Use fully folded form for wasm-opt compatibility
         const targetType = inferExprType(ctx, target);
         const prefix = getWatPrefix(targetType);
         const isFloat = prefix === 'f64' || prefix === 'f32';
@@ -854,21 +978,66 @@ function generateStmt(ctx: CodeGenContext, stmt: Stmt): void {
           '>>>=': `${prefix}.rotr`,
         };
         const watOp = opMap[stmt.op] || `${prefix}.add`;
-        emit(ctx, `(${watOp})`);
-        generateStore(ctx, target);
+
+        // Generate fully folded form
+        const targetWat = exprToWat(ctx, target);
+        let valueWat = exprToWat(ctx, stmt.value);
+
+        // Convert value to target type if needed
+        const valueType = inferExprType(ctx, stmt.value);
+        const valuePrefix = getWatPrefix(valueType);
+        if (valuePrefix !== prefix) {
+          const valueUnsigned = isUnsignedType(valueType);
+          const conv = getConversion(valuePrefix as WatType, prefix as WatType, valueUnsigned);
+          if (conv) {
+            valueWat = `(${conv} ${valueWat})`;
+          }
+        }
+
+        if (target.kind === 'Identifier') {
+          const isGlobal = ctx.globals.has(target.name);
+          const setOp = isGlobal ? 'global.set' : 'local.set';
+          const watName = isGlobal ? target.name : (ctx.localRenames.get(target.name) || target.name);
+          emit(ctx, `(${setOp} $${watName} (${watOp} ${targetWat} ${valueWat}))`);
+        } else {
+          // For complex targets, fall back to stack-based
+          generateLoad(ctx, target);
+          generateExpr(ctx, stmt.value);
+          emit(ctx, `(${watOp})`);
+          generateStore(ctx, target);
+        }
       }
       break;
     }
 
-    case 'ExprStmt':
+    case 'ExprStmt': {
+      // Only emit drop if the expression returns a value
       generateExpr(ctx, stmt.expr);
-      // Drop result if not used
-      emit(ctx, '(drop)');
+      // Check if it's a call to a void function
+      if (stmt.expr.kind === 'CallExpr' && stmt.expr.callee.kind === 'Identifier') {
+        const funcSym = ctx.symbols.global.symbols.get(stmt.expr.callee.name);
+        if (funcSym?.type?.kind === 'FunctionType') {
+          const ret = funcSym.type.returns;
+          // Check if void: no returns, or empty tuple
+          if (!ret || (ret.kind === 'TupleType' && ret.elements.length === 0)) {
+            // Void function, no drop needed
+            break;
+          }
+        }
+      }
+      // For all other expressions, assume they produce a value that needs dropping
+      const exprType = inferExprType(ctx, stmt.expr);
+      if (exprType) {
+        emit(ctx, '(drop)');
+      }
       break;
+    }
 
     case 'ReturnStmt':
       if (stmt.value) {
-        generateExpr(ctx, stmt.value);
+        // Use folded form for return
+        emit(ctx, `(return ${exprToWat(ctx, stmt.value)})`);
+      } else {
         emit(ctx, '(return)');
       }
       break;
@@ -883,7 +1052,8 @@ function generateLoad(ctx: CodeGenContext, target: Expr): void {
   switch (target.kind) {
     case 'Identifier': {
       const isGlobal = ctx.globals.has(target.name);
-      emit(ctx, `(${isGlobal ? 'global' : 'local'}.get $${target.name})`);
+      const watName = isGlobal ? target.name : (ctx.localRenames.get(target.name) || target.name);
+      emit(ctx, `(${isGlobal ? 'global' : 'local'}.get $${watName})`);
       break;
     }
     case 'IndexExpr':
@@ -907,7 +1077,8 @@ function generateStore(ctx: CodeGenContext, target: Expr): void {
   switch (target.kind) {
     case 'Identifier': {
       const isGlobal = ctx.globals.has(target.name);
-      emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${target.name})`);
+      const watName = isGlobal ? target.name : (ctx.localRenames.get(target.name) || target.name);
+      emit(ctx, `(${isGlobal ? 'global' : 'local'}.set $${watName})`);
       break;
     }
     case 'IndexExpr':
@@ -946,12 +1117,19 @@ function exprToWat(ctx: CodeGenContext, expr: Expr): string {
       return `(${prefix}.const ${expr.value})`;
     }
 
-    case 'Identifier':
+    case 'Identifier': {
+      // Check if it's a def constant to inline
+      const defValue = ctx.defs.get(expr.name);
+      if (defValue) {
+        return exprToWat(ctx, defValue);
+      }
       if (ctx.globals.has(expr.name)) {
         return `(global.get $${expr.name})`;
-      } else {
-        return `(local.get $${expr.name})`;
       }
+      // Use renamed name if this local was renamed to avoid param collision
+      const watName = ctx.localRenames.get(expr.name) || expr.name;
+      return `(local.get $${watName})`;
+    }
 
     case 'MemberExpr':
       // Struct fields are flattened: point.x -> $point_x
@@ -988,15 +1166,50 @@ function exprToWat(ctx: CodeGenContext, expr: Expr): string {
         copysign: 'f64.copysign',
       };
 
-      const args = expr.args.map(a => exprToWat(ctx, a.value)).join(' ');
       if (expr.callee.kind === 'Identifier') {
         const builtinOp = builtinOps[expr.callee.name];
         if (builtinOp) {
+          const args = expr.args.map(a => exprToWat(ctx, a.value)).join(' ');
           return `(${builtinOp} ${args})`;
         }
+
+        // Look up function signature to get expected parameter types
+        const funcSym = ctx.symbols.global.symbols.get(expr.callee.name);
+        const funcType = funcSym?.type;
+        const paramTypes: Type[] = [];
+        if (funcType?.kind === 'FunctionType' && funcType.params) {
+          // params is Type[] in FunctionType
+          for (const p of funcType.params) {
+            paramTypes.push(p as unknown as Type);
+          }
+        }
+
+        // Generate arguments with type conversion if needed
+        const argParts: string[] = [];
+        for (let i = 0; i < expr.args.length; i++) {
+          const arg = expr.args[i];
+          let argWat = exprToWat(ctx, arg.value);
+
+          // Convert argument type if it doesn't match expected parameter type
+          if (paramTypes[i]) {
+            const argType = inferExprType(ctx, arg.value);
+            const argPrefix = getWatPrefix(argType);
+            const paramPrefix = getWatPrefix(paramTypes[i]);
+            if (argPrefix !== paramPrefix) {
+              const argUnsigned = isUnsignedType(argType);
+              const conv = getConversion(argPrefix as WatType, paramPrefix as WatType, argUnsigned);
+              if (conv) {
+                argWat = `(${conv} ${argWat})`;
+              }
+            }
+          }
+          argParts.push(argWat);
+        }
+
+        const args = argParts.join(' ');
         return `(call $${expr.callee.name}${args ? ` ${args}` : ''})`;
       }
-      return `;; TODO: CallExpr with non-identifier callee`;
+      return `(i32.const 0) ;; TODO: CallExpr with non-identifier callee`;
     }
 
     case 'StructLit':
@@ -1013,8 +1226,140 @@ function exprToWat(ctx: CodeGenContext, expr: Expr): string {
       return `(i32.const ${offset}) (i32.const ${expr.value.length})`;
     }
 
+    case 'AnnotationExpr': {
+      // Type-annotated expression (e.g., 2654435761:u32) - use the annotated type
+      const watType = getWatPrefix(expr.type);
+      if (expr.expr.kind === 'NumberLit') {
+        return `(${watType}.const ${expr.expr.value})`;
+      }
+      return exprToWat(ctx, expr.expr);
+    }
+
+    case 'GroupExpr':
+      // Parenthesized expression - just pass through to inner expression
+      return exprToWat(ctx, expr.expr);
+
+    case 'CastExpr': {
+      // Type cast: expr as Type
+      const srcType = inferExprType(ctx, expr.expr);
+      const srcWat = getWatPrefix(srcType);
+      const dstWat = getWatPrefix(expr.type);
+      const srcUnsigned = isUnsignedType(srcType);
+      const dstUnsigned = isUnsignedType(expr.type);
+      const innerWat = exprToWat(ctx, expr.expr);
+
+      // Same type - no conversion needed
+      if (srcWat === dstWat) {
+        return innerWat;
+      }
+
+      const suffix = srcUnsigned ? 'u' : 's';
+
+      // Integer → wider integer
+      if (srcWat === 'i32' && dstWat === 'i64') {
+        return `(i64.extend_i32_${suffix} ${innerWat})`;
+      }
+
+      // Integer → narrower integer (wrap)
+      if (srcWat === 'i64' && dstWat === 'i32') {
+        return `(i32.wrap_i64 ${innerWat})`;
+      }
+
+      // Integer → float
+      if ((srcWat === 'i32' || srcWat === 'i64') && (dstWat === 'f32' || dstWat === 'f64')) {
+        return `(${dstWat}.convert_${srcWat}_${suffix} ${innerWat})`;
+      }
+
+      // Float → integer (truncate)
+      if ((srcWat === 'f32' || srcWat === 'f64') && (dstWat === 'i32' || dstWat === 'i64')) {
+        const dstSuffix = dstUnsigned ? 'u' : 's';
+        return `(${dstWat}.trunc_${srcWat}_${dstSuffix} ${innerWat})`;
+      }
+
+      // Float → float (promote/demote)
+      if (srcWat === 'f32' && dstWat === 'f64') {
+        return `(f64.promote_f32 ${innerWat})`;
+      }
+      if (srcWat === 'f64' && dstWat === 'f32') {
+        return `(f32.demote_f64 ${innerWat})`;
+      }
+
+      // Fallback - just return the inner expression with a warning
+      return `${innerWat} ;; WARN: unsupported cast ${srcWat} -> ${dstWat}`;
+    }
+
     default:
-      return `;; TODO: ${expr.kind}`;
+      // Return a placeholder value instead of a comment to avoid breaking S-expressions
+      // Emit a warning comment on a separate line
+      return `(i32.const 0) ;; TODO: ${expr.kind}`;
+  }
+}
+
+/**
+ * Generate expression for multi-value context (each value on stack separately).
+ * Uses S-expression form but emits each value-producing instruction separately.
+ */
+function generateExprMultiValue(ctx: CodeGenContext, expr: Expr): void {
+  switch (expr.kind) {
+    case 'CallExpr': {
+      // For calls, use folded form which pushes all return values onto stack
+      emit(ctx, exprToWat(ctx, expr));
+      break;
+    }
+    case 'Identifier': {
+      const defValue = ctx.defs.get(expr.name);
+      if (defValue) {
+        generateExprMultiValue(ctx, defValue);
+      } else if (ctx.globals.has(expr.name)) {
+        emit(ctx, `(global.get $${expr.name})`);
+      } else {
+        const watName = ctx.localRenames.get(expr.name) || expr.name;
+        emit(ctx, `(local.get $${watName})`);
+      }
+      break;
+    }
+    case 'NumberLit': {
+      const literalType = inferExprType(ctx, expr);
+      const prefix = getWatPrefix(literalType);
+      emit(ctx, `(${prefix}.const ${expr.value})`);
+      break;
+    }
+    case 'MemberExpr': {
+      if (expr.target.kind === 'Identifier' && typeof expr.member === 'string') {
+        const baseName = expr.target.name;
+        const flatName = `${baseName}_${expr.member}`;
+        // Check if this is a renamed local
+        const watName = ctx.localRenames.get(flatName) || flatName;
+        emit(ctx, `(local.get $${watName})`);
+      }
+      break;
+    }
+    case 'AnnotationExpr': {
+      const watType = getWatPrefix(expr.type);
+      if (expr.expr.kind === 'NumberLit') {
+        emit(ctx, `(${watType}.const ${expr.expr.value})`);
+      } else {
+        generateExprMultiValue(ctx, expr.expr);
+      }
+      break;
+    }
+    case 'StructLit': {
+      // Struct literals push multiple values (one per field)
+      for (const field of expr.fields) {
+        generateExprMultiValue(ctx, field.value);
+      }
+      break;
+    }
+    case 'TupleLit': {
+      // Tuple literals push multiple values
+      for (const elem of expr.elements) {
+        generateExprMultiValue(ctx, elem.value);
+      }
+      break;
+    }
+    default:
+      // Fall back to folded form
+      emit(ctx, exprToWat(ctx, expr));
   }
 }
 

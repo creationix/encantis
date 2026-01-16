@@ -7,9 +7,9 @@ ENCANTIS = ../tools/cli.ts
 all: ast wat wasm
 
 ALL_ENT_FILES := $(shell find . -name "*.ents")
+ALL_AST_FILES := $(patsubst %.ents,%.ast,$(ALL_ENT_FILES))
 ALL_WAT_FILES := $(patsubst %.ents,%.wat,$(ALL_ENT_FILES))
 ALL_WASM_FILES := $(patsubst %.wat,%.wasm,$(ALL_WAT_FILES))
-ALL_AST_FILES := $(patsubst %.ents,%.ast,$(ALL_ENT_FILES))
 
 # Generate AST (JSON) from .ents files
 ast: $(ALL_AST_FILES)
@@ -25,6 +25,7 @@ wat: $(ALL_WAT_FILES)
 wasm: $(ALL_WASM_FILES)
 %.wasm: %.wat
 	wat2wasm $< -o $@
+	wasm-opt -all -Os $@ -o $(patsubst %.wasm,%.opt.wasm,$@)
 
 # Generate JS glue code from WASM files (for examples that need it)
 js:

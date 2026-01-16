@@ -1,5 +1,8 @@
 // Trigonometry example: coordinate conversion between polar and cartesian
 
+// Export memory so JS can read strings
+export "memory" memory 1
+
 // Import math functions from the host environment
 import "math" (
   "sin" func sin(angle:f64) -> f64
