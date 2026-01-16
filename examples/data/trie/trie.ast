@@ -1,0 +1,323 @@
+Module
+  decls:
+    [
+      ExportDecl
+        exportName: "walk-trie"
+        decl:
+          FuncDecl
+            name: "walk"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "trie"
+                      type:
+                        SliceType
+                          element:
+                            PrimitiveType
+                              name: "u64"
+                      span:
+                        {
+                          start: 237
+                          end: 247
+                        }
+                    }
+                    {
+                      name: "key"
+                      type:
+                        PrimitiveType
+                          name: "u64"
+                      span:
+                        {
+                          start: 249
+                          end: 256
+                        }
+                    }
+                  ]
+                returns:
+                  PrimitiveType
+                    name: "i64"
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "trie_offset"
+                      type:
+                        PrimitiveType
+                          name: "u32"
+                      init:
+                        NumberLit
+                          value: "0"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "bit_offset"
+                      type:
+                        PrimitiveType
+                          name: "u8"
+                      init:
+                        NumberLit
+                          value: "0"
+                    LoopStmt
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "index"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  BinaryExpr
+                                    op: "<<"
+                                    left:
+                                      NumberLit
+                                        value: "1"
+                                    right:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "&"
+                                            left:
+                                              GroupExpr
+                                                expr:
+                                                  BinaryExpr
+                                                    op: ">>"
+                                                    left:
+                                                      Identifier
+                                                        name: "key"
+                                                    right:
+                                                      Identifier
+                                                        name: "bit_offset"
+                                            right:
+                                              NumberLit
+                                                value: "0x7f"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "bit_offset"
+                                op: "="
+                                value:
+                                  BinaryExpr
+                                    op: "%"
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "+"
+                                            left:
+                                              Identifier
+                                                name: "bit_offset"
+                                            right:
+                                              NumberLit
+                                                value: "7"
+                                    right:
+                                      NumberLit
+                                        value: "64"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "bitfield"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  IndexExpr
+                                    target:
+                                      Identifier
+                                        name: "trie"
+                                    index:
+                                      Identifier
+                                        name: "trie_offset"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "trie_offset"
+                                op: "+="
+                                value:
+                                  NumberLit
+                                    value: "1"
+                              ReturnStmt
+                                value:
+                                  UnaryExpr
+                                    op: "-"
+                                    operand:
+                                      NumberLit
+                                        value: "1"
+                                when:
+                                  BinaryExpr
+                                    op: "=="
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "&"
+                                            left:
+                                              Identifier
+                                                name: "bitfield"
+                                            right:
+                                              Identifier
+                                                name: "index"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "trie_offset"
+                                op: "+="
+                                value:
+                                  BinaryExpr
+                                    op: "<<"
+                                    left:
+                                      CastExpr
+                                        expr:
+                                          CallExpr
+                                            callee:
+                                              Identifier
+                                                name: "popcnt"
+                                            args:
+                                              [
+                                                {
+                                                  value:
+                                                    BinaryExpr
+                                                      op: "&"
+                                                      left:
+                                                        Identifier
+                                                          name: "bitfield"
+                                                      right:
+                                                        GroupExpr
+                                                          expr:
+                                                            BinaryExpr
+                                                              op: "-"
+                                                              left:
+                                                                Identifier
+                                                                  name: "index"
+                                                              right:
+                                                                NumberLit
+                                                                  value: "1"
+                                                  span:
+                                                    {
+                                                      start: 818
+                                                      end: 840
+                                                    }
+                                                }
+                                              ]
+                                        type:
+                                          PrimitiveType
+                                            name: "u32"
+                                    right:
+                                      NumberLit
+                                        value: "3"
+                              ReturnStmt
+                                value:
+                                  UnaryExpr
+                                    op: "-"
+                                    operand:
+                                      NumberLit
+                                        value: "2"
+                                when:
+                                  BinaryExpr
+                                    op: ">="
+                                    left:
+                                      Identifier
+                                        name: "trie_offset"
+                                    right:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "trie"
+                                        member: "len"
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "pointer"
+                                type:
+                                  PrimitiveType
+                                    name: "u64"
+                                init:
+                                  IndexExpr
+                                    target:
+                                      Identifier
+                                        name: "trie"
+                                    index:
+                                      Identifier
+                                        name: "trie_offset"
+                              ReturnStmt
+                                value:
+                                  CastExpr
+                                    expr:
+                                      Identifier
+                                        name: "pointer"
+                                    type:
+                                      PrimitiveType
+                                        name: "i64"
+                                when:
+                                  BinaryExpr
+                                    op: "=="
+                                    left:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: "&"
+                                            left:
+                                              Identifier
+                                                name: "pointer"
+                                            right:
+                                              NumberLit
+                                                value: "1"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "trie_offset"
+                                op: "+="
+                                value:
+                                  CastExpr
+                                    expr:
+                                      GroupExpr
+                                        expr:
+                                          BinaryExpr
+                                            op: ">>"
+                                            left:
+                                              Identifier
+                                                name: "pointer"
+                                            right:
+                                              NumberLit
+                                                value: "1"
+                                    type:
+                                      PrimitiveType
+                                        name: "u32"
+                              ReturnStmt
+                                value:
+                                  UnaryExpr
+                                    op: "-"
+                                    operand:
+                                      NumberLit
+                                        value: "2"
+                                when:
+                                  BinaryExpr
+                                    op: ">="
+                                    left:
+                                      Identifier
+                                        name: "trie_offset"
+                                    right:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "trie"
+                                        member: "len"
+                            ]
+                  ]
+    ]

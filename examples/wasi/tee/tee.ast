@@ -1,0 +1,581 @@
+Module
+  decls:
+    [
+      ImportDecl
+        module: "wasi_snapshot_preview1"
+        items:
+          [
+            {
+              externalName: "fd_read"
+              item:
+                func
+                  name: "wasi_fd_read"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "fd"
+                            type:
+                              PrimitiveType
+                                name: "i32"
+                            span:
+                              {
+                                start: 139
+                                end: 145
+                              }
+                          }
+                          {
+                            name: "iovs"
+                            type:
+                              SliceType
+                                element:
+                                  SliceType
+                                    element:
+                                      PrimitiveType
+                                        name: "u8"
+                            span:
+                              {
+                                start: 147
+                                end: 158
+                              }
+                          }
+                          {
+                            name: "nread"
+                            type:
+                              PointerType
+                                target:
+                                  PrimitiveType
+                                    name: "u32"
+                            span:
+                              {
+                                start: 160
+                                end: 170
+                              }
+                          }
+                        ]
+                      returns:
+                        PrimitiveType
+                          name: "i32"
+                    }
+              span:
+                {
+                  start: 175
+                  end: 178
+                }
+            }
+            {
+              externalName: "fd_write"
+              item:
+                func
+                  name: "wasi_fd_write"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "fd"
+                            type:
+                              PrimitiveType
+                                name: "i32"
+                            span:
+                              {
+                                start: 211
+                                end: 217
+                              }
+                          }
+                          {
+                            name: "iovs"
+                            type:
+                              SliceType
+                                element:
+                                  SliceType
+                                    element:
+                                      PrimitiveType
+                                        name: "u8"
+                            span:
+                              {
+                                start: 219
+                                end: 230
+                              }
+                          }
+                          {
+                            name: "nwritten"
+                            type:
+                              PointerType
+                                target:
+                                  PrimitiveType
+                                    name: "u32"
+                            span:
+                              {
+                                start: 232
+                                end: 245
+                              }
+                          }
+                        ]
+                      returns:
+                        PrimitiveType
+                          name: "i32"
+                    }
+              span:
+                {
+                  start: 250
+                  end: 253
+                }
+            }
+            {
+              externalName: "proc_exit"
+              item:
+                func
+                  name: "wasi_proc_exit"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "code"
+                            type:
+                              PrimitiveType
+                                name: "i32"
+                            span:
+                              {
+                                start: 288
+                                end: 296
+                              }
+                          }
+                        ]
+                    }
+              span:
+                {
+                  start: 296
+                  end: 297
+                }
+            }
+          ]
+      DefDecl
+        name: "stdin"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "0"
+            type:
+              PrimitiveType
+                name: "i32"
+      DefDecl
+        name: "stdout"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "1"
+            type:
+              PrimitiveType
+                name: "i32"
+      DefDecl
+        name: "stderr"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "2"
+            type:
+              PrimitiveType
+                name: "i32"
+      ExportDecl
+        exportName: "memory"
+        decl:
+          MemoryDecl
+            minPages: 1
+      GlobalDecl
+        name: "iovec"
+        type:
+          SliceType
+            element:
+              PrimitiveType
+                name: "u8"
+        init:
+          StructLit
+            fields:
+              [
+                {
+                  name: "ptr"
+                  value:
+                    NumberLit
+                      value: "64"
+                  span:
+                    {
+                      start: 513
+                      end: 520
+                    }
+                }
+                {
+                  name: "len"
+                  value:
+                    NumberLit
+                      value: "0"
+                  span:
+                    {
+                      start: 522
+                      end: 528
+                    }
+                }
+              ]
+      DefDecl
+        name: "buffer_ptr"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "64"
+            type:
+              PointerType
+                target:
+                  PrimitiveType
+                    name: "u8"
+      DefDecl
+        name: "buffer_len"
+        value:
+          AnnotationExpr
+            expr:
+              NumberLit
+                value: "1024"
+            type:
+              PrimitiveType
+                name: "u32"
+      ExportDecl
+        exportName: "_start"
+        decl:
+          FuncDecl
+            name: "main"
+            isInline: false
+            signature:
+              {
+                params:
+                  []
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "nread"
+                      type:
+                        PrimitiveType
+                          name: "u32"
+                      init:
+                        NumberLit
+                          value: "0"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "nwritten"
+                      type:
+                        PrimitiveType
+                          name: "u32"
+                      init:
+                        NumberLit
+                          value: "0"
+                    LoopStmt
+                      body:
+                        BlockBody
+                          stmts:
+                            [
+                              AssignStmt
+                                target:
+                                  Identifier
+                                    name: "iovec"
+                                op: "="
+                                value:
+                                  StructLit
+                                    fields:
+                                      [
+                                        {
+                                          name: "ptr"
+                                          value:
+                                            Identifier
+                                              name: "buffer_ptr"
+                                          span:
+                                            {
+                                              start: 776
+                                              end: 791
+                                            }
+                                        }
+                                        {
+                                          name: "len"
+                                          value:
+                                            Identifier
+                                              name: "buffer_len"
+                                          span:
+                                            {
+                                              start: 793
+                                              end: 808
+                                            }
+                                        }
+                                      ]
+                              LetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "res"
+                                init:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "wasi_fd_read"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "stdin"
+                                          span:
+                                            {
+                                              start: 957
+                                              end: 962
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            TupleLit
+                                              elements:
+                                                [
+                                                  {
+                                                    value:
+                                                      UnaryExpr
+                                                        op: "&"
+                                                        operand:
+                                                          Identifier
+                                                            name: "iovec"
+                                                    span:
+                                                      {
+                                                        start: 965
+                                                        end: 971
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      NumberLit
+                                                        value: "1"
+                                                    span:
+                                                      {
+                                                        start: 973
+                                                        end: 974
+                                                      }
+                                                  }
+                                                ]
+                                          span:
+                                            {
+                                              start: 964
+                                              end: 975
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            UnaryExpr
+                                              op: "&"
+                                              operand:
+                                                Identifier
+                                                  name: "nread"
+                                          span:
+                                            {
+                                              start: 977
+                                              end: 983
+                                            }
+                                        }
+                                      ]
+                              BreakStmt
+                                when:
+                                  BinaryExpr
+                                    op: "!="
+                                    left:
+                                      Identifier
+                                        name: "res"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              BreakStmt
+                                when:
+                                  BinaryExpr
+                                    op: "=="
+                                    left:
+                                      Identifier
+                                        name: "nread"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              AssignStmt
+                                target:
+                                  MemberExpr
+                                    target:
+                                      Identifier
+                                        name: "iovec"
+                                    member: "len"
+                                op: "="
+                                value:
+                                  Identifier
+                                    name: "nread"
+                              SetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "res"
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "wasi_fd_write"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "stdout"
+                                          span:
+                                            {
+                                              start: 1168
+                                              end: 1174
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            TupleLit
+                                              elements:
+                                                [
+                                                  {
+                                                    value:
+                                                      UnaryExpr
+                                                        op: "&"
+                                                        operand:
+                                                          Identifier
+                                                            name: "iovec"
+                                                    span:
+                                                      {
+                                                        start: 1177
+                                                        end: 1183
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      NumberLit
+                                                        value: "1"
+                                                    span:
+                                                      {
+                                                        start: 1185
+                                                        end: 1186
+                                                      }
+                                                  }
+                                                ]
+                                          span:
+                                            {
+                                              start: 1176
+                                              end: 1187
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            UnaryExpr
+                                              op: "&"
+                                              operand:
+                                                Identifier
+                                                  name: "nwritten"
+                                          span:
+                                            {
+                                              start: 1189
+                                              end: 1198
+                                            }
+                                        }
+                                      ]
+                              BreakStmt
+                                when:
+                                  BinaryExpr
+                                    op: "!="
+                                    left:
+                                      Identifier
+                                        name: "res"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                              SetStmt
+                                pattern:
+                                  IdentPattern
+                                    name: "res"
+                                value:
+                                  CallExpr
+                                    callee:
+                                      Identifier
+                                        name: "wasi_fd_write"
+                                    args:
+                                      [
+                                        {
+                                          value:
+                                            Identifier
+                                              name: "stderr"
+                                          span:
+                                            {
+                                              start: 1291
+                                              end: 1297
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            TupleLit
+                                              elements:
+                                                [
+                                                  {
+                                                    value:
+                                                      UnaryExpr
+                                                        op: "&"
+                                                        operand:
+                                                          Identifier
+                                                            name: "iovec"
+                                                    span:
+                                                      {
+                                                        start: 1300
+                                                        end: 1306
+                                                      }
+                                                  }
+                                                  {
+                                                    value:
+                                                      NumberLit
+                                                        value: "1"
+                                                    span:
+                                                      {
+                                                        start: 1308
+                                                        end: 1309
+                                                      }
+                                                  }
+                                                ]
+                                          span:
+                                            {
+                                              start: 1299
+                                              end: 1310
+                                            }
+                                        }
+                                        {
+                                          value:
+                                            UnaryExpr
+                                              op: "&"
+                                              operand:
+                                                Identifier
+                                                  name: "nwritten"
+                                          span:
+                                            {
+                                              start: 1312
+                                              end: 1321
+                                            }
+                                        }
+                                      ]
+                              BreakStmt
+                                when:
+                                  BinaryExpr
+                                    op: "!="
+                                    left:
+                                      Identifier
+                                        name: "res"
+                                    right:
+                                      NumberLit
+                                        value: "0"
+                            ]
+                  ]
+    ]

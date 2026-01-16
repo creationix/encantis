@@ -1,0 +1,799 @@
+Module
+  decls:
+    [
+      ImportDecl
+        module: "math"
+        items:
+          [
+            {
+              externalName: "sin"
+              item:
+                func
+                  name: "sin"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "angle"
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 160
+                                end: 169
+                              }
+                          }
+                        ]
+                      returns:
+                        PrimitiveType
+                          name: "f64"
+                    }
+              span:
+                {
+                  start: 174
+                  end: 177
+                }
+            }
+            {
+              externalName: "cos"
+              item:
+                func
+                  name: "cos"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "angle"
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 195
+                                end: 204
+                              }
+                          }
+                        ]
+                      returns:
+                        PrimitiveType
+                          name: "f64"
+                    }
+              span:
+                {
+                  start: 209
+                  end: 212
+                }
+            }
+            {
+              externalName: "atan2"
+              item:
+                func
+                  name: "atan2"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            name: "y"
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 234
+                                end: 239
+                              }
+                          }
+                          {
+                            name: "x"
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 241
+                                end: 246
+                              }
+                          }
+                        ]
+                      returns:
+                        PrimitiveType
+                          name: "f64"
+                    }
+              span:
+                {
+                  start: 251
+                  end: 254
+                }
+            }
+          ]
+      ImportDecl
+        module: "sys"
+        items:
+          [
+            {
+              externalName: "print-f64-pair"
+              item:
+                func
+                  name: "print"
+                  signature:
+                    {
+                      params:
+                        [
+                          {
+                            type:
+                              SliceType
+                                element:
+                                  PrimitiveType
+                                    name: "u8"
+                            span:
+                              {
+                                start: 331
+                                end: 335
+                              }
+                          }
+                          {
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 337
+                                end: 340
+                              }
+                          }
+                          {
+                            type:
+                              SliceType
+                                element:
+                                  PrimitiveType
+                                    name: "u8"
+                            span:
+                              {
+                                start: 342
+                                end: 346
+                              }
+                          }
+                          {
+                            type:
+                              PrimitiveType
+                                name: "f64"
+                            span:
+                              {
+                                start: 348
+                                end: 351
+                              }
+                          }
+                          {
+                            type:
+                              SliceType
+                                element:
+                                  PrimitiveType
+                                    name: "u8"
+                            span:
+                              {
+                                start: 353
+                                end: 357
+                              }
+                          }
+                        ]
+                    }
+              span:
+                {
+                  start: 357
+                  end: 358
+                }
+            }
+          ]
+      TypeDecl
+        name: "PolarPoint"
+        type:
+          StructType
+            fields:
+              [
+                {
+                  name: "d"
+                  type:
+                    PrimitiveType
+                      name: "f64"
+                  span:
+                    {
+                      start: 379
+                      end: 384
+                    }
+                }
+                {
+                  name: "a"
+                  type:
+                    PrimitiveType
+                      name: "f64"
+                  span:
+                    {
+                      start: 386
+                      end: 391
+                    }
+                }
+              ]
+      TypeDecl
+        name: "CartesianPoint"
+        type:
+          StructType
+            fields:
+              [
+                {
+                  name: "x"
+                  type:
+                    PrimitiveType
+                      name: "f64"
+                  span:
+                    {
+                      start: 416
+                      end: 421
+                    }
+                }
+                {
+                  name: "y"
+                  type:
+                    PrimitiveType
+                      name: "f64"
+                  span:
+                    {
+                      start: 423
+                      end: 428
+                    }
+                }
+              ]
+      ExportDecl
+        exportName: "to_polar"
+        decl:
+          FuncDecl
+            name: "to_polar"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "point"
+                      type:
+                        NamedType
+                          name: "CartesianPoint"
+                      span:
+                        {
+                          start: 510
+                          end: 530
+                        }
+                    }
+                  ]
+                returns:
+                  NamedReturns
+                    fields:
+                      [
+                        {
+                          name: "out"
+                          type:
+                            NamedType
+                              name: "PolarPoint"
+                          span:
+                            {
+                              start: 536
+                              end: 550
+                            }
+                        }
+                      ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    AssignStmt
+                      target:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "out"
+                          member: "d"
+                      op: "="
+                      value:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "sqrt"
+                          args:
+                            [
+                              {
+                                value:
+                                  BinaryExpr
+                                    op: "+"
+                                    left:
+                                      BinaryExpr
+                                        op: "*"
+                                        left:
+                                          MemberExpr
+                                            target:
+                                              Identifier
+                                                name: "point"
+                                            member: "x"
+                                        right:
+                                          MemberExpr
+                                            target:
+                                              Identifier
+                                                name: "point"
+                                            member: "x"
+                                    right:
+                                      BinaryExpr
+                                        op: "*"
+                                        left:
+                                          MemberExpr
+                                            target:
+                                              Identifier
+                                                name: "point"
+                                            member: "y"
+                                        right:
+                                          MemberExpr
+                                            target:
+                                              Identifier
+                                                name: "point"
+                                            member: "y"
+                                span:
+                                  {
+                                    start: 569
+                                    end: 606
+                                  }
+                              }
+                            ]
+                    AssignStmt
+                      target:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "out"
+                          member: "a"
+                      op: "="
+                      value:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "atan2"
+                          args:
+                            [
+                              {
+                                value:
+                                  MemberExpr
+                                    target:
+                                      Identifier
+                                        name: "point"
+                                    member: "y"
+                                span:
+                                  {
+                                    start: 624
+                                    end: 631
+                                  }
+                              }
+                              {
+                                value:
+                                  MemberExpr
+                                    target:
+                                      Identifier
+                                        name: "point"
+                                    member: "x"
+                                span:
+                                  {
+                                    start: 633
+                                    end: 640
+                                  }
+                              }
+                            ]
+                  ]
+      ExportDecl
+        exportName: "from_polar"
+        decl:
+          FuncDecl
+            name: "from_polar"
+            isInline: false
+            signature:
+              {
+                params:
+                  [
+                    {
+                      name: "point"
+                      type:
+                        NamedType
+                          name: "PolarPoint"
+                      span:
+                        {
+                          start: 728
+                          end: 744
+                        }
+                    }
+                  ]
+                returns:
+                  NamedReturns
+                    fields:
+                      [
+                        {
+                          name: "out"
+                          type:
+                            NamedType
+                              name: "CartesianPoint"
+                          span:
+                            {
+                              start: 750
+                              end: 768
+                            }
+                        }
+                      ]
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    AssignStmt
+                      target:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "out"
+                          member: "x"
+                      op: "="
+                      value:
+                        BinaryExpr
+                          op: "*"
+                          left:
+                            CallExpr
+                              callee:
+                                Identifier
+                                  name: "cos"
+                              args:
+                                [
+                                  {
+                                    value:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "point"
+                                        member: "a"
+                                    span:
+                                      {
+                                        start: 786
+                                        end: 793
+                                      }
+                                  }
+                                ]
+                          right:
+                            MemberExpr
+                              target:
+                                Identifier
+                                  name: "point"
+                              member: "d"
+                    AssignStmt
+                      target:
+                        MemberExpr
+                          target:
+                            Identifier
+                              name: "out"
+                          member: "y"
+                      op: "="
+                      value:
+                        BinaryExpr
+                          op: "*"
+                          left:
+                            CallExpr
+                              callee:
+                                Identifier
+                                  name: "sin"
+                              args:
+                                [
+                                  {
+                                    value:
+                                      MemberExpr
+                                        target:
+                                          Identifier
+                                            name: "point"
+                                        member: "a"
+                                    span:
+                                      {
+                                        start: 819
+                                        end: 826
+                                      }
+                                  }
+                                ]
+                          right:
+                            MemberExpr
+                              target:
+                                Identifier
+                                  name: "point"
+                              member: "d"
+                  ]
+      ExportDecl
+        exportName: "_start"
+        decl:
+          FuncDecl
+            name: "main"
+            isInline: false
+            signature:
+              {
+                params:
+                  []
+              }
+            body:
+              BlockBody
+                stmts:
+                  [
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "x"
+                      type:
+                        PrimitiveType
+                          name: "f64"
+                      init:
+                        NumberLit
+                          value: "3.1"
+                    LetStmt
+                      pattern:
+                        IdentPattern
+                          name: "y"
+                      type:
+                        PrimitiveType
+                          name: "f64"
+                      init:
+                        NumberLit
+                          value: "4.2"
+                    LetStmt
+                      pattern:
+                        StructPattern
+                          fields:
+                            [
+                              {
+                                fieldName: "d"
+                                span:
+                                  {
+                                    start: 992
+                                    end: 994
+                                  }
+                              }
+                              {
+                                fieldName: "a"
+                                span:
+                                  {
+                                    start: 996
+                                    end: 998
+                                  }
+                              }
+                            ]
+                      init:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "to_polar"
+                          args:
+                            [
+                              {
+                                value:
+                                  StructLit
+                                    fields:
+                                      [
+                                        {
+                                          name: "x"
+                                          value:
+                                            Identifier
+                                              name: "x"
+                                          span:
+                                            {
+                                              start: 1012
+                                              end: 1014
+                                            }
+                                        }
+                                        {
+                                          name: "y"
+                                          value:
+                                            Identifier
+                                              name: "y"
+                                          span:
+                                            {
+                                              start: 1016
+                                              end: 1018
+                                            }
+                                        }
+                                      ]
+                                span:
+                                  {
+                                    start: 1011
+                                    end: 1019
+                                  }
+                              }
+                            ]
+                    ExprStmt
+                      expr:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "print"
+                          args:
+                            [
+                              {
+                                value:
+                                  StringLit
+                                    value: "Polar coordinates: ("
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1052
+                                    end: 1074
+                                  }
+                              }
+                              {
+                                value:
+                                  Identifier
+                                    name: "d"
+                                span:
+                                  {
+                                    start: 1076
+                                    end: 1077
+                                  }
+                              }
+                              {
+                                value:
+                                  StringLit
+                                    value: ", "
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1079
+                                    end: 1083
+                                  }
+                              }
+                              {
+                                value:
+                                  Identifier
+                                    name: "a"
+                                span:
+                                  {
+                                    start: 1085
+                                    end: 1086
+                                  }
+                              }
+                              {
+                                value:
+                                  StringLit
+                                    value: ")"
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1088
+                                    end: 1091
+                                  }
+                              }
+                            ]
+                    SetStmt
+                      pattern:
+                        StructPattern
+                          fields:
+                            [
+                              {
+                                fieldName: "x"
+                                span:
+                                  {
+                                    start: 1150
+                                    end: 1152
+                                  }
+                              }
+                              {
+                                fieldName: "y"
+                                span:
+                                  {
+                                    start: 1154
+                                    end: 1156
+                                  }
+                              }
+                            ]
+                      value:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "from_polar"
+                          args:
+                            [
+                              {
+                                value:
+                                  StructLit
+                                    fields:
+                                      [
+                                        {
+                                          name: "d"
+                                          value:
+                                            Identifier
+                                              name: "d"
+                                          span:
+                                            {
+                                              start: 1172
+                                              end: 1174
+                                            }
+                                        }
+                                        {
+                                          name: "a"
+                                          value:
+                                            Identifier
+                                              name: "a"
+                                          span:
+                                            {
+                                              start: 1176
+                                              end: 1178
+                                            }
+                                        }
+                                      ]
+                                span:
+                                  {
+                                    start: 1171
+                                    end: 1179
+                                  }
+                              }
+                            ]
+                    ExprStmt
+                      expr:
+                        CallExpr
+                          callee:
+                            Identifier
+                              name: "print"
+                          args:
+                            [
+                              {
+                                value:
+                                  StringLit
+                                    value: "Cartesian coordinates: ("
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1212
+                                    end: 1238
+                                  }
+                              }
+                              {
+                                value:
+                                  Identifier
+                                    name: "x"
+                                span:
+                                  {
+                                    start: 1240
+                                    end: 1241
+                                  }
+                              }
+                              {
+                                value:
+                                  StringLit
+                                    value: ", "
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1243
+                                    end: 1247
+                                  }
+                              }
+                              {
+                                value:
+                                  Identifier
+                                    name: "y"
+                                span:
+                                  {
+                                    start: 1249
+                                    end: 1250
+                                  }
+                              }
+                              {
+                                value:
+                                  StringLit
+                                    value: ")"
+                                    encoding: "utf8"
+                                span:
+                                  {
+                                    start: 1252
+                                    end: 1255
+                                  }
+                              }
+                            ]
+                  ]
+    ]

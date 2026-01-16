@@ -1058,13 +1058,21 @@ function parseIndexedType(p: ParserState, element: Type): Type {
 
   const end = expect(p, ']');
 
+  let result: Type;
   if (isNullTerm) {
-    return { kind: 'NullTermType', element, length, span: spanFrom(start, end.span) };
+    result = { kind: 'NullTermType', element, length, span: spanFrom(start, end.span) };
   } else if (length !== undefined) {
-    return { kind: 'ArrayType', element, length, span: spanFrom(start, end.span) };
+    result = { kind: 'ArrayType', element, length, span: spanFrom(start, end.span) };
   } else {
-    return { kind: 'SliceType', element, span: spanFrom(start, end.span) };
+    result = { kind: 'SliceType', element, span: spanFrom(start, end.span) };
   }
+
+  // Check for nested indexed types: u8[][] or u8[10][20]
+  if (at(p, '[')) {
+    return parseIndexedType(p, result);
+  }
+
+  return result;
 }
 
 function parseCompositeType(p: ParserState): Type {
@@ -1075,26 +1083,32 @@ function parseCompositeType(p: ParserState): Type {
     return { kind: 'TupleType', elements: [], span: spanFrom(start, peek(p, -1).span) };
   }
 
-  // Parse first element to determine if struct or tuple
-  const firstType = parseType(p);
+  // Look ahead to determine if struct or tuple
+  // Struct: (name: Type, ...) where first token is IDENT followed by :
+  const isStruct = (peek(p).kind === 'IDENT' || KEYWORDS.has(peek(p).kind)) && peek(p, 1).kind === ':';
 
-  if (at(p, ':')) {
-    // This is a struct type: (name: Type, ...)
-    // Backtrack - we parsed the name as a type
-    // Actually, for struct types the syntax is (name: Type), but we parsed Type first
-    // Let me re-check the grammar...
-    // field = type | identifier ":" type
-    // So we need to check if what we parsed was actually an identifier followed by :
-    // This is ambiguous in parsing - let's handle it differently
+  if (isStruct) {
+    // Parse struct type: (name: Type, ...)
+    const fields: StructField[] = [];
+    do {
+      const fieldStart = peek(p).span;
+      const name = advance(p).text; // consume name
+      expect(p, ':');
+      const type = parseType(p);
+      fields.push({ name, type, span: spanFrom(fieldStart, type.span) });
+    } while (match(p, ',') && !at(p, ')'));
+
+    const end = expect(p, ')');
+    return { kind: 'StructType', fields, span: spanFrom(start, end.span) };
   }
 
-  // For now, parse as tuple
-  const elements: Type[] = [firstType];
+  // Parse as tuple type
+  const elements: Type[] = [parseType(p)];
 
   while (match(p, ',')) {
-      if (at(p, ')')) break;
+    if (at(p, ')')) break;
     elements.push(parseType(p));
-    }
+  }
 
   const end = expect(p, ')');
   return { kind: 'TupleType', elements, span: spanFrom(start, end.span) };
@@ -1822,9 +1836,14 @@ function parseImportItem(p: ParserState): ImportItemKind {
     return { kind: 'memory', pages };
   }
 
-  // Default: function signature
+  // Function import: "func" [ identifier ] func_signature
+  expect(p, 'func');
+  let name: string | undefined;
+  if (at(p, 'IDENT')) {
+    name = advance(p).text;
+  }
   const signature = parseFuncSignature(p);
-  return { kind: 'func', signature };
+  return { kind: 'func', name, signature };
 }
 
 function parseExportDecl(p: ParserState): ExportDecl {
