@@ -3,7 +3,7 @@
 # Build all examples
 all: ast wat wasm
 
-COMPILER_FILES := ./tools/cli.ts # TODO: List all source files here that affect compilation
+COMPILER_FILES := ./tools/cli.ts ./tools/parser.ts ./tools/ast.ts ./tools/grammar/encantis.ohm ./tools/grammar/actions.ts
 # List of all .ents files in the examples directory
 ALL_ENT_FILES := $(shell find examples -name "*.ents")
 # List of all expected ast, wat, wasm files
@@ -41,7 +41,7 @@ ast: $(ALL_AST_FILES)
 # Compile .ents files to .wat
 wat: $(ALL_WAT_FILES)
 %.wat: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_COMPILE) $< -o $@
+	$(ENCANTIS_COMPILE) $< > $@
 
 # Compile .wat files to .wasm
 wasm: $(ALL_WASM_FILES)
