@@ -1,6 +1,7 @@
 // Parser wrapper for Encantis
 // Provides a clean API for parsing source code to AST
 
+import type * as ohm from 'ohm-js'
 import type { Module, Span } from './ast'
 import { grammar, semantics } from './grammar/actions'
 
@@ -71,7 +72,7 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
  * Extract error information from a failed Ohm match result.
  */
 function extractError(
-  matchResult: ohm.MatchResult,
+  matchResult: ohm.FailedMatchResult,
   _source: string,
   _filePath?: string,
 ): ParseError {
@@ -83,12 +84,9 @@ function extractError(
     .filter((s) => s.length > 0)
 
   return {
-    message: matchResult.message ?? 'Parse error',
-    shortMessage: matchResult.shortMessage ?? 'Parse error',
+    message: matchResult.message,
+    shortMessage: matchResult.shortMessage,
     span: { start: pos, end: pos + 1 },
     expected,
   }
 }
-
-// Import ohm types for type checking
-import type * as ohm from 'ohm-js'

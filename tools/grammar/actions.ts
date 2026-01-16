@@ -1,12 +1,21 @@
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import * as ohm from 'ohm-js'
 import type * as AST from '../ast'
 import type { Span } from '../ast'
 
+// Types for access suffixes parsed from grammar
+type AccessSuffix =
+  | { kind: 'field'; name: string }
+  | { kind: 'tupleIndex'; value: number }
+  | { kind: 'deref' }
+  | { kind: 'typePun'; type: AST.Type }
+  | { kind: 'index'; expr: AST.Expr }
+
+// Types for postfix operations (AccessSuffix + call)
+type PostfixOp = AccessSuffix | { kind: 'call'; args: AST.Arg[] }
+
 // Load the grammar
-const grammarPath = path.join(__dirname, 'encantis.ohm')
-const grammarSource = fs.readFileSync(grammarPath, 'utf-8')
+const grammarPath = new URL('encantis.ohm', import.meta.url).pathname
+const grammarSource = await Bun.file(grammarPath).text()
 export const grammar = ohm.grammar(grammarSource)
 
 // Helper to create span from Ohm source interval
@@ -26,7 +35,7 @@ function first<T>(iter: ohm.IterationNode): T | null {
 export const semantics = grammar.createSemantics()
 
 // Add toAST operation
-semantics.addOperation<any>('toAST', {
+semantics.addOperation<unknown>('toAST', {
   // ============================================================================
   // Module
   // ============================================================================
@@ -265,12 +274,11 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   Type_indexed(element, _lb, sizeOpt, nullTermOpt, _rb) {
+    const sizeNode = sizeOpt.children[0]
     return {
       kind: 'IndexedType',
       element: element.toAST(),
-      size: first(sizeOpt)
-        ? Number(first<any>(sizeOpt).sourceString ?? first(sizeOpt))
-        : null,
+      size: sizeNode ? Number(sizeNode.sourceString) : null,
       nullTerminated: nullTermOpt.children.length > 0,
       span: span(this),
     } as AST.IndexedType
@@ -441,7 +449,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   LValue(ident, suffixes) {
-    let result: any = {
+    let result: AST.Expr = {
       kind: 'IdentExpr',
       name: ident.toAST(),
       span: span(ident),
@@ -1082,7 +1090,11 @@ semantics.addOperation<any>('toAST', {
 // Helper: Apply suffix to build AST node
 // ============================================================================
 
-function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
+function applySuffix(
+  base: AST.Expr,
+  suffix: AccessSuffix,
+  suffixSpan: Span,
+): AST.Expr {
   switch (suffix.kind) {
     case 'field':
       return {
@@ -1123,13 +1135,10 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         index: suffix.expr,
         span: { start: base.span.start, end: suffixSpan.end },
       } as AST.IndexExpr
-
-    default:
-      throw new Error(`Unknown suffix kind: ${suffix.kind}`)
   }
 }
 
-function applyPostfixOp(base: any, op: any, opSpan: Span): any {
+function applyPostfixOp(base: AST.Expr, op: PostfixOp, opSpan: Span): AST.Expr {
   if (op.kind === 'call') {
     return {
       kind: 'CallExpr',

@@ -36,12 +36,12 @@ check:
 # Generate AST (JSON) from .ents files
 ast: $(ALL_AST_FILES)
 %.ast.json: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_PARSE) $< > $@
+	$(ENCANTIS_PARSE) $< -o $@
 
 # Compile .ents files to .wat
 wat: $(ALL_WAT_FILES)
 %.wat: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_COMPILE) $< > $@
+	$(ENCANTIS_COMPILE) $< -o $@
 
 # Compile .wat files to .wasm
 wasm: $(ALL_WASM_FILES)

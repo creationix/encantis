@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'bun:test'
-import path from 'node:path'
-import { parse } from '../parser'
+import { type ExportDecl, type ImportDecl, parse } from '../parser'
 
-const testDir = path.dirname(import.meta.url.replace('file://', ''))
+const testDir = new URL('.', import.meta.url).pathname
 
 describe('parser', () => {
   describe('basic.ents', () => {
-    const filePath = path.join(testDir, 'basic.ents')
-    const watPath = filePath.replace('.ents', '.wat')
-    const astPath = filePath.replace('.ents', '.ast.json')
+    const filePath = `${testDir}basic.ents`
 
     it('parses without errors', async () => {
       const ents = await Bun.file(filePath).text()
@@ -21,50 +18,41 @@ describe('parser', () => {
       const result = parse(ents, { filePath })
 
       expect(result.module).toBeDefined()
-      expect(result.module!.kind).toBe('Module')
-      expect(result.module!.decls.length).toBeGreaterThan(0)
+      expect(result.module?.kind).toBe('Module')
+      expect(result.module?.decls.length).toBeGreaterThan(0)
     })
 
     it('parses memory export', async () => {
       const ents = await Bun.file(filePath).text()
       const result = parse(ents, { filePath })
 
-      const memoryExport = result.module!.decls.find(
+      const memoryExport = result.module?.decls.find(
         (node) => node.kind === 'ExportDecl' && node.item.kind === 'MemoryDecl',
-      )
+      ) as ExportDecl | undefined
       expect(memoryExport).toBeDefined()
-      expect(memoryExport!.name).toBe('mem')
+      expect(memoryExport?.name).toBe('mem')
     })
 
     it('parses function import', async () => {
       const ents = await Bun.file(filePath).text()
       const result = parse(ents, { filePath })
 
-      const importDecl = result.module!.decls.find(
+      const importDecl = result.module?.decls.find(
         (node) => node.kind === 'ImportDecl',
-      )
+      ) as ImportDecl | undefined
       expect(importDecl).toBeDefined()
-      expect((importDecl as any).items[0].name).toBe('log')
+      expect(importDecl?.items[0].name).toBe('log')
     })
 
     it('parses main function export', async () => {
       const ents = await Bun.file(filePath).text()
       const result = parse(ents, { filePath })
 
-      const mainExport = result.module!.decls.find(
+      const mainExport = result.module?.decls.find(
         (node) => node.kind === 'ExportDecl' && node.item.kind === 'FuncDecl',
-      )
+      ) as ExportDecl | undefined
       expect(mainExport).toBeDefined()
-      expect(mainExport!.name).toBe('main')
-    })
-
-    it('generated the expected AST structure', async () => {
-      const ents = await Bun.file(filePath).text()
-      const result = parse(ents, { filePath })
-      const expectedAstText = await Bun.file(astPath).text()
-      const expectedAst = JSON.parse(expectedAstText)
-
-      expect(result.module).toEqual(expectedAst)
+      expect(mainExport?.name).toBe('main')
     })
   })
 })

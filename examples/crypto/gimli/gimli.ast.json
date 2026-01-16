@@ -44,7 +44,7 @@
                       "end": 331
                     }
                   },
-                  "size": null,
+                  "size": 12,
                   "nullTerminated": false,
                   "span": {
                     "start": 328,
@@ -1756,7 +1756,7 @@
                       "end": 1494
                     }
                   },
-                  "size": null,
+                  "size": 32,
                   "nullTerminated": false,
                   "span": {
                     "start": 1492,
@@ -1803,7 +1803,7 @@
                     "end": 1517
                   }
                 },
-                "size": null,
+                "size": 12,
                 "nullTerminated": false,
                 "span": {
                   "start": 1514,
