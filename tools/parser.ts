@@ -46,7 +46,7 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 
   // Parse successful - convert to AST
   try {
-    const module = semantics(matchResult).toAST(filePath) as Module;
+    const module = semantics(matchResult).toAST() as Module;
     return {
       module,
       errors: [],
@@ -58,11 +58,7 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
       errors: [{
         message: `Internal parser error: ${e instanceof Error ? e.message : String(e)}`,
         shortMessage: 'Internal error',
-        span: {
-          start: { offset: 0, line: 1, column: 1 },
-          end: { offset: 0, line: 1, column: 1 },
-          source: filePath,
-        },
+        span: { start: 0, end: 0 },
         expected: [],
       }],
     };
@@ -72,12 +68,8 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 /**
  * Extract error information from a failed Ohm match result.
  */
-function extractError(matchResult: ohm.MatchResult, source: string, filePath?: string): ParseError {
-  // Get position information
+function extractError(matchResult: ohm.MatchResult, _source: string, _filePath?: string): ParseError {
   const pos = matchResult.getRightmostFailurePosition();
-  const { lineNum, colNum } = getLineAndColumn(source, pos);
-
-  // Get expected tokens
   const expected = matchResult.getExpectedText().split('\n')
     .map(s => s.trim())
     .filter(s => s.length > 0);
@@ -85,32 +77,9 @@ function extractError(matchResult: ohm.MatchResult, source: string, filePath?: s
   return {
     message: matchResult.message ?? 'Parse error',
     shortMessage: matchResult.shortMessage ?? 'Parse error',
-    span: {
-      start: { offset: pos, line: lineNum, column: colNum },
-      end: { offset: pos + 1, line: lineNum, column: colNum + 1 },
-      source: filePath,
-    },
+    span: { start: pos, end: pos + 1 },
     expected,
   };
-}
-
-/**
- * Get line and column number from an offset in source.
- */
-function getLineAndColumn(source: string, offset: number): { lineNum: number; colNum: number } {
-  let lineNum = 1;
-  let colNum = 1;
-
-  for (let i = 0; i < offset && i < source.length; i++) {
-    if (source[i] === '\n') {
-      lineNum++;
-      colNum = 1;
-    } else {
-      colNum++;
-    }
-  }
-
-  return { lineNum, colNum };
 }
 
 // Import ohm types for type checking

@@ -7,7 +7,7 @@ COMPILER_FILES := ./tools/cli.ts # TODO: List all source files here that affect 
 # List of all .ents files in the examples directory
 ALL_ENT_FILES := $(shell find examples -name "*.ents")
 # List of all expected ast, wat, wasm files
-ALL_AST_FILES := $(patsubst %.ents,%.ast,$(ALL_ENT_FILES))
+ALL_AST_FILES := $(patsubst %.ents,%.ast.json,$(ALL_ENT_FILES))
 ALL_WAT_FILES := $(patsubst %.ents,%.wat,$(ALL_ENT_FILES))
 ALL_WASM_FILES := $(patsubst %.wat,%.wasm,$(ALL_WAT_FILES))
 
@@ -21,10 +21,10 @@ ENCANTIS_COMPILE = ./tools/cli.ts compile
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	@find . -name "*.ast" -delete
+	@find . -name "*.ast.json" -delete
 	@find . -name "*.wasm" -delete
 	@find . -name "*.wat" -delete
-	@echo "Cleaned .ast, .wasm, and .wat files"
+	@echo "Cleaned .ast.json, .wasm, and .wat files"
 
 # Check all .ents files for errors without compiling
 check:
@@ -35,8 +35,8 @@ check:
 
 # Generate AST (JSON) from .ents files
 ast: $(ALL_AST_FILES)
-%.ast: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_PARSE) $< -o $@
+%.ast.json: %.ents $(COMPILER_FILES)
+	$(ENCANTIS_PARSE) $< > $@
 
 # Compile .ents files to .wat
 wat: $(ALL_WAT_FILES)

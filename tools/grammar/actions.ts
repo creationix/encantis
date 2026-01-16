@@ -10,34 +10,23 @@ const grammarSource = fs.readFileSync(grammarPath, 'utf-8');
 export const grammar = ohm.grammar(grammarSource);
 
 // Helper to create span from Ohm source interval
-function span(node: ohm.Node, source?: string): Span {
-  const interval = node.source;
-  const startLC = interval.getLineAndColumn();
-  // For end, we need to get line/col at the end position
-  // Ohm doesn't have a direct method, so we compute it
-  const endOffset = interval.endIdx;
-  // Simple approach: use start line/col and add offset difference
-  // This is approximate; a more accurate approach would parse through the source
+function span(node: ohm.Node): Span {
   return {
-    start: {
-      offset: interval.startIdx,
-      line: startLC.lineNum,
-      column: startLC.colNum,
-    },
-    end: {
-      offset: endOffset,
-      line: startLC.lineNum, // Approximation
-      column: startLC.colNum + (endOffset - interval.startIdx),
-    },
-    source,
+    start: node.source.startIdx,
+    end: node.source.endIdx,
   };
+}
+
+// Helper to get first child if present
+function first<T>(iter: ohm.IterationNode): T | null {
+  return iter.children[0]?.toAST() ?? null;
 }
 
 // Create semantics
 export const semantics = grammar.createSemantics();
 
 // Add toAST operation
-semantics.addOperation<any>('toAST(source)', {
+semantics.addOperation<any>('toAST', {
   // ============================================================================
   // Module
   // ============================================================================
@@ -45,8 +34,8 @@ semantics.addOperation<any>('toAST(source)', {
   Module(decls) {
     return {
       kind: 'Module',
-      decls: decls.children.map((d: ohm.Node) => d.toAST(this.args.source)),
-      span: span(this, this.args.source),
+      decls: decls.children.map((d: ohm.Node) => d.toAST()),
+      span: span(this),
     } as AST.Module;
   },
 
@@ -55,58 +44,51 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   Declaration(decl) {
-    return decl.toAST(this.args.source);
+    return decl.toAST();
   },
 
   ImportDecl_group(_import, module, _lp, items, _rp) {
     return {
       kind: 'ImportDecl',
-      module: module.toAST(this.args.source),
-      items: items.children.map((i: ohm.Node) => i.toAST(this.args.source)),
-      span: span(this, this.args.source),
+      module: module.toAST().value.value,
+      items: items.children.map((i: ohm.Node) => i.toAST()),
+      span: span(this),
     } as AST.ImportDecl;
   },
 
-  ImportDecl_single(_import, module, name, item) {
-    const importItem = item.toAST(this.args.source);
+  ImportDecl_single(_import, module, item) {
     return {
       kind: 'ImportDecl',
-      module: module.toAST(this.args.source),
-      items: [{
-        kind: 'ImportItem',
-        name: name.toAST(this.args.source),
-        item: importItem,
-        span: span(name, this.args.source),
-      }],
-      span: span(this, this.args.source),
+      module: module.toAST().value.value,
+      items: [item.toAST()],
+      span: span(this),
     } as AST.ImportDecl;
   },
 
   ImportGroupItem(name, item) {
     return {
       kind: 'ImportItem',
-      name: name.toAST(this.args.source),
-      item: item.toAST(this.args.source),
-      span: span(this, this.args.source),
+      name: name.toAST().value.value,
+      item: item.toAST(),
+      span: span(this),
     } as AST.ImportItem;
   },
 
   ImportItem_func(_func, identOpt, sig) {
-    const identNode = identOpt.children[0];
     return {
       kind: 'ImportFunc',
-      ident: identNode ? identNode.toAST(this.args.source) : null,
-      signature: sig.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: first(identOpt),
+      signature: sig.toAST(),
+      span: span(this),
     } as AST.ImportFunc;
   },
 
-  ImportItem_global(_global, ident, _colon, type) {
+  ImportItem_global(_global, ident, typeAnnotation) {
     return {
       kind: 'ImportGlobal',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      type: typeAnnotation.toAST(),
+      span: span(this),
     } as AST.ImportGlobal;
   },
 
@@ -114,80 +96,69 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'ImportMemory',
       min: Number(size.sourceString),
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.ImportMemory;
   },
 
   ExportDecl(_export, name, item) {
     return {
       kind: 'ExportDecl',
-      name: name.toAST(this.args.source),
-      item: item.toAST(this.args.source),
-      span: span(this, this.args.source),
+      name: name.toAST().value.value,
+      item: item.toAST(),
+      span: span(this),
     } as AST.ExportDecl;
   },
 
   Exportable(item) {
-    return item.toAST(this.args.source);
+    return item.toAST();
   },
 
   FuncDecl(inlineOpt, _func, identOpt, sig, body) {
-    const identNode = identOpt.children[0];
     return {
       kind: 'FuncDecl',
       inline: inlineOpt.sourceString !== '',
-      ident: identNode ? identNode.toAST(this.args.source) : null,
-      signature: sig.toAST(this.args.source),
-      body: body.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: first(identOpt),
+      signature: sig.toAST(),
+      body: body.toAST(),
+      span: span(this),
     } as AST.FuncDecl;
   },
 
-  FuncSignature_withReturn(params, _arrow, returns) {
+  FuncSignature(params, returnOpt) {
     return {
       kind: 'FuncSignature',
-      params: params.toAST(this.args.source),
-      returns: returns.toAST(this.args.source),
-      span: span(this, this.args.source),
+      params: params.toAST(),
+      returns: first(returnOpt),
+      span: span(this),
     } as AST.FuncSignature;
   },
 
-  FuncSignature_noReturn(params) {
-    return {
-      kind: 'FuncSignature',
-      params: params.toAST(this.args.source),
-      returns: null,
-      span: span(this, this.args.source),
-    } as AST.FuncSignature;
-  },
-
-  FuncSignature(sig) {
-    return sig.toAST(this.args.source);
+  ReturnSpec(_arrow, valueSpec) {
+    return valueSpec.toAST();
   },
 
   ValueSpec_parens(_lp, fieldListOpt, _rp) {
-    const fieldListNode = fieldListOpt.children[0];
     return {
       kind: 'FieldList',
-      fields: fieldListNode ? fieldListNode.toAST(this.args.source) : [],
-      span: span(this, this.args.source),
+      fields: first(fieldListOpt) ?? [],
+      span: span(this),
     } as AST.FieldList;
   },
 
   ValueSpec_single(type) {
-    return type.toAST(this.args.source);
+    return type.toAST();
   },
 
   FieldList(list) {
-    return list.asIteration().children.map((f: ohm.Node) => f.toAST(this.args.source));
+    return list.asIteration().children.map((f: ohm.Node) => f.toAST());
   },
 
-  Field_named(ident, _colon, type) {
+  Field_named(ident, typeAnnotation) {
     return {
       kind: 'Field',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      type: typeAnnotation.toAST(),
+      span: span(this),
     } as AST.Field;
   },
 
@@ -195,156 +166,97 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'Field',
       ident: null,
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      type: type.toAST(),
+      span: span(this),
     } as AST.Field;
   },
 
-  FuncBody_block(block) {
-    return block.toAST(this.args.source);
+  TypeAnnotation(_colon, type) {
+    return type.toAST();
   },
 
-  FuncBody_arrow(_arrow, expr) {
+  Assign(_eq, expr) {
+    return expr.toAST();
+  },
+
+  Body_block(block) {
+    return block.toAST();
+  },
+
+  Body_arrow(_arrow, expr) {
     return {
       kind: 'ArrowBody',
-      expr: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      expr: expr.toAST(),
+      span: span(this),
     } as AST.ArrowBody;
-  },
-
-  FuncBody(body) {
-    return body.toAST(this.args.source);
   },
 
   Block(_lb, stmts, _rb) {
     return {
       kind: 'Block',
-      stmts: stmts.children.map((s: ohm.Node) => s.toAST(this.args.source)),
-      span: span(this, this.args.source),
+      stmts: stmts.children.map((s: ohm.Node) => s.toAST()),
+      span: span(this),
     } as AST.Block;
   },
 
   TypeDecl(_type, ident, _eq, type) {
     return {
       kind: 'TypeDecl',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      type: type.toAST(),
+      span: span(this),
     } as AST.TypeDecl;
   },
 
   UniqueDecl(_unique, ident, _eq, type) {
     return {
       kind: 'UniqueDecl',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      type: type.toAST(),
+      span: span(this),
     } as AST.UniqueDecl;
   },
 
-  DefDecl(_def, ident, _eq, expr) {
+  DefDecl(_def, ident, assign) {
     return {
       kind: 'DefDecl',
-      ident: ident.toAST(this.args.source),
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      value: assign.toAST(),
+      span: span(this),
     } as AST.DefDecl;
   },
 
-  GlobalDecl_full(_global, ident, _colon, type, _eq, expr) {
+  GlobalDecl(_global, ident, typeOpt, assignOpt) {
     return {
       kind: 'GlobalDecl',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      ident: ident.toAST(),
+      type: first(typeOpt),
+      value: first(assignOpt),
+      span: span(this),
     } as AST.GlobalDecl;
   },
 
-  GlobalDecl_typed(_global, ident, _colon, type) {
-    return {
-      kind: 'GlobalDecl',
-      ident: ident.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      value: null,
-      span: span(this, this.args.source),
-    } as AST.GlobalDecl;
-  },
-
-  GlobalDecl_init(_global, ident, _eq, expr) {
-    return {
-      kind: 'GlobalDecl',
-      ident: ident.toAST(this.args.source),
-      type: null,
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.GlobalDecl;
-  },
-
-  GlobalDecl_bare(_global, ident) {
-    return {
-      kind: 'GlobalDecl',
-      ident: ident.toAST(this.args.source),
-      type: null,
-      value: null,
-      span: span(this, this.args.source),
-    } as AST.GlobalDecl;
-  },
-
-  GlobalDecl(decl) {
-    return decl.toAST(this.args.source);
-  },
-
-  MemoryDecl_fullWithData(_memory, min, max, _lb, data, _rb) {
+  MemoryDecl(_memory, min, maxOpt, dataBlockOpt) {
+    const dataBlock = first<AST.DataEntry[]>(dataBlockOpt);
     return {
       kind: 'MemoryDecl',
       min: Number(min.sourceString),
-      max: Number(max.sourceString),
-      data: data.children.map((e: ohm.Node) => e.toAST(this.args.source)),
-      span: span(this, this.args.source),
+      max: first(maxOpt) ? Number(first(maxOpt)) : null,
+      data: dataBlock ?? [],
+      span: span(this),
     } as AST.MemoryDecl;
   },
 
-  MemoryDecl_minWithData(_memory, min, _lb, data, _rb) {
-    return {
-      kind: 'MemoryDecl',
-      min: Number(min.sourceString),
-      max: null,
-      data: data.children.map((e: ohm.Node) => e.toAST(this.args.source)),
-      span: span(this, this.args.source),
-    } as AST.MemoryDecl;
-  },
-
-  MemoryDecl_fullNoData(_memory, min, max) {
-    return {
-      kind: 'MemoryDecl',
-      min: Number(min.sourceString),
-      max: Number(max.sourceString),
-      data: [],
-      span: span(this, this.args.source),
-    } as AST.MemoryDecl;
-  },
-
-  MemoryDecl_minNoData(_memory, min) {
-    return {
-      kind: 'MemoryDecl',
-      min: Number(min.sourceString),
-      max: null,
-      data: [],
-      span: span(this, this.args.source),
-    } as AST.MemoryDecl;
-  },
-
-  MemoryDecl(decl) {
-    return decl.toAST(this.args.source);
+  DataBlock(_lb, entries, _rb) {
+    return entries.children.map((e: ohm.Node) => e.toAST());
   },
 
   DataEntry(offset, _arrow, expr, _comma) {
     return {
       kind: 'DataEntry',
       offset: Number(offset.sourceString),
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      value: expr.toAST(),
+      span: span(this),
     } as AST.DataEntry;
   },
 
@@ -353,46 +265,44 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   Type_indexed(element, _lb, sizeOpt, nullTermOpt, _rb) {
-    const sizeNode = sizeOpt.children[0];
     return {
       kind: 'IndexedType',
-      element: element.toAST(this.args.source),
-      size: sizeNode ? Number(sizeNode.sourceString) : null,
+      element: element.toAST(),
+      size: first(sizeOpt) ? Number(first<any>(sizeOpt).sourceString ?? first(sizeOpt)) : null,
       nullTerminated: nullTermOpt.children.length > 0,
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.IndexedType;
   },
 
   Type_pointer(_star, type) {
     return {
       kind: 'PointerType',
-      pointee: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      pointee: type.toAST(),
+      span: span(this),
     } as AST.PointerType;
   },
 
   Type_composite(_lp, fieldListOpt, _rp) {
-    const fieldListNode = fieldListOpt.children[0];
     return {
       kind: 'CompositeType',
-      fields: fieldListNode ? fieldListNode.toAST(this.args.source) : [],
-      span: span(this, this.args.source),
+      fields: first(fieldListOpt) ?? [],
+      span: span(this),
     } as AST.CompositeType;
   },
 
   Type_primitive(prim) {
-    return prim.toAST(this.args.source);
+    return prim.toAST();
   },
 
   Type_named(typeIdent) {
-    return typeIdent.toAST(this.args.source);
+    return typeIdent.toAST();
   },
 
   PrimitiveType(name) {
     return {
       kind: 'PrimitiveType',
       name: name.sourceString as AST.PrimitiveType['name'],
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.PrimitiveType;
   },
 
@@ -400,7 +310,7 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'TypeRef',
       name: this.sourceString,
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.TypeRef;
   },
 
@@ -409,261 +319,161 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   Statement(stmt) {
-    return stmt.toAST(this.args.source);
+    return stmt.toAST();
   },
 
-  LetStmt_typedInit(_let, pattern, _colon, type, _eq, expr) {
+  LetStmt(_let, pattern, typeOpt, assignOpt) {
     return {
       kind: 'LetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      pattern: pattern.toAST(),
+      type: first(typeOpt),
+      value: first(assignOpt),
+      span: span(this),
     } as AST.LetStmt;
   },
 
-  LetStmt_typed(_let, pattern, _colon, type) {
-    return {
-      kind: 'LetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      value: null,
-      span: span(this, this.args.source),
-    } as AST.LetStmt;
-  },
-
-  LetStmt_init(_let, pattern, _eq, expr) {
-    return {
-      kind: 'LetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: null,
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.LetStmt;
-  },
-
-  LetStmt_bare(_let, pattern) {
-    return {
-      kind: 'LetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: null,
-      value: null,
-      span: span(this, this.args.source),
-    } as AST.LetStmt;
-  },
-
-  LetStmt(stmt) {
-    return stmt.toAST(this.args.source);
-  },
-
-  SetStmt_typed(_set, pattern, _colon, type, _eq, expr) {
+  SetStmt(_set, pattern, typeOpt, assign) {
     return {
       kind: 'SetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      pattern: pattern.toAST(),
+      type: first(typeOpt),
+      value: assign.toAST(),
+      span: span(this),
     } as AST.SetStmt;
-  },
-
-  SetStmt_untyped(_set, pattern, _eq, expr) {
-    return {
-      kind: 'SetStmt',
-      pattern: pattern.toAST(this.args.source),
-      type: null,
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.SetStmt;
-  },
-
-  SetStmt(stmt) {
-    return stmt.toAST(this.args.source);
-  },
-
-  IfStmt(_if, condition, then, elifs, elseOpt) {
-    const elseNode = elseOpt.children[0];
-    return {
-      kind: 'IfStmt',
-      condition: condition.toAST(this.args.source),
-      thenBranch: then.toAST(this.args.source),
-      elifs: elifs.children.map((e: ohm.Node) => e.toAST(this.args.source)),
-      else_: elseNode ? elseNode.toAST(this.args.source) : null,
-      span: span(this, this.args.source),
-    } as AST.IfStmt;
-  },
-
-  ElifClause(_elif, condition, then) {
-    return {
-      kind: 'ElifClause',
-      condition: condition.toAST(this.args.source),
-      thenBranch: then.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.ElifClause;
-  },
-
-  ElseClause(_else, body) {
-    return body.toAST(this.args.source);
   },
 
   WhileStmt(_while, condition, body) {
     return {
       kind: 'WhileStmt',
-      condition: condition.toAST(this.args.source),
-      body: body.toAST(this.args.source),
-      span: span(this, this.args.source),
+      condition: condition.toAST(),
+      body: body.toAST(),
+      span: span(this),
     } as AST.WhileStmt;
   },
 
   ForStmt(_for, binding, _in, iterable, body) {
     return {
       kind: 'ForStmt',
-      binding: binding.toAST(this.args.source),
-      iterable: iterable.toAST(this.args.source),
-      body: body.toAST(this.args.source),
-      span: span(this, this.args.source),
+      binding: binding.toAST(),
+      iterable: iterable.toAST(),
+      body: body.toAST(),
+      span: span(this),
     } as AST.ForStmt;
   },
 
   ForBinding_withIndex(value, _comma, index) {
     return {
       kind: 'ForBinding',
-      value: value.toAST(this.args.source),
-      index: index.toAST(this.args.source),
-      span: span(this, this.args.source),
+      value: value.toAST(),
+      index: index.toAST(),
+      span: span(this),
     } as AST.ForBinding;
   },
 
   ForBinding_valueOnly(value) {
     return {
       kind: 'ForBinding',
-      value: value.toAST(this.args.source),
+      value: value.toAST(),
       index: null,
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.ForBinding;
-  },
-
-  ForBinding(binding) {
-    return binding.toAST(this.args.source);
   },
 
   LoopStmt(_loop, body) {
     return {
       kind: 'LoopStmt',
-      body: body.toAST(this.args.source),
-      span: span(this, this.args.source),
+      body: body.toAST(),
+      span: span(this),
     } as AST.LoopStmt;
   },
 
   ReturnStmt(_return, exprOpt, whenOpt) {
-    const exprNode = exprOpt.children[0];
-    const whenNode = whenOpt.children[0];
     return {
       kind: 'ReturnStmt',
-      value: exprNode ? exprNode.toAST(this.args.source) : null,
-      when: whenNode ? whenNode.toAST(this.args.source) : null,
-      span: span(this, this.args.source),
+      value: first(exprOpt),
+      when: first(whenOpt),
+      span: span(this),
     } as AST.ReturnStmt;
   },
 
   BreakStmt(_break, whenOpt) {
-    const whenNode = whenOpt.children[0];
     return {
       kind: 'BreakStmt',
-      when: whenNode ? whenNode.toAST(this.args.source) : null,
-      span: span(this, this.args.source),
+      when: first(whenOpt),
+      span: span(this),
     } as AST.BreakStmt;
   },
 
   ContinueStmt(_continue, whenOpt) {
-    const whenNode = whenOpt.children[0];
     return {
       kind: 'ContinueStmt',
-      when: whenNode ? whenNode.toAST(this.args.source) : null,
-      span: span(this, this.args.source),
+      when: first(whenOpt),
+      span: span(this),
     } as AST.ContinueStmt;
   },
 
   WhenClause(_when, expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   AssignmentStmt(target, op, value) {
     return {
       kind: 'AssignmentStmt',
-      target: target.toAST(this.args.source),
+      target: target.toAST(),
       op: op.sourceString as AST.AssignOp,
-      value: value.toAST(this.args.source),
-      span: span(this, this.args.source),
+      value: value.toAST(),
+      span: span(this),
     } as AST.AssignmentStmt;
-  },
-
-  assignOp(_op) {
-    return this.sourceString;
   },
 
   ExpressionStmt(expr) {
     return {
       kind: 'ExpressionStmt',
-      expr: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      expr: expr.toAST(),
+      span: span(this),
     } as AST.ExpressionStmt;
   },
 
   // ============================================================================
-  // L-Values
+  // L-Values: ident AccessSuffix*
   // ============================================================================
 
-  LValue_field(obj, _dot, field) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'field', name: field.sourceString },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
-  },
-
-  LValue_index(obj, _dot, digits) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'index', value: Number(digits.sourceString) },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
-  },
-
-  LValue_deref(obj, _dot, _star) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'deref' },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
-  },
-
-  LValue_typePun(obj, _dot, type) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'type', type: type.toAST(this.args.source) },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
-  },
-
-  LValue_subscript(obj, _lb, index, _rb) {
-    return {
-      kind: 'IndexExpr',
-      object: obj.toAST(this.args.source),
-      index: index.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.IndexExpr;
-  },
-
-  LValue_ident(ident) {
-    return {
+  LValue(ident, suffixes) {
+    let result: any = {
       kind: 'IdentExpr',
-      name: ident.sourceString,
-      span: span(this, this.args.source),
-    } as AST.IdentExpr;
+      name: ident.toAST(),
+      span: span(ident),
+    };
+
+    for (const suffix of suffixes.children) {
+      result = applySuffix(result, suffix.toAST(), span(suffix));
+    }
+
+    return result;
+  },
+
+  // ============================================================================
+  // Access Suffixes (shared by LValue and PostfixExpr)
+  // ============================================================================
+
+  AccessSuffix_field(_dot, field) {
+    return { kind: 'field', name: field.sourceString };
+  },
+
+  AccessSuffix_tupleIndex(_dot, digits) {
+    return { kind: 'tupleIndex', value: Number(digits.sourceString) };
+  },
+
+  AccessSuffix_deref(_dot, _star) {
+    return { kind: 'deref' };
+  },
+
+  AccessSuffix_typePun(_dot, type) {
+    return { kind: 'typePun', type: type.toAST() };
+  },
+
+  AccessSuffix_index(_lb, expr, _rb) {
+    return { kind: 'index', expr: expr.toAST() };
   },
 
   // ============================================================================
@@ -673,21 +483,21 @@ semantics.addOperation<any>('toAST(source)', {
   Pattern_tuple(_lp, list, _rp) {
     return {
       kind: 'TuplePattern',
-      elements: list.toAST(this.args.source),
-      span: span(this, this.args.source),
+      elements: list.toAST(),
+      span: span(this),
     } as AST.TuplePattern;
   },
 
   Pattern_ident(ident) {
     return {
       kind: 'IdentPattern',
-      name: ident.sourceString,
-      span: span(this, this.args.source),
+      name: ident.toAST(),
+      span: span(this),
     } as AST.IdentPattern;
   },
 
   PatternList(list) {
-    return list.asIteration().children.map((e: ohm.Node) => e.toAST(this.args.source));
+    return list.asIteration().children.map((e: ohm.Node) => e.toAST());
   },
 
   PatternElem_namedExplicit(field, _colon, binding) {
@@ -709,7 +519,7 @@ semantics.addOperation<any>('toAST(source)', {
   PatternElem_positional(pattern) {
     return {
       kind: 'positional',
-      pattern: pattern.toAST(this.args.source),
+      pattern: pattern.toAST(),
     } as AST.PatternElement;
   },
 
@@ -718,170 +528,154 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   Expr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   OrExpr_or(left, _op, right) {
     return {
       kind: 'BinaryExpr',
       op: '||',
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   OrExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   AndExpr_and(left, _op, right) {
     return {
       kind: 'BinaryExpr',
       op: '&&',
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   AndExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   NotExpr_not(_op, operand) {
     return {
       kind: 'UnaryExpr',
       op: '!',
-      operand: operand.toAST(this.args.source),
-      span: span(this, this.args.source),
+      operand: operand.toAST(),
+      span: span(this),
     } as AST.UnaryExpr;
   },
 
   NotExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   CompareExpr_compare(left, op, right) {
     return {
       kind: 'BinaryExpr',
       op: op.sourceString as AST.BinaryOp,
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   CompareExpr(expr) {
-    return expr.toAST(this.args.source);
-  },
-
-  compareOp(_op) {
-    return this.sourceString;
+    return expr.toAST();
   },
 
   BitOrExpr_or(left, _op, right) {
     return {
       kind: 'BinaryExpr',
       op: '|',
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   BitOrExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   BitXorExpr_xor(left, _op, right) {
     return {
       kind: 'BinaryExpr',
       op: '^',
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   BitXorExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   BitAndExpr_and(left, _op, right) {
     return {
       kind: 'BinaryExpr',
       op: '&',
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   BitAndExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   ShiftExpr_shift(left, op, right) {
     return {
       kind: 'BinaryExpr',
       op: op.sourceString as AST.BinaryOp,
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   ShiftExpr(expr) {
-    return expr.toAST(this.args.source);
-  },
-
-  shiftOp(_op) {
-    return this.sourceString;
+    return expr.toAST();
   },
 
   AddExpr_add(left, op, right) {
     return {
       kind: 'BinaryExpr',
       op: op.sourceString as AST.BinaryOp,
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   AddExpr(expr) {
-    return expr.toAST(this.args.source);
-  },
-
-  addOp(_op) {
-    return this.sourceString;
+    return expr.toAST();
   },
 
   MulExpr_mul(left, op, right) {
     return {
       kind: 'BinaryExpr',
       op: op.sourceString as AST.BinaryOp,
-      left: left.toAST(this.args.source),
-      right: right.toAST(this.args.source),
-      span: span(this, this.args.source),
+      left: left.toAST(),
+      right: right.toAST(),
+      span: span(this),
     } as AST.BinaryExpr;
   },
 
   MulExpr(expr) {
-    return expr.toAST(this.args.source);
-  },
-
-  mulOp(_op) {
-    return this.sourceString;
+    return expr.toAST();
   },
 
   UnaryExpr_neg(_op, operand) {
     return {
       kind: 'UnaryExpr',
       op: '-',
-      operand: operand.toAST(this.args.source),
-      span: span(this, this.args.source),
+      operand: operand.toAST(),
+      span: span(this),
     } as AST.UnaryExpr;
   },
 
@@ -889,8 +683,8 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'UnaryExpr',
       op: '~',
-      operand: operand.toAST(this.args.source),
-      span: span(this, this.args.source),
+      operand: operand.toAST(),
+      span: span(this),
     } as AST.UnaryExpr;
   },
 
@@ -898,109 +692,88 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'UnaryExpr',
       op: '&',
-      operand: operand.toAST(this.args.source),
-      span: span(this, this.args.source),
+      operand: operand.toAST(),
+      span: span(this),
     } as AST.UnaryExpr;
   },
 
   UnaryExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
   CastExpr_cast(expr, _as, type) {
     return {
       kind: 'CastExpr',
-      expr: expr.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      expr: expr.toAST(),
+      type: type.toAST(),
+      span: span(this),
     } as AST.CastExpr;
   },
 
-  CastExpr_annotation(expr, _colon, type) {
+  CastExpr_annotation(expr, typeAnnotation) {
     return {
       kind: 'AnnotationExpr',
-      expr: expr.toAST(this.args.source),
-      type: type.toAST(this.args.source),
-      span: span(this, this.args.source),
+      expr: expr.toAST(),
+      type: typeAnnotation.toAST(),
+      span: span(this),
     } as AST.AnnotationExpr;
   },
 
   CastExpr(expr) {
-    return expr.toAST(this.args.source);
+    return expr.toAST();
   },
 
-  PostfixExpr_field(obj, _dot, field) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'field', name: field.sourceString },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
+  // ============================================================================
+  // Postfix: PrimaryExpr PostfixOp*
+  // ============================================================================
+
+  PostfixExpr(primary, ops) {
+    let result = primary.toAST();
+
+    for (const op of ops.children) {
+      result = applyPostfixOp(result, op.toAST(), span(op));
+    }
+
+    return result;
   },
 
-  PostfixExpr_tupleIndex(obj, _dot, digits) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'index', value: Number(digits.sourceString) },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
+  PostfixOp(suffix) {
+    return suffix.toAST();
   },
 
-  PostfixExpr_deref(obj, _dot, _star) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'deref' },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
+  PostfixOp_call(_lp, argsOpt, _rp) {
+    return { kind: 'call', args: first(argsOpt) ?? [] };
   },
 
-  PostfixExpr_typePun(obj, _dot, type) {
-    return {
-      kind: 'MemberExpr',
-      object: obj.toAST(this.args.source),
-      member: { kind: 'type', type: type.toAST(this.args.source) },
-      span: span(this, this.args.source),
-    } as AST.MemberExpr;
-  },
+  // ============================================================================
+  // Primary Expressions
+  // ============================================================================
 
-  PostfixExpr_index(obj, _lb, index, _rb) {
-    return {
-      kind: 'IndexExpr',
-      object: obj.toAST(this.args.source),
-      index: index.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.IndexExpr;
-  },
-
-  PostfixExpr_call(callee, _lp, argsOpt, _rp) {
-    const argsNode = argsOpt.children[0];
-    return {
-      kind: 'CallExpr',
-      callee: callee.toAST(this.args.source),
-      args: argsNode ? argsNode.toAST(this.args.source) : [],
-      span: span(this, this.args.source),
-    } as AST.CallExpr;
-  },
-
-  PostfixExpr(expr) {
-    return expr.toAST(this.args.source);
+  PrimaryExpr(expr) {
+    // Handle ident specially - it returns a string but needs to be IdentExpr here
+    if (expr.ctorName === 'ident') {
+      return {
+        kind: 'IdentExpr',
+        name: expr.toAST(),
+        span: span(expr),
+      } as AST.IdentExpr;
+    }
+    return expr.toAST();
   },
 
   PrimaryExpr_tupleOrStruct(_lp, args, _rp) {
     return {
       kind: 'TupleExpr',
-      elements: args.toAST(this.args.source),
-      span: span(this, this.args.source),
+      elements: args.toAST(),
+      span: span(this),
     } as AST.TupleExpr;
   },
 
   PrimaryExpr_group(_lp, expr, _rp) {
     return {
       kind: 'GroupExpr',
-      expr: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      expr: expr.toAST(),
+      span: span(this),
     } as AST.GroupExpr;
   },
 
@@ -1008,26 +781,21 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'TupleExpr',
       elements: [],
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.TupleExpr;
   },
 
   PrimaryExpr_constructor(typeName, _lp, argsOpt, _rp) {
-    const argsNode = argsOpt.children[0];
     return {
       kind: 'CallExpr',
       callee: {
         kind: 'IdentExpr',
         name: typeName.sourceString,
-        span: span(typeName, this.args.source),
+        span: span(typeName),
       } as AST.IdentExpr,
-      args: argsNode ? argsNode.toAST(this.args.source) : [],
-      span: span(this, this.args.source),
+      args: first(argsOpt) ?? [],
+      span: span(this),
     } as AST.CallExpr;
-  },
-
-  PrimaryExpr(expr) {
-    return expr.toAST(this.args.source);
   },
 
   // ============================================================================
@@ -1035,28 +803,27 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   IfExpr(_if, condition, then, elifs, elseOpt) {
-    const elseNode = elseOpt.children[0];
     return {
       kind: 'IfExpr',
-      condition: condition.toAST(this.args.source),
-      thenBranch: then.toAST(this.args.source),
-      elifs: elifs.children.map((e: ohm.Node) => e.toAST(this.args.source)),
-      else_: elseNode ? elseNode.toAST(this.args.source) : null,
-      span: span(this, this.args.source),
+      condition: condition.toAST(),
+      thenBranch: then.toAST(),
+      elifs: elifs.children.map((e: ohm.Node) => e.toAST()),
+      else_: first(elseOpt),
+      span: span(this),
     } as AST.IfExpr;
   },
 
-  ElifExpr(_elif, condition, then) {
+  ElifBranch(_elif, condition, then) {
     return {
-      kind: 'ElifClause',
-      condition: condition.toAST(this.args.source),
-      thenBranch: then.toAST(this.args.source),
-      span: span(this, this.args.source),
-    } as AST.ElifClause;
+      kind: 'ElifBranch',
+      condition: condition.toAST(),
+      thenBranch: then.toAST(),
+      span: span(this),
+    } as AST.ElifBranch;
   },
 
-  ElseExpr(_else, body) {
-    return body.toAST(this.args.source);
+  ElseBranch(_else, body) {
+    return body.toAST();
   },
 
   // ============================================================================
@@ -1066,29 +833,29 @@ semantics.addOperation<any>('toAST(source)', {
   MatchExpr(_match, subject, _lb, arms, _rb) {
     return {
       kind: 'MatchExpr',
-      subject: subject.toAST(this.args.source),
-      arms: arms.children.map((a: ohm.Node) => a.toAST(this.args.source)),
-      span: span(this, this.args.source),
+      subject: subject.toAST(),
+      arms: arms.children.map((a: ohm.Node) => a.toAST()),
+      span: span(this),
     } as AST.MatchExpr;
   },
 
   MatchArm(patterns, _arrow, body) {
     return {
       kind: 'MatchArm',
-      patterns: patterns.toAST(this.args.source),
-      body: body.toAST(this.args.source),
-      span: span(this, this.args.source),
+      patterns: patterns.toAST(),
+      body: body.toAST(),
+      span: span(this),
     } as AST.MatchArm;
   },
 
   MatchPatterns(list) {
-    return list.asIteration().children.map((p: ohm.Node) => p.toAST(this.args.source));
+    return list.asIteration().children.map((p: ohm.Node) => p.toAST());
   },
 
   MatchPattern_literal(lit) {
     return {
       kind: 'literal',
-      value: lit.toAST(this.args.source).value,
+      value: lit.toAST().value,
     } as AST.MatchPattern;
   },
 
@@ -1101,15 +868,15 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   ArgList(list) {
-    return list.asIteration().children.map((a: ohm.Node) => a.toAST(this.args.source));
+    return list.asIteration().children.map((a: ohm.Node) => a.toAST());
   },
 
   Arg_named(name, _colon, expr) {
     return {
       kind: 'Arg',
       name: name.sourceString,
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      value: expr.toAST(),
+      span: span(this),
     } as AST.Arg;
   },
 
@@ -1118,7 +885,7 @@ semantics.addOperation<any>('toAST(source)', {
       kind: 'Arg',
       name: name.sourceString,
       value: null,
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.Arg;
   },
 
@@ -1126,8 +893,8 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'Arg',
       name: null,
-      value: expr.toAST(this.args.source),
-      span: span(this, this.args.source),
+      value: expr.toAST(),
+      span: span(this),
     } as AST.Arg;
   },
 
@@ -1136,27 +903,27 @@ semantics.addOperation<any>('toAST(source)', {
   // ============================================================================
 
   literal(lit) {
-    return lit.toAST(this.args.source);
+    return lit.toAST();
   },
 
   numberLiteral(num) {
-    return num.toAST(this.args.source);
+    return num.toAST();
   },
 
   intLiteral(negOpt, num) {
-    const neg = negOpt.sourceString === '-';
-    const numAST = num.toAST(this.args.source);
-    if (neg) {
-      numAST.value.value = -numAST.value.value;
+    const isNeg = negOpt.sourceString === '-';
+    const ast = num.toAST();
+    if (isNeg && ast.value.kind === 'int') {
+      ast.value.value = -ast.value.value;
     }
-    return numAST;
+    return ast;
   },
 
   decimalLiteral(_digits) {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 10 },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1164,7 +931,7 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 16 },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1172,7 +939,7 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 2 },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1180,13 +947,12 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 8 },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
   dozenalLiteral(_prefix, _digits) {
-    // Parse dozenal: digits 0-9, a/A=10, b/B=11
-    const str = this.sourceString.slice(2); // Remove "0d"
+    const str = this.sourceString.slice(2);
     let value = 0n;
     for (const c of str) {
       value *= 12n;
@@ -1201,7 +967,7 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value, radix: 12 as 12 },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1209,39 +975,38 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'float', value: parseFloat(this.sourceString) },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
   stringLiteral(str) {
-    return str.toAST(this.args.source);
+    return str.toAST();
   },
 
   utf8String(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST(this.args.source)).join('');
+    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('');
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'utf8' },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
   charString(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST(this.args.source)).join('');
+    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('');
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'char' },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
   hexString(_prefix, bytes, _rq) {
-    // Just store the hex string as-is for now
     const value = bytes.sourceString.replace(/\s+/g, '');
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'hex' },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1250,12 +1015,12 @@ semantics.addOperation<any>('toAST(source)', {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'base64' },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
   utf8Char(char) {
-    return char.toAST(this.args.source);
+    return char.toAST();
   },
 
   escapeSeq_hex(_backslash, _x, d1, d2) {
@@ -1264,28 +1029,22 @@ semantics.addOperation<any>('toAST(source)', {
 
   escapeSeq_simple(_backslash, char) {
     const c = char.sourceString;
-    if (c === 'n') return '\n';
-    if (c === 't') return '\t';
-    if (c === 'r') return '\r';
-    if (c === '\\') return '\\';
-    if (c === '"') return '"';
-    if (c === "'") return "'";
-    return c;
-  },
-
-  escapeSeq(seq) {
-    return seq.toAST(this.args.source);
-  },
-
-  escapeChar(_char) {
-    return this.sourceString;
+    switch (c) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case 'r': return '\r';
+      case '\\': return '\\';
+      case '"': return '"';
+      case "'": return "'";
+      default: return c;
+    }
   },
 
   boolLiteral(bool) {
     return {
       kind: 'LiteralExpr',
       value: { kind: 'bool', value: bool.sourceString === 'true' },
-      span: span(this, this.args.source),
+      span: span(this),
     } as AST.LiteralExpr;
   },
 
@@ -1297,12 +1056,80 @@ semantics.addOperation<any>('toAST(source)', {
     return this.sourceString;
   },
 
-  // Fallback for terminals
+  // ============================================================================
+  // Fallbacks
+  // ============================================================================
+
   _terminal() {
     return this.sourceString;
   },
 
   _iter(...children) {
-    return children.map((c: ohm.Node) => c.toAST(this.args.source));
+    return children.map((c: ohm.Node) => c.toAST());
   },
 });
+
+// ============================================================================
+// Helper: Apply suffix to build AST node
+// ============================================================================
+
+function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
+  switch (suffix.kind) {
+    case 'field':
+      return {
+        kind: 'MemberExpr',
+        object: base,
+        member: { kind: 'field', name: suffix.name },
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.MemberExpr;
+
+    case 'tupleIndex':
+      return {
+        kind: 'MemberExpr',
+        object: base,
+        member: { kind: 'index', value: suffix.value },
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.MemberExpr;
+
+    case 'deref':
+      return {
+        kind: 'MemberExpr',
+        object: base,
+        member: { kind: 'deref' },
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.MemberExpr;
+
+    case 'typePun':
+      return {
+        kind: 'MemberExpr',
+        object: base,
+        member: { kind: 'type', type: suffix.type },
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.MemberExpr;
+
+    case 'index':
+      return {
+        kind: 'IndexExpr',
+        object: base,
+        index: suffix.expr,
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.IndexExpr;
+
+    default:
+      throw new Error(`Unknown suffix kind: ${suffix.kind}`);
+  }
+}
+
+function applyPostfixOp(base: any, op: any, opSpan: Span): any {
+  if (op.kind === 'call') {
+    return {
+      kind: 'CallExpr',
+      callee: base,
+      args: op.args,
+      span: { start: base.span.start, end: opSpan.end },
+    } as AST.CallExpr;
+  }
+
+  // Otherwise it's an AccessSuffix
+  return applySuffix(base, op, opSpan);
+}

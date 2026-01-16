@@ -165,10 +165,10 @@ Encantis {
 
   LValue = ident AccessSuffix*
 
-  AccessSuffix = "." ident         -- field
-               | "." digit+        -- tupleIndex
+  AccessSuffix = "." digit+        -- tupleIndex
                | "." "*"           -- deref
                | "." PrimitiveType -- typePun
+               | "." ident         -- field
                | "[" Expr "]"      -- index
 
   // ============================================================================

@@ -1,0 +1,1028 @@
+{
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ExportDecl",
+      "name": "walk-trie",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": "walk",
+        "signature": {
+          "kind": "FuncSignature",
+          "params": {
+            "kind": "FieldList",
+            "fields": [
+              {
+                "kind": "Field",
+                "ident": "trie",
+                "type": {
+                  "kind": "IndexedType",
+                  "element": {
+                    "kind": "PrimitiveType",
+                    "name": "u64",
+                    "span": {
+                      "start": 242,
+                      "end": 245
+                    }
+                  },
+                  "size": null,
+                  "nullTerminated": false,
+                  "span": {
+                    "start": 242,
+                    "end": 247
+                  }
+                },
+                "span": {
+                  "start": 237,
+                  "end": 247
+                }
+              },
+              {
+                "kind": "Field",
+                "ident": "key",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 253,
+                    "end": 256
+                  }
+                },
+                "span": {
+                  "start": 249,
+                  "end": 256
+                }
+              }
+            ],
+            "span": {
+              "start": 236,
+              "end": 257
+            }
+          },
+          "returns": {
+            "kind": "PrimitiveType",
+            "name": "i64",
+            "span": {
+              "start": 261,
+              "end": 264
+            }
+          },
+          "span": {
+            "start": 236,
+            "end": 264
+          }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "trie_offset",
+                "span": {
+                  "start": 273,
+                  "end": 284
+                }
+              },
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u32",
+                "span": {
+                  "start": 285,
+                  "end": 288
+                }
+              },
+              "value": {
+                "kind": "LiteralExpr",
+                "value": {
+                  "kind": "int",
+                  "value": "0",
+                  "radix": 10
+                },
+                "span": {
+                  "start": 291,
+                  "end": 292
+                }
+              },
+              "span": {
+                "start": 269,
+                "end": 292
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "bit_offset",
+                "span": {
+                  "start": 299,
+                  "end": 309
+                }
+              },
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u8",
+                "span": {
+                  "start": 310,
+                  "end": 312
+                }
+              },
+              "value": {
+                "kind": "LiteralExpr",
+                "value": {
+                  "kind": "int",
+                  "value": "0",
+                  "radix": 10
+                },
+                "span": {
+                  "start": 315,
+                  "end": 316
+                }
+              },
+              "span": {
+                "start": 295,
+                "end": 316
+              }
+            },
+            {
+              "kind": "LoopStmt",
+              "body": {
+                "kind": "Block",
+                "stmts": [
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "index",
+                      "span": {
+                        "start": 380,
+                        "end": 385
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 386,
+                        "end": 389
+                      }
+                    },
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "<<",
+                      "left": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "1",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 392,
+                          "end": 393
+                        }
+                      },
+                      "right": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": "&",
+                              "left": {
+                                "kind": "TupleExpr",
+                                "elements": [
+                                  {
+                                    "kind": "Arg",
+                                    "name": null,
+                                    "value": {
+                                      "kind": "BinaryExpr",
+                                      "op": ">>",
+                                      "left": {
+                                        "kind": "IdentExpr",
+                                        "name": "key",
+                                        "span": {
+                                          "start": 399,
+                                          "end": 402
+                                        }
+                                      },
+                                      "right": {
+                                        "kind": "IdentExpr",
+                                        "name": "bit_offset",
+                                        "span": {
+                                          "start": 406,
+                                          "end": 416
+                                        }
+                                      },
+                                      "span": {
+                                        "start": 399,
+                                        "end": 416
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 399,
+                                      "end": 416
+                                    }
+                                  }
+                                ],
+                                "span": {
+                                  "start": 398,
+                                  "end": 417
+                                }
+                              },
+                              "right": {
+                                "kind": "LiteralExpr",
+                                "value": {
+                                  "kind": "int",
+                                  "value": "127",
+                                  "radix": 16
+                                },
+                                "span": {
+                                  "start": 420,
+                                  "end": 424
+                                }
+                              },
+                              "span": {
+                                "start": 398,
+                                "end": 424
+                              }
+                            },
+                            "span": {
+                              "start": 398,
+                              "end": 424
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 397,
+                          "end": 425
+                        }
+                      },
+                      "span": {
+                        "start": 392,
+                        "end": 425
+                      }
+                    },
+                    "span": {
+                      "start": 376,
+                      "end": 425
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "bit_offset",
+                      "span": {
+                        "start": 430,
+                        "end": 440
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "%",
+                      "left": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": "+",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "bit_offset",
+                                "span": {
+                                  "start": 444,
+                                  "end": 454
+                                }
+                              },
+                              "right": {
+                                "kind": "LiteralExpr",
+                                "value": {
+                                  "kind": "int",
+                                  "value": "7",
+                                  "radix": 10
+                                },
+                                "span": {
+                                  "start": 457,
+                                  "end": 458
+                                }
+                              },
+                              "span": {
+                                "start": 444,
+                                "end": 458
+                              }
+                            },
+                            "span": {
+                              "start": 444,
+                              "end": 458
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 443,
+                          "end": 459
+                        }
+                      },
+                      "right": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "64",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 462,
+                          "end": 464
+                        }
+                      },
+                      "span": {
+                        "start": 443,
+                        "end": 464
+                      }
+                    },
+                    "span": {
+                      "start": 430,
+                      "end": 464
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "bitfield",
+                      "span": {
+                        "start": 513,
+                        "end": 521
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 522,
+                        "end": 525
+                      }
+                    },
+                    "value": {
+                      "kind": "IndexExpr",
+                      "object": {
+                        "kind": "IdentExpr",
+                        "name": "trie",
+                        "span": {
+                          "start": 528,
+                          "end": 532
+                        }
+                      },
+                      "index": {
+                        "kind": "IdentExpr",
+                        "name": "trie_offset",
+                        "span": {
+                          "start": 533,
+                          "end": 544
+                        }
+                      },
+                      "span": {
+                        "start": 528,
+                        "end": 545
+                      }
+                    },
+                    "span": {
+                      "start": 509,
+                      "end": 545
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "trie_offset",
+                      "span": {
+                        "start": 550,
+                        "end": 561
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": {
+                        "kind": "int",
+                        "value": "1",
+                        "radix": 10
+                      },
+                      "span": {
+                        "start": 565,
+                        "end": 566
+                      }
+                    },
+                    "span": {
+                      "start": 550,
+                      "end": 566
+                    }
+                  },
+                  {
+                    "kind": "ReturnStmt",
+                    "value": {
+                      "kind": "UnaryExpr",
+                      "op": "-",
+                      "operand": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "1",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 637,
+                          "end": 638
+                        }
+                      },
+                      "span": {
+                        "start": 636,
+                        "end": 638
+                      }
+                    },
+                    "when": {
+                      "kind": "BinaryExpr",
+                      "op": "==",
+                      "left": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": "&",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "bitfield",
+                                "span": {
+                                  "start": 645,
+                                  "end": 653
+                                }
+                              },
+                              "right": {
+                                "kind": "IdentExpr",
+                                "name": "index",
+                                "span": {
+                                  "start": 656,
+                                  "end": 661
+                                }
+                              },
+                              "span": {
+                                "start": 645,
+                                "end": 661
+                              }
+                            },
+                            "span": {
+                              "start": 645,
+                              "end": 661
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 644,
+                          "end": 662
+                        }
+                      },
+                      "right": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "0",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 666,
+                          "end": 667
+                        }
+                      },
+                      "span": {
+                        "start": 644,
+                        "end": 667
+                      }
+                    },
+                    "span": {
+                      "start": 629,
+                      "end": 667
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "trie_offset",
+                      "span": {
+                        "start": 796,
+                        "end": 807
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "<<",
+                      "left": {
+                        "kind": "CastExpr",
+                        "expr": {
+                          "kind": "CallExpr",
+                          "callee": {
+                            "kind": "IdentExpr",
+                            "name": "popcnt",
+                            "span": {
+                              "start": 811,
+                              "end": 817
+                            }
+                          },
+                          "args": [
+                            {
+                              "kind": "Arg",
+                              "name": null,
+                              "value": {
+                                "kind": "BinaryExpr",
+                                "op": "&",
+                                "left": {
+                                  "kind": "IdentExpr",
+                                  "name": "bitfield",
+                                  "span": {
+                                    "start": 818,
+                                    "end": 826
+                                  }
+                                },
+                                "right": {
+                                  "kind": "TupleExpr",
+                                  "elements": [
+                                    {
+                                      "kind": "Arg",
+                                      "name": null,
+                                      "value": {
+                                        "kind": "BinaryExpr",
+                                        "op": "-",
+                                        "left": {
+                                          "kind": "IdentExpr",
+                                          "name": "index",
+                                          "span": {
+                                            "start": 830,
+                                            "end": 835
+                                          }
+                                        },
+                                        "right": {
+                                          "kind": "LiteralExpr",
+                                          "value": {
+                                            "kind": "int",
+                                            "value": "1",
+                                            "radix": 10
+                                          },
+                                          "span": {
+                                            "start": 838,
+                                            "end": 839
+                                          }
+                                        },
+                                        "span": {
+                                          "start": 830,
+                                          "end": 839
+                                        }
+                                      },
+                                      "span": {
+                                        "start": 830,
+                                        "end": 839
+                                      }
+                                    }
+                                  ],
+                                  "span": {
+                                    "start": 829,
+                                    "end": 840
+                                  }
+                                },
+                                "span": {
+                                  "start": 818,
+                                  "end": 840
+                                }
+                              },
+                              "span": {
+                                "start": 818,
+                                "end": 840
+                              }
+                            }
+                          ],
+                          "span": {
+                            "start": 811,
+                            "end": 841
+                          }
+                        },
+                        "type": {
+                          "kind": "PrimitiveType",
+                          "name": "u32",
+                          "span": {
+                            "start": 845,
+                            "end": 848
+                          }
+                        },
+                        "span": {
+                          "start": 811,
+                          "end": 848
+                        }
+                      },
+                      "right": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "3",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 852,
+                          "end": 853
+                        }
+                      },
+                      "span": {
+                        "start": 811,
+                        "end": 853
+                      }
+                    },
+                    "span": {
+                      "start": 796,
+                      "end": 853
+                    }
+                  },
+                  {
+                    "kind": "ReturnStmt",
+                    "value": {
+                      "kind": "UnaryExpr",
+                      "op": "-",
+                      "operand": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "2",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 908,
+                          "end": 909
+                        }
+                      },
+                      "span": {
+                        "start": 907,
+                        "end": 909
+                      }
+                    },
+                    "when": {
+                      "kind": "BinaryExpr",
+                      "op": ">=",
+                      "left": {
+                        "kind": "IdentExpr",
+                        "name": "trie_offset",
+                        "span": {
+                          "start": 915,
+                          "end": 926
+                        }
+                      },
+                      "right": {
+                        "kind": "MemberExpr",
+                        "object": {
+                          "kind": "IdentExpr",
+                          "name": "trie",
+                          "span": {
+                            "start": 930,
+                            "end": 934
+                          }
+                        },
+                        "member": {
+                          "kind": "field",
+                          "name": "len"
+                        },
+                        "span": {
+                          "start": 930,
+                          "end": 938
+                        }
+                      },
+                      "span": {
+                        "start": 915,
+                        "end": 938
+                      }
+                    },
+                    "span": {
+                      "start": 900,
+                      "end": 938
+                    }
+                  },
+                  {
+                    "kind": "LetStmt",
+                    "pattern": {
+                      "kind": "IdentPattern",
+                      "name": "pointer",
+                      "span": {
+                        "start": 979,
+                        "end": 986
+                      }
+                    },
+                    "type": {
+                      "kind": "PrimitiveType",
+                      "name": "u64",
+                      "span": {
+                        "start": 987,
+                        "end": 990
+                      }
+                    },
+                    "value": {
+                      "kind": "IndexExpr",
+                      "object": {
+                        "kind": "IdentExpr",
+                        "name": "trie",
+                        "span": {
+                          "start": 993,
+                          "end": 997
+                        }
+                      },
+                      "index": {
+                        "kind": "IdentExpr",
+                        "name": "trie_offset",
+                        "span": {
+                          "start": 998,
+                          "end": 1009
+                        }
+                      },
+                      "span": {
+                        "start": 993,
+                        "end": 1010
+                      }
+                    },
+                    "span": {
+                      "start": 975,
+                      "end": 1010
+                    }
+                  },
+                  {
+                    "kind": "ReturnStmt",
+                    "value": {
+                      "kind": "CastExpr",
+                      "expr": {
+                        "kind": "IdentExpr",
+                        "name": "pointer",
+                        "span": {
+                          "start": 1062,
+                          "end": 1069
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "i64",
+                        "span": {
+                          "start": 1073,
+                          "end": 1076
+                        }
+                      },
+                      "span": {
+                        "start": 1062,
+                        "end": 1076
+                      }
+                    },
+                    "when": {
+                      "kind": "BinaryExpr",
+                      "op": "==",
+                      "left": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": "&",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "pointer",
+                                "span": {
+                                  "start": 1083,
+                                  "end": 1090
+                                }
+                              },
+                              "right": {
+                                "kind": "LiteralExpr",
+                                "value": {
+                                  "kind": "int",
+                                  "value": "1",
+                                  "radix": 10
+                                },
+                                "span": {
+                                  "start": 1093,
+                                  "end": 1094
+                                }
+                              },
+                              "span": {
+                                "start": 1083,
+                                "end": 1094
+                              }
+                            },
+                            "span": {
+                              "start": 1083,
+                              "end": 1094
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1082,
+                          "end": 1095
+                        }
+                      },
+                      "right": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "0",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 1099,
+                          "end": 1100
+                        }
+                      },
+                      "span": {
+                        "start": 1082,
+                        "end": 1100
+                      }
+                    },
+                    "span": {
+                      "start": 1055,
+                      "end": 1100
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "trie_offset",
+                      "span": {
+                        "start": 1160,
+                        "end": 1171
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "CastExpr",
+                      "expr": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": ">>",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "pointer",
+                                "span": {
+                                  "start": 1176,
+                                  "end": 1183
+                                }
+                              },
+                              "right": {
+                                "kind": "LiteralExpr",
+                                "value": {
+                                  "kind": "int",
+                                  "value": "1",
+                                  "radix": 10
+                                },
+                                "span": {
+                                  "start": 1187,
+                                  "end": 1188
+                                }
+                              },
+                              "span": {
+                                "start": 1176,
+                                "end": 1188
+                              }
+                            },
+                            "span": {
+                              "start": 1176,
+                              "end": 1188
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1175,
+                          "end": 1189
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "u32",
+                        "span": {
+                          "start": 1193,
+                          "end": 1196
+                        }
+                      },
+                      "span": {
+                        "start": 1175,
+                        "end": 1196
+                      }
+                    },
+                    "span": {
+                      "start": 1160,
+                      "end": 1196
+                    }
+                  },
+                  {
+                    "kind": "ReturnStmt",
+                    "value": {
+                      "kind": "UnaryExpr",
+                      "op": "-",
+                      "operand": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "2",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 1236,
+                          "end": 1237
+                        }
+                      },
+                      "span": {
+                        "start": 1235,
+                        "end": 1237
+                      }
+                    },
+                    "when": {
+                      "kind": "BinaryExpr",
+                      "op": ">=",
+                      "left": {
+                        "kind": "IdentExpr",
+                        "name": "trie_offset",
+                        "span": {
+                          "start": 1243,
+                          "end": 1254
+                        }
+                      },
+                      "right": {
+                        "kind": "MemberExpr",
+                        "object": {
+                          "kind": "IdentExpr",
+                          "name": "trie",
+                          "span": {
+                            "start": 1258,
+                            "end": 1262
+                          }
+                        },
+                        "member": {
+                          "kind": "field",
+                          "name": "len"
+                        },
+                        "span": {
+                          "start": 1258,
+                          "end": 1266
+                        }
+                      },
+                      "span": {
+                        "start": 1243,
+                        "end": 1266
+                      }
+                    },
+                    "span": {
+                      "start": 1228,
+                      "end": 1266
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 325,
+                  "end": 1270
+                }
+              },
+              "span": {
+                "start": 320,
+                "end": 1270
+              }
+            }
+          ],
+          "span": {
+            "start": 265,
+            "end": 1272
+          }
+        },
+        "span": {
+          "start": 227,
+          "end": 1272
+        }
+      },
+      "span": {
+        "start": 208,
+        "end": 1272
+      }
+    }
+  ],
+  "span": {
+    "start": 208,
+    "end": 1273
+  }
+}
