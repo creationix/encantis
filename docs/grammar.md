@@ -254,6 +254,7 @@ continue_stmt   = "continue" [ "when" expression ]
 assignment_stmt = lvalue assign_op expression
 assign_op       = "=" | "+=" | "-=" | "*=" | "/=" | "%="
                 | "&=" | "|=" | "^=" | "<<=" | ">>=" | "<<<=" | ">>>="
+                | "+|=" | "-|=" | "*|="
 
 expression_stmt = expression
 ```
@@ -317,10 +318,10 @@ shift_op        = "<<" | ">>" | "<<<" | ">>>"
 
 ```ebnf
 add_expr        = mul_expr { add_op mul_expr }
-add_op          = "+" | "-"
+add_op          = "+" | "-" | "+|" | "-|"
 
 mul_expr        = unary_expr { mul_op unary_expr }
-mul_op          = "*" | "/" | "%"
+mul_op          = "*" | "/" | "%" | "*|"
 ```
 
 ### Unary

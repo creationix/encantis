@@ -903,6 +903,21 @@ Casts are required for:
 | `*` | multiplication | numeric |
 | `/` | division | numeric |
 | `%` | remainder | integers only |
+| `+\|` | saturating add | integers |
+| `-\|` | saturating subtract | integers |
+| `*\|` | saturating multiply | integers |
+
+Saturating operators clamp at type boundaries instead of wrapping:
+
+```ents
+let a:u8 = 250
+let b = a +| 10      // 255 (clamped, not 4)
+let c = a -| 255     // 0 (clamped, not wraparound)
+
+let x:i8 = 100
+let y = x +| 50      // 127 (max i8)
+let z = x -| 200     // -128 (min i8)
+```
 
 ### Bitwise
 
@@ -996,6 +1011,9 @@ Compound assignment combines an operation with assignment. Works with any valid 
 | `x >>= n` | `x = x >> n` |
 | `x <<<= n` | `x = x <<< n` |
 | `x >>>= n` | `x = x >>> n` |
+| `x +\|= n` | `x = x +\| n` |
+| `x -\|= n` | `x = x -\| n` |
+| `x *\|= n` | `x = x *\| n` |
 
 ```ents
 count += 1               // increment variable
@@ -1111,3 +1129,148 @@ let (ptr:, len:) = slice         // by name
 | `continue` | `br` (to loop head) |
 | `continue when` | `br_if` (to loop head) |
 | `return` | `return` |
+
+## Potential Future Additions
+
+Features under consideration for future versions of Encantis.
+
+### Generics
+
+Parameterized types and functions would enable reusable algorithms without code duplication:
+
+```ents
+func swap<T>(a:*T, b:*T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+
+type Vec<T> = (data:*T, len:u32, cap:u32)
+```
+
+**Why:** Currently, utilities like `swap`, `min`, `max`, or data structures like vectors must be duplicated for each type. Generics enable writing code once that works for any type, critical for building reusable libraries.
+
+### Enums and Sum Types
+
+Tagged unions for representing values that can be one of several variants:
+
+```ents
+enum Option<T> {
+  None
+  Some(T)
+}
+
+enum Result<T, E> {
+  Ok(T)
+  Err(E)
+}
+
+enum State {
+  Idle
+  Running(progress:u32)
+  Done(result:i32)
+  Failed(code:u32, msg:u8[])
+}
+```
+
+**Why:** Enables type-safe error handling, optional values, and state machines. Currently these patterns require manual tag fields and discipline. The compiler could enforce exhaustive matching.
+
+### Match Expressions
+
+Pattern matching for cleaner conditional logic:
+
+```ents
+match state {
+  Idle => start()
+  Running(p) => update_progress(p)
+  Done(r) => handle_result(r)
+  Failed(code, _) => log_error(code)
+}
+
+match value & 3 {
+  0 => small_swap()
+  2 => big_swap()
+  _ => {}
+}
+```
+
+**Why:** Replaces chains of `if`/`elif` with more readable, exhaustive matching. The compiler can warn about unhandled cases. Pairs naturally with enums.
+
+### SIMD Support
+
+Access to WASM's 128-bit vector operations:
+
+```ents
+let a:v128 = v128_load(ptr)
+let b:v128 = v128_load(ptr + 16)
+let sum = i32x4_add(a, b)
+
+// Potential syntax for vector literals
+let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
+```
+
+**Why:** WASM has full SIMD support via v128 types. Crypto, hashing, image processing, and numerical code can see 2-4x speedups. xxHash and Gimli both have vectorized variants that significantly outperform scalar implementations.
+
+### Comptime Evaluation
+
+Compile-time computation beyond simple literals:
+
+```ents
+def page_size = 64 * 1024
+def buffer_pages = 4
+def buffer_size = page_size * buffer_pages
+
+// Compile-time function execution
+comptime func generate_table() -> u8[256] {
+  let table:u8[256]
+  for i in 256 {
+    table[i] = crc_byte(i)
+  }
+  return table
+}
+
+def crc_table = generate_table()
+```
+
+**Why:** Enables computing lookup tables, buffer sizes, and constants at compile time. Reduces runtime overhead and allows complex initialization without startup cost.
+
+### Module System
+
+Multi-file organization beyond WASM imports:
+
+```ents
+// In math/vector.ents
+module math.vector
+
+export type Vec3 = (x:f32, y:f32, z:f32)
+export func dot(a:Vec3, b:Vec3) -> f32 => ...
+
+// In main.ents
+use math.vector (Vec3, dot)
+// or
+use math.vector as vec
+```
+
+**Why:** Larger projects need to split code across files. Currently the only modularity is WASM-level imports from the host environment. A proper module system enables code organization and selective visibility.
+
+### Defer
+
+Guaranteed cleanup at scope exit:
+
+```ents
+func process_file(path:u8[/0]) -> Result {
+  let handle = open(path)
+  defer close(handle)
+
+  let buffer = allocate(1024)
+  defer free(buffer)
+
+  // Multiple return paths - cleanup always runs
+  return when check_header(handle) == false { Err(BadHeader) }
+
+  process(handle, buffer)
+  return Ok(())
+}
+```
+
+**Why:** Ensures resources are released regardless of how a function exits. Reduces bugs from forgotten cleanup, especially with multiple return paths or error conditions.
