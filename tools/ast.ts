@@ -2,9 +2,8 @@
 // All nodes include span for sourcemap support
 
 export interface Span {
-  start: { offset: number; line: number; column: number };
-  end: { offset: number; line: number; column: number };
-  source?: string;
+  start: number;  // byte offset
+  end: number;    // byte offset
 }
 
 // Base for all AST nodes
@@ -165,7 +164,6 @@ export interface DataEntry extends BaseNode {
 export type Statement =
   | LetStmt
   | SetStmt
-  | IfStmt
   | WhileStmt
   | ForStmt
   | LoopStmt
@@ -189,21 +187,6 @@ export interface SetStmt extends BaseNode {
   pattern: Pattern;
   type: Type | null;
   value: Expr;
-}
-
-// if expr { ... } elif expr { ... } else { ... }
-export interface IfStmt extends BaseNode {
-  kind: 'IfStmt';
-  condition: Expr;
-  thenBranch: FuncBody;
-  elifs: ElifClause[];
-  else_: FuncBody | null;
-}
-
-export interface ElifClause extends BaseNode {
-  kind: 'ElifClause';
-  condition: Expr;
-  thenBranch: FuncBody;
 }
 
 // while expr { ... }
@@ -385,8 +368,14 @@ export interface IfExpr extends BaseNode {
   kind: 'IfExpr';
   condition: Expr;
   thenBranch: FuncBody;
-  elifs: ElifClause[];
+  elifs: ElifBranch[];
   else_: FuncBody | null;
+}
+
+export interface ElifBranch extends BaseNode {
+  kind: 'ElifBranch';
+  condition: Expr;
+  thenBranch: FuncBody;
 }
 
 // match expr { patterns => ... }

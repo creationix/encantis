@@ -106,7 +106,7 @@ Encantis {
        | PrimitiveType                             -- primitive
        | typeIdent                                 -- named
 
-  nullTerminator = "/" "0"
+  nullTerminator = "/0"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"
@@ -119,7 +119,6 @@ Encantis {
 
   Statement = LetStmt
             | SetStmt
-            | IfStmt
             | WhileStmt
             | ForStmt
             | LoopStmt
@@ -132,12 +131,6 @@ Encantis {
   LetStmt = let Pattern TypeAnnotation? Assign?
 
   SetStmt = set Pattern TypeAnnotation? Assign
-
-  IfStmt = if Expr Body ElifClause* ElseClause?
-
-  ElifClause = elif Expr Body
-
-  ElseClause = else Body
 
   WhileStmt = while Expr Body
 
@@ -273,14 +266,14 @@ Encantis {
               | ident
 
   // ============================================================================
-  // If Expression
+  // If Expression / Branches
   // ============================================================================
 
-  IfExpr = if Expr Body ElifExpr* ElseExpr?
+  IfExpr = if Expr Body ElifBranch* ElseBranch?
 
-  ElifExpr = elif Expr Body
+  ElifBranch = elif Expr Body
 
-  ElseExpr = else Body
+  ElseBranch = else Body
 
   // ============================================================================
   // Match Expression
@@ -336,7 +329,7 @@ Encantis {
 
   floatLiteral = "-"? digit+ "." digit+ exponent?
 
-  exponent = ("e" | "E") ("+" | "-")? digit+
+  exponent = caseInsensitive<"e"> ("+" | "-")? digit+
 
   stringLiteral = utf8String
                 | charString
