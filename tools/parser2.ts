@@ -26,24 +26,26 @@ export type TokenKind =
   // Literals
   | 'NUMBER' | 'STRING' | 'IDENT' | 'TYPE_IDENT'
   // Keywords
-  | 'if' | 'elif' | 'else' | 'while' | 'for' | 'in' | 'loop'
+  | 'if' | 'elif' | 'else' | 'while' | 'for' | 'in' | 'loop' | 'match'
   | 'break' | 'continue' | 'return' | 'when'
   | 'func' | 'let' | 'set' | 'global' | 'def' | 'type'
   | 'import' | 'export' | 'memory' | 'data' | 'inline' | 'unique'
   | 'as' | 'true' | 'false'
   // Operators
   | '+' | '-' | '*' | '/' | '%'
+  | '+|' | '-|' | '*|'  // saturating operators
   | '&' | '|' | '^' | '~'
   | '<<' | '>>' | '<<<' | '>>>'
   | '==' | '!=' | '<' | '>' | '<=' | '>='
   | '&&' | '||' | '!'
   | '=' | '+=' | '-=' | '*=' | '/=' | '%='
+  | '+|=' | '-|=' | '*|='  // saturating assignment
   | '&=' | '|=' | '^=' | '<<=' | '>>=' | '<<<=' | '>>>='
   // Punctuation
   | '(' | ')' | '[' | ']' | '{' | '}'
-  | ',' | ':' | '.' | '->' | '=>'
+  | ',' | ':' | '.' | '->' | '=>' | '_'
   // Special
-  | 'EOF' | 'ERROR' | 'NEWLINE';
+  | 'EOF' | 'ERROR';
 
 export interface Token {
   kind: TokenKind;
@@ -148,6 +150,7 @@ export type Expr =
   | TupleLit
   | StructLit
   | IfExpr
+  | MatchExpr
   | GroupExpr
   | ConstructorExpr
   | ErrorExpr;
@@ -242,6 +245,22 @@ export interface IfExpr extends AstNode {
   elifBranches: Array<{ condition: Expr; body: Body; span: Span }>;
   elseBranch?: Body;
 }
+
+export interface MatchExpr extends AstNode {
+  kind: 'MatchExpr';
+  subject: Expr;
+  arms: MatchArm[];
+}
+
+export interface MatchArm {
+  patterns: MatchPattern[];
+  body: Body;
+  span: Span;
+}
+
+export type MatchPattern =
+  | { kind: 'LiteralPattern'; value: NumberLit | StringLit | BoolLit; span: Span }
+  | { kind: 'WildcardPattern'; span: Span };
 
 export interface GroupExpr extends AstNode {
   kind: 'GroupExpr';
@@ -547,7 +566,7 @@ export interface ParseResult {
 // =============================================================================
 
 const KEYWORDS = new Set([
-  'if', 'elif', 'else', 'while', 'for', 'in', 'loop',
+  'if', 'elif', 'else', 'while', 'for', 'in', 'loop', 'match',
   'break', 'continue', 'return', 'when',
   'func', 'let', 'set', 'global', 'def', 'type',
   'import', 'export', 'memory', 'data', 'inline', 'unique',
@@ -584,11 +603,8 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
   function skipWhitespace(): void {
     while (pos < src.length) {
       const ch = peek();
-      if (ch === ' ' || ch === '\t' || ch === '\r') {
+      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
         advance();
-      } else if (ch === '\n') {
-        // Newlines are significant for statement separation
-        break;
       } else if (ch === '/' && peek(1) === '/') {
         // Line comment
         while (pos < src.length && peek() !== '\n') advance();
@@ -796,7 +812,7 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
 
     // Multi-character operators (longest match first)
     const threeChar = src.slice(pos, pos + 3);
-    if (['<<<', '>>>', '&&=', '||='].includes(threeChar)) {
+    if (['<<<', '>>>', '&&=', '||=', '+|=', '-|=', '*|='].includes(threeChar)) {
       // Check for 4-char operators
       const fourChar = src.slice(pos, pos + 4);
       if (['<<<=', '>>>='].includes(fourChar)) {
@@ -808,7 +824,7 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
     }
 
     const twoChar = src.slice(pos, pos + 2);
-    if (['==', '!=', '<=', '>=', '<<', '>>', '&&', '||', '->', '=>', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^='].includes(twoChar)) {
+    if (['==', '!=', '<=', '>=', '<<', '>>', '&&', '||', '->', '=>', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '+|', '-|', '*|'].includes(twoChar)) {
       // Check for 3-char compound assignments
       const threeCharAssign = src.slice(pos, pos + 3);
       if (['<<=', '>>='].includes(threeCharAssign)) {
@@ -825,6 +841,12 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
       return { kind: ch as TokenKind, text: ch, span: { start, end: pos } };
     }
 
+    // Underscore (wildcard for match patterns)
+    if (ch === '_') {
+      advance();
+      return { kind: '_', text: '_', span: { start, end: pos } };
+    }
+
     return null;
   }
 
@@ -835,13 +857,6 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
 
     const start = pos;
     const ch = peek();
-
-    // Newline (significant for statement separation)
-    if (ch === '\n') {
-      advance();
-      tokens.push({ kind: 'NEWLINE', text: '\n', span: { start, end: pos } });
-      continue;
-    }
 
     // Numbers
     if (/[0-9]/.test(ch)) {
@@ -867,8 +882,8 @@ export function tokenize(src: string): { tokens: Token[]; errors: Diagnostic[] }
       continue;
     }
 
-    // Identifiers and keywords
-    if (/[a-zA-Z_]/.test(ch)) {
+    // Identifiers and keywords (must start with letter per grammar)
+    if (/[a-zA-Z]/.test(ch)) {
       tokens.push(scanIdentifier());
       continue;
     }
@@ -950,12 +965,17 @@ function match(p: ParserState, kind: TokenKind): boolean {
   return false;
 }
 
-function skipNewlines(p: ParserState): void {
-  while (at(p, 'NEWLINE')) advance(p);
-}
-
 function addError(p: ParserState, span: Span, message: string): void {
   p.errors.push({ span, severity: 'error', message });
+}
+
+// Check if current token can start an expression
+function canStartExpr(p: ParserState): boolean {
+  const kind = peek(p).kind;
+  return kind === 'NUMBER' || kind === 'STRING' || kind === 'IDENT' || kind === 'TYPE_IDENT' ||
+         kind === 'true' || kind === 'false' ||
+         kind === '(' || kind === 'if' || kind === 'match' ||
+         kind === '-' || kind === '~' || kind === '&' || kind === '!';
 }
 
 // Synchronize to a recovery point (statement/declaration boundary)
@@ -963,7 +983,7 @@ function synchronize(p: ParserState): void {
   while (!at(p, 'EOF')) {
     const kind = peek(p).kind;
     // Skip to next statement/declaration boundary
-    if (kind === 'NEWLINE' || kind === 'func' || kind === 'let' || kind === 'set' ||
+    if (kind === 'func' || kind === 'let' || kind === 'set' ||
         kind === 'if' || kind === 'while' || kind === 'for' || kind === 'loop' ||
         kind === 'return' || kind === 'break' || kind === 'continue' ||
         kind === 'import' || kind === 'export' || kind === 'global' ||
@@ -1049,7 +1069,6 @@ function parseIndexedType(p: ParserState, element: Type): Type {
 
 function parseCompositeType(p: ParserState): Type {
   const start = expect(p, '(').span;
-  skipNewlines(p);
 
   if (match(p, ')')) {
     // Unit type ()
@@ -1071,14 +1090,11 @@ function parseCompositeType(p: ParserState): Type {
 
   // For now, parse as tuple
   const elements: Type[] = [firstType];
-  skipNewlines(p);
 
   while (match(p, ',')) {
-    skipNewlines(p);
-    if (at(p, ')')) break;
+      if (at(p, ')')) break;
     elements.push(parseType(p));
-    skipNewlines(p);
-  }
+    }
 
   const end = expect(p, ')');
   return { kind: 'TupleType', elements, span: spanFrom(start, end.span) };
@@ -1096,8 +1112,8 @@ const PRECEDENCE: Record<string, number> = {
   '^': 6,
   '&': 7,
   '<<': 8, '>>': 8, '<<<': 8, '>>>': 8,
-  '+': 9, '-': 9,
-  '*': 10, '/': 10, '%': 10,
+  '+': 9, '-': 9, '+|': 9, '-|': 9,
+  '*': 10, '/': 10, '%': 10, '*|': 10,
 };
 
 function parseExpr(p: ParserState, minPrec = 0): Expr {
@@ -1176,10 +1192,8 @@ function parsePostfixExpr(p: ParserState): Expr {
       }
     } else if (match(p, '[')) {
       // Index access
-      skipNewlines(p);
-      const index = parseExpr(p);
-      skipNewlines(p);
-      const end = expect(p, ']');
+          const index = parseExpr(p);
+          const end = expect(p, ']');
       expr = { kind: 'IndexExpr', target: expr, index, span: spanFrom(expr.span, end.span) };
     } else if (at(p, '(') && expr.kind === 'Identifier') {
       // Function call - only if callee is identifier-like
@@ -1197,19 +1211,16 @@ function parsePostfixExpr(p: ParserState): Expr {
 
 function parseCallExpr(p: ParserState, callee: Expr): CallExpr {
   expect(p, '(');
-  skipNewlines(p);
   const args: Arg[] = [];
 
   if (!at(p, ')')) {
     args.push(parseArg(p));
     while (match(p, ',')) {
-      skipNewlines(p);
-      if (at(p, ')')) break;
+          if (at(p, ')')) break;
       args.push(parseArg(p));
     }
   }
 
-  skipNewlines(p);
   const end = expect(p, ')');
 
   return { kind: 'CallExpr', callee, args, span: spanFrom(callee.span, end.span) };
@@ -1223,7 +1234,7 @@ function parseArg(p: ParserState): Arg {
     const name = advance(p).text;
     advance(p); // consume :
 
-    if (at(p, ',') || at(p, ')') || at(p, 'NEWLINE')) {
+    if (at(p, ',') || at(p, ')')) {
       // Shorthand: name:
       return { name, value: { kind: 'Identifier', name, span: start }, span: spanFrom(start, peek(p, -1).span) };
     }
@@ -1284,8 +1295,7 @@ function parsePrimaryExpr(p: ParserState): Expr {
     case '(': {
       // Could be: grouping, tuple literal, struct literal
       const start = advance(p).span;
-      skipNewlines(p);
-
+    
       if (match(p, ')')) {
         // Empty tuple ()
         return { kind: 'TupleLit', elements: [], span: spanFrom(start, peek(p, -1).span) };
@@ -1293,8 +1303,7 @@ function parsePrimaryExpr(p: ParserState): Expr {
 
       // Parse first element
       const firstArg = parseArg(p);
-      skipNewlines(p);
-
+    
       if (at(p, ')') && !firstArg.name) {
         // Single expression in parens - grouping
         expect(p, ')');
@@ -1304,11 +1313,9 @@ function parsePrimaryExpr(p: ParserState): Expr {
       // Multiple elements or named - tuple/struct literal
       const elements: Arg[] = [firstArg];
       while (match(p, ',')) {
-        skipNewlines(p);
-        if (at(p, ')')) break;
+              if (at(p, ')')) break;
         elements.push(parseArg(p));
-        skipNewlines(p);
-      }
+            }
 
       const end = expect(p, ')');
 
@@ -1323,6 +1330,9 @@ function parsePrimaryExpr(p: ParserState): Expr {
     case 'if':
       return parseIfExpr(p);
 
+    case 'match':
+      return parseMatchExpr(p);
+
     default:
       addError(p, tok.span, `Unexpected token: ${tok.kind}`);
       advance(p);
@@ -1332,19 +1342,16 @@ function parsePrimaryExpr(p: ParserState): Expr {
 
 function parseArgList(p: ParserState): Arg[] {
   expect(p, '(');
-  skipNewlines(p);
   const args: Arg[] = [];
 
   if (!at(p, ')')) {
     args.push(parseArg(p));
     while (match(p, ',')) {
-      skipNewlines(p);
-      if (at(p, ')')) break;
+          if (at(p, ')')) break;
       args.push(parseArg(p));
     }
   }
 
-  skipNewlines(p);
   expect(p, ')');
   return args;
 }
@@ -1371,6 +1378,90 @@ function parseIfExpr(p: ParserState): IfExpr {
   return { kind: 'IfExpr', condition, thenBranch, elifBranches, elseBranch, span: spanFrom(start, endSpan) };
 }
 
+function parseMatchExpr(p: ParserState): MatchExpr {
+  const start = expect(p, 'match').span;
+  const subject = parseExpr(p);
+  expect(p, '{');
+
+  const arms: MatchArm[] = [];
+  while (!at(p, '}') && !at(p, 'EOF')) {
+    const arm = parseMatchArm(p);
+    arms.push(arm);
+    }
+
+  const end = expect(p, '}');
+  return { kind: 'MatchExpr', subject, arms, span: spanFrom(start, end.span) };
+}
+
+function parseMatchArm(p: ParserState): MatchArm {
+  const startSpan = peek(p).span;
+  const patterns = parseMatchPatterns(p);
+  expect(p, '=>');
+
+  // After =>, expect either a block { } or an expression
+  let body: Body;
+  if (at(p, '{')) {
+    body = parseBlock(p);
+  } else {
+    const expr = parseExpr(p);
+    body = { kind: 'ArrowBody', expr, span: expr.span };
+  }
+
+  return { patterns, body, span: spanFrom(startSpan, body.span) };
+}
+
+function parseMatchPatterns(p: ParserState): MatchPattern[] {
+  const patterns: MatchPattern[] = [parseMatchPattern(p)];
+  while (match(p, ',')) {
+      // Check if we're at '=>' which means trailing comma
+    if (at(p, '=>')) break;
+    patterns.push(parseMatchPattern(p));
+  }
+  return patterns;
+}
+
+function parseMatchPattern(p: ParserState): MatchPattern {
+  const tok = peek(p);
+
+  // Wildcard pattern
+  if (tok.kind === '_') {
+    advance(p);
+    return { kind: 'WildcardPattern', span: tok.span };
+  }
+
+  // Literal patterns
+  if (tok.kind === 'NUMBER') {
+    advance(p);
+    const lit: NumberLit = { kind: 'NumberLit', value: tok.text, span: tok.span };
+    return { kind: 'LiteralPattern', value: lit, span: tok.span };
+  }
+
+  if (tok.kind === 'STRING') {
+    advance(p);
+    let encoding: 'utf8' | 'hex' | 'base64' = 'utf8';
+    let value = tok.text;
+    if (tok.text.startsWith('x"')) {
+      encoding = 'hex';
+      value = tok.text.slice(2, -1);
+    } else if (tok.text.startsWith('b"')) {
+      encoding = 'base64';
+      value = tok.text.slice(2, -1);
+    }
+    const lit: StringLit = { kind: 'StringLit', value, encoding, span: tok.span };
+    return { kind: 'LiteralPattern', value: lit, span: tok.span };
+  }
+
+  if (tok.kind === 'true' || tok.kind === 'false') {
+    advance(p);
+    const lit: BoolLit = { kind: 'BoolLit', value: tok.kind === 'true', span: tok.span };
+    return { kind: 'LiteralPattern', value: lit, span: tok.span };
+  }
+
+  addError(p, tok.span, `Expected pattern (literal or _), got ${tok.kind}`);
+  advance(p);
+  return { kind: 'WildcardPattern', span: tok.span };
+}
+
 // -----------------------------------------------------------------------------
 // Pattern Parsing
 // -----------------------------------------------------------------------------
@@ -1394,7 +1485,6 @@ function parsePattern(p: ParserState): Pattern {
 
 function parseTupleOrStructPattern(p: ParserState): Pattern {
   const start = expect(p, '(').span;
-  skipNewlines(p);
 
   if (match(p, ')')) {
     return { kind: 'TuplePattern', elements: [], span: spanFrom(start, peek(p, -1).span) };
@@ -1414,13 +1504,11 @@ function parseTupleOrStructPattern(p: ParserState): Pattern {
   elements.push({ pattern: parsePattern(p), span: peek(p, -1).span });
 
   while (match(p, ',')) {
-    skipNewlines(p);
-    if (at(p, ')')) break;
+      if (at(p, ')')) break;
     const elem = parsePattern(p);
     elements.push({ pattern: elem, span: elem.span });
   }
 
-  skipNewlines(p);
   const end = expect(p, ')');
   return { kind: 'TuplePattern', elements, span: spanFrom(start, end.span) };
 }
@@ -1429,8 +1517,7 @@ function parseStructPatternContinued(p: ParserState, start: Span): StructPattern
   const fields: PatternField[] = [];
 
   do {
-    skipNewlines(p);
-    if (at(p, ')')) break;
+      if (at(p, ')')) break;
 
     const fieldName = expect(p, 'IDENT').text;
     const fieldStart = peek(p, -1).span;
@@ -1444,7 +1531,6 @@ function parseStructPatternContinued(p: ParserState, start: Span): StructPattern
     fields.push({ fieldName, binding, span: spanFrom(fieldStart, peek(p, -1).span) });
   } while (match(p, ','));
 
-  skipNewlines(p);
   const end = expect(p, ')');
   return { kind: 'StructPattern', fields, span: spanFrom(start, end.span) };
 }
@@ -1454,7 +1540,6 @@ function parseStructPatternContinued(p: ParserState, start: Span): StructPattern
 // -----------------------------------------------------------------------------
 
 function parseBody(p: ParserState): Body {
-  skipNewlines(p);
 
   if (match(p, '=>')) {
     const expr = parseExpr(p);
@@ -1473,14 +1558,12 @@ function parseBody(p: ParserState): Body {
 
 function parseBlock(p: ParserState): BlockBody {
   const start = expect(p, '{').span;
-  skipNewlines(p);
 
   const stmts: Stmt[] = [];
   while (!at(p, '}') && !at(p, 'EOF')) {
     const stmt = parseStmt(p);
     stmts.push(stmt);
-    skipNewlines(p);
-  }
+    }
 
   const end = expect(p, '}');
   return { kind: 'BlockBody', stmts, span: spanFrom(start, end.span) };
@@ -1491,7 +1574,6 @@ function parseBlock(p: ParserState): BlockBody {
 // -----------------------------------------------------------------------------
 
 function parseStmt(p: ParserState): Stmt {
-  skipNewlines(p);
   const tok = peek(p);
 
   switch (tok.kind) {
@@ -1616,8 +1698,8 @@ function parseReturnStmt(p: ParserState): ReturnStmt {
   let value: Expr | undefined;
   let when: Expr | undefined;
 
-  // Check if there's an expression (not followed immediately by when or newline)
-  if (!at(p, 'when') && !at(p, 'NEWLINE') && !at(p, '}') && !at(p, 'EOF')) {
+  // Check if there's an expression to return
+  if (!at(p, 'when') && canStartExpr(p)) {
     value = parseExpr(p);
   }
 
@@ -1659,7 +1741,8 @@ function parseExprOrAssignStmt(p: ParserState): Stmt {
   if (tok.kind === '=' || tok.kind === '+=' || tok.kind === '-=' || tok.kind === '*=' ||
       tok.kind === '/=' || tok.kind === '%=' || tok.kind === '&=' || tok.kind === '|=' ||
       tok.kind === '^=' || tok.kind === '<<=' || tok.kind === '>>=' ||
-      tok.kind === '<<<=' || tok.kind === '>>>=') {
+      tok.kind === '<<<=' || tok.kind === '>>>=' ||
+      tok.kind === '+|=' || tok.kind === '-|=' || tok.kind === '*|=') {
     advance(p);
     const value = parseExpr(p);
     return { kind: 'AssignStmt', target: expr, op: tok.text, value, span: spanFrom(expr.span, value.span) };
@@ -1673,7 +1756,6 @@ function parseExprOrAssignStmt(p: ParserState): Stmt {
 // -----------------------------------------------------------------------------
 
 function parseDecl(p: ParserState): Decl {
-  skipNewlines(p);
   const tok = peek(p);
 
   switch (tok.kind) {
@@ -1698,6 +1780,7 @@ function parseDecl(p: ParserState): Decl {
       return parseDataDecl(p);
     default:
       addError(p, tok.span, `Unexpected token at top level: ${tok.kind}`);
+      advance(p);  // Always advance past the unexpected token
       synchronize(p);
       return { kind: 'ErrorDecl', message: `Unexpected ${tok.kind}`, span: tok.span };
   }
@@ -1711,13 +1794,11 @@ function parseImportDecl(p: ParserState): ImportDecl {
 
   if (match(p, '(')) {
     // Grouped imports
-    skipNewlines(p);
-    while (!at(p, ')') && !at(p, 'EOF')) {
+      while (!at(p, ')') && !at(p, 'EOF')) {
       const externalName = expect(p, 'STRING').text;
       const item = parseImportItem(p);
       items.push({ externalName, item, span: spanFrom(peek(p, -1).span, peek(p, -1).span) });
-      skipNewlines(p);
-    }
+        }
     expect(p, ')');
   } else {
     // Single import
@@ -1751,7 +1832,6 @@ function parseImportItem(p: ParserState): ImportItemKind {
 function parseExportDecl(p: ParserState): ExportDecl {
   const start = expect(p, 'export').span;
   const exportName = expect(p, 'STRING').text;
-  skipNewlines(p);
 
   const tok = peek(p);
   let decl: FuncDecl | GlobalDecl | MemoryDecl;
@@ -1795,19 +1875,16 @@ function parseFuncSignature(p: ParserState): FuncSignature {
   // Parameters
   if (at(p, '(')) {
     expect(p, '(');
-    skipNewlines(p);
-
+  
     if (!at(p, ')')) {
       params.push(parseFuncParam(p));
       while (match(p, ',')) {
-        skipNewlines(p);
-        if (at(p, ')')) break;
+              if (at(p, ')')) break;
         params.push(parseFuncParam(p));
       }
     }
 
-    skipNewlines(p);
-    expect(p, ')');
+      expect(p, ')');
   } else if (at(p, 'IDENT') || at(p, 'TYPE_IDENT')) {
     // Single anonymous parameter (type only)
     const type = parseType(p);
@@ -1819,8 +1896,7 @@ function parseFuncSignature(p: ParserState): FuncSignature {
     if (at(p, '(')) {
       // Could be tuple return or named returns
       const start = advance(p).span;
-      skipNewlines(p);
-
+    
       if (at(p, ')')) {
         // Empty parens - unit return
         advance(p);
@@ -1834,27 +1910,23 @@ function parseFuncSignature(p: ParserState): FuncSignature {
           // Named returns
           const fields: Array<{ name: string; type: Type; span: Span }> = [];
           do {
-            skipNewlines(p);
-            if (at(p, ')')) break;
+                      if (at(p, ')')) break;
             const fieldStart = peek(p).span;
             const fieldName = expect(p, 'IDENT').text;
             expect(p, ':');
             const fieldType = parseType(p);
             fields.push({ name: fieldName, type: fieldType, span: spanFrom(fieldStart, fieldType.span) });
           } while (match(p, ','));
-          skipNewlines(p);
-          expect(p, ')');
+                  expect(p, ')');
           returns = { kind: 'NamedReturns', fields };
         } else {
           // Tuple return type
           const elements: Type[] = [parseType(p)];
           while (match(p, ',')) {
-            skipNewlines(p);
-            if (at(p, ')')) break;
+                      if (at(p, ')')) break;
             elements.push(parseType(p));
           }
-          skipNewlines(p);
-          expect(p, ')');
+                  expect(p, ')');
           returns = { kind: 'TupleType', elements, span: spanFrom(start, peek(p, -1).span) };
         }
       }
@@ -1950,7 +2022,6 @@ function parseDataDecl(p: ParserState): DataDecl {
 
 function parseModule(p: ParserState): Module {
   const decls: Decl[] = [];
-  skipNewlines(p);
 
   while (!at(p, 'EOF')) {
     try {
@@ -1960,8 +2031,7 @@ function parseModule(p: ParserState): Module {
       // Recover from unexpected errors
       synchronize(p);
     }
-    skipNewlines(p);
-  }
+    }
 
   const span: Span = decls.length > 0
     ? spanFrom(decls[0].span, decls[decls.length - 1].span)

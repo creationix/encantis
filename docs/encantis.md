@@ -74,7 +74,7 @@ Hyphens in identifiers are idiomatic for constants and helper functions.
 
 The following identifiers are reserved keywords in Encantis:
 
-**Control Flow:** `if`, `elif`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
+**Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
 **Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`, `unique`
 
@@ -465,6 +465,52 @@ return value when cond   // return if condition is true
 ```
 
 The `when` form is equivalent to wrapping in `if cond { ... }`.
+
+### Match Expressions
+
+Match expressions provide multi-way branching on values:
+
+```ents
+match value {
+  0 => handle_zero()
+  1 => handle_one()
+  _ => handle_other()
+}
+```
+
+Match arms are tested in order. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+
+```ents
+let result = match code {
+  200 => "OK"
+  404 => "Not Found"
+  500 => {
+    log_error(code)
+    "Server Error"
+  }
+  _ => "Unknown"
+}
+```
+
+Match is an expression and returns a value. All arms must have compatible types:
+
+```ents
+let msg:u8[] = match status & 3 {
+  0 => "idle"
+  1 => "running"
+  2 => "done"
+  _ => "error"
+}
+```
+
+Multiple values can share an arm by using multiple patterns (comma-separated):
+
+```ents
+match char {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+```
 
 ## Type System
 
@@ -1122,6 +1168,7 @@ let (ptr:, len:) = slice         // by name
 | Encantis | WASM |
 |----------|------|
 | `if`/`elif`/`else` | `if`/`else`/`end` (nested) |
+| `match { }` | `br_table` or nested `if`/`else` |
 | `while { }` | `block`/`loop` + `br_if` |
 | `loop { }` | `loop`/`end` |
 | `break` | `br` (to enclosing block) |
@@ -1175,9 +1222,9 @@ enum State {
 
 **Why:** Enables type-safe error handling, optional values, and state machines. Currently these patterns require manual tag fields and discipline. The compiler could enforce exhaustive matching.
 
-### Match Expressions
+### Match Destructuring
 
-Pattern matching for cleaner conditional logic:
+Extending match expressions to destructure enum variants:
 
 ```ents
 match state {
@@ -1186,15 +1233,9 @@ match state {
   Done(r) => handle_result(r)
   Failed(code, _) => log_error(code)
 }
-
-match value & 3 {
-  0 => small_swap()
-  2 => big_swap()
-  _ => {}
-}
 ```
 
-**Why:** Replaces chains of `if`/`elif` with more readable, exhaustive matching. The compiler can warn about unhandled cases. Pairs naturally with enums.
+**Why:** Current match supports literal patterns only. With enums, match could destructure variants and the compiler could enforce exhaustive handling of all cases.
 
 ### SIMD Support
 

@@ -32,7 +32,7 @@ ident_char      = 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' | '-'
 ### Keywords
 
 ```ebnf
-keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop"
+keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop" | "match"
         | "break" | "continue" | "return" | "when"
         | "func" | "let" | "set" | "global" | "def" | "type"
         | "import" | "export" | "memory" | "data" | "inline" | "unique"
@@ -361,10 +361,16 @@ primary_expr    = literal
                | "(" expression ")"                          -- grouping
                | "(" [ arg_list ] ")"                        -- tuple/struct literal
                | if_expr
+               | match_expr
 
 if_expr         = "if" expression body [ elif_expr | else_expr ]
 elif_expr       = "elif" expression body [ elif_expr | else_expr ]
 else_expr       = "else" body
+
+match_expr      = "match" expression "{" { match_arm } "}"
+match_arm       = match_patterns "=>" ( block | expression )
+match_patterns  = match_pattern { "," match_pattern }
+match_pattern   = literal | "_"
 
 arg_list        = arg { "," arg }
 arg             = expression
