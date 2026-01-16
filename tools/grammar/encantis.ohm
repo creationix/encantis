@@ -1,0 +1,447 @@
+Encantis {
+  // ============================================================================
+  // Top-Level
+  // ============================================================================
+
+  Module = Declaration*
+
+  Declaration = ImportDecl
+              | ExportDecl
+              | FuncDecl
+              | TypeDecl
+              | UniqueDecl
+              | DefDecl
+              | GlobalDecl
+              | MemoryDecl
+
+  // ============================================================================
+  // Imports
+  // ============================================================================
+
+  ImportDecl = import stringLiteral "(" ImportGroupItem+ ")"  -- group
+             | import stringLiteral stringLiteral ImportItem  -- single
+
+  ImportGroupItem = stringLiteral ImportItem
+
+  ImportItem = func ident? FuncSignature  -- func
+             | global ident ":" Type      -- global
+             | memory intLiteral          -- memory
+
+  // ============================================================================
+  // Exports
+  // ============================================================================
+
+  ExportDecl = export stringLiteral Exportable
+
+  Exportable = FuncDecl
+             | GlobalDecl
+             | MemoryDecl
+
+  // ============================================================================
+  // Functions
+  // ============================================================================
+
+  FuncDecl = inline? func ident? FuncSignature FuncBody
+
+  FuncSignature = ValueSpec "->" ValueSpec  -- withReturn
+                | ValueSpec                 -- noReturn
+
+  ValueSpec = "(" FieldList? ")"  -- parens
+            | Type                -- single
+
+  FieldList = NonemptyListOf<Field, ",">
+
+  Field = ident ":" Type  -- named
+        | Type            -- anonymous
+
+  FuncBody = Block       -- block
+           | "=>" Expr   -- arrow
+
+  Block = "{" Statement* "}"
+
+  // ============================================================================
+  // Type Declarations
+  // ============================================================================
+
+  TypeDecl = type typeIdent "=" Type
+
+  UniqueDecl = unique typeIdent "=" Type
+
+  // ============================================================================
+  // Definitions
+  // ============================================================================
+
+  DefDecl = def ident "=" Expr
+
+  // ============================================================================
+  // Globals
+  // ============================================================================
+
+  GlobalDecl = global ident ":" Type "=" Expr  -- full
+             | global ident ":" Type          -- typed
+             | global ident "=" Expr          -- init
+             | global ident                   -- bare
+
+  // ============================================================================
+  // Memory
+  // ============================================================================
+
+  MemoryDecl = memory intLiteral intLiteral "{" DataEntry* "}"  -- fullWithData
+             | memory intLiteral "{" DataEntry* "}"             -- minWithData
+             | memory intLiteral intLiteral                     -- fullNoData
+             | memory intLiteral                                -- minNoData
+
+  DataEntry = intLiteral "=>" Expr ","?
+
+  // ============================================================================
+  // Types
+  // ============================================================================
+
+  Type = PointerType
+       | IndexedType
+       | CompositeType
+       | PrimitiveType
+       | typeIdent
+
+  PrimitiveType = "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "f32" | "f64"
+                | "bool"
+
+  PointerType = "*" Type
+
+  // type[] or type[N] or type[/0] or type[N/0]
+  IndexedType = NonIndexedType "[" intLiteral "/" "0" "]"  -- fixedNull
+              | NonIndexedType "[" "/" "0" "]"            -- sliceNull
+              | NonIndexedType "[" intLiteral "]"         -- fixed
+              | NonIndexedType "[" "]"                    -- slice
+
+  NonIndexedType = PointerType
+                 | CompositeType
+                 | PrimitiveType
+                 | typeIdent
+
+  CompositeType = "(" FieldList? ")"
+
+  // ============================================================================
+  // Statements
+  // ============================================================================
+
+  Statement = LetStmt
+            | SetStmt
+            | IfStmt
+            | WhileStmt
+            | ForStmt
+            | LoopStmt
+            | ReturnStmt
+            | BreakStmt
+            | ContinueStmt
+            | AssignmentStmt
+            | ExpressionStmt
+
+  LetStmt = let Pattern ":" Type "=" Expr  -- typedInit
+          | let Pattern ":" Type          -- typed
+          | let Pattern "=" Expr          -- init
+          | let Pattern                   -- bare
+
+  SetStmt = set Pattern ":" Type "=" Expr  -- typed
+          | set Pattern "=" Expr           -- untyped
+
+  IfStmt = if Expr FuncBody ElifClause* ElseClause?
+
+  ElifClause = elif Expr FuncBody
+
+  ElseClause = else FuncBody
+
+  WhileStmt = while Expr FuncBody
+
+  ForStmt = for ForBinding in Expr FuncBody
+
+  ForBinding = ident "," ident  -- withIndex
+             | ident            -- valueOnly
+
+  LoopStmt = loop FuncBody
+
+  ReturnStmt = return Expr? WhenClause?
+
+  BreakStmt = break WhenClause?
+
+  ContinueStmt = continue WhenClause?
+
+  WhenClause = when Expr
+
+  AssignmentStmt = LValue assignOp Expr
+
+  assignOp = "<<<=" | ">>>=" | "<<=" | ">>="
+           | "+|=" | "-|=" | "*|="
+           | "+=" | "-=" | "*=" | "/=" | "%="
+           | "&=" | "|=" | "^="
+           | "="
+
+  ExpressionStmt = Expr
+
+  // ============================================================================
+  // L-Values
+  // ============================================================================
+
+  LValue = LValue "." ident         -- field
+         | LValue "." digit+        -- index
+         | LValue "." "*"           -- deref
+         | LValue "." Type          -- typePun
+         | LValue "[" Expr "]"      -- subscript
+         | ident                    -- ident
+
+  // ============================================================================
+  // Patterns
+  // ============================================================================
+
+  Pattern = "(" PatternList ")"  -- tuple
+          | ident                -- ident
+
+  PatternList = NonemptyListOf<PatternElem, ",">
+
+  PatternElem = ident ":" ident  -- namedExplicit
+              | ident ":"        -- namedShort
+              | Pattern          -- positional
+
+  // ============================================================================
+  // Expressions (by precedence, lowest to highest)
+  // ============================================================================
+
+  Expr = OrExpr
+
+  // Logical OR (lowest precedence)
+  OrExpr = OrExpr "||" AndExpr  -- or
+         | AndExpr
+
+  // Logical AND
+  AndExpr = AndExpr "&&" NotExpr  -- and
+          | NotExpr
+
+  // Logical NOT
+  NotExpr = "!" NotExpr  -- not
+          | CompareExpr
+
+  // Comparison
+  CompareExpr = CompareExpr compareOp BitOrExpr  -- compare
+              | BitOrExpr
+
+  compareOp = "==" | "!=" | "<=" | ">=" | "<" | ">"
+
+  // Bitwise OR
+  BitOrExpr = BitOrExpr "|" BitXorExpr  -- or
+            | BitXorExpr
+
+  // Bitwise XOR
+  BitXorExpr = BitXorExpr "^" BitAndExpr  -- xor
+             | BitAndExpr
+
+  // Bitwise AND
+  BitAndExpr = BitAndExpr "&" ShiftExpr  -- and
+             | ShiftExpr
+
+  // Shift
+  ShiftExpr = ShiftExpr shiftOp AddExpr  -- shift
+            | AddExpr
+
+  shiftOp = "<<<" | ">>>" | "<<" | ">>"
+
+  // Addition/Subtraction
+  AddExpr = AddExpr addOp MulExpr  -- add
+          | MulExpr
+
+  addOp = "+|" | "-|" | "+" | "-"
+
+  // Multiplication/Division
+  MulExpr = MulExpr mulOp UnaryExpr  -- mul
+          | UnaryExpr
+
+  mulOp = "*|" | "*" | "/" | "%"
+
+  // Unary
+  UnaryExpr = "-" UnaryExpr   -- neg
+            | "~" UnaryExpr   -- complement
+            | "&" UnaryExpr   -- ref
+            | CastExpr
+
+  // Cast and Annotation
+  CastExpr = PostfixExpr as Type   -- cast
+           | PostfixExpr ":" Type  -- annotation
+           | PostfixExpr
+
+  // Postfix (highest precedence for operators)
+  PostfixExpr = PostfixExpr "." ident         -- field
+              | PostfixExpr "." digit+        -- tupleIndex
+              | PostfixExpr "." "*"           -- deref
+              | PostfixExpr "." Type          -- typePun
+              | PostfixExpr "[" Expr "]"      -- index
+              | PostfixExpr "(" ArgList? ")"  -- call
+              | PrimaryExpr
+
+  // Primary (atoms)
+  PrimaryExpr = IfExpr
+              | MatchExpr
+              | "(" ArgList ")"      -- tupleOrStruct
+              | "(" Expr ")"         -- group
+              | "(" ")"              -- unit
+              | typeIdent "(" ArgList? ")"  -- constructor
+              | literal
+              | ident
+
+  // ============================================================================
+  // If Expression
+  // ============================================================================
+
+  IfExpr = if Expr FuncBody ElifExpr* ElseExpr?
+
+  ElifExpr = elif Expr FuncBody
+
+  ElseExpr = else FuncBody
+
+  // ============================================================================
+  // Match Expression
+  // ============================================================================
+
+  MatchExpr = match Expr "{" MatchArm* "}"
+
+  MatchArm = MatchPatterns "=>" (Block | Expr)
+
+  MatchPatterns = NonemptyListOf<MatchPattern, ",">
+
+  MatchPattern = literal  -- literal
+               | "_"      -- wildcard
+
+  // ============================================================================
+  // Arguments
+  // ============================================================================
+
+  ArgList = NonemptyListOf<Arg, ",">
+
+  Arg = ident ":" Expr  -- named
+      | ident ":"       -- shorthand
+      | Expr            -- positional
+
+  // ============================================================================
+  // Literals
+  // ============================================================================
+
+  literal = numberLiteral
+          | stringLiteral
+          | boolLiteral
+
+  numberLiteral = floatLiteral
+                | intLiteral
+
+  intLiteral = "-"? hexLiteral
+             | "-"? binaryLiteral
+             | "-"? octalLiteral
+             | "-"? dozenalLiteral
+             | "-"? decimalLiteral
+
+  decimalLiteral = digit+
+
+  hexLiteral = "0x" hexDigit+
+
+  binaryLiteral = "0b" binaryDigit+
+
+  octalLiteral = "0o" octalDigit+
+
+  dozenalLiteral = "0d" dozenalDigit+
+
+  floatLiteral = "-"? digit+ "." digit+ exponent?
+
+  exponent = ("e" | "E") ("+" | "-")? digit+
+
+  stringLiteral = utf8String
+                | charString
+                | hexString
+                | base64String
+
+  utf8String = "\"" utf8Char* "\""
+
+  charString = "'" utf8Char* "'"
+
+  hexString = "x\"" (hexByte | space)* "\""
+
+  base64String = "b\"" (base64Char | space)* "\""
+
+  utf8Char = escapeSeq
+           | ~("\"" | "'" | "\\") any
+
+  escapeSeq = "\\" "x" hexDigit hexDigit  -- hex
+            | "\\" escapeChar             -- simple
+
+  escapeChar = "n" | "t" | "r" | "\\" | "\"" | "'"
+
+  hexByte = hexDigit hexDigit
+
+  base64Char = letter | digit | "+" | "/" | "="
+
+  boolLiteral = true | false
+
+  // ============================================================================
+  // Lexical Rules
+  // ============================================================================
+
+  // Identifiers
+  ident = ~keyword lowerStart identChar*
+
+  typeIdent = upperStart identChar*
+
+  lowerStart = "a".."z"
+
+  upperStart = "A".."Z"
+
+  identChar = letter | digit | "_" | "-"
+
+  // hexDigit is built-in, but we need these custom ones
+  binaryDigit = "0" | "1"
+
+  octalDigit = "0".."7"
+
+  dozenalDigit = digit | "a".."b" | "A".."B"
+
+  // Keywords
+  keyword = (if | elif | else | while | for | in | loop | match
+           | break | continue | return | when
+           | func | let | set | global | def | type
+           | import | export | memory | inline | unique
+           | as | true | false) ~identChar
+
+  if = "if" ~identChar
+  elif = "elif" ~identChar
+  else = "else" ~identChar
+  while = "while" ~identChar
+  for = "for" ~identChar
+  in = "in" ~identChar
+  loop = "loop" ~identChar
+  match = "match" ~identChar
+  break = "break" ~identChar
+  continue = "continue" ~identChar
+  return = "return" ~identChar
+  when = "when" ~identChar
+  func = "func" ~identChar
+  let = "let" ~identChar
+  set = "set" ~identChar
+  global = "global" ~identChar
+  def = "def" ~identChar
+  type = "type" ~identChar
+  import = "import" ~identChar
+  export = "export" ~identChar
+  memory = "memory" ~identChar
+  inline = "inline" ~identChar
+  unique = "unique" ~identChar
+  as = "as" ~identChar
+  true = "true" ~identChar
+  false = "false" ~identChar
+
+  // Comments
+  comment = lineComment | blockComment
+
+  lineComment = "//" (~"\n" any)*
+
+  blockComment = "/*" (~"*/" any)* "*/"
+
+  // Whitespace (override to include comments)
+  space := " " | "\t" | "\n" | "\r" | comment
+}
