@@ -1,0 +1,3209 @@
+{
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "ExportDecl",
+      "name": "mem",
+      "item": {
+        "kind": "MemoryDecl",
+        "min": 1,
+        "max": null,
+        "data": [],
+        "span": {
+          "start": 93,
+          "end": 101
+        }
+      },
+      "span": {
+        "start": 80,
+        "end": 101
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "ident": "prime64-1",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "LiteralExpr",
+          "value": {
+            "kind": "int",
+            "value": "11400714785074694791",
+            "radix": 10
+          },
+          "span": {
+            "start": 119,
+            "end": 139
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 140,
+            "end": 143
+          }
+        },
+        "span": {
+          "start": 119,
+          "end": 143
+        }
+      },
+      "span": {
+        "start": 103,
+        "end": 143
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "ident": "prime64-2",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "LiteralExpr",
+          "value": {
+            "kind": "int",
+            "value": "14029467366897019727",
+            "radix": 10
+          },
+          "span": {
+            "start": 160,
+            "end": 180
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 181,
+            "end": 184
+          }
+        },
+        "span": {
+          "start": 160,
+          "end": 184
+        }
+      },
+      "span": {
+        "start": 144,
+        "end": 184
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "ident": "prime64-3",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "LiteralExpr",
+          "value": {
+            "kind": "int",
+            "value": "1609587929392839161",
+            "radix": 10
+          },
+          "span": {
+            "start": 202,
+            "end": 221
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 222,
+            "end": 225
+          }
+        },
+        "span": {
+          "start": 202,
+          "end": 225
+        }
+      },
+      "span": {
+        "start": 185,
+        "end": 225
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "ident": "prime64-4",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "LiteralExpr",
+          "value": {
+            "kind": "int",
+            "value": "9650029242287828579",
+            "radix": 10
+          },
+          "span": {
+            "start": 243,
+            "end": 262
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 263,
+            "end": 266
+          }
+        },
+        "span": {
+          "start": 243,
+          "end": 266
+        }
+      },
+      "span": {
+        "start": 226,
+        "end": 266
+      }
+    },
+    {
+      "kind": "DefDecl",
+      "ident": "prime64-5",
+      "value": {
+        "kind": "AnnotationExpr",
+        "expr": {
+          "kind": "LiteralExpr",
+          "value": {
+            "kind": "int",
+            "value": "2870177450012600261",
+            "radix": 10
+          },
+          "span": {
+            "start": 284,
+            "end": 303
+          }
+        },
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 304,
+            "end": 307
+          }
+        },
+        "span": {
+          "start": 284,
+          "end": 307
+        }
+      },
+      "span": {
+        "start": 267,
+        "end": 307
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": true,
+      "ident": "round64",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "acc",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u64",
+                "span": {
+                  "start": 333,
+                  "end": 336
+                }
+              },
+              "span": {
+                "start": 329,
+                "end": 336
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "value",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u64",
+                "span": {
+                  "start": 344,
+                  "end": 347
+                }
+              },
+              "span": {
+                "start": 338,
+                "end": 347
+              }
+            }
+          ],
+          "span": {
+            "start": 328,
+            "end": 348
+          }
+        },
+        "returns": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 352,
+            "end": 355
+          }
+        },
+        "span": {
+          "start": 328,
+          "end": 355
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "AssignmentStmt",
+            "target": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 360,
+                "end": 363
+              }
+            },
+            "op": "+=",
+            "value": {
+              "kind": "BinaryExpr",
+              "op": "*",
+              "left": {
+                "kind": "IdentExpr",
+                "name": "value",
+                "span": {
+                  "start": 367,
+                  "end": 372
+                }
+              },
+              "right": {
+                "kind": "IdentExpr",
+                "name": "prime64-2",
+                "span": {
+                  "start": 375,
+                  "end": 384
+                }
+              },
+              "span": {
+                "start": 367,
+                "end": 384
+              }
+            },
+            "span": {
+              "start": 360,
+              "end": 384
+            }
+          },
+          {
+            "kind": "AssignmentStmt",
+            "target": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 387,
+                "end": 390
+              }
+            },
+            "op": "<<<=",
+            "value": {
+              "kind": "LiteralExpr",
+              "value": {
+                "kind": "int",
+                "value": "31",
+                "radix": 10
+              },
+              "span": {
+                "start": 396,
+                "end": 398
+              }
+            },
+            "span": {
+              "start": 387,
+              "end": 398
+            }
+          },
+          {
+            "kind": "AssignmentStmt",
+            "target": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 401,
+                "end": 404
+              }
+            },
+            "op": "*=",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "prime64-1",
+              "span": {
+                "start": 408,
+                "end": 417
+              }
+            },
+            "span": {
+              "start": 401,
+              "end": 417
+            }
+          },
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 427,
+                "end": 430
+              }
+            },
+            "when": null,
+            "span": {
+              "start": 420,
+              "end": 430
+            }
+          }
+        ],
+        "span": {
+          "start": 356,
+          "end": 432
+        }
+      },
+      "span": {
+        "start": 309,
+        "end": 432
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": true,
+      "ident": "merge-round64",
+      "signature": {
+        "kind": "FuncSignature",
+        "params": {
+          "kind": "FieldList",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "acc",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u64",
+                "span": {
+                  "start": 464,
+                  "end": 467
+                }
+              },
+              "span": {
+                "start": 460,
+                "end": 467
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "value",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u64",
+                "span": {
+                  "start": 475,
+                  "end": 478
+                }
+              },
+              "span": {
+                "start": 469,
+                "end": 478
+              }
+            }
+          ],
+          "span": {
+            "start": 459,
+            "end": 479
+          }
+        },
+        "returns": {
+          "kind": "PrimitiveType",
+          "name": "u64",
+          "span": {
+            "start": 483,
+            "end": 486
+          }
+        },
+        "span": {
+          "start": 459,
+          "end": 486
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "val",
+              "span": {
+                "start": 495,
+                "end": 498
+              }
+            },
+            "type": null,
+            "value": {
+              "kind": "CallExpr",
+              "callee": {
+                "kind": "IdentExpr",
+                "name": "round64",
+                "span": {
+                  "start": 501,
+                  "end": 508
+                }
+              },
+              "args": [
+                {
+                  "kind": "Arg",
+                  "name": null,
+                  "value": {
+                    "kind": "LiteralExpr",
+                    "value": {
+                      "kind": "int",
+                      "value": "0",
+                      "radix": 10
+                    },
+                    "span": {
+                      "start": 509,
+                      "end": 510
+                    }
+                  },
+                  "span": {
+                    "start": 509,
+                    "end": 510
+                  }
+                },
+                {
+                  "kind": "Arg",
+                  "name": null,
+                  "value": {
+                    "kind": "IdentExpr",
+                    "name": "value",
+                    "span": {
+                      "start": 512,
+                      "end": 517
+                    }
+                  },
+                  "span": {
+                    "start": 512,
+                    "end": 517
+                  }
+                }
+              ],
+              "span": {
+                "start": 501,
+                "end": 518
+              }
+            },
+            "span": {
+              "start": 491,
+              "end": 518
+            }
+          },
+          {
+            "kind": "AssignmentStmt",
+            "target": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 521,
+                "end": 524
+              }
+            },
+            "op": "^=",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "val",
+              "span": {
+                "start": 528,
+                "end": 531
+              }
+            },
+            "span": {
+              "start": 521,
+              "end": 531
+            }
+          },
+          {
+            "kind": "AssignmentStmt",
+            "target": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 534,
+                "end": 537
+              }
+            },
+            "op": "=",
+            "value": {
+              "kind": "BinaryExpr",
+              "op": "+",
+              "left": {
+                "kind": "TupleExpr",
+                "elements": [
+                  {
+                    "kind": "Arg",
+                    "name": null,
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "IdentExpr",
+                        "name": "acc",
+                        "span": {
+                          "start": 541,
+                          "end": 544
+                        }
+                      },
+                      "right": {
+                        "kind": "IdentExpr",
+                        "name": "prime64-1",
+                        "span": {
+                          "start": 547,
+                          "end": 556
+                        }
+                      },
+                      "span": {
+                        "start": 541,
+                        "end": 556
+                      }
+                    },
+                    "span": {
+                      "start": 541,
+                      "end": 556
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 540,
+                  "end": 557
+                }
+              },
+              "right": {
+                "kind": "IdentExpr",
+                "name": "prime64-4",
+                "span": {
+                  "start": 560,
+                  "end": 569
+                }
+              },
+              "span": {
+                "start": 540,
+                "end": 569
+              }
+            },
+            "span": {
+              "start": 534,
+              "end": 569
+            }
+          },
+          {
+            "kind": "ReturnStmt",
+            "value": {
+              "kind": "IdentExpr",
+              "name": "acc",
+              "span": {
+                "start": 579,
+                "end": 582
+              }
+            },
+            "when": null,
+            "span": {
+              "start": 572,
+              "end": 582
+            }
+          }
+        ],
+        "span": {
+          "start": 487,
+          "end": 584
+        }
+      },
+      "span": {
+        "start": 434,
+        "end": 584
+      }
+    },
+    {
+      "kind": "ExportDecl",
+      "name": "xxh64",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": "xxh64",
+        "signature": {
+          "kind": "FuncSignature",
+          "params": {
+            "kind": "FieldList",
+            "fields": [
+              {
+                "kind": "Field",
+                "ident": "data",
+                "type": {
+                  "kind": "IndexedType",
+                  "element": {
+                    "kind": "PrimitiveType",
+                    "name": "u8",
+                    "span": {
+                      "start": 617,
+                      "end": 619
+                    }
+                  },
+                  "size": null,
+                  "nullTerminated": false,
+                  "span": {
+                    "start": 617,
+                    "end": 621
+                  }
+                },
+                "span": {
+                  "start": 612,
+                  "end": 621
+                }
+              },
+              {
+                "kind": "Field",
+                "ident": "seed",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 628,
+                    "end": 631
+                  }
+                },
+                "span": {
+                  "start": 623,
+                  "end": 631
+                }
+              }
+            ],
+            "span": {
+              "start": 611,
+              "end": 632
+            }
+          },
+          "returns": {
+            "kind": "FieldList",
+            "fields": [
+              {
+                "kind": "Field",
+                "ident": "h64",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 641,
+                    "end": 644
+                  }
+                },
+                "span": {
+                  "start": 637,
+                  "end": 644
+                }
+              }
+            ],
+            "span": {
+              "start": 636,
+              "end": 645
+            }
+          },
+          "span": {
+            "start": 611,
+            "end": 645
+          }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "ptr",
+                "span": {
+                  "start": 654,
+                  "end": 657
+                }
+              },
+              "type": null,
+              "value": {
+                "kind": "MemberExpr",
+                "object": {
+                  "kind": "IdentExpr",
+                  "name": "data",
+                  "span": {
+                    "start": 660,
+                    "end": 664
+                  }
+                },
+                "member": {
+                  "kind": "field",
+                  "name": "ptr"
+                },
+                "span": {
+                  "start": 660,
+                  "end": 668
+                }
+              },
+              "span": {
+                "start": 650,
+                "end": 668
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "len",
+                "span": {
+                  "start": 675,
+                  "end": 678
+                }
+              },
+              "type": null,
+              "value": {
+                "kind": "MemberExpr",
+                "object": {
+                  "kind": "IdentExpr",
+                  "name": "data",
+                  "span": {
+                    "start": 681,
+                    "end": 685
+                  }
+                },
+                "member": {
+                  "kind": "field",
+                  "name": "len"
+                },
+                "span": {
+                  "start": 681,
+                  "end": 689
+                }
+              },
+              "span": {
+                "start": 671,
+                "end": 689
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "last",
+                "span": {
+                  "start": 696,
+                  "end": 700
+                }
+              },
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 702,
+                    "end": 704
+                  }
+                },
+                "span": {
+                  "start": 701,
+                  "end": 704
+                }
+              },
+              "value": {
+                "kind": "BinaryExpr",
+                "op": "+",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "ptr",
+                  "span": {
+                    "start": 707,
+                    "end": 710
+                  }
+                },
+                "right": {
+                  "kind": "IdentExpr",
+                  "name": "len",
+                  "span": {
+                    "start": 713,
+                    "end": 716
+                  }
+                },
+                "span": {
+                  "start": 707,
+                  "end": 716
+                }
+              },
+              "span": {
+                "start": 692,
+                "end": 716
+              }
+            },
+            {
+              "kind": "ExpressionStmt",
+              "expr": {
+                "kind": "IfExpr",
+                "condition": {
+                  "kind": "BinaryExpr",
+                  "op": ">=",
+                  "left": {
+                    "kind": "IdentExpr",
+                    "name": "len",
+                    "span": {
+                      "start": 723,
+                      "end": 726
+                    }
+                  },
+                  "right": {
+                    "kind": "LiteralExpr",
+                    "value": {
+                      "kind": "int",
+                      "value": "32",
+                      "radix": 10
+                    },
+                    "span": {
+                      "start": 730,
+                      "end": 732
+                    }
+                  },
+                  "span": {
+                    "start": 723,
+                    "end": 732
+                  }
+                },
+                "thenBranch": {
+                  "kind": "Block",
+                  "stmts": [
+                    {
+                      "kind": "LetStmt",
+                      "pattern": {
+                        "kind": "IdentPattern",
+                        "name": "limit",
+                        "span": {
+                          "start": 743,
+                          "end": 748
+                        }
+                      },
+                      "type": {
+                        "kind": "PointerType",
+                        "pointee": {
+                          "kind": "PrimitiveType",
+                          "name": "u8",
+                          "span": {
+                            "start": 750,
+                            "end": 752
+                          }
+                        },
+                        "span": {
+                          "start": 749,
+                          "end": 752
+                        }
+                      },
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "-",
+                        "left": {
+                          "kind": "IdentExpr",
+                          "name": "last",
+                          "span": {
+                            "start": 755,
+                            "end": 759
+                          }
+                        },
+                        "right": {
+                          "kind": "LiteralExpr",
+                          "value": {
+                            "kind": "int",
+                            "value": "32",
+                            "radix": 10
+                          },
+                          "span": {
+                            "start": 762,
+                            "end": 764
+                          }
+                        },
+                        "span": {
+                          "start": 755,
+                          "end": 764
+                        }
+                      },
+                      "span": {
+                        "start": 739,
+                        "end": 764
+                      }
+                    },
+                    {
+                      "kind": "LetStmt",
+                      "pattern": {
+                        "kind": "IdentPattern",
+                        "name": "v1",
+                        "span": {
+                          "start": 773,
+                          "end": 775
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "u64",
+                        "span": {
+                          "start": 776,
+                          "end": 779
+                        }
+                      },
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "BinaryExpr",
+                          "op": "+",
+                          "left": {
+                            "kind": "IdentExpr",
+                            "name": "seed",
+                            "span": {
+                              "start": 782,
+                              "end": 786
+                            }
+                          },
+                          "right": {
+                            "kind": "IdentExpr",
+                            "name": "prime64-1",
+                            "span": {
+                              "start": 789,
+                              "end": 798
+                            }
+                          },
+                          "span": {
+                            "start": 782,
+                            "end": 798
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-2",
+                          "span": {
+                            "start": 801,
+                            "end": 810
+                          }
+                        },
+                        "span": {
+                          "start": 782,
+                          "end": 810
+                        }
+                      },
+                      "span": {
+                        "start": 769,
+                        "end": 810
+                      }
+                    },
+                    {
+                      "kind": "LetStmt",
+                      "pattern": {
+                        "kind": "IdentPattern",
+                        "name": "v2",
+                        "span": {
+                          "start": 819,
+                          "end": 821
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "u64",
+                        "span": {
+                          "start": 822,
+                          "end": 825
+                        }
+                      },
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "IdentExpr",
+                          "name": "seed",
+                          "span": {
+                            "start": 828,
+                            "end": 832
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-2",
+                          "span": {
+                            "start": 835,
+                            "end": 844
+                          }
+                        },
+                        "span": {
+                          "start": 828,
+                          "end": 844
+                        }
+                      },
+                      "span": {
+                        "start": 815,
+                        "end": 844
+                      }
+                    },
+                    {
+                      "kind": "LetStmt",
+                      "pattern": {
+                        "kind": "IdentPattern",
+                        "name": "v3",
+                        "span": {
+                          "start": 853,
+                          "end": 855
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "u64",
+                        "span": {
+                          "start": 856,
+                          "end": 859
+                        }
+                      },
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "IdentExpr",
+                          "name": "seed",
+                          "span": {
+                            "start": 862,
+                            "end": 866
+                          }
+                        },
+                        "right": {
+                          "kind": "LiteralExpr",
+                          "value": {
+                            "kind": "int",
+                            "value": "0",
+                            "radix": 10
+                          },
+                          "span": {
+                            "start": 869,
+                            "end": 870
+                          }
+                        },
+                        "span": {
+                          "start": 862,
+                          "end": 870
+                        }
+                      },
+                      "span": {
+                        "start": 849,
+                        "end": 870
+                      }
+                    },
+                    {
+                      "kind": "LetStmt",
+                      "pattern": {
+                        "kind": "IdentPattern",
+                        "name": "v4",
+                        "span": {
+                          "start": 879,
+                          "end": 881
+                        }
+                      },
+                      "type": {
+                        "kind": "PrimitiveType",
+                        "name": "u64",
+                        "span": {
+                          "start": 882,
+                          "end": 885
+                        }
+                      },
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "-",
+                        "left": {
+                          "kind": "IdentExpr",
+                          "name": "seed",
+                          "span": {
+                            "start": 888,
+                            "end": 892
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-1",
+                          "span": {
+                            "start": 895,
+                            "end": 904
+                          }
+                        },
+                        "span": {
+                          "start": 888,
+                          "end": 904
+                        }
+                      },
+                      "span": {
+                        "start": 875,
+                        "end": 904
+                      }
+                    },
+                    {
+                      "kind": "LoopStmt",
+                      "body": {
+                        "kind": "Block",
+                        "stmts": [
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "v1",
+                              "span": {
+                                "start": 983,
+                                "end": 985
+                              }
+                            },
+                            "op": "=",
+                            "value": {
+                              "kind": "CallExpr",
+                              "callee": {
+                                "kind": "IdentExpr",
+                                "name": "round64",
+                                "span": {
+                                  "start": 988,
+                                  "end": 995
+                                }
+                              },
+                              "args": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "IdentExpr",
+                                    "name": "v1",
+                                    "span": {
+                                      "start": 996,
+                                      "end": 998
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 996,
+                                    "end": 998
+                                  }
+                                },
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "MemberExpr",
+                                    "object": {
+                                      "kind": "IdentExpr",
+                                      "name": "ptr",
+                                      "span": {
+                                        "start": 1000,
+                                        "end": 1003
+                                      }
+                                    },
+                                    "member": {
+                                      "kind": "type",
+                                      "type": {
+                                        "kind": "PrimitiveType",
+                                        "name": "u64",
+                                        "span": {
+                                          "start": 1004,
+                                          "end": 1007
+                                        }
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1000,
+                                      "end": 1007
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1000,
+                                    "end": 1007
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 988,
+                                "end": 1008
+                              }
+                            },
+                            "span": {
+                              "start": 983,
+                              "end": 1008
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1015,
+                                "end": 1018
+                              }
+                            },
+                            "op": "+=",
+                            "value": {
+                              "kind": "LiteralExpr",
+                              "value": {
+                                "kind": "int",
+                                "value": "8",
+                                "radix": 10
+                              },
+                              "span": {
+                                "start": 1022,
+                                "end": 1023
+                              }
+                            },
+                            "span": {
+                              "start": 1015,
+                              "end": 1023
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "v2",
+                              "span": {
+                                "start": 1030,
+                                "end": 1032
+                              }
+                            },
+                            "op": "=",
+                            "value": {
+                              "kind": "CallExpr",
+                              "callee": {
+                                "kind": "IdentExpr",
+                                "name": "round64",
+                                "span": {
+                                  "start": 1035,
+                                  "end": 1042
+                                }
+                              },
+                              "args": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "IdentExpr",
+                                    "name": "v2",
+                                    "span": {
+                                      "start": 1043,
+                                      "end": 1045
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1043,
+                                    "end": 1045
+                                  }
+                                },
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "MemberExpr",
+                                    "object": {
+                                      "kind": "IdentExpr",
+                                      "name": "ptr",
+                                      "span": {
+                                        "start": 1047,
+                                        "end": 1050
+                                      }
+                                    },
+                                    "member": {
+                                      "kind": "type",
+                                      "type": {
+                                        "kind": "PrimitiveType",
+                                        "name": "u64",
+                                        "span": {
+                                          "start": 1051,
+                                          "end": 1054
+                                        }
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1047,
+                                      "end": 1054
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1047,
+                                    "end": 1054
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1035,
+                                "end": 1055
+                              }
+                            },
+                            "span": {
+                              "start": 1030,
+                              "end": 1055
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1062,
+                                "end": 1065
+                              }
+                            },
+                            "op": "+=",
+                            "value": {
+                              "kind": "LiteralExpr",
+                              "value": {
+                                "kind": "int",
+                                "value": "8",
+                                "radix": 10
+                              },
+                              "span": {
+                                "start": 1069,
+                                "end": 1070
+                              }
+                            },
+                            "span": {
+                              "start": 1062,
+                              "end": 1070
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "v3",
+                              "span": {
+                                "start": 1077,
+                                "end": 1079
+                              }
+                            },
+                            "op": "=",
+                            "value": {
+                              "kind": "CallExpr",
+                              "callee": {
+                                "kind": "IdentExpr",
+                                "name": "round64",
+                                "span": {
+                                  "start": 1082,
+                                  "end": 1089
+                                }
+                              },
+                              "args": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "IdentExpr",
+                                    "name": "v3",
+                                    "span": {
+                                      "start": 1090,
+                                      "end": 1092
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1090,
+                                    "end": 1092
+                                  }
+                                },
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "MemberExpr",
+                                    "object": {
+                                      "kind": "IdentExpr",
+                                      "name": "ptr",
+                                      "span": {
+                                        "start": 1094,
+                                        "end": 1097
+                                      }
+                                    },
+                                    "member": {
+                                      "kind": "type",
+                                      "type": {
+                                        "kind": "PrimitiveType",
+                                        "name": "u64",
+                                        "span": {
+                                          "start": 1098,
+                                          "end": 1101
+                                        }
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1094,
+                                      "end": 1101
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1094,
+                                    "end": 1101
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1082,
+                                "end": 1102
+                              }
+                            },
+                            "span": {
+                              "start": 1077,
+                              "end": 1102
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1109,
+                                "end": 1112
+                              }
+                            },
+                            "op": "+=",
+                            "value": {
+                              "kind": "LiteralExpr",
+                              "value": {
+                                "kind": "int",
+                                "value": "8",
+                                "radix": 10
+                              },
+                              "span": {
+                                "start": 1116,
+                                "end": 1117
+                              }
+                            },
+                            "span": {
+                              "start": 1109,
+                              "end": 1117
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "v4",
+                              "span": {
+                                "start": 1124,
+                                "end": 1126
+                              }
+                            },
+                            "op": "=",
+                            "value": {
+                              "kind": "CallExpr",
+                              "callee": {
+                                "kind": "IdentExpr",
+                                "name": "round64",
+                                "span": {
+                                  "start": 1129,
+                                  "end": 1136
+                                }
+                              },
+                              "args": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "IdentExpr",
+                                    "name": "v4",
+                                    "span": {
+                                      "start": 1137,
+                                      "end": 1139
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1137,
+                                    "end": 1139
+                                  }
+                                },
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "MemberExpr",
+                                    "object": {
+                                      "kind": "IdentExpr",
+                                      "name": "ptr",
+                                      "span": {
+                                        "start": 1141,
+                                        "end": 1144
+                                      }
+                                    },
+                                    "member": {
+                                      "kind": "type",
+                                      "type": {
+                                        "kind": "PrimitiveType",
+                                        "name": "u64",
+                                        "span": {
+                                          "start": 1145,
+                                          "end": 1148
+                                        }
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1141,
+                                      "end": 1148
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1141,
+                                    "end": 1148
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1129,
+                                "end": 1149
+                              }
+                            },
+                            "span": {
+                              "start": 1124,
+                              "end": 1149
+                            }
+                          },
+                          {
+                            "kind": "AssignmentStmt",
+                            "target": {
+                              "kind": "IdentExpr",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1156,
+                                "end": 1159
+                              }
+                            },
+                            "op": "+=",
+                            "value": {
+                              "kind": "LiteralExpr",
+                              "value": {
+                                "kind": "int",
+                                "value": "8",
+                                "radix": 10
+                              },
+                              "span": {
+                                "start": 1163,
+                                "end": 1164
+                              }
+                            },
+                            "span": {
+                              "start": 1156,
+                              "end": 1164
+                            }
+                          },
+                          {
+                            "kind": "BreakStmt",
+                            "when": {
+                              "kind": "BinaryExpr",
+                              "op": ">",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "ptr",
+                                "span": {
+                                  "start": 1182,
+                                  "end": 1185
+                                }
+                              },
+                              "right": {
+                                "kind": "IdentExpr",
+                                "name": "limit",
+                                "span": {
+                                  "start": 1188,
+                                  "end": 1193
+                                }
+                              },
+                              "span": {
+                                "start": 1182,
+                                "end": 1193
+                              }
+                            },
+                            "span": {
+                              "start": 1171,
+                              "end": 1193
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 975,
+                          "end": 1199
+                        }
+                      },
+                      "span": {
+                        "start": 970,
+                        "end": 1199
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1205,
+                          "end": 1208
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "BinaryExpr",
+                          "op": "+",
+                          "left": {
+                            "kind": "BinaryExpr",
+                            "op": "+",
+                            "left": {
+                              "kind": "TupleExpr",
+                              "elements": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "BinaryExpr",
+                                    "op": "<<<",
+                                    "left": {
+                                      "kind": "IdentExpr",
+                                      "name": "v1",
+                                      "span": {
+                                        "start": 1212,
+                                        "end": 1214
+                                      }
+                                    },
+                                    "right": {
+                                      "kind": "LiteralExpr",
+                                      "value": {
+                                        "kind": "int",
+                                        "value": "1",
+                                        "radix": 10
+                                      },
+                                      "span": {
+                                        "start": 1219,
+                                        "end": 1220
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1212,
+                                      "end": 1220
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1212,
+                                    "end": 1220
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1211,
+                                "end": 1221
+                              }
+                            },
+                            "right": {
+                              "kind": "TupleExpr",
+                              "elements": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "BinaryExpr",
+                                    "op": "<<<",
+                                    "left": {
+                                      "kind": "IdentExpr",
+                                      "name": "v2",
+                                      "span": {
+                                        "start": 1233,
+                                        "end": 1235
+                                      }
+                                    },
+                                    "right": {
+                                      "kind": "LiteralExpr",
+                                      "value": {
+                                        "kind": "int",
+                                        "value": "7",
+                                        "radix": 10
+                                      },
+                                      "span": {
+                                        "start": 1240,
+                                        "end": 1241
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1233,
+                                      "end": 1241
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1233,
+                                    "end": 1241
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1232,
+                                "end": 1242
+                              }
+                            },
+                            "span": {
+                              "start": 1211,
+                              "end": 1242
+                            }
+                          },
+                          "right": {
+                            "kind": "TupleExpr",
+                            "elements": [
+                              {
+                                "kind": "Arg",
+                                "name": null,
+                                "value": {
+                                  "kind": "BinaryExpr",
+                                  "op": "<<<",
+                                  "left": {
+                                    "kind": "IdentExpr",
+                                    "name": "v3",
+                                    "span": {
+                                      "start": 1254,
+                                      "end": 1256
+                                    }
+                                  },
+                                  "right": {
+                                    "kind": "LiteralExpr",
+                                    "value": {
+                                      "kind": "int",
+                                      "value": "12",
+                                      "radix": 10
+                                    },
+                                    "span": {
+                                      "start": 1261,
+                                      "end": 1263
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1254,
+                                    "end": 1263
+                                  }
+                                },
+                                "span": {
+                                  "start": 1254,
+                                  "end": 1263
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 1253,
+                              "end": 1264
+                            }
+                          },
+                          "span": {
+                            "start": 1211,
+                            "end": 1264
+                          }
+                        },
+                        "right": {
+                          "kind": "TupleExpr",
+                          "elements": [
+                            {
+                              "kind": "Arg",
+                              "name": null,
+                              "value": {
+                                "kind": "BinaryExpr",
+                                "op": "<<<",
+                                "left": {
+                                  "kind": "IdentExpr",
+                                  "name": "v4",
+                                  "span": {
+                                    "start": 1276,
+                                    "end": 1278
+                                  }
+                                },
+                                "right": {
+                                  "kind": "LiteralExpr",
+                                  "value": {
+                                    "kind": "int",
+                                    "value": "18",
+                                    "radix": 10
+                                  },
+                                  "span": {
+                                    "start": 1283,
+                                    "end": 1285
+                                  }
+                                },
+                                "span": {
+                                  "start": 1276,
+                                  "end": 1285
+                                }
+                              },
+                              "span": {
+                                "start": 1276,
+                                "end": 1285
+                              }
+                            }
+                          ],
+                          "span": {
+                            "start": 1275,
+                            "end": 1286
+                          }
+                        },
+                        "span": {
+                          "start": 1211,
+                          "end": 1286
+                        }
+                      },
+                      "span": {
+                        "start": 1205,
+                        "end": 1286
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1292,
+                          "end": 1295
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "CallExpr",
+                        "callee": {
+                          "kind": "IdentExpr",
+                          "name": "merge-round64",
+                          "span": {
+                            "start": 1298,
+                            "end": 1311
+                          }
+                        },
+                        "args": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "h64",
+                              "span": {
+                                "start": 1312,
+                                "end": 1315
+                              }
+                            },
+                            "span": {
+                              "start": 1312,
+                              "end": 1315
+                            }
+                          },
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "v1",
+                              "span": {
+                                "start": 1317,
+                                "end": 1319
+                              }
+                            },
+                            "span": {
+                              "start": 1317,
+                              "end": 1319
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1298,
+                          "end": 1320
+                        }
+                      },
+                      "span": {
+                        "start": 1292,
+                        "end": 1320
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1325,
+                          "end": 1328
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "CallExpr",
+                        "callee": {
+                          "kind": "IdentExpr",
+                          "name": "merge-round64",
+                          "span": {
+                            "start": 1331,
+                            "end": 1344
+                          }
+                        },
+                        "args": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "h64",
+                              "span": {
+                                "start": 1345,
+                                "end": 1348
+                              }
+                            },
+                            "span": {
+                              "start": 1345,
+                              "end": 1348
+                            }
+                          },
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "v2",
+                              "span": {
+                                "start": 1350,
+                                "end": 1352
+                              }
+                            },
+                            "span": {
+                              "start": 1350,
+                              "end": 1352
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1331,
+                          "end": 1353
+                        }
+                      },
+                      "span": {
+                        "start": 1325,
+                        "end": 1353
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1358,
+                          "end": 1361
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "CallExpr",
+                        "callee": {
+                          "kind": "IdentExpr",
+                          "name": "merge-round64",
+                          "span": {
+                            "start": 1364,
+                            "end": 1377
+                          }
+                        },
+                        "args": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "h64",
+                              "span": {
+                                "start": 1378,
+                                "end": 1381
+                              }
+                            },
+                            "span": {
+                              "start": 1378,
+                              "end": 1381
+                            }
+                          },
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "v3",
+                              "span": {
+                                "start": 1383,
+                                "end": 1385
+                              }
+                            },
+                            "span": {
+                              "start": 1383,
+                              "end": 1385
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1364,
+                          "end": 1386
+                        }
+                      },
+                      "span": {
+                        "start": 1358,
+                        "end": 1386
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1391,
+                          "end": 1394
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "CallExpr",
+                        "callee": {
+                          "kind": "IdentExpr",
+                          "name": "merge-round64",
+                          "span": {
+                            "start": 1397,
+                            "end": 1410
+                          }
+                        },
+                        "args": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "h64",
+                              "span": {
+                                "start": 1411,
+                                "end": 1414
+                              }
+                            },
+                            "span": {
+                              "start": 1411,
+                              "end": 1414
+                            }
+                          },
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "IdentExpr",
+                              "name": "v4",
+                              "span": {
+                                "start": 1416,
+                                "end": 1418
+                              }
+                            },
+                            "span": {
+                              "start": 1416,
+                              "end": 1418
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 1397,
+                          "end": 1419
+                        }
+                      },
+                      "span": {
+                        "start": 1391,
+                        "end": 1419
+                      }
+                    }
+                  ],
+                  "span": {
+                    "start": 733,
+                    "end": 1424
+                  }
+                },
+                "elifs": [],
+                "else_": {
+                  "kind": "Block",
+                  "stmts": [
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1479,
+                          "end": 1482
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "IdentExpr",
+                          "name": "seed",
+                          "span": {
+                            "start": 1485,
+                            "end": 1489
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-5",
+                          "span": {
+                            "start": 1492,
+                            "end": 1501
+                          }
+                        },
+                        "span": {
+                          "start": 1485,
+                          "end": 1501
+                        }
+                      },
+                      "span": {
+                        "start": 1479,
+                        "end": 1501
+                      }
+                    }
+                  ],
+                  "span": {
+                    "start": 1430,
+                    "end": 1505
+                  }
+                },
+                "span": {
+                  "start": 720,
+                  "end": 1505
+                }
+              },
+              "span": {
+                "start": 720,
+                "end": 1505
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 1509,
+                  "end": 1512
+                }
+              },
+              "op": "+=",
+              "value": {
+                "kind": "CastExpr",
+                "expr": {
+                  "kind": "IdentExpr",
+                  "name": "len",
+                  "span": {
+                    "start": 1516,
+                    "end": 1519
+                  }
+                },
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u64",
+                  "span": {
+                    "start": 1523,
+                    "end": 1526
+                  }
+                },
+                "span": {
+                  "start": 1516,
+                  "end": 1526
+                }
+              },
+              "span": {
+                "start": 1509,
+                "end": 1526
+              }
+            },
+            {
+              "kind": "WhileStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": "<=",
+                "left": {
+                  "kind": "BinaryExpr",
+                  "op": "+",
+                  "left": {
+                    "kind": "IdentExpr",
+                    "name": "ptr",
+                    "span": {
+                      "start": 1604,
+                      "end": 1607
+                    }
+                  },
+                  "right": {
+                    "kind": "LiteralExpr",
+                    "value": {
+                      "kind": "int",
+                      "value": "8",
+                      "radix": 10
+                    },
+                    "span": {
+                      "start": 1610,
+                      "end": 1611
+                    }
+                  },
+                  "span": {
+                    "start": 1604,
+                    "end": 1611
+                  }
+                },
+                "right": {
+                  "kind": "IdentExpr",
+                  "name": "last",
+                  "span": {
+                    "start": 1615,
+                    "end": 1619
+                  }
+                },
+                "span": {
+                  "start": 1604,
+                  "end": 1619
+                }
+              },
+              "body": {
+                "kind": "Block",
+                "stmts": [
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "h64",
+                      "span": {
+                        "start": 1626,
+                        "end": 1629
+                      }
+                    },
+                    "op": "^=",
+                    "value": {
+                      "kind": "CallExpr",
+                      "callee": {
+                        "kind": "IdentExpr",
+                        "name": "round64",
+                        "span": {
+                          "start": 1633,
+                          "end": 1640
+                        }
+                      },
+                      "args": [
+                        {
+                          "kind": "Arg",
+                          "name": null,
+                          "value": {
+                            "kind": "LiteralExpr",
+                            "value": {
+                              "kind": "int",
+                              "value": "0",
+                              "radix": 10
+                            },
+                            "span": {
+                              "start": 1641,
+                              "end": 1642
+                            }
+                          },
+                          "span": {
+                            "start": 1641,
+                            "end": 1642
+                          }
+                        },
+                        {
+                          "kind": "Arg",
+                          "name": null,
+                          "value": {
+                            "kind": "MemberExpr",
+                            "object": {
+                              "kind": "IdentExpr",
+                              "name": "ptr",
+                              "span": {
+                                "start": 1644,
+                                "end": 1647
+                              }
+                            },
+                            "member": {
+                              "kind": "type",
+                              "type": {
+                                "kind": "PrimitiveType",
+                                "name": "u64",
+                                "span": {
+                                  "start": 1648,
+                                  "end": 1651
+                                }
+                              }
+                            },
+                            "span": {
+                              "start": 1644,
+                              "end": 1651
+                            }
+                          },
+                          "span": {
+                            "start": 1644,
+                            "end": 1651
+                          }
+                        }
+                      ],
+                      "span": {
+                        "start": 1633,
+                        "end": 1652
+                      }
+                    },
+                    "span": {
+                      "start": 1626,
+                      "end": 1652
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "h64",
+                      "span": {
+                        "start": 1657,
+                        "end": 1660
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "+",
+                      "left": {
+                        "kind": "BinaryExpr",
+                        "op": "*",
+                        "left": {
+                          "kind": "TupleExpr",
+                          "elements": [
+                            {
+                              "kind": "Arg",
+                              "name": null,
+                              "value": {
+                                "kind": "BinaryExpr",
+                                "op": "<<<",
+                                "left": {
+                                  "kind": "IdentExpr",
+                                  "name": "h64",
+                                  "span": {
+                                    "start": 1664,
+                                    "end": 1667
+                                  }
+                                },
+                                "right": {
+                                  "kind": "LiteralExpr",
+                                  "value": {
+                                    "kind": "int",
+                                    "value": "27",
+                                    "radix": 10
+                                  },
+                                  "span": {
+                                    "start": 1672,
+                                    "end": 1674
+                                  }
+                                },
+                                "span": {
+                                  "start": 1664,
+                                  "end": 1674
+                                }
+                              },
+                              "span": {
+                                "start": 1664,
+                                "end": 1674
+                              }
+                            }
+                          ],
+                          "span": {
+                            "start": 1663,
+                            "end": 1675
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-1",
+                          "span": {
+                            "start": 1678,
+                            "end": 1687
+                          }
+                        },
+                        "span": {
+                          "start": 1663,
+                          "end": 1687
+                        }
+                      },
+                      "right": {
+                        "kind": "IdentExpr",
+                        "name": "prime64-4",
+                        "span": {
+                          "start": 1690,
+                          "end": 1699
+                        }
+                      },
+                      "span": {
+                        "start": 1663,
+                        "end": 1699
+                      }
+                    },
+                    "span": {
+                      "start": 1657,
+                      "end": 1699
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "ptr",
+                      "span": {
+                        "start": 1704,
+                        "end": 1707
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": {
+                        "kind": "int",
+                        "value": "8",
+                        "radix": 10
+                      },
+                      "span": {
+                        "start": 1711,
+                        "end": 1712
+                      }
+                    },
+                    "span": {
+                      "start": 1704,
+                      "end": 1712
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 1620,
+                  "end": 1716
+                }
+              },
+              "span": {
+                "start": 1598,
+                "end": 1716
+              }
+            },
+            {
+              "kind": "ExpressionStmt",
+              "expr": {
+                "kind": "IfExpr",
+                "condition": {
+                  "kind": "BinaryExpr",
+                  "op": "<=",
+                  "left": {
+                    "kind": "BinaryExpr",
+                    "op": "+",
+                    "left": {
+                      "kind": "IdentExpr",
+                      "name": "ptr",
+                      "span": {
+                        "start": 1801,
+                        "end": 1804
+                      }
+                    },
+                    "right": {
+                      "kind": "LiteralExpr",
+                      "value": {
+                        "kind": "int",
+                        "value": "4",
+                        "radix": 10
+                      },
+                      "span": {
+                        "start": 1807,
+                        "end": 1808
+                      }
+                    },
+                    "span": {
+                      "start": 1801,
+                      "end": 1808
+                    }
+                  },
+                  "right": {
+                    "kind": "IdentExpr",
+                    "name": "last",
+                    "span": {
+                      "start": 1812,
+                      "end": 1816
+                    }
+                  },
+                  "span": {
+                    "start": 1801,
+                    "end": 1816
+                  }
+                },
+                "thenBranch": {
+                  "kind": "Block",
+                  "stmts": [
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1823,
+                          "end": 1826
+                        }
+                      },
+                      "op": "^=",
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "*",
+                        "left": {
+                          "kind": "CastExpr",
+                          "expr": {
+                            "kind": "MemberExpr",
+                            "object": {
+                              "kind": "TupleExpr",
+                              "elements": [
+                                {
+                                  "kind": "Arg",
+                                  "name": null,
+                                  "value": {
+                                    "kind": "CastExpr",
+                                    "expr": {
+                                      "kind": "IdentExpr",
+                                      "name": "ptr",
+                                      "span": {
+                                        "start": 1831,
+                                        "end": 1834
+                                      }
+                                    },
+                                    "type": {
+                                      "kind": "PointerType",
+                                      "pointee": {
+                                        "kind": "PrimitiveType",
+                                        "name": "u32",
+                                        "span": {
+                                          "start": 1839,
+                                          "end": 1842
+                                        }
+                                      },
+                                      "span": {
+                                        "start": 1838,
+                                        "end": 1842
+                                      }
+                                    },
+                                    "span": {
+                                      "start": 1831,
+                                      "end": 1842
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1831,
+                                    "end": 1842
+                                  }
+                                }
+                              ],
+                              "span": {
+                                "start": 1830,
+                                "end": 1843
+                              }
+                            },
+                            "member": {
+                              "kind": "deref"
+                            },
+                            "span": {
+                              "start": 1830,
+                              "end": 1845
+                            }
+                          },
+                          "type": {
+                            "kind": "PrimitiveType",
+                            "name": "u64",
+                            "span": {
+                              "start": 1849,
+                              "end": 1852
+                            }
+                          },
+                          "span": {
+                            "start": 1830,
+                            "end": 1852
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-1",
+                          "span": {
+                            "start": 1855,
+                            "end": 1864
+                          }
+                        },
+                        "span": {
+                          "start": 1830,
+                          "end": 1864
+                        }
+                      },
+                      "span": {
+                        "start": 1823,
+                        "end": 1864
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "h64",
+                        "span": {
+                          "start": 1869,
+                          "end": 1872
+                        }
+                      },
+                      "op": "=",
+                      "value": {
+                        "kind": "BinaryExpr",
+                        "op": "+",
+                        "left": {
+                          "kind": "BinaryExpr",
+                          "op": "*",
+                          "left": {
+                            "kind": "TupleExpr",
+                            "elements": [
+                              {
+                                "kind": "Arg",
+                                "name": null,
+                                "value": {
+                                  "kind": "BinaryExpr",
+                                  "op": "<<<",
+                                  "left": {
+                                    "kind": "IdentExpr",
+                                    "name": "h64",
+                                    "span": {
+                                      "start": 1876,
+                                      "end": 1879
+                                    }
+                                  },
+                                  "right": {
+                                    "kind": "LiteralExpr",
+                                    "value": {
+                                      "kind": "int",
+                                      "value": "23",
+                                      "radix": 10
+                                    },
+                                    "span": {
+                                      "start": 1884,
+                                      "end": 1886
+                                    }
+                                  },
+                                  "span": {
+                                    "start": 1876,
+                                    "end": 1886
+                                  }
+                                },
+                                "span": {
+                                  "start": 1876,
+                                  "end": 1886
+                                }
+                              }
+                            ],
+                            "span": {
+                              "start": 1875,
+                              "end": 1887
+                            }
+                          },
+                          "right": {
+                            "kind": "IdentExpr",
+                            "name": "prime64-2",
+                            "span": {
+                              "start": 1890,
+                              "end": 1899
+                            }
+                          },
+                          "span": {
+                            "start": 1875,
+                            "end": 1899
+                          }
+                        },
+                        "right": {
+                          "kind": "IdentExpr",
+                          "name": "prime64-3",
+                          "span": {
+                            "start": 1902,
+                            "end": 1911
+                          }
+                        },
+                        "span": {
+                          "start": 1875,
+                          "end": 1911
+                        }
+                      },
+                      "span": {
+                        "start": 1869,
+                        "end": 1911
+                      }
+                    },
+                    {
+                      "kind": "AssignmentStmt",
+                      "target": {
+                        "kind": "IdentExpr",
+                        "name": "ptr",
+                        "span": {
+                          "start": 1916,
+                          "end": 1919
+                        }
+                      },
+                      "op": "+=",
+                      "value": {
+                        "kind": "LiteralExpr",
+                        "value": {
+                          "kind": "int",
+                          "value": "4",
+                          "radix": 10
+                        },
+                        "span": {
+                          "start": 1923,
+                          "end": 1924
+                        }
+                      },
+                      "span": {
+                        "start": 1916,
+                        "end": 1924
+                      }
+                    }
+                  ],
+                  "span": {
+                    "start": 1817,
+                    "end": 1928
+                  }
+                },
+                "elifs": [],
+                "else_": null,
+                "span": {
+                  "start": 1798,
+                  "end": 1928
+                }
+              },
+              "span": {
+                "start": 1798,
+                "end": 1928
+              }
+            },
+            {
+              "kind": "WhileStmt",
+              "condition": {
+                "kind": "BinaryExpr",
+                "op": "<",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "ptr",
+                  "span": {
+                    "start": 2028,
+                    "end": 2031
+                  }
+                },
+                "right": {
+                  "kind": "IdentExpr",
+                  "name": "last",
+                  "span": {
+                    "start": 2034,
+                    "end": 2038
+                  }
+                },
+                "span": {
+                  "start": 2028,
+                  "end": 2038
+                }
+              },
+              "body": {
+                "kind": "Block",
+                "stmts": [
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "h64",
+                      "span": {
+                        "start": 2045,
+                        "end": 2048
+                      }
+                    },
+                    "op": "^=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "CastExpr",
+                        "expr": {
+                          "kind": "MemberExpr",
+                          "object": {
+                            "kind": "IdentExpr",
+                            "name": "ptr",
+                            "span": {
+                              "start": 2052,
+                              "end": 2055
+                            }
+                          },
+                          "member": {
+                            "kind": "type",
+                            "type": {
+                              "kind": "PrimitiveType",
+                              "name": "u8",
+                              "span": {
+                                "start": 2056,
+                                "end": 2058
+                              }
+                            }
+                          },
+                          "span": {
+                            "start": 2052,
+                            "end": 2058
+                          }
+                        },
+                        "type": {
+                          "kind": "PrimitiveType",
+                          "name": "u64",
+                          "span": {
+                            "start": 2062,
+                            "end": 2065
+                          }
+                        },
+                        "span": {
+                          "start": 2052,
+                          "end": 2065
+                        }
+                      },
+                      "right": {
+                        "kind": "IdentExpr",
+                        "name": "prime64-5",
+                        "span": {
+                          "start": 2068,
+                          "end": 2077
+                        }
+                      },
+                      "span": {
+                        "start": 2052,
+                        "end": 2077
+                      }
+                    },
+                    "span": {
+                      "start": 2045,
+                      "end": 2077
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "h64",
+                      "span": {
+                        "start": 2082,
+                        "end": 2085
+                      }
+                    },
+                    "op": "=",
+                    "value": {
+                      "kind": "BinaryExpr",
+                      "op": "*",
+                      "left": {
+                        "kind": "TupleExpr",
+                        "elements": [
+                          {
+                            "kind": "Arg",
+                            "name": null,
+                            "value": {
+                              "kind": "BinaryExpr",
+                              "op": "<<<",
+                              "left": {
+                                "kind": "IdentExpr",
+                                "name": "h64",
+                                "span": {
+                                  "start": 2089,
+                                  "end": 2092
+                                }
+                              },
+                              "right": {
+                                "kind": "LiteralExpr",
+                                "value": {
+                                  "kind": "int",
+                                  "value": "11",
+                                  "radix": 10
+                                },
+                                "span": {
+                                  "start": 2097,
+                                  "end": 2099
+                                }
+                              },
+                              "span": {
+                                "start": 2089,
+                                "end": 2099
+                              }
+                            },
+                            "span": {
+                              "start": 2089,
+                              "end": 2099
+                            }
+                          }
+                        ],
+                        "span": {
+                          "start": 2088,
+                          "end": 2100
+                        }
+                      },
+                      "right": {
+                        "kind": "IdentExpr",
+                        "name": "prime64-1",
+                        "span": {
+                          "start": 2103,
+                          "end": 2112
+                        }
+                      },
+                      "span": {
+                        "start": 2088,
+                        "end": 2112
+                      }
+                    },
+                    "span": {
+                      "start": 2082,
+                      "end": 2112
+                    }
+                  },
+                  {
+                    "kind": "AssignmentStmt",
+                    "target": {
+                      "kind": "IdentExpr",
+                      "name": "ptr",
+                      "span": {
+                        "start": 2117,
+                        "end": 2120
+                      }
+                    },
+                    "op": "+=",
+                    "value": {
+                      "kind": "LiteralExpr",
+                      "value": {
+                        "kind": "int",
+                        "value": "1",
+                        "radix": 10
+                      },
+                      "span": {
+                        "start": 2124,
+                        "end": 2125
+                      }
+                    },
+                    "span": {
+                      "start": 2117,
+                      "end": 2125
+                    }
+                  }
+                ],
+                "span": {
+                  "start": 2039,
+                  "end": 2129
+                }
+              },
+              "span": {
+                "start": 2022,
+                "end": 2129
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 2147,
+                  "end": 2150
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "h64",
+                  "span": {
+                    "start": 2154,
+                    "end": 2157
+                  }
+                },
+                "right": {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "int",
+                    "value": "33",
+                    "radix": 10
+                  },
+                  "span": {
+                    "start": 2161,
+                    "end": 2163
+                  }
+                },
+                "span": {
+                  "start": 2154,
+                  "end": 2163
+                }
+              },
+              "span": {
+                "start": 2147,
+                "end": 2163
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 2166,
+                  "end": 2169
+                }
+              },
+              "op": "*=",
+              "value": {
+                "kind": "IdentExpr",
+                "name": "prime64-2",
+                "span": {
+                  "start": 2173,
+                  "end": 2182
+                }
+              },
+              "span": {
+                "start": 2166,
+                "end": 2182
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 2185,
+                  "end": 2188
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "h64",
+                  "span": {
+                    "start": 2192,
+                    "end": 2195
+                  }
+                },
+                "right": {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "int",
+                    "value": "29",
+                    "radix": 10
+                  },
+                  "span": {
+                    "start": 2199,
+                    "end": 2201
+                  }
+                },
+                "span": {
+                  "start": 2192,
+                  "end": 2201
+                }
+              },
+              "span": {
+                "start": 2185,
+                "end": 2201
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 2204,
+                  "end": 2207
+                }
+              },
+              "op": "*=",
+              "value": {
+                "kind": "IdentExpr",
+                "name": "prime64-3",
+                "span": {
+                  "start": 2211,
+                  "end": 2220
+                }
+              },
+              "span": {
+                "start": 2204,
+                "end": 2220
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "h64",
+                "span": {
+                  "start": 2223,
+                  "end": 2226
+                }
+              },
+              "op": "^=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": ">>",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "h64",
+                  "span": {
+                    "start": 2230,
+                    "end": 2233
+                  }
+                },
+                "right": {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "int",
+                    "value": "32",
+                    "radix": 10
+                  },
+                  "span": {
+                    "start": 2237,
+                    "end": 2239
+                  }
+                },
+                "span": {
+                  "start": 2230,
+                  "end": 2239
+                }
+              },
+              "span": {
+                "start": 2223,
+                "end": 2239
+              }
+            }
+          ],
+          "span": {
+            "start": 646,
+            "end": 2241
+          }
+        },
+        "span": {
+          "start": 601,
+          "end": 2241
+        }
+      },
+      "span": {
+        "start": 586,
+        "end": 2241
+      }
+    }
+  ],
+  "span": {
+    "start": 80,
+    "end": 2242
+  }
+}
