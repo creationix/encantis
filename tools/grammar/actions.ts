@@ -1,29 +1,29 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as ohm from 'ohm-js';
-import type * as AST from '../ast';
-import type { Span } from '../ast';
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as ohm from 'ohm-js'
+import type * as AST from '../ast'
+import type { Span } from '../ast'
 
 // Load the grammar
-const grammarPath = path.join(__dirname, 'encantis.ohm');
-const grammarSource = fs.readFileSync(grammarPath, 'utf-8');
-export const grammar = ohm.grammar(grammarSource);
+const grammarPath = path.join(__dirname, 'encantis.ohm')
+const grammarSource = fs.readFileSync(grammarPath, 'utf-8')
+export const grammar = ohm.grammar(grammarSource)
 
 // Helper to create span from Ohm source interval
 function span(node: ohm.Node): Span {
   return {
     start: node.source.startIdx,
     end: node.source.endIdx,
-  };
+  }
 }
 
 // Helper to get first child if present
 function first<T>(iter: ohm.IterationNode): T | null {
-  return iter.children[0]?.toAST() ?? null;
+  return iter.children[0]?.toAST() ?? null
 }
 
 // Create semantics
-export const semantics = grammar.createSemantics();
+export const semantics = grammar.createSemantics()
 
 // Add toAST operation
 semantics.addOperation<any>('toAST', {
@@ -36,7 +36,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'Module',
       decls: decls.children.map((d: ohm.Node) => d.toAST()),
       span: span(this),
-    } as AST.Module;
+    } as AST.Module
   },
 
   // ============================================================================
@@ -44,7 +44,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   Declaration(decl) {
-    return decl.toAST();
+    return decl.toAST()
   },
 
   ImportDecl_group(_import, module, _lp, items, _rp) {
@@ -53,7 +53,7 @@ semantics.addOperation<any>('toAST', {
       module: module.toAST().value.value,
       items: items.children.map((i: ohm.Node) => i.toAST()),
       span: span(this),
-    } as AST.ImportDecl;
+    } as AST.ImportDecl
   },
 
   ImportDecl_single(_import, module, item) {
@@ -62,7 +62,7 @@ semantics.addOperation<any>('toAST', {
       module: module.toAST().value.value,
       items: [item.toAST()],
       span: span(this),
-    } as AST.ImportDecl;
+    } as AST.ImportDecl
   },
 
   ImportGroupItem(name, item) {
@@ -71,7 +71,7 @@ semantics.addOperation<any>('toAST', {
       name: name.toAST().value.value,
       item: item.toAST(),
       span: span(this),
-    } as AST.ImportItem;
+    } as AST.ImportItem
   },
 
   ImportItem_func(_func, identOpt, sig) {
@@ -80,7 +80,7 @@ semantics.addOperation<any>('toAST', {
       ident: first(identOpt),
       signature: sig.toAST(),
       span: span(this),
-    } as AST.ImportFunc;
+    } as AST.ImportFunc
   },
 
   ImportItem_global(_global, ident, typeAnnotation) {
@@ -89,7 +89,7 @@ semantics.addOperation<any>('toAST', {
       ident: ident.toAST(),
       type: typeAnnotation.toAST(),
       span: span(this),
-    } as AST.ImportGlobal;
+    } as AST.ImportGlobal
   },
 
   ImportItem_memory(_memory, size) {
@@ -97,7 +97,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'ImportMemory',
       min: Number(size.sourceString),
       span: span(this),
-    } as AST.ImportMemory;
+    } as AST.ImportMemory
   },
 
   ExportDecl(_export, name, item) {
@@ -106,11 +106,11 @@ semantics.addOperation<any>('toAST', {
       name: name.toAST().value.value,
       item: item.toAST(),
       span: span(this),
-    } as AST.ExportDecl;
+    } as AST.ExportDecl
   },
 
   Exportable(item) {
-    return item.toAST();
+    return item.toAST()
   },
 
   FuncDecl(inlineOpt, _func, identOpt, sig, body) {
@@ -121,7 +121,7 @@ semantics.addOperation<any>('toAST', {
       signature: sig.toAST(),
       body: body.toAST(),
       span: span(this),
-    } as AST.FuncDecl;
+    } as AST.FuncDecl
   },
 
   FuncSignature(params, returnOpt) {
@@ -130,11 +130,11 @@ semantics.addOperation<any>('toAST', {
       params: params.toAST(),
       returns: first(returnOpt),
       span: span(this),
-    } as AST.FuncSignature;
+    } as AST.FuncSignature
   },
 
   ReturnSpec(_arrow, valueSpec) {
-    return valueSpec.toAST();
+    return valueSpec.toAST()
   },
 
   ValueSpec_parens(_lp, fieldListOpt, _rp) {
@@ -142,15 +142,15 @@ semantics.addOperation<any>('toAST', {
       kind: 'FieldList',
       fields: first(fieldListOpt) ?? [],
       span: span(this),
-    } as AST.FieldList;
+    } as AST.FieldList
   },
 
   ValueSpec_single(type) {
-    return type.toAST();
+    return type.toAST()
   },
 
   FieldList(list) {
-    return list.asIteration().children.map((f: ohm.Node) => f.toAST());
+    return list.asIteration().children.map((f: ohm.Node) => f.toAST())
   },
 
   Field_named(ident, typeAnnotation) {
@@ -159,7 +159,7 @@ semantics.addOperation<any>('toAST', {
       ident: ident.toAST(),
       type: typeAnnotation.toAST(),
       span: span(this),
-    } as AST.Field;
+    } as AST.Field
   },
 
   Field_anonymous(type) {
@@ -168,19 +168,19 @@ semantics.addOperation<any>('toAST', {
       ident: null,
       type: type.toAST(),
       span: span(this),
-    } as AST.Field;
+    } as AST.Field
   },
 
   TypeAnnotation(_colon, type) {
-    return type.toAST();
+    return type.toAST()
   },
 
   Assign(_eq, expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   Body_block(block) {
-    return block.toAST();
+    return block.toAST()
   },
 
   Body_arrow(_arrow, expr) {
@@ -188,7 +188,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'ArrowBody',
       expr: expr.toAST(),
       span: span(this),
-    } as AST.ArrowBody;
+    } as AST.ArrowBody
   },
 
   Block(_lb, stmts, _rb) {
@@ -196,7 +196,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'Block',
       stmts: stmts.children.map((s: ohm.Node) => s.toAST()),
       span: span(this),
-    } as AST.Block;
+    } as AST.Block
   },
 
   TypeDecl(_type, ident, _eq, type) {
@@ -205,7 +205,7 @@ semantics.addOperation<any>('toAST', {
       ident: ident.toAST(),
       type: type.toAST(),
       span: span(this),
-    } as AST.TypeDecl;
+    } as AST.TypeDecl
   },
 
   UniqueDecl(_unique, ident, _eq, type) {
@@ -214,7 +214,7 @@ semantics.addOperation<any>('toAST', {
       ident: ident.toAST(),
       type: type.toAST(),
       span: span(this),
-    } as AST.UniqueDecl;
+    } as AST.UniqueDecl
   },
 
   DefDecl(_def, ident, assign) {
@@ -223,7 +223,7 @@ semantics.addOperation<any>('toAST', {
       ident: ident.toAST(),
       value: assign.toAST(),
       span: span(this),
-    } as AST.DefDecl;
+    } as AST.DefDecl
   },
 
   GlobalDecl(_global, ident, typeOpt, assignOpt) {
@@ -233,22 +233,22 @@ semantics.addOperation<any>('toAST', {
       type: first(typeOpt),
       value: first(assignOpt),
       span: span(this),
-    } as AST.GlobalDecl;
+    } as AST.GlobalDecl
   },
 
   MemoryDecl(_memory, min, maxOpt, dataBlockOpt) {
-    const dataBlock = first<AST.DataEntry[]>(dataBlockOpt);
+    const dataBlock = first<AST.DataEntry[]>(dataBlockOpt)
     return {
       kind: 'MemoryDecl',
       min: Number(min.sourceString),
       max: first(maxOpt) ? Number(first(maxOpt)) : null,
       data: dataBlock ?? [],
       span: span(this),
-    } as AST.MemoryDecl;
+    } as AST.MemoryDecl
   },
 
   DataBlock(_lb, entries, _rb) {
-    return entries.children.map((e: ohm.Node) => e.toAST());
+    return entries.children.map((e: ohm.Node) => e.toAST())
   },
 
   DataEntry(offset, _arrow, expr, _comma) {
@@ -257,7 +257,7 @@ semantics.addOperation<any>('toAST', {
       offset: Number(offset.sourceString),
       value: expr.toAST(),
       span: span(this),
-    } as AST.DataEntry;
+    } as AST.DataEntry
   },
 
   // ============================================================================
@@ -268,10 +268,12 @@ semantics.addOperation<any>('toAST', {
     return {
       kind: 'IndexedType',
       element: element.toAST(),
-      size: first(sizeOpt) ? Number(first<any>(sizeOpt).sourceString ?? first(sizeOpt)) : null,
+      size: first(sizeOpt)
+        ? Number(first<any>(sizeOpt).sourceString ?? first(sizeOpt))
+        : null,
       nullTerminated: nullTermOpt.children.length > 0,
       span: span(this),
-    } as AST.IndexedType;
+    } as AST.IndexedType
   },
 
   Type_pointer(_star, type) {
@@ -279,7 +281,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'PointerType',
       pointee: type.toAST(),
       span: span(this),
-    } as AST.PointerType;
+    } as AST.PointerType
   },
 
   Type_composite(_lp, fieldListOpt, _rp) {
@@ -287,15 +289,15 @@ semantics.addOperation<any>('toAST', {
       kind: 'CompositeType',
       fields: first(fieldListOpt) ?? [],
       span: span(this),
-    } as AST.CompositeType;
+    } as AST.CompositeType
   },
 
   Type_primitive(prim) {
-    return prim.toAST();
+    return prim.toAST()
   },
 
   Type_named(typeIdent) {
-    return typeIdent.toAST();
+    return typeIdent.toAST()
   },
 
   PrimitiveType(name) {
@@ -303,7 +305,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'PrimitiveType',
       name: name.sourceString as AST.PrimitiveType['name'],
       span: span(this),
-    } as AST.PrimitiveType;
+    } as AST.PrimitiveType
   },
 
   typeIdent(_first, _rest) {
@@ -311,7 +313,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'TypeRef',
       name: this.sourceString,
       span: span(this),
-    } as AST.TypeRef;
+    } as AST.TypeRef
   },
 
   // ============================================================================
@@ -319,7 +321,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   Statement(stmt) {
-    return stmt.toAST();
+    return stmt.toAST()
   },
 
   LetStmt(_let, pattern, typeOpt, assignOpt) {
@@ -329,7 +331,7 @@ semantics.addOperation<any>('toAST', {
       type: first(typeOpt),
       value: first(assignOpt),
       span: span(this),
-    } as AST.LetStmt;
+    } as AST.LetStmt
   },
 
   SetStmt(_set, pattern, typeOpt, assign) {
@@ -339,7 +341,7 @@ semantics.addOperation<any>('toAST', {
       type: first(typeOpt),
       value: assign.toAST(),
       span: span(this),
-    } as AST.SetStmt;
+    } as AST.SetStmt
   },
 
   WhileStmt(_while, condition, body) {
@@ -348,7 +350,7 @@ semantics.addOperation<any>('toAST', {
       condition: condition.toAST(),
       body: body.toAST(),
       span: span(this),
-    } as AST.WhileStmt;
+    } as AST.WhileStmt
   },
 
   ForStmt(_for, binding, _in, iterable, body) {
@@ -358,7 +360,7 @@ semantics.addOperation<any>('toAST', {
       iterable: iterable.toAST(),
       body: body.toAST(),
       span: span(this),
-    } as AST.ForStmt;
+    } as AST.ForStmt
   },
 
   ForBinding_withIndex(value, _comma, index) {
@@ -367,7 +369,7 @@ semantics.addOperation<any>('toAST', {
       value: value.toAST(),
       index: index.toAST(),
       span: span(this),
-    } as AST.ForBinding;
+    } as AST.ForBinding
   },
 
   ForBinding_valueOnly(value) {
@@ -376,7 +378,7 @@ semantics.addOperation<any>('toAST', {
       value: value.toAST(),
       index: null,
       span: span(this),
-    } as AST.ForBinding;
+    } as AST.ForBinding
   },
 
   LoopStmt(_loop, body) {
@@ -384,7 +386,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'LoopStmt',
       body: body.toAST(),
       span: span(this),
-    } as AST.LoopStmt;
+    } as AST.LoopStmt
   },
 
   ReturnStmt(_return, exprOpt, whenOpt) {
@@ -393,7 +395,7 @@ semantics.addOperation<any>('toAST', {
       value: first(exprOpt),
       when: first(whenOpt),
       span: span(this),
-    } as AST.ReturnStmt;
+    } as AST.ReturnStmt
   },
 
   BreakStmt(_break, whenOpt) {
@@ -401,7 +403,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'BreakStmt',
       when: first(whenOpt),
       span: span(this),
-    } as AST.BreakStmt;
+    } as AST.BreakStmt
   },
 
   ContinueStmt(_continue, whenOpt) {
@@ -409,11 +411,11 @@ semantics.addOperation<any>('toAST', {
       kind: 'ContinueStmt',
       when: first(whenOpt),
       span: span(this),
-    } as AST.ContinueStmt;
+    } as AST.ContinueStmt
   },
 
   WhenClause(_when, expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   AssignmentStmt(target, op, value) {
@@ -423,7 +425,7 @@ semantics.addOperation<any>('toAST', {
       op: op.sourceString as AST.AssignOp,
       value: value.toAST(),
       span: span(this),
-    } as AST.AssignmentStmt;
+    } as AST.AssignmentStmt
   },
 
   ExpressionStmt(expr) {
@@ -431,7 +433,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'ExpressionStmt',
       expr: expr.toAST(),
       span: span(this),
-    } as AST.ExpressionStmt;
+    } as AST.ExpressionStmt
   },
 
   // ============================================================================
@@ -443,13 +445,13 @@ semantics.addOperation<any>('toAST', {
       kind: 'IdentExpr',
       name: ident.toAST(),
       span: span(ident),
-    };
-
-    for (const suffix of suffixes.children) {
-      result = applySuffix(result, suffix.toAST(), span(suffix));
     }
 
-    return result;
+    for (const suffix of suffixes.children) {
+      result = applySuffix(result, suffix.toAST(), span(suffix))
+    }
+
+    return result
   },
 
   // ============================================================================
@@ -457,23 +459,23 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   AccessSuffix_field(_dot, field) {
-    return { kind: 'field', name: field.sourceString };
+    return { kind: 'field', name: field.sourceString }
   },
 
   AccessSuffix_tupleIndex(_dot, digits) {
-    return { kind: 'tupleIndex', value: Number(digits.sourceString) };
+    return { kind: 'tupleIndex', value: Number(digits.sourceString) }
   },
 
   AccessSuffix_deref(_dot, _star) {
-    return { kind: 'deref' };
+    return { kind: 'deref' }
   },
 
   AccessSuffix_typePun(_dot, type) {
-    return { kind: 'typePun', type: type.toAST() };
+    return { kind: 'typePun', type: type.toAST() }
   },
 
   AccessSuffix_index(_lb, expr, _rb) {
-    return { kind: 'index', expr: expr.toAST() };
+    return { kind: 'index', expr: expr.toAST() }
   },
 
   // ============================================================================
@@ -485,7 +487,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'TuplePattern',
       elements: list.toAST(),
       span: span(this),
-    } as AST.TuplePattern;
+    } as AST.TuplePattern
   },
 
   Pattern_ident(ident) {
@@ -493,11 +495,11 @@ semantics.addOperation<any>('toAST', {
       kind: 'IdentPattern',
       name: ident.toAST(),
       span: span(this),
-    } as AST.IdentPattern;
+    } as AST.IdentPattern
   },
 
   PatternList(list) {
-    return list.asIteration().children.map((e: ohm.Node) => e.toAST());
+    return list.asIteration().children.map((e: ohm.Node) => e.toAST())
   },
 
   PatternElem_namedExplicit(field, _colon, binding) {
@@ -505,7 +507,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'named',
       field: field.sourceString,
       binding: binding.sourceString,
-    } as AST.PatternElement;
+    } as AST.PatternElement
   },
 
   PatternElem_namedShort(field, _colon) {
@@ -513,14 +515,14 @@ semantics.addOperation<any>('toAST', {
       kind: 'named',
       field: field.sourceString,
       binding: null,
-    } as AST.PatternElement;
+    } as AST.PatternElement
   },
 
   PatternElem_positional(pattern) {
     return {
       kind: 'positional',
       pattern: pattern.toAST(),
-    } as AST.PatternElement;
+    } as AST.PatternElement
   },
 
   // ============================================================================
@@ -528,7 +530,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   Expr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   OrExpr_or(left, _op, right) {
@@ -538,11 +540,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   OrExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   AndExpr_and(left, _op, right) {
@@ -552,11 +554,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   AndExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   NotExpr_not(_op, operand) {
@@ -565,11 +567,11 @@ semantics.addOperation<any>('toAST', {
       op: '!',
       operand: operand.toAST(),
       span: span(this),
-    } as AST.UnaryExpr;
+    } as AST.UnaryExpr
   },
 
   NotExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   CompareExpr_compare(left, op, right) {
@@ -579,11 +581,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   CompareExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   BitOrExpr_or(left, _op, right) {
@@ -593,11 +595,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   BitOrExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   BitXorExpr_xor(left, _op, right) {
@@ -607,11 +609,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   BitXorExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   BitAndExpr_and(left, _op, right) {
@@ -621,11 +623,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   BitAndExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   ShiftExpr_shift(left, op, right) {
@@ -635,11 +637,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   ShiftExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   AddExpr_add(left, op, right) {
@@ -649,11 +651,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   AddExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   MulExpr_mul(left, op, right) {
@@ -663,11 +665,11 @@ semantics.addOperation<any>('toAST', {
       left: left.toAST(),
       right: right.toAST(),
       span: span(this),
-    } as AST.BinaryExpr;
+    } as AST.BinaryExpr
   },
 
   MulExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   UnaryExpr_neg(_op, operand) {
@@ -676,7 +678,7 @@ semantics.addOperation<any>('toAST', {
       op: '-',
       operand: operand.toAST(),
       span: span(this),
-    } as AST.UnaryExpr;
+    } as AST.UnaryExpr
   },
 
   UnaryExpr_complement(_op, operand) {
@@ -685,7 +687,7 @@ semantics.addOperation<any>('toAST', {
       op: '~',
       operand: operand.toAST(),
       span: span(this),
-    } as AST.UnaryExpr;
+    } as AST.UnaryExpr
   },
 
   UnaryExpr_ref(_op, operand) {
@@ -694,11 +696,11 @@ semantics.addOperation<any>('toAST', {
       op: '&',
       operand: operand.toAST(),
       span: span(this),
-    } as AST.UnaryExpr;
+    } as AST.UnaryExpr
   },
 
   UnaryExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   CastExpr_cast(expr, _as, type) {
@@ -707,7 +709,7 @@ semantics.addOperation<any>('toAST', {
       expr: expr.toAST(),
       type: type.toAST(),
       span: span(this),
-    } as AST.CastExpr;
+    } as AST.CastExpr
   },
 
   CastExpr_annotation(expr, typeAnnotation) {
@@ -716,11 +718,11 @@ semantics.addOperation<any>('toAST', {
       expr: expr.toAST(),
       type: typeAnnotation.toAST(),
       span: span(this),
-    } as AST.AnnotationExpr;
+    } as AST.AnnotationExpr
   },
 
   CastExpr(expr) {
-    return expr.toAST();
+    return expr.toAST()
   },
 
   // ============================================================================
@@ -728,21 +730,21 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   PostfixExpr(primary, ops) {
-    let result = primary.toAST();
+    let result = primary.toAST()
 
     for (const op of ops.children) {
-      result = applyPostfixOp(result, op.toAST(), span(op));
+      result = applyPostfixOp(result, op.toAST(), span(op))
     }
 
-    return result;
+    return result
   },
 
   PostfixOp(suffix) {
-    return suffix.toAST();
+    return suffix.toAST()
   },
 
   PostfixOp_call(_lp, argsOpt, _rp) {
-    return { kind: 'call', args: first(argsOpt) ?? [] };
+    return { kind: 'call', args: first(argsOpt) ?? [] }
   },
 
   // ============================================================================
@@ -756,9 +758,9 @@ semantics.addOperation<any>('toAST', {
         kind: 'IdentExpr',
         name: expr.toAST(),
         span: span(expr),
-      } as AST.IdentExpr;
+      } as AST.IdentExpr
     }
-    return expr.toAST();
+    return expr.toAST()
   },
 
   PrimaryExpr_tupleOrStruct(_lp, args, _rp) {
@@ -766,7 +768,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'TupleExpr',
       elements: args.toAST(),
       span: span(this),
-    } as AST.TupleExpr;
+    } as AST.TupleExpr
   },
 
   PrimaryExpr_group(_lp, expr, _rp) {
@@ -774,7 +776,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'GroupExpr',
       expr: expr.toAST(),
       span: span(this),
-    } as AST.GroupExpr;
+    } as AST.GroupExpr
   },
 
   PrimaryExpr_unit(_lp, _rp) {
@@ -782,7 +784,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'TupleExpr',
       elements: [],
       span: span(this),
-    } as AST.TupleExpr;
+    } as AST.TupleExpr
   },
 
   PrimaryExpr_constructor(typeName, _lp, argsOpt, _rp) {
@@ -795,7 +797,7 @@ semantics.addOperation<any>('toAST', {
       } as AST.IdentExpr,
       args: first(argsOpt) ?? [],
       span: span(this),
-    } as AST.CallExpr;
+    } as AST.CallExpr
   },
 
   // ============================================================================
@@ -810,7 +812,7 @@ semantics.addOperation<any>('toAST', {
       elifs: elifs.children.map((e: ohm.Node) => e.toAST()),
       else_: first(elseOpt),
       span: span(this),
-    } as AST.IfExpr;
+    } as AST.IfExpr
   },
 
   ElifBranch(_elif, condition, then) {
@@ -819,11 +821,11 @@ semantics.addOperation<any>('toAST', {
       condition: condition.toAST(),
       thenBranch: then.toAST(),
       span: span(this),
-    } as AST.ElifBranch;
+    } as AST.ElifBranch
   },
 
   ElseBranch(_else, body) {
-    return body.toAST();
+    return body.toAST()
   },
 
   // ============================================================================
@@ -836,7 +838,7 @@ semantics.addOperation<any>('toAST', {
       subject: subject.toAST(),
       arms: arms.children.map((a: ohm.Node) => a.toAST()),
       span: span(this),
-    } as AST.MatchExpr;
+    } as AST.MatchExpr
   },
 
   MatchArm(patterns, _arrow, body) {
@@ -845,22 +847,22 @@ semantics.addOperation<any>('toAST', {
       patterns: patterns.toAST(),
       body: body.toAST(),
       span: span(this),
-    } as AST.MatchArm;
+    } as AST.MatchArm
   },
 
   MatchPatterns(list) {
-    return list.asIteration().children.map((p: ohm.Node) => p.toAST());
+    return list.asIteration().children.map((p: ohm.Node) => p.toAST())
   },
 
   MatchPattern_literal(lit) {
     return {
       kind: 'literal',
       value: lit.toAST().value,
-    } as AST.MatchPattern;
+    } as AST.MatchPattern
   },
 
   MatchPattern_wildcard(_underscore) {
-    return { kind: 'wildcard' } as AST.MatchPattern;
+    return { kind: 'wildcard' } as AST.MatchPattern
   },
 
   // ============================================================================
@@ -868,7 +870,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   ArgList(list) {
-    return list.asIteration().children.map((a: ohm.Node) => a.toAST());
+    return list.asIteration().children.map((a: ohm.Node) => a.toAST())
   },
 
   Arg_named(name, _colon, expr) {
@@ -877,7 +879,7 @@ semantics.addOperation<any>('toAST', {
       name: name.sourceString,
       value: expr.toAST(),
       span: span(this),
-    } as AST.Arg;
+    } as AST.Arg
   },
 
   Arg_shorthand(name, _colon) {
@@ -886,7 +888,7 @@ semantics.addOperation<any>('toAST', {
       name: name.sourceString,
       value: null,
       span: span(this),
-    } as AST.Arg;
+    } as AST.Arg
   },
 
   Arg_positional(expr) {
@@ -895,7 +897,7 @@ semantics.addOperation<any>('toAST', {
       name: null,
       value: expr.toAST(),
       span: span(this),
-    } as AST.Arg;
+    } as AST.Arg
   },
 
   // ============================================================================
@@ -903,20 +905,20 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   literal(lit) {
-    return lit.toAST();
+    return lit.toAST()
   },
 
   numberLiteral(num) {
-    return num.toAST();
+    return num.toAST()
   },
 
   intLiteral(negOpt, num) {
-    const isNeg = negOpt.sourceString === '-';
-    const ast = num.toAST();
+    const isNeg = negOpt.sourceString === '-'
+    const ast = num.toAST()
     if (isNeg && ast.value.kind === 'int') {
-      ast.value.value = -ast.value.value;
+      ast.value.value = -ast.value.value
     }
-    return ast;
+    return ast
   },
 
   decimalLiteral(_digits) {
@@ -924,7 +926,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 10 },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   hexLiteral(_prefix, _digits) {
@@ -932,7 +934,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 16 },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   binaryLiteral(_prefix, _digits) {
@@ -940,7 +942,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 2 },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   octalLiteral(_prefix, _digits) {
@@ -948,27 +950,27 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'int', value: BigInt(this.sourceString), radix: 8 },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   dozenalLiteral(_prefix, _digits) {
-    const str = this.sourceString.slice(2);
-    let value = 0n;
+    const str = this.sourceString.slice(2)
+    let value = 0n
     for (const c of str) {
-      value *= 12n;
+      value *= 12n
       if (c >= '0' && c <= '9') {
-        value += BigInt(c.charCodeAt(0) - 48);
+        value += BigInt(c.charCodeAt(0) - 48)
       } else if (c === 'a' || c === 'A') {
-        value += 10n;
+        value += 10n
       } else if (c === 'b' || c === 'B') {
-        value += 11n;
+        value += 11n
       }
     }
     return {
       kind: 'LiteralExpr',
       value: { kind: 'int', value, radix: 12 as 12 },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   floatLiteral(_neg, _int, _dot, _frac, _exp) {
@@ -976,67 +978,74 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'float', value: parseFloat(this.sourceString) },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   stringLiteral(str) {
-    return str.toAST();
+    return str.toAST()
   },
 
   utf8String(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('');
+    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('')
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'utf8' },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   charString(_lq, chars, _rq) {
-    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('');
+    const value = chars.children.map((c: ohm.Node) => c.toAST()).join('')
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'char' },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   hexString(_prefix, bytes, _rq) {
-    const value = bytes.sourceString.replace(/\s+/g, '');
+    const value = bytes.sourceString.replace(/\s+/g, '')
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'hex' },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   base64String(_prefix, chars, _rq) {
-    const value = chars.sourceString.replace(/\s+/g, '');
+    const value = chars.sourceString.replace(/\s+/g, '')
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', value, format: 'base64' },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   utf8Char(char) {
-    return char.toAST();
+    return char.toAST()
   },
 
   escapeSeq_hex(_backslash, _x, d1, d2) {
-    return String.fromCharCode(parseInt(d1.sourceString + d2.sourceString, 16));
+    return String.fromCharCode(parseInt(d1.sourceString + d2.sourceString, 16))
   },
 
   escapeSeq_simple(_backslash, char) {
-    const c = char.sourceString;
+    const c = char.sourceString
     switch (c) {
-      case 'n': return '\n';
-      case 't': return '\t';
-      case 'r': return '\r';
-      case '\\': return '\\';
-      case '"': return '"';
-      case "'": return "'";
-      default: return c;
+      case 'n':
+        return '\n'
+      case 't':
+        return '\t'
+      case 'r':
+        return '\r'
+      case '\\':
+        return '\\'
+      case '"':
+        return '"'
+      case "'":
+        return "'"
+      default:
+        return c
     }
   },
 
@@ -1045,7 +1054,7 @@ semantics.addOperation<any>('toAST', {
       kind: 'LiteralExpr',
       value: { kind: 'bool', value: bool.sourceString === 'true' },
       span: span(this),
-    } as AST.LiteralExpr;
+    } as AST.LiteralExpr
   },
 
   // ============================================================================
@@ -1053,7 +1062,7 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   ident(_first, _rest) {
-    return this.sourceString;
+    return this.sourceString
   },
 
   // ============================================================================
@@ -1061,13 +1070,13 @@ semantics.addOperation<any>('toAST', {
   // ============================================================================
 
   _terminal() {
-    return this.sourceString;
+    return this.sourceString
   },
 
   _iter(...children) {
-    return children.map((c: ohm.Node) => c.toAST());
+    return children.map((c: ohm.Node) => c.toAST())
   },
-});
+})
 
 // ============================================================================
 // Helper: Apply suffix to build AST node
@@ -1081,7 +1090,7 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         object: base,
         member: { kind: 'field', name: suffix.name },
         span: { start: base.span.start, end: suffixSpan.end },
-      } as AST.MemberExpr;
+      } as AST.MemberExpr
 
     case 'tupleIndex':
       return {
@@ -1089,7 +1098,7 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         object: base,
         member: { kind: 'index', value: suffix.value },
         span: { start: base.span.start, end: suffixSpan.end },
-      } as AST.MemberExpr;
+      } as AST.MemberExpr
 
     case 'deref':
       return {
@@ -1097,7 +1106,7 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         object: base,
         member: { kind: 'deref' },
         span: { start: base.span.start, end: suffixSpan.end },
-      } as AST.MemberExpr;
+      } as AST.MemberExpr
 
     case 'typePun':
       return {
@@ -1105,7 +1114,7 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         object: base,
         member: { kind: 'type', type: suffix.type },
         span: { start: base.span.start, end: suffixSpan.end },
-      } as AST.MemberExpr;
+      } as AST.MemberExpr
 
     case 'index':
       return {
@@ -1113,10 +1122,10 @@ function applySuffix(base: any, suffix: any, suffixSpan: Span): any {
         object: base,
         index: suffix.expr,
         span: { start: base.span.start, end: suffixSpan.end },
-      } as AST.IndexExpr;
+      } as AST.IndexExpr
 
     default:
-      throw new Error(`Unknown suffix kind: ${suffix.kind}`);
+      throw new Error(`Unknown suffix kind: ${suffix.kind}`)
   }
 }
 
@@ -1127,9 +1136,9 @@ function applyPostfixOp(base: any, op: any, opSpan: Span): any {
       callee: base,
       args: op.args,
       span: { start: base.span.start, end: opSpan.end },
-    } as AST.CallExpr;
+    } as AST.CallExpr
   }
 
   // Otherwise it's an AccessSuffix
-  return applySuffix(base, op, opSpan);
+  return applySuffix(base, op, opSpan)
 }
