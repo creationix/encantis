@@ -137,7 +137,6 @@ describe('Lexer', () => {
       { input: 'import', kind: 'import', text: 'import' },
       { input: 'export', kind: 'export', text: 'export' },
       { input: 'memory', kind: 'memory', text: 'memory' },
-      { input: 'data', kind: 'data', text: 'data' },
       { input: 'inline', kind: 'inline', text: 'inline' },
       { input: 'unique', kind: 'unique', text: 'unique' },
       { input: 'as', kind: 'as', text: 'as' },
@@ -1007,20 +1006,32 @@ describe('Declaration Parsing', () => {
     });
   });
 
-  describe('Data declarations', () => {
-    test('parses data with string', () => {
-      const result = parse('data 0 "Hello"');
+  describe('Memory with data', () => {
+    test('parses memory with inline data block', () => {
+      const result = parse('memory 1 { 0 => "Hello" }');
       const decl = result.ast.decls[0] as any;
-      expect(decl.kind).toBe('DataDecl');
-      expect(decl.offset).toBe(0);
-      expect(decl.value.kind).toBe('StringLit');
+      expect(decl.kind).toBe('MemoryDecl');
+      expect(decl.minPages).toBe(1);
+      expect(decl.data).toHaveLength(1);
+      expect(decl.data[0].offset).toBe(0);
+      expect(decl.data[0].value.kind).toBe('StringLit');
     });
 
-    test('parses data with number', () => {
-      const result = parse('data 100 42');
+    test('parses memory with multiple data entries', () => {
+      const result = parse('memory 1 { 0 => "Hello", 100 => 42 }');
       const decl = result.ast.decls[0] as any;
-      expect(decl.offset).toBe(100);
-      expect(decl.value.kind).toBe('NumberLit');
+      expect(decl.data).toHaveLength(2);
+      expect(decl.data[0].offset).toBe(0);
+      expect(decl.data[1].offset).toBe(100);
+      expect(decl.data[1].value.kind).toBe('NumberLit');
+    });
+
+    test('parses memory without data', () => {
+      const result = parse('memory 1');
+      const decl = result.ast.decls[0] as any;
+      expect(decl.kind).toBe('MemoryDecl');
+      expect(decl.minPages).toBe(1);
+      expect(decl.data).toBeUndefined();
     });
   });
 
