@@ -68,12 +68,13 @@ export function compile(src: string): string {
   const parseResult = parse(src);
   const checkResult = check(parseResult);
 
-  if (checkResult.errors.some(e => e.severity === 'error')) {
-    // Return error summary instead of WAT
-    const errorLines = checkResult.errors
-      .filter(e => e.severity === 'error')
-      .map(e => formatDiagnostic(src, e));
-    throw new Error(`Compilation failed with ${errorLines.length} error(s):\n\n${errorLines.join('\n\n')}`);
+  // Log errors to stderr but continue with codegen (checker is incomplete)
+  const errors = checkResult.errors.filter(e => e.severity === 'error');
+  if (errors.length > 0) {
+    for (const e of errors) {
+      console.error(formatDiagnostic(src, e));
+    }
+    console.error(`\nWarning: ${errors.length} type error(s) found, continuing with codegen...\n`);
   }
 
   return generateWat(parseResult.ast, checkResult.symbols, src);

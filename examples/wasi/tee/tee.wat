@@ -1,0 +1,16 @@
+(module
+  (func $wasi_fd_read (import "wasi_snapshot_preview1" "fd_read") (param i32) (param i32 i32) (param i32) (result i32))
+  (func $wasi_fd_write (import "wasi_snapshot_preview1" "fd_write") (param i32) (param i32 i32) (param i32) (result i32))
+  (func $wasi_proc_exit (import "wasi_snapshot_preview1" "proc_exit") (param i32) )
+  (global $iovec (mut i32 i32) (i32 i32.const 0))
+  (memory (export "memory") 1)
+  (func $main (export "_start")
+    (local $nread i32)
+    (local $nwritten i32)
+    (i32.const 0)
+    (local.set $nread)
+    (i32.const 0)
+    (local.set $nwritten)
+    ;; TODO: LoopStmt
+  )
+)

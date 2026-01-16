@@ -317,11 +317,7 @@ function getReturnType(returns: Type | NamedReturns | undefined, fallbackSpan: S
 
 function checkExpr(c: Checker, expr: Expr): Type | undefined {
   switch (expr.kind) {
-    case 'NumberLiteral': {
-      // Infer type from suffix or context
-      if (expr.suffix) {
-        return { kind: 'PrimitiveType', name: expr.suffix, span: expr.span };
-      }
+    case 'NumberLit': {
       // Default: i32 for integers, f64 for floats
       if (expr.value.includes('.') || expr.value.includes('e') || expr.value.includes('E')) {
         return { kind: 'PrimitiveType', name: 'f64', span: expr.span };
@@ -329,9 +325,14 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
       return { kind: 'PrimitiveType', name: 'i32', span: expr.span };
     }
 
-    case 'StringLiteral': {
+    case 'StringLit': {
       // String literals become byte slices
       return { kind: 'SliceType', element: { kind: 'PrimitiveType', name: 'u8', span: expr.span }, span: expr.span };
+    }
+
+    case 'AnnotationExpr': {
+      // Type annotation like 123:u32 - return the annotated type
+      return expr.type as Type;
     }
 
     case 'Identifier': {
@@ -413,11 +414,11 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
 
       // Check argument types
       for (let i = 0; i < Math.min(expr.args.length, calleeType.params.length); i++) {
-        const argType = checkExpr(c, expr.args[i]);
+        const argType = checkExpr(c, expr.args[i].value);
         const paramType = calleeType.params[i];
 
         if (argType && !typesCompatible(argType, paramType, c)) {
-          addError(c, expr.args[i].span,
+          addError(c, expr.args[i].value.span,
             `Argument ${i + 1} has type '${typeToString(argType)}', but expected '${typeToString(paramType)}'.`);
         }
       }
@@ -426,7 +427,7 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
     }
 
     case 'IndexExpr': {
-      const objType = checkExpr(c, expr.object);
+      const objType = checkExpr(c, expr.target);
       const idxType = checkExpr(c, expr.index);
 
       if (!objType) return undefined;
@@ -438,7 +439,7 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
         return objType.element;
       }
 
-      if (objType.kind === 'FixedArrayType') {
+      if (objType.kind === 'ArrayType') {
         if (idxType && !isIntegerType(idxType)) {
           addError(c, expr.index.span, `Array index must be an integer, but got '${typeToString(idxType)}'.`);
         }
@@ -453,12 +454,12 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
         return objType.target;
       }
 
-      addError(c, expr.object.span, `Cannot index into type '${typeToString(objType)}'. Expected a slice, array, or pointer.`);
+      addError(c, expr.target.span, `Cannot index into type '${typeToString(objType)}'. Expected a slice, array, or pointer.`);
       return undefined;
     }
 
     case 'MemberExpr': {
-      const objType = checkExpr(c, expr.object);
+      const objType = checkExpr(c, expr.target);
       if (!objType) return undefined;
 
       // Resolve named types to their underlying type
@@ -508,42 +509,23 @@ function checkExpr(c: Checker, expr: Expr): Type | undefined {
       return expr.type;
     }
 
-    case 'TupleExpr': {
-      const elementTypes = expr.elements.map(e => checkExpr(c, e)).filter((t): t is Type => t !== undefined);
+    case 'TupleLit': {
+      const elementTypes = expr.elements.map(e => checkExpr(c, e.value)).filter((t): t is Type => t !== undefined);
       return { kind: 'TupleType', elements: elementTypes, span: expr.span };
     }
 
-    case 'TernaryExpr': {
+    case 'IfExpr': {
       checkExpr(c, expr.condition);
-      const thenType = checkExpr(c, expr.thenExpr);
-      const elseType = checkExpr(c, expr.elseExpr);
-
-      if (thenType && elseType && !typesCompatible(thenType, elseType, c)) {
-        addError(c, expr.span,
-          `Ternary branches have different types: '${typeToString(thenType)}' vs '${typeToString(elseType)}'.`);
-      }
-
-      return thenType || elseType;
+      // IfExpr branches are Body types, not simple Expr - return undefined for now
+      return undefined;
     }
 
-    case 'StructLiteral': {
-      // Infer struct type from fields
-      const fields: StructField[] = [];
+    case 'StructLit': {
+      // Infer struct type from fields (fields are Arg[] with name? and value)
+      const fields: Array<{ name: string; type: Type; span: { start: number; end: number } }> = [];
       for (const field of expr.fields) {
-        let fieldType: Type | undefined;
-        if (field.value) {
-          // Explicit value: {x: expr}
-          fieldType = checkExpr(c, field.value);
-        } else {
-          // Shorthand: {x} means {x: x}
-          const sym = lookupSymbol(c, field.name);
-          if (!sym) {
-            addError(c, field.span, `Undefined variable '${field.name}' in struct literal shorthand.`);
-          } else {
-            fieldType = sym.type;
-          }
-        }
-        if (fieldType) {
+        const fieldType = checkExpr(c, field.value);
+        if (fieldType && field.name) {
           fields.push({ name: field.name, type: fieldType, span: field.span });
         }
       }
@@ -592,6 +574,16 @@ function typesCompatible(a: Type, b: Type, checker?: Checker): boolean {
 // -----------------------------------------------------------------------------
 // Statement Checking
 // -----------------------------------------------------------------------------
+
+function checkBody(c: Checker, body: { kind: string; stmts?: Stmt[]; expr?: Expr }): void {
+  if (body.kind === 'BlockBody' && body.stmts) {
+    for (const s of body.stmts) {
+      checkStmt(c, s);
+    }
+  } else if (body.kind === 'ArrowBody' && body.expr) {
+    checkExpr(c, body.expr);
+  }
+}
 
 function checkStmt(c: Checker, stmt: Stmt): void {
   switch (stmt.kind) {
@@ -897,21 +889,19 @@ function checkStmt(c: Checker, stmt: Stmt): void {
 
     case 'IfStmt':
       checkExpr(c, stmt.condition);
-      for (const s of stmt.thenBody) {
-        checkStmt(c, s);
+      checkBody(c, stmt.thenBody);
+      for (const elif of stmt.elifClauses) {
+        checkExpr(c, elif.condition);
+        checkBody(c, elif.body);
       }
       if (stmt.elseBody) {
-        for (const s of stmt.elseBody) {
-          checkStmt(c, s);
-        }
+        checkBody(c, stmt.elseBody);
       }
       break;
 
     case 'WhileStmt':
       checkExpr(c, stmt.condition);
-      for (const s of stmt.body) {
-        checkStmt(c, s);
-      }
+      checkBody(c, stmt.body);
       break;
 
     case 'ForStmt': {
@@ -922,40 +912,28 @@ function checkStmt(c: Checker, stmt: Stmt): void {
       const outerScope = c.currentScope;
       c.currentScope = createScope(outerScope);
 
-      let varType = stmt.variableType;
-      if (!varType) {
-        if (iterType) {
-          if (iterType.kind === 'PrimitiveType' && isIntegerType(iterType)) {
-            // Iterating over a number: variable is same type
-            varType = iterType;
-          } else if (iterType.kind === 'SliceType') {
-            // Iterating over slice: variable is element type
-            varType = iterType.element;
-          }
+      let varType: Type | undefined;
+      if (iterType) {
+        if (iterType.kind === 'PrimitiveType' && isIntegerType(iterType)) {
+          // Iterating over a number: variable is same type
+          varType = iterType;
+        } else if (iterType.kind === 'SliceType') {
+          // Iterating over slice: variable is element type
+          varType = iterType.element;
         }
-        varType = varType || { kind: 'PrimitiveType', name: 'i32', span: stmt.span };
       }
+      varType = varType || { kind: 'PrimitiveType', name: 'i32' as const, span: stmt.span };
 
-      defineSymbol(c, stmt.variable, 'local', stmt.span, varType, false);
+      defineSymbol(c, stmt.binding, 'local', stmt.span, varType, false);
 
-      for (const s of stmt.body) {
-        checkStmt(c, s);
-      }
+      checkBody(c, stmt.body);
 
       c.currentScope = outerScope;
       break;
     }
 
     case 'LoopStmt':
-      for (const s of stmt.body) {
-        checkStmt(c, s);
-      }
-      break;
-
-    case 'BranchStmt':
-      if (stmt.condition) {
-        checkExpr(c, stmt.condition);
-      }
+      checkBody(c, stmt.body);
       break;
 
     case 'BreakStmt':
