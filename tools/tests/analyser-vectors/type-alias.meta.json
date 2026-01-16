@@ -3,7 +3,7 @@
   "src": "file://./type-alias.ents",
   "data": [],
   "types": [
-    { "type": "(x: i32, y: i32)", "symbol": 0 },
+    { "type": "(x:i32,y:i32)", "symbol": 0 },
     { "type": "()->Point" },
     { "type": "comptime_int(10)" },
     { "type": "comptime_int(20)" }

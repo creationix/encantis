@@ -262,6 +262,7 @@ class CheckContext {
         if (param.ident) {
           const type = this.resolveType(param.type)
           funcScope.symbols.set(param.ident, { kind: 'param', type })
+          this.types.set(param.span.start, type)
           this.recordDefinition(param.ident, param.span.start)
         }
       }
@@ -274,6 +275,7 @@ class CheckContext {
           if (ret.ident) {
             const type = this.resolveType(ret.type)
             funcScope.symbols.set(ret.ident, { kind: 'return', type })
+            this.types.set(ret.span.start, type)
             this.recordDefinition(ret.ident, ret.span.start)
           }
         }

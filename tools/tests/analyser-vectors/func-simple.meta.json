@@ -2,12 +2,16 @@
   "$schema": "../meta-schema.json",
   "src": "file://./func-simple.ents",
   "data": [],
-  "types": [
-    { "type": "(a: i32, b: i32)->i32" },
-    { "type": "i32" }
-  ],
+  "types": [{ "type": "(a:i32,b:i32)->i32" }, { "type": "i32" }],
   "symbols": [
-    { "name": "add", "kind": "func", "type": 0, "def": "1:5", "refs": [], "doc": "Test: basic function with parameters and locals" },
+    {
+      "name": "add",
+      "kind": "func",
+      "type": 0,
+      "def": "1:5",
+      "refs": [],
+      "doc": "Test: basic function with parameters and locals"
+    },
     { "name": "a", "kind": "param", "type": 1, "def": "1:9", "refs": ["2:12"] },
     { "name": "b", "kind": "param", "type": 1, "def": "1:17", "refs": ["2:16"] },
     { "name": "sum", "kind": "local", "type": 1, "def": "2:6", "refs": ["3:9"] }

@@ -4,7 +4,7 @@
   "data": [],
   "types": [
     { "type": "i32", "symbol": 0 },
-    { "type": "(idx: Index)->Index" },
+    { "type": "(idx:Index)->Index" },
     { "type": "()->()" },
     { "type": "comptime_int(42)" }
   ],

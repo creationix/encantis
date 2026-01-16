@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { parse } from './parser'
+import { buildMeta } from './meta'
 
 const args = process.argv.slice(2)
 
@@ -12,6 +13,7 @@ Usage: cli.ts <command> [options]
 Commands:
   check <file>            Parse and check file for errors
   ast <file> [-o out]     Parse file and output AST as JSON
+  meta <file> [-o out]    Generate meta.json (types, symbols, hints)
   compile <file> [-o out] Compile file to WAT (not yet implemented)
 
 Options:
@@ -105,6 +107,33 @@ switch (command) {
     console.log(
       `${filePath}: OK (${result.module?.decls.length ?? 0} declarations)`,
     )
+    break
+  }
+
+  case 'meta': {
+    const result = parse(source, { filePath })
+
+    if (result.errors.length > 0) {
+      for (const error of result.errors) {
+        const loc = offsetToLineCol(source, error.span.start)
+        console.error(
+          `${filePath}:${loc.line}:${loc.column}: ${error.shortMessage}`,
+        )
+        console.error(error.message)
+      }
+      process.exit(1)
+    }
+
+    if (!result.module) {
+      console.error('Error: Failed to parse module')
+      process.exit(1)
+    }
+
+    // Generate meta.json
+    const srcPath = `file://./${inputFile.split('/').pop()}`
+    const meta = buildMeta(result.module, source, { srcPath })
+    const json = JSON.stringify(meta, jsonReplacer, 2)
+    await output(json)
     break
   }
 
