@@ -65,7 +65,7 @@ func gimli_hash(input:u8[], output:u8[32]) {
   while len >= 16 {
     // XOR input into rate portion of state (first 16 bytes = 4 words)
     for i in 16 {
-      (state as *u8)[i] ^= input_ptr[i]
+      state.u8[i] ^= input_ptr[i]
     }
     gimli(state)
     input_ptr += 16
@@ -74,23 +74,23 @@ func gimli_hash(input:u8[], output:u8[32]) {
 
   // Absorb remaining bytes with padding
   for i in len {
-    (state as *u8)[i] ^= input_ptr[i]
+    state.u8[i] ^= input_ptr[i]
   }
   // Pad with 0x1F at position len
-  (state as *u8)[len] ^= 0x1f
+  state.u8[len] ^= 0x1f
   // Pad with 0x80 at position 15 (end of rate)
-  (state as *u8)[15] ^= 0x80
+  state.u8[15] ^= 0x80
 
   gimli(state)
 
   // Squeeze phase: extract 32 bytes of output (two blocks of 16 bytes)
   for i in 16 {
-    output[i] = (state as *u8)[i]
+    output[i] = state.u8[i]
   }
 
   gimli(state)
 
   for i in 16 {
-    output[i + 16] = (state as *u8)[i]
+    output[i + 16] = state.u8[i]
   }
 }
