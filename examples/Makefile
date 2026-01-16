@@ -6,6 +6,7 @@ ENCANTIS = ../tools/cli.ts
 # Build all examples
 all: ast wat wasm
 
+COMPILER_FILES := ../tools/cli.ts ../tools/compile.ts ../tools/parser2.ts ../tools/types.ts
 ALL_ENT_FILES := $(shell find . -name "*.ents")
 ALL_AST_FILES := $(patsubst %.ents,%.ast,$(ALL_ENT_FILES))
 ALL_WAT_FILES := $(patsubst %.ents,%.wat,$(ALL_ENT_FILES))
@@ -13,12 +14,12 @@ ALL_WASM_FILES := $(patsubst %.wat,%.wasm,$(ALL_WAT_FILES))
 
 # Generate AST (JSON) from .ents files
 ast: $(ALL_AST_FILES)
-%.ast: %.ents
+%.ast: %.ents $(COMPILER_FILES)
 	$(ENCANTIS) ast $< -o $@
 
 # Compile .ents files to .wat
 wat: $(ALL_WAT_FILES)
-%.wat: %.ents
+%.wat: %.ents $(COMPILER_FILES)
 	$(ENCANTIS) compile $< -o $@
 
 # Compile .wat files to .wasm

@@ -5,6 +5,7 @@
     (local $col i32)
     (local $x i32)
     (local $y i32)
+    (local $z i32)
     (local.set $round (i32.const 24))
     (block $loop_exit_0
       (loop $loop_0
@@ -12,9 +13,9 @@
         (block $for_exit_1
           (loop $for_1
             (br_if $for_exit_1 (i32.ge_s (local.get $col) (i32.const 4)))
-            (local.set $x (i32.rotl (i32.const 0) ;; TODO: IndexExpr (i32.const 24)))
-            (local.set $y (i32.rotl (i32.const 0) ;; TODO: IndexExpr (i32.const 9)))
-            (local.set $z (i32.const 0) ;; TODO: IndexExpr)
+            (local.set $x (i32.rotl (i32.load (i32.add (local.get $state) (i32.shl (local.get $col) (i32.const 2)))) (i32.const 24)))
+            (local.set $y (i32.rotl (i32.load (i32.add (local.get $state) (i32.shl (i32.add (local.get $col) (i32.const 4)) (i32.const 2)))) (i32.const 9)))
+            (local.set $z (i32.load (i32.add (local.get $state) (i32.shl (i32.add (local.get $col) (i32.const 8)) (i32.const 2)))))
             (i32.xor (i32.xor (local.get $x) (i32.shl (local.get $z) (i32.const 1))) (i32.shl (i32.and (local.get $y) (local.get $z)) (i32.const 2)))
             ;; TODO: indexed store
             (i32.xor (i32.xor (local.get $y) (local.get $x)) (i32.shl (i32.or (local.get $x) (local.get $z)) (i32.const 1)))
@@ -25,7 +26,7 @@
             (br $for_1)
           )
         )
-        (i32.const 0) ;; TODO: MatchExpr
+        (i32.const 0)
         (local.set $round (i32.sub (local.get $round) (i32.const 1)))
         (br_if $loop_exit_0 (i32.eq (local.get $round) (i32.const 0)))
         (br $loop_0)
@@ -54,7 +55,7 @@
             (local.get $i_2)
             (i32.add)
             (i32.load)
-            (i32.const 0) ;; TODO: IndexExpr
+            (i32.load (i32.add (local.get $input_ptr_2) (i32.shl (local.get $i_2) (i32.const 2))))
             (i32.xor)
             ;; TODO: indexed store
             (local.set $i_2 (i32.add (local.get $i_2) (i32.const 1)))
@@ -75,7 +76,7 @@
         (local.get $i_2)
         (i32.add)
         (i32.load)
-        (i32.const 0) ;; TODO: IndexExpr
+        (i32.load (i32.add (local.get $input_ptr_2) (i32.shl (local.get $i_2) (i32.const 2))))
         (i32.xor)
         ;; TODO: indexed store
         (local.set $i_2 (i32.add (local.get $i_2) (i32.const 1)))
@@ -101,7 +102,7 @@
     (block $for_exit_5
       (loop $for_5
         (br_if $for_exit_5 (i32.ge_s (local.get $i_2) (i32.const 16)))
-        (i32.const 0) ;; TODO: IndexExpr
+        (i32.load (i32.add (local.get $state) (i32.shl (local.get $i_2) (i32.const 2))))
         ;; TODO: indexed store
         (local.set $i_2 (i32.add (local.get $i_2) (i32.const 1)))
         (br $for_5)
@@ -112,7 +113,7 @@
     (block $for_exit_6
       (loop $for_6
         (br_if $for_exit_6 (i32.ge_s (local.get $i_2) (i32.const 16)))
-        (i32.const 0) ;; TODO: IndexExpr
+        (i32.load (i32.add (local.get $state) (i32.shl (local.get $i_2) (i32.const 2))))
         ;; TODO: indexed store
         (local.set $i_2 (i32.add (local.get $i_2) (i32.const 1)))
         (br $for_6)

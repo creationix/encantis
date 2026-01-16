@@ -1,7 +1,10 @@
 .PHONY: test clean
 
+wasm:
+	$(MAKE) -C examples wasm
+
 test:
 	$(MAKE) -C examples test
 
 clean:
-	# No build artifacts to clean
+	$(MAKE) -C examples clean

@@ -1149,6 +1149,31 @@ function parseExpr(p: ParserState, minPrec = 0): Expr {
 function parseUnaryExpr(p: ParserState): Expr {
   const tok = peek(p);
 
+  // Special case: negative number literals (-1, -3.14, etc.)
+  // Parse as a single NumberLit instead of UnaryExpr
+  if (tok.kind === '-') {
+    const next = peek(p, 1);
+    if (next.kind === 'NUMBER') {
+      advance(p);  // consume '-'
+      advance(p);  // consume number
+      // Check for type suffix (e.g., -1:i64)
+      if (at(p, ':') && peek(p, 1).kind !== '=') {
+        advance(p);  // consume ':'
+        const suffixTok = peek(p);
+        if (suffixTok.kind === 'IDENT') {
+          advance(p);
+          return {
+            kind: 'AnnotationExpr',
+            expr: { kind: 'NumberLit', value: '-' + next.text, span: spanFrom(tok.span, next.span) },
+            type: { kind: 'PrimitiveType', name: suffixTok.text as 'i32', span: suffixTok.span },
+            span: spanFrom(tok.span, suffixTok.span),
+          };
+        }
+      }
+      return { kind: 'NumberLit', value: '-' + next.text, span: spanFrom(tok.span, next.span) };
+    }
+  }
+
   if (tok.kind === '-' || tok.kind === '~' || tok.kind === '&' || tok.kind === '!') {
     advance(p);
     const operand = parseUnaryExpr(p);
