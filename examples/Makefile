@@ -24,8 +24,9 @@ wat: $(ALL_WAT_FILES)
 # Compile .wat files to .wasm
 wasm: $(ALL_WASM_FILES)
 %.wasm: %.wat
-	wat2wasm $< -o $@
+	wat2wasm --enable-all $< -o $@
 	wasm-opt -all -Os $@ -o $(patsubst %.wasm,%.opt.wasm,$@)
+	wasm2wat --enable-all -f --inline-exports --inline-imports $(patsubst %.wasm,%.opt.wasm,$@) -o $(patsubst %.wasm,%.opt.wat,$@)
 
 # Generate JS glue code from WASM files (for examples that need it)
 js:
