@@ -2,17 +2,17 @@
 // Extracts comments with positions for doc comment support
 
 export interface Comment {
-  /** Comment text (without // or /* */) */
+  // Comment text (without // or /* */)
   text: string
-  /** Start line (0-indexed) */
+  // Start line (0-indexed)
   line: number
-  /** Start column (0-indexed) */
+  // Start column (0-indexed)
   col: number
-  /** End line (0-indexed) */
+  // End line (0-indexed)
   endLine: number
-  /** End column (0-indexed) */
+  // End column (0-indexed)
   endCol: number
-  /** Whether this is a line comment (//) or block comment (/* */) */
+  // Whether this is a line comment (//) or block comment (/* */)
   kind: 'line' | 'block'
 }
 

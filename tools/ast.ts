@@ -117,14 +117,14 @@ export interface ArrowBody extends BaseNode {
 // type Name = Type
 export interface TypeDecl extends BaseNode {
   kind: 'TypeDecl'
-  ident: string
+  ident: TypeRef
   type: Type
 }
 
 // unique Name = Type
 export interface UniqueDecl extends BaseNode {
   kind: 'UniqueDecl'
-  ident: string
+  ident: TypeRef
   type: Type
 }
 

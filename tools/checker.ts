@@ -52,6 +52,12 @@ export interface TypeCheckResult {
   symbols: Map<string, Symbol>
   // Type errors
   errors: TypeError[]
+  // Reference tracking: definition offset → array of reference offsets
+  references: Map<number, number[]>
+  // Reverse lookup: usage offset → definition offset
+  symbolRefs: Map<number, number>
+  // Symbol name → definition offset
+  symbolDefOffsets: Map<string, number>
 }
 
 // === Main Entry Point ===
@@ -63,6 +69,9 @@ export function check(module: AST.Module): TypeCheckResult {
     types: ctx.types,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
+    references: ctx.references,
+    symbolRefs: ctx.symbolRefs,
+    symbolDefOffsets: ctx.symbolDefOffsets,
   }
 }
 
@@ -76,6 +85,11 @@ class CheckContext {
 
   // Cache for resolved type aliases
   typeCache = new Map<string, ResolvedType>()
+
+  // Reference tracking
+  references = new Map<number, number[]>() // defOffset → refOffsets
+  symbolRefs = new Map<number, number>() // usageOffset → defOffset
+  symbolDefOffsets = new Map<string, number>() // name → defOffset
 
   checkModule(module: AST.Module): void {
     // First pass: collect all type aliases, function signatures, globals, defs
@@ -170,32 +184,40 @@ class CheckContext {
       type: sig,
       inline: decl.inline,
     })
+    // Record definition at function name offset (need to find it in span)
+    // FuncDecl span starts at 'func' keyword, ident follows
+    this.recordDefinition(decl.ident, decl.span.start)
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {
+    const name = decl.ident.name
     const resolved = this.resolveType(decl.type)
-    this.moduleScope.symbols.set(decl.ident, {
+    this.moduleScope.symbols.set(name, {
       kind: 'type',
       type: resolved,
       unique: false,
     })
-    this.typeCache.set(decl.ident, resolved)
+    this.typeCache.set(name, resolved)
+    this.recordDefinition(name, decl.ident.span.start)
   }
 
   collectUniqueDecl(decl: AST.UniqueDecl): void {
+    const name = decl.ident.name
     const resolved = this.resolveType(decl.type)
-    this.moduleScope.symbols.set(decl.ident, {
+    this.moduleScope.symbols.set(name, {
       kind: 'type',
       type: resolved,
       unique: true,
     })
-    this.typeCache.set(decl.ident, resolved)
+    this.typeCache.set(name, resolved)
+    this.recordDefinition(name, decl.ident.span.start)
   }
 
   collectDef(decl: AST.DefDecl): void {
     // Defs are comptime - infer type from literal value
     const type = this.inferExpr(decl.value)
     this.moduleScope.symbols.set(decl.ident, { kind: 'def', type })
+    this.recordDefinition(decl.ident, decl.span.start)
   }
 
   collectGlobal(decl: AST.GlobalDecl): void {
@@ -209,6 +231,7 @@ class CheckContext {
       type = primitive('i32')
     }
     this.moduleScope.symbols.set(decl.ident, { kind: 'global', type })
+    this.recordDefinition(decl.ident, decl.span.start)
   }
 
   // === Second Pass: Check Declarations ===
@@ -239,6 +262,7 @@ class CheckContext {
         if (param.ident) {
           const type = this.resolveType(param.type)
           funcScope.symbols.set(param.ident, { kind: 'param', type })
+          this.recordDefinition(param.ident, param.span.start)
         }
       }
     }
@@ -250,6 +274,7 @@ class CheckContext {
           if (ret.ident) {
             const type = this.resolveType(ret.type)
             funcScope.symbols.set(ret.ident, { kind: 'return', type })
+            this.recordDefinition(ret.ident, ret.span.start)
           }
         }
       }
@@ -340,6 +365,7 @@ class CheckContext {
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         // Record type at pattern offset for LSP
         this.types.set(pattern.span.start, type)
+        this.recordDefinition(pattern.name, pattern.span.start)
         break
       case 'TuplePattern':
         // TODO: destructure tuple fields
@@ -398,6 +424,9 @@ class CheckContext {
       }
 
       case 'TypeRef': {
+        // Record reference to type
+        this.recordReference(type.name, type.span.start)
+
         const cached = this.typeCache.get(type.name)
         if (cached) return cached
         const sym = this.moduleScope.symbols.get(type.name)
@@ -511,6 +540,9 @@ class CheckContext {
       this.error(expr.span.start, `unknown identifier: ${expr.name}`)
       return primitive('i32')
     }
+
+    // Record this as a reference to the symbol
+    this.recordReference(expr.name, expr.span.start)
 
     switch (sym.kind) {
       case 'local':
@@ -717,5 +749,25 @@ class CheckContext {
 
   error(offset: number, message: string): void {
     this.errors.push({ offset, message })
+  }
+
+  // === Reference Tracking ===
+
+  // Record a symbol definition at the given offset
+  recordDefinition(name: string, offset: number): void {
+    this.symbolDefOffsets.set(name, offset)
+    this.references.set(offset, [])
+  }
+
+  // Record a reference to a symbol (looks up def offset by name)
+  recordReference(name: string, refOffset: number): void {
+    const defOffset = this.symbolDefOffsets.get(name)
+    if (defOffset !== undefined) {
+      const refs = this.references.get(defOffset)
+      if (refs) {
+        refs.push(refOffset)
+      }
+      this.symbolRefs.set(refOffset, defOffset)
+    }
   }
 }
