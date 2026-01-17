@@ -1,19 +1,16 @@
 {
   "$schema": "../meta-schema.json",
   "src": "file://./string-literal.ents",
-  "data": [
-    { "offset": 0, "hex": "48656c6c6f2c20576f726c64210a00" }
-  ],
+  "data": [],
   "types": [
     { "type": "()->u8[]" },
-    { "type": "comptime_string(14)" },
-    { "type": "u8[14/0]" }
+    { "type": "[comptime_int(72),comptime_int(101),comptime_int(108),comptime_int(108),comptime_int(111),comptime_int(44),comptime_int(32),comptime_int(87),comptime_int(111),comptime_int(114),comptime_int(108),comptime_int(100),comptime_int(33),comptime_int(10)]" }
   ],
   "symbols": [
-    { "name": "get_greeting", "kind": "func", "type": 0, "def": "3:5", "refs": [], "doc": "Test: string literal in data section" }
+    { "name": "get_greeting", "kind": "func", "type": 0, "def": "3:5", "refs": [] }
   ],
   "hints": {
     "3:5": { "len": 12, "type": 0, "symbol": 0 },
-    "4:9": { "len": 17, "type": 1, "data": 0 }
+    "4:9": { "len": 17, "type": 1 }
   }
 }

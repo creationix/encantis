@@ -1,0 +1,10 @@
+
+func () {
+  let s-s:u8[][]        = [ "hello", "world" ]
+  let s-z:u8[][/0]      = [ "hello", "world" ]
+  let z-s:u8[/0][]      = [ "hello", "world" ]
+  let z-z:u8[/0][/0]    = [ "hello", "world" ]
+  let  uu:u8[/u8/u8]    = [ "hello", "world" ]
+  let  zz:u8[/0/0]      = [ "hello", "world" ]
+  let  lz:u8[/leb128/0] = [ "hello", "world" ]
+}

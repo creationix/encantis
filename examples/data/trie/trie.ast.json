@@ -27,7 +27,7 @@
                     }
                   },
                   "size": null,
-                  "nullTerminated": false,
+                  "nullTerminationLevel": 0,
                   "span": {
                     "start": 242,
                     "end": 247

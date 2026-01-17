@@ -6,20 +6,23 @@ import {
   type ResolvedType,
   type ResolvedField,
   type PrimitiveName,
+  type IndexSpecifierRT,
   primitive,
   pointer,
+  indexed,
   slice,
   array,
-  nullterm,
   tuple,
   func,
   field,
   VOID,
   comptimeInt,
   comptimeFloat,
-  comptimeString,
+  comptimeList,
+  named,
   typeToString,
   comptimeIntFits,
+  typeAssignable,
 } from './types'
 
 // === Symbol Table ===
@@ -145,6 +148,7 @@ class CheckContext {
             type: sig,
             inline: false,
           })
+          this.recordDefinition(name, item.item.span.start)
           break
         }
         case 'ImportGlobal': {
@@ -340,10 +344,15 @@ class CheckContext {
     if (stmt.type) {
       type = this.resolveType(stmt.type)
       if (stmt.value) {
-        this.inferExpr(stmt.value)
+        // Use bidirectional type checking - propagate expected type down
+        this.checkExpr(stmt.value, type)
       }
     } else if (stmt.value) {
       const valueType = this.inferExpr(stmt.value)
+      // Check for empty comptime_list - needs type annotation
+      if (valueType.kind === 'comptime_list' && valueType.elements.length === 0) {
+        this.error(stmt.value.span.start, 'cannot infer element type of empty array literal')
+      }
       // Concretize comptime types for variables
       type = this.concretize(valueType)
     } else {
@@ -389,12 +398,57 @@ class CheckContext {
       case 'comptime_float':
         // Default: f64
         return primitive('f64')
-      case 'comptime_string':
-        // Default: u8[N/0] (null-terminated fixed array)
-        return nullterm(primitive('u8'), type.bytes.length)
+      case 'comptime_list': {
+        if (type.elements.length === 0) {
+          // Empty list - can't determine element type
+          return slice(primitive('i32'))
+        }
+        // Unify all element types to find common type
+        const elemType = this.unifyTypes(type.elements)
+        return array(elemType, type.elements.length)
+      }
       default:
         return type
     }
+  }
+
+  // Find a common type that all given types can be assigned to
+  unifyTypes(types: ResolvedType[]): ResolvedType {
+    if (types.length === 0) {
+      return primitive('i32')
+    }
+
+    // Check if all are comptime_int - default to i32, widen if needed
+    if (types.every((t) => t.kind === 'comptime_int')) {
+      const values = types.map((t) => (t as { kind: 'comptime_int'; value: bigint }).value)
+      // Default to i32 for integer literals (standard default)
+      const i32Type = primitive('i32')
+      if (values.every((v) => comptimeIntFits(v, i32Type))) {
+        return i32Type
+      }
+      // Widen to i64 if values don't fit in i32
+      return primitive('i64')
+    }
+
+    // Check if all are comptime_list - recursively unify
+    if (types.every((t) => t.kind === 'comptime_list')) {
+      const lists = types as { kind: 'comptime_list'; elements: ResolvedType[] }[]
+      // Unify all elements from all lists
+      const allElements = lists.flatMap((l) => l.elements)
+      if (allElements.length === 0) {
+        return slice(primitive('i32'))
+      }
+      const innerType = this.unifyTypes(allElements)
+      // All lists should have same length for fixed array, otherwise slice
+      const lengths = lists.map((l) => l.elements.length)
+      if (lengths.every((len) => len === lengths[0])) {
+        return array(innerType, lengths[0])
+      }
+      return slice(innerType)
+    }
+
+    // Mixed or other types - concretize first element as fallback
+    return this.concretize(types[0])
   }
 
   // === Type Resolution ===
@@ -409,13 +463,12 @@ class CheckContext {
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
-        if (type.nullTerminated) {
-          return nullterm(element, type.size)
-        } else if (type.size !== null) {
-          return array(element, type.size)
-        } else {
-          return slice(element)
-        }
+        const specifiers: IndexSpecifierRT[] = type.specifiers.map((s) =>
+          s.kind === 'null' ? { kind: 'null' } : { kind: 'prefix', prefixType: s.prefixType },
+        )
+        // Handle 'inferred' size - will be filled in by bidirectional checking
+        const size = type.size === 'inferred' ? null : type.size
+        return indexed(element, size, specifiers)
       }
 
       case 'CompositeType': {
@@ -425,16 +478,26 @@ class CheckContext {
         return tuple(fields)
       }
 
+      case 'TaggedType': {
+        // Tagged types create unique/opaque types
+        const underlying = this.resolveType(type.type)
+        return named(type.tag, underlying, true)
+      }
+
+      case 'ComptimeIntType':
+        return comptimeInt(type.value)
+
+      case 'ComptimeFloatType':
+        return comptimeFloat(type.value)
+
       case 'TypeRef': {
         // Record reference to type
         this.recordReference(type.name, type.span.start)
 
-        const cached = this.typeCache.get(type.name)
-        if (cached) return cached
         const sym = this.moduleScope.symbols.get(type.name)
         if (sym && sym.kind === 'type') {
-          this.typeCache.set(type.name, sym.type)
-          return sym.type
+          // Wrap with named to preserve the alias/unique name
+          return named(type.name, sym.type, sym.unique)
         }
         this.error(type.span.start, `unknown type: ${type.name}`)
         return primitive('i32')
@@ -458,13 +521,108 @@ class CheckContext {
 
   // === Expression Type Inference ===
 
+  // Infer the type of an expression (bottom-up)
   inferExpr(expr: AST.Expr): ResolvedType {
     const type = this.inferExprInner(expr)
     // Record type for LSP-relevant nodes
+    // Note: comptime types are stored as-is; concrete type depends on usage context
     if (this.isLSPRelevant(expr)) {
       this.types.set(expr.span.start, type)
     }
     return type
+  }
+
+  // Check an expression against an expected type (top-down / bidirectional)
+  // This allows comptime types to resolve based on context
+  // Optional errorContext is prepended to error messages (e.g., "argument 1: ")
+  checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
+    const inferred = this.inferExprInner(expr)
+    const prefix = errorContext ? `${errorContext}: ` : ''
+
+    // Handle comptime_list against indexed types - propagate element type down
+    if (inferred.kind === 'comptime_list' && expected.kind === 'indexed') {
+      // Check each element against the inner element type
+      if (expr.kind === 'ArrayExpr') {
+        // Determine what type to check each element against
+        // For stacked specifiers like u8[/0/0], peel off one specifier level
+        // so "hello" checks against u8[/0] (not just u8)
+        const innerType = this.peelSpecifier(expected)
+        for (const elem of expr.elements) {
+          this.checkExpr(elem, innerType)
+        }
+      }
+      // Resolve to concrete indexed type based on expected
+      const resolved = this.resolveListToIndexed(inferred, expected)
+      if (this.isLSPRelevant(expr)) {
+        this.types.set(expr.span.start, resolved)
+      }
+      return resolved
+    }
+
+    // For other types, check assignability and record the inferred type
+    if (!typeAssignable(expected, inferred)) {
+      this.error(
+        expr.span.start,
+        `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`,
+      )
+    }
+
+    // For LSP hints, determine what type to record
+    // - Named/unique types: show the named type (e.g., Index)
+    // - Regular types: show the inferred type (preserves comptime info)
+    if (this.isLSPRelevant(expr)) {
+      const lspType = expected.kind === 'named' ? expected : inferred
+      this.types.set(expr.span.start, lspType)
+    }
+
+    // For return value, concretize based on expected type
+    return this.concretizeToTarget(inferred, expected)
+  }
+
+  // Peel off one specifier level from an indexed type to get the inner element type
+  // u8[/0/0] -> u8[/0] (peel first /0, remaining is /0)
+  // u8[/0] -> u8 (peel /0, no remaining specifiers = element type)
+  // u8[][] -> u8[] (element is already an indexed type)
+  peelSpecifier(t: { kind: 'indexed'; element: ResolvedType; size: number | null; specifiers: IndexSpecifierRT[] }): ResolvedType {
+    // If element is already an indexed type (separate brackets), use it directly
+    if (t.element.kind === 'indexed') {
+      return t.element
+    }
+    // If we have stacked specifiers, peel one off
+    if (t.specifiers.length > 1) {
+      return indexed(t.element, null, t.specifiers.slice(1))
+    }
+    // If we have exactly one specifier, the inner type is just the element with that specifier
+    if (t.specifiers.length === 1) {
+      return indexed(t.element, null, t.specifiers)
+    }
+    // No specifiers (plain slice/array) - inner type is just the element
+    return t.element
+  }
+
+  // Resolve a comptime_list to a concrete indexed type based on expected type
+  resolveListToIndexed(list: { kind: 'comptime_list'; elements: ResolvedType[] }, expected: { kind: 'indexed'; element: ResolvedType; size: number | null; specifiers: IndexSpecifierRT[] }): ResolvedType {
+    // Size is either expected size or list length
+    const size = expected.size ?? list.elements.length
+    // Element type from expected
+    const elemType = expected.element
+    // Specifiers from expected
+    return indexed(elemType, size, expected.specifiers)
+  }
+
+  // Concretize a comptime type to match expected type
+  concretizeToTarget(type: ResolvedType, expected: ResolvedType): ResolvedType {
+    if (type.kind === 'comptime_int' && expected.kind === 'primitive') {
+      return expected
+    }
+    if (type.kind === 'comptime_float' && expected.kind === 'primitive') {
+      return expected
+    }
+    if (type.kind === 'comptime_list' && expected.kind === 'indexed') {
+      return this.resolveListToIndexed(type, expected)
+    }
+    // Fall back to default concretization
+    return this.concretize(type)
   }
 
   isLSPRelevant(expr: AST.Expr): boolean {
@@ -501,6 +659,9 @@ class CheckContext {
       case 'TupleExpr':
         return this.inferTuple(expr)
 
+      case 'ArrayExpr':
+        return this.inferArray(expr)
+
       case 'GroupExpr':
         return this.inferExpr(expr.expr)
 
@@ -511,12 +672,17 @@ class CheckContext {
         return this.inferMatch(expr)
 
       case 'CastExpr':
+        // Explicit cast - always returns the target type (may generate conversion code)
         this.inferExpr(expr.expr)
         return this.resolveType(expr.type)
 
-      case 'AnnotationExpr':
-        this.inferExpr(expr.expr)
-        return this.resolveType(expr.type)
+      case 'AnnotationExpr': {
+        // Type annotation - use bidirectional type checking to propagate type down
+        // This allows [1,2,3]:i8[] to know each element should be i8
+        const annotationType = this.resolveType(expr.type)
+        this.checkExpr(expr.expr, annotationType)
+        return annotationType
+      }
     }
   }
 
@@ -528,8 +694,12 @@ class CheckContext {
       case 'float':
         return comptimeFloat(expr.value.value)
 
-      case 'string':
-        return comptimeString(expr.value.bytes)
+      case 'string': {
+        // String literals are comptime lists of bytes (including null terminator)
+        // They coerce to u8[], u8[N], u8[/0], etc. based on context
+        const elements = Array.from(expr.value.bytes).map((b) => comptimeInt(BigInt(b)))
+        return comptimeList(elements)
+      }
 
       case 'bool':
         return primitive('bool')
@@ -566,14 +736,27 @@ class CheckContext {
   inferCall(expr: AST.CallExpr): ResolvedType {
     const calleeType = this.inferExpr(expr.callee)
 
-    // Infer types of arguments
-    for (const arg of expr.args) {
-      if (arg.value) {
-        this.inferExpr(arg.value)
-      }
-    }
-
     if (calleeType.kind === 'func') {
+      // Check argument count
+      const argCount = expr.args.filter((a) => a.value).length
+      if (argCount !== calleeType.params.length) {
+        this.error(
+          expr.span.start,
+          `expected ${calleeType.params.length} arguments, got ${argCount}`,
+        )
+      }
+
+      // Use bidirectional type checking for arguments
+      // This allows log("message") to propagate u8[/0] to the string literal
+      let argIndex = 0
+      for (const arg of expr.args) {
+        if (arg.value && argIndex < calleeType.params.length) {
+          const paramType = calleeType.params[argIndex].type
+          this.checkExpr(arg.value, paramType, `argument ${argIndex + 1}`)
+          argIndex++
+        }
+      }
+
       // Return type of function
       if (calleeType.returns.length === 0) {
         return VOID
@@ -708,6 +891,20 @@ class CheckContext {
     return tuple(fields)
   }
 
+  inferArray(expr: AST.ArrayExpr): ResolvedType {
+    if (expr.elements.length === 0) {
+      // Empty array - comptime list with no elements
+      // Will need context to determine element type
+      return comptimeList([])
+    }
+
+    // Infer element types - keep them as comptime types for coercion
+    const elemTypes = expr.elements.map((e) => this.inferExpr(e))
+
+    // Return comptime list - coercion happens based on target type
+    return comptimeList(elemTypes)
+  }
+
   inferIf(expr: AST.IfExpr): ResolvedType {
     this.inferExpr(expr.condition)
     // TODO: unify branch types
@@ -750,7 +947,10 @@ class CheckContext {
   // === Error Reporting ===
 
   error(offset: number, message: string): void {
-    this.errors.push({ offset, message })
+    // Avoid duplicate errors at the same offset
+    if (!this.errors.some((e) => e.offset === offset && e.message === message)) {
+      this.errors.push({ offset, message })
+    }
   }
 
   // === Reference Tracking ===
@@ -766,7 +966,7 @@ class CheckContext {
     const defOffset = this.symbolDefOffsets.get(name)
     if (defOffset !== undefined) {
       const refs = this.references.get(defOffset)
-      if (refs) {
+      if (refs && !refs.includes(refOffset)) {
         refs.push(refOffset)
       }
       this.symbolRefs.set(refOffset, defOffset)

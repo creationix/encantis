@@ -1,0 +1,8 @@
+// Test: argument type mismatch in function call
+func add(a:i32, b:i32) -> i32 {
+  return a + b
+}
+
+func main() {
+  add(1, "two")
+}

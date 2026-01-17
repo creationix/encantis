@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { parse } from './parser'
+import { check } from './checker'
 import { buildMeta } from './meta'
 
 const args = process.argv.slice(2)
@@ -17,8 +18,9 @@ Commands:
   compile <file> [-o out] Compile file to WAT (not yet implemented)
 
 Options:
-  -o <file>   Output file (default: stdout)
-  --help      Show this help
+  -o <file>       Output file (default: stdout)
+  -s, --start <rule>  Start rule for parsing (default: Module)
+  --help          Show this help
 `)
 }
 
@@ -32,12 +34,19 @@ const command = args[0]
 // Parse remaining arguments
 let inputFile: string | undefined
 let outputFile: string | undefined
+let startRule: string | undefined
 
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '-o') {
     outputFile = args[++i]
     if (!outputFile) {
       console.error('Error: -o requires an output file')
+      process.exit(1)
+    }
+  } else if (args[i] === '-s' || args[i] === '--start') {
+    startRule = args[++i]
+    if (!startRule) {
+      console.error('Error: -s/--start requires a rule name')
       process.exit(1)
     }
   } else if (!inputFile) {
@@ -71,7 +80,7 @@ const filePath = file.name ?? inputFile
 
 switch (command) {
   case 'ast': {
-    const result = parse(source, { filePath })
+    const result = parse(source, { filePath, startRule })
 
     if (result.errors.length > 0) {
       for (const error of result.errors) {
@@ -104,8 +113,24 @@ switch (command) {
       process.exit(1)
     }
 
+    if (!result.module) {
+      console.error('Error: Failed to parse module')
+      process.exit(1)
+    }
+
+    // Run type checker
+    const checkResult = check(result.module)
+
+    if (checkResult.errors.length > 0) {
+      for (const error of checkResult.errors) {
+        const loc = offsetToLineCol(source, error.offset)
+        console.error(`${filePath}:${loc.line}:${loc.column}: ${error.message}`)
+      }
+      process.exit(1)
+    }
+
     console.log(
-      `${filePath}: OK (${result.module?.decls.length ?? 0} declarations)`,
+      `${filePath}: OK (${result.module.decls.length} declarations)`,
     )
     break
   }

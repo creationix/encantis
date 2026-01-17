@@ -242,7 +242,7 @@
                         }
                       },
                       "size": null,
-                      "nullTerminated": false,
+                      "nullTerminationLevel": 0,
                       "span": {
                         "start": 397,
                         "end": 401
@@ -283,7 +283,7 @@
                         }
                       },
                       "size": null,
-                      "nullTerminated": false,
+                      "nullTerminationLevel": 0,
                       "span": {
                         "start": 408,
                         "end": 412
@@ -324,7 +324,7 @@
                         }
                       },
                       "size": null,
-                      "nullTerminated": false,
+                      "nullTerminationLevel": 0,
                       "span": {
                         "start": 419,
                         "end": 423

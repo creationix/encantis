@@ -658,7 +658,7 @@
                     }
                   },
                   "size": null,
-                  "nullTerminated": false,
+                  "nullTerminationLevel": 0,
                   "span": {
                     "start": 617,
                     "end": 621

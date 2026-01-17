@@ -281,6 +281,7 @@ export type Expr =
   | IndexExpr
   | IdentExpr
   | LiteralExpr
+  | ArrayExpr
   | IfExpr
   | MatchExpr
   | TupleExpr
@@ -393,6 +394,12 @@ export type LiteralValue =
   | { kind: 'string'; bytes: Uint8Array }
   | { kind: 'bool'; value: boolean }
 
+// [expr, expr, ...]
+export interface ArrayExpr extends BaseNode {
+  kind: 'ArrayExpr'
+  elements: Expr[]
+}
+
 // if expr { ... } elif ... else ...
 export interface IfExpr extends BaseNode {
   kind: 'IfExpr'
@@ -474,6 +481,9 @@ export type Type =
   | PointerType
   | IndexedType
   | CompositeType
+  | TaggedType
+  | ComptimeIntType
+  | ComptimeFloatType
   | TypeRef
 
 export interface PrimitiveType extends BaseNode {
@@ -498,12 +508,17 @@ export interface PointerType extends BaseNode {
   pointee: Type
 }
 
-// type[] or type[N] or type[/0] or type[N/0]
+// Index specifiers: terminators (/0) and length prefixes (/u8, /u16, /u32, /u64, /leb128)
+export type IndexSpecifier =
+  | { kind: 'null' }
+  | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
+
+// type[] or type[N] or type[/0] or type[/u8] or type[/leb128/0] etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
-  size: number | null // null = slice
-  nullTerminated: boolean
+  size: number | 'inferred' | null // null = slice, 'inferred' = [N] syntax
+  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for /0
 }
 
 // () or (type, type) or (name: type, name: type)
@@ -516,4 +531,23 @@ export interface CompositeType extends BaseNode {
 export interface TypeRef extends BaseNode {
   kind: 'TypeRef'
   name: string
+}
+
+// Tagged type: Type@Tag (makes an opaque/unique type)
+export interface TaggedType extends BaseNode {
+  kind: 'TaggedType'
+  type: Type
+  tag: string
+}
+
+// Comptime integer: int(value)
+export interface ComptimeIntType extends BaseNode {
+  kind: 'ComptimeIntType'
+  value: bigint
+}
+
+// Comptime float: float(value)
+export interface ComptimeFloatType extends BaseNode {
+  kind: 'ComptimeFloatType'
+  value: number
 }

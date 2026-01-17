@@ -273,15 +273,54 @@ semantics.addOperation<unknown>('toAST', {
   // Types
   // ============================================================================
 
-  Type_indexed(element, _lb, sizeOpt, nullTermOpt, _rb) {
-    const sizeNode = sizeOpt.children[0]
+  Type_array(element, _lb, sizeNode, _rb) {
+    const sizeStr = sizeNode.sourceString
+    const size = sizeStr === 'N' ? 'inferred' : Number(sizeStr)
     return {
       kind: 'IndexedType',
       element: element.toAST(),
-      size: sizeNode ? Number(sizeNode.sourceString) : null,
-      nullTerminated: nullTermOpt.children.length > 0,
+      size,
+      specifiers: [],
       span: span(this),
     } as AST.IndexedType
+  },
+
+  Type_indexed(element, _lb, specs, _rb) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: specs.children.map((s) => s.toAST()),
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  Type_slice(element, _lb, _rb) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  indexSpecifier(token) {
+    const s = token.sourceString
+    if (s === '/0') {
+      return { kind: 'null' } as AST.IndexSpecifier
+    }
+    // Extract prefix type from /u8, /u16, etc.
+    return { kind: 'prefix', prefixType: s.slice(1) } as AST.IndexSpecifier
+  },
+
+  Type_tagged(type, _at, tag) {
+    return {
+      kind: 'TaggedType',
+      type: type.toAST(),
+      tag: tag.sourceString,
+      span: span(this),
+    } as AST.TaggedType
   },
 
   Type_pointer(_star, type) {
@@ -300,12 +339,34 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.CompositeType
   },
 
+  Type_comptime(comptime) {
+    return comptime.toAST()
+  },
+
   Type_primitive(prim) {
     return prim.toAST()
   },
 
   Type_named(typeIdent) {
     return typeIdent.toAST()
+  },
+
+  ComptimeType_int(_int, _lp, value, _rp) {
+    const ast = value.toAST() as AST.LiteralExpr
+    return {
+      kind: 'ComptimeIntType',
+      value: ast.value.kind === 'int' ? ast.value.value : BigInt(0),
+      span: span(this),
+    } as AST.ComptimeIntType
+  },
+
+  ComptimeType_float(_float, _lp, value, _rp) {
+    const ast = value.toAST() as AST.LiteralExpr
+    return {
+      kind: 'ComptimeFloatType',
+      value: ast.value.kind === 'float' ? ast.value.value : 0,
+      span: span(this),
+    } as AST.ComptimeFloatType
   },
 
   PrimitiveType(name) {
@@ -914,6 +975,14 @@ semantics.addOperation<unknown>('toAST', {
 
   literal(lit) {
     return lit.toAST()
+  },
+
+  ArrayLiteral(_lb, elements, _rb) {
+    return {
+      kind: 'ArrayExpr',
+      elements: elements.asIteration().children.map((e: ohm.Node) => e.toAST()),
+      span: span(this),
+    } as AST.ArrayExpr
   },
 
   numberLiteral(num) {

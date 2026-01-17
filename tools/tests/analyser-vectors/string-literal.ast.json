@@ -44,7 +44,7 @@
             }
           },
           "size": null,
-          "nullTerminated": false,
+          "nullTerminationLevel": 0,
           "span": {
             "start": 86,
             "end": 90

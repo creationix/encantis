@@ -10,6 +10,7 @@ export * from './ast'
 
 export interface ParseOptions {
   filePath?: string
+  startRule?: string // Grammar rule to start parsing from (default: 'Module')
 }
 
 export interface ParseError {
@@ -32,9 +33,9 @@ export interface ParseResult {
  * @returns ParseResult with module (if successful) and any errors
  */
 export function parse(source: string, options: ParseOptions = {}): ParseResult {
-  const { filePath } = options
+  const { filePath, startRule } = options
 
-  const matchResult = grammar.match(source)
+  const matchResult = grammar.match(source, startRule)
 
   if (matchResult.failed()) {
     // Extract error information from Ohm's match result

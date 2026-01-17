@@ -1,0 +1,17 @@
+// This is a module-level doc, it shouldn't be attached to anything
+
+// This should be attached to the "double" function
+export "double" func double(x:i32) -> i32 {
+  return x * 2
+}
+
+// This shouldn't be attached to anything either
+
+// Another module-level doc
+export "main" func () {
+  // A doc for a local variable
+  let halfLucky = 21
+
+  // A doc for the "lucky" variable
+  let lucky = double(halfLucky)
+}

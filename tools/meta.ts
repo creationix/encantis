@@ -350,12 +350,18 @@ class MetaBuilder {
     const typeIndex = this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
 
-    // Get doc comment
-    const declLine = this.lineMap.offsetToPosition(offset).line
-    const doc = findDocComment(this.comments, declLine)
+    // Get doc comment - only for module-level declarations
+    let doc: string | null = null
+    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'def') {
+      const declLine = this.lineMap.offsetToPosition(offset).line
+      doc = findDocComment(this.comments, declLine)
+    }
 
-    // Get references
-    const refs = this.checkResult.references.get(offset) ?? []
+    // Get references - use checker's recorded definition offset, not the display offset
+    const checkerDefOffset = this.checkResult.symbolDefOffsets.get(name)
+    const refs = checkerDefOffset !== undefined
+      ? this.checkResult.references.get(checkerDefOffset) ?? []
+      : []
     const refPositions = refs.map((r) => this.lineMap.positionKey(r))
 
     const symbol: MetaSymbol = {
@@ -424,33 +430,34 @@ class MetaBuilder {
   }
 
   private generateHintsForFunc(decl: AST.FuncDecl): void {
-    if (!decl.ident) return
+    // Handle named functions
+    if (decl.ident) {
+      const symbolIndex = this.symbolIndexByName.get(decl.ident)
+      if (symbolIndex !== undefined) {
+        // Hint for function name
+        const offset = this.findFuncIdentOffset(decl)
+        this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
+      }
 
-    const symbolIndex = this.symbolIndexByName.get(decl.ident)
-    if (symbolIndex === undefined) return
-
-    // Hint for function name
-    const offset = this.findFuncIdentOffset(decl)
-    this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
-
-    // Hints for parameters
-    if (decl.signature.params.kind === 'FieldList') {
-      for (const param of decl.signature.params.fields) {
-        if (param.ident) {
-          const paramSymbolIndex = this.symbolIndexByName.get(param.ident)
-          if (paramSymbolIndex !== undefined) {
-            this.addHint(
-              param.span.start,
-              param.ident.length,
-              this.symbols[paramSymbolIndex].type,
-              paramSymbolIndex,
-            )
+      // Hints for parameters
+      if (decl.signature.params.kind === 'FieldList') {
+        for (const param of decl.signature.params.fields) {
+          if (param.ident) {
+            const paramSymbolIndex = this.symbolIndexByName.get(param.ident)
+            if (paramSymbolIndex !== undefined) {
+              this.addHint(
+                param.span.start,
+                param.ident.length,
+                this.symbols[paramSymbolIndex].type,
+                paramSymbolIndex,
+              )
+            }
           }
         }
       }
     }
 
-    // Hints for body
+    // Hints for body (process even for anonymous functions)
     if (decl.body.kind === 'Block') {
       this.generateHintsForBlock(decl.body)
     } else {
@@ -707,6 +714,12 @@ class TypeRegistry {
   private typeIndex = new Map<string, number>()
 
   register(type: ResolvedType): number {
+    // For named types (type aliases/uniques), register the underlying type
+    // which already has the symbol reference from collectTypeDecl/collectUniqueDecl
+    if (type.kind === 'named') {
+      return this.register(type.type)
+    }
+
     const key = metaTypeString(type)
     const existing = this.typeIndex.get(key)
     if (existing !== undefined) return existing
@@ -749,28 +762,31 @@ function metaTypeString(t: ResolvedType): string {
 
     case 'indexed': {
       const elem = metaTypeString(t.element)
-      if (t.nullTerminated) {
-        return t.size !== null ? `${elem}[${t.size}/0]` : `${elem}[/0]`
+      const specs = t.specifiers
+        .map((s) => (s.kind === 'null' ? '/0' : `/${s.prefixType}`))
+        .join('')
+      if (t.size !== null) {
+        return `${elem}[${t.size}${specs}]`
       } else {
-        return t.size !== null ? `${elem}[${t.size}]` : `${elem}[]`
+        return `${elem}[${specs}]`
       }
     }
 
     case 'tuple': {
       if (t.fields.length === 0) return '()'
-      const fields = t.fields.map(metaFieldString).join(', ')
+      const fields = t.fields.map(metaFieldString).join(',')
       return `(${fields})`
     }
 
     case 'func': {
-      // Meta format: (params)->returns (no "func" prefix)
+      // Meta format: (params)->returns (no spaces, no "func" prefix)
       const params =
-        t.params.length === 0 ? '()' : `(${t.params.map(metaFieldString).join(', ')})`
+        t.params.length === 0 ? '()' : `(${t.params.map(metaFieldString).join(',')})`
       if (t.returns.length === 0) return `${params}->()`
       const returns =
         t.returns.length === 1 && t.returns[0].name === null
           ? metaTypeString(t.returns[0].type)
-          : `(${t.returns.map(metaFieldString).join(', ')})`
+          : `(${t.returns.map(metaFieldString).join(',')})`
       return `${params}->${returns}`
     }
 
@@ -783,14 +799,17 @@ function metaTypeString(t: ResolvedType): string {
     case 'comptime_float':
       return `comptime_float(${t.value})`
 
-    case 'comptime_string':
-      return `comptime_string(${t.bytes.length})`
+    case 'comptime_list':
+      return `[${t.elements.map(metaTypeString).join(',')}]`
+
+    case 'named':
+      return t.name
   }
 }
 
 function metaFieldString(f: { name: string | null; type: ResolvedType }): string {
   if (f.name) {
-    return `${f.name}: ${metaTypeString(f.type)}`
+    return `${f.name}:${metaTypeString(f.type)}`
   }
   return metaTypeString(f.type)
 }

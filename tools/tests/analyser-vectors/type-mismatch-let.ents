@@ -1,0 +1,4 @@
+// Test: type mismatch in let statement
+func main() {
+  let age:i32 = 100:u32
+}

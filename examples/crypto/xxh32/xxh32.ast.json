@@ -402,7 +402,7 @@
                     }
                   },
                   "size": null,
-                  "nullTerminated": false,
+                  "nullTerminationLevel": 0,
                   "span": {
                     "start": 420,
                     "end": 424

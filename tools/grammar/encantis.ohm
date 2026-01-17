@@ -99,19 +99,31 @@ Encantis {
   // Types
   // ============================================================================
 
-  // Left-recursive for chained indexed types like i32[][]
-  Type = Type "[" intLiteral? nullTerminator? "]"  -- indexed
+  // Left-recursive for chained indexed types like i32[][] and tagged types like i32@Index
+  Type = Type "[" arraySize "]"                    -- array
+       | Type "[" indexSpecifier+ "]"              -- indexed
+       | Type "[" "]"                              -- slice
+       | Type "@" typeIdent                        -- tagged
        | "*" Type                                  -- pointer
        | "(" FieldList? ")"                        -- composite
+       | ComptimeType                              -- comptime
        | PrimitiveType                             -- primitive
        | typeIdent                                 -- named
 
-  nullTerminator = "/0"
+  // Array size can be a literal number or N for inferred count
+  arraySize = intLiteral  -- literal
+            | "N"         -- inferred
+
+  // Index specifiers: terminators and length prefixes
+  indexSpecifier = "/0" | "/u8" | "/u16" | "/u32" | "/u64" | "/leb128"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"
                 | "f32" | "f64"
                 | "bool"
+
+  ComptimeType = int "(" intLiteral ")"      -- int
+               | float "(" floatLiteral ")"  -- float
 
   // ============================================================================
   // Statements
@@ -251,19 +263,23 @@ Encantis {
 
   // Postfix (highest precedence for operators)
   PostfixExpr = PrimaryExpr PostfixOp*
-
+              
   PostfixOp = AccessSuffix
             | "(" ArgList? ")"  -- call
 
   // Primary (atoms)
   PrimaryExpr = IfExpr
               | MatchExpr
+              | ArrayLiteral
               | "(" ArgList ")"      -- tupleOrStruct
               | "(" Expr ")"         -- group
               | "(" ")"              -- unit
               | typeIdent "(" ArgList? ")"  -- constructor
               | literal
               | ident
+
+  // Array literal: [expr, expr, ...]
+  ArrayLiteral = "[" ListOf<Expr, ","> "]"
 
   // ============================================================================
   // If Expression / Branches
@@ -385,7 +401,7 @@ Encantis {
            | break | continue | return | when
            | func | let | set | global | def | type
            | import | export | memory | inline | unique
-           | as | true | false) ~identChar
+           | as | true | false | int | float) ~identChar
 
   if = "if" ~identChar
   elif = "elif" ~identChar
@@ -413,6 +429,8 @@ Encantis {
   as = "as" ~identChar
   true = "true" ~identChar
   false = "false" ~identChar
+  int = "int" ~identChar
+  float = "float" ~identChar
 
   // Comments
   comment = lineComment | blockComment

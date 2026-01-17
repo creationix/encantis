@@ -48,14 +48,14 @@
                           }
                         },
                         "size": null,
-                        "nullTerminated": false,
+                        "nullTerminationLevel": 0,
                         "span": {
                           "start": 152,
                           "end": 156
                         }
                       },
                       "size": null,
-                      "nullTerminated": false,
+                      "nullTerminationLevel": 0,
                       "span": {
                         "start": 152,
                         "end": 158
@@ -161,14 +161,14 @@
                           }
                         },
                         "size": null,
-                        "nullTerminated": false,
+                        "nullTerminationLevel": 0,
                         "span": {
                           "start": 224,
                           "end": 228
                         }
                       },
                       "size": null,
-                      "nullTerminated": false,
+                      "nullTerminationLevel": 0,
                       "span": {
                         "start": 224,
                         "end": 230
@@ -423,7 +423,7 @@
           }
         },
         "size": null,
-        "nullTerminated": false,
+        "nullTerminationLevel": 0,
         "span": {
           "start": 505,
           "end": 509

@@ -1,0 +1,7 @@
+// Test: slice passed to null-terminated parameter (unsafe - should fail)
+import "env" "log" func log(message:u8[/0])
+
+func main() {
+  let message:u8[] = "What"
+  log(message)
+}
