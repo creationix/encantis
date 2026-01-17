@@ -193,17 +193,20 @@ class MetaBuilder {
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
-    if (!decl.ident) return
+    if (decl.ident) {
+      const sym = this.checkResult.symbols.get(decl.ident)
+      if (!sym || sym.kind !== 'func') return
 
-    const sym = this.checkResult.symbols.get(decl.ident)
-    if (!sym || sym.kind !== 'func') return
+      // Find the function name offset (after "func" keyword)
+      const offset = this.findFuncIdentOffset(decl)
+      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset)
 
-    // Find the function name offset (after "func" keyword)
-    const offset = this.findFuncIdentOffset(decl)
-    const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset)
-
-    // Collect params and locals
-    this.collectFuncBody(decl, symbolIndex)
+      // Collect params and locals
+      this.collectFuncBody(decl, symbolIndex)
+    } else {
+      // Anonymous function - still collect locals from body
+      this.collectFuncBody(decl, -1)
+    }
   }
 
   private findFuncIdentOffset(decl: AST.FuncDecl): number {
@@ -578,6 +581,20 @@ class MetaBuilder {
         }
         break
 
+      case 'ArrayExpr': {
+        // Record hint for the array literal itself (comptime_list type)
+        if (type) {
+          const typeIndex = this.typeRegistry.register(type)
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, typeIndex)
+        }
+        // Recurse into elements
+        for (const elem of expr.elements) {
+          this.generateHintsForExpr(elem)
+        }
+        break
+      }
+
       case 'GroupExpr':
         this.generateHintsForExpr(expr.expr)
         break
@@ -765,10 +782,19 @@ function metaTypeString(t: ResolvedType): string {
       const specs = t.specifiers
         .map((s) => (s.kind === 'null' ? '/0' : `/${s.prefixType}`))
         .join('')
-      if (t.size !== null) {
-        return `${elem}[${t.size}${specs}]`
+      if (t.size === 'comptime') {
+        // Comptime list: T[]
+        return `${elem}[]`
+      } else if (t.size === null) {
+        // Slice (no specifiers) or serialized (with specifiers)
+        if (specs) {
+          return `${elem}[${specs}]`
+        } else {
+          return `${elem}[#]`
+        }
       } else {
-        return `${elem}[${specs}]`
+        // Fixed array: T[N] or T[N/0] etc.
+        return `${elem}[${t.size}${specs}]`
       }
     }
 

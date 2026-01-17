@@ -102,11 +102,12 @@ Encantis {
   // Left-recursive for chained indexed types like i32[][] and tagged types like i32@Index
   Type = Type "[" arraySize "]"                    -- array
        | Type "[" indexSpecifier+ "]"              -- indexed
-       | Type "[" "]"                              -- slice
+       | Type "[" "#" "]"                          -- slice
+       | Type "[" "]"                              -- comptimeList
        | Type "@" typeIdent                        -- tagged
        | "*" Type                                  -- pointer
        | "(" FieldList? ")"                        -- composite
-       | ComptimeType                              -- comptime
+       | ComptimeType                              -- comptimeScalar
        | PrimitiveType                             -- primitive
        | typeIdent                                 -- named
 

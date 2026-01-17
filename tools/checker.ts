@@ -19,6 +19,7 @@ import {
   comptimeInt,
   comptimeFloat,
   comptimeList,
+  comptimeIndexed,
   named,
   typeToString,
   comptimeIntFits,
@@ -553,10 +554,35 @@ class CheckContext {
       }
       // Resolve to concrete indexed type based on expected
       const resolved = this.resolveListToIndexed(inferred, expected)
-      if (this.isLSPRelevant(expr)) {
-        this.types.set(expr.span.start, resolved)
+      // For LSP, record the comptime_list type (not resolved) so user sees the literal type
+      if (expr.kind === 'ArrayExpr') {
+        this.types.set(expr.span.start, inferred)
       }
       return resolved
+    }
+
+    // Handle comptime indexed (T[]) against concrete indexed types
+    // Must check each element individually to catch overflow (e.g., [1,10,100,1000]:u8[4])
+    if (
+      inferred.kind === 'indexed' &&
+      inferred.size === 'comptime' &&
+      expected.kind === 'indexed' &&
+      expected.size !== 'comptime'
+    ) {
+      if (expr.kind === 'ArrayExpr') {
+        // Peel specifiers to get the element type for checking
+        // e.g., u8[/0/0] -> u8[/0] for first level, u8[/0] -> u8 for second level
+        const innerType = this.peelSpecifier(expected)
+        for (const elem of expr.elements) {
+          this.checkExpr(elem, innerType)
+        }
+      }
+      // Record the inferred comptime type for LSP
+      if (this.isLSPRelevant(expr)) {
+        this.types.set(expr.span.start, inferred)
+      }
+      // Return concretized type
+      return this.concretizeToTarget(inferred, expected)
     }
 
     // For other types, check assignability and record the inferred type
@@ -695,10 +721,9 @@ class CheckContext {
         return comptimeFloat(expr.value.value)
 
       case 'string': {
-        // String literals are comptime lists of bytes (including null terminator)
-        // They coerce to u8[], u8[N], u8[/0], etc. based on context
-        const elements = Array.from(expr.value.bytes).map((b) => comptimeInt(BigInt(b)))
-        return comptimeList(elements)
+        // String literals are comptime indexed u8[] types
+        // They coerce to u8[N], u8[#], u8[/0], etc. based on context
+        return comptimeIndexed(primitive('u8'))
       }
 
       case 'bool':
@@ -893,16 +918,20 @@ class CheckContext {
 
   inferArray(expr: AST.ArrayExpr): ResolvedType {
     if (expr.elements.length === 0) {
-      // Empty array - comptime list with no elements
-      // Will need context to determine element type
+      // Empty array - needs context to determine element type
+      // For now, return comptime list with no elements
       return comptimeList([])
     }
 
-    // Infer element types - keep them as comptime types for coercion
+    // Infer element types
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
 
-    // Return comptime list - coercion happens based on target type
-    return comptimeList(elemTypes)
+    // Use first element's type as the element type (arrays are homogeneous)
+    // TODO: unify element types properly
+    const elementType = elemTypes[0]
+
+    // Return comptime indexed type: T[]
+    return comptimeIndexed(elementType)
   }
 
   inferIf(expr: AST.IfExpr): ResolvedType {

@@ -295,11 +295,21 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.IndexedType
   },
 
-  Type_slice(element, _lb, _rb) {
+  Type_slice(element, _lb, _hash, _rb) {
     return {
       kind: 'IndexedType',
       element: element.toAST(),
       size: null,
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  Type_comptimeList(element, _lb, _rb) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'comptime',
       specifiers: [],
       span: span(this),
     } as AST.IndexedType
@@ -339,7 +349,7 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.CompositeType
   },
 
-  Type_comptime(comptime) {
+  Type_comptimeScalar(comptime) {
     return comptime.toAST()
   },
 

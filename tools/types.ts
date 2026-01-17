@@ -45,12 +45,12 @@ export type IndexSpecifierRT =
   | { kind: 'null' }
   | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
 
-// Indexed type: T[], T[N], T[/0], T[/u8], T[/leb128/0], etc.
-// Unified representation for slices, arrays, and prefixed/terminated strings
+// Indexed type: T[], T[#], T[N], T[/0], T[/u8], T[/leb128/0], etc.
+// Unified representation for comptime lists, slices, arrays, and prefixed/terminated strings
 export interface IndexedRT {
   kind: 'indexed'
   element: ResolvedType
-  size: number | null // null = runtime/unknown length (slice)
+  size: number | 'comptime' | null // number = fixed T[N], null = slice T[#], 'comptime' = comptime T[]
   specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for /0
 }
 
@@ -117,7 +117,7 @@ export function pointer(pointee: ResolvedType): PointerRT {
 
 export function indexed(
   element: ResolvedType,
-  size: number | null = null,
+  size: number | 'comptime' | null = null,
   specifiers: IndexSpecifierRT[] = [],
 ): IndexedRT {
   return { kind: 'indexed', element, size, specifiers }
@@ -132,7 +132,11 @@ export function array(element: ResolvedType, size: number): IndexedRT {
   return indexed(element, size, [])
 }
 
-export function nullterm(element: ResolvedType, size: number | null = null, level: number = 1): IndexedRT {
+export function comptimeIndexed(element: ResolvedType): IndexedRT {
+  return indexed(element, 'comptime', [])
+}
+
+export function nullterm(element: ResolvedType, size: number | 'comptime' | null = null, level: number = 1): IndexedRT {
   const specifiers: IndexSpecifierRT[] = Array(level).fill({ kind: 'null' })
   return indexed(element, size, specifiers)
 }
@@ -333,8 +337,10 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Comptime list can coerce to indexed types (arrays, slices, null-terminated, etc.)
   if (s.kind === 'comptime_list' && t.kind === 'indexed') {
-    // Check size compatibility
-    if (t.size !== null && t.size !== s.elements.length) {
+    // Can't assign to comptime indexed type (T[])
+    if (t.size === 'comptime') return INCOMPATIBLE
+    // Check size compatibility for fixed arrays
+    if (typeof t.size === 'number' && t.size !== s.elements.length) {
       return INCOMPATIBLE
     }
     // Check all elements can be assigned to target element type
@@ -373,12 +379,55 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Indexed type coercion (arrays/slices)
   if (t.kind === 'indexed' && s.kind === 'indexed') {
+    // Can't assign to comptime indexed type (T[])
+    if (t.size === 'comptime') return INCOMPATIBLE
+
+    // Handle comptime source with potential bracket merging
+    // u8[][] can coerce to:
+    //   - u8[/0][/0] (2 brackets, each level gets a specifier)
+    //   - u8[/0/0] (1 bracket with 2 specifiers - merged)
+    if (s.size === 'comptime') {
+      // Count comptime nesting depth and find innermost element
+      let sourceDepth = 0
+      let innerElement: ResolvedType = s
+      while (innerElement.kind === 'indexed' && innerElement.size === 'comptime') {
+        sourceDepth++
+        innerElement = innerElement.element
+      }
+
+      // Count target depth (bracket levels) and total specifier count
+      let targetDepth = 0
+      let targetSpecCount = 0
+      let targetInner: ResolvedType = t
+      while (targetInner.kind === 'indexed') {
+        targetDepth++
+        targetSpecCount += targetInner.specifiers.length
+        // If target element is comptime, that's invalid
+        if (targetInner.size === 'comptime') return INCOMPATIBLE
+        targetInner = targetInner.element
+      }
+
+      // For bracket merging: source depth must equal target specifier count
+      // u8[][] (depth 2) -> u8[/0/0] (1 bracket, 2 specs) ✓
+      // u8[][] (depth 2) -> u8[/0][/0] (2 brackets, 2 specs total) ✓
+      // But source depth must be >= target depth (can merge but not split)
+      if (sourceDepth < targetDepth) return INCOMPATIBLE
+      if (sourceDepth !== targetSpecCount && sourceDepth !== targetDepth) return INCOMPATIBLE
+
+      // Check innermost elements are compatible
+      const innerResult = typeAssignResult(targetInner, innerElement)
+      if (!innerResult.compatible || innerResult.lossiness !== 'lossless') return INCOMPATIBLE
+
+      return lossless(false)
+    }
+
+    // Non-comptime source: normal element matching
     const elemResult = typeAssignResult(t.element, s.element)
     if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
 
     // For reinterpretability: element must be reinterpretable AND sizes must work
-    // u8[] -> u16[] is NOT reinterpretable (no space for widened elements)
-    // u8[10] -> u8[] IS reinterpretable (same bytes, just slice view)
+    // u8[#] -> u16[#] is NOT reinterpretable (no space for widened elements)
+    // u8[10] -> u8[#] IS reinterpretable (same bytes, just slice view)
 
     // Slice (no specifiers) accepts any indexed type with compatible element
     // A null-terminated/prefixed type can be assigned to a slice (it just loses the guarantee)
@@ -395,11 +444,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       return lossless(elemResult.reinterpret)
     }
     // Fixed array (no specifiers) accepts same size with no specifiers
-    if (t.size !== null && t.specifiers.length === 0) {
+    if (typeof t.size === 'number' && t.specifiers.length === 0) {
       return s.size === t.size && s.specifiers.length === 0 ? lossless(elemResult.reinterpret) : INCOMPATIBLE
     }
     // Fixed with specifiers accepts same size with compatible specifiers
-    if (t.size !== null && t.specifiers.length > 0) {
+    if (typeof t.size === 'number' && t.specifiers.length > 0) {
       return s.size === t.size ? lossless(elemResult.reinterpret) : INCOMPATIBLE
     }
   }
@@ -462,10 +511,19 @@ export function typeToString(t: ResolvedType): string {
     case 'indexed': {
       const elem = typeToString(t.element)
       const specs = t.specifiers.map(specifierToString).join('')
-      if (t.size !== null) {
-        return `${elem}[${t.size}${specs}]`
+      if (t.size === 'comptime') {
+        // Comptime list: T[]
+        return `${elem}[]`
+      } else if (t.size === null) {
+        // Slice (null size, no specifiers) or serialized (null size, with specifiers)
+        if (specs) {
+          return `${elem}[${specs}]`
+        } else {
+          return `${elem}[#]`
+        }
       } else {
-        return `${elem}[${specs}]`
+        // Fixed array: T[N] or T[N/0] etc.
+        return `${elem}[${t.size}${specs}]`
       }
     }
 

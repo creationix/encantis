@@ -513,11 +513,11 @@ export type IndexSpecifier =
   | { kind: 'null' }
   | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
 
-// type[] or type[N] or type[/0] or type[/u8] or type[/leb128/0] etc.
+// type[] or type[#] or type[N] or type[/0] or type[/u8] or type[/leb128/0] etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
-  size: number | 'inferred' | null // null = slice, 'inferred' = [N] syntax
+  size: number | 'inferred' | 'comptime' | null // null = slice [#], 'comptime' = [], 'inferred' = [N]
   specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for /0
 }
 

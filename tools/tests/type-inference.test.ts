@@ -199,10 +199,10 @@ describe('type inference', () => {
   })
 
   describe('array literals', () => {
-    test('infers element type from elements', () => {
+    test('array literal with annotation gets concrete type', () => {
       const result = checkModule(`
         func main() {
-          let arr = [1, 2, 3]
+          let arr:i32[3] = [1, 2, 3]
         }
       `)
       expect(result.errors).toHaveLength(0)
@@ -214,6 +214,22 @@ describe('type inference', () => {
       }
     })
 
+    test('unannotated array literal stays comptime', () => {
+      const result = checkModule(`
+        func main() {
+          let arr = [1, 2, 3]
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('arr')
+      if (offset !== undefined) {
+        const type = result.types.get(offset)
+        expect(type).toBeDefined()
+        // Without annotation, array stays comptime (int(1) is first element's comptime type)
+        expect(typeToString(type!)).toBe('int(1)[]')
+      }
+    })
+
     test('empty array literal requires annotation', () => {
       const result = checkModule(`
         func main() {
@@ -222,6 +238,16 @@ describe('type inference', () => {
       `)
       expect(result.errors).toHaveLength(1)
       expect(result.errors[0].message).toContain('cannot infer')
+    })
+
+    test('array element overflow is caught', () => {
+      const result = checkModule(`
+        func main() {
+          let arr:u8[4] = [1, 10, 100, 1000]
+        }
+      `)
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors[0].message).toContain('cannot assign int(1000) to u8')
     })
   })
 

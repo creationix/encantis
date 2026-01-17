@@ -58,18 +58,18 @@ describe('typeAssignable', () => {
     ['i32', 'float(3.14)', false],
 
     // Slice accepts various indexed types
-    ['u8[]', 'u8[]', true],
-    ['u8[]', 'u8[10]', true],
-    ['u8[]', 'u8[/0]', true],
+    ['u8[#]', 'u8[#]', true],
+    ['u8[#]', 'u8[10]', true],
+    ['u8[#]', 'u8[/0]', true],
 
     // Array size must match
     ['u8[10]', 'u8[10]', true],
     ['u8[10]', 'u8[5]', false],
-    ['u8[10]', 'u8[]', false],
+    ['u8[10]', 'u8[#]', false],
 
     // Null-terminated safety
     ['u8[/0]', 'u8[/0]', true],
-    ['u8[/0]', 'u8[]', false], // unsafe: slice to null-term
+    ['u8[/0]', 'u8[#]', false], // unsafe: slice to null-term
     ['u8[/0]', 'u8[10]', false], // unsafe: array to null-term
 
     // Tuple coercion
@@ -161,7 +161,7 @@ describe('typeAssignResult', () => {
     })
 
     test('slice coercion', () => {
-      const r = check('u8[]', 'u8[10]')
+      const r = check('u8[#]', 'u8[10]')
       expect(r.compatible).toBe(true)
       if (r.compatible) {
         expect(r.lossiness).toBe('lossless')
@@ -281,8 +281,8 @@ describe('typeAssignResult', () => {
 
   describe('indexed type reinterpretability', () => {
     test('slice with widening elements is NOT reinterpretable', () => {
-      // u8[] -> u16[] requires copying each element, not just byte reinterpret
-      const r = check('u16[]', 'u8[]')
+      // u8[#] -> u16[#] requires copying each element, not just byte reinterpret
+      const r = check('u16[#]', 'u8[#]')
       expect(r.compatible).toBe(true)
       if (r.compatible) {
         expect(r.lossiness).toBe('lossless')
@@ -291,7 +291,7 @@ describe('typeAssignResult', () => {
     })
 
     test('array with same elements is reinterpretable', () => {
-      const r = check('u8[]', 'u8[10]')
+      const r = check('u8[#]', 'u8[10]')
       expect(r.compatible).toBe(true)
       if (r.compatible) {
         expect(r.lossiness).toBe('lossless')

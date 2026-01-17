@@ -43,12 +43,15 @@ export function astToResolved(ast: AST.Type): ResolvedType {
     case 'PointerType':
       return pointer(astToResolved(ast.pointee))
 
-    case 'IndexedType':
+    case 'IndexedType': {
+      // Handle 'inferred' size - convert to null (slice) until context provides size
+      const size = ast.size === 'inferred' ? null : ast.size
       return indexed(
         astToResolved(ast.element),
-        ast.size,
+        size,
         ast.specifiers.map(astSpecifierToResolved),
       )
+    }
 
     case 'CompositeType':
       return tuple(
