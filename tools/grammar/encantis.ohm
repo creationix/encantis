@@ -99,25 +99,26 @@ Encantis {
   // Types
   // ============================================================================
 
-  // Left-recursive for chained indexed types like i32[][] and tagged types like i32@Index
-  Type = Type "[" arraySize "]"                    -- array
-       | Type "[" indexSpecifier+ "]"              -- indexed
-       | Type "[" "#" "]"                          -- slice
-       | Type "[" "]"                              -- comptimeList
+  // Array syntax: [encoding? size? Type]
+  // - [T] = comptime list
+  // - *[T] = slice (ptr + len)
+  // - [N;T] = inline array (N values on stack)
+  // - *[N;T] = fixed array (ptr to N values)
+  // - *[?T] = LEB128-prefixed
+  // - *[!T] = null-terminated
+  Type = "*" Type                                  -- pointer
+       | "[" arrayEncoding? arraySize? Type "]"    -- array
        | Type "@" typeIdent                        -- tagged
-       | "*" Type                                  -- pointer
        | "(" FieldList? ")"                        -- composite
        | ComptimeType                              -- comptimeScalar
        | PrimitiveType                             -- primitive
        | typeIdent                                 -- named
 
-  // Array size can be a literal number or N for inferred count
-  arraySize = intLiteral  -- literal
-            | "N"         -- inferred
+  // Array encoding: ? = LEB128 prefix, ! = null terminator
+  arrayEncoding = "?" | "!"
 
-  // Index specifiers: terminators and length prefixes
-  // /L is a shorthand for /leb128
-  indexSpecifier = "/0" | "/u8" | "/u16" | "/u32" | "/u64" | "/leb128" | "/L"
+  // Array size: N; where N is a literal integer
+  arraySize = intLiteral ";"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"

@@ -196,7 +196,7 @@ memory 1 {
 ```ebnf
 type            = primitive_type
                 | pointer_type
-                | indexed_type
+                | array_type
                 | composite_type
                 | type_identifier
 
@@ -207,12 +207,56 @@ primitive_type  = "i8" | "i16" | "i32" | "i64"
 
 pointer_type    = "*" type
 
-indexed_type    = type "[" [ integer_literal ] [ "/" "0" ] "]"
+array_type      = "[" encoding? size? type "]"
+encoding        = "?" | "!"
+size            = integer_literal ";"
 
 composite_type  = "(" [ field_list ] ")"
 ```
 
-Indexed type variants: `T[]` (slice), `T[N]` (fixed-size), `T[/0]` (null-terminated), `T[N/0]` (fixed-size null-terminated).
+### Array Types
+
+Arrays use bracket syntax with optional encoding and size specifiers:
+
+| Syntax | Description | Runtime Representation |
+|--------|-------------|------------------------|
+| `[T]` | Comptime list | None (resolved at compile time) |
+| `*[T]` | Slice | ptr + len (fat pointer, 64 bits) |
+| `[N;T]` | Inline array | N values on stack/registers |
+| `*[N;T]` | Fixed array | ptr to N values in memory |
+| `*[?T]` | LEB128-prefixed | ptr (length encoded in data) |
+| `*[!T]` | Null-terminated | ptr (sentinel in data) |
+
+The `?` encoding means "how many?" — the length is stored as a LEB128 prefix.
+The `!` encoding means "stop!" — a null sentinel terminates the array.
+
+### Nested Arrays
+
+Nesting determines flat vs pointer-indirect memory layout:
+
+**Flat memory (no inner pointer):**
+
+- `*[![!u8]]` — double null-terminated: `"hello\0world\0\0"`
+- `*[?[?u8]]` — LEB128 count + LEB128 length per element
+
+**Pointer indirection (inner `*`):**
+
+- `*[!*[!u8]]` — null-term array of pointers to null-term strings
+- `*[*[u8]]` — slice of slices (outer has ptr+len, each element has ptr+len)
+
+Examples:
+
+```ents
+["hello", "world"]:*[![!u8]]     // Flat: "hello\0world\0\0"
+["hello", "world"]:*[!*[!u8]]    // Pointers: [ptr1, ptr2, 0] where ptr1→"hello\0", ptr2→"world\0"
+```
+
+### Inline Arrays and SIMD
+
+Inline arrays `[N;T]` store values directly on the stack or in registers:
+
+- `[4;f32]` — 4 floats inline (may auto-promote to v128/f32x4)
+- `[2;[2;f32]]` — 2×2 matrix as 4 inline floats
 
 Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
 

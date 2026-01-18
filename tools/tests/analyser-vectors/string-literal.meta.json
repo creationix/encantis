@@ -3,8 +3,8 @@
   "src": "file://./string-literal.ents",
   "data": [],
   "types": [
-    { "type": "()->u8[]" },
-    { "type": "u8[]" }
+    { "type": "()->[u8]" },
+    { "type": "[u8]" }
   ],
   "symbols": [
     { "name": "get_greeting", "kind": "func", "type": 0, "def": "3:5", "refs": [] }

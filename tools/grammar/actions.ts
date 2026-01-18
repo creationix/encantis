@@ -273,57 +273,53 @@ semantics.addOperation<unknown>('toAST', {
   // Types
   // ============================================================================
 
-  Type_array(element, _lb, sizeNode, _rb) {
-    const sizeStr = sizeNode.sourceString
-    const size = sizeStr === 'N' ? 'inferred' : Number(sizeStr)
+  // New array syntax: [encoding? size? Type]
+  // - [T] = comptime list (no encoding, no size)
+  // - *[T] = slice (handled by pointer wrapping)
+  // - [N;T] = inline array (size present, no encoding)
+  // - *[N;T] = fixed array in memory (size present, no encoding, wrapped in pointer)
+  // - *[?T] = LEB128-prefixed (encoding=?)
+  // - *[!T] = null-terminated (encoding=!)
+  Type_array(_lb, encodingOpt, sizeOpt, element, _rb) {
+    const encoding = first<string>(encodingOpt)
+    const sizeVal = first<number>(sizeOpt)
+
+    // Build specifiers from encoding
+    const specifiers: AST.IndexSpecifier[] = []
+    if (encoding === '?') {
+      specifiers.push({ kind: 'prefix', prefixType: 'leb128' })
+    } else if (encoding === '!') {
+      specifiers.push({ kind: 'null' })
+    }
+
+    // Determine size:
+    // - If sizeVal is present: fixed size
+    // - If no encoding and no size: comptime list
+    // - If encoding but no size: runtime array (size = null)
+    let size: number | 'comptime' | null
+    if (sizeVal !== null) {
+      size = sizeVal
+    } else if (specifiers.length === 0) {
+      size = 'comptime'
+    } else {
+      size = null
+    }
+
     return {
       kind: 'IndexedType',
       element: element.toAST(),
       size,
-      specifiers: [],
+      specifiers,
       span: span(this),
     } as AST.IndexedType
   },
 
-  Type_indexed(element, _lb, specs, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(),
-      size: null,
-      specifiers: specs.children.map((s) => s.toAST()),
-      span: span(this),
-    } as AST.IndexedType
+  arrayEncoding(token) {
+    return token.sourceString // "?" or "!"
   },
 
-  Type_slice(element, _lb, _hash, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(),
-      size: null,
-      specifiers: [],
-      span: span(this),
-    } as AST.IndexedType
-  },
-
-  Type_comptimeList(element, _lb, _rb) {
-    return {
-      kind: 'IndexedType',
-      element: element.toAST(),
-      size: 'comptime',
-      specifiers: [],
-      span: span(this),
-    } as AST.IndexedType
-  },
-
-  indexSpecifier(token) {
-    const s = token.sourceString
-    if (s === '/0') {
-      return { kind: 'null' } as AST.IndexSpecifier
-    }
-    // Extract prefix type from /u8, /u16, etc.
-    // Normalize /L to leb128
-    const prefixType = s === '/L' ? 'leb128' : s.slice(1)
-    return { kind: 'prefix', prefixType } as AST.IndexSpecifier
+  arraySize(intLit, _semi) {
+    return Number(intLit.sourceString)
   },
 
   Type_tagged(type, _at, tag) {

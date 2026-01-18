@@ -796,6 +796,14 @@ class TypeRegistry {
 
 // === Type String Formatting (meta-specific) ===
 
+// Convert specifier to new encoding syntax for meta output
+function specToEncoding(s: { kind: 'null' } | { kind: 'prefix'; prefixType: string }): string {
+  if (s.kind === 'null') return '!'
+  if (s.prefixType === 'leb128') return '?'
+  // For other prefix types, fall back to old style
+  return `/${s.prefixType}`
+}
+
 function metaTypeString(t: ResolvedType): string {
   switch (t.kind) {
     case 'primitive':
@@ -805,24 +813,11 @@ function metaTypeString(t: ResolvedType): string {
       return `*${metaTypeString(t.pointee)}`
 
     case 'indexed': {
+      // New syntax: [encoding? size? element]
+      const encoding = t.specifiers.length > 0 ? specToEncoding(t.specifiers[0]) : ''
+      const size = typeof t.size === 'number' ? `${t.size};` : ''
       const elem = metaTypeString(t.element)
-      const specs = t.specifiers
-        .map((s) => (s.kind === 'null' ? '/0' : `/${s.prefixType}`))
-        .join('')
-      if (t.size === 'comptime') {
-        // Comptime list: T[]
-        return `${elem}[]`
-      } else if (t.size === null) {
-        // Slice (no specifiers) or serialized (with specifiers)
-        if (specs) {
-          return `${elem}[${specs}]`
-        } else {
-          return `${elem}[#]`
-        }
-      } else {
-        // Fixed array: T[N] or T[N/0] etc.
-        return `${elem}[${t.size}${specs}]`
-      }
+      return `[${encoding}${size}${elem}]`
     }
 
     case 'tuple': {

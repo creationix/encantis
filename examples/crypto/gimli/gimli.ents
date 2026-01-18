@@ -7,7 +7,7 @@ export "mem" memory 1
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
 export "gimli"
-func gimli(state:u32[12]) {
+func gimli(state:*[12;u32]) {
   let round:u32 = 24
 
   loop {
@@ -56,8 +56,8 @@ func gimli(state:u32[12]) {
 // Gimli-Hash: absorb input and squeeze 32-byte output
 // Uses rate of 16 bytes (128 bits)
 export "gimli_hash"
-func gimli_hash(input:u8[], output:u8[32]) {
-  let state:u32[12] = 0  // 48 bytes state, initialized to zero
+func gimli_hash(input:*[u8], output:*[32;u8]) {
+  let state:[12;u32] = 0  // 48 bytes state, initialized to zero
   let len = input.len
   let input_ptr = input.ptr
 

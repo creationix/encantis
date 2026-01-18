@@ -425,8 +425,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   }
 
   // Comptime list can coerce to indexed types (arrays, slices, null-terminated, etc.)
+  // Note: bare indexed with size='comptime' is a comptime list (can't assign to it)
+  // But pointer-to-indexed with size='comptime' is a slice (CAN assign to it)
   if (s.kind === 'comptime_list' && t.kind === 'indexed') {
-    // Can't assign to comptime indexed type (T[])
+    // Can't assign to bare comptime indexed type [T] - it's not a runtime type
+    // This check is skipped when called from pointer-to-indexed handler below
     if (t.size === 'comptime') return INCOMPATIBLE
     // Check size compatibility for fixed arrays
     if (typeof t.size === 'number' && t.size !== s.elements.length) {
@@ -440,6 +443,69 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       }
     }
     // Comptime list can satisfy any specifiers (we know the data at compile time)
+    return lossless(false)
+  }
+
+  // Comptime list can coerce to pointer-to-indexed types (new syntax: *[T], *[!T], etc.)
+  // *[T] is a slice (fat pointer), *[!T] is null-terminated, *[?T] is LEB128-prefixed
+  if (s.kind === 'comptime_list' && t.kind === 'pointer' && t.pointee.kind === 'indexed') {
+    const targetIndexed = t.pointee
+    // For pointer-wrapped indexed, size='comptime' means slice (runtime type, CAN assign)
+    // Check size compatibility for fixed arrays
+    if (typeof targetIndexed.size === 'number' && targetIndexed.size !== s.elements.length) {
+      return INCOMPATIBLE
+    }
+    // Check all elements can be assigned to target element type
+    for (const elem of s.elements) {
+      const elemResult = typeAssignResult(targetIndexed.element, elem)
+      if (!elemResult.compatible || elemResult.lossiness !== 'lossless') {
+        return INCOMPATIBLE
+      }
+    }
+    return lossless(false)
+  }
+
+  // Comptime indexed can coerce to pointer-to-indexed (new syntax: [u8] → *[u8])
+  // This handles [[u8]] → *[*[u8]], [[u8]] → *[![!u8]], etc.
+  if (s.kind === 'indexed' && s.size === 'comptime' && t.kind === 'pointer' && t.pointee.kind === 'indexed') {
+
+    // Count comptime nesting depth in source
+    let sourceDepth = 0
+    let innerSource: ResolvedType = s
+    while (innerSource.kind === 'indexed' && innerSource.size === 'comptime') {
+      sourceDepth++
+      innerSource = innerSource.element
+    }
+
+    // Count target depth (following both indexed AND pointer-to-indexed)
+    // For *[*[u8]]: depth=2, for *[![!u8]]: depth=1 with 2 specifiers
+    let targetDepth = 0
+    let targetSpecCount = 0
+    let targetInner: ResolvedType = t
+    while (true) {
+      if (targetInner.kind === 'pointer' && targetInner.pointee.kind === 'indexed') {
+        targetDepth++
+        targetSpecCount += targetInner.pointee.specifiers.length
+        targetInner = targetInner.pointee.element
+      } else if (targetInner.kind === 'indexed' && targetInner.size !== 'comptime') {
+        targetDepth++
+        targetSpecCount += targetInner.specifiers.length
+        targetInner = targetInner.element
+      } else {
+        break
+      }
+    }
+
+    // For merged brackets (like *[![!u8]]): sourceDepth == targetSpecCount
+    // For separate brackets (like *[*[u8]]): sourceDepth == targetDepth
+    if (sourceDepth !== targetSpecCount && sourceDepth !== targetDepth) {
+      return INCOMPATIBLE
+    }
+
+    // Check innermost elements are compatible
+    const innerResult = typeAssignResult(targetInner, innerSource)
+    if (!innerResult.compatible || innerResult.lossiness !== 'lossless') return INCOMPATIBLE
+
     return lossless(false)
   }
 
@@ -584,8 +650,11 @@ export function typeAssignable(target: ResolvedType, source: ResolvedType): bool
 
 // === Type Formatting ===
 
-function specifierToString(s: IndexSpecifierRT): string {
-  if (s.kind === 'null') return '/0'
+// Convert specifier to new encoding syntax
+function specifierToEncoding(s: IndexSpecifierRT): string {
+  if (s.kind === 'null') return '!'
+  if (s.prefixType === 'leb128') return '?'
+  // For other prefix types, we don't have syntax yet - fall back to old style
   return `/${s.prefixType}`
 }
 
@@ -598,22 +667,15 @@ export function typeToString(t: ResolvedType): string {
       return `*${typeToString(t.pointee)}`
 
     case 'indexed': {
+      // New syntax: [encoding? size? element]
+      // - [T] for comptime (no encoding, no size)
+      // - [N;T] for inline array
+      // - [!T] for null-terminated (though usually needs pointer wrapper)
+      // - [?T] for LEB128-prefixed (though usually needs pointer wrapper)
+      const encoding = t.specifiers.length > 0 ? specifierToEncoding(t.specifiers[0]) : ''
+      const size = typeof t.size === 'number' ? `${t.size};` : ''
       const elem = typeToString(t.element)
-      const specs = t.specifiers.map(specifierToString).join('')
-      if (t.size === 'comptime') {
-        // Comptime list: T[]
-        return `${elem}[]`
-      } else if (t.size === null) {
-        // Slice (null size, no specifiers) or serialized (null size, with specifiers)
-        if (specs) {
-          return `${elem}[${specs}]`
-        } else {
-          return `${elem}[#]`
-        }
-      } else {
-        // Fixed array: T[N] or T[N/0] etc.
-        return `${elem}[${t.size}${specs}]`
-      }
+      return `[${encoding}${size}${elem}]`
     }
 
     case 'tuple': {
