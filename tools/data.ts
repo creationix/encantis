@@ -3,7 +3,15 @@
 
 import type * as AST from './ast'
 import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
-import { bytesToHex } from './utils'
+import {
+  bytesToHex,
+  concatBytes,
+  encodeLEB128,
+  serializeInt,
+  serializeI32,
+  serializeF64,
+  serializeFloat,
+} from './utils'
 
 /**
  * Check if indexed type uses merged brackets (single pass serialization)
@@ -530,86 +538,6 @@ function escapeWatString(bytes: Uint8Array): string {
   return result
 }
 
-// Concatenate multiple byte arrays
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
-  const result = new Uint8Array(totalLen)
-  let offset = 0
-  for (const part of parts) {
-    result.set(part, offset)
-    offset += part.length
-  }
-  return result
-}
-
-// Serialize integer to bytes (little endian)
-function serializeInt(value: bigint, typeName: string): Uint8Array | null {
-  switch (typeName) {
-    case 'i8':
-    case 'u8':
-      return new Uint8Array([Number(value) & 0xff])
-    case 'i16':
-    case 'u16': {
-      const buf = new Uint8Array(2)
-      const view = new DataView(buf.buffer)
-      view.setUint16(0, Number(value) & 0xffff, true)
-      return buf
-    }
-    case 'i32':
-    case 'u32': {
-      const buf = new Uint8Array(4)
-      const view = new DataView(buf.buffer)
-      view.setUint32(0, Number(value) & 0xffffffff, true)
-      return buf
-    }
-    case 'i64':
-    case 'u64': {
-      const buf = new Uint8Array(8)
-      const view = new DataView(buf.buffer)
-      view.setBigUint64(0, BigInt.asUintN(64, value), true)
-      return buf
-    }
-    default:
-      return null
-  }
-}
-
-// Fast i32 serialization (common case for pointers)
-function serializeI32(value: number): Uint8Array {
-  const buf = new Uint8Array(4)
-  const view = new DataView(buf.buffer)
-  view.setInt32(0, value, true)
-  return buf
-}
-
-// Fast f64 serialization (common case for floats)
-function serializeF64(value: number): Uint8Array {
-  const buf = new Uint8Array(8)
-  const view = new DataView(buf.buffer)
-  view.setFloat64(0, value, true)
-  return buf
-}
-
-// Serialize float to bytes (little endian)
-function serializeFloat(value: number, typeName: string): Uint8Array | null {
-  switch (typeName) {
-    case 'f32': {
-      const buf = new Uint8Array(4)
-      const view = new DataView(buf.buffer)
-      view.setFloat32(0, value, true)
-      return buf
-    }
-    case 'f64': {
-      const buf = new Uint8Array(8)
-      const view = new DataView(buf.buffer)
-      view.setFloat64(0, value, true)
-      return buf
-    }
-    default:
-      return null
-  }
-}
-
 // === Type-aware literal serialization ===
 
 // Reference to data in the data section
@@ -988,18 +916,6 @@ function encodeLengthPrefix(
     throw new Error(`Unknown prefix type: ${prefixType}`)
   }
   return bytes
-}
-
-// Encode unsigned LEB128
-function encodeLEB128(value: number): Uint8Array {
-  const bytes: number[] = []
-  do {
-    let byte = value & 0x7f
-    value >>>= 7
-    if (value !== 0) byte |= 0x80
-    bytes.push(byte)
-  } while (value !== 0)
-  return new Uint8Array(bytes)
 }
 
 // Get the byte size of an element type (for null terminators)

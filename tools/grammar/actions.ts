@@ -1,6 +1,7 @@
 import * as ohm from 'ohm-js'
 import type * as AST from '../ast'
 import type { Span } from '../ast'
+import { hexToBytes } from '../utils'
 
 // Types for access suffixes parsed from grammar
 type AccessSuffix =
@@ -1092,10 +1093,7 @@ semantics.addOperation<unknown>('toAST', {
 
   hexString(_prefix, hexChars, _rq) {
     const hex = hexChars.sourceString.replace(/\s+/g, '')
-    const bytes = new Uint8Array(hex.length / 2)
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-    }
+    const bytes = hexToBytes(hex)
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', bytes },

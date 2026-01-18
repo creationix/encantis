@@ -3,6 +3,7 @@
 import { parse } from './parser'
 import { check } from './checker'
 import { buildMeta } from './meta'
+import { bigintReplacer } from './utils'
 
 const args = process.argv.slice(2)
 
@@ -94,7 +95,7 @@ switch (command) {
     }
 
     // Output AST as JSON
-    const json = JSON.stringify(result.module, jsonReplacer, 2)
+    const json = JSON.stringify(result.module, bigintReplacer, 2)
     await output(json)
     break
   }
@@ -157,7 +158,7 @@ switch (command) {
     // Generate meta.json
     const srcPath = `file://./${inputFile.split('/').pop()}`
     const meta = buildMeta(result.module, source, { srcPath })
-    const json = JSON.stringify(meta, jsonReplacer, 2)
+    const json = JSON.stringify(meta, bigintReplacer, 2)
     await output(json)
     break
   }
@@ -204,12 +205,4 @@ function offsetToLineCol(
     }
   }
   return { line, column }
-}
-
-// JSON replacer that handles BigInt
-function jsonReplacer(_key: string, value: unknown): unknown {
-  if (typeof value === 'bigint') {
-    return value.toString()
-  }
-  return value
 }
