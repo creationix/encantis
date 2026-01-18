@@ -15,6 +15,24 @@ export type PrimitiveName =
   | 'f64'
   | 'bool'
 
+// Type classification constants
+const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64']
+const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64']
+const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
+const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
+
+// Integer bounds for comptime int checking
+const INT_BOUNDS: Record<string, [bigint, bigint]> = {
+  i8: [-128n, 127n],
+  u8: [0n, 255n],
+  i16: [-32768n, 32767n],
+  u16: [0n, 65535n],
+  i32: [-2147483648n, 2147483647n],
+  u32: [0n, 4294967295n],
+  i64: [-9223372036854775808n, 9223372036854775807n],
+  u64: [0n, 18446744073709551615n],
+}
+
 // Resolved type variants
 export type ResolvedType =
   | PrimitiveRT
@@ -40,18 +58,18 @@ export interface PointerRT {
   pointee: ResolvedType
 }
 
-// Index specifiers: terminators (/0) and length prefixes (/u8, /u16, /u32, /u64, /leb128)
+// Index specifiers: terminators (!) and length prefixes (?)
 export type IndexSpecifierRT =
   | { kind: 'null' }
   | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
 
-// Indexed type: T[], T[#], T[N], T[/0], T[/u8], T[/leb128/0], etc.
+// Indexed type: [T], *[T], *[N;T], *[!T], *[?T], etc.
 // Unified representation for comptime lists, slices, arrays, and prefixed/terminated strings
 export interface IndexedRT {
   kind: 'indexed'
   element: ResolvedType
-  size: number | 'comptime' | null // number = fixed T[N], null = slice T[#], 'comptime' = comptime T[]
-  specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for /0
+  size: number | 'comptime' | null // number = fixed *[N;T], null = slice *[T], 'comptime' = comptime [T]
+  specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for !
 }
 
 // Tuple/struct type: (T, T) or (x: T, y: T)
@@ -178,8 +196,8 @@ export function field(
 }
 
 // Create the default concrete type for a comptime list or indexed type
-// Uses /leb128 prefix for each nesting level - compact for typical sizes
-// e.g., comptime_list of strings → u8[/L/L] (leb128 count + leb128 length per string)
+// Uses ? (LEB128) prefix for each nesting level - compact for typical sizes
+// e.g., comptime_list of strings → *[?[?u8]] (leb128 count + leb128 length per string)
 export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
   const LEB128_SPEC: IndexSpecifierRT = { kind: 'prefix', prefixType: 'leb128' }
 
@@ -292,7 +310,7 @@ function specifiersCompatible(target: IndexSpecifierRT[], source: IndexSpecifier
   const sourceAllNulls = source.every(s => s.kind === 'null')
 
   if (targetAllNulls && sourceAllNulls) {
-    // u8[/0] accepts u8[/0/0] (more nulls is still valid)
+    // *[!u8] accepts *[![!u8]] (more nulls is still valid)
     return source.length >= target.length
   }
 
@@ -538,9 +556,9 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     if (t.size === 'comptime') return INCOMPATIBLE
 
     // Handle comptime source with potential bracket merging
-    // u8[][] can coerce to:
-    //   - u8[/0][/0] (2 brackets, each level gets a specifier)
-    //   - u8[/0/0] (1 bracket with 2 specifiers - merged)
+    // [[u8]] can coerce to:
+    //   - *[!*[!u8]] (2 brackets, each level gets a specifier)
+    //   - *[![!u8]] (1 bracket with 2 specifiers - merged)
     if (s.size === 'comptime') {
       // Count comptime nesting depth and find innermost element
       let sourceDepth = 0
@@ -563,8 +581,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       }
 
       // For bracket merging: source depth must equal target specifier count
-      // u8[][] (depth 2) -> u8[/0/0] (1 bracket, 2 specs) ✓
-      // u8[][] (depth 2) -> u8[/0][/0] (2 brackets, 2 specs total) ✓
+      // [[u8]] (depth 2) -> *[![!u8]] (1 bracket, 2 specs) ✓
+      // [[u8]] (depth 2) -> *[!*[!u8]] (2 brackets, 2 specs total) ✓
       // But source depth must be >= target depth (can merge but not split)
       if (sourceDepth < targetDepth) return INCOMPATIBLE
       if (sourceDepth !== targetSpecCount && sourceDepth !== targetDepth) return INCOMPATIBLE
@@ -658,70 +676,81 @@ function specifierToEncoding(s: IndexSpecifierRT): string {
   return `/${s.prefixType}`
 }
 
-export function typeToString(t: ResolvedType): string {
+export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): string {
+  const compact = opts?.compact ?? false
+  const sep = compact ? ',' : ', '
+  const arrow = compact ? '->' : ' -> '
+
   switch (t.kind) {
     case 'primitive':
       return t.name
 
     case 'pointer':
-      return `*${typeToString(t.pointee)}`
+      return `*${typeToString(t.pointee, opts)}`
 
     case 'indexed': {
-      // New syntax: [encoding? size? element]
+      // Syntax: [encoding? size? element]
       // - [T] for comptime (no encoding, no size)
       // - [N;T] for inline array
-      // - [!T] for null-terminated (though usually needs pointer wrapper)
-      // - [?T] for LEB128-prefixed (though usually needs pointer wrapper)
+      // - [!T] for null-terminated
+      // - [?T] for LEB128-prefixed
       const encoding = t.specifiers.length > 0 ? specifierToEncoding(t.specifiers[0]) : ''
       const size = typeof t.size === 'number' ? `${t.size};` : ''
-      const elem = typeToString(t.element)
+      const elem = typeToString(t.element, opts)
       return `[${encoding}${size}${elem}]`
     }
 
     case 'tuple': {
       if (t.fields.length === 0) return '()'
-      const fields = t.fields.map(fieldToString).join(', ')
+      const fields = t.fields.map((f) => fieldToString(f, opts)).join(sep)
       return `(${fields})`
     }
 
     case 'func': {
       const params =
-        t.params.length === 0 ? '()' : `(${t.params.map(fieldToString).join(', ')})`
-      if (t.returns.length === 0) return `func${params}`
+        t.params.length === 0
+          ? '()'
+          : `(${t.params.map((f) => fieldToString(f, opts)).join(sep)})`
+      if (t.returns.length === 0) return compact ? `${params}->()` : `func${params}`
       const returns =
         t.returns.length === 1 && t.returns[0].name === null
-          ? typeToString(t.returns[0].type)
-          : `(${t.returns.map(fieldToString).join(', ')})`
-      return `func${params} -> ${returns}`
+          ? typeToString(t.returns[0].type, opts)
+          : `(${t.returns.map((f) => fieldToString(f, opts)).join(sep)})`
+      return compact ? `${params}${arrow}${returns}` : `func${params}${arrow}${returns}`
     }
 
     case 'void':
       return '()'
 
     case 'comptime_int':
-      return `int(${t.value})`
+      return compact ? `comptime_int(${t.value})` : `int(${t.value})`
 
     case 'comptime_float':
-      return `float(${t.value})`
+      return compact ? `comptime_float(${t.value})` : `float(${t.value})`
 
     case 'comptime_list':
-      return `[${t.elements.map(typeToString).join(', ')}]`
+      return `[${t.elements.map((e) => typeToString(e, opts)).join(sep)}]`
 
     case 'named':
+      // In compact mode (meta output), always use just the name
+      if (compact) {
+        return t.name
+      }
       // For unique/tagged types, show as Type@Tag
       if (t.unique) {
-        return `${typeToString(t.type)}@${t.name}`
+        return `${typeToString(t.type, opts)}@${t.name}`
       }
       // For aliases, just show the name
       return t.name
   }
 }
 
-function fieldToString(f: ResolvedField): string {
+function fieldToString(f: ResolvedField, opts?: { compact?: boolean }): string {
+  const sep = opts?.compact ? ':' : ': '
   if (f.name) {
-    return `${f.name}: ${typeToString(f.type)}`
+    return `${f.name}${sep}${typeToString(f.type, opts)}`
   }
-  return typeToString(f.type)
+  return typeToString(f.type, opts)
 }
 
 // === Type Predicates ===
@@ -733,31 +762,22 @@ export function unwrap(t: ResolvedType): ResolvedType {
 
 export function isInteger(t: ResolvedType): boolean {
   const u = unwrap(t)
-  return (
-    u.kind === 'primitive' &&
-    ['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64'].includes(u.name)
-  )
+  return u.kind === 'primitive' && INTEGER.includes(u.name)
 }
 
 export function isSigned(t: ResolvedType): boolean {
   const u = unwrap(t)
-  return (
-    u.kind === 'primitive' &&
-    ['i8', 'i16', 'i32', 'i64'].includes(u.name)
-  )
+  return u.kind === 'primitive' && SIGNED.includes(u.name)
 }
 
 export function isUnsigned(t: ResolvedType): boolean {
   const u = unwrap(t)
-  return (
-    u.kind === 'primitive' &&
-    ['u8', 'u16', 'u32', 'u64'].includes(u.name)
-  )
+  return u.kind === 'primitive' && UNSIGNED.includes(u.name)
 }
 
 export function isFloat(t: ResolvedType): boolean {
   const u = unwrap(t)
-  return u.kind === 'primitive' && ['f32', 'f64'].includes(u.name)
+  return u.kind === 'primitive' && FLOAT.includes(u.name)
 }
 
 export function isNumeric(t: ResolvedType): boolean {
@@ -870,38 +890,16 @@ export function isNarrowingConversion(from: PrimitiveName, to: PrimitiveName): b
 
 // Check if conversion is between float and integer types
 export function isFloatIntConversion(from: PrimitiveName, to: PrimitiveName): boolean {
-  const floats: PrimitiveName[] = ['f32', 'f64']
-  const ints: PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64']
-
-  const fromIsFloat = floats.includes(from)
-  const toIsFloat = floats.includes(to)
-  const fromIsInt = ints.includes(from)
-  const toIsInt = ints.includes(to)
-
-  // Float to int or int to float
+  const fromIsFloat = FLOAT.includes(from)
+  const toIsFloat = FLOAT.includes(to)
+  const fromIsInt = INTEGER.includes(from)
+  const toIsInt = INTEGER.includes(to)
   return (fromIsFloat && toIsInt) || (fromIsInt && toIsFloat)
 }
 
 // Check if comptime int value fits in a given integer type
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
-  switch (target.name) {
-    case 'i8':
-      return value >= -128n && value <= 127n
-    case 'u8':
-      return value >= 0n && value <= 255n
-    case 'i16':
-      return value >= -32768n && value <= 32767n
-    case 'u16':
-      return value >= 0n && value <= 65535n
-    case 'i32':
-      return value >= -2147483648n && value <= 2147483647n
-    case 'u32':
-      return value >= 0n && value <= 4294967295n
-    case 'i64':
-      return value >= -9223372036854775808n && value <= 9223372036854775807n
-    case 'u64':
-      return value >= 0n && value <= 18446744073709551615n
-    default:
-      return false
-  }
+  const bounds = INT_BOUNDS[target.name]
+  if (!bounds) return false
+  return value >= bounds[0] && value <= bounds[1]
 }

@@ -508,17 +508,17 @@ export interface PointerType extends BaseNode {
   pointee: Type
 }
 
-// Index specifiers: terminators (/0) and length prefixes (/u8, /u16, /u32, /u64, /leb128)
+// Index specifiers: terminators (!) and length prefixes (?)
 export type IndexSpecifier =
   | { kind: 'null' }
   | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
 
-// type[] or type[#] or type[N] or type[/0] or type[/u8] or type[/leb128/0] etc.
+// [T] or *[T] or *[N;T] or *[!T] or *[?T] etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
-  size: number | 'inferred' | 'comptime' | null // null = slice [#], 'comptime' = [], 'inferred' = [N]
-  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for /0
+  size: number | 'inferred' | 'comptime' | null // null = slice *[T], 'comptime' = [T], 'inferred' = *[N;T]
+  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for !
 }
 
 // () or (type, type) or (name: type, name: type)

@@ -152,7 +152,7 @@ class CheckContext {
   }
 
   // Max specifiers in any single bracket level
-  // Merged brackets like u8[/0/0] have 2, separate u8[/0][/0] has max 1
+  // Merged brackets like *[![!u8]] have 2, separate *[!*[!u8]] has max 1
   private maxSpecifiersInBracket(type: IndexedRT): number {
     const thisLevel = type.specifiers.length
     if (type.element.kind === 'indexed') {
@@ -258,25 +258,17 @@ class CheckContext {
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {
-    const name = decl.ident.name
-    const resolved = this.resolveType(decl.type)
-    this.moduleScope.symbols.set(name, {
-      kind: 'type',
-      type: resolved,
-      unique: false,
-    })
-    this.typeCache.set(name, resolved)
-    this.recordDefinition(name, decl.ident.span.start)
+    this.collectTypeOrUnique(decl, false)
   }
 
   collectUniqueDecl(decl: AST.UniqueDecl): void {
+    this.collectTypeOrUnique(decl, true)
+  }
+
+  private collectTypeOrUnique(decl: AST.TypeDecl | AST.UniqueDecl, unique: boolean): void {
     const name = decl.ident.name
     const resolved = this.resolveType(decl.type)
-    this.moduleScope.symbols.set(name, {
-      kind: 'type',
-      type: resolved,
-      unique: true,
-    })
+    this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
     this.recordDefinition(name, decl.ident.span.start)
   }
@@ -324,30 +316,10 @@ class CheckContext {
     // Create function scope with params and named returns
     const funcScope: Scope = { parent: this.moduleScope, symbols: new Map() }
 
-    // Add parameters to scope
-    if (decl.signature.params.kind === 'FieldList') {
-      for (const param of decl.signature.params.fields) {
-        if (param.ident) {
-          const type = this.resolveType(param.type)
-          funcScope.symbols.set(param.ident, { kind: 'param', type })
-          this.types.set(param.span.start, type)
-          this.recordDefinition(param.ident, param.span.start)
-        }
-      }
-    }
-
-    // Add named returns to scope
-    if (decl.signature.returns) {
-      if (decl.signature.returns.kind === 'FieldList') {
-        for (const ret of decl.signature.returns.fields) {
-          if (ret.ident) {
-            const type = this.resolveType(ret.type)
-            funcScope.symbols.set(ret.ident, { kind: 'return', type })
-            this.types.set(ret.span.start, type)
-            this.recordDefinition(ret.ident, ret.span.start)
-          }
-        }
-      }
+    // Add parameters and named returns to scope
+    this.bindFields(decl.signature.params, funcScope, 'param')
+    if (decl.signature.returns?.kind === 'FieldList') {
+      this.bindFields(decl.signature.returns, funcScope, 'return')
     }
 
     // Check body
@@ -355,6 +327,22 @@ class CheckContext {
     this.currentScope = funcScope
     this.checkBody(decl.body)
     this.currentScope = prevScope
+  }
+
+  private bindFields(
+    fields: AST.FieldList | AST.Type,
+    scope: Scope,
+    kind: 'param' | 'return',
+  ): void {
+    if (fields.kind !== 'FieldList') return
+    for (const field of fields.fields) {
+      if (field.ident) {
+        const type = this.resolveType(field.type)
+        scope.symbols.set(field.ident, { kind, type })
+        this.types.set(field.span.start, type)
+        this.recordDefinition(field.ident, field.span.start)
+      }
+    }
   }
 
   checkBody(body: AST.FuncBody): void {
@@ -463,7 +451,7 @@ class CheckContext {
         // Default: f64
         return primitive('f64')
       case 'comptime_list': {
-        // Default to /leb128 encoding for each nesting level
+        // Default to ? (LEB128) encoding for each nesting level
         const defaultType = defaultIndexedType(type)
         if (defaultType) return defaultType
         // Fallback for empty list or heterogeneous types
@@ -474,7 +462,7 @@ class CheckContext {
         return array(elemType, type.elements.length)
       }
       case 'indexed': {
-        // Handle comptime indexed (T[]) - default to /leb128
+        // Handle comptime indexed ([T]) - default to ? (LEB128)
         if (type.size === 'comptime') {
           const defaultType = defaultIndexedType(type)
           if (defaultType) return defaultType
@@ -618,8 +606,8 @@ class CheckContext {
       // Check each element against the inner element type
       if (expr.kind === 'ArrayExpr') {
         // Determine what type to check each element against
-        // For stacked specifiers like u8[/0/0], peel off one specifier level
-        // so "hello" checks against u8[/0] (not just u8)
+        // For stacked specifiers like *[![!u8]], peel off one specifier level
+        // so "hello" checks against *[!u8] (not just u8)
         const innerType = this.peelSpecifier(expected)
         for (const elem of expr.elements) {
           this.checkExpr(elem, innerType)
@@ -648,7 +636,7 @@ class CheckContext {
     ) {
       if (expr.kind === 'ArrayExpr') {
         // Peel specifiers to get the element type for checking
-        // e.g., u8[/0/0] -> u8[/0] for first level, u8[/0] -> u8 for second level
+        // e.g., *[![!u8]] -> *[!u8] for first level, *[!u8] -> u8 for second level
         const innerType = this.peelSpecifier(expected)
         for (const elem of expr.elements) {
           this.checkExpr(elem, innerType)
@@ -685,9 +673,9 @@ class CheckContext {
   }
 
   // Peel off one specifier level from an indexed type to get the inner element type
-  // u8[/0/0] -> u8[/0] (peel first /0, remaining is /0)
-  // u8[/0] -> u8 (peel /0, no remaining specifiers = element type)
-  // u8[][] -> u8[] (element is already an indexed type)
+  // *[![!u8]] -> *[!u8] (peel first !, remaining is !)
+  // *[!u8] -> u8 (peel !, no remaining specifiers = element type)
+  // *[*[u8]] -> *[u8] (element is already an indexed type)
   peelSpecifier(t: { kind: 'indexed'; element: ResolvedType; size: number | null; specifiers: IndexSpecifierRT[] }): ResolvedType {
     // If element is already an indexed type (separate brackets), use it directly
     if (t.element.kind === 'indexed') {
@@ -800,8 +788,8 @@ class CheckContext {
         return comptimeFloat(expr.value.value)
 
       case 'string': {
-        // String literals are comptime indexed u8[] types
-        // They coerce to u8[N], u8[#], u8[/0], etc. based on context
+        // String literals are comptime indexed [u8] types
+        // They coerce to *[N;u8], *[u8], *[!u8], etc. based on context
         return comptimeIndexed(primitive('u8'))
       }
 
@@ -851,7 +839,7 @@ class CheckContext {
       }
 
       // Use bidirectional type checking for arguments
-      // This allows log("message") to propagate u8[/0] to the string literal
+      // This allows log("message") to propagate *[!u8] to the string literal
       let argIndex = 0
       for (const arg of expr.args) {
         if (arg.value && argIndex < calleeType.params.length) {

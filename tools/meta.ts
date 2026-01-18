@@ -6,6 +6,7 @@ import { check, type TypeCheckResult, type Symbol } from './checker'
 import { type ResolvedType, typeToString } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
+import { bytesToHex } from './utils'
 
 // === Meta Output Types ===
 
@@ -237,18 +238,19 @@ class MetaBuilder {
 
   private findFuncIdentOffset(decl: AST.FuncDecl): number {
     if (!decl.ident) return decl.span.start
-    // Search for "func" then find the identifier
-    const searchStart = decl.span.start
-    const funcText = this.source.slice(searchStart, decl.signature.span.start)
-    const funcIdx = funcText.indexOf('func')
-    if (funcIdx !== -1) {
-      const afterFunc = searchStart + funcIdx + 4
-      // Skip whitespace
-      let i = afterFunc
+    return this.findKeywordIdentOffset(decl.span.start, decl.signature.span.start, 'func')
+  }
+
+  /** Find identifier offset after a keyword (e.g., 'func', 'def', 'global') */
+  private findKeywordIdentOffset(start: number, end: number, keyword: string): number {
+    const searchText = this.source.slice(start, end)
+    const keywordIdx = searchText.indexOf(keyword)
+    if (keywordIdx !== -1) {
+      let i = start + keywordIdx + keyword.length
       while (i < this.source.length && /\s/.test(this.source[i])) i++
       return i
     }
-    return decl.span.start
+    return start
   }
 
   private collectFuncBody(decl: AST.FuncDecl, _funcSymbolIndex: number): void {
@@ -338,15 +340,7 @@ class MetaBuilder {
   }
 
   private findDefIdentOffset(decl: AST.DefDecl): number {
-    const searchText = this.source.slice(decl.span.start, decl.span.end)
-    const defIdx = searchText.indexOf('def')
-    if (defIdx !== -1) {
-      const afterDef = decl.span.start + defIdx + 3
-      let i = afterDef
-      while (i < this.source.length && /\s/.test(this.source[i])) i++
-      return i
-    }
-    return decl.span.start
+    return this.findKeywordIdentOffset(decl.span.start, decl.span.end, 'def')
   }
 
   private collectGlobal(decl: AST.GlobalDecl): void {
@@ -359,15 +353,7 @@ class MetaBuilder {
   }
 
   private findGlobalIdentOffset(decl: AST.GlobalDecl): number {
-    const searchText = this.source.slice(decl.span.start, decl.span.end)
-    const globalIdx = searchText.indexOf('global')
-    if (globalIdx !== -1) {
-      const afterGlobal = decl.span.start + globalIdx + 6
-      let i = afterGlobal
-      while (i < this.source.length && /\s/.test(this.source[i])) i++
-      return i
-    }
-    return decl.span.start
+    return this.findKeywordIdentOffset(decl.span.start, decl.span.end, 'global')
   }
 
   private addSymbol(
@@ -764,7 +750,7 @@ class TypeRegistry {
       return this.register(type.type)
     }
 
-    const key = metaTypeString(type)
+    const key = typeToString(type, { compact: true })
     const existing = this.typeIndex.get(key)
     if (existing !== undefined) return existing
 
@@ -775,7 +761,7 @@ class TypeRegistry {
   }
 
   registerWithSymbol(type: ResolvedType, symbolIndex: number): number {
-    const key = metaTypeString(type)
+    const key = typeToString(type, { compact: true })
     const existing = this.typeIndex.get(key)
     if (existing !== undefined) {
       // Update existing entry with symbol reference
@@ -792,79 +778,4 @@ class TypeRegistry {
   getTypes(): MetaType[] {
     return this.types
   }
-}
-
-// === Type String Formatting (meta-specific) ===
-
-// Convert specifier to new encoding syntax for meta output
-function specToEncoding(s: { kind: 'null' } | { kind: 'prefix'; prefixType: string }): string {
-  if (s.kind === 'null') return '!'
-  if (s.prefixType === 'leb128') return '?'
-  // For other prefix types, fall back to old style
-  return `/${s.prefixType}`
-}
-
-function metaTypeString(t: ResolvedType): string {
-  switch (t.kind) {
-    case 'primitive':
-      return t.name
-
-    case 'pointer':
-      return `*${metaTypeString(t.pointee)}`
-
-    case 'indexed': {
-      // New syntax: [encoding? size? element]
-      const encoding = t.specifiers.length > 0 ? specToEncoding(t.specifiers[0]) : ''
-      const size = typeof t.size === 'number' ? `${t.size};` : ''
-      const elem = metaTypeString(t.element)
-      return `[${encoding}${size}${elem}]`
-    }
-
-    case 'tuple': {
-      if (t.fields.length === 0) return '()'
-      const fields = t.fields.map(metaFieldString).join(',')
-      return `(${fields})`
-    }
-
-    case 'func': {
-      // Meta format: (params)->returns (no spaces, no "func" prefix)
-      const params =
-        t.params.length === 0 ? '()' : `(${t.params.map(metaFieldString).join(',')})`
-      if (t.returns.length === 0) return `${params}->()`
-      const returns =
-        t.returns.length === 1 && t.returns[0].name === null
-          ? metaTypeString(t.returns[0].type)
-          : `(${t.returns.map(metaFieldString).join(',')})`
-      return `${params}->${returns}`
-    }
-
-    case 'void':
-      return '()'
-
-    case 'comptime_int':
-      return `comptime_int(${t.value})`
-
-    case 'comptime_float':
-      return `comptime_float(${t.value})`
-
-    case 'comptime_list':
-      return `[${t.elements.map(metaTypeString).join(',')}]`
-
-    case 'named':
-      return t.name
-  }
-}
-
-function metaFieldString(f: { name: string | null; type: ResolvedType }): string {
-  if (f.name) {
-    return `${f.name}:${metaTypeString(f.type)}`
-  }
-  return metaTypeString(f.type)
-}
-
-// Convert bytes to hex string
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
 }

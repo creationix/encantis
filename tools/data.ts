@@ -3,6 +3,18 @@
 
 import type * as AST from './ast'
 import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
+import { bytesToHex } from './utils'
+
+/**
+ * Check if indexed type uses merged brackets (single pass serialization)
+ * vs separate brackets (depth-first with pointer arrays).
+ * Merged: specifiers apply to contiguous data (e.g., *[![!u8]])
+ * Separate: nested indexed types requiring pointer indirection (e.g., *[!*[!u8]])
+ */
+function isMergedBrackets(type: IndexedRT): boolean {
+  return type.specifiers.length > 1 ||
+    (type.specifiers.length === 1 && type.element.kind !== 'indexed')
+}
 
 // An interned string entry in the data section
 export interface DataEntry {
@@ -475,11 +487,8 @@ function stringBytesWithNull(bytes: Uint8Array): Uint8Array {
 }
 
 // Convert bytes to a string key for Map (for deduplication)
-function bytesToKey(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
+// Use bytesToHex as deduplication key
+const bytesToKey = bytesToHex
 
 // Serialize the data section to bytes (for embedding in WASM)
 export function serializeDataSection(section: DataSection): Uint8Array {
@@ -637,11 +646,7 @@ function collectParts(
 ): number {
   const thisId = partIdCounter++
 
-  // Check if this is merged brackets vs separate brackets
-  const isMerged = type.specifiers.length > 1 ||
-    (type.specifiers.length === 1 && type.element.kind !== 'indexed')
-
-  if (isMerged || type.element.kind !== 'indexed') {
+  if (isMergedBrackets(type) || type.element.kind !== 'indexed') {
     // Merged or leaf: serialize as a single unit
     parts.push({
       id: thisId,
@@ -755,21 +760,14 @@ export function serializeLiteral(
   targetType: IndexedRT,
   builder: DataSectionBuilder,
 ): DataRef {
-  // Check if this is a merged bracket (single indexed type with multiple specifiers)
-  // vs separate brackets (nested indexed types)
-  const isMerged = targetType.specifiers.length > 1 ||
-    (targetType.specifiers.length === 1 && targetType.element.kind !== 'indexed')
-
-  if (isMerged || targetType.element.kind !== 'indexed') {
-    // Merged or single-level: serialize everything at once
+  if (isMergedBrackets(targetType) || targetType.element.kind !== 'indexed') {
     return serializeMerged(expr, targetType, builder)
   } else {
-    // Separate brackets: recurse depth-first
     return serializeSeparate(expr, targetType, builder)
   }
 }
 
-// Serialize merged brackets (e.g., u8[/0/0]) - single contiguous write
+// Serialize merged brackets (e.g., *[![!u8]]) - single contiguous write
 function serializeMerged(
   expr: AST.Expr,
   targetType: IndexedRT,
@@ -781,7 +779,7 @@ function serializeMerged(
 
 // Build the complete byte sequence for merged brackets
 // Specifier order: leftmost is outermost, rightmost is innermost
-// e.g., u8[/leb128/0] means: /0 applies to each element, /leb128 applies to whole array
+// e.g., *[?[!u8]] means: ! applies to each element, ? applies to whole array
 function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
   const specifiers = targetType.specifiers
   const elementType = targetType.element
@@ -853,7 +851,7 @@ function buildElementBytes(
   throw new Error(`Cannot build element bytes for ${expr.kind}`)
 }
 
-// Serialize separate brackets (e.g., u8[/0][/0]) - depth-first with pointer arrays
+// Serialize separate brackets (e.g., *[!*[!u8]]) - depth-first with pointer arrays
 function serializeSeparate(
   expr: AST.Expr,
   targetType: IndexedRT,
@@ -902,7 +900,7 @@ function encodePointerArray(
 
   const combined = concatBytes(parts)
 
-  // Apply specifiers (e.g., null terminator for /0)
+  // Apply specifiers (e.g., null terminator for !)
   if (specifiers.length > 0) {
     const spec = specifiers[specifiers.length - 1]
     // For pointer arrays, element size is 4 (i32 pointer) or 8 (slice pair)
