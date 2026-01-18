@@ -609,6 +609,145 @@ export interface DataRef {
   len: number // Byte length or element count (for slices)
 }
 
+// === Part extraction for global sorting ===
+
+// A serializable part extracted from literal tree
+interface SerializablePart {
+  id: number                        // Unique ID for this part
+  expr: AST.Expr                    // The expression to serialize
+  type: IndexedRT                   // Target type
+  depth: number                     // Nesting depth (0=top-level, higher=inner)
+  parentId: number | null           // Parent part's ID (for separate bracket children)
+  childIndices: number[]            // Indices of this part's children (filled during collection)
+  isPointerArray: boolean           // True if this is a pointer array (parent of separate bracket)
+  literalId: number | string | undefined  // Original literal ID for refs
+}
+
+let partIdCounter = 0
+
+// Extract all parts from a literal, returning them in a flat list
+// Parts are returned in order they were discovered (depth-first)
+function collectParts(
+  expr: AST.Expr,
+  type: IndexedRT,
+  depth: number,
+  parentId: number | null,
+  literalId: number | string | undefined,
+  parts: SerializablePart[],
+): number {
+  const thisId = partIdCounter++
+
+  // Check if this is merged brackets vs separate brackets
+  const isMerged = type.specifiers.length > 1 ||
+    (type.specifiers.length === 1 && type.element.kind !== 'indexed')
+
+  if (isMerged || type.element.kind !== 'indexed') {
+    // Merged or leaf: serialize as a single unit
+    parts.push({
+      id: thisId,
+      expr,
+      type,
+      depth,
+      parentId,
+      childIndices: [],
+      isPointerArray: false,
+      literalId: depth === 0 ? literalId : undefined,
+    })
+    return thisId
+  }
+
+  // Separate brackets: extract children first, then this part as pointer array
+  if (expr.kind !== 'ArrayExpr') {
+    throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
+  }
+
+  const innerType = type.element as IndexedRT
+  const childIds: number[] = []
+
+  // Recursively collect children at depth+1
+  for (const elem of expr.elements) {
+    const childId = collectParts(elem, innerType, depth + 1, thisId, undefined, parts)
+    childIds.push(childId)
+  }
+
+  // Add this part as a pointer array (depends on children)
+  parts.push({
+    id: thisId,
+    expr,
+    type,
+    depth,
+    parentId,
+    childIndices: childIds,
+    isPointerArray: true,
+    literalId: depth === 0 ? literalId : undefined,
+  })
+
+  return thisId
+}
+
+// Sort score for parts - higher = process first
+// Priority:
+//   1. Non-pointer-arrays first (sorted by specifier count, more = higher)
+//   2. Pointer arrays last (sorted by depth desc, then specifier count)
+function partSortScore(part: SerializablePart): number {
+  const specCount = part.type.specifiers.length
+
+  if (part.isPointerArray) {
+    // Pointer arrays come after ALL non-pointer-arrays
+    // Among pointer arrays: deeper ones first (for nested separate brackets),
+    // then by specifier count
+    const specScore = specCount > 0 ? 10 + specCount : (part.type.size !== null ? 1 : 0)
+    return -10000 + part.depth * 100 + specScore
+  }
+
+  // Non-pointer-arrays: sort by specifier count (more = higher priority)
+  if (specCount > 0) {
+    return 1000 + specCount
+  } else if (part.type.size !== null) {
+    return 100
+  }
+  return 0 // Slices
+}
+
+// Serialize parts in sorted order
+function serializeSortedParts(
+  parts: SerializablePart[],
+  builder: DataSectionBuilder,
+): Map<number, DataRef> {
+  const refMap = new Map<number, DataRef>()
+
+  // Sort by score descending
+  const sorted = [...parts].sort((a, b) => partSortScore(b) - partSortScore(a))
+
+  for (const part of sorted) {
+    if (part.isPointerArray) {
+      // Pointer array: look up child refs and encode
+      const childRefs: DataRef[] = []
+      for (const childId of part.childIndices) {
+        const childRef = refMap.get(childId)
+        if (!childRef) {
+          throw new Error(`Child ${childId} not serialized before parent ${part.id}`)
+        }
+        childRefs.push(childRef)
+      }
+
+      // Check if INNER type (children) are slices - determines if we store (ptr,len) pairs
+      const innerType = part.type.element
+      const childrenAreSlices = innerType.kind === 'indexed' &&
+        innerType.size === null && innerType.specifiers.length === 0
+      const pointerBytes = encodePointerArray(childRefs, part.type.specifiers, childrenAreSlices)
+      const ref = builder.internBytes(pointerBytes)
+      refMap.set(part.id, ref)
+    } else {
+      // Merged or leaf: serialize directly
+      const ref = serializeMerged(part.expr, part.type, builder)
+      refMap.set(part.id, ref)
+    }
+  }
+
+  return refMap
+}
+
 // Serialize a literal expression to the data section based on target type
 // Returns a DataRef that codegen can use
 export function serializeLiteral(
@@ -981,17 +1120,6 @@ export interface DataLayout {
   errors: string[]
 }
 
-// Count max specifiers in a single bracket (not summed across nesting)
-// Merged brackets like u8[/0/0] have 2, separate u8[/0][/0] has max 1
-// Higher count = larger contiguous output = should be written first
-function countSpecifiers(type: IndexedRT): number {
-  const thisLevel = type.specifiers.length
-  if (type.element.kind === 'indexed') {
-    return Math.max(thisLevel, countSpecifiers(type.element))
-  }
-  return thisLevel
-}
-
 // Lay out a list of qualified literals into a data section
 // Uses DataSectionBuilder internally (single implementation)
 export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
@@ -1033,9 +1161,6 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
     }
   }
 
-  // Sort auto entries by specifier depth (descending) for better deduplication
-  auto.sort((a, b) => countSpecifiers(b.type) - countSpecifiers(a.type))
-
   // Set auto data to start after explicit entries
   let maxExplicitEnd = 0
   for (const e of explicitEntries) {
@@ -1044,12 +1169,29 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
   }
   builder.setAutoDataStart(maxExplicitEnd)
 
-  // Serialize auto literals using the shared DataSectionBuilder
+  // Reset part ID counter for this layout
+  partIdCounter = 0
+
+  // Collect all parts from all auto literals (including nested children)
+  const allParts: SerializablePart[] = []
+  const topLevelPartIds = new Map<number | string, number>() // literalId -> partId
+
   for (const lit of auto) {
     const expr = literalValueToExpr(lit.value)
-    const ref = serializeLiteral(expr, lit.type, builder)
+    const partId = collectParts(expr, lit.type, 0, null, lit.id, allParts)
     if (lit.id !== undefined) {
-      refs.set(lit.id, ref)
+      topLevelPartIds.set(lit.id, partId)
+    }
+  }
+
+  // Sort and serialize all parts globally
+  const partRefs = serializeSortedParts(allParts, builder)
+
+  // Map top-level part refs back to literal IDs
+  for (const [litId, partId] of topLevelPartIds) {
+    const ref = partRefs.get(partId)
+    if (ref) {
+      refs.set(litId, ref)
     }
   }
 

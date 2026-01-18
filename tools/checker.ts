@@ -124,11 +124,11 @@ class CheckContext {
     this.serializePendingLiterals()
   }
 
-  // Serialize pending literals, sorted by specifier depth for better deduplication
+  // Serialize pending literals, sorted by priority for better deduplication
+  // Priority: specifiers (terminators/prefixes) > fixed-size > slices
   private serializePendingLiterals(): void {
-    // Sort by specifier depth (descending) - compound values first
     this.pendingLiterals.sort((a, b) =>
-      this.countSpecifiers(b.type) - this.countSpecifiers(a.type)
+      this.literalSortScore(b.type) - this.literalSortScore(a.type)
     )
 
     // Serialize each literal using the existing serializeLiteral function
@@ -138,14 +138,36 @@ class CheckContext {
     }
   }
 
-  // Count max specifiers in a single bracket (for sorting)
+  // Sorting score for literals - higher = process first
+  // Priority: specifiers (terminators/prefixes) > fixed-size > slices
+  private literalSortScore(type: IndexedRT): number {
+    const maxSpecs = this.maxSpecifiersInBracket(type)
+    if (maxSpecs > 0) {
+      return 1000 + maxSpecs // Has specifiers - highest priority
+    }
+    if (this.hasFixedSize(type)) {
+      return 100 // Fixed-size arrays
+    }
+    return 0 // Slices (fat-pointers)
+  }
+
+  // Max specifiers in any single bracket level
   // Merged brackets like u8[/0/0] have 2, separate u8[/0][/0] has max 1
-  private countSpecifiers(type: IndexedRT): number {
+  private maxSpecifiersInBracket(type: IndexedRT): number {
     const thisLevel = type.specifiers.length
     if (type.element.kind === 'indexed') {
-      return Math.max(thisLevel, this.countSpecifiers(type.element))
+      return Math.max(thisLevel, this.maxSpecifiersInBracket(type.element))
     }
     return thisLevel
+  }
+
+  // Check if any level has a fixed size
+  private hasFixedSize(type: IndexedRT): boolean {
+    if (type.size !== null) return true
+    if (type.element.kind === 'indexed') {
+      return this.hasFixedSize(type.element)
+    }
+    return false
   }
 
   // === First Pass: Collect Declarations ===
