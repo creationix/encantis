@@ -52,24 +52,33 @@ export interface DataSection {
   errors: string[]
 }
 
-// Build the data section for a module
+/**
+ * Build the data section for a module.
+ * Processes memory declarations for explicit data and interns string literals.
+ * @param module The parsed AST module
+ * @returns DataSection with all entries, offsets, and size information
+ */
 export function buildDataSection(module: AST.Module): DataSection {
   const builder = new DataSectionBuilder()
   builder.build(module)
   return builder.result()
 }
 
+/**
+ * Builder for constructing a WASM data section.
+ *
+ * Two-pass algorithm:
+ * 1. Explicit data (from memory declarations) placed at specified offsets
+ * 2. Auto data (interned literals) placed after explicit entries
+ *
+ * Deduplicates identical byte sequences using hex-encoded keys.
+ * Also deduplicates by finding substrings within already-written data.
+ */
 export class DataSectionBuilder {
-  // Explicit data entries from memory declarations (placed first)
   private explicitEntries: { offset: number; bytes: Uint8Array }[] = []
-
-  // Interned literals: bytes (as hex string for Map key) → entry
   private internedMap = new Map<string, DataEntry>()
-
-  // Map from AST literal offset → interned entry
   private literalMap = new Map<number, DataEntry>()
-
-  // Current offset for placing new interned data
+  /** Next available offset for placing new interned data */
   private currentOffset = 0
 
   // Set where auto data starts (for layoutLiterals with explicit addresses)
@@ -476,13 +485,12 @@ export class DataSectionBuilder {
     const haystack = this.getWrittenBytes()
     if (haystack.length < needle.length) return -1
 
-    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
-      for (let j = 0; j < needle.length; j++) {
-        if (haystack[i + j] !== needle[j]) continue outer
+    for (let i = 0; i <= haystack.length - needle.length; i++) {
+      if (needle.every((byte, j) => haystack[i + j] === byte)) {
+        return i
       }
-      return i // Found at offset i
     }
-    return -1 // Not found
+    return -1
   }
 }
 
@@ -498,7 +506,11 @@ function stringBytesWithNull(bytes: Uint8Array): Uint8Array {
 // Use bytesToHex as deduplication key
 const bytesToKey = bytesToHex
 
-// Serialize the data section to bytes (for embedding in WASM)
+/**
+ * Serialize a DataSection to a single byte array for embedding in WASM.
+ * @param section The data section to serialize
+ * @returns Byte array with all entries at their correct offsets
+ */
 export function serializeDataSection(section: DataSection): Uint8Array {
   const result = new Uint8Array(section.totalSize)
 
@@ -510,7 +522,13 @@ export function serializeDataSection(section: DataSection): Uint8Array {
   return result
 }
 
-// Format data section as WAT data segments
+/**
+ * Format a DataSection as WAT data segment declarations.
+ * Each entry becomes: (data (i32.const OFFSET) "ESCAPED_BYTES")
+ * Non-printable bytes are escaped as \xx hex.
+ * @param section The data section to format
+ * @returns Array of WAT data segment strings
+ */
 export function dataToWat(section: DataSection): string[] {
   const segments: string[] = []
 
@@ -681,8 +699,15 @@ function serializeSortedParts(
   return refMap
 }
 
-// Serialize a literal expression to the data section based on target type
-// Returns a DataRef that codegen can use
+/**
+ * Serialize a literal expression to bytes based on target type.
+ * Handles both merged brackets (*[![!u8]] - single contiguous write) and
+ * separate brackets (*[!*[!u8]] - depth-first with pointer arrays).
+ * @param expr The literal expression (LiteralExpr or ArrayExpr)
+ * @param targetType The indexed type to serialize as
+ * @param builder The data section builder for interning
+ * @returns DataRef with pointer offset and length for codegen
+ */
 export function serializeLiteral(
   expr: AST.Expr,
   targetType: IndexedRT,
@@ -1034,8 +1059,18 @@ export interface DataLayout {
   errors: string[]
 }
 
-// Lay out a list of qualified literals into a data section
-// Uses DataSectionBuilder internally (single implementation)
+/**
+ * Lay out a list of qualified literals into a data section.
+ * Handles both explicit (user-specified address) and auto (interned) literals.
+ *
+ * Algorithm:
+ * 1. Explicit literals placed at their specified addresses
+ * 2. Check for overlapping explicit entries (reports errors)
+ * 3. Auto literals interned after explicit entries end
+ *
+ * @param literals Array of qualified literals with types and optional addresses
+ * @returns DataLayout with refs, entries, total size, and any errors
+ */
 export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
   const builder = new DataSectionBuilder()
   const refs = new Map<number | string, DataRef>()

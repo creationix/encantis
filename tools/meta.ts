@@ -277,14 +277,8 @@ class MetaBuilder {
       if (stmt.kind === 'LetStmt') {
         this.collectLocal(stmt.pattern)
       }
-      // Recurse into nested blocks
-      if (stmt.kind === 'WhileStmt' && stmt.body.kind === 'Block') {
-        this.collectLocalsFromBlock(stmt.body)
-      }
-      if (stmt.kind === 'LoopStmt' && stmt.body.kind === 'Block') {
-        this.collectLocalsFromBlock(stmt.body)
-      }
-      if (stmt.kind === 'ForStmt' && stmt.body.kind === 'Block') {
+      // Recurse into nested blocks (while, loop, for)
+      if ('body' in stmt && stmt.body.kind === 'Block') {
         this.collectLocalsFromBlock(stmt.body)
       }
     }
@@ -301,32 +295,21 @@ class MetaBuilder {
   }
 
   private collectTypeDecl(decl: AST.TypeDecl): void {
-    const sym = this.checkResult.symbols.get(decl.ident.name)
-    if (!sym || sym.kind !== 'type') return
-
-    const symbolIndex = this.addSymbol(
-      decl.ident.name,
-      'type',
-      sym.type,
-      decl.ident.span.start,
-    )
-
-    // Register the type with symbol reference
-    this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
+    this.collectTypeOrUnique(decl, 'type')
   }
 
   private collectUniqueDecl(decl: AST.UniqueDecl): void {
+    this.collectTypeOrUnique(decl, 'unique')
+  }
+
+  private collectTypeOrUnique(
+    decl: AST.TypeDecl | AST.UniqueDecl,
+    kind: 'type' | 'unique',
+  ): void {
     const sym = this.checkResult.symbols.get(decl.ident.name)
     if (!sym || sym.kind !== 'type') return
 
-    const symbolIndex = this.addSymbol(
-      decl.ident.name,
-      'unique',
-      sym.type,
-      decl.ident.span.start,
-    )
-
-    // Register the type with symbol reference
+    const symbolIndex = this.addSymbol(decl.ident.name, kind, sym.type, decl.ident.span.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
   }
 
