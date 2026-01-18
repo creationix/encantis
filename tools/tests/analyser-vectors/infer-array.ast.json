@@ -11,14 +11,14 @@
           "kind": "FieldList",
           "fields": [],
           "span": {
-            "start": 6,
-            "end": 8
+            "start": 5,
+            "end": 7
           }
         },
         "returns": null,
         "span": {
-          "start": 6,
-          "end": 8
+          "start": 5,
+          "end": 7
         }
       },
       "body": {
@@ -28,10 +28,10 @@
             "kind": "LetStmt",
             "pattern": {
               "kind": "IdentPattern",
-              "name": "s-s",
+              "name": "a",
               "span": {
-                "start": 17,
-                "end": 20
+                "start": 59,
+                "end": 60
               }
             },
             "type": {
@@ -42,106 +42,22 @@
                   "kind": "PrimitiveType",
                   "name": "u8",
                   "span": {
-                    "start": 21,
-                    "end": 23
+                    "start": 61,
+                    "end": 63
                   }
                 },
                 "size": null,
-                "nullTerminationLevel": 0,
+                "specifiers": [],
                 "span": {
-                  "start": 21,
-                  "end": 25
+                  "start": 61,
+                  "end": 66
                 }
               },
               "size": null,
-              "nullTerminationLevel": 0,
-              "span": {
-                "start": 21,
-                "end": 27
-              }
-            },
-            "value": {
-              "kind": "ArrayExpr",
-              "elements": [
-                {
-                  "kind": "LiteralExpr",
-                  "value": {
-                    "kind": "string",
-                    "bytes": {
-                      "0": 104,
-                      "1": 101,
-                      "2": 108,
-                      "3": 108,
-                      "4": 111
-                    }
-                  },
-                  "span": {
-                    "start": 36,
-                    "end": 43
-                  }
-                },
-                {
-                  "kind": "LiteralExpr",
-                  "value": {
-                    "kind": "string",
-                    "bytes": {
-                      "0": 119,
-                      "1": 111,
-                      "2": 114,
-                      "3": 108,
-                      "4": 100
-                    }
-                  },
-                  "span": {
-                    "start": 45,
-                    "end": 52
-                  }
-                }
-              ],
-              "span": {
-                "start": 34,
-                "end": 54
-              }
-            },
-            "span": {
-              "start": 13,
-              "end": 54
-            }
-          },
-          {
-            "kind": "LetStmt",
-            "pattern": {
-              "kind": "IdentPattern",
-              "name": "s-z",
+              "specifiers": [],
               "span": {
                 "start": 61,
-                "end": 64
-              }
-            },
-            "type": {
-              "kind": "IndexedType",
-              "element": {
-                "kind": "IndexedType",
-                "element": {
-                  "kind": "PrimitiveType",
-                  "name": "u8",
-                  "span": {
-                    "start": 65,
-                    "end": 67
-                  }
-                },
-                "size": null,
-                "nullTerminationLevel": 0,
-                "span": {
-                  "start": 65,
-                  "end": 69
-                }
-              },
-              "size": null,
-              "nullTerminationLevel": 1,
-              "span": {
-                "start": 65,
-                "end": 73
+                "end": 69
               }
             },
             "value": {
@@ -160,8 +76,8 @@
                     }
                   },
                   "span": {
-                    "start": 80,
-                    "end": 87
+                    "start": 79,
+                    "end": 86
                   }
                 },
                 {
@@ -177,29 +93,29 @@
                     }
                   },
                   "span": {
-                    "start": 89,
-                    "end": 96
+                    "start": 88,
+                    "end": 95
                   }
                 }
               ],
               "span": {
-                "start": 78,
-                "end": 98
+                "start": 77,
+                "end": 97
               }
             },
             "span": {
-              "start": 57,
-              "end": 98
+              "start": 55,
+              "end": 97
             }
           },
           {
             "kind": "LetStmt",
             "pattern": {
               "kind": "IdentPattern",
-              "name": "z-s",
+              "name": "b",
               "span": {
-                "start": 105,
-                "end": 108
+                "start": 124,
+                "end": 125
               }
             },
             "type": {
@@ -210,22 +126,30 @@
                   "kind": "PrimitiveType",
                   "name": "u8",
                   "span": {
-                    "start": 109,
-                    "end": 111
+                    "start": 126,
+                    "end": 128
                   }
                 },
                 "size": null,
-                "nullTerminationLevel": 1,
+                "specifiers": [
+                  {
+                    "kind": "null"
+                  }
+                ],
                 "span": {
-                  "start": 109,
-                  "end": 115
+                  "start": 126,
+                  "end": 132
                 }
               },
               "size": null,
-              "nullTerminationLevel": 0,
+              "specifiers": [
+                {
+                  "kind": "null"
+                }
+              ],
               "span": {
-                "start": 109,
-                "end": 117
+                "start": 126,
+                "end": 136
               }
             },
             "value": {
@@ -244,8 +168,8 @@
                     }
                   },
                   "span": {
-                    "start": 124,
-                    "end": 131
+                    "start": 144,
+                    "end": 151
                   }
                 },
                 {
@@ -260,56 +184,60 @@
                       "4": 100
                     }
                   },
-                  "span": {
-                    "start": 133,
-                    "end": 140
-                  }
-                }
-              ],
-              "span": {
-                "start": 122,
-                "end": 142
-              }
-            },
-            "span": {
-              "start": 101,
-              "end": 142
-            }
-          },
-          {
-            "kind": "LetStmt",
-            "pattern": {
-              "kind": "IdentPattern",
-              "name": "z-z",
-              "span": {
-                "start": 149,
-                "end": 152
-              }
-            },
-            "type": {
-              "kind": "IndexedType",
-              "element": {
-                "kind": "IndexedType",
-                "element": {
-                  "kind": "PrimitiveType",
-                  "name": "u8",
                   "span": {
                     "start": 153,
-                    "end": 155
+                    "end": 160
+                  }
+                }
+              ],
+              "span": {
+                "start": 142,
+                "end": 162
+              }
+            },
+            "span": {
+              "start": 120,
+              "end": 162
+            }
+          },
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "c",
+              "span": {
+                "start": 196,
+                "end": 197
+              }
+            },
+            "type": {
+              "kind": "IndexedType",
+              "element": {
+                "kind": "IndexedType",
+                "element": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 198,
+                    "end": 200
                   }
                 },
                 "size": null,
-                "nullTerminationLevel": 1,
+                "specifiers": [
+                  {
+                    "kind": "null"
+                  }
+                ],
                 "span": {
-                  "start": 153,
-                  "end": 159
+                  "start": 198,
+                  "end": 204
                 }
               },
               "size": null,
-              "nullTerminationLevel": 1,
+              "specifiers": [],
               "span": {
-                "start": 153,
-                "end": 163
+                "start": 198,
+                "end": 207
               }
             },
             "value": {
@@ -328,8 +256,8 @@
                     }
                   },
                   "span": {
-                    "start": 168,
-                    "end": 175
+                    "start": 216,
+                    "end": 223
                   }
                 },
                 {
@@ -345,29 +273,117 @@
                     }
                   },
                   "span": {
-                    "start": 177,
-                    "end": 184
+                    "start": 225,
+                    "end": 232
                   }
                 }
               ],
               "span": {
-                "start": 166,
-                "end": 186
+                "start": 214,
+                "end": 234
               }
             },
             "span": {
-              "start": 145,
-              "end": 186
+              "start": 192,
+              "end": 234
             }
           },
           {
             "kind": "LetStmt",
             "pattern": {
               "kind": "IdentPattern",
-              "name": "zz",
+              "name": "d",
               "span": {
-                "start": 194,
-                "end": 196
+                "start": 265,
+                "end": 266
+              }
+            },
+            "type": {
+              "kind": "IndexedType",
+              "element": {
+                "kind": "IndexedType",
+                "element": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 267,
+                    "end": 269
+                  }
+                },
+                "size": null,
+                "specifiers": [],
+                "span": {
+                  "start": 267,
+                  "end": 272
+                }
+              },
+              "size": null,
+              "specifiers": [
+                {
+                  "kind": "null"
+                }
+              ],
+              "span": {
+                "start": 267,
+                "end": 276
+              }
+            },
+            "value": {
+              "kind": "ArrayExpr",
+              "elements": [
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 104,
+                      "1": 101,
+                      "2": 108,
+                      "3": 108,
+                      "4": 111
+                    }
+                  },
+                  "span": {
+                    "start": 285,
+                    "end": 292
+                  }
+                },
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 119,
+                      "1": 111,
+                      "2": 114,
+                      "3": 108,
+                      "4": 100
+                    }
+                  },
+                  "span": {
+                    "start": 294,
+                    "end": 301
+                  }
+                }
+              ],
+              "span": {
+                "start": 283,
+                "end": 303
+              }
+            },
+            "span": {
+              "start": 261,
+              "end": 303
+            }
+          },
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "e",
+              "span": {
+                "start": 369,
+                "end": 370
               }
             },
             "type": {
@@ -376,15 +392,24 @@
                 "kind": "PrimitiveType",
                 "name": "u8",
                 "span": {
-                  "start": 197,
-                  "end": 199
+                  "start": 371,
+                  "end": 373
                 }
               },
               "size": null,
-              "nullTerminationLevel": 2,
+              "specifiers": [
+                {
+                  "kind": "prefix",
+                  "prefixType": "u8"
+                },
+                {
+                  "kind": "prefix",
+                  "prefixType": "u8"
+                }
+              ],
               "span": {
-                "start": 197,
-                "end": 205
+                "start": 371,
+                "end": 381
               }
             },
             "value": {
@@ -403,8 +428,8 @@
                     }
                   },
                   "span": {
-                    "start": 212,
-                    "end": 219
+                    "start": 389,
+                    "end": 396
                   }
                 },
                 {
@@ -420,35 +445,200 @@
                     }
                   },
                   "span": {
-                    "start": 221,
-                    "end": 228
+                    "start": 398,
+                    "end": 405
                   }
                 }
               ],
               "span": {
-                "start": 210,
-                "end": 230
+                "start": 387,
+                "end": 407
               }
             },
             "span": {
-              "start": 189,
-              "end": 230
+              "start": 365,
+              "end": 407
+            }
+          },
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "f",
+              "span": {
+                "start": 453,
+                "end": 454
+              }
+            },
+            "type": {
+              "kind": "IndexedType",
+              "element": {
+                "kind": "PrimitiveType",
+                "name": "u8",
+                "span": {
+                  "start": 455,
+                  "end": 457
+                }
+              },
+              "size": null,
+              "specifiers": [
+                {
+                  "kind": "null"
+                },
+                {
+                  "kind": "null"
+                }
+              ],
+              "span": {
+                "start": 455,
+                "end": 463
+              }
+            },
+            "value": {
+              "kind": "ArrayExpr",
+              "elements": [
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 104,
+                      "1": 101,
+                      "2": 108,
+                      "3": 108,
+                      "4": 111
+                    }
+                  },
+                  "span": {
+                    "start": 473,
+                    "end": 480
+                  }
+                },
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 119,
+                      "1": 111,
+                      "2": 114,
+                      "3": 108,
+                      "4": 100
+                    }
+                  },
+                  "span": {
+                    "start": 482,
+                    "end": 489
+                  }
+                }
+              ],
+              "span": {
+                "start": 471,
+                "end": 491
+              }
+            },
+            "span": {
+              "start": 449,
+              "end": 491
+            }
+          },
+          {
+            "kind": "LetStmt",
+            "pattern": {
+              "kind": "IdentPattern",
+              "name": "g",
+              "span": {
+                "start": 525,
+                "end": 526
+              }
+            },
+            "type": {
+              "kind": "IndexedType",
+              "element": {
+                "kind": "PrimitiveType",
+                "name": "u8",
+                "span": {
+                  "start": 527,
+                  "end": 529
+                }
+              },
+              "size": null,
+              "specifiers": [
+                {
+                  "kind": "prefix",
+                  "prefixType": "leb128"
+                },
+                {
+                  "kind": "null"
+                }
+              ],
+              "span": {
+                "start": 527,
+                "end": 540
+              }
+            },
+            "value": {
+              "kind": "ArrayExpr",
+              "elements": [
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 104,
+                      "1": 101,
+                      "2": 108,
+                      "3": 108,
+                      "4": 111
+                    }
+                  },
+                  "span": {
+                    "start": 545,
+                    "end": 552
+                  }
+                },
+                {
+                  "kind": "LiteralExpr",
+                  "value": {
+                    "kind": "string",
+                    "bytes": {
+                      "0": 119,
+                      "1": 111,
+                      "2": 114,
+                      "3": 108,
+                      "4": 100
+                    }
+                  },
+                  "span": {
+                    "start": 554,
+                    "end": 561
+                  }
+                }
+              ],
+              "span": {
+                "start": 543,
+                "end": 563
+              }
+            },
+            "span": {
+              "start": 521,
+              "end": 563
             }
           }
         ],
         "span": {
-          "start": 9,
-          "end": 232
+          "start": 8,
+          "end": 603
         }
       },
       "span": {
-        "start": 1,
-        "end": 232
+        "start": 0,
+        "end": 603
       }
     }
   ],
   "span": {
-    "start": 1,
-    "end": 232
+    "start": 0,
+    "end": 604
   }
 }

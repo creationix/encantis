@@ -2,6 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
+import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
 
 // An interned string entry in the data section
 export interface DataEntry {
@@ -38,7 +39,7 @@ export function buildDataSection(module: AST.Module): DataSection {
   return builder.result()
 }
 
-class DataSectionBuilder {
+export class DataSectionBuilder {
   // Explicit data entries from memory declarations (placed first)
   private explicitEntries: { offset: number; bytes: Uint8Array }[] = []
 
@@ -50,6 +51,11 @@ class DataSectionBuilder {
 
   // Current offset for placing new interned data
   private currentOffset = 0
+
+  // Set where auto data starts (for layoutLiterals with explicit addresses)
+  setAutoDataStart(offset: number): void {
+    this.currentOffset = offset
+  }
 
   build(module: AST.Module): void {
     // First pass: collect explicit data blocks from memory declarations
@@ -392,6 +398,72 @@ class DataSectionBuilder {
     // Map this literal to its entry
     this.literalMap.set(expr.span.start, entry)
   }
+
+  // Intern arbitrary bytes, returning a DataRef
+  // Used by type-aware serialization
+  internBytes(bytes: Uint8Array): DataRef {
+    const key = bytesToKey(bytes)
+
+    // 1. Check exact-match cache first (fast path)
+    let entry = this.internedMap.get(key)
+    if (entry) {
+      return { ptr: entry.offset, len: entry.length }
+    }
+
+    // 2. Scan existing data for substring match
+    const existingOffset = this.findSubstring(bytes)
+    if (existingOffset !== -1) {
+      // Found! Return ref without adding to entries (we're reusing, not writing)
+      return { ptr: existingOffset, len: bytes.length }
+    }
+
+    // 3. Not found - write new bytes
+    entry = {
+      bytes,
+      offset: this.currentOffset,
+      length: bytes.length,
+      explicit: false,
+    }
+    this.internedMap.set(key, entry)
+    this.currentOffset += bytes.length
+
+    return { ptr: entry.offset, len: entry.length }
+  }
+
+  // Get all written bytes as a contiguous buffer (for substring search)
+  private getWrittenBytes(): Uint8Array {
+    if (this.currentOffset === 0) return new Uint8Array(0)
+
+    // Build buffer from all interned entries
+    const result = new Uint8Array(this.currentOffset)
+
+    // Copy explicit entries first
+    for (const exp of this.explicitEntries) {
+      result.set(exp.bytes, exp.offset)
+    }
+
+    // Copy interned entries
+    for (const entry of this.internedMap.values()) {
+      result.set(entry.bytes, entry.offset)
+    }
+
+    return result
+  }
+
+  // Search for needle in existing data section
+  // Returns offset if found, -1 if not found
+  private findSubstring(needle: Uint8Array): number {
+    const haystack = this.getWrittenBytes()
+    if (haystack.length < needle.length) return -1
+
+    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (haystack[i + j] !== needle[j]) continue outer
+      }
+      return i // Found at offset i
+    }
+    return -1 // Not found
+  }
 }
 
 // Append null terminator to string bytes
@@ -493,6 +565,22 @@ function serializeInt(value: bigint, typeName: string): Uint8Array | null {
   }
 }
 
+// Fast i32 serialization (common case for pointers)
+function serializeI32(value: number): Uint8Array {
+  const buf = new Uint8Array(4)
+  const view = new DataView(buf.buffer)
+  view.setInt32(0, value, true)
+  return buf
+}
+
+// Fast f64 serialization (common case for floats)
+function serializeF64(value: number): Uint8Array {
+  const buf = new Uint8Array(8)
+  const view = new DataView(buf.buffer)
+  view.setFloat64(0, value, true)
+  return buf
+}
+
 // Serialize float to bytes (little endian)
 function serializeFloat(value: number, typeName: string): Uint8Array | null {
   switch (typeName) {
@@ -510,5 +598,480 @@ function serializeFloat(value: number, typeName: string): Uint8Array | null {
     }
     default:
       return null
+  }
+}
+
+// === Type-aware literal serialization ===
+
+// Reference to data in the data section
+export interface DataRef {
+  ptr: number // Offset in data section
+  len: number // Byte length or element count (for slices)
+}
+
+// Serialize a literal expression to the data section based on target type
+// Returns a DataRef that codegen can use
+export function serializeLiteral(
+  expr: AST.Expr,
+  targetType: IndexedRT,
+  builder: DataSectionBuilder,
+): DataRef {
+  // Check if this is a merged bracket (single indexed type with multiple specifiers)
+  // vs separate brackets (nested indexed types)
+  const isMerged = targetType.specifiers.length > 1 ||
+    (targetType.specifiers.length === 1 && targetType.element.kind !== 'indexed')
+
+  if (isMerged || targetType.element.kind !== 'indexed') {
+    // Merged or single-level: serialize everything at once
+    return serializeMerged(expr, targetType, builder)
+  } else {
+    // Separate brackets: recurse depth-first
+    return serializeSeparate(expr, targetType, builder)
+  }
+}
+
+// Serialize merged brackets (e.g., u8[/0/0]) - single contiguous write
+function serializeMerged(
+  expr: AST.Expr,
+  targetType: IndexedRT,
+  builder: DataSectionBuilder,
+): DataRef {
+  const bytes = buildMergedBytes(expr, targetType)
+  return builder.internBytes(bytes)
+}
+
+// Build the complete byte sequence for merged brackets
+// Specifier order: leftmost is outermost, rightmost is innermost
+// e.g., u8[/leb128/0] means: /0 applies to each element, /leb128 applies to whole array
+function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
+  const specifiers = targetType.specifiers
+  const elementType = targetType.element
+
+  // For single-element types (string literal, int array), serialize directly
+  if (expr.kind === 'LiteralExpr') {
+    const rawBytes = literalToBytes(expr, elementType)
+    return applySpecifiers(rawBytes, specifiers, getElementSize(elementType))
+  }
+
+  // For array expressions, serialize each element then apply outer specifiers
+  if (expr.kind === 'ArrayExpr') {
+    const elementParts: Uint8Array[] = []
+
+    // Leftmost specifier is outermost (applies to whole array)
+    // Rightmost specifiers are innermost (apply to each element)
+    const outerSpec = specifiers[0]
+    const innerSpecs = specifiers.slice(1)
+
+    for (const elem of expr.elements) {
+      const elemBytes = buildElementBytes(elem, elementType, innerSpecs)
+      elementParts.push(elemBytes)
+    }
+
+    // Concatenate all elements
+    const combined = concatBytes(elementParts)
+
+    // Apply outer specifier (final terminator or prefix)
+    if (outerSpec) {
+      return applySpecifier(combined, outerSpec, getElementSize(elementType), elementParts.length)
+    }
+    return combined
+  }
+
+  throw new Error(`Cannot serialize ${expr.kind} to merged indexed type`)
+}
+
+// Build bytes for a single element with inner specifiers
+// Specifiers are ordered: leftmost is outermost, rightmost is innermost
+function buildElementBytes(
+  expr: AST.Expr,
+  elementType: ResolvedType,
+  specifiers: IndexSpecifierRT[],
+): Uint8Array {
+  if (expr.kind === 'LiteralExpr') {
+    const rawBytes = literalToBytes(expr, elementType)
+    if (specifiers.length === 0) {
+      return rawBytes
+    }
+    // Apply specifiers - for a single literal, apply all specifiers
+    return applySpecifiers(rawBytes, specifiers, getElementSize(elementType))
+  }
+
+  if (expr.kind === 'ArrayExpr' && specifiers.length > 0) {
+    // Nested array with specifiers - recurse
+    const parts: Uint8Array[] = []
+    // Leftmost is outermost, rightmost (slice(1)) are inner
+    const outerSpec = specifiers[0]
+    const innerSpecs = specifiers.slice(1)
+
+    for (const elem of expr.elements) {
+      parts.push(buildElementBytes(elem, elementType, innerSpecs))
+    }
+
+    const combined = concatBytes(parts)
+    return applySpecifier(combined, outerSpec, getElementSize(elementType), parts.length)
+  }
+
+  throw new Error(`Cannot build element bytes for ${expr.kind}`)
+}
+
+// Serialize separate brackets (e.g., u8[/0][/0]) - depth-first with pointer arrays
+function serializeSeparate(
+  expr: AST.Expr,
+  targetType: IndexedRT,
+  builder: DataSectionBuilder,
+): DataRef {
+  if (expr.kind !== 'ArrayExpr') {
+    throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
+  }
+
+  const innerType = targetType.element as IndexedRT
+  const childRefs: DataRef[] = []
+
+  // Recurse to serialize each child element first
+  for (const elem of expr.elements) {
+    const childRef = serializeLiteral(elem, innerType, builder)
+    childRefs.push(childRef)
+  }
+
+  // Now encode the pointer array based on outer type
+  const isSlice = targetType.size === null && targetType.specifiers.length === 0
+  const pointerBytes = encodePointerArray(childRefs, targetType.specifiers, isSlice)
+
+  return builder.internBytes(pointerBytes)
+}
+
+// Encode an array of DataRefs as a pointer array
+function encodePointerArray(
+  refs: DataRef[],
+  specifiers: IndexSpecifierRT[],
+  isSlice: boolean,
+): Uint8Array {
+  const parts: Uint8Array[] = []
+
+  if (isSlice) {
+    // Slice of slices: each element is (ptr, len) pair
+    for (const ref of refs) {
+      parts.push(serializeI32(ref.ptr))
+      parts.push(serializeI32(ref.len))
+    }
+  } else {
+    // Pointer array: just pointers
+    for (const ref of refs) {
+      parts.push(serializeI32(ref.ptr))
+    }
+  }
+
+  const combined = concatBytes(parts)
+
+  // Apply specifiers (e.g., null terminator for /0)
+  if (specifiers.length > 0) {
+    const spec = specifiers[specifiers.length - 1]
+    // For pointer arrays, element size is 4 (i32 pointer) or 8 (slice pair)
+    const elemSize = isSlice ? 8 : 4
+    return applySpecifier(combined, spec, elemSize, refs.length)
+  }
+
+  return combined
+}
+
+// Convert a literal expression to raw bytes based on element type
+function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8Array {
+  const lit = expr.value
+
+  if (lit.kind === 'string') {
+    return lit.bytes
+  }
+
+  if (lit.kind === 'int') {
+    if (elementType.kind === 'primitive') {
+      const bytes = serializeInt(lit.value, elementType.name)
+      if (bytes) return bytes
+    }
+    // Default to i32
+    return serializeI32(Number(lit.value))
+  }
+
+  if (lit.kind === 'float') {
+    if (elementType.kind === 'primitive') {
+      const bytes = serializeFloat(lit.value, elementType.name)
+      if (bytes) return bytes
+    }
+    // Default to f64
+    return serializeF64(lit.value)
+  }
+
+  if (lit.kind === 'bool') {
+    return new Uint8Array([lit.value ? 1 : 0])
+  }
+
+  throw new Error(`Cannot convert ${lit.kind} literal to bytes`)
+}
+
+// Apply all specifiers to bytes (inside-out order)
+function applySpecifiers(
+  bytes: Uint8Array,
+  specifiers: IndexSpecifierRT[],
+  elementSize: number,
+): Uint8Array {
+  let result = bytes
+  for (const spec of specifiers) {
+    result = applySpecifier(result, spec, elementSize, 0)
+  }
+  return result
+}
+
+// Apply a single specifier to bytes
+function applySpecifier(
+  bytes: Uint8Array,
+  spec: IndexSpecifierRT,
+  elementSize: number,
+  count: number,
+): Uint8Array {
+  if (spec.kind === 'null') {
+    // Null terminator: append zeros of element width
+    const terminator = new Uint8Array(elementSize)
+    return concatBytes([bytes, terminator])
+  }
+
+  // Length/count prefix
+  const prefixBytes = encodeLengthPrefix(spec.prefixType, count || bytes.length)
+  return concatBytes([prefixBytes, bytes])
+}
+
+// Encode a length prefix in the specified format
+function encodeLengthPrefix(
+  prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128',
+  value: number,
+): Uint8Array {
+  if (prefixType === 'leb128') {
+    return encodeLEB128(value)
+  }
+  const bytes = serializeInt(BigInt(value), prefixType)
+  if (!bytes) {
+    throw new Error(`Unknown prefix type: ${prefixType}`)
+  }
+  return bytes
+}
+
+// Encode unsigned LEB128
+function encodeLEB128(value: number): Uint8Array {
+  const bytes: number[] = []
+  do {
+    let byte = value & 0x7f
+    value >>>= 7
+    if (value !== 0) byte |= 0x80
+    bytes.push(byte)
+  } while (value !== 0)
+  return new Uint8Array(bytes)
+}
+
+// Get the byte size of an element type (for null terminators)
+function getElementSize(type: ResolvedType): number {
+  if (type.kind === 'primitive') {
+    switch (type.name) {
+      case 'i8':
+      case 'u8':
+      case 'bool':
+        return 1
+      case 'i16':
+      case 'u16':
+        return 2
+      case 'i32':
+      case 'u32':
+      case 'f32':
+        return 4
+      case 'i64':
+      case 'u64':
+      case 'f64':
+        return 8
+    }
+  }
+  // For pointer types (nested indexed), pointers are 4 bytes (i32)
+  if (type.kind === 'indexed' || type.kind === 'pointer') {
+    return 4
+  }
+  // Default to 1 byte
+  return 1
+}
+
+// === Standalone Data Layout API ===
+
+// Input for a qualified literal to be laid out
+export interface QualifiedLiteral {
+  // The literal value (string bytes, number array, nested arrays)
+  value: LiteralValue
+  // The target indexed type (determines encoding)
+  type: IndexedRT
+  // Optional explicit address (for memory block entries)
+  address?: number
+  // Optional identifier for tracking (e.g., AST offset or label)
+  id?: number | string
+}
+
+// Literal value types
+export type LiteralValue =
+  | { kind: 'bytes'; data: Uint8Array } // String literal or raw bytes
+  | { kind: 'ints'; data: bigint[] } // Integer array
+  | { kind: 'floats'; data: number[] } // Float array
+  | { kind: 'nested'; elements: LiteralValue[] } // Nested array
+
+// Convert LiteralValue to mock AST.Expr for use with serializeLiteral
+function literalValueToExpr(value: LiteralValue): AST.Expr {
+  const span = { start: 0, end: 0 }
+
+  switch (value.kind) {
+    case 'bytes':
+      return {
+        kind: 'LiteralExpr',
+        value: { kind: 'string', bytes: value.data },
+        span,
+      }
+    case 'ints':
+      if (value.data.length === 1) {
+        return {
+          kind: 'LiteralExpr',
+          value: { kind: 'int', value: value.data[0], radix: 10 },
+          span,
+        }
+      }
+      return {
+        kind: 'ArrayExpr',
+        elements: value.data.map((v) => ({
+          kind: 'LiteralExpr' as const,
+          value: { kind: 'int' as const, value: v, radix: 10 as const },
+          span,
+        })),
+        span,
+      }
+    case 'floats':
+      if (value.data.length === 1) {
+        return {
+          kind: 'LiteralExpr',
+          value: { kind: 'float', value: value.data[0] },
+          span,
+        }
+      }
+      return {
+        kind: 'ArrayExpr',
+        elements: value.data.map((v) => ({
+          kind: 'LiteralExpr' as const,
+          value: { kind: 'float' as const, value: v },
+          span,
+        })),
+        span,
+      }
+    case 'nested':
+      return {
+        kind: 'ArrayExpr',
+        elements: value.elements.map((elem) => literalValueToExpr(elem)),
+        span,
+      }
+  }
+}
+
+// Result of laying out literals
+export interface DataLayout {
+  // Map from input id → DataRef
+  refs: Map<number | string, DataRef>
+  // All data entries sorted by offset
+  entries: DataEntry[]
+  // Total size of data section
+  totalSize: number
+  // Errors encountered
+  errors: string[]
+}
+
+// Count max specifiers in a single bracket (not summed across nesting)
+// Merged brackets like u8[/0/0] have 2, separate u8[/0][/0] has max 1
+// Higher count = larger contiguous output = should be written first
+function countSpecifiers(type: IndexedRT): number {
+  const thisLevel = type.specifiers.length
+  if (type.element.kind === 'indexed') {
+    return Math.max(thisLevel, countSpecifiers(type.element))
+  }
+  return thisLevel
+}
+
+// Lay out a list of qualified literals into a data section
+// Uses DataSectionBuilder internally (single implementation)
+export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
+  const builder = new DataSectionBuilder()
+  const refs = new Map<number | string, DataRef>()
+  const explicitEntries: { offset: number; bytes: Uint8Array }[] = []
+  const errors: string[] = []
+
+  // Separate explicit (addressed) and auto literals
+  const explicit = literals.filter((lit) => lit.address !== undefined)
+  const auto = literals.filter((lit) => lit.address === undefined)
+
+  // Handle explicit entries first - serialize and place at specified address
+  for (const lit of explicit) {
+    const address = lit.address as number // filtered above
+    const expr = literalValueToExpr(lit.value)
+    // Use a temporary builder to get the bytes
+    const tempBuilder = new DataSectionBuilder()
+    serializeLiteral(expr, lit.type, tempBuilder)
+    const tempSection = tempBuilder.result()
+    const bytes = tempSection.entries[0]?.bytes ?? new Uint8Array(0)
+
+    explicitEntries.push({ offset: address, bytes })
+    if (lit.id !== undefined) {
+      refs.set(lit.id, { ptr: address, len: bytes.length })
+    }
+  }
+
+  // Check for overlapping explicit entries
+  const sortedExplicit = [...explicitEntries].sort((a, b) => a.offset - b.offset)
+  for (let i = 0; i < sortedExplicit.length - 1; i++) {
+    const current = sortedExplicit[i]
+    const next = sortedExplicit[i + 1]
+    const currentEnd = current.offset + current.bytes.length
+    if (currentEnd > next.offset) {
+      errors.push(
+        `data at offset ${next.offset} overlaps entry at ${current.offset} (ends at ${currentEnd})`,
+      )
+    }
+  }
+
+  // Sort auto entries by specifier depth (descending) for better deduplication
+  auto.sort((a, b) => countSpecifiers(b.type) - countSpecifiers(a.type))
+
+  // Set auto data to start after explicit entries
+  let maxExplicitEnd = 0
+  for (const e of explicitEntries) {
+    const end = e.offset + e.bytes.length
+    if (end > maxExplicitEnd) maxExplicitEnd = end
+  }
+  builder.setAutoDataStart(maxExplicitEnd)
+
+  // Serialize auto literals using the shared DataSectionBuilder
+  for (const lit of auto) {
+    const expr = literalValueToExpr(lit.value)
+    const ref = serializeLiteral(expr, lit.type, builder)
+    if (lit.id !== undefined) {
+      refs.set(lit.id, ref)
+    }
+  }
+
+  // Combine explicit and auto entries
+  const section = builder.result()
+  const explicitDataEntries: DataEntry[] = explicitEntries.map((e) => ({
+    bytes: e.bytes,
+    offset: e.offset,
+    length: e.bytes.length,
+    explicit: true,
+  }))
+  const allEntries = [...explicitDataEntries, ...section.entries].sort(
+    (a, b) => a.offset - b.offset,
+  )
+
+  // Calculate total size (max of explicit end and auto end)
+  const totalSize = Math.max(maxExplicitEnd, section.totalSize)
+
+  return {
+    refs,
+    entries: allEntries,
+    totalSize,
+    errors: [...errors, ...section.errors],
   }
 }

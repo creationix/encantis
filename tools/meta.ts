@@ -73,6 +73,7 @@ class MetaBuilder {
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
   private data: MetaData[] = []
+  private dataIndexByOffset = new Map<number, number>() // AST offset → data index
 
   constructor(
     private module: AST.Module,
@@ -86,7 +87,10 @@ class MetaBuilder {
     // Pass 1: Collect symbols (populates typeRegistry)
     this.collectSymbols()
 
-    // Pass 2: Generate hints
+    // Pass 2: Build data section from serialized literals
+    this.buildDataSection()
+
+    // Pass 3: Generate hints
     this.generateHints()
 
     // Build output
@@ -107,6 +111,28 @@ class MetaBuilder {
     }
 
     return output
+  }
+
+  // === Data Section Building ===
+
+  private buildDataSection(): void {
+    // Get the finalized data section from the builder
+    const dataSection = this.checkResult.dataBuilder.result()
+
+    // Build data entries sorted by offset
+    for (const entry of dataSection.entries) {
+      const hex = bytesToHex(entry.bytes)
+      this.data.push({ offset: entry.offset, hex })
+    }
+
+    // Map AST literal offsets to their data indices
+    for (const [astOffset, dataRef] of this.checkResult.literalRefs) {
+      // Find the data entry at this pointer offset
+      const dataIndex = this.data.findIndex((d) => d.offset === dataRef.ptr)
+      if (dataIndex !== -1) {
+        this.dataIndexByOffset.set(astOffset, dataIndex)
+      }
+    }
   }
 
   // === Symbol Collection ===
@@ -586,7 +612,8 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          this.addHint(expr.span.start, len, typeIndex)
+          const dataIndex = this.dataIndexByOffset.get(expr.span.start)
+          this.addHint(expr.span.start, len, typeIndex, undefined, dataIndex)
         }
         // Recurse into elements
         for (const elem of expr.elements) {
@@ -838,4 +865,11 @@ function metaFieldString(f: { name: string | null; type: ResolvedType }): string
     return `${f.name}:${metaTypeString(f.type)}`
   }
   return metaTypeString(f.type)
+}
+
+// Convert bytes to hex string
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
 }

@@ -7,6 +7,7 @@ import {
   type ResolvedField,
   type PrimitiveName,
   type IndexSpecifierRT,
+  type IndexedRT,
   primitive,
   pointer,
   indexed,
@@ -24,7 +25,9 @@ import {
   typeToString,
   comptimeIntFits,
   typeAssignable,
+  defaultIndexedType,
 } from './types'
+import { DataSectionBuilder, serializeLiteral, type DataRef } from './data'
 
 // === Symbol Table ===
 
@@ -62,6 +65,10 @@ export interface TypeCheckResult {
   symbolRefs: Map<number, number>
   // Symbol name → definition offset
   symbolDefOffsets: Map<string, number>
+  // Literal refs: AST offset → DataRef for serialized literals
+  literalRefs: Map<number, DataRef>
+  // Data section builder (for codegen to finalize)
+  dataBuilder: DataSectionBuilder
 }
 
 // === Main Entry Point ===
@@ -76,6 +83,8 @@ export function check(module: AST.Module): TypeCheckResult {
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
+    literalRefs: ctx.literalRefs,
+    dataBuilder: ctx.dataBuilder,
   }
 }
 
@@ -95,6 +104,11 @@ class CheckContext {
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
   symbolDefOffsets = new Map<string, number>() // name → defOffset
 
+  // Data section: collect literals during checking, serialize at end with sorting
+  pendingLiterals: { id: number; expr: AST.Expr; type: IndexedRT }[] = []
+  dataBuilder = new DataSectionBuilder()
+  literalRefs = new Map<number, DataRef>() // AST offset → DataRef
+
   checkModule(module: AST.Module): void {
     // First pass: collect all type aliases, function signatures, globals, defs
     for (const decl of module.decls) {
@@ -105,6 +119,33 @@ class CheckContext {
     for (const decl of module.decls) {
       this.checkDeclaration(decl)
     }
+
+    // Final pass: serialize collected literals with sorting for better deduplication
+    this.serializePendingLiterals()
+  }
+
+  // Serialize pending literals, sorted by specifier depth for better deduplication
+  private serializePendingLiterals(): void {
+    // Sort by specifier depth (descending) - compound values first
+    this.pendingLiterals.sort((a, b) =>
+      this.countSpecifiers(b.type) - this.countSpecifiers(a.type)
+    )
+
+    // Serialize each literal using the existing serializeLiteral function
+    for (const lit of this.pendingLiterals) {
+      const ref = serializeLiteral(lit.expr, lit.type, this.dataBuilder)
+      this.literalRefs.set(lit.id, ref)
+    }
+  }
+
+  // Count max specifiers in a single bracket (for sorting)
+  // Merged brackets like u8[/0/0] have 2, separate u8[/0][/0] has max 1
+  private countSpecifiers(type: IndexedRT): number {
+    const thisLevel = type.specifiers.length
+    if (type.element.kind === 'indexed') {
+      return Math.max(thisLevel, this.countSpecifiers(type.element))
+    }
+    return thisLevel
   }
 
   // === First Pass: Collect Declarations ===
@@ -400,13 +441,23 @@ class CheckContext {
         // Default: f64
         return primitive('f64')
       case 'comptime_list': {
+        // Default to /leb128 encoding for each nesting level
+        const defaultType = defaultIndexedType(type)
+        if (defaultType) return defaultType
+        // Fallback for empty list or heterogeneous types
         if (type.elements.length === 0) {
-          // Empty list - can't determine element type
           return slice(primitive('i32'))
         }
-        // Unify all element types to find common type
         const elemType = this.unifyTypes(type.elements)
         return array(elemType, type.elements.length)
+      }
+      case 'indexed': {
+        // Handle comptime indexed (T[]) - default to /leb128
+        if (type.size === 'comptime') {
+          const defaultType = defaultIndexedType(type)
+          if (defaultType) return defaultType
+        }
+        return type
       }
       default:
         return type
@@ -558,6 +609,10 @@ class CheckContext {
       if (expr.kind === 'ArrayExpr') {
         this.types.set(expr.span.start, inferred)
       }
+      // Collect literal for deferred serialization (concrete types only)
+      if (expected.size !== 'comptime') {
+        this.pendingLiterals.push({ id: expr.span.start, expr, type: expected })
+      }
       return resolved
     }
 
@@ -581,6 +636,8 @@ class CheckContext {
       if (this.isLSPRelevant(expr)) {
         this.types.set(expr.span.start, inferred)
       }
+      // Collect literal for deferred serialization
+      this.pendingLiterals.push({ id: expr.span.start, expr, type: expected })
       // Return concretized type
       return this.concretizeToTarget(inferred, expected)
     }

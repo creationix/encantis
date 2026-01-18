@@ -321,7 +321,9 @@ semantics.addOperation<unknown>('toAST', {
       return { kind: 'null' } as AST.IndexSpecifier
     }
     // Extract prefix type from /u8, /u16, etc.
-    return { kind: 'prefix', prefixType: s.slice(1) } as AST.IndexSpecifier
+    // Normalize /L to leb128
+    const prefixType = s === '/L' ? 'leb128' : s.slice(1)
+    return { kind: 'prefix', prefixType } as AST.IndexSpecifier
   },
 
   Type_tagged(type, _at, tag) {

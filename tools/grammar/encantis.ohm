@@ -116,7 +116,8 @@ Encantis {
             | "N"         -- inferred
 
   // Index specifiers: terminators and length prefixes
-  indexSpecifier = "/0" | "/u8" | "/u16" | "/u32" | "/u64" | "/leb128"
+  // /L is a shorthand for /leb128
+  indexSpecifier = "/0" | "/u8" | "/u16" | "/u32" | "/u64" | "/leb128" | "/L"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"

@@ -225,8 +225,9 @@ describe('type inference', () => {
       if (offset !== undefined) {
         const type = result.types.get(offset)
         expect(type).toBeDefined()
-        // Without annotation, array stays comptime (int(1) is first element's comptime type)
-        expect(typeToString(type!)).toBe('int(1)[]')
+        // Without annotation, array defaults to /leb128 encoding (compact for typical sizes)
+        // comptime_int elements default to i32
+        expect(typeToString(type!)).toBe('i32[/leb128]')
       }
     })
 
@@ -271,6 +272,87 @@ describe('type inference', () => {
       // The plain: u8 = idx should fail because you can't assign tagged to plain
       expect(result.errors).toHaveLength(1)
       expect(result.errors[0].message).toContain('cannot assign')
+    })
+  })
+
+  describe('/L shorthand for /leb128', () => {
+    test('/L is equivalent to /leb128', () => {
+      const result = checkModule(`
+        func main() {
+          let a: u8[/L] = "hello"
+          let b: u8[/leb128] = "world"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const aOffset = result.symbolDefOffsets.get('a')
+      const bOffset = result.symbolDefOffsets.get('b')
+      if (aOffset && bOffset) {
+        const aType = result.types.get(aOffset)
+        const bType = result.types.get(bOffset)
+        expect(typeToString(aType!)).toBe('u8[/leb128]')
+        expect(typeToString(bType!)).toBe('u8[/leb128]')
+      }
+    })
+
+    test('/L/L for nested arrays', () => {
+      const result = checkModule(`
+        func main() {
+          let arr: u8[/L/L] = ["hello", "world"]
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('arr')
+      if (offset) {
+        const type = result.types.get(offset)
+        expect(typeToString(type!)).toBe('u8[/leb128/leb128]')
+      }
+    })
+  })
+
+  describe('default /leb128 encoding', () => {
+    test('string literal without annotation defaults to u8[/leb128]', () => {
+      const result = checkModule(`
+        func main() {
+          let s = "hello"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('s')
+      if (offset) {
+        const type = result.types.get(offset)
+        expect(typeToString(type!)).toBe('u8[/leb128]')
+      }
+    })
+
+    test('nested array defaults to multiple /leb128 layers', () => {
+      const result = checkModule(`
+        func main() {
+          let arr = ["hello", "world"]
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('arr')
+      if (offset) {
+        const type = result.types.get(offset)
+        // Array of strings: two nesting levels → u8[/leb128/leb128]
+        expect(typeToString(type!)).toBe('u8[/leb128/leb128]')
+      }
+    })
+
+    test('explicit type annotation overrides default', () => {
+      const result = checkModule(`
+        func main() {
+          let a: u8[/0] = "hello"
+          let b: u8[5] = "world"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const aOffset = result.symbolDefOffsets.get('a')
+      const bOffset = result.symbolDefOffsets.get('b')
+      if (aOffset && bOffset) {
+        expect(typeToString(result.types.get(aOffset)!)).toBe('u8[/0]')
+        expect(typeToString(result.types.get(bOffset)!)).toBe('u8[5]')
+      }
     })
   })
 })

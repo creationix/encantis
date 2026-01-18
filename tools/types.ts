@@ -177,6 +177,95 @@ export function field(
   return { name, type }
 }
 
+// Create the default concrete type for a comptime list or indexed type
+// Uses /leb128 prefix for each nesting level - compact for typical sizes
+// e.g., comptime_list of strings → u8[/L/L] (leb128 count + leb128 length per string)
+export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
+  const LEB128_SPEC: IndexSpecifierRT = { kind: 'prefix', prefixType: 'leb128' }
+
+  // Handle comptime_list: find innermost element and count depth
+  if (t.kind === 'comptime_list') {
+    // Find common element type and max depth
+    let depth = 1
+    let elemType: ResolvedType | null = null
+
+    for (const elem of t.elements) {
+      const { element, nesting } = findInnermostElement(elem)
+      if (elemType === null) {
+        elemType = element
+        depth = Math.max(depth, nesting + 1)
+      } else if (!typeEquals(elemType, element)) {
+        // Heterogeneous list - can't create default type
+        return null
+      } else {
+        depth = Math.max(depth, nesting + 1)
+      }
+    }
+
+    // Empty list defaults to u8[/L] (like an empty string array)
+    if (elemType === null) {
+      elemType = primitive('u8')
+    }
+
+    // Apply defaults to the innermost element type
+    const resolvedElem = defaultizeElement(elemType)
+    if (resolvedElem === null) return null
+
+    // Build specifiers: one /L per nesting level
+    const specifiers = Array(depth).fill(LEB128_SPEC)
+    return indexed(resolvedElem, null, specifiers)
+  }
+
+  // Handle comptime indexed type (u8[])
+  if (t.kind === 'indexed' && t.size === 'comptime') {
+    let depth = 1
+    let elem = t.element
+    while (elem.kind === 'indexed' && elem.size === 'comptime') {
+      depth++
+      elem = elem.element
+    }
+
+    const resolvedElem = defaultizeElement(elem)
+    if (resolvedElem === null) return null
+
+    const specifiers = Array(depth).fill(LEB128_SPEC)
+    return indexed(resolvedElem, null, specifiers)
+  }
+
+  return null
+}
+
+// Find the innermost non-comptime-list element and count nesting depth
+function findInnermostElement(t: ResolvedType): { element: ResolvedType; nesting: number } {
+  if (t.kind === 'comptime_list') {
+    if (t.elements.length === 0) {
+      return { element: primitive('u8'), nesting: 1 }
+    }
+    const inner = findInnermostElement(t.elements[0])
+    return { element: inner.element, nesting: inner.nesting + 1 }
+  }
+  if (t.kind === 'indexed' && t.size === 'comptime') {
+    const inner = findInnermostElement(t.element)
+    return { element: inner.element, nesting: inner.nesting + 1 }
+  }
+  return { element: t, nesting: 0 }
+}
+
+// Apply default rules to element types (comptime_int → i32, comptime_float → f64)
+function defaultizeElement(t: ResolvedType): ResolvedType | null {
+  if (t.kind === 'comptime_int') {
+    return primitive('i32')
+  }
+  if (t.kind === 'comptime_float') {
+    return primitive('f64')
+  }
+  if (t.kind === 'primitive') {
+    return t
+  }
+  // For other types (tuples, pointers, etc.), can't auto-default
+  return null
+}
+
 // === Type Equality ===
 
 function specifierEquals(a: IndexSpecifierRT, b: IndexSpecifierRT): boolean {
