@@ -186,9 +186,6 @@ class CheckContext {
       case 'TypeDecl':
         this.collectTypeDecl(decl)
         break
-      case 'UniqueDecl':
-        this.collectUniqueDecl(decl)
-        break
       case 'DefDecl':
         this.collectDef(decl)
         break
@@ -258,15 +255,9 @@ class CheckContext {
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {
-    this.collectTypeOrUnique(decl, false)
-  }
-
-  collectUniqueDecl(decl: AST.UniqueDecl): void {
-    this.collectTypeOrUnique(decl, true)
-  }
-
-  private collectTypeOrUnique(decl: AST.TypeDecl | AST.UniqueDecl, unique: boolean): void {
     const name = decl.ident.name
+    // Types with @ prefix are unique/nominal, others are structural aliases
+    const unique = name.startsWith('@')
     const resolved = this.resolveType(decl.type)
     this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
@@ -540,10 +531,13 @@ class CheckContext {
         return tuple(fields)
       }
 
-      case 'TaggedType': {
-        // Tagged types create unique/opaque types
-        const underlying = this.resolveType(type.type)
-        return named(type.tag, underlying, true)
+      case 'BuiltinType': {
+        // str is a unique type (UTF-8 string), bytes is a structural alias for *[u8]
+        const sliceU8 = pointer(indexed(primitive('u8')))
+        if (type.name === 'str') {
+          return named('str', sliceU8, true) // unique
+        }
+        return sliceU8 // bytes is just *[u8]
       }
 
       case 'ComptimeIntType':

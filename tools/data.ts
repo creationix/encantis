@@ -258,7 +258,6 @@ export class DataSectionBuilder {
         this.collectLiteralsFromFunc(decl)
         break
       case 'TypeDecl':
-      case 'UniqueDecl':
         // Type declarations don't contain literals
         break
       case 'DefDecl':

@@ -29,7 +29,6 @@ export type Declaration =
   | ExportDecl
   | FuncDecl
   | TypeDecl
-  | UniqueDecl
   | DefDecl
   | GlobalDecl
   | MemoryDecl
@@ -114,17 +113,11 @@ export interface ArrowBody extends BaseNode {
   expr: Expr
 }
 
-// type Name = Type
+// type Name = Type (structural alias)
+// type @Name = Type (unique/nominal type - @ prefix makes it unique)
 export interface TypeDecl extends BaseNode {
   kind: 'TypeDecl'
-  ident: TypeRef
-  type: Type
-}
-
-// unique Name = Type
-export interface UniqueDecl extends BaseNode {
-  kind: 'UniqueDecl'
-  ident: TypeRef
+  ident: TypeRef // name may start with @ for unique types
   type: Type
 }
 
@@ -481,7 +474,7 @@ export type Type =
   | PointerType
   | IndexedType
   | CompositeType
-  | TaggedType
+  | BuiltinType
   | ComptimeIntType
   | ComptimeFloatType
   | TypeRef
@@ -527,17 +520,16 @@ export interface CompositeType extends BaseNode {
   fields: Field[]
 }
 
-// Named type reference (uppercase identifier)
+// Named type reference (uppercase identifier, optionally prefixed with @ for unique types)
 export interface TypeRef extends BaseNode {
   kind: 'TypeRef'
-  name: string
+  name: string // e.g., "Point" or "@CleanString"
 }
 
-// Tagged type: Type@Tag (makes an opaque/unique type)
-export interface TaggedType extends BaseNode {
-  kind: 'TaggedType'
-  type: Type
-  tag: string
+// Built-in types: str (unique UTF-8 string), bytes (u8 slice)
+export interface BuiltinType extends BaseNode {
+  kind: 'BuiltinType'
+  name: 'str' | 'bytes'
 }
 
 // Comptime integer: int(value)

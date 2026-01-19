@@ -1,0 +1,36 @@
+// This is a comment line in the .ents format
+
+/* This is a block comment
+   spanning multiple lines
+*/
+
+// ============================================================================
+// Imports
+// ============================================================================
+
+// Normal function import
+import "math" "cos" func cos (x:f64):f64
+
+// Grouped function imports
+import "fs" (
+    "read-file" func read-file (path:str):*[u8]
+    "write-file" func write-file (path:str, data:*[u8]):void
+)
+
+// Global variable import
+import "config" "max-connections" global max-connections:u32
+
+// Memory import
+import "memory" "main-mem" memory 1
+
+// ============================================================================
+// Exports
+// ============================================================================
+
+// Exported function
+export "main" func ():i32 {
+    return 0
+}
+
+// Exported global variable
+export "version" global version:str = "1.0.0"

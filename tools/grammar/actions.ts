@@ -218,15 +218,6 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.TypeDecl
   },
 
-  UniqueDecl(_unique, ident, _eq, type) {
-    return {
-      kind: 'UniqueDecl',
-      ident: ident.toAST(),
-      type: type.toAST(),
-      span: span(this),
-    } as AST.UniqueDecl
-  },
-
   DefDecl(_def, ident, assign) {
     return {
       kind: 'DefDecl',
@@ -323,15 +314,6 @@ semantics.addOperation<unknown>('toAST', {
     return Number(intLit.sourceString)
   },
 
-  Type_tagged(type, _at, tag) {
-    return {
-      kind: 'TaggedType',
-      type: type.toAST(),
-      tag: tag.sourceString,
-      span: span(this),
-    } as AST.TaggedType
-  },
-
   Type_pointer(_star, type) {
     return {
       kind: 'PointerType',
@@ -356,8 +338,20 @@ semantics.addOperation<unknown>('toAST', {
     return prim.toAST()
   },
 
+  Type_builtin(builtin) {
+    return builtin.toAST()
+  },
+
   Type_named(typeIdent) {
     return typeIdent.toAST()
+  },
+
+  BuiltinType(name) {
+    return {
+      kind: 'BuiltinType',
+      name: name.sourceString as 'str' | 'bytes',
+      span: span(this),
+    } as AST.BuiltinType
   },
 
   ComptimeType_int(_int, _lp, value, _rp) {
@@ -386,10 +380,12 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.PrimitiveType
   },
 
-  typeIdent(_first, _rest) {
+  // typeIdent = "@"? upperStart identChar*
+  // The @ prefix indicates a unique/nominal type
+  typeIdent(_atOpt, _first, _rest) {
     return {
       kind: 'TypeRef',
-      name: this.sourceString,
+      name: this.sourceString, // includes @ if present
       span: span(this),
     } as AST.TypeRef
   },

@@ -57,9 +57,15 @@ export function astToResolved(ast: AST.Type): ResolvedType {
         ast.fields.map((f) => field(f.ident, astToResolved(f.type))),
       )
 
-    case 'TaggedType':
-      // Tagged type creates a unique named type
-      return named(ast.tag, astToResolved(ast.type), true)
+    case 'BuiltinType': {
+      // str is a unique type (UTF-8 string), bytes is a structural alias
+      // Both are slices of u8: *[u8]
+      const sliceU8 = pointer(indexed(primitive('u8')))
+      if (ast.name === 'str') {
+        return named('str', sliceU8, true) // unique
+      }
+      return sliceU8 // bytes is just *[u8], no wrapper
+    }
 
     case 'ComptimeIntType':
       return comptimeInt(ast.value)

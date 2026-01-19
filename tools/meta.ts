@@ -158,9 +158,6 @@ class MetaBuilder {
       case 'TypeDecl':
         this.collectTypeDecl(decl)
         break
-      case 'UniqueDecl':
-        this.collectUniqueDecl(decl)
-        break
       case 'DefDecl':
         this.collectDef(decl)
         break
@@ -295,20 +292,11 @@ class MetaBuilder {
   }
 
   private collectTypeDecl(decl: AST.TypeDecl): void {
-    this.collectTypeOrUnique(decl, 'type')
-  }
-
-  private collectUniqueDecl(decl: AST.UniqueDecl): void {
-    this.collectTypeOrUnique(decl, 'unique')
-  }
-
-  private collectTypeOrUnique(
-    decl: AST.TypeDecl | AST.UniqueDecl,
-    kind: 'type' | 'unique',
-  ): void {
     const sym = this.checkResult.symbols.get(decl.ident.name)
     if (!sym || sym.kind !== 'type') return
 
+    // Types with @ prefix are unique/nominal, others are structural aliases
+    const kind = decl.ident.name.startsWith('@') ? 'unique' : 'type'
     const symbolIndex = this.addSymbol(decl.ident.name, kind, sym.type, decl.ident.span.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
   }
@@ -401,9 +389,6 @@ class MetaBuilder {
         break
       case 'TypeDecl':
         this.generateHintsForTypeDecl(decl)
-        break
-      case 'UniqueDecl':
-        this.generateHintsForUniqueDecl(decl)
         break
       case 'DefDecl':
         this.generateHintsForDef(decl)
@@ -674,18 +659,6 @@ class MetaBuilder {
     }
   }
 
-  private generateHintsForUniqueDecl(decl: AST.UniqueDecl): void {
-    const symbolIndex = this.symbolIndexByName.get(decl.ident.name)
-    if (symbolIndex !== undefined) {
-      this.addHint(
-        decl.ident.span.start,
-        decl.ident.name.length,
-        this.symbols[symbolIndex].type,
-        symbolIndex,
-      )
-    }
-  }
-
   private generateHintsForDef(decl: AST.DefDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
@@ -728,7 +701,7 @@ class TypeRegistry {
 
   register(type: ResolvedType): number {
     // For named types (type aliases/uniques), register the underlying type
-    // which already has the symbol reference from collectTypeDecl/collectUniqueDecl
+    // which already has the symbol reference from collectTypeDecl
     if (type.kind === 'named') {
       return this.register(type.type)
     }
