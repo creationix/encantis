@@ -207,28 +207,32 @@ primitive_type  = "i8" | "i16" | "i32" | "i64"
 
 pointer_type    = "*" type
 
-array_type      = "[" encoding? size? type "]"
-encoding        = "?" | "!"
-size            = integer_literal ";"
+array_type      = "[" array_prefix? "]" type
+array_prefix    = "*" sentinel_list?
+               | integer_literal sentinel_list?
+               | sentinel_list
+sentinel_list   = ":" sentinel { ":" sentinel }
+sentinel        = "0" | "?"
 
 composite_type  = "(" [ field_list ] ")"
 ```
 
 ### Array Types
 
-Arrays use bracket syntax with optional encoding and size specifiers:
+Arrays use bracket syntax with optional prefixes and sentinel modifiers:
 
 | Syntax | Description | Runtime Representation |
 |--------|-------------|------------------------|
-| `[T]` | Comptime list | None (resolved at compile time) |
-| `*[T]` | Slice | ptr + len (fat pointer, 64 bits) |
-| `[N;T]` | Inline array | N values on stack/registers |
-| `*[N;T]` | Fixed array | ptr to N values in memory |
-| `*[?T]` | LEB128-prefixed | ptr (length encoded in data) |
-| `*[!T]` | Null-terminated | ptr (sentinel in data) |
+| `[*]T` | Many-pointer | ptr (unknown length) |
+| `[*:0]T` | Null-terminated many-pointer | ptr (sentinel in data) |
+| `[*:?]T` | LEB128-prefixed many-pointer | ptr (length encoded in data) |
+| `[]T` | Slice | ptr + len |
+| `[:0]T` | Slice with sentinel | ptr + len (sentinel in data) |
+| `[N]T` | Fixed array | N values by-value |
+| `[N:0]T` | Fixed array with sentinel | N values + sentinel |
 
-The `?` encoding means "how many?" — the length is stored as a LEB128 prefix.
-The `!` encoding means "stop!" — a null sentinel terminates the array.
+The `?` sentinel means "how many?" — the length is stored as a LEB128 prefix.
+The `0` sentinel means "stop!" — a null sentinel terminates the array.
 
 ### Nested Arrays
 
@@ -236,27 +240,27 @@ Nesting determines flat vs pointer-indirect memory layout:
 
 **Flat memory (no inner pointer):**
 
-- `*[![!u8]]` — double null-terminated: `"hello\0world\0\0"`
-- `*[?[?u8]]` — LEB128 count + LEB128 length per element
+- `[*:0:0]u8` — double null-terminated: `"hello\0world\0\0"`
+- `[*:?:?]u8` — LEB128 count + LEB128 length per element
 
-**Pointer indirection (inner `*`):**
+**Pointer indirection (inner pointer type):**
 
-- `*[!*[!u8]]` — null-term array of pointers to null-term strings
-- `*[*[u8]]` — slice of slices (outer has ptr+len, each element has ptr+len)
+- `[*:0][*:0]u8` — null-term array of pointers to null-term strings
+- `[][]u8` — slice of slices (outer has ptr+len, each element has ptr+len)
 
 Examples:
 
 ```ents
-["hello", "world"]:*[![!u8]]     // Flat: "hello\0world\0\0"
-["hello", "world"]:*[!*[!u8]]    // Pointers: [ptr1, ptr2, 0] where ptr1→"hello\0", ptr2→"world\0"
+["hello", "world"]:[*:0:0]u8     // Flat: "hello\0world\0\0"
+["hello", "world"]:[*:0]*[:0]u8  // Pointers: [ptr1, ptr2, 0] where ptr1→"hello\0", ptr2→"world\0"
 ```
 
 ### Inline Arrays and SIMD
 
-Inline arrays `[N;T]` store values directly on the stack or in registers:
+Fixed arrays `[N]T` store values directly on the stack or in registers:
 
-- `[4;f32]` — 4 floats inline (may auto-promote to v128/f32x4)
-- `[2;[2;f32]]` — 2×2 matrix as 4 inline floats
+- `[4]f32` — 4 floats inline (may auto-promote to v128/f32x4)
+- `[2][2]f32` — 2×2 matrix as 4 inline floats
 
 Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
 

@@ -96,26 +96,48 @@ Encantis {
   // Types
   // ============================================================================
 
-  // Array syntax: [encoding? size? Type]
-  // - [T] = comptime list
-  // - *[T] = slice (ptr + len)
-  // - [N;T] = inline array (N values on stack)
-  // - *[N;T] = fixed array (ptr to N values)
-  // - *[?T] = LEB128-prefixed
-  // - *[!T] = null-terminated
-  Type = "*" Type                                  -- pointer
-       | "[" arrayEncoding? arraySize? Type "]"    -- array
+  // Zig-inspired array/pointer syntax
+  // - *T = normal pointer
+  // - [*]T = many-pointer (comptime unknown length)
+  // - [*:0]T = many-pointer to null-terminated array of T (i.e. ->"hello\x00")
+  // - [*:?]T = many-pointer to LEB128-prefixed array of T (i.e. ->"\x05hello")
+  // You can combine these for multi-dimensional arrays:
+  // These are still a single pointer, but the data is laid out in a specific way.
+  // The left modifier is the outermost dimension.
+  // - [*:0:0]T = 2d many-pointer, null-terminated at both levels (i.e. ->"one\x00two\x00\x00")
+  // - [*:?:?]T = 2d many-pointer, LEB128-prefixed at both levels (i.e. ->"\x02\x03one\x03two")
+  // - [*:0:?]T - 2d many-pointer, null-terminated at outer level (i.e. ->"\x03one\x03two\x00")
+  // - [*:?:0]T - 2d many-pointer, null-terminated at inner level (i.e. ->"\x02one\x00two\x00")
+  // Fat Pointers (aka Slices)
+  // - []T = fat-pointer (pointer + length) (aka slice)
+  // - [:0]T = slices can have modifiers as well
+  // Fixed Length Arrays (by-value semantics)
+  // - [N]T = fixed length array of T
+  // - [_]T = fixed length array with inferred length
+  // - [N:0]T = fixed length arrays can have modifiers as well
+  // You can nest these, the left bracket is the outermost dimension:
+  // - [][]T - slices of slices
+  // - [N][]T - fixed length array of slices of T
+  // - [][N]T - slice of fixed length arrays of T
+  // - [*][N]T - many-pointer to fixed length arrays of T
+  // - [N][*][]T - fixed length array of many-pointers to slices of T
+  Type = "*" Type                          -- pointer
+       | "[" arrayTypePrefix? "]" Type    -- array
        | "(" FieldList? ")"                        -- composite
        | ComptimeType                              -- comptimeScalar
        | PrimitiveType                             -- primitive
        | BuiltinType                               -- builtin
        | typeIdent                                 -- named
 
-  // Array encoding: ? = LEB128 prefix, ! = null terminator
-  arrayEncoding = "?" | "!"
 
-  // Array size: N; where N is a literal integer
-  arraySize = intLiteral ";"
+        arrayTypePrefix = "*" arraySentinelList?  -- manyPointer
+                                                                 | intLiteral arraySentinelList?  -- fixed
+                                                                 | arraySentinelList              -- sliceSentinel
+
+        arraySentinelList = ":" arraySentinel (":" arraySentinel)*
+
+        // Array sentinels: 0 = null terminator, ? = LEB128 prefix
+        arraySentinel = "0" | "?"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"

@@ -40,7 +40,7 @@ func fib2(n:i32) -> i32 =>
 
 ```ents
 // Named return value, for..in iterator over slice
-func sum(arr:*[i32]) -> (total:i32) {
+func sum(arr:[]i32) -> (total:i32) {
   total = 0
   for elem in arr {
     total += elem
@@ -196,7 +196,7 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 ### String Literals
 
 ```ents
-"hello"           // coerces to str, *[!u8], *[5;u8], *[?u8] or bytes
+"hello"           // coerces to str, [*:0]u8, *[5]u8, [*:?]u8 or bytes
 "line1\nline2"    // escape sequences: \n \t \r \\ \"
 'also a string'   // single quotes work too
 x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
@@ -206,10 +206,9 @@ b"73gafe7FdA"     // base64 bytes
 Both single and double quoted strings are equivalent. String literals are stored in the data section and coerce to:
 
 - `str` - UTF-8 text string (the default for string literals)
-- `bytes` - structural slice of bytes (aka `*[u8]`)
-- `*[!u8]` - null-terminated pointer (single i32)
-- `*[!u8]` - null-terminated pointer (single i32)
-- `*[N;u8]` - fixed-size array (single i32, length known at compile time)
+- `bytes` - structural slice of bytes (aka `[]u8`)
+- `[*:0]u8` - null-terminated pointer (single i32)
+- `*[N]u8` - pointer to fixed-size array (single i32, length known at compile time)
 
 ### Boolean Literals
 
@@ -233,7 +232,7 @@ def max-size = 1024
 
 // Using definitions
 let hash:u32 = seed + prime32-1
-let buffer:*[max-size;u8]
+let buffer:*[max-size]u8
 ```
 
 Definitions are inlined at compile time, they do not create runtime variables.
@@ -535,7 +534,7 @@ Encantis has a unified model for compound values:
 | **Multiple values** | Base concept - zero or more values | positional |
 | **Tuple** | Multiple values with indices | `.0`, `.1`, ... |
 | **Struct** | Tuple with named fields | `.name` |
-| **Slice** | Struct `(ptr:*T, len:u32)` via `*[T]` | `.ptr`, `.len` |
+| **Slice** | Struct `(ptr:*T, len:u32)` via `[]T` | `.ptr`, `.len` |
 
 Each level is a superset of the one above:
 
@@ -593,16 +592,16 @@ Encantis has three array-like types:
 
 | Syntax | Representation | Length | Use Case |
 |--------|----------------|--------|----------|
-| `*[T]` | ptr + len | runtime, stored | General-purpose slices |
-| `*[N;T]` | ptr only | compile-time N | Fixed-size buffers |
-| `*[!T]` | ptr only | scan for null | C strings |
+| `[]T` | ptr + len | runtime, stored | General-purpose slices |
+| `[N]T` | values | compile-time N | Fixed-size arrays |
+| `[*:0]T` | ptr only | scan for null | C strings |
 
-#### `*[T]` — Runtime Slice
+#### `[]T` — Runtime Slice
 
 Fat pointer containing pointer and length. Slices behave like a struct `(ptr:*T, len:u32)`:
 
 ```ents
-let data:*[u8] = ...
+let data:[]u8 = ...
 
 // Property access
 data.ptr        // extract pointer (*u8)
@@ -619,21 +618,21 @@ let (ptr:, len:) = data           // by name
 let (ptr: p, len: n) = data       // renamed bindings
 ```
 
-#### `*[N;T]` — Fixed-Size Array
+#### `[N]T` — Fixed-Size Array
 
 Pointer with compile-time known length:
 
 ```ents
-let buf:*[64;u8] = 0   // 64-byte buffer
-buf.len                // comptime constant 64
+let buf:[64]u8 = 0      // 64-byte buffer
+buf.len                 // comptime constant 64
 ```
 
-#### `*[!T]` — Null-Terminated
+#### `[*:0]T` — Null-Terminated
 
 Pointer to null-terminated data:
 
 ```ents
-let cstr:*[!u8] = ...
+let cstr:[*:0]u8 = ...
 cstr.len                 // runtime scan for null, O(n)
 ```
 
@@ -691,7 +690,7 @@ get_user(UserId(raw))              // OK: explicit cast
 
 Use `unique` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
 
-The built-in `str` type is a unique type based on `*[u8]` that assumes UTF-8 encoding. Similarly, `bytes` is a structural alias for `*[u8]` for raw binary data.
+The built-in `str` type is a unique type based on `[]u8` that assumes UTF-8 encoding. Similarly, `bytes` is a structural alias for `[]u8` for raw binary data.
 
 ### Struct Types
 
@@ -846,7 +845,7 @@ Encantis distinguishes between stack-allocated values (WASM locals) and memory-a
 | `let x:i32` | WASM local | None (no `&x`) |
 | `let p:Point` | Multiple WASM locals | None |
 | `let ptr:*Point` | Single WASM local (i32) | Points to memory |
-| `let arr:*[64;u8]` | Linear memory | Has address |
+| `let arr:*[64]u8` | Linear memory | Has address |
 | `global g:i32` | Linear memory | Has address |
 
 Primitives and small structs declared as `let` are stored in WASM locals—fast registers with no memory address. Pointers like `*Point` are single i32 values pointing to data serialized in linear memory.
@@ -862,7 +861,7 @@ let a = p.x                      // reads from WASM local
 let b = ptr.x                    // reads from linear memory at ptr+0
 ```
 
-Fixed-size arrays (`*[N;T]`) and globals are always memory-allocated and have addresses.
+Fixed-size arrays (`*[N]T`) and globals are always memory-allocated and have addresses.
 
 ### WASM Type Mapping
 
@@ -873,8 +872,8 @@ Fixed-size arrays (`*[N;T]`) and globals are always memory-allocated and have ad
 | f32 | f32 |
 | f64 | f64 |
 | `*T` | i32 |
-| `*[T]` | i32, i32 (ptr, len) |
-| `*[N;T]`, `*[!T]` | i32 (ptr only) |
+| `[]T` | i32, i32 (ptr, len) |
+| `*[N]T`, `[*:0]T` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
 
 ## Type Conversions
@@ -1123,30 +1122,30 @@ ptr.f64             // read 8 bytes as f64
 
 // Compound types need parentheses
 ptr.(MyStruct)
-ptr.(*[u8])
+ptr.([]u8)
 ```
 
 ## Array Type Conversions
 
 | From | To | How |
 |------|----|-----|
-| `*[T]` | `*T` | `slice.ptr` |
-| `*[T]` | `u32` | `slice.len` |
-| `*[T]` | `(*T, u32)` | `(slice.ptr, slice.len)` or destructure |
-| `*[N;T]` | `*[T]` | implicit |
-| `*[N;T]` | `*T` | `arr.ptr` |
-| `*[!T]` | `*T` | `s.ptr` |
-| `*[!T]` | `*[T]` | `(s.ptr, s.len)` |
-| `(*T, u32)` | `*[T]` | implicit |
-| `*T` | `*[T]` | ERROR - needs length |
+| `[]T` | `*T` | `slice.ptr` |
+| `[]T` | `u32` | `slice.len` |
+| `[]T` | `(*T, u32)` | `(slice.ptr, slice.len)` or destructure |
+| `*[N]T` | `[]T` | implicit |
+| `*[N]T` | `*T` | `arr.ptr` |
+| `[*:0]T` | `*T` | `s.ptr` |
+| `[*:0]T` | `[]T` | `(s.ptr, s.len)` |
+| `(*T, u32)` | `[]T` | implicit |
+| `*T` | `[]T` | ERROR - needs length |
 
 ```ents
-let arr:*[16;u8] = ...
-let slice:*[u8] = arr         // OK: implicit
+let arr:*[16]u8 = ...
+let slice:[]u8 = arr           // OK: implicit
 
 let ptr:*u8 = ...
-let slice:*[u8] = ptr         // ERROR: need length
-let slice:*[u8] = (ptr, 64)   // OK: provide length
+let slice:[]u8 = ptr           // ERROR: need length
+let slice:[]u8 = (ptr, 64)     // OK: provide length
 
 // Extract components from slice
 let (ptr, len) = slice           // by position
@@ -1276,8 +1275,8 @@ def buffer_pages = 4
 def buffer_size = page_size * buffer_pages
 
 // Compile-time function execution
-comptime func generate_table() -> *[256;u8] {
-  let table:*[256;u8]
+comptime func generate_table() -> *[256]u8 {
+  let table:*[256]u8
   for i in 256 {
     table[i] = crc_byte(i)
   }
@@ -1313,7 +1312,7 @@ use math.vector as vec
 Guaranteed cleanup at scope exit:
 
 ```ents
-func process_file(path:*[!u8]) -> Result {
+func process_file(path:[*:0]u8) -> Result {
   let handle = open(path)
   defer close(handle)
 

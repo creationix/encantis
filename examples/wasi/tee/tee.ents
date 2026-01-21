@@ -2,8 +2,8 @@
 // Outputs to stderr and stdout whatever comes in stdin
 
 import "wasi_snapshot_preview1" (
-  "fd_read" func wasi_fd_read(fd:i32, iovs:*[*[u8]], nread:*u32) -> i32
-  "fd_write" func wasi_fd_write(fd:i32, iovs:*[*[u8]], nwritten:*u32) -> i32
+  "fd_read" func wasi_fd_read(fd:i32, iovs:[][]u8, nread:*u32) -> i32
+  "fd_write" func wasi_fd_write(fd:i32, iovs:[][]u8, nwritten:*u32) -> i32
   "proc_exit" func wasi_proc_exit(code:i32)
 )
 
@@ -14,8 +14,8 @@ def stderr = 2:i32
 export "memory" memory 1
 
 // I/O vector (ptr, len) stored at offset 0
-// *[u8] is structurally (ptr:*u8, len:u32) - same as WASI iovec
-global iovec:*[u8] = (ptr: 64, len: 0)
+// []u8 is structurally (ptr:[*]u8, len:u32) - same as WASI iovec
+global iovec:[]u8 = (ptr: 64, len: 0)
 
 // Buffer starts at offset 64 (after iovec struct at 0-7)
 def buffer_ptr = 64:*u8
@@ -31,7 +31,7 @@ func main() {
     iovec = (ptr: buffer_ptr, len: buffer_len)
 
     // Read up to buffer_len bytes from stdin
-    // Pass slice containing single iovec: (&iovec, 1) coerces to *[*[u8]]
+    // Pass slice containing single iovec: (&iovec, 1) coerces to [][]u8
     let res = wasi_fd_read(stdin, (&iovec, 1), &nread)
     break when res != 0
     break when nread == 0

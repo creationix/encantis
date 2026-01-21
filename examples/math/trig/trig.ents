@@ -12,7 +12,7 @@ import "math" (
 
 // Import a way to print things
 import "sys" "print-f64-pair"
-func print(*[u8], f64, *[u8], f64, *[u8])
+func print([]u8, f64, []u8, f64, []u8)
 
 type PolarPoint = (d:f64, a:f64)
 type CartesianPoint = (x:f64, y:f64)
