@@ -129,26 +129,23 @@ describe('parseType', () => {
     })
   })
 
-  describe('tagged types', () => {
-    test('tagged primitive', () => {
-      const t = parseType('i32@UserId')
-      expect(t.kind).toBe('named')
-      if (t.kind === 'named') {
-        expect(t.name).toBe('UserId')
-        expect(t.unique).toBe(true)
-        expect(t.type).toMatchObject({ kind: 'primitive', name: 'i32' })
+  describe('unique types (@ prefix)', () => {
+    test('unique type reference parses as TypeRef', () => {
+      // @UserId is a reference to a unique type - underlying type resolved at check time
+      const ast = parseTypeAST('@UserId')
+      expect(ast.kind).toBe('TypeRef')
+      if (ast.kind === 'TypeRef') {
+        expect(ast.name).toBe('@UserId')
       }
     })
 
-    test('tagged type inside pointer', () => {
-      // *u8@String parses as *(u8@String) - pointer to tagged type
-      const t = parseType('*u8@String')
-      expect(t.kind).toBe('pointer')
-      if (t.kind === 'pointer') {
-        expect(t.pointee.kind).toBe('named')
-        if (t.pointee.kind === 'named') {
-          expect(t.pointee.name).toBe('String')
-          expect(t.pointee.type).toMatchObject({ kind: 'primitive', name: 'u8' })
+    test('pointer to unique type', () => {
+      const ast = parseTypeAST('*@String')
+      expect(ast.kind).toBe('PointerType')
+      if (ast.kind === 'PointerType') {
+        expect(ast.pointee.kind).toBe('TypeRef')
+        if (ast.pointee.kind === 'TypeRef') {
+          expect(ast.pointee.name).toBe('@String')
         }
       }
     })

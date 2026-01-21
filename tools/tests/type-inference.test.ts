@@ -135,7 +135,7 @@ describe('type inference', () => {
   describe('function calls', () => {
     test('string literal to *[u8] parameter', () => {
       const result = checkModule(`
-        import "test" "log" func log(str: *[u8])
+        import "test" "log" func log(s: *[u8])
         func main() {
           log("hello")
         }
@@ -145,7 +145,7 @@ describe('type inference', () => {
 
     test('string literal to *[!u8] parameter', () => {
       const result = checkModule(`
-        import "test" "log" func log(str: *[!u8])
+        import "test" "log" func log(s: *[!u8])
         func main() {
           log("hello")
         }
@@ -253,24 +253,26 @@ describe('type inference', () => {
     })
   })
 
-  describe('tagged types', () => {
-    test('tagged type in type annotation', () => {
+  describe('unique types (@ prefix)', () => {
+    test('unique type in type annotation', () => {
       const result = checkModule(`
+        type @Index = u8
         func main() {
-          let idx: u8@Index = 0
+          let idx: @Index = 0
         }
       `)
       expect(result.errors).toHaveLength(0)
     })
 
-    test('tagged type rejects plain value assignment', () => {
+    test('unique type rejects plain value assignment', () => {
       const result = checkModule(`
+        type @Index = u8
         func main() {
-          let idx: u8@Index = 0
+          let idx: @Index = 0
           let plain: u8 = idx
         }
       `)
-      // The plain: u8 = idx should fail because you can't assign tagged to plain
+      // The plain: u8 = idx should fail because you can't assign unique to plain
       expect(result.errors).toHaveLength(1)
       expect(result.errors[0].message).toContain('cannot assign')
     })

@@ -9,16 +9,18 @@ import {
 import { parseType as parseTypeLib } from '../type-lib'
 
 // Parse type with extended syntax for testing (named types with =)
+// Syntax: Name=underlying for aliases, @Name=underlying for unique types
 function parseType(s: string): ResolvedType {
   s = s.trim()
 
-  // Named type: Name=underlying or unique Name=underlying
+  // Named type: Name=underlying or @Name=underlying (unique)
   if (s.includes('=')) {
     const eqIdx = s.indexOf('=')
     const namePart = s.slice(0, eqIdx).trim()
     const underlying = s.slice(eqIdx + 1).trim()
-    const unique = namePart.startsWith('unique ')
-    const typeName = unique ? namePart.slice(7).trim() : namePart
+    // @ prefix indicates unique type
+    const unique = namePart.startsWith('@')
+    const typeName = namePart // Keep the @ in the name for unique types
     return named(typeName, parseType(underlying), unique)
   }
 
@@ -84,16 +86,11 @@ describe('typeAssignable', () => {
     ['Point=(x:i32, y:i32)', '(x:int(1), y:int(2))', true],
     ['i32', 'Index=i32', true], // alias unwraps
 
-    // Unique types
-    ['unique Index=i32', 'unique Index=i32', true],
-    ['unique Index=i32', 'i32', false], // can't assign plain to unique
-    ['i32', 'unique Index=i32', false], // can't assign unique to plain
-
-    // Tagged types - uses @Tag syntax from grammar
-    ['u8@Index', 'u8@Index', true],
-    ['u8@Index', 'u8', false], // can't assign plain to tagged
-    ['u8', 'u8@Index', false], // can't assign tagged to plain
-    ['u8@Index', 'int(42)', true], // comptime coerces to tagged underlying
+    // Unique types - uses @Name syntax
+    ['@Index=i32', '@Index=i32', true],
+    ['@Index=i32', 'i32', false], // can't assign plain to unique
+    ['i32', '@Index=i32', false], // can't assign unique to plain
+    ['@Index=u8', 'int(42)', true], // comptime coerces to unique underlying
 
     // Pointers
     ['*i32', '*i32', true],
