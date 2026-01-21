@@ -94,7 +94,7 @@ Types in the AST mirror the source syntax:
 |----------|---------|-------------|
 | `PrimitiveType` | `i32`, `u8`, `f64`, `bool` | Built-in types |
 | `PointerType` | `*i32`, `*[u8]` | Pointer to type |
-| `IndexedType` | `[u8]`, `*[!u8]`, `*[10;i32]` | Array/slice types |
+| `IndexedType` | `*[u8]`, `*[!u8]`, `*[10;i32]` | Array/slice types |
 | `CompositeType` | `(x: i32, y: i32)` | Tuple/struct types |
 | `TaggedType` | `u8@Index` | Unique tagged type |
 | `TypeRef` | `Point`, `MyType` | Named type reference |

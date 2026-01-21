@@ -1,0 +1,144 @@
+/*
+ * Crit-Bit Tree (Critical Bit Tree)
+ * ==================================
+ *
+ * A crit-bit tree is a compact binary trie optimized for storing strings or
+ * binary keys. It's a variant of a PATRICIA trie with exactly two types of nodes:
+ *
+ *   - Internal nodes: Store only a "critical bit" position - the bit index where
+ *     two keys first differ. Has left child (bit=0) and right child (bit=1).
+ *
+ *   - External nodes: Store the actual key (leaf nodes).
+ *
+ * Key properties:
+ *
+ *   - Space efficient: Internal nodes store only a bit position, not key prefixes.
+ *     For n keys, there are exactly n external nodes and n-1 internal nodes.
+ *
+ *   - Time efficient: Lookup, insert, and delete are O(k) where k is key length
+ *     in bits. No key comparisons during tree traversal - just bit tests.
+ *
+ *   - Ordered: In-order traversal yields keys in lexicographic order, enabling
+ *     efficient range queries and prefix searches.
+ *
+ *   - Cache friendly: Small internal nodes mean more fit in cache during traversal.
+ *
+ * How lookup works:
+ *
+ *   1. Start at root, traverse down testing the critical bit at each internal node
+ *   2. Go left if bit is 0, right if bit is 1
+ *   3. Reach an external node containing a candidate key
+ *   4. Compare the full key - if it matches, found; otherwise, key not present
+ *
+ * How insert works:
+ *
+ *   1. Traverse tree to find the best candidate leaf
+ *   2. Compare new key with candidate to find first differing bit position
+ *   3. Walk back up to find correct insertion point (where crit-bit fits in order)
+ *   4. Insert new internal node at that position with new leaf as child
+ *
+ * Example tree storing {"a", "aa", "b"}:
+ *
+ *              [bit 0]           <- root: test bit 0
+ *              /     \
+ *         [bit 7]     "b"        <- left subtree, right is leaf "b"
+ *         /     \
+ *       "a"     "aa"             <- leaves
+ *
+ * Bit 0 distinguishes 'a' (0x61) from 'b' (0x62) in their high bits.
+ * Bit 7 distinguishes "a" from "aa" (presence of second byte).
+ *
+ * References:
+ *   - D.J. Bernstein's crit-bit paper: https://cr.yp.to/critbit.html
+ *   - Adam Langley's implementation notes
+ */
+
+// Memory layout: nodes are allocated in linear memory
+// Internal node: (crit_bit:u32, children:(*Node, *Node))
+// External node: (key_ptr:*u8, key_len:u32)
+// Distinguish by low bit of pointer: 0 = internal, 1 = external
+
+type Node = *u8  // opaque pointer, interpreted based on tag bit
+
+type Tree = (
+  root: Node,
+  count: u32
+)
+
+// Check if a key exists in the tree
+// Returns true if found, false otherwise
+func contains(tree: *Tree, key: bytes) -> bool {
+  // TODO: traverse to candidate leaf, compare full key
+}
+
+// Look up a key and return pointer to stored value (or null if not found)
+func lookup(tree: *Tree, key: bytes) -> *u8 {
+  // TODO: similar to contains but returns the key pointer
+}
+
+// Insert a key into the tree
+// Returns true if inserted, false if already present
+func insert(tree: *Tree, key: bytes) -> bool {
+  // TODO:
+  // 1. Handle empty tree case
+  // 2. Find best candidate leaf
+  // 3. Find critical bit between new key and candidate
+  // 4. Find insertion point in tree
+  // 5. Create new internal + external nodes
+  // 6. Update tree structure
+}
+
+// Remove a key from the tree
+// Returns true if removed, false if not found
+func delete(tree: *Tree, key: bytes) -> bool {
+  // TODO:
+  // 1. Find the key
+  // 2. Remove external node
+  // 3. Remove parent internal node
+  // 4. Reconnect sibling to grandparent
+}
+
+// Iterate over all keys in lexicographic order
+// Calls visitor function for each key
+func walk(tree: *Tree, visitor: func(*[u8])) {
+  // TODO: in-order traversal of the tree
+}
+
+// Find all keys with a given prefix
+// Calls visitor function for each matching key
+func walk_prefix(tree: *Tree, prefix: bytes, visitor: func(*[u8])) {
+  // TODO:
+  // 1. Navigate to subtree matching prefix
+  // 2. Walk that subtree
+}
+
+// --- Internal helpers ---
+
+// Get the bit at position `pos` in the key (0-indexed from MSB)
+// Returns 0 or 1
+inline func get_bit(key: bytes, pos: u32) -> u32 {
+  // TODO: extract bit at position
+  // byte_index = pos / 8
+  // bit_index = 7 - (pos % 8)  // MSB first
+}
+
+// Find the first differing bit position between two keys
+// Returns the bit index, or -1 if keys are equal
+func find_critical_bit(a: bytes, b: bytes) -> i32 {
+  // TODO: XOR bytes, find first differing bit
+}
+
+// Check if a node pointer is external (tagged with low bit = 1)
+inline func is_external(node: Node) -> bool {
+  // TODO: check low bit
+}
+
+// Create an external node from a key
+func make_external(key: bytes) -> Node {
+  // TODO: allocate and tag
+}
+
+// Create an internal node with given critical bit and children
+func make_internal(crit_bit: u32, left: Node, right: Node) -> Node {
+  // TODO: allocate internal node
+}

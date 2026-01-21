@@ -5,6 +5,13 @@
 */
 
 // ============================================================================
+// Type Declarations
+// ============================================================================
+
+type Point = (x:f64, y:f64)       // structural alias
+type @UniquePoint = (x:f64, y:f64) // unique type (@ in name)
+
+// ============================================================================
 // Imports
 // ============================================================================
 
@@ -13,8 +20,8 @@ import "math" "cos" func cos (x:f64):f64
 
 // Grouped function imports
 import "fs" (
-    "read-file" func read-file (path:str):*[u8]
-    "write-file" func write-file (path:str, data:*[u8]):void
+  "read-file" func read-file (path:str):*[u8]
+  "write-file" func write-file (path:str, data:*[u8]):void
 )
 
 // Global variable import
@@ -27,10 +34,30 @@ import "memory" "main-mem" memory 1
 // Exports
 // ============================================================================
 
-// Exported function
+// Exported function with no inner-name
 export "main" func ():i32 {
-    return 0
+  return 0
+}
+
+// Export function with inner-name
+export "answer" func get-answer ():i32 {
+  return 42
 }
 
 // Exported global variable
 export "version" global version:str = "1.0.0"
+
+// Exported memory
+export "data-mem" memory 2
+
+// ============================================================================
+// Functions
+// ============================================================================
+
+// Inline function example
+inline func clamp (value:i32, min:i32, max:i32):i32 {
+  if (value < min) => min
+  elif (value > max) => max
+  else => value
+}
+

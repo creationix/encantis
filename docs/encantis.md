@@ -10,7 +10,7 @@ Encantis is a systems programming language that compiles to WebAssembly. It prov
 export "mem" memory 1
 
 // Import JavaScript console.log
-import "env" "log" func log(u8[])
+import "env" "log" func log(str)
 
 export "main"
 func main() {
@@ -40,7 +40,7 @@ func fib2(n:i32) -> i32 =>
 
 ```ents
 // Named return value, for..in iterator over slice
-func sum(arr:i32[]) -> (total:i32) {
+func sum(arr:*[i32]) -> (total:i32) {
   total = 0
   for elem in arr {
     total += elem
@@ -76,7 +76,7 @@ The following identifiers are reserved keywords in Encantis:
 
 **Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`, `unique`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`
 
 **Operators:** `as`
 
@@ -150,11 +150,13 @@ if old == -1 {
 User-defined type names must start with a capital letter. This distinguishes them from primitive types (`i32`, `f64`, etc.) and regular identifiers:
 
 ```ents
+// Structural types
 type Point = (x:f32, y:f32)      // OK: Point starts with capital
 type point = (x:f32, y:f32)      // ERROR: type names must be capitalized
 
-unique String = u8[]             // OK: String starts with capital
-unique buffer = u8[]             // ERROR: type names must be capitalized
+// Unique types
+type @UserId = i64               // OK: UserId starts with capital
+type @user_id = i64              // ERROR: type names must be capitalized
 ```
 
 This convention allows the parser to distinguish type references from variable references without forward declarations:
@@ -194,16 +196,20 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 ### String Literals
 
 ```ents
-"hello"           // type is u8[5/0], coerces to u8[/0], u8[5], or u8[]
+"hello"           // coerces to str, *[!u8], *[5;u8], *[?u8] or bytes
 "line1\nline2"    // escape sequences: \n \t \r \\ \"
 'also a string'   // single quotes work too
+x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
+b"73gafe7FdA"     // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals are stored in the data section with a null terminator. Their type is `u8[N/0]` - a comptime-known length that also guarantees null termination. This dual nature allows implicit coercion to:
+Both single and double quoted strings are equivalent. String literals are stored in the data section and coerce to:
 
-- `u8[/0]` - null-terminated pointer (single i32)
-- `u8[N]` - fixed-size array (single i32, length known at compile time)
-- `u8[]` - runtime slice (i32 pointer + i32 length)
+- `str` - UTF-8 text string (the default for string literals)
+- `bytes` - structural slice of bytes (aka `*[u8]`)
+- `*[!u8]` - null-terminated pointer (single i32)
+- `*[!u8]` - null-terminated pointer (single i32)
+- `*[N;u8]` - fixed-size array (single i32, length known at compile time)
 
 ### Boolean Literals
 
@@ -227,7 +233,7 @@ def max-size = 1024
 
 // Using definitions
 let hash:u32 = seed + prime32-1
-let buffer:u8[max-size]
+let buffer:*[max-size;u8]
 ```
 
 Definitions are inlined at compile time, they do not create runtime variables.
@@ -346,7 +352,7 @@ func add(a:i32, b:i32) -> i32 => a + b
 
 // Export anonymous function (no internal name needed if not called internally)
 export "hash"
-func (data:u8[], seed:u32) -> u32 {
+func (data:bytes, seed:u32) -> u32 {
   // only accessible via export, no internal calls
 }
 
@@ -361,7 +367,7 @@ export "counter" global counter:i32 = 0
 
 ```ents
 // Import function from host environment
-import "env" "log" func log(msg:u8[/0])
+import "env" "log" func log(msg:str)
 
 // Import memory
 import "env" "memory" memory 1
@@ -381,7 +387,7 @@ Whitespace is flexible - the import and function signature can span multiple lin
 
 ```ents
 import "sys" "print"
-func print(msg:u8[])
+func print(msg:str)
 ```
 
 ### Memory and Data
@@ -501,7 +507,7 @@ let result = match code {
 Match is an expression and returns a value. All arms must have compatible types:
 
 ```ents
-let msg:u8[] = match status & 3 {
+let msg:str = match status & 3 {
   0 => "idle"
   1 => "running"
   2 => "done"
@@ -529,7 +535,7 @@ Encantis has a unified model for compound values:
 | **Multiple values** | Base concept - zero or more values | positional |
 | **Tuple** | Multiple values with indices | `.0`, `.1`, ... |
 | **Struct** | Tuple with named fields | `.name` |
-| **Slice** | Struct `(ptr:*T, len:u32)` | `.ptr`, `.len` |
+| **Slice** | Struct `(ptr:*T, len:u32)` via `*[T]` | `.ptr`, `.len` |
 
 Each level is a superset of the one above:
 
@@ -587,16 +593,16 @@ Encantis has three array-like types:
 
 | Syntax | Representation | Length | Use Case |
 |--------|----------------|--------|----------|
-| `T[]` | ptr + len | runtime, stored | General-purpose slices |
-| `T[N]` | ptr only | compile-time N | Fixed-size buffers |
-| `T[/0]` | ptr only | scan for null | C strings |
+| `*[T]` | ptr + len | runtime, stored | General-purpose slices |
+| `*[N;T]` | ptr only | compile-time N | Fixed-size buffers |
+| `*[!T]` | ptr only | scan for null | C strings |
 
-#### `T[]` — Runtime Slice
+#### `*[T]` — Runtime Slice
 
 Fat pointer containing pointer and length. Slices behave like a struct `(ptr:*T, len:u32)`:
 
 ```ents
-let data:u8[] = ...
+let data:*[u8] = ...
 
 // Property access
 data.ptr        // extract pointer (*u8)
@@ -613,21 +619,21 @@ let (ptr:, len:) = data           // by name
 let (ptr: p, len: n) = data       // renamed bindings
 ```
 
-#### `T[N]` — Fixed-Size Array
+#### `*[N;T]` — Fixed-Size Array
 
 Pointer with compile-time known length:
 
 ```ents
-let buf:u8[64] = 0     // 64-byte buffer
+let buf:*[64;u8] = 0   // 64-byte buffer
 buf.len                // comptime constant 64
 ```
 
-#### `T[/0]` — Null-Terminated
+#### `*[!T]` — Null-Terminated
 
 Pointer to null-terminated data:
 
 ```ents
-let cstr:u8[/0] = ...
+let cstr:*[!u8] = ...
 cstr.len                 // runtime scan for null, O(n)
 ```
 
@@ -667,23 +673,25 @@ The structure must be exactly identical - extra or missing fields are not allowe
 Unique types require explicit casts even when the underlying structure is identical:
 
 ```ents
-unique String = u8[]
-unique Bytes = u8[]
+unique UserId = i64
+unique PostId = i64
 
-func print(s:String) {
+func get_user(id:UserId) -> User {
   // implementation
 }
 
-let data:u8[] = ...
-print(data)                        // ERROR: u8[] is not String
-print(String(data))                // OK: explicit cast
+let post_id:PostId = 12345
+get_user(post_id)                  // ERROR: PostId is not UserId
+get_user(UserId(post_id))          // OK: explicit cast
 
-let b:Bytes = ...
-print(b)                           // ERROR: Bytes is not String
-print(String(b))                   // OK: explicit cast
+let raw:i64 = 99999
+get_user(raw)                      // ERROR: i64 is not UserId
+get_user(UserId(raw))              // OK: explicit cast
 ```
 
 Use `unique` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
+
+The built-in `str` type is a unique type based on `*[u8]` that assumes UTF-8 encoding. Similarly, `bytes` is a structural alias for `*[u8]` for raw binary data.
 
 ### Struct Types
 
@@ -818,13 +826,13 @@ UFCS works for all types, not just structs:
 
 ```ents
 func double(x:i32) -> i32 => x * 2
-func to_hex(data:u8[]) -> u8[] => ...
+func to_hex(data:bytes) -> str => ...
 
 let n = 21
 n.double()                 // 42
 
-let bytes:u8[] = ...
-bytes.to_hex()             // works on slices too
+let data:bytes = ...
+data.to_hex()              // works on slices too
 ```
 
 Note: There are no implicit built-in methods except for operators that already look like function calls (ex: `sqrt(n)` can be written as `n.sqrt()`). Slice properties like `slice.len` and `slice.ptr` are built-in field access, not method calls.
@@ -838,7 +846,7 @@ Encantis distinguishes between stack-allocated values (WASM locals) and memory-a
 | `let x:i32` | WASM local | None (no `&x`) |
 | `let p:Point` | Multiple WASM locals | None |
 | `let ptr:*Point` | Single WASM local (i32) | Points to memory |
-| `let arr:u8[64]` | Linear memory | Has address |
+| `let arr:*[64;u8]` | Linear memory | Has address |
 | `global g:i32` | Linear memory | Has address |
 
 Primitives and small structs declared as `let` are stored in WASM locals—fast registers with no memory address. Pointers like `*Point` are single i32 values pointing to data serialized in linear memory.
@@ -854,7 +862,7 @@ let a = p.x                      // reads from WASM local
 let b = ptr.x                    // reads from linear memory at ptr+0
 ```
 
-Fixed-size arrays (`T[N]`) and globals are always memory-allocated and have addresses.
+Fixed-size arrays (`*[N;T]`) and globals are always memory-allocated and have addresses.
 
 ### WASM Type Mapping
 
@@ -865,8 +873,8 @@ Fixed-size arrays (`T[N]`) and globals are always memory-allocated and have addr
 | f32 | f32 |
 | f64 | f64 |
 | `*T` | i32 |
-| `T[]` | i32, i32 (ptr, len) |
-| `T[N]`, `T[/0]` | i32 (ptr only) |
+| `*[T]` | i32, i32 (ptr, len) |
+| `*[N;T]`, `*[!T]` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
 
 ## Type Conversions
@@ -1115,30 +1123,30 @@ ptr.f64             // read 8 bytes as f64
 
 // Compound types need parentheses
 ptr.(MyStruct)
-ptr.(u8[])
+ptr.(*[u8])
 ```
 
 ## Array Type Conversions
 
 | From | To | How |
 |------|----|-----|
-| `T[]` | `*T` | `slice.ptr` |
-| `T[]` | `u32` | `slice.len` |
-| `T[]` | `(*T, u32)` | `(slice.ptr, slice.len)` or destructure |
-| `T[N]` | `T[]` | implicit |
-| `T[N]` | `*T` | `arr.ptr` |
-| `T[/0]` | `*T` | `s.ptr` |
-| `T[/0]` | `T[]` | `(s.ptr, s.len)` |
-| `(*T, u32)` | `T[]` | implicit |
-| `*T` | `T[]` | ERROR - needs length |
+| `*[T]` | `*T` | `slice.ptr` |
+| `*[T]` | `u32` | `slice.len` |
+| `*[T]` | `(*T, u32)` | `(slice.ptr, slice.len)` or destructure |
+| `*[N;T]` | `*[T]` | implicit |
+| `*[N;T]` | `*T` | `arr.ptr` |
+| `*[!T]` | `*T` | `s.ptr` |
+| `*[!T]` | `*[T]` | `(s.ptr, s.len)` |
+| `(*T, u32)` | `*[T]` | implicit |
+| `*T` | `*[T]` | ERROR - needs length |
 
 ```ents
-let arr:u8[16] = ...
-let slice:u8[] = arr          // OK: implicit
+let arr:*[16;u8] = ...
+let slice:*[u8] = arr         // OK: implicit
 
 let ptr:*u8 = ...
-let slice:u8[] = ptr          // ERROR: need length
-let slice:u8[] = (ptr, 64)    // OK: provide length
+let slice:*[u8] = ptr         // ERROR: need length
+let slice:*[u8] = (ptr, 64)   // OK: provide length
 
 // Extract components from slice
 let (ptr, len) = slice           // by position
@@ -1222,7 +1230,7 @@ enum State {
   Idle
   Running(progress:u32)
   Done(result:i32)
-  Failed(code:u32, msg:u8[])
+  Failed(code:u32, msg:str)
 }
 ```
 
@@ -1268,8 +1276,8 @@ def buffer_pages = 4
 def buffer_size = page_size * buffer_pages
 
 // Compile-time function execution
-comptime func generate_table() -> u8[256] {
-  let table:u8[256]
+comptime func generate_table() -> *[256;u8] {
+  let table:*[256;u8]
   for i in 256 {
     table[i] = crc_byte(i)
   }
@@ -1305,7 +1313,7 @@ use math.vector as vec
 Guaranteed cleanup at scope exit:
 
 ```ents
-func process_file(path:u8[/0]) -> Result {
+func process_file(path:*[!u8]) -> Result {
   let handle = open(path)
   defer close(handle)
 
@@ -1321,3 +1329,24 @@ func process_file(path:u8[/0]) -> Result {
 ```
 
 **Why:** Ensures resources are released regardless of how a function exits. Reduces bugs from forgotten cleanup, especially with multiple return paths or error conditions.
+
+### Operator Overloading via UFCS
+
+Operators could desugar to function calls, allowing user-defined types to support standard operators through regular function definitions:
+
+```ents
+type Vec2 = (x:f64, y:f64)
+
+func +(a:Vec2, b:Vec2) -> Vec2 =>
+  Vec2(a.x + b.x, a.y + b.y)
+
+func *(v:Vec2, s:f64) -> Vec2 =>
+  Vec2(v.x * s, v.y * s)
+
+// Now works naturally:
+let result = (a + b) * 2.0
+```
+
+Combined with function overloading, the same operator name can have multiple implementations for different type signatures. The compiler selects the correct overload based on argument types.
+
+**Why:** Unifies operators with UFCS—no special mechanism needed. Operators become overloaded functions resolved by the same rules as method calls. This keeps the language simple while enabling expressive numeric and container types.
