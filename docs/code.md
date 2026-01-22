@@ -97,6 +97,7 @@ TypeCheckResult
 ```
 
 **Key files:**
+
 - `tools/ast.ts` - AST node definitions
 - `tools/types.ts` - ResolvedType definitions and type utilities
 - `tools/parser.ts` - Parser API (ohm-js → AST)
