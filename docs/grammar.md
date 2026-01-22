@@ -127,17 +127,12 @@ exportable      = func_decl
 ```ebnf
 func_decl       = [ "inline" ] "func" [ identifier ] func_signature func_body
 
-func_signature  = value_spec [ "->" value_spec ]
-
-value_spec      = type                           -- single value
-                | "(" [ field_list ] ")"         -- zero or more values
-
-field_list      = field { "," field }
-field           = type                           -- anonymous
-                | identifier ":" type            -- named
+func_signature  = base_type [ "->" type ]        -- input type, optional output (defaults to void)
 
 func_body       = body
 ```
+
+The function signature uses the same type grammar for both input and output. The output can be omitted (defaults to `()`/void). Named parameters and return values are expressed using composite types: `(x: i32)`.
 
 Examples:
 
@@ -145,6 +140,7 @@ Examples:
 - `func foo(a:i32, b:i32) -> i32` — named inputs, single output
 - `func foo(a:i32, b:i32) -> (q:i32, r:i32)` — named inputs and outputs
 - `func foo()` — no inputs, no return
+- `func foo() -> i32` — no inputs, single output
 
 ### Type Declarations
 
@@ -194,7 +190,10 @@ memory 1 {
 ## Types
 
 ```ebnf
-type            = primitive_type
+type            = base_type "->" type            -- function type
+                | base_type                      -- non-function type
+
+base_type       = primitive_type
                 | pointer_type
                 | array_type
                 | composite_type
@@ -215,7 +214,27 @@ sentinel_list   = ":" sentinel { ":" sentinel }
 sentinel        = "0" | "?"
 
 composite_type  = "(" [ field_list ] ")"
+
+field_list      = field { "," field }
+field           = type                           -- anonymous
+                | identifier ":" type            -- named
 ```
+
+### Function Types
+
+Function types use the `->` syntax and can appear anywhere a type is expected:
+
+| Syntax | Description |
+|--------|-------------|
+| `i32 -> i32` | Single input, single output |
+| `(i32, i32) -> i32` | Multiple inputs (tuple), single output |
+| `(x: i32) -> (result: i32)` | Named input and output |
+| `() -> i32` | No input, single output |
+| `i32 -> ()` | Single input, no output (void) |
+| `(i32 -> i32) -> i32` | Higher-order: function taking a function |
+| `i32 -> i32 -> i32` | Curried: same as `i32 -> (i32 -> i32)` |
+
+The `->` operator is right-associative, enabling natural curried function types.
 
 ### Array Types
 

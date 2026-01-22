@@ -306,6 +306,49 @@ let (q: quotient , r: remainder) = divmod(17, 5)    // with explicit names
 
 ```
 
+#### Function Types and Pointers
+
+Function names are first-class values with types corresponding to their signatures. At runtime, function values are opaque indices into WebAssembly's function table.
+
+```ents
+// Function type syntax: input -> output
+let callback: i32 -> i32 = double
+let binary_op: (i32, i32) -> i32 = add
+
+// Calling through function pointers
+let result = callback(5)    // calls double(5)
+
+// Higher-order functions
+func apply(x: i32, f: i32 -> i32) -> i32 {
+  return f(x)
+}
+
+func map(arr: []i32, f: i32 -> i32) -> []i32 {
+  // apply f to each element
+}
+
+// Functions that return functions
+func get_op(add: bool) -> (i32, i32) -> i32 {
+  if add { return add_fn } else { return sub_fn }
+}
+```
+
+Function types require explicit return types — use `-> ()` for void-returning functions:
+
+```ents
+// Callback that takes a key and returns nothing
+func walk(tree: *Tree, visitor: []u8 -> ()) {
+  // call visitor(key) for each key in tree
+}
+```
+
+The `->` operator is right-associative, enabling curried function types:
+
+```ents
+// Curried function type: takes i32, returns function
+let curried: i32 -> i32 -> i32   // same as: i32 -> (i32 -> i32)
+```
+
 ### Inline Functions
 
 Inline functions are guaranteed to be inlined at each call site. Unlike `def` which performs textual substitution, inline functions have proper type checking and evaluate each argument exactly once:
@@ -1349,3 +1392,41 @@ let result = (a + b) * 2.0
 Combined with function overloading, the same operator name can have multiple implementations for different type signatures. The compiler selects the correct overload based on argument types.
 
 **Why:** Unifies operators with UFCS—no special mechanism needed. Operators become overloaded functions resolved by the same rules as method calls. This keeps the language simple while enabling expressive numeric and container types.
+
+### Closures
+
+Functions that capture variables from their enclosing scope. Unlike plain function pointers (which are just table indices), closures carry attached state:
+
+```ents
+func make_counter(start: i32) -> () -> i32 {
+  let count = start
+  return || {
+    count += 1
+    return count
+  }
+}
+
+func map(arr: []i32, f: i32 -> i32) -> []i32 {
+  // With closures, f could capture external state
+}
+
+// Usage
+let counter = make_counter(0)
+counter()  // 1
+counter()  // 2
+```
+
+**Implementation approach:**
+
+- Non-capturing functions remain raw table indices (zero overhead)
+- Capturing functions become "fat": a struct with function pointer + environment pointer
+- Compiler automatically generates environment structs for captured variables
+- Callee receives an implicit environment parameter
+
+**Design questions:**
+
+- Syntax: `|| expr`, `|x| expr`, or `func |x| expr`?
+- Capture semantics: by-value (copy) or by-reference (requires lifetime tracking)?
+- Should closure types be distinct from function types, or unified with automatic coercion?
+
+**Why:** Enables functional patterns (map/filter/reduce with inline logic), callbacks with context, and eliminates manual environment-passing boilerplate. WebAssembly's GC proposal (now shipped) makes closure environments easier to manage without manual memory allocation.

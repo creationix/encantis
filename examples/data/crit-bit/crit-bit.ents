@@ -100,13 +100,13 @@ func delete(tree: *Tree, key: bytes) -> bool {
 
 // Iterate over all keys in lexicographic order
 // Calls visitor function for each key
-func walk(tree: *Tree, visitor: func([]u8)) {
+func walk(tree: *Tree, visitor: []u8 -> ()) {
   // TODO: in-order traversal of the tree
 }
 
 // Find all keys with a given prefix
 // Calls visitor function for each matching key
-func walk_prefix(tree: *Tree, prefix: bytes, visitor: func([]u8)) {
+func walk_prefix(tree: *Tree, prefix: bytes, visitor: []u8 -> ()) {
   // TODO:
   // 1. Navigate to subtree matching prefix
   // 2. Walk that subtree

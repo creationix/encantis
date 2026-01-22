@@ -1,12 +1,12 @@
 func () {
   // Nested brackets (pointer indirection)
-  let a:*[*[u8]]      = [ "hello", "world" ]  // slice of slices
-  let b:*[!*[!u8]]    = [ "hello", "world" ]  // null-term of null-term
-  let c:*[!*[u8]]    = [ "hello", "world" ]  // null-term of slices
-  let d:*[*[!u8]]    = [ "hello", "world" ]  // slice of null-term
+  let a:[][]u8         = [ "hello", "world" ]  // slice of slices
+  let b:[*:0][*:0]u8   = [ "hello", "world" ]  // null-term of null-term
+  let c:[*:0][]u8      = [ "hello", "world" ]  // null-term of slices
+  let d:[][*:0]u8      = [ "hello", "world" ]  // slice of null-term
 
   // Merged brackets (flat memory)
-  let e:*[?[?u8]]     = [ "hello", "world" ]  // prefix count + prefix len per elem
-  let f:*[![!u8]]     = [ "hello", "world" ]  // double null-terminated
-  let g:*[?[!u8]]     = [ "hello", "world" ]  // leb128 count + null-term per elem
+  let e:[*:?:?]u8      = [ "hello", "world" ]  // prefix count + prefix len per elem
+  let f:[*:0:0]u8      = [ "hello", "world" ]  // double null-terminated
+  let g:[*:?:0]u8      = [ "hello", "world" ]  // leb128 count + null-term per elem
 }

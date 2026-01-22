@@ -63,12 +63,12 @@ export type IndexSpecifierRT =
   | { kind: 'null' }
   | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
 
-// Indexed type: [T], *[T], *[N;T], *[!T], *[?T], etc.
+// Indexed type: [T], []T, *[N]T, [*:0]T, [*:?]T, etc.
 // Unified representation for comptime lists, slices, arrays, and prefixed/terminated strings
 export interface IndexedRT {
   kind: 'indexed'
   element: ResolvedType
-  size: number | 'comptime' | null // number = fixed *[N;T], null = slice *[T], 'comptime' = comptime [T]
+  size: number | 'comptime' | null // number = fixed *[N]T, null = slice []T, 'comptime' = comptime [T]
   specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for !
 }
 
@@ -220,7 +220,7 @@ export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
       }
     }
 
-    // Empty list defaults to u8[/L] (like an empty string array)
+    // Empty list defaults to [*:?]u8 (like an empty string array)
     if (elemType === null) {
       elemType = primitive('u8')
     }
@@ -234,7 +234,7 @@ export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
     return indexed(resolvedElem, null, specifiers)
   }
 
-  // Handle comptime indexed type (u8[])
+  // Handle comptime indexed type ([]u8)
   if (t.kind === 'indexed' && t.size === 'comptime') {
     let depth = 1
     let elem = t.element
@@ -390,8 +390,8 @@ function fieldEquals(a: ResolvedField, b: ResolvedField): boolean {
 //    - lossless: all values preserved (implicit, no `as` needed)
 //    - lossy: may truncate/lose precision (explicit `as` required)
 // 2. Reinterpret: can the bytes be read directly with different type?
-//    - true: same bytes, just different interpretation (e.g., i32↔u32, u8[4]→u32[1])
-//    - false: bytes must be re-encoded (e.g., i32→i64 needs sign-extend, u8[]→u16[] needs copy)
+//    - true: same bytes, just different interpretation (e.g., i32↔u32, [4]u8→[1]u32)
+//    - false: bytes must be re-encoded (e.g., i32→i64 needs sign-extend, []u8→[]u16 needs copy)
 
 export type Lossiness = 'lossless' | 'lossy'
 
@@ -552,7 +552,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Indexed type coercion (arrays/slices)
   if (t.kind === 'indexed' && s.kind === 'indexed') {
-    // Can't assign to comptime indexed type (T[])
+    // Can't assign to comptime indexed type ([]T)
     if (t.size === 'comptime') return INCOMPATIBLE
 
     // Handle comptime source with potential bracket merging
@@ -626,6 +626,23 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
+  // Function type assignability (exact match required)
+  // Functions are reference types (table indices), so no coercion is possible
+  if (t.kind === 'func' && s.kind === 'func') {
+    // Must have same number of params and returns
+    if (t.params.length !== s.params.length) return INCOMPATIBLE
+    if (t.returns.length !== s.returns.length) return INCOMPATIBLE
+    // Check each param type matches exactly
+    for (let i = 0; i < t.params.length; i++) {
+      if (!typeEquals(t.params[i].type, s.params[i].type)) return INCOMPATIBLE
+    }
+    // Check each return type matches exactly
+    for (let i = 0; i < t.returns.length; i++) {
+      if (!typeEquals(t.returns[i].type, s.returns[i].type)) return INCOMPATIBLE
+    }
+    return lossless(true) // Exact same function type, reinterpret as same value
+  }
+
   // Lossy+reinterpret: pointer to same-size pointee type
   if (t.kind === 'pointer' && s.kind === 'pointer') {
     const tSize = primitiveByteSize(t.pointee)
@@ -668,11 +685,11 @@ export function typeAssignable(target: ResolvedType, source: ResolvedType): bool
 
 // === Type Formatting ===
 
-// Convert specifier to new encoding syntax
-function specifierToEncoding(s: IndexSpecifierRT): string {
+// Convert specifier to sentinel encoding (Zig-style)
+function specifierToSentinel(s: IndexSpecifierRT): string {
   if (s.kind === 'null') return '!'
   if (s.prefixType === 'leb128') return '?'
-  // For other prefix types, we don't have syntax yet - fall back to old style
+  // For other prefix types, fall back to descriptive style
   return `/${s.prefixType}`
 }
 
@@ -689,15 +706,25 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return `*${typeToString(t.pointee, opts)}`
 
     case 'indexed': {
-      // Syntax: [encoding? size? element]
-      // - [T] for comptime (no encoding, no size)
-      // - [N;T] for inline array
-      // - [!T] for null-terminated
-      // - [?T] for LEB128-prefixed
-      const encoding = t.specifiers.length > 0 ? specifierToEncoding(t.specifiers[0]) : ''
-      const size = typeof t.size === 'number' ? `${t.size};` : ''
+      // Zig-style syntax: [prefix]T where T is outside the brackets
+      // - []T for slice (size=null, no specifiers)
+      // - [N]T for fixed array (size=N)
+      // - [!]T or [?]T for sentinel types
+      // - [N:!]T for fixed with sentinel
       const elem = typeToString(t.element, opts)
-      return `[${encoding}${size}${elem}]`
+      const sentinels = t.specifiers.map(specifierToSentinel).join(':')
+      const sentinelPart = sentinels ? `:${sentinels}` : ''
+
+      if (typeof t.size === 'number') {
+        // Fixed array: [N]T or [N:!]T
+        return `[${t.size}${sentinelPart}]${elem}`
+      } else if (t.specifiers.length > 0) {
+        // Sentinel type without size: [!]T or [?]T
+        return `[${sentinels}]${elem}`
+      } else {
+        // Slice: []T (or comptime: []T - can't distinguish in output)
+        return `[]${elem}`
+      }
     }
 
     case 'tuple': {

@@ -81,14 +81,13 @@ export interface FuncDecl extends BaseNode {
   body: FuncBody
 }
 
+// Function signature with symmetric input/output design
+// Input and output can both be any Type (including CompositeType for tuples)
 export interface FuncSignature extends BaseNode {
   kind: 'FuncSignature'
-  params: ValueSpec
-  returns: ValueSpec | null
+  input: Type   // The input type (tuple, single type, or void)
+  output: Type  // The output type (defaults to void if omitted in source)
 }
-
-// Single type or (field, field, ...)
-export type ValueSpec = Type | FieldList
 
 export interface FieldList extends BaseNode {
   kind: 'FieldList'
@@ -478,6 +477,7 @@ export type Type =
   | ComptimeIntType
   | ComptimeFloatType
   | TypeRef
+  | FuncType
 
 export interface PrimitiveType extends BaseNode {
   kind: 'PrimitiveType'
@@ -542,4 +542,12 @@ export interface ComptimeIntType extends BaseNode {
 export interface ComptimeFloatType extends BaseNode {
   kind: 'ComptimeFloatType'
   value: number
+}
+
+// Function type: input -> output
+// Examples: i32 -> i32, (i32, i32) -> i32, () -> i32
+export interface FuncType extends BaseNode {
+  kind: 'FuncType'
+  input: Type   // The input type
+  output: Type  // The output type
 }

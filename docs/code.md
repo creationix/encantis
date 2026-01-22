@@ -94,7 +94,7 @@ Types in the AST mirror the source syntax:
 |----------|---------|-------------|
 | `PrimitiveType` | `i32`, `u8`, `f64`, `bool` | Built-in types |
 | `PointerType` | `*i32`, `*[u8]` | Pointer to type |
-| `IndexedType` | `*[u8]`, `*[!u8]`, `*[10;i32]` | Array/slice types |
+| `IndexedType` | `*[u8]`, `*[!u8]`, `*[10]i32` | Array/slice types |
 | `CompositeType` | `(x: i32, y: i32)` | Tuple/struct types |
 | `TaggedType` | `u8@Index` | Unique tagged type |
 | `TypeRef` | `Point`, `MyType` | Named type reference |
@@ -118,7 +118,7 @@ Types in the AST mirror the source syntax:
 }
 ```
 
-**Input:** `*[10;i32]` (pointer to fixed array of 10 i32s)
+**Input:** `*[10]i32` (pointer to fixed array of 10 i32s)
 
 **AST:**
 ```typescript
@@ -214,7 +214,7 @@ pointer(primitive('u8'))  // → *u8
 
 // Arrays/slices
 slice(primitive('u8'))         // → *[u8] (fat pointer)
-array(primitive('i32'), 10)    // → [10;i32] (inline fixed)
+array(primitive('i32'), 10)    // → [10]i32 (inline fixed)
 indexed(primitive('u8'), null, [{ kind: 'null' }])  // → *[!u8]
 
 // Tuples

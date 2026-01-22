@@ -251,9 +251,9 @@ class MetaBuilder {
   }
 
   private collectFuncBody(decl: AST.FuncDecl, _funcSymbolIndex: number): void {
-    // Collect parameters
-    if (decl.signature.params.kind === 'FieldList') {
-      for (const param of decl.signature.params.fields) {
+    // Collect parameters (only CompositeType has named fields)
+    if (decl.signature.input.kind === 'CompositeType') {
+      for (const param of decl.signature.input.fields) {
         if (param.ident) {
           const type = this.checkResult.types.get(param.span.start)
           if (type) {
@@ -422,9 +422,9 @@ class MetaBuilder {
         this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
       }
 
-      // Hints for parameters
-      if (decl.signature.params.kind === 'FieldList') {
-        for (const param of decl.signature.params.fields) {
+      // Hints for parameters (only CompositeType has named fields)
+      if (decl.signature.input.kind === 'CompositeType') {
+        for (const param of decl.signature.input.fields) {
           if (param.ident) {
             const paramSymbolIndex = this.symbolIndexByName.get(param.ident)
             if (paramSymbolIndex !== undefined) {

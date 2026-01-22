@@ -55,12 +55,9 @@ Encantis {
 
   FuncDecl = inline? func ident? FuncSignature Body
 
-  FuncSignature = ValueSpec ReturnSpec?
-
-  ReturnSpec = "->" ValueSpec
-
-  ValueSpec = "(" FieldList? ")"  -- parens
-            | Type                -- single
+  // Function signature - return type is optional (defaults to void)
+  // Uses BaseType for input to avoid ambiguity with function types
+  FuncSignature = BaseType ("->" Type)?
 
   FieldList = NonemptyListOf<Field, ",">
 
@@ -121,13 +118,25 @@ Encantis {
   // - [][N]T - slice of fixed length arrays of T
   // - [*][N]T - many-pointer to fixed length arrays of T
   // - [N][*][]T - fixed length array of many-pointers to slices of T
-  Type = "*" Type                          -- pointer
-       | "[" arrayTypePrefix? "]" Type    -- array
-       | "(" FieldList? ")"                        -- composite
-       | ComptimeType                              -- comptimeScalar
-       | PrimitiveType                             -- primitive
-       | BuiltinType                               -- builtin
-       | typeIdent                                 -- named
+  //
+  // Function types use -> syntax:
+  // - i32 -> i32 (simple types)
+  // - (i32, i32) -> i32 (tuple input)
+  // - (x: i32) -> (result: i32) (named params/returns)
+  // - () -> i32 (void input)
+  // - i32 -> () (void output)
+  // Note: -> is right-associative, so a -> b -> c means a -> (b -> c)
+  Type = BaseType "->" Type   -- func
+       | BaseType             -- base
+
+  // Base types (atoms that can compose into function types)
+  BaseType = "*" Type                          -- pointer
+           | "[" arrayTypePrefix? "]" Type     -- array
+           | "(" FieldList? ")"                -- composite
+           | ComptimeType                      -- comptimeScalar
+           | PrimitiveType                     -- primitive
+           | BuiltinType                       -- builtin
+           | typeIdent                         -- named
 
 
         arrayTypePrefix = "*" arraySentinelList?  -- manyPointer

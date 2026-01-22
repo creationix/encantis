@@ -57,7 +57,7 @@ func gimli(state:*[12]u32) {
 // Uses rate of 16 bytes (128 bits)
 export "gimli_hash"
 func gimli_hash(input:[]u8, output:*[32]u8) {
-  let state:[12;u32] = 0  // 48 bytes state, initialized to zero
+  let state:[12]u32 = 0  // 48 bytes state, initialized to zero
   let len = input.len
   let input_ptr = input.ptr
 

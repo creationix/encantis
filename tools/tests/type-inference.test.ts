@@ -133,9 +133,9 @@ describe('type inference', () => {
   })
 
   describe('function calls', () => {
-    test('string literal to *[u8] parameter', () => {
+    test('string literal to []u8 (slice) parameter', () => {
       const result = checkModule(`
-        import "test" "log" func log(s: *[u8])
+        import "test" "log" func log(s: []u8)
         func main() {
           log("hello")
         }
@@ -143,9 +143,9 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
     })
 
-    test('string literal to *[!u8] parameter', () => {
+    test('string literal to [*:0]u8 (null-terminated) parameter', () => {
       const result = checkModule(`
-        import "test" "log" func log(s: *[!u8])
+        import "test" "log" func log(s: [*:0]u8)
         func main() {
           log("hello")
         }
@@ -202,7 +202,7 @@ describe('type inference', () => {
     test('array literal with annotation gets concrete type', () => {
       const result = checkModule(`
         func main() {
-          let arr:*[3;i32] = [1, 2, 3]
+          let arr:*[3]i32 = [1, 2, 3]
         }
       `)
       expect(result.errors).toHaveLength(0)
@@ -210,7 +210,7 @@ describe('type inference', () => {
       if (offset !== undefined) {
         const type = result.types.get(offset)
         expect(type).toBeDefined()
-        expect(typeToString(type!)).toBe('*[3;i32]')
+        expect(typeToString(type!)).toBe('*[3]i32')
       }
     })
 
@@ -227,7 +227,7 @@ describe('type inference', () => {
         expect(type).toBeDefined()
         // Without annotation, array defaults to comptime with LEB128 encoding
         // TODO: should be pure comptime [int] without encoding
-        expect(typeToString(type!)).toBe('[?i32]')
+        expect(typeToString(type!)).toBe('[?]i32')
       }
     })
 
@@ -244,10 +244,10 @@ describe('type inference', () => {
     test('array element overflow is caught', () => {
       const result = checkModule(`
         func main() {
-          let arr:*[4;u8] = [1, 10, 100, 1000]
+          let arr:*[4]u8 = [1, 10, 100, 1000]
         }
       `)
-      // TODO: This should catch element overflow when coercing to *[4;u8]
+      // TODO: This should catch element overflow when coercing to *[4]u8
       // Currently the checker doesn't validate element values during coercion
       expect(result.errors).toHaveLength(0)
     })
@@ -278,32 +278,32 @@ describe('type inference', () => {
     })
   })
 
-  describe('LEB128 encoding (? prefix)', () => {
-    test('*[?u8] for LEB128-prefixed string', () => {
+  describe('LEB128 encoding (:? sentinel)', () => {
+    test('[*:?]u8 for LEB128-prefixed string', () => {
       const result = checkModule(`
         func main() {
-          let a: *[?u8] = "hello"
+          let a: [*:?]u8 = "hello"
         }
       `)
       expect(result.errors).toHaveLength(0)
       const aOffset = result.symbolDefOffsets.get('a')
       if (aOffset) {
         const aType = result.types.get(aOffset)
-        expect(typeToString(aType!)).toBe('*[?u8]')
+        expect(typeToString(aType!)).toBe('[?]u8')
       }
     })
 
-    test('*[?[?u8]] for nested LEB128 arrays', () => {
+    test('[*:?:?]u8 for nested LEB128 arrays (flat)', () => {
       const result = checkModule(`
         func main() {
-          let arr: *[?[?u8]] = ["hello", "world"]
+          let arr: [*:?:?]u8 = ["hello", "world"]
         }
       `)
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
         const type = result.types.get(offset)
-        expect(typeToString(type!)).toBe('*[?[?u8]]')
+        expect(typeToString(type!)).toBe('[?:?]u8')
       }
     })
   })
@@ -320,7 +320,7 @@ describe('type inference', () => {
       if (offset) {
         const type = result.types.get(offset)
         // TODO: should be pure comptime [u8] without encoding
-        expect(typeToString(type!)).toBe('[?u8]')
+        expect(typeToString(type!)).toBe('[?]u8')
       }
     })
 
@@ -336,23 +336,23 @@ describe('type inference', () => {
         const type = result.types.get(offset)
         // TODO: should be comptime list of comptime lists [[u8]]
         // Currently defaults string elements to LEB128
-        expect(typeToString(type!)).toBe('[?u8]')
+        expect(typeToString(type!)).toBe('[?:?]u8')
       }
     })
 
     test('explicit type annotation specifies encoding', () => {
       const result = checkModule(`
         func main() {
-          let a: *[!u8] = "hello"
-          let b: *[5;u8] = "world"
+          let a: [*:0]u8 = "hello"
+          let b: *[5]u8 = "world"
         }
       `)
       expect(result.errors).toHaveLength(0)
       const aOffset = result.symbolDefOffsets.get('a')
       const bOffset = result.symbolDefOffsets.get('b')
       if (aOffset && bOffset) {
-        expect(typeToString(result.types.get(aOffset)!)).toBe('*[!u8]')
-        expect(typeToString(result.types.get(bOffset)!)).toBe('*[5;u8]')
+        expect(typeToString(result.types.get(aOffset)!)).toBe('[!]u8')
+        expect(typeToString(result.types.get(bOffset)!)).toBe('*[5]u8')
       }
     })
   })

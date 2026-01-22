@@ -308,10 +308,8 @@ class CheckContext {
     const funcScope: Scope = { parent: this.moduleScope, symbols: new Map() }
 
     // Add parameters and named returns to scope
-    this.bindFields(decl.signature.params, funcScope, 'param')
-    if (decl.signature.returns?.kind === 'FieldList') {
-      this.bindFields(decl.signature.returns, funcScope, 'return')
-    }
+    this.bindFields(decl.signature.input, funcScope, 'param')
+    this.bindFields(decl.signature.output, funcScope, 'return')
 
     // Check body
     const prevScope = this.currentScope
@@ -320,17 +318,14 @@ class CheckContext {
     this.currentScope = prevScope
   }
 
-  private bindFields(
-    fields: AST.FieldList | AST.Type,
-    scope: Scope,
-    kind: 'param' | 'return',
-  ): void {
-    if (fields.kind !== 'FieldList') return
-    for (const field of fields.fields) {
+  private bindFields(type: AST.Type, scope: Scope, kind: 'param' | 'return'): void {
+    // Only CompositeType can have named fields
+    if (type.kind !== 'CompositeType') return
+    for (const field of type.fields) {
       if (field.ident) {
-        const type = this.resolveType(field.type)
-        scope.symbols.set(field.ident, { kind, type })
-        this.types.set(field.span.start, type)
+        const resolvedType = this.resolveType(field.type)
+        scope.symbols.set(field.ident, { kind, type: resolvedType })
+        this.types.set(field.span.start, resolvedType)
         this.recordDefinition(field.ident, field.span.start)
       }
     }
@@ -558,21 +553,37 @@ class CheckContext {
         this.error(type.span.start, `unknown type: ${type.name}`)
         return primitive('i32')
       }
+
+      case 'FuncType': {
+        // Function type: input -> output
+        const params = this.typeToFields(type.input)
+        const returns = this.typeToFields(type.output)
+        return func(params, returns)
+      }
     }
   }
 
   resolveSignature(sig: AST.FuncSignature): ResolvedType & { kind: 'func' } {
-    const params = this.resolveValueSpec(sig.params)
-    const returns = sig.returns ? this.resolveValueSpec(sig.returns) : []
+    const params = this.typeToFields(sig.input)
+    const returns = this.typeToFields(sig.output)
     return func(params, returns)
   }
 
-  resolveValueSpec(spec: AST.ValueSpec): ResolvedField[] {
-    if (spec.kind === 'FieldList') {
-      return spec.fields.map((f) => field(f.ident, this.resolveType(f.type)))
+  // Convert a Type to a list of fields (for function params/returns)
+  // CompositeType with fields -> array of fields
+  // Empty CompositeType -> empty array (void)
+  // Other types -> single unnamed field
+  typeToFields(type: AST.Type): ResolvedField[] {
+    if (type.kind === 'CompositeType') {
+      // Empty composite = void, return no fields
+      if (type.fields.length === 0) {
+        return []
+      }
+      // Composite with fields = tuple/struct
+      return type.fields.map((f) => field(f.ident, this.resolveType(f.type)))
     }
     // Single type without name
-    return [field(null, this.resolveType(spec))]
+    return [field(null, this.resolveType(type))]
   }
 
   // === Expression Type Inference ===
@@ -620,8 +631,8 @@ class CheckContext {
       return resolved
     }
 
-    // Handle comptime indexed (T[]) against concrete indexed types
-    // Must check each element individually to catch overflow (e.g., [1,10,100,1000]:u8[4])
+    // Handle comptime indexed ([]T) against concrete indexed types
+    // Must check each element individually to catch overflow (e.g., [1,10,100,1000]:[4]u8)
     if (
       inferred.kind === 'indexed' &&
       inferred.size === 'comptime' &&
@@ -765,7 +776,7 @@ class CheckContext {
 
       case 'AnnotationExpr': {
         // Type annotation - use bidirectional type checking to propagate type down
-        // This allows [1,2,3]:i8[] to know each element should be i8
+        // This allows [1,2,3]:[]i8 to know each element should be i8
         const annotationType = this.resolveType(expr.type)
         this.checkExpr(expr.expr, annotationType)
         return annotationType
@@ -783,7 +794,7 @@ class CheckContext {
 
       case 'string': {
         // String literals are comptime indexed [u8] types
-        // They coerce to *[N;u8], *[u8], *[!u8], etc. based on context
+        // They coerce to *[N]u8, []u8, [*:0]u8, etc. based on context
         return comptimeIndexed(primitive('u8'))
       }
 

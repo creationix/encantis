@@ -134,29 +134,20 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.FuncDecl
   },
 
-  FuncSignature(params, returnOpt) {
+  // FuncSignature = BaseType ("->" Type)?
+  // Uses symmetric input/output design
+  // Ohm passes optional elements separately: BaseType, _arrow (optional iter), Type (optional iter)
+  FuncSignature(input, _arrowOpt, outputOpt) {
+    const inputAST = input.toAST()
+    // If return is omitted, default to void (empty composite type)
+    const outputAST =
+      first(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: span(this) } as AST.CompositeType)
     return {
       kind: 'FuncSignature',
-      params: params.toAST(),
-      returns: first(returnOpt),
+      input: inputAST,
+      output: outputAST,
       span: span(this),
     } as AST.FuncSignature
-  },
-
-  ReturnSpec(_arrow, valueSpec) {
-    return valueSpec.toAST()
-  },
-
-  ValueSpec_parens(_lp, fieldListOpt, _rp) {
-    return {
-      kind: 'FieldList',
-      fields: first(fieldListOpt) ?? [],
-      span: span(this),
-    } as AST.FieldList
-  },
-
-  ValueSpec_single(type) {
-    return type.toAST()
   },
 
   FieldList(list) {
@@ -265,36 +256,48 @@ semantics.addOperation<unknown>('toAST', {
   // Types
   // ============================================================================
 
-  // New array syntax: [encoding? size? Type]
-  // - [T] = comptime list (no encoding, no size)
-  // - *[T] = slice (handled by pointer wrapping)
-  // - [N;T] = inline array (size present, no encoding)
-  // - *[N;T] = fixed array in memory (size present, no encoding, wrapped in pointer)
-  // - *[?T] = LEB128-prefixed (encoding=?)
-  // - *[!T] = null-terminated (encoding=!)
-  Type_array(_lb, encodingOpt, sizeOpt, element, _rb) {
-    const encoding = first<string>(encodingOpt)
-    const sizeVal = first<number>(sizeOpt)
+  // Type = BaseType "->" Type   -- func
+  //      | BaseType             -- base
+  Type_func(inputType, _arrow, outputType) {
+    return {
+      kind: 'FuncType',
+      input: inputType.toAST(),
+      output: outputType.toAST(),
+      span: span(this),
+    } as AST.FuncType
+  },
 
-    // Build specifiers from encoding
-    const specifiers: AST.IndexSpecifier[] = []
-    if (encoding === '?') {
-      specifiers.push({ kind: 'prefix', prefixType: 'leb128' })
-    } else if (encoding === '!') {
-      specifiers.push({ kind: 'null' })
-    }
+  Type_base(baseType) {
+    return baseType.toAST()
+  },
 
-    // Determine size:
-    // - If sizeVal is present: fixed size
-    // - If no encoding and no size: comptime list
-    // - If encoding but no size: runtime array (size = null)
+  // Zig-style array syntax: [prefix?]Type
+  // - []T = slice (fat pointer with ptr+len)
+  // - [*]T = many-pointer (just ptr, no length)
+  // - [*:0]T = null-terminated many-pointer
+  // - [*:?]T = LEB128-prefixed many-pointer
+  // - [:0]T = slice with null sentinel
+  // - [N]T = fixed length array (by-value)
+  // - [N:0]T = fixed length array with sentinel
+  BaseType_array(_lb, prefixOpt, _rb, element) {
+    type PrefixInfo = { kind: 'manyPointer' | 'fixed' | 'slice'; size: number | null; specifiers: AST.IndexSpecifier[] }
+    const prefix = first<PrefixInfo>(prefixOpt)
+
     let size: number | 'comptime' | null
-    if (sizeVal !== null) {
-      size = sizeVal
-    } else if (specifiers.length === 0) {
-      size = 'comptime'
-    } else {
+    let specifiers: AST.IndexSpecifier[]
+
+    if (prefix === null) {
+      // []T - plain slice (no prefix)
       size = null
+      specifiers = []
+    } else if (prefix.kind === 'fixed') {
+      // [N]T or [N:0]T - fixed size array
+      size = prefix.size
+      specifiers = prefix.specifiers
+    } else {
+      // [*]T, [*:0]T, [:0]T - runtime arrays with null size
+      size = null
+      specifiers = prefix.specifiers
     }
 
     return {
@@ -306,15 +309,45 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.IndexedType
   },
 
-  arrayEncoding(token) {
-    return token.sourceString // "?" or "!"
+  // [*]T or [*:0]T - many-pointer
+  arrayTypePrefix_manyPointer(_star, sentinelsOpt) {
+    const specifiers = first<AST.IndexSpecifier[]>(sentinelsOpt) ?? []
+    return { kind: 'manyPointer', size: null, specifiers }
   },
 
-  arraySize(intLit, _semi) {
-    return Number(intLit.sourceString)
+  // [N]T or [N:0]T - fixed size array
+  arrayTypePrefix_fixed(intLit, sentinelsOpt) {
+    const size = Number(intLit.sourceString)
+    const specifiers = first<AST.IndexSpecifier[]>(sentinelsOpt) ?? []
+    return { kind: 'fixed', size, specifiers }
   },
 
-  Type_pointer(_star, type) {
+  // [:0]T - slice with sentinel
+  arrayTypePrefix_sliceSentinel(sentinels) {
+    const specifiers = sentinels.toAST() as AST.IndexSpecifier[]
+    return { kind: 'slice', size: null, specifiers }
+  },
+
+  // ":" sentinel (":" sentinel)* - list of sentinels like :0 or :0:?
+  arraySentinelList(_colon1, firstSentinel, _moreColons, moreSentinels) {
+    const specifiers: AST.IndexSpecifier[] = [firstSentinel.toAST() as AST.IndexSpecifier]
+    // moreSentinels is an iteration of the additional sentinels
+    for (const child of moreSentinels.children) {
+      specifiers.push(child.toAST() as AST.IndexSpecifier)
+    }
+    return specifiers
+  },
+
+  // Single sentinel: 0 = null terminator, ? = LEB128 prefix
+  arraySentinel(char) {
+    if (char.sourceString === '0') {
+      return { kind: 'null' } as AST.IndexSpecifier
+    } else {
+      return { kind: 'prefix', prefixType: 'leb128' } as AST.IndexSpecifier
+    }
+  },
+
+  BaseType_pointer(_star, type) {
     return {
       kind: 'PointerType',
       pointee: type.toAST(),
@@ -322,7 +355,7 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.PointerType
   },
 
-  Type_composite(_lp, fieldListOpt, _rp) {
+  BaseType_composite(_lp, fieldListOpt, _rp) {
     return {
       kind: 'CompositeType',
       fields: first(fieldListOpt) ?? [],
@@ -330,19 +363,19 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.CompositeType
   },
 
-  Type_comptimeScalar(comptime) {
+  BaseType_comptimeScalar(comptime) {
     return comptime.toAST()
   },
 
-  Type_primitive(prim) {
+  BaseType_primitive(prim) {
     return prim.toAST()
   },
 
-  Type_builtin(builtin) {
+  BaseType_builtin(builtin) {
     return builtin.toAST()
   },
 
-  Type_named(typeIdent) {
+  BaseType_named(typeIdent) {
     return typeIdent.toAST()
   },
 

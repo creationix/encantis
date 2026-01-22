@@ -44,18 +44,27 @@ describe('parseType', () => {
   })
 
   describe('indexed types', () => {
-    test('comptime indexed [T]', () => {
-      const t = parseType('[u8]')
+    test('slice []T', () => {
+      const t = parseType('[]u8')
       expect(t.kind).toBe('indexed')
       if (t.kind === 'indexed') {
-        expect(t.size).toBe('comptime')
+        expect(t.size).toBe(null) // slice has null size
         expect(t.specifiers).toHaveLength(0)
         expect(t.element).toMatchObject({ kind: 'primitive', name: 'u8' })
       }
     })
 
-    test('fixed-size array', () => {
-      const t = parseType('*[10;u8]')
+    test('fixed-size array [N]T', () => {
+      const t = parseType('[10]u8')
+      expect(t.kind).toBe('indexed')
+      if (t.kind === 'indexed') {
+        expect(t.size).toBe(10)
+        expect(t.element).toMatchObject({ kind: 'primitive', name: 'u8' })
+      }
+    })
+
+    test('pointer to fixed-size array *[N]T', () => {
+      const t = parseType('*[10]u8')
       expect(t.kind).toBe('pointer')
       if (t.kind === 'pointer' && t.pointee.kind === 'indexed') {
         expect(t.pointee.size).toBe(10)
@@ -63,29 +72,31 @@ describe('parseType', () => {
       }
     })
 
-    test('null-terminated (!)', () => {
-      const t = parseType('*[!u8]')
-      expect(t.kind).toBe('pointer')
-      if (t.kind === 'pointer' && t.pointee.kind === 'indexed') {
-        expect(t.pointee.specifiers).toHaveLength(1)
-        expect(t.pointee.specifiers[0]).toMatchObject({ kind: 'null' })
+    test('null-terminated many-pointer [*:0]T', () => {
+      const t = parseType('[*:0]u8')
+      expect(t.kind).toBe('indexed')
+      if (t.kind === 'indexed') {
+        expect(t.size).toBe(null)
+        expect(t.specifiers).toHaveLength(1)
+        expect(t.specifiers[0]).toMatchObject({ kind: 'null' })
       }
     })
 
-    test('LEB128-prefixed (?)', () => {
-      const t = parseType('*[?u8]')
-      expect(t.kind).toBe('pointer')
-      if (t.kind === 'pointer' && t.pointee.kind === 'indexed') {
-        expect(t.pointee.specifiers).toHaveLength(1)
-        expect(t.pointee.specifiers[0]).toMatchObject({ kind: 'prefix', prefixType: 'leb128' })
+    test('LEB128-prefixed many-pointer [*:?]T', () => {
+      const t = parseType('[*:?]u8')
+      expect(t.kind).toBe('indexed')
+      if (t.kind === 'indexed') {
+        expect(t.size).toBe(null)
+        expect(t.specifiers).toHaveLength(1)
+        expect(t.specifiers[0]).toMatchObject({ kind: 'prefix', prefixType: 'leb128' })
       }
     })
 
-    test('nested indexed', () => {
-      const t = parseType('*[*[u8]]')
-      expect(t.kind).toBe('pointer')
-      if (t.kind === 'pointer' && t.pointee.kind === 'indexed') {
-        expect(t.pointee.element.kind).toBe('pointer')
+    test('nested slice of slices [][]T', () => {
+      const t = parseType('[][]u8')
+      expect(t.kind).toBe('indexed')
+      if (t.kind === 'indexed') {
+        expect(t.element.kind).toBe('indexed')
       }
     })
   })
