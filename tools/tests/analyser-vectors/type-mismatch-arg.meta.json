@@ -1,5 +1,5 @@
 {
-  "src": "file://./func-simple.ents",
+  "src": "file://./type-mismatch-arg.ents",
   "data": [],
   "types": [
     {
@@ -7,6 +7,12 @@
     },
     {
       "type": "i32"
+    },
+    {
+      "type": "()->()"
+    },
+    {
+      "type": "[]u8"
     }
   ],
   "symbols": [
@@ -15,8 +21,10 @@
       "kind": "func",
       "type": 0,
       "def": "1:5",
-      "refs": [],
-      "doc": "Test: basic function with parameters and locals"
+      "refs": [
+        "6:2"
+      ],
+      "doc": "Test: argument type mismatch in function call"
     },
     {
       "name": "a",
@@ -24,26 +32,24 @@
       "type": 1,
       "def": "1:9",
       "refs": [
-        "2:12"
+        "2:9"
       ]
     },
     {
       "name": "b",
       "kind": "param",
       "type": 1,
-      "def": "1:17",
+      "def": "1:16",
       "refs": [
-        "2:16"
+        "2:13"
       ]
     },
     {
-      "name": "sum",
-      "kind": "local",
-      "type": 1,
-      "def": "2:6",
-      "refs": [
-        "3:9"
-      ]
+      "name": "main",
+      "kind": "func",
+      "type": 2,
+      "def": "5:5",
+      "refs": []
     }
   ],
   "hints": {
@@ -57,30 +63,44 @@
       "type": 1,
       "symbol": 1
     },
-    "1:17": {
+    "1:16": {
       "len": 1,
       "type": 1,
       "symbol": 2
     },
-    "2:6": {
-      "len": 3,
-      "type": 1,
-      "symbol": 3
-    },
-    "2:12": {
+    "2:9": {
       "len": 1,
       "type": 1,
       "symbol": 1
     },
-    "2:16": {
+    "2:13": {
       "len": 1,
       "type": 1,
       "symbol": 2
     },
-    "3:9": {
-      "len": 3,
-      "type": 1,
+    "5:5": {
+      "len": 4,
+      "type": 2,
       "symbol": 3
+    },
+    "6:2": {
+      "len": 3,
+      "type": 0,
+      "symbol": 0
+    },
+    "6:6": {
+      "len": 1,
+      "type": 1
+    },
+    "6:9": {
+      "len": 5,
+      "type": 3
     }
-  }
+  },
+  "errors": [
+    {
+      "pos": "6:9",
+      "message": "argument 2: cannot assign []u8 to i32"
+    }
+  ]
 }

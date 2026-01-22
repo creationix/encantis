@@ -31,8 +31,8 @@
             "ident": "sin",
             "signature": {
               "kind": "FuncSignature",
-              "params": {
-                "kind": "FieldList",
+              "input": {
+                "kind": "CompositeType",
                 "fields": [
                   {
                     "kind": "Field",
@@ -56,7 +56,7 @@
                   "end": 236
                 }
               },
-              "returns": {
+              "output": {
                 "kind": "PrimitiveType",
                 "name": "f64",
                 "span": {
@@ -87,8 +87,8 @@
             "ident": "cos",
             "signature": {
               "kind": "FuncSignature",
-              "params": {
-                "kind": "FieldList",
+              "input": {
+                "kind": "CompositeType",
                 "fields": [
                   {
                     "kind": "Field",
@@ -112,7 +112,7 @@
                   "end": 271
                 }
               },
-              "returns": {
+              "output": {
                 "kind": "PrimitiveType",
                 "name": "f64",
                 "span": {
@@ -143,8 +143,8 @@
             "ident": "atan2",
             "signature": {
               "kind": "FuncSignature",
-              "params": {
-                "kind": "FieldList",
+              "input": {
+                "kind": "CompositeType",
                 "fields": [
                   {
                     "kind": "Field",
@@ -184,7 +184,7 @@
                   "end": 313
                 }
               },
-              "returns": {
+              "output": {
                 "kind": "PrimitiveType",
                 "name": "f64",
                 "span": {
@@ -225,8 +225,8 @@
             "ident": "print",
             "signature": {
               "kind": "FuncSignature",
-              "params": {
-                "kind": "FieldList",
+              "input": {
+                "kind": "CompositeType",
                 "fields": [
                   {
                     "kind": "Field",
@@ -237,12 +237,12 @@
                         "kind": "PrimitiveType",
                         "name": "u8",
                         "span": {
-                          "start": 397,
-                          "end": 399
+                          "start": 399,
+                          "end": 401
                         }
                       },
                       "size": null,
-                      "nullTerminationLevel": 0,
+                      "specifiers": [],
                       "span": {
                         "start": 397,
                         "end": 401
@@ -278,12 +278,12 @@
                         "kind": "PrimitiveType",
                         "name": "u8",
                         "span": {
-                          "start": 408,
-                          "end": 410
+                          "start": 410,
+                          "end": 412
                         }
                       },
                       "size": null,
-                      "nullTerminationLevel": 0,
+                      "specifiers": [],
                       "span": {
                         "start": 408,
                         "end": 412
@@ -319,12 +319,12 @@
                         "kind": "PrimitiveType",
                         "name": "u8",
                         "span": {
-                          "start": 419,
-                          "end": 421
+                          "start": 421,
+                          "end": 423
                         }
                       },
                       "size": null,
-                      "nullTerminationLevel": 0,
+                      "specifiers": [],
                       "span": {
                         "start": 419,
                         "end": 423
@@ -341,7 +341,14 @@
                   "end": 424
                 }
               },
-              "returns": null,
+              "output": {
+                "kind": "CompositeType",
+                "fields": [],
+                "span": {
+                  "start": 396,
+                  "end": 424
+                }
+              },
               "span": {
                 "start": 396,
                 "end": 424
@@ -484,8 +491,8 @@
         "ident": "to_polar",
         "signature": {
           "kind": "FuncSignature",
-          "params": {
-            "kind": "FieldList",
+          "input": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -509,8 +516,8 @@
               "end": 597
             }
           },
-          "returns": {
-            "kind": "FieldList",
+          "output": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -817,8 +824,8 @@
         "ident": "from_polar",
         "signature": {
           "kind": "FuncSignature",
-          "params": {
-            "kind": "FieldList",
+          "input": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -842,8 +849,8 @@
               "end": 811
             }
           },
-          "returns": {
-            "kind": "FieldList",
+          "output": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -1096,15 +1103,22 @@
         "ident": "main",
         "signature": {
           "kind": "FuncSignature",
-          "params": {
-            "kind": "FieldList",
+          "input": {
+            "kind": "CompositeType",
             "fields": [],
             "span": {
               "start": 932,
               "end": 934
             }
           },
-          "returns": null,
+          "output": {
+            "kind": "CompositeType",
+            "fields": [],
+            "span": {
+              "start": 932,
+              "end": 934
+            }
+          },
           "span": {
             "start": 932,
             "end": 934
@@ -1280,8 +1294,28 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": "Polar coordinates: (",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 80,
+                          "1": 111,
+                          "2": 108,
+                          "3": 97,
+                          "4": 114,
+                          "5": 32,
+                          "6": 99,
+                          "7": 111,
+                          "8": 111,
+                          "9": 114,
+                          "10": 100,
+                          "11": 105,
+                          "12": 110,
+                          "13": 97,
+                          "14": 116,
+                          "15": 101,
+                          "16": 115,
+                          "17": 58,
+                          "18": 32,
+                          "19": 40
+                        }
                       },
                       "span": {
                         "start": 1118,
@@ -1316,8 +1350,10 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": ", ",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 44,
+                          "1": 32
+                        }
                       },
                       "span": {
                         "start": 1145,
@@ -1352,8 +1388,9 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": ")",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 41
+                        }
                       },
                       "span": {
                         "start": 1154,
@@ -1475,8 +1512,32 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": "Cartesian coordinates: (",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 67,
+                          "1": 97,
+                          "2": 114,
+                          "3": 116,
+                          "4": 101,
+                          "5": 115,
+                          "6": 105,
+                          "7": 97,
+                          "8": 110,
+                          "9": 32,
+                          "10": 99,
+                          "11": 111,
+                          "12": 111,
+                          "13": 114,
+                          "14": 100,
+                          "15": 105,
+                          "16": 110,
+                          "17": 97,
+                          "18": 116,
+                          "19": 101,
+                          "20": 115,
+                          "21": 58,
+                          "22": 32,
+                          "23": 40
+                        }
                       },
                       "span": {
                         "start": 1278,
@@ -1511,8 +1572,10 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": ", ",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 44,
+                          "1": 32
+                        }
                       },
                       "span": {
                         "start": 1309,
@@ -1547,8 +1610,9 @@
                       "kind": "LiteralExpr",
                       "value": {
                         "kind": "string",
-                        "value": ")",
-                        "format": "utf8"
+                        "bytes": {
+                          "0": 41
+                        }
                       },
                       "span": {
                         "start": 1318,

@@ -58,27 +58,33 @@ semantics.addOperation<unknown>('toAST', {
   },
 
   ImportDecl_group(_import, module, _lp, items, _rp) {
+    const moduleLit = module.toAST()
+    const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
     return {
       kind: 'ImportDecl',
-      module: module.toAST().value.value,
+      module: moduleName,
       items: items.children.map((i: ohm.Node) => i.toAST()),
       span: span(this),
     } as AST.ImportDecl
   },
 
   ImportDecl_single(_import, module, item) {
+    const moduleLit = module.toAST()
+    const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
     return {
       kind: 'ImportDecl',
-      module: module.toAST().value.value,
+      module: moduleName,
       items: [item.toAST()],
       span: span(this),
     } as AST.ImportDecl
   },
 
   ImportGroupItem(name, item) {
+    const nameLit = name.toAST()
+    const itemName = new TextDecoder().decode(nameLit.value.bytes)
     return {
       kind: 'ImportItem',
-      name: name.toAST().value.value,
+      name: itemName,
       item: item.toAST(),
       span: span(this),
     } as AST.ImportItem
@@ -111,9 +117,11 @@ semantics.addOperation<unknown>('toAST', {
   },
 
   ExportDecl(_export, name, item) {
+    const literal = name.toAST()
+    const exportName = new TextDecoder().decode(literal.value.bytes)
     return {
       kind: 'ExportDecl',
-      name: name.toAST().value.value,
+      name: exportName,
       item: item.toAST(),
       span: span(this),
     } as AST.ExportDecl

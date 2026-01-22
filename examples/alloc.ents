@@ -1,0 +1,23 @@
+// A very simple memory allocator that just moved a pointer
+// forward in a pre-allocated buffer. No deallocation.
+
+global alloc-ptr: *u8  // start of free memory
+global alloc-end: *u8  // end of allocated memory
+
+// Initialize the allocator with a memory region
+export "initAllocator" func (start: *u8, size: u32) {
+  alloc-ptr = start
+  alloc-end = start + size
+}
+
+// Allocate a block of memory of given size and alignment
+// Returns pointer to allocated memory or null if out of memory
+export "alloc" func alloc(size: u32) -> *u8 {
+  // Check for out of memory
+  return 0 when alloc-ptr + size > alloc-end
+  // Get current allocation pointer
+  let ptr: *u8 = alloc-ptr
+  // Update the allocation pointer
+  alloc-ptr += size
+  return ptr
+}

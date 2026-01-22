@@ -1,0 +1,51 @@
+{
+  "src": "file://./type-mismatch-let.ents",
+  "data": [],
+  "types": [
+    {
+      "type": "()->()"
+    },
+    {
+      "type": "i32"
+    }
+  ],
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "func",
+      "type": 0,
+      "def": "1:5",
+      "refs": [],
+      "doc": "Test: type mismatch in let statement"
+    },
+    {
+      "name": "age",
+      "kind": "local",
+      "type": 1,
+      "def": "2:6",
+      "refs": []
+    }
+  ],
+  "hints": {
+    "1:5": {
+      "len": 4,
+      "type": 0,
+      "symbol": 0
+    },
+    "2:6": {
+      "len": 3,
+      "type": 1,
+      "symbol": 1
+    },
+    "2:16": {
+      "len": 3,
+      "type": 1
+    }
+  },
+  "errors": [
+    {
+      "pos": "2:16",
+      "message": "cannot assign u32 to i32"
+    }
+  ]
+}

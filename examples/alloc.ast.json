@@ -1,0 +1,420 @@
+{
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "GlobalDecl",
+      "ident": "alloc-ptr",
+      "type": {
+        "kind": "PointerType",
+        "pointee": {
+          "kind": "PrimitiveType",
+          "name": "u8",
+          "span": {
+            "start": 135,
+            "end": 137
+          }
+        },
+        "span": {
+          "start": 134,
+          "end": 137
+        }
+      },
+      "value": null,
+      "span": {
+        "start": 116,
+        "end": 137
+      }
+    },
+    {
+      "kind": "GlobalDecl",
+      "ident": "alloc-end",
+      "type": {
+        "kind": "PointerType",
+        "pointee": {
+          "kind": "PrimitiveType",
+          "name": "u8",
+          "span": {
+            "start": 182,
+            "end": 184
+          }
+        },
+        "span": {
+          "start": 181,
+          "end": 184
+        }
+      },
+      "value": null,
+      "span": {
+        "start": 163,
+        "end": 184
+      }
+    },
+    {
+      "kind": "ExportDecl",
+      "name": "initAllocator",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": null,
+        "signature": {
+          "kind": "FuncSignature",
+          "input": {
+            "kind": "CompositeType",
+            "fields": [
+              {
+                "kind": "Field",
+                "ident": "start",
+                "type": {
+                  "kind": "PointerType",
+                  "pointee": {
+                    "kind": "PrimitiveType",
+                    "name": "u8",
+                    "span": {
+                      "start": 300,
+                      "end": 302
+                    }
+                  },
+                  "span": {
+                    "start": 299,
+                    "end": 302
+                  }
+                },
+                "span": {
+                  "start": 292,
+                  "end": 302
+                }
+              },
+              {
+                "kind": "Field",
+                "ident": "size",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u32",
+                  "span": {
+                    "start": 310,
+                    "end": 313
+                  }
+                },
+                "span": {
+                  "start": 304,
+                  "end": 313
+                }
+              }
+            ],
+            "span": {
+              "start": 291,
+              "end": 314
+            }
+          },
+          "output": {
+            "kind": "CompositeType",
+            "fields": [],
+            "span": {
+              "start": 291,
+              "end": 314
+            }
+          },
+          "span": {
+            "start": 291,
+            "end": 314
+          }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "alloc-ptr",
+                "span": {
+                  "start": 319,
+                  "end": 328
+                }
+              },
+              "op": "=",
+              "value": {
+                "kind": "IdentExpr",
+                "name": "start",
+                "span": {
+                  "start": 331,
+                  "end": 336
+                }
+              },
+              "span": {
+                "start": 319,
+                "end": 336
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "alloc-end",
+                "span": {
+                  "start": 339,
+                  "end": 348
+                }
+              },
+              "op": "=",
+              "value": {
+                "kind": "BinaryExpr",
+                "op": "+",
+                "left": {
+                  "kind": "IdentExpr",
+                  "name": "start",
+                  "span": {
+                    "start": 351,
+                    "end": 356
+                  }
+                },
+                "right": {
+                  "kind": "IdentExpr",
+                  "name": "size",
+                  "span": {
+                    "start": 359,
+                    "end": 363
+                  }
+                },
+                "span": {
+                  "start": 351,
+                  "end": 363
+                }
+              },
+              "span": {
+                "start": 339,
+                "end": 363
+              }
+            }
+          ],
+          "span": {
+            "start": 315,
+            "end": 365
+          }
+        },
+        "span": {
+          "start": 286,
+          "end": 365
+        }
+      },
+      "span": {
+        "start": 263,
+        "end": 365
+      }
+    },
+    {
+      "kind": "ExportDecl",
+      "name": "alloc",
+      "item": {
+        "kind": "FuncDecl",
+        "inline": false,
+        "ident": "alloc",
+        "signature": {
+          "kind": "FuncSignature",
+          "input": {
+            "kind": "CompositeType",
+            "fields": [
+              {
+                "kind": "Field",
+                "ident": "size",
+                "type": {
+                  "kind": "PrimitiveType",
+                  "name": "u32",
+                  "span": {
+                    "start": 521,
+                    "end": 524
+                  }
+                },
+                "span": {
+                  "start": 515,
+                  "end": 524
+                }
+              }
+            ],
+            "span": {
+              "start": 514,
+              "end": 525
+            }
+          },
+          "output": {
+            "kind": "PointerType",
+            "pointee": {
+              "kind": "PrimitiveType",
+              "name": "u8",
+              "span": {
+                "start": 530,
+                "end": 532
+              }
+            },
+            "span": {
+              "start": 529,
+              "end": 532
+            }
+          },
+          "span": {
+            "start": 514,
+            "end": 532
+          }
+        },
+        "body": {
+          "kind": "Block",
+          "stmts": [
+            {
+              "kind": "ReturnStmt",
+              "value": {
+                "kind": "LiteralExpr",
+                "value": {
+                  "kind": "int",
+                  "value": "0",
+                  "radix": 10
+                },
+                "span": {
+                  "start": 573,
+                  "end": 574
+                }
+              },
+              "when": {
+                "kind": "BinaryExpr",
+                "op": ">",
+                "left": {
+                  "kind": "BinaryExpr",
+                  "op": "+",
+                  "left": {
+                    "kind": "IdentExpr",
+                    "name": "alloc-ptr",
+                    "span": {
+                      "start": 580,
+                      "end": 589
+                    }
+                  },
+                  "right": {
+                    "kind": "IdentExpr",
+                    "name": "size",
+                    "span": {
+                      "start": 592,
+                      "end": 596
+                    }
+                  },
+                  "span": {
+                    "start": 580,
+                    "end": 596
+                  }
+                },
+                "right": {
+                  "kind": "IdentExpr",
+                  "name": "alloc-end",
+                  "span": {
+                    "start": 599,
+                    "end": 608
+                  }
+                },
+                "span": {
+                  "start": 580,
+                  "end": 608
+                }
+              },
+              "span": {
+                "start": 566,
+                "end": 608
+              }
+            },
+            {
+              "kind": "LetStmt",
+              "pattern": {
+                "kind": "IdentPattern",
+                "name": "ptr",
+                "span": {
+                  "start": 651,
+                  "end": 654
+                }
+              },
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "PrimitiveType",
+                  "name": "u8",
+                  "span": {
+                    "start": 657,
+                    "end": 659
+                  }
+                },
+                "span": {
+                  "start": 656,
+                  "end": 659
+                }
+              },
+              "value": {
+                "kind": "IdentExpr",
+                "name": "alloc-ptr",
+                "span": {
+                  "start": 662,
+                  "end": 671
+                }
+              },
+              "span": {
+                "start": 647,
+                "end": 671
+              }
+            },
+            {
+              "kind": "AssignmentStmt",
+              "target": {
+                "kind": "IdentExpr",
+                "name": "alloc-ptr",
+                "span": {
+                  "start": 709,
+                  "end": 718
+                }
+              },
+              "op": "+=",
+              "value": {
+                "kind": "IdentExpr",
+                "name": "size",
+                "span": {
+                  "start": 722,
+                  "end": 726
+                }
+              },
+              "span": {
+                "start": 709,
+                "end": 726
+              }
+            },
+            {
+              "kind": "ReturnStmt",
+              "value": {
+                "kind": "IdentExpr",
+                "name": "ptr",
+                "span": {
+                  "start": 736,
+                  "end": 739
+                }
+              },
+              "when": null,
+              "span": {
+                "start": 729,
+                "end": 739
+              }
+            }
+          ],
+          "span": {
+            "start": 533,
+            "end": 741
+          }
+        },
+        "span": {
+          "start": 504,
+          "end": 741
+        }
+      },
+      "span": {
+        "start": 489,
+        "end": 741
+      }
+    }
+  ],
+  "span": {
+    "start": 116,
+    "end": 741
+  }
+}

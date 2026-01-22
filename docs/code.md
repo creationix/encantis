@@ -2,6 +2,82 @@
 
 This document describes the internal representation of types and AST nodes, and the APIs for parsing and type checking.
 
+## Source Code Map
+
+```
+tools/
+├── Core Types (no dependencies)
+│   ├── ast.ts          AST node definitions
+│   ├── types.ts        ResolvedType definitions & utilities
+│   ├── position.ts     Line/column mapping
+│   ├── comments.ts     Comment extraction
+│   └── utils.ts        General utilities
+│
+├── Parsing
+│   ├── grammar/        Ohm grammar & actions
+│   ├── parser.ts       Parser API (ohm-js → AST)
+│   └── type-lib.ts     Type string parsing
+│
+├── Analysis
+│   ├── checker.ts      Type checker (AST → TypeCheckResult with concrete types)
+│   └── preprocess.ts   Def constant inlining
+│
+├── Code Generation
+│   ├── data.ts         Data section serialization
+│   ├── codegen.ts      WAT code generation
+│   └── meta.ts         LSP metadata generation
+│
+└── cli.ts              CLI entry point
+```
+
+**Dependency Graph:**
+
+```
+          ┌───────────────────────────────────────┐
+          │               cli.ts                  │
+          └───────────────────────────────────────┘
+            │         │         │         │
+            ▼         ▼         ▼         ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ parser   │ │preprocess│ │ checker  │ │ codegen  │
+    └──────────┘ └──────────┘ └──────────┘ └──────────┘
+          │            │            │            │
+          │            │            ▼            ▼
+          │            │       ┌──────────┐ ┌──────────┐
+          │            │       │  data    │ │  meta    │
+          │            │       └──────────┘ └──────────┘
+          │            │            │            │
+          ▼            ▼            ▼            ▼
+    ┌─────────────────────────────────────────────────┐
+    │                     ast.ts                      │
+    └─────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────┐
+    │                    types.ts                     │
+    └─────────────────────────────────────────────────┘
+```
+
+**Compilation Pipeline:**
+
+```
+Source (.ents)
+     │
+     ▼ parse()
+   AST
+     │
+     ▼ inlineDefs()
+   AST (def constants inlined)
+     │
+     ▼ typecheck()
+   TypeCheckResult { types: Map<"offset:kind", ConcreteType>, symbols, errors, ... }
+     │
+     ├──────────────────┬──────────────────┐
+     ▼                  ▼                  ▼
+ moduleToWat()      buildMeta()      (other backends)
+     │                  │
+     ▼                  ▼
+   .wat              .meta.json
+```
+
 ## Compiler Pipeline
 
 ```
@@ -10,21 +86,25 @@ Source Code
     ▼ parse()
 AST (Abstract Syntax Tree)
     │
-    ▼ check()
+    ▼ inlineDefs()
+AST (def constants inlined)
+    │
+    ▼ typecheck()
 TypeCheckResult
     │
-    ├── types: Map<offset, ResolvedType>
+    ├── types: Map<"offset:kind", ConcreteType>
     ├── symbols: Map<name, Symbol>
     ├── errors: TypeError[]
     └── literalRefs: Map<offset, DataRef>
 ```
 
 **Key files:**
-- `tools/ast.ts` - AST type definitions
+- `tools/ast.ts` - AST node definitions
 - `tools/types.ts` - ResolvedType definitions and type utilities
-- `tools/parser.ts` - Parser API
-- `tools/checker.ts` - Type checker
-- `tools/type-lib.ts` - Type string parsing utilities
+- `tools/parser.ts` - Parser API (ohm-js → AST)
+- `tools/checker.ts` - Type checker (includes concretization)
+- `tools/preprocess.ts` - Def constant inlining
+- `tools/codegen.ts` - WAT code generation
 
 ## AST Types
 
@@ -304,11 +384,11 @@ console.log(typeToString(type))  // → "*[!u8]"
 
 ## Type Checker API
 
-### Checking a Module
+### Type Checking a Module
 
 ```typescript
 import { parse } from './parser'
-import { check } from './checker'
+import { typecheck } from './checker'
 
 const source = `
 func add(a: i32, b: i32) -> i32 {
@@ -321,7 +401,7 @@ if (!parseResult.module) {
   throw new Error('Parse failed')
 }
 
-const checkResult = check(parseResult.module)
+const checkResult = typecheck(parseResult.module)
 
 if (checkResult.errors.length > 0) {
   for (const err of checkResult.errors) {
@@ -336,8 +416,8 @@ if (checkResult.errors.length > 0) {
 
 ```typescript
 interface TypeCheckResult {
-  // Type of each expression, keyed by AST node start offset
-  types: Map<number, ResolvedType>
+  // Type of each expression, keyed by "offset:kind" composite key
+  types: Map<string, ResolvedType>
 
   // Module-level symbol table
   symbols: Map<string, Symbol>
@@ -365,10 +445,12 @@ interface TypeCheckResult {
 ### Accessing Expression Types
 
 ```typescript
+import { typeKey } from './checker'
+
 const checkResult = check(module)
 
-// Get type of expression at a specific offset
-const exprType = checkResult.types.get(42)  // offset 42
+// Get type of expression at a specific offset and kind
+const exprType = checkResult.types.get(typeKey(42, 'BinaryExpr'))
 if (exprType) {
   console.log('Type:', typeToString(exprType))
 }

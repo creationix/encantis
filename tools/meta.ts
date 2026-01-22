@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { check, type TypeCheckResult, type Symbol } from './checker'
+import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
 import { type ResolvedType, typeToString } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
@@ -60,7 +60,7 @@ export function buildMeta(
 ): MetaOutput {
   const lineMap = new LineMap(source)
   const comments = extractComments(source)
-  const checkResult = check(module)
+  const checkResult = typecheck(module)
 
   const builder = new MetaBuilder(module, source, lineMap, comments, checkResult)
   return builder.build(options?.srcPath ?? 'file://./source.ents')
@@ -255,7 +255,7 @@ class MetaBuilder {
     if (decl.signature.input.kind === 'CompositeType') {
       for (const param of decl.signature.input.fields) {
         if (param.ident) {
-          const type = this.checkResult.types.get(param.span.start)
+          const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
           if (type) {
             this.addSymbol(param.ident, 'param', type, param.span.start)
           }
@@ -283,7 +283,7 @@ class MetaBuilder {
 
   private collectLocal(pattern: AST.Pattern): void {
     if (pattern.kind === 'IdentPattern') {
-      const type = this.checkResult.types.get(pattern.span.start)
+      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
       if (type) {
         this.addSymbol(pattern.name, 'local', type, pattern.span.start)
       }
@@ -509,7 +509,7 @@ class MetaBuilder {
   }
 
   private generateHintsForExpr(expr: AST.Expr): void {
-    const type = this.checkResult.types.get(expr.span.start)
+    const type = this.checkResult.types.get(typeKey(expr.span.start, expr.kind))
 
     switch (expr.kind) {
       case 'IdentExpr': {

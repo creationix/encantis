@@ -200,8 +200,8 @@
       "ident": "round64",
       "signature": {
         "kind": "FuncSignature",
-        "params": {
-          "kind": "FieldList",
+        "input": {
+          "kind": "CompositeType",
           "fields": [
             {
               "kind": "Field",
@@ -241,7 +241,7 @@
             "end": 348
           }
         },
-        "returns": {
+        "output": {
           "kind": "PrimitiveType",
           "name": "u64",
           "span": {
@@ -382,8 +382,8 @@
       "ident": "merge-round64",
       "signature": {
         "kind": "FuncSignature",
-        "params": {
-          "kind": "FieldList",
+        "input": {
+          "kind": "CompositeType",
           "fields": [
             {
               "kind": "Field",
@@ -423,7 +423,7 @@
             "end": 479
           }
         },
-        "returns": {
+        "output": {
           "kind": "PrimitiveType",
           "name": "u64",
           "span": {
@@ -641,8 +641,8 @@
         "ident": "xxh64",
         "signature": {
           "kind": "FuncSignature",
-          "params": {
-            "kind": "FieldList",
+          "input": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -653,12 +653,12 @@
                     "kind": "PrimitiveType",
                     "name": "u8",
                     "span": {
-                      "start": 617,
-                      "end": 619
+                      "start": 619,
+                      "end": 621
                     }
                   },
                   "size": null,
-                  "nullTerminationLevel": 0,
+                  "specifiers": [],
                   "span": {
                     "start": 617,
                     "end": 621
@@ -691,8 +691,8 @@
               "end": 632
             }
           },
-          "returns": {
-            "kind": "FieldList",
+          "output": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",

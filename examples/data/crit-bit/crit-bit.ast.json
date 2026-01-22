@@ -1,0 +1,995 @@
+{
+  "kind": "Module",
+  "decls": [
+    {
+      "kind": "TypeDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Node",
+        "span": {
+          "start": 2404,
+          "end": 2408
+        }
+      },
+      "type": {
+        "kind": "PointerType",
+        "pointee": {
+          "kind": "PrimitiveType",
+          "name": "u8",
+          "span": {
+            "start": 2412,
+            "end": 2414
+          }
+        },
+        "span": {
+          "start": 2411,
+          "end": 2414
+        }
+      },
+      "span": {
+        "start": 2399,
+        "end": 2414
+      }
+    },
+    {
+      "kind": "TypeDecl",
+      "ident": {
+        "kind": "TypeRef",
+        "name": "Tree",
+        "span": {
+          "start": 2470,
+          "end": 2474
+        }
+      },
+      "type": {
+        "kind": "CompositeType",
+        "fields": [
+          {
+            "kind": "Field",
+            "ident": "root",
+            "type": {
+              "kind": "TypeRef",
+              "name": "Node",
+              "span": {
+                "start": 2487,
+                "end": 2491
+              }
+            },
+            "span": {
+              "start": 2481,
+              "end": 2491
+            }
+          },
+          {
+            "kind": "Field",
+            "ident": "count",
+            "type": {
+              "kind": "PrimitiveType",
+              "name": "u32",
+              "span": {
+                "start": 2502,
+                "end": 2505
+              }
+            },
+            "span": {
+              "start": 2495,
+              "end": 2505
+            }
+          }
+        ],
+        "span": {
+          "start": 2477,
+          "end": 2507
+        }
+      },
+      "span": {
+        "start": 2465,
+        "end": 2507
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "contains",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 2609,
+                    "end": 2613
+                  }
+                },
+                "span": {
+                  "start": 2608,
+                  "end": 2613
+                }
+              },
+              "span": {
+                "start": 2602,
+                "end": 2613
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 2620,
+                  "end": 2625
+                }
+              },
+              "span": {
+                "start": 2615,
+                "end": 2625
+              }
+            }
+          ],
+          "span": {
+            "start": 2601,
+            "end": 2626
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "bool",
+          "span": {
+            "start": 2630,
+            "end": 2634
+          }
+        },
+        "span": {
+          "start": 2601,
+          "end": 2634
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 2635,
+          "end": 2694
+        }
+      },
+      "span": {
+        "start": 2588,
+        "end": 2694
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "lookup",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 2790,
+                    "end": 2794
+                  }
+                },
+                "span": {
+                  "start": 2789,
+                  "end": 2794
+                }
+              },
+              "span": {
+                "start": 2783,
+                "end": 2794
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 2801,
+                  "end": 2806
+                }
+              },
+              "span": {
+                "start": 2796,
+                "end": 2806
+              }
+            }
+          ],
+          "span": {
+            "start": 2782,
+            "end": 2807
+          }
+        },
+        "output": {
+          "kind": "PointerType",
+          "pointee": {
+            "kind": "PrimitiveType",
+            "name": "u8",
+            "span": {
+              "start": 2812,
+              "end": 2814
+            }
+          },
+          "span": {
+            "start": 2811,
+            "end": 2814
+          }
+        },
+        "span": {
+          "start": 2782,
+          "end": 2814
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 2815,
+          "end": 2877
+        }
+      },
+      "span": {
+        "start": 2771,
+        "end": 2877
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "insert",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 2982,
+                    "end": 2986
+                  }
+                },
+                "span": {
+                  "start": 2981,
+                  "end": 2986
+                }
+              },
+              "span": {
+                "start": 2975,
+                "end": 2986
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 2993,
+                  "end": 2998
+                }
+              },
+              "span": {
+                "start": 2988,
+                "end": 2998
+              }
+            }
+          ],
+          "span": {
+            "start": 2974,
+            "end": 2999
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "bool",
+          "span": {
+            "start": 3003,
+            "end": 3007
+          }
+        },
+        "span": {
+          "start": 2974,
+          "end": 3007
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 3008,
+          "end": 3254
+        }
+      },
+      "span": {
+        "start": 2963,
+        "end": 3254
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "delete",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 3352,
+                    "end": 3356
+                  }
+                },
+                "span": {
+                  "start": 3351,
+                  "end": 3356
+                }
+              },
+              "span": {
+                "start": 3345,
+                "end": 3356
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 3363,
+                  "end": 3368
+                }
+              },
+              "span": {
+                "start": 3358,
+                "end": 3368
+              }
+            }
+          ],
+          "span": {
+            "start": 3344,
+            "end": 3369
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "bool",
+          "span": {
+            "start": 3373,
+            "end": 3377
+          }
+        },
+        "span": {
+          "start": 3344,
+          "end": 3377
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 3378,
+          "end": 3519
+        }
+      },
+      "span": {
+        "start": 3333,
+        "end": 3519
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "walk",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 3625,
+                    "end": 3629
+                  }
+                },
+                "span": {
+                  "start": 3624,
+                  "end": 3629
+                }
+              },
+              "span": {
+                "start": 3618,
+                "end": 3629
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "visitor",
+              "type": {
+                "kind": "IndexedType",
+                "element": {
+                  "kind": "FuncType",
+                  "input": {
+                    "kind": "PrimitiveType",
+                    "name": "u8",
+                    "span": {
+                      "start": 3642,
+                      "end": 3644
+                    }
+                  },
+                  "output": {
+                    "kind": "CompositeType",
+                    "fields": [],
+                    "span": {
+                      "start": 3648,
+                      "end": 3650
+                    }
+                  },
+                  "span": {
+                    "start": 3642,
+                    "end": 3650
+                  }
+                },
+                "size": null,
+                "specifiers": [],
+                "span": {
+                  "start": 3640,
+                  "end": 3650
+                }
+              },
+              "span": {
+                "start": 3631,
+                "end": 3650
+              }
+            }
+          ],
+          "span": {
+            "start": 3617,
+            "end": 3651
+          }
+        },
+        "output": {
+          "kind": "CompositeType",
+          "fields": [],
+          "span": {
+            "start": 3617,
+            "end": 3651
+          }
+        },
+        "span": {
+          "start": 3617,
+          "end": 3651
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 3652,
+          "end": 3697
+        }
+      },
+      "span": {
+        "start": 3608,
+        "end": 3697
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "walk_prefix",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "tree",
+              "type": {
+                "kind": "PointerType",
+                "pointee": {
+                  "kind": "TypeRef",
+                  "name": "Tree",
+                  "span": {
+                    "start": 3808,
+                    "end": 3812
+                  }
+                },
+                "span": {
+                  "start": 3807,
+                  "end": 3812
+                }
+              },
+              "span": {
+                "start": 3801,
+                "end": 3812
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "prefix",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 3822,
+                  "end": 3827
+                }
+              },
+              "span": {
+                "start": 3814,
+                "end": 3827
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "visitor",
+              "type": {
+                "kind": "IndexedType",
+                "element": {
+                  "kind": "FuncType",
+                  "input": {
+                    "kind": "PrimitiveType",
+                    "name": "u8",
+                    "span": {
+                      "start": 3840,
+                      "end": 3842
+                    }
+                  },
+                  "output": {
+                    "kind": "CompositeType",
+                    "fields": [],
+                    "span": {
+                      "start": 3846,
+                      "end": 3848
+                    }
+                  },
+                  "span": {
+                    "start": 3840,
+                    "end": 3848
+                  }
+                },
+                "size": null,
+                "specifiers": [],
+                "span": {
+                  "start": 3838,
+                  "end": 3848
+                }
+              },
+              "span": {
+                "start": 3829,
+                "end": 3848
+              }
+            }
+          ],
+          "span": {
+            "start": 3800,
+            "end": 3849
+          }
+        },
+        "output": {
+          "kind": "CompositeType",
+          "fields": [],
+          "span": {
+            "start": 3800,
+            "end": 3849
+          }
+        },
+        "span": {
+          "start": 3800,
+          "end": 3849
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 3850,
+          "end": 3934
+        }
+      },
+      "span": {
+        "start": 3784,
+        "end": 3934
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": true,
+      "ident": "get_bit",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 4073,
+                  "end": 4078
+                }
+              },
+              "span": {
+                "start": 4068,
+                "end": 4078
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "pos",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u32",
+                "span": {
+                  "start": 4085,
+                  "end": 4088
+                }
+              },
+              "span": {
+                "start": 4080,
+                "end": 4088
+              }
+            }
+          ],
+          "span": {
+            "start": 4067,
+            "end": 4089
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "u32",
+          "span": {
+            "start": 4093,
+            "end": 4096
+          }
+        },
+        "span": {
+          "start": 4067,
+          "end": 4096
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 4097,
+          "end": 4206
+        }
+      },
+      "span": {
+        "start": 4048,
+        "end": 4206
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "find_critical_bit",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "a",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 4342,
+                  "end": 4347
+                }
+              },
+              "span": {
+                "start": 4339,
+                "end": 4347
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "b",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 4352,
+                  "end": 4357
+                }
+              },
+              "span": {
+                "start": 4349,
+                "end": 4357
+              }
+            }
+          ],
+          "span": {
+            "start": 4338,
+            "end": 4358
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "i32",
+          "span": {
+            "start": 4362,
+            "end": 4365
+          }
+        },
+        "span": {
+          "start": 4338,
+          "end": 4365
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 4366,
+          "end": 4416
+        }
+      },
+      "span": {
+        "start": 4316,
+        "end": 4416
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": true,
+      "ident": "is_external",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "node",
+              "type": {
+                "kind": "TypeRef",
+                "name": "Node",
+                "span": {
+                  "start": 4513,
+                  "end": 4517
+                }
+              },
+              "span": {
+                "start": 4507,
+                "end": 4517
+              }
+            }
+          ],
+          "span": {
+            "start": 4506,
+            "end": 4518
+          }
+        },
+        "output": {
+          "kind": "PrimitiveType",
+          "name": "bool",
+          "span": {
+            "start": 4522,
+            "end": 4526
+          }
+        },
+        "span": {
+          "start": 4506,
+          "end": 4526
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 4527,
+          "end": 4555
+        }
+      },
+      "span": {
+        "start": 4483,
+        "end": 4555
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "make_external",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "key",
+              "type": {
+                "kind": "BuiltinType",
+                "name": "bytes",
+                "span": {
+                  "start": 4619,
+                  "end": 4624
+                }
+              },
+              "span": {
+                "start": 4614,
+                "end": 4624
+              }
+            }
+          ],
+          "span": {
+            "start": 4613,
+            "end": 4625
+          }
+        },
+        "output": {
+          "kind": "TypeRef",
+          "name": "Node",
+          "span": {
+            "start": 4629,
+            "end": 4633
+          }
+        },
+        "span": {
+          "start": 4613,
+          "end": 4633
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 4634,
+          "end": 4665
+        }
+      },
+      "span": {
+        "start": 4595,
+        "end": 4665
+      }
+    },
+    {
+      "kind": "FuncDecl",
+      "inline": false,
+      "ident": "make_internal",
+      "signature": {
+        "kind": "FuncSignature",
+        "input": {
+          "kind": "CompositeType",
+          "fields": [
+            {
+              "kind": "Field",
+              "ident": "crit_bit",
+              "type": {
+                "kind": "PrimitiveType",
+                "name": "u32",
+                "span": {
+                  "start": 4760,
+                  "end": 4763
+                }
+              },
+              "span": {
+                "start": 4750,
+                "end": 4763
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "left",
+              "type": {
+                "kind": "TypeRef",
+                "name": "Node",
+                "span": {
+                  "start": 4771,
+                  "end": 4775
+                }
+              },
+              "span": {
+                "start": 4765,
+                "end": 4775
+              }
+            },
+            {
+              "kind": "Field",
+              "ident": "right",
+              "type": {
+                "kind": "TypeRef",
+                "name": "Node",
+                "span": {
+                  "start": 4784,
+                  "end": 4788
+                }
+              },
+              "span": {
+                "start": 4777,
+                "end": 4788
+              }
+            }
+          ],
+          "span": {
+            "start": 4749,
+            "end": 4789
+          }
+        },
+        "output": {
+          "kind": "TypeRef",
+          "name": "Node",
+          "span": {
+            "start": 4793,
+            "end": 4797
+          }
+        },
+        "span": {
+          "start": 4749,
+          "end": 4797
+        }
+      },
+      "body": {
+        "kind": "Block",
+        "stmts": [],
+        "span": {
+          "start": 4798,
+          "end": 4835
+        }
+      },
+      "span": {
+        "start": 4731,
+        "end": 4835
+      }
+    }
+  ],
+  "span": {
+    "start": 2399,
+    "end": 4836
+  }
+}

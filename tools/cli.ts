@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 
 import { parse } from './parser'
-import { check } from './checker'
+import { typecheck } from './checker'
 import { buildMeta } from './meta'
+import { moduleToWat } from './codegen'
 import { bigintReplacer } from './utils'
+import { inlineDefs } from './preprocess'
 
 const args = process.argv.slice(2)
 
@@ -16,7 +18,7 @@ Commands:
   check <file>            Parse and check file for errors
   ast <file> [-o out]     Parse file and output AST as JSON
   meta <file> [-o out]    Generate meta.json (types, symbols, hints)
-  compile <file> [-o out] Compile file to WAT (not yet implemented)
+  compile <file> [-o out] Compile file to WAT
 
 Options:
   -o <file>       Output file (default: stdout)
@@ -119,8 +121,8 @@ switch (command) {
       process.exit(1)
     }
 
-    // Run type checker
-    const checkResult = check(result.module)
+    // Type check
+    const checkResult = typecheck(result.module)
 
     if (checkResult.errors.length > 0) {
       for (const error of checkResult.errors) {
@@ -177,9 +179,28 @@ switch (command) {
       process.exit(1)
     }
 
-    // TODO: Implement WAT codegen
-    console.error('Error: compile command not yet implemented')
-    process.exit(1)
+    if (!result.module) {
+      console.error('Error: Failed to parse module')
+      process.exit(1)
+    }
+
+    // Preprocess: inline def constants
+    const preprocessed = inlineDefs(result.module)
+
+    // Type check (includes concretization)
+    const checkResult = typecheck(preprocessed)
+
+    if (checkResult.errors.length > 0) {
+      for (const error of checkResult.errors) {
+        const loc = offsetToLineCol(source, error.offset)
+        console.error(`${filePath}:${loc.line}:${loc.column}: ${error.message}`)
+      }
+      process.exit(1)
+    }
+
+    // Generate WAT
+    const wat = moduleToWat(preprocessed, checkResult)
+    await output(wat)
     break
   }
 

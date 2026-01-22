@@ -1,29 +1,118 @@
 {
-  "$schema": "../meta-schema.json",
   "src": "file://./unique-type.ents",
   "data": [],
   "types": [
-    { "type": "i32", "symbol": 0 },
-    { "type": "(idx:@Index)->@Index" },
-    { "type": "()->()" }
+    {
+      "type": "i32",
+      "symbol": 0
+    },
+    {
+      "type": "(idx:@Index)->@Index"
+    },
+    {
+      "type": "()->()"
+    },
+    {
+      "type": "(idx:i32)->i32"
+    }
   ],
   "symbols": [
-    { "name": "@Index", "kind": "unique", "type": 0, "def": "1:5", "refs": ["3:20", "3:31", "8:9"], "doc": "Test: unique type definition and usage" },
-    { "name": "use_index", "kind": "func", "type": 1, "def": "3:5", "refs": ["9:2"] },
-    { "name": "idx", "kind": "param", "type": 0, "def": "3:15", "refs": ["4:9"] },
-    { "name": "main", "kind": "func", "type": 2, "def": "7:5", "refs": [] },
-    { "name": "i", "kind": "local", "type": 0, "def": "8:6", "refs": ["9:12"] }
+    {
+      "name": "@Index",
+      "kind": "unique",
+      "type": 0,
+      "def": "1:5",
+      "refs": [
+        "3:20",
+        "3:31",
+        "8:9"
+      ],
+      "doc": "Test: unique type definition and usage"
+    },
+    {
+      "name": "use_index",
+      "kind": "func",
+      "type": 1,
+      "def": "3:5",
+      "refs": [
+        "9:2"
+      ]
+    },
+    {
+      "name": "idx",
+      "kind": "param",
+      "type": 0,
+      "def": "3:15",
+      "refs": [
+        "4:9"
+      ]
+    },
+    {
+      "name": "main",
+      "kind": "func",
+      "type": 2,
+      "def": "7:5",
+      "refs": []
+    },
+    {
+      "name": "i",
+      "kind": "local",
+      "type": 0,
+      "def": "8:6",
+      "refs": [
+        "9:12"
+      ]
+    }
   ],
   "hints": {
-    "1:5": { "len": 6, "type": 0, "symbol": 0 },
-    "3:5": { "len": 9, "type": 1, "symbol": 1 },
-    "3:15": { "len": 3, "type": 0, "symbol": 2 },
-    "4:9": { "len": 3, "type": 0, "symbol": 2 },
-    "7:5": { "len": 4, "type": 2, "symbol": 3 },
-    "8:6": { "len": 1, "type": 0, "symbol": 4 },
-    "8:9": { "len": 6, "type": 0, "symbol": 0 },
-    "8:18": { "len": 2, "type": 0 },
-    "9:2": { "len": 9, "type": 0, "symbol": 1 },
-    "9:12": { "len": 1, "type": 0, "symbol": 4 }
+    "1:5": {
+      "len": 6,
+      "type": 0,
+      "symbol": 0
+    },
+    "3:5": {
+      "len": 9,
+      "type": 1,
+      "symbol": 1
+    },
+    "3:15": {
+      "len": 3,
+      "type": 0,
+      "symbol": 2
+    },
+    "4:9": {
+      "len": 3,
+      "type": 0,
+      "symbol": 2
+    },
+    "7:5": {
+      "len": 4,
+      "type": 2,
+      "symbol": 3
+    },
+    "8:6": {
+      "len": 1,
+      "type": 0,
+      "symbol": 4
+    },
+    "8:9": {
+      "len": 6,
+      "type": 0,
+      "symbol": 0
+    },
+    "8:18": {
+      "len": 2,
+      "type": 0
+    },
+    "9:2": {
+      "len": 9,
+      "type": 3,
+      "symbol": 1
+    },
+    "9:12": {
+      "len": 1,
+      "type": 0,
+      "symbol": 4
+    }
   }
 }

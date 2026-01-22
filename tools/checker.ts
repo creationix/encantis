@@ -1,5 +1,5 @@
-// Type checker / inference pass for Encantis
-// Produces a TypeMap keyed by AST node start offset
+// Type checker for Encantis
+// Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
 import {
@@ -26,16 +26,23 @@ import {
   comptimeIntFits,
   typeAssignable,
   defaultIndexedType,
+  unwrap,
 } from './types'
 import { DataSectionBuilder, serializeLiteral, type DataRef } from './data'
 
 // === Symbol Table ===
 
+// Compile-time constant value (for def constants)
+export type ComptimeValue =
+  | { kind: 'int'; value: bigint }
+  | { kind: 'float'; value: number }
+  | { kind: 'bool'; value: boolean }
+
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean }
   | { kind: 'global'; type: ResolvedType }
-  | { kind: 'def'; type: ResolvedType }
+  | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
   | { kind: 'return'; type: ResolvedType }
@@ -43,6 +50,18 @@ export type Symbol =
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
+}
+
+// === Type Key Helper ===
+
+/**
+ * Create a unique key for the types Map.
+ * Uses "offset:kind" format to avoid collisions when nested expressions
+ * share the same start offset (e.g., `a > b` where both the binary expr
+ * and identifier `a` start at the same position).
+ */
+export function typeKey(offset: number, kind: string): string {
+  return `${offset}:${kind}`
 }
 
 // === Type Check Result ===
@@ -53,8 +72,8 @@ export interface TypeError {
 }
 
 export interface TypeCheckResult {
-  // Type map: start offset → resolved type
-  types: Map<number, ResolvedType>
+  // Type map: "offset:kind" → resolved type
+  types: Map<string, ResolvedType>
   // Symbol table (module scope)
   symbols: Map<string, Symbol>
   // Type errors
@@ -71,11 +90,39 @@ export interface TypeCheckResult {
   dataBuilder: DataSectionBuilder
 }
 
+// === Concretization Options ===
+
+export interface TypecheckOptions {
+  // Default concrete type for untyped integers (default: 'i32')
+  defaultInt?: 'i32' | 'i64'
+  // Default concrete type for untyped floats (default: 'f64')
+  defaultFloat?: 'f32' | 'f64'
+}
+
+const DEFAULT_OPTIONS: Required<TypecheckOptions> = {
+  defaultInt: 'i32',
+  defaultFloat: 'f64',
+}
+
 // === Main Entry Point ===
 
-export function check(module: AST.Module): TypeCheckResult {
+/**
+ * Type check a module and return concrete types for all AST nodes.
+ * This is the single type checking phase that:
+ * 1. Infers types for all expressions
+ * 2. Validates type compatibility
+ * 3. Concretizes comptime types to concrete runtime types
+ */
+export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
+  const opts = { ...DEFAULT_OPTIONS, ...options }
   const ctx = new CheckContext()
   ctx.checkModule(module)
+
+  // Concretize all comptime types to concrete types
+  for (const [key, type] of ctx.types) {
+    ctx.types.set(key, concretizeType(type, opts))
+  }
+
   return {
     types: ctx.types,
     symbols: ctx.moduleScope.symbols,
@@ -88,10 +135,125 @@ export function check(module: AST.Module): TypeCheckResult {
   }
 }
 
+/** @deprecated Use typecheck() instead */
+export const check = typecheck
+
+// === Concretization ===
+
+/**
+ * Concretize a single type, replacing comptime types with concrete defaults.
+ */
+export function concretizeType(
+  t: ResolvedType,
+  options: TypecheckOptions = DEFAULT_OPTIONS,
+): ResolvedType {
+  const opts: Required<TypecheckOptions> = { ...DEFAULT_OPTIONS, ...options }
+  const u = unwrap(t)
+
+  switch (u.kind) {
+    case 'comptime_int':
+      return primitive(opts.defaultInt)
+
+    case 'comptime_float':
+      return primitive(opts.defaultFloat)
+
+    case 'comptime_list': {
+      // Comptime lists become slices with concretized element type
+      const elemType = u.elements.length > 0
+        ? concretizeType(u.elements[0], opts)
+        : primitive(opts.defaultInt)
+      return {
+        kind: 'indexed',
+        element: elemType,
+        size: null,
+        specifiers: [],
+      }
+    }
+
+    case 'tuple':
+      return {
+        ...u,
+        fields: u.fields.map((f) => ({
+          ...f,
+          type: concretizeType(f.type, opts),
+        })),
+      }
+
+    case 'indexed':
+      return {
+        ...u,
+        element: concretizeType(u.element, opts),
+      }
+
+    case 'pointer':
+      return {
+        ...u,
+        pointee: concretizeType(u.pointee, opts),
+      }
+
+    case 'func':
+      return {
+        ...u,
+        params: u.params.map((p) => ({
+          ...p,
+          type: concretizeType(p.type, opts),
+        })),
+        returns: u.returns.map((r) => ({
+          ...r,
+          type: concretizeType(r.type, opts),
+        })),
+      }
+
+    case 'named':
+      return {
+        ...u,
+        underlying: concretizeType(u.underlying, opts),
+      }
+
+    default:
+      return u
+  }
+}
+
+/**
+ * Check if a type is fully concrete (no comptime types).
+ */
+export function isConcreteType(t: ResolvedType): boolean {
+  const u = unwrap(t)
+
+  switch (u.kind) {
+    case 'comptime_int':
+    case 'comptime_float':
+    case 'comptime_list':
+      return false
+
+    case 'tuple':
+      return u.fields.every((f) => isConcreteType(f.type))
+
+    case 'indexed':
+      return isConcreteType(u.element)
+
+    case 'pointer':
+      return isConcreteType(u.pointee)
+
+    case 'func':
+      return (
+        u.params.every((p) => isConcreteType(p.type)) &&
+        u.returns.every((r) => isConcreteType(r.type))
+      )
+
+    case 'named':
+      return isConcreteType(u.underlying)
+
+    default:
+      return true
+  }
+}
+
 // === Check Context ===
 
 class CheckContext {
-  types = new Map<number, ResolvedType>()
+  types = new Map<string, ResolvedType>()
   errors: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
@@ -267,8 +429,84 @@ class CheckContext {
   collectDef(decl: AST.DefDecl): void {
     // Defs are comptime - infer type from literal value
     const type = this.inferExpr(decl.value)
-    this.moduleScope.symbols.set(decl.ident, { kind: 'def', type })
+    const value = this.evalComptimeExpr(decl.value)
+    if (!value) {
+      this.error(decl.span.start, `def value must be a compile-time constant`)
+      this.moduleScope.symbols.set(decl.ident, { kind: 'def', type, value: { kind: 'int', value: 0n } })
+    } else {
+      this.moduleScope.symbols.set(decl.ident, { kind: 'def', type, value })
+    }
     this.recordDefinition(decl.ident, decl.span.start)
+  }
+
+  // Evaluate a compile-time constant expression
+  evalComptimeExpr(expr: AST.Expr): ComptimeValue | null {
+    // Handle annotation expression (e.g., 42:u32)
+    if (expr.kind === 'AnnotationExpr') {
+      return this.evalComptimeExpr(expr.expr)
+    }
+
+    // Handle literal expression
+    if (expr.kind === 'LiteralExpr') {
+      const lit = expr.value
+      if (lit.kind === 'int') {
+        return { kind: 'int', value: lit.value }
+      }
+      if (lit.kind === 'float') {
+        return { kind: 'float', value: lit.value }
+      }
+      if (lit.kind === 'bool') {
+        return { kind: 'bool', value: lit.value }
+      }
+    }
+
+    // Handle group expression
+    if (expr.kind === 'GroupExpr') {
+      return this.evalComptimeExpr(expr.expr)
+    }
+
+    // Handle unary negation
+    if (expr.kind === 'UnaryExpr' && expr.op === '-') {
+      const operand = this.evalComptimeExpr(expr.operand)
+      if (operand?.kind === 'int') {
+        return { kind: 'int', value: -operand.value }
+      }
+      if (operand?.kind === 'float') {
+        return { kind: 'float', value: -operand.value }
+      }
+    }
+
+    // Handle binary operations on comptime values
+    if (expr.kind === 'BinaryExpr') {
+      const left = this.evalComptimeExpr(expr.left)
+      const right = this.evalComptimeExpr(expr.right)
+      if (left?.kind === 'int' && right?.kind === 'int') {
+        const l = left.value
+        const r = right.value
+        switch (expr.op) {
+          case '+': return { kind: 'int', value: l + r }
+          case '-': return { kind: 'int', value: l - r }
+          case '*': return { kind: 'int', value: l * r }
+          case '/': return r !== 0n ? { kind: 'int', value: l / r } : null
+          case '%': return r !== 0n ? { kind: 'int', value: l % r } : null
+          case '&': return { kind: 'int', value: l & r }
+          case '|': return { kind: 'int', value: l | r }
+          case '^': return { kind: 'int', value: l ^ r }
+          case '<<': return { kind: 'int', value: l << r }
+          case '>>': return { kind: 'int', value: l >> r }
+        }
+      }
+    }
+
+    // Handle identifier references to other defs
+    if (expr.kind === 'IdentExpr') {
+      const sym = this.moduleScope.symbols.get(expr.name)
+      if (sym?.kind === 'def') {
+        return sym.value
+      }
+    }
+
+    return null
   }
 
   collectGlobal(decl: AST.GlobalDecl): void {
@@ -325,7 +563,7 @@ class CheckContext {
       if (field.ident) {
         const resolvedType = this.resolveType(field.type)
         scope.symbols.set(field.ident, { kind, type: resolvedType })
-        this.types.set(field.span.start, resolvedType)
+        this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start)
       }
     }
@@ -413,7 +651,7 @@ class CheckContext {
       case 'IdentPattern':
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         // Record type at pattern offset for LSP
-        this.types.set(pattern.span.start, type)
+        this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
         break
       case 'TuplePattern':
@@ -591,11 +829,9 @@ class CheckContext {
   // Infer the type of an expression (bottom-up)
   inferExpr(expr: AST.Expr): ResolvedType {
     const type = this.inferExprInner(expr)
-    // Record type for LSP-relevant nodes
-    // Note: comptime types are stored as-is; concrete type depends on usage context
-    if (this.isLSPRelevant(expr)) {
-      this.types.set(expr.span.start, type)
-    }
+    // Record type for ALL expressions - codegen needs this
+    // Note: comptime types are stored as-is; concretization happens in a later pass
+    this.types.set(typeKey(expr.span.start, expr.kind), type)
     return type
   }
 
@@ -622,7 +858,7 @@ class CheckContext {
       const resolved = this.resolveListToIndexed(inferred, expected)
       // For LSP, record the comptime_list type (not resolved) so user sees the literal type
       if (expr.kind === 'ArrayExpr') {
-        this.types.set(expr.span.start, inferred)
+        this.types.set(typeKey(expr.span.start, expr.kind), inferred)
       }
       // Collect literal for deferred serialization (concrete types only)
       if (expected.size !== 'comptime') {
@@ -647,10 +883,8 @@ class CheckContext {
           this.checkExpr(elem, innerType)
         }
       }
-      // Record the inferred comptime type for LSP
-      if (this.isLSPRelevant(expr)) {
-        this.types.set(expr.span.start, inferred)
-      }
+      // Record the inferred comptime type
+      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
       // Collect literal for deferred serialization
       this.pendingLiterals.push({ id: expr.span.start, expr, type: expected })
       // Return concretized type
@@ -665,13 +899,9 @@ class CheckContext {
       )
     }
 
-    // For LSP hints, determine what type to record
-    // - Named/unique types: show the named type (e.g., Index)
-    // - Regular types: show the inferred type (preserves comptime info)
-    if (this.isLSPRelevant(expr)) {
-      const lspType = expected.kind === 'named' ? expected : inferred
-      this.types.set(expr.span.start, lspType)
-    }
+    // Record the type - use named type if available for better LSP hints
+    const recordType = expected.kind === 'named' ? expected : inferred
+    this.types.set(typeKey(expr.span.start, expr.kind), recordType)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
@@ -721,14 +951,6 @@ class CheckContext {
     }
     // Fall back to default concretization
     return this.concretize(type)
-  }
-
-  isLSPRelevant(expr: AST.Expr): boolean {
-    return (
-      expr.kind === 'IdentExpr' ||
-      expr.kind === 'CallExpr' ||
-      expr.kind === 'LiteralExpr'
-    )
   }
 
   inferExprInner(expr: AST.Expr): ResolvedType {

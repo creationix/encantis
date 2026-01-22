@@ -10,8 +10,8 @@
         "ident": "walk",
         "signature": {
           "kind": "FuncSignature",
-          "params": {
-            "kind": "FieldList",
+          "input": {
+            "kind": "CompositeType",
             "fields": [
               {
                 "kind": "Field",
@@ -22,12 +22,12 @@
                     "kind": "PrimitiveType",
                     "name": "u64",
                     "span": {
-                      "start": 242,
-                      "end": 245
+                      "start": 244,
+                      "end": 247
                     }
                   },
                   "size": null,
-                  "nullTerminationLevel": 0,
+                  "specifiers": [],
                   "span": {
                     "start": 242,
                     "end": 247
@@ -60,7 +60,7 @@
               "end": 257
             }
           },
-          "returns": {
+          "output": {
             "kind": "PrimitiveType",
             "name": "i64",
             "span": {

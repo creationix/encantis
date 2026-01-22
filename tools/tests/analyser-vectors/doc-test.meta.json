@@ -1,28 +1,94 @@
 {
-  "$schema": "../meta-schema.json",
   "src": "file://./doc-test.ents",
   "data": [],
   "types": [
-    { "type": "(x:i32)->i32" },
-    { "type": "i32" },
-    { "type": "comptime_int(2)" },
-    { "type": "comptime_int(21)" }
+    {
+      "type": "(x:i32)->i32"
+    },
+    {
+      "type": "i32"
+    }
   ],
   "symbols": [
-    { "name": "double", "kind": "func", "type": 0, "def": "3:21", "refs": ["15:14"], "doc": "This should be attached to the \"double\" function" },
-    { "name": "x", "kind": "param", "type": 1, "def": "3:28", "refs": ["4:9"] },
-    { "name": "halfLucky", "kind": "local", "type": 1, "def": "12:6", "refs": ["15:21"] },
-    { "name": "lucky", "kind": "local", "type": 1, "def": "15:6", "refs": [] }
+    {
+      "name": "double",
+      "kind": "func",
+      "type": 0,
+      "def": "3:21",
+      "refs": [
+        "15:14"
+      ],
+      "doc": "This should be attached to the \"double\" function"
+    },
+    {
+      "name": "x",
+      "kind": "param",
+      "type": 1,
+      "def": "3:28",
+      "refs": [
+        "4:9"
+      ]
+    },
+    {
+      "name": "halfLucky",
+      "kind": "local",
+      "type": 1,
+      "def": "12:6",
+      "refs": [
+        "15:21"
+      ]
+    },
+    {
+      "name": "lucky",
+      "kind": "local",
+      "type": 1,
+      "def": "15:6",
+      "refs": []
+    }
   ],
   "hints": {
-    "3:21": { "len": 6, "type": 0, "symbol": 0 },
-    "3:28": { "len": 1, "type": 1, "symbol": 1 },
-    "4:9": { "len": 1, "type": 1, "symbol": 1 },
-    "4:13": { "len": 1, "type": 2 },
-    "12:6": { "len": 9, "type": 1, "symbol": 2 },
-    "12:18": { "len": 2, "type": 3 },
-    "15:6": { "len": 5, "type": 1, "symbol": 3 },
-    "15:14": { "len": 6, "type": 1, "symbol": 0 },
-    "15:21": { "len": 9, "type": 1, "symbol": 2 }
+    "3:21": {
+      "len": 6,
+      "type": 0,
+      "symbol": 0
+    },
+    "3:28": {
+      "len": 1,
+      "type": 1,
+      "symbol": 1
+    },
+    "4:9": {
+      "len": 1,
+      "type": 1,
+      "symbol": 1
+    },
+    "4:13": {
+      "len": 1,
+      "type": 1
+    },
+    "12:6": {
+      "len": 9,
+      "type": 1,
+      "symbol": 2
+    },
+    "12:18": {
+      "len": 2,
+      "type": 1
+    },
+    "15:6": {
+      "len": 5,
+      "type": 1,
+      "symbol": 3
+    },
+    "15:14": {
+      "len": 6,
+      "type": 0,
+      "symbol": 0
+    },
+    "15:21": {
+      "len": 9,
+      "type": 1,
+      "symbol": 2
+    }
   }
 }

@@ -1,20 +1,21 @@
 import { describe, test, expect } from 'bun:test'
 import { parse } from '../parser'
-import { check, type TypeCheckResult } from '../checker'
+import { typecheck, typeKey, type TypeCheckResult } from '../checker'
 import { typeToString } from '../types'
 
-// Helper to parse and check a module
+// Helper to parse and typecheck a module
 function checkModule(source: string): TypeCheckResult {
   const result = parse(source)
   if (result.errors.length > 0) {
     throw new Error(`Parse error: ${result.errors[0].message}`)
   }
-  return check(result.module!)
+  return typecheck(result.module!)
 }
 
-// Helper to get the type of an expression at a specific offset
-function typeAt(result: TypeCheckResult, offset: number): string | undefined {
-  const type = result.types.get(offset)
+// Helper to get the type of an expression/pattern at a specific offset
+// kind defaults to 'IdentPattern' since most tests check variable types
+function typeAt(result: TypeCheckResult, offset: number, kind: string = 'IdentPattern'): string | undefined {
+  const type = result.types.get(typeKey(offset, kind))
   return type ? typeToString(type) : undefined
 }
 
@@ -49,7 +50,7 @@ describe('type inference', () => {
       // Check that 'a' has type i32 (find its offset)
       const aOffset = result.symbolDefOffsets.get('a')
       if (aOffset !== undefined) {
-        const aType = result.types.get(aOffset)
+        const aType = result.types.get(typeKey(aOffset, 'IdentPattern'))
         expect(aType).toBeDefined()
         expect(typeToString(aType!)).toBe('i32')
       }
@@ -64,7 +65,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('big')
       if (offset !== undefined) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
         expect(typeToString(type!)).toBe('i64')
       }
@@ -79,7 +80,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('f')
       if (offset !== undefined) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
         expect(typeToString(type!)).toBe('f64')
       }
@@ -96,7 +97,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('x')
       if (offset !== undefined) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
         expect(typeToString(type!)).toBe('u8')
       }
@@ -208,7 +209,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset !== undefined) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
         expect(typeToString(type!)).toBe('*[3]i32')
       }
@@ -223,7 +224,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset !== undefined) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
         // Without annotation, array defaults to comptime with LEB128 encoding
         // TODO: should be pure comptime [int] without encoding
@@ -288,7 +289,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const aOffset = result.symbolDefOffsets.get('a')
       if (aOffset) {
-        const aType = result.types.get(aOffset)
+        const aType = result.types.get(typeKey(aOffset, 'IdentPattern'))
         expect(typeToString(aType!)).toBe('[?]u8')
       }
     })
@@ -302,7 +303,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(typeToString(type!)).toBe('[?:?]u8')
       }
     })
@@ -318,7 +319,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('s')
       if (offset) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         // TODO: should be pure comptime [u8] without encoding
         expect(typeToString(type!)).toBe('[?]u8')
       }
@@ -333,7 +334,7 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
-        const type = result.types.get(offset)
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
         // TODO: should be comptime list of comptime lists [[u8]]
         // Currently defaults string elements to LEB128
         expect(typeToString(type!)).toBe('[?:?]u8')
@@ -351,8 +352,8 @@ describe('type inference', () => {
       const aOffset = result.symbolDefOffsets.get('a')
       const bOffset = result.symbolDefOffsets.get('b')
       if (aOffset && bOffset) {
-        expect(typeToString(result.types.get(aOffset)!)).toBe('[!]u8')
-        expect(typeToString(result.types.get(bOffset)!)).toBe('*[5]u8')
+        expect(typeToString(result.types.get(typeKey(aOffset, 'IdentPattern'))!)).toBe('[!]u8')
+        expect(typeToString(result.types.get(typeKey(bOffset, 'IdentPattern'))!)).toBe('*[5]u8')
       }
     })
   })
