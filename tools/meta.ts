@@ -6,23 +6,16 @@ import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker
 import { type ResolvedType, typeToString } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
-import { bytesToHex } from './utils'
 
 // === Meta Output Types ===
 
 export interface MetaOutput {
   $schema?: string
   src: string
-  data: MetaData[]
   types: MetaType[]
   symbols: MetaSymbol[]
   hints: Record<string, MetaHint>
   errors?: MetaError[]
-}
-
-export interface MetaData {
-  offset: number
-  hex: string
 }
 
 export interface MetaType {
@@ -43,7 +36,6 @@ export interface MetaHint {
   len: number
   type: number // Index into types array
   symbol?: number // Index into symbols array
-  data?: number // Index into data array
 }
 
 export interface MetaError {
@@ -73,8 +65,6 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
-  private data: MetaData[] = []
-  private dataIndexByOffset = new Map<number, number>() // AST offset → data index
 
   constructor(
     private module: AST.Module,
@@ -88,16 +78,12 @@ class MetaBuilder {
     // Pass 1: Collect symbols (populates typeRegistry)
     this.collectSymbols()
 
-    // Pass 2: Build data section from serialized literals
-    this.buildDataSection()
-
-    // Pass 3: Generate hints
+    // Pass 2: Generate hints
     this.generateHints()
 
     // Build output
     const output: MetaOutput = {
       src: srcPath,
-      data: this.data,
       types: this.typeRegistry.getTypes(),
       symbols: this.symbols,
       hints: this.hints,
@@ -112,28 +98,6 @@ class MetaBuilder {
     }
 
     return output
-  }
-
-  // === Data Section Building ===
-
-  private buildDataSection(): void {
-    // Get the finalized data section from the builder
-    const dataSection = this.checkResult.dataBuilder.result()
-
-    // Build data entries sorted by offset
-    for (const entry of dataSection.entries) {
-      const hex = bytesToHex(entry.bytes)
-      this.data.push({ offset: entry.offset, hex })
-    }
-
-    // Map AST literal offsets to their data indices
-    for (const [astOffset, dataRef] of this.checkResult.literalRefs) {
-      // Find the data entry at this pointer offset
-      const dataIndex = this.data.findIndex((d) => d.offset === dataRef.ptr)
-      if (dataIndex !== -1) {
-        this.dataIndexByOffset.set(astOffset, dataIndex)
-      }
-    }
   }
 
   // === Symbol Collection ===
@@ -566,8 +530,7 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          const dataIndex = this.dataIndexByOffset.get(expr.span.start)
-          this.addHint(expr.span.start, len, typeIndex, undefined, dataIndex)
+          this.addHint(expr.span.start, len, typeIndex)
         }
         // Recurse into elements
         for (const elem of expr.elements) {
@@ -683,12 +646,10 @@ class MetaBuilder {
     len: number,
     typeIndex: number,
     symbolIndex?: number,
-    dataIndex?: number,
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
-    if (dataIndex !== undefined) hint.data = dataIndex
     this.hints[key] = hint
   }
 }

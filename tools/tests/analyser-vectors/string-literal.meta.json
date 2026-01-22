@@ -1,6 +1,5 @@
 {
   "src": "file://./string-literal.ents",
-  "data": [],
   "types": [
     {
       "type": "()->[]u8"

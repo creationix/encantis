@@ -1,6 +1,5 @@
 {
   "src": "file://./type-alias.ents",
-  "data": [],
   "types": [
     {
       "type": "(x:i32,y:i32)",

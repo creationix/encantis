@@ -1,6 +1,5 @@
 {
   "src": "file://./import-func.ents",
-  "data": [],
   "types": [
     {
       "type": "(i32)->()"

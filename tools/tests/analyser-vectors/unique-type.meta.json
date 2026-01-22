@@ -1,6 +1,5 @@
 {
   "src": "file://./unique-type.ents",
-  "data": [],
   "types": [
     {
       "type": "i32",

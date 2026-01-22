@@ -33,28 +33,26 @@ tools/
 **Dependency Graph:**
 
 ```
-          ┌───────────────────────────────────────┐
-          │               cli.ts                  │
-          └───────────────────────────────────────┘
-            │         │         │         │
-            ▼         ▼         ▼         ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │ parser   │ │preprocess│ │ checker  │ │ codegen  │
-    └──────────┘ └──────────┘ └──────────┘ └──────────┘
-          │            │            │            │
-          │            │            ▼            ▼
-          │            │       ┌──────────┐ ┌──────────┐
-          │            │       │  data    │ │  meta    │
-          │            │       └──────────┘ └──────────┘
-          │            │            │            │
-          ▼            ▼            ▼            ▼
-    ┌─────────────────────────────────────────────────┐
-    │                     ast.ts                      │
-    └─────────────────────────────────────────────────┘
-    ┌─────────────────────────────────────────────────┐
-    │                    types.ts                     │
-    └─────────────────────────────────────────────────┘
+                              cli.ts
+                                 │
+       ┌────────────┬────────────┼────────────┬────────────┐
+       ▼            ▼            ▼            ▼            ▼
+   parser.ts  preprocess.ts  checker.ts  codegen.ts    meta.ts
+       │            │            │            │            │
+       │            │            │            ▼            │
+       │            │            │         data.ts         │
+       │            │            │            │            │
+       ▼            ▼            ▼            ▼            ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │  ast.ts, types.ts, position.ts, comments.ts, utils.ts    │
+  │  (core types - no dependencies)                          │
+  └──────────────────────────────────────────────────────────┘
 ```
+
+**Two output paths:**
+
+- `codegen.ts` → WAT/WASM output (uses `data.ts` for literal serialization)
+- `meta.ts` → LSP metadata (types, symbols, hints)
 
 **Compilation Pipeline:**
 
@@ -95,7 +93,7 @@ TypeCheckResult
     ├── types: Map<"offset:kind", ConcreteType>
     ├── symbols: Map<name, Symbol>
     ├── errors: TypeError[]
-    └── literalRefs: Map<offset, DataRef>
+    └── literals: PendingLiteral[]  (for codegen to serialize)
 ```
 
 **Key files:**
@@ -105,6 +103,7 @@ TypeCheckResult
 - `tools/checker.ts` - Type checker (includes concretization)
 - `tools/preprocess.ts` - Def constant inlining
 - `tools/codegen.ts` - WAT code generation
+- `tools/data.ts` - Data section serialization (called by codegen/meta)
 
 ## AST Types
 
@@ -128,13 +127,15 @@ interface Module {
 ### Example: Parsing a Function
 
 **Input:**
-```encantis
+
+```ents
 func add(a: i32, b: i32) -> i32 {
   return a + b
 }
 ```
 
 **AST Output:**
+
 ```typescript
 {
   kind: 'FuncDecl',
@@ -186,6 +187,7 @@ Types in the AST mirror the source syntax:
 **Input:** `*[!u8]` (pointer to null-terminated u8 array)
 
 **AST:**
+
 ```typescript
 {
   kind: 'PointerType',
@@ -201,6 +203,7 @@ Types in the AST mirror the source syntax:
 **Input:** `*[10]i32` (pointer to fixed array of 10 i32s)
 
 **AST:**
+
 ```typescript
 {
   kind: 'PointerType',
@@ -256,6 +259,7 @@ interface IndexedRT {
 **Input:** `let msg: *[!u8] = "hello"`
 
 **ResolvedType for `msg`:**
+
 ```typescript
 {
   kind: 'pointer',
@@ -269,6 +273,7 @@ interface IndexedRT {
 ```
 
 **ResolvedType for `"hello"` literal (before coercion):**
+
 ```typescript
 {
   kind: 'indexed',
@@ -337,6 +342,7 @@ if (result.errors.length > 0) {
 ```
 
 **ParseResult:**
+
 ```typescript
 interface ParseResult {
   module: Module | null  // AST if successful
@@ -434,11 +440,14 @@ interface TypeCheckResult {
   // Symbol name → definition offset
   symbolDefOffsets: Map<string, number>
 
-  // Literal refs: AST offset → DataRef for serialized data
-  literalRefs: Map<number, DataRef>
+  // Literals that need data section serialization (for codegen)
+  literals: PendingLiteral[]
+}
 
-  // Data section builder for codegen
-  dataBuilder: DataSectionBuilder
+interface PendingLiteral {
+  id: number          // AST offset
+  expr: AST.Expr      // The literal expression
+  type: IndexedRT     // Target type for serialization
 }
 ```
 
@@ -523,7 +532,8 @@ Comptime types represent values known at compile time that can coerce to multipl
 | `[u8]` (comptime list) | `*[u8]`, `*[!u8]`, `*[?u8]`, `*[N;u8]` |
 
 **Example:**
-```encantis
+
+```ents
 let a: u8 = 100      // int(100) coerces to u8 ✓
 let b: u8 = 256      // int(256) doesn't fit in u8 ✗
 let c: *[!u8] = "hi" // [u8] coerces to *[!u8] ✓

@@ -28,7 +28,6 @@ import {
   defaultIndexedType,
   unwrap,
 } from './types'
-import { DataSectionBuilder, serializeLiteral, type DataRef } from './data'
 
 // === Symbol Table ===
 
@@ -71,6 +70,13 @@ export interface TypeError {
   message: string
 }
 
+// Pending literal for data section serialization (handled by codegen, not checker)
+export interface PendingLiteral {
+  id: number          // AST offset
+  expr: AST.Expr      // The literal expression
+  type: IndexedRT     // Target type for serialization
+}
+
 export interface TypeCheckResult {
   // Type map: "offset:kind" → resolved type
   types: Map<string, ResolvedType>
@@ -84,10 +90,8 @@ export interface TypeCheckResult {
   symbolRefs: Map<number, number>
   // Symbol name → definition offset
   symbolDefOffsets: Map<string, number>
-  // Literal refs: AST offset → DataRef for serialized literals
-  literalRefs: Map<number, DataRef>
-  // Data section builder (for codegen to finalize)
-  dataBuilder: DataSectionBuilder
+  // Literals that need data section serialization (for codegen)
+  literals: PendingLiteral[]
 }
 
 // === Concretization Options ===
@@ -130,8 +134,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
-    literalRefs: ctx.literalRefs,
-    dataBuilder: ctx.dataBuilder,
+    literals: ctx.pendingLiterals,
   }
 }
 
@@ -266,10 +269,8 @@ class CheckContext {
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
   symbolDefOffsets = new Map<string, number>() // name → defOffset
 
-  // Data section: collect literals during checking, serialize at end with sorting
-  pendingLiterals: { id: number; expr: AST.Expr; type: IndexedRT }[] = []
-  dataBuilder = new DataSectionBuilder()
-  literalRefs = new Map<number, DataRef>() // AST offset → DataRef
+  // Literals that need data section serialization (collected during checking)
+  pendingLiterals: PendingLiteral[] = []
 
   checkModule(module: AST.Module): void {
     // First pass: collect all type aliases, function signatures, globals, defs
@@ -281,55 +282,6 @@ class CheckContext {
     for (const decl of module.decls) {
       this.checkDeclaration(decl)
     }
-
-    // Final pass: serialize collected literals with sorting for better deduplication
-    this.serializePendingLiterals()
-  }
-
-  // Serialize pending literals, sorted by priority for better deduplication
-  // Priority: specifiers (terminators/prefixes) > fixed-size > slices
-  private serializePendingLiterals(): void {
-    this.pendingLiterals.sort((a, b) =>
-      this.literalSortScore(b.type) - this.literalSortScore(a.type)
-    )
-
-    // Serialize each literal using the existing serializeLiteral function
-    for (const lit of this.pendingLiterals) {
-      const ref = serializeLiteral(lit.expr, lit.type, this.dataBuilder)
-      this.literalRefs.set(lit.id, ref)
-    }
-  }
-
-  // Sorting score for literals - higher = process first
-  // Priority: specifiers (terminators/prefixes) > fixed-size > slices
-  private literalSortScore(type: IndexedRT): number {
-    const maxSpecs = this.maxSpecifiersInBracket(type)
-    if (maxSpecs > 0) {
-      return 1000 + maxSpecs // Has specifiers - highest priority
-    }
-    if (this.hasFixedSize(type)) {
-      return 100 // Fixed-size arrays
-    }
-    return 0 // Slices (fat-pointers)
-  }
-
-  // Max specifiers in any single bracket level
-  // Merged brackets like *[![!u8]] have 2, separate *[!*[!u8]] has max 1
-  private maxSpecifiersInBracket(type: IndexedRT): number {
-    const thisLevel = type.specifiers.length
-    if (type.element.kind === 'indexed') {
-      return Math.max(thisLevel, this.maxSpecifiersInBracket(type.element))
-    }
-    return thisLevel
-  }
-
-  // Check if any level has a fixed size
-  private hasFixedSize(type: IndexedRT): boolean {
-    if (type.size !== null) return true
-    if (type.element.kind === 'indexed') {
-      return this.hasFixedSize(type.element)
-    }
-    return false
   }
 
   // === First Pass: Collect Declarations ===

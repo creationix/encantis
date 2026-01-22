@@ -53,18 +53,6 @@ export interface DataSection {
 }
 
 /**
- * Build the data section for a module.
- * Processes memory declarations for explicit data and interns string literals.
- * @param module The parsed AST module
- * @returns DataSection with all entries, offsets, and size information
- */
-export function buildDataSection(module: AST.Module): DataSection {
-  const builder = new DataSectionBuilder()
-  builder.build(module)
-  return builder.result()
-}
-
-/**
  * Builder for constructing a WASM data section.
  *
  * Two-pass algorithm:
@@ -1164,4 +1152,74 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
     totalSize,
     errors: [...errors, ...section.errors],
   }
+}
+
+// === Data Section Building from Checker Literals ===
+
+// Pending literal from type checker
+export interface PendingLiteral {
+  id: number          // AST offset
+  expr: AST.Expr      // The literal expression
+  type: IndexedRT     // Target type for serialization
+}
+
+// Result of building the data section
+export interface DataSectionResult {
+  dataBuilder: DataSectionBuilder
+  literalRefs: Map<number, DataRef>  // AST offset → DataRef
+}
+
+/**
+ * Build the data section from pending literals collected during type checking.
+ * Sorts literals by priority for better deduplication, then serializes each.
+ */
+export function buildDataSection(literals: PendingLiteral[]): DataSectionResult {
+  const dataBuilder = new DataSectionBuilder()
+  const literalRefs = new Map<number, DataRef>()
+
+  // Sort by priority for better deduplication
+  // Priority: more specifiers > fixed-size > slices
+  const sorted = [...literals].sort((a, b) =>
+    literalSortScore(b.type) - literalSortScore(a.type)
+  )
+
+  // Serialize each literal
+  for (const lit of sorted) {
+    const ref = serializeLiteral(lit.expr, lit.type, dataBuilder)
+    literalRefs.set(lit.id, ref)
+  }
+
+  return { dataBuilder, literalRefs }
+}
+
+// Sorting score for literals - higher = process first
+// Priority: specifiers (terminators/prefixes) > fixed-size > slices
+function literalSortScore(type: IndexedRT): number {
+  const maxSpecs = maxSpecifiersInBracket(type)
+  if (maxSpecs > 0) {
+    return 1000 + maxSpecs // Has specifiers - highest priority
+  }
+  if (hasFixedSize(type)) {
+    return 100 // Fixed-size arrays
+  }
+  return 0 // Slices (fat-pointers)
+}
+
+// Max specifiers in any single bracket level
+// Merged brackets like *[![!u8]] have 2, separate *[!*[!u8]] has max 1
+function maxSpecifiersInBracket(type: IndexedRT): number {
+  const thisLevel = type.specifiers.length
+  if (type.element.kind === 'indexed') {
+    return Math.max(thisLevel, maxSpecifiersInBracket(type.element))
+  }
+  return thisLevel
+}
+
+// Check if any level has a fixed size
+function hasFixedSize(type: IndexedRT): boolean {
+  if (type.size !== null) return true
+  if (type.element.kind === 'indexed') {
+    return hasFixedSize(type.element)
+  }
+  return false
 }

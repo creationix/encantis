@@ -1,6 +1,5 @@
 {
   "src": "file://./type-mismatch-let.ents",
-  "data": [],
   "types": [
     {
       "type": "()->()"

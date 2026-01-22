@@ -1,6 +1,5 @@
 {
   "src": "file://./doc-test.ents",
-  "data": [],
   "types": [
     {
       "type": "(x:i32)->i32"

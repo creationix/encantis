@@ -1,6 +1,5 @@
 {
   "src": "file://./func-simple.ents",
-  "data": [],
   "types": [
     {
       "type": "(a:i32,b:i32)->i32"

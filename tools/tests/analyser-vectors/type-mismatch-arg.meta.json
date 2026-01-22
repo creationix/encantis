@@ -1,6 +1,5 @@
 {
   "src": "file://./type-mismatch-arg.ents",
-  "data": [],
   "types": [
     {
       "type": "(a:i32,b:i32)->i32"

@@ -11,7 +11,7 @@ import {
   unwrap,
   primitiveByteSize,
 } from './types'
-import { dataToWat } from './data'
+import { dataToWat, buildDataSection } from './data'
 
 // === Context ===
 
@@ -1131,8 +1131,9 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   const ctx = createContext(checkResult)
   const parts: string[] = ['(module']
 
-  // Check if memory is needed
-  const dataSection = checkResult.dataBuilder.result()
+  // Build data section from collected literals
+  const { dataBuilder } = buildDataSection(checkResult.literals)
+  const dataSection = dataBuilder.result()
   const hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module)
 
   // Collect imports
