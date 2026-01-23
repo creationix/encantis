@@ -90,6 +90,7 @@ describe('types', () => {
       expect(typeToString(type)).toContain('x')
       expect(typeToString(type)).toContain('y')
     })
+  })
 
   describe('typeAssignable', () => {
     test('same primitive types are assignable', () => {
@@ -142,3 +143,4 @@ describe('types', () => {
     })
   })
 })
+

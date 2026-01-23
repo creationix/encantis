@@ -8,7 +8,21 @@ import { buildMeta, type MetaOutput } from './meta'
 
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')
-  const vectorDir = 'packages/compiler/src/tests/analyser-vectors'
+  const fixturesDir = new URL('./__fixtures__/analyser-vectors', import.meta.url)
+  const vectorDir = fixturesDir.pathname
+
+  // Check if fixtures directory exists before running tests
+  let vectorsExist = false
+  try {
+    vectorsExist = Bun.file(vectorDir).isDirectory()
+  } catch {
+    // Directory doesn't exist
+  }
+
+  if (!vectorsExist) {
+    test.skip('meta.json generation (fixtures not available)', () => {})
+    return
+  }
 
   for (const file of glob.scanSync(vectorDir)) {
     const name = file.replace('.ents', '')

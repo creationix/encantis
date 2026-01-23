@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import * as ohm from 'ohm-js'
 import type * as AST from './ast'
 import type { Span } from './ast'
@@ -14,9 +15,9 @@ type AccessSuffix =
 // Types for postfix operations (AccessSuffix + call)
 type PostfixOp = AccessSuffix | { kind: 'call'; args: AST.Arg[] }
 
-// Load the grammar
-const grammarPath = new URL('encantis.ohm', import.meta.url).pathname
-const grammarSource = await Bun.file(grammarPath).text()
+// Load grammar and create semantics
+const grammarPath = new URL('encantis-grammar.ohm', import.meta.url).pathname
+const grammarSource = readFileSync(grammarPath, 'utf-8')
 export const grammar = ohm.grammar(grammarSource)
 
 // Helper to create span from Ohm source interval
@@ -32,11 +33,8 @@ function first<T>(iter: ohm.IterationNode): T | null {
   return iter.children[0]?.toAST() ?? null
 }
 
-// Create semantics
-export const semantics = grammar.createSemantics()
-
-// Add toAST operation
-semantics.addOperation<unknown>('toAST', {
+// Semantics operations object
+const semanticsActions = {
   // ============================================================================
   // Module
   // ============================================================================
@@ -148,8 +146,7 @@ semantics.addOperation<unknown>('toAST', {
   FuncSignature(input, _arrowOpt, outputOpt) {
     const inputAST = input.toAST()
     // If return is omitted, default to void (empty composite type)
-    const outputAST =
-      first(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: span(this) } as AST.CompositeType)
+    const outputAST = first(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: span(this) } as AST.CompositeType)
     return {
       kind: 'FuncSignature',
       input: inputAST,
@@ -1237,17 +1234,16 @@ semantics.addOperation<unknown>('toAST', {
   _iter(...children) {
     return children.map((c: ohm.Node) => c.toAST())
   },
-})
+}
+
+// Create semantics instance and add operations
+export const semantics = grammar.createSemantics().addOperation<unknown>('toAST', semanticsActions)
 
 // ============================================================================
 // Helper: Apply suffix to build AST node
 // ============================================================================
 
-function applySuffix(
-  base: AST.Expr,
-  suffix: AccessSuffix,
-  suffixSpan: Span,
-): AST.Expr {
+function applySuffix(base: AST.Expr, suffix: AccessSuffix, suffixSpan: Span): AST.Expr {
   switch (suffix.kind) {
     case 'field':
       return {
