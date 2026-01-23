@@ -1,0 +1,20 @@
+# Bun workspace configuration for Encantis monorepo
+# https://bun.sh/docs/cli/bunfig
+
+[install]
+# Save exact versions
+save_exact = true
+
+# Optimize lockfile
+production = false
+
+[test]
+# Use Bun's test runner
+root = "."
+timeout = 5000
+
+[bundle]
+# Shared bundle configuration
+target = "node"
+format = "esm"
+sourcemap = "inline"

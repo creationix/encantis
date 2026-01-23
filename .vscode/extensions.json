@@ -1,6 +1,7 @@
 {
     "recommendations": [
         "creationix.encantis-vscode-ext",
-        "dtsvet.vscode-wasm"
+        "dtsvet.vscode-wasm",
+        "biomejs.biome"
     ]
 }

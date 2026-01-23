@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
-import { parse } from './parser'
-import { typecheck } from './checker'
-import { buildMeta } from './meta'
-import { moduleToWat } from './codegen'
-import { bigintReplacer } from './utils'
-import { inlineDefs } from './preprocess'
+import { parse } from '@encantis/compiler/parser'
+import { typecheck } from '@encantis/compiler/checker'
+import { buildMeta } from '@encantis/compiler/meta'
+import { moduleToWat } from '@encantis/compiler/codegen'
+import { bigintReplacer } from '@encantis/compiler/utils'
+import { inlineDefs } from '@encantis/compiler/preprocess'
 
 const args = process.argv.slice(2)
 

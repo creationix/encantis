@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <!-- Spine/back (L-shape with rounded corners) -->
+  <path d="M5 3.5A1.5 1.5 0 0 1 6.5 2H7v12H6.5A1.5 1.5 0 0 1 5 12.5v-9z" stroke="#C678DD" stroke-width="0.7" fill="none"/>
+  <!-- Book cover (rounded left corners) -->
+  <path d="M7 2h9v12H8.5A1.5 1.5 0 0 1 7 12.5v-9A1.5 1.5 0 0 1 8.5 2" stroke="#C678DD" stroke-width="1" fill="none"/>
+  <!-- E letter -->
+  <path d="M10 5h3M10 8h2.5M10 11h3M10 5v6" stroke="#61AFEF" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Bookmark (bottom) -->
+  <path d="M9 14v2l.5-.7.5.7v-2" stroke="#E5C07B" stroke-width="0.8"/>
+</svg>

@@ -1,0 +1,22 @@
+{
+  "name": "@encantis/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Encantis language compiler command-line interface",
+  "bin": {
+    "encantis": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "bun build src/cli.ts --outfile dist/cli.js --format esm",
+    "watch": "bun build src/cli.ts --outfile dist/cli.js --format esm --watch",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@encantis/compiler": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "typescript": "^5.0.0"
+  }
+}

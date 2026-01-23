@@ -1,0 +1,44 @@
+{
+  "name": "@encantis/compiler",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Encantis language compiler core - parser, type checker, and code generator",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./parser": {
+      "import": "./dist/parser.js",
+      "types": "./dist/parser.d.ts"
+    },
+    "./checker": {
+      "import": "./dist/checker.js",
+      "types": "./dist/checker.d.ts"
+    },
+    "./codegen": {
+      "import": "./dist/codegen.js",
+      "types": "./dist/codegen.d.ts"
+    },
+    "./ast": {
+      "import": "./dist/ast.js",
+      "types": "./dist/ast.d.ts"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "ohm-js": "^17.3.0",
+    "@creationix/jot": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "typescript": "^5.0.0"
+  }
+}

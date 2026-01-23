@@ -1,0 +1,145 @@
+{
+  "name": "encantis-vscode-ext",
+  "displayName": "Encantis Language",
+  "description": "Language support for Encantis (.ents files) - syntax highlighting, diagnostics, and hover",
+  "version": "0.0.4",
+  "repository": "https://github.com/creationix/encantis-ext",
+  "publisher": "creationix",
+  "icon": "icon-128.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "browser": "./dist/web/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run package-web",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "compile-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external:vscode",
+    "watch-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external:vscode --watch",
+    "package-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@encantis/compiler": "workspace:*",
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "@types/bun": "^1.3.6",
+    "typescript": "^5.0.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "encantis.openWatPreview",
+        "title": "Open WAT Preview",
+        "category": "Encantis",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "encantis.openWatPreviewSide",
+        "title": "Open WAT Preview to the Side",
+        "category": "Encantis",
+        "icon": "$(open-preview)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "encantis.openWatPreviewSide",
+          "when": "editorLangId == encantis",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "encantis.openWatPreview",
+          "when": "editorLangId == encantis"
+        },
+        {
+          "command": "encantis.openWatPreviewSide",
+          "when": "editorLangId == encantis"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "encantis.openWatPreview",
+        "key": "ctrl+shift+v",
+        "mac": "cmd+shift+v",
+        "when": "editorLangId == encantis"
+      },
+      {
+        "command": "encantis.openWatPreviewSide",
+        "key": "ctrl+k v",
+        "mac": "cmd+k v",
+        "when": "editorLangId == encantis"
+      }
+    ],
+    "languages": [
+      {
+        "id": "encantis",
+        "aliases": [
+          "encantis",
+          "ents"
+        ],
+        "extensions": [
+          ".ents",
+          ".encantis"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/encantis-file.svg",
+          "dark": "./icons/encantis-file.svg"
+        }
+      },
+      {
+        "id": "encantis-injection"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "encantis",
+        "scopeName": "source.encantis",
+        "path": "encantis.tmlanguage.json"
+      },
+      {
+        "language": "encantis-injection",
+        "scopeName": "markdown.encantis.codeblock",
+        "path": "./codeblock.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.encantis": "encantis"
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[encantis]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "encantis",
+        "scopes": {
+          "parameter": ["variable.parameter.encantis"],
+          "parameter.output": ["variable.parameter.output.encantis"],
+          "variable": ["variable.other.local.encantis"],
+          "variable.static": ["variable.other.global.encantis"],
+          "function": ["entity.name.function.encantis"]
+        }
+      }
+    ]
+  }
+}

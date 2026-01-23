@@ -1,74 +1,58 @@
-.PHONY: all test clean wasm wat ast js check
+# Makefile - Backwards Compatibility Layer
+# ============================================
+# The primary build system is now BUN-based and cross-platform.
+# This Makefile provides compatibility wrappers for existing make targets.
+# 
+# For Windows users: Use `bun run <script>` directly from package.json
+# For Unix/Linux/macOS users: Use either `bun run <script>` or `make <target>`
+#
+# All build scripts are defined in package.json and implemented in TypeScript.
+# See package.json "scripts" section for the complete list.
 
-# Build all examples
-all: ast wat wasm
+.PHONY: all build watch clean check test help
 
-COMPILER_FILES := ./tools/cli.ts ./tools/parser.ts ./tools/ast.ts ./tools/grammar/encantis.ohm ./tools/grammar/actions.ts
-# List of all .ents files in the examples directory
-ALL_ENT_FILES := $(shell find examples -name "*.ents")
-# List of all expected ast, wat, wasm files
-ALL_AST_FILES := $(patsubst %.ents,%.ast.json,$(ALL_ENT_FILES))
-ALL_WAT_FILES := $(patsubst %.ents,%.wat,$(ALL_ENT_FILES))
-ALL_WASM_FILES := $(patsubst %.wat,%.wasm,$(ALL_WAT_FILES))
+# Build all examples (parse → compile → wasm)
+all:
+	bun run examples:all
 
-# Command to check .ents files for errors
-ENCANTIS_CHECK = ./tools/cli.ts check
-# Command to compile .ents to .ast
-ENCANTIS_PARSE = ./tools/cli.ts ast
-# Command to compile .ents to .wat
-ENCANTIS_COMPILE = ./tools/cli.ts compile
+# Build all packages
+build:
+	bun run build
 
-# Clean build artifacts
+# Watch all packages for changes
+watch:
+	bun run watch
+
+# Clean build artifacts and dist directories
 clean:
-	@echo "Cleaning build artifacts..."
-	@find examples -name "*.ast.json" -delete
-	@find examples -name "*.wasm" -delete
-	@find examples -name "*.wat" -delete
-	@echo "Cleaned .ast.json, .wasm, and .wat files"
+	bun run examples:clean
 
-# Check all .ents files for errors without compiling
+# Check all .ents files for errors
 check:
-	@echo "Checking .ents files..."
-	@for file in $(ALL_ENT_FILES); do \
-		$(ENCANTIS_CHECK) $$file; \
-	done
-
-# Generate AST (JSON) from .ents files
-ast: $(ALL_AST_FILES)
-%.ast.json: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_PARSE) $< -o $@
-
-# Compile .ents files to .wat
-wat: $(ALL_WAT_FILES)
-%.wat: %.ents $(COMPILER_FILES)
-	$(ENCANTIS_COMPILE) $< -o $@
-
-# Compile .wat files to .wasm
-wasm: $(ALL_WASM_FILES)
-%.wasm: %.wat
-	wat2wasm --enable-all $< -o $@
-	wasm-opt -all -Os $@ -o $(patsubst %.wasm,%.opt.wasm,$@)
-	wasm2wat --enable-all -f --inline-exports --inline-imports $(patsubst %.wasm,%.opt.wasm,$@) -o $(patsubst %.wasm,%.opt.wat,$@)
+	bun run examples:check
 
 # Run all tests
 test:
-	@echo "Running all tests..."
-	@echo "=== Testing trig example ==="
-	@cd math/trig && node trig.ents.mjs
-	@echo "=== Testing xxh32 example ==="
-	@cd crypto/xxh32 && bun test xxh32.test.ts
-	@echo "=== Testing xxh64 example ==="
-	@cd crypto/xxh64 && bun test xxh64.test.ts
-	@echo "All tests completed!"
+	bun test
 
-# Help
+# Show this help
 help:
-	@echo "Available targets:"
-	@echo "  all       - Build all examples (ast + wat + wasm)"
-	@echo "  clean     - Clean build artifacts"
-	@echo "  check     - Check .ents files for errors"
-	@echo "  ast       - Parse .ents files to .ast (JSON)"
-	@echo "  wat       - Compile .ents files to .wat"
-	@echo "  wasm      - Compile .wat files to .wasm"
-	@echo "  test      - Run all tests"
-	@echo "  help      - Show this help"
+	@echo "Encantis Build System - Backwards Compatibility"
+	@echo "=============================================="
+	@echo ""
+	@echo "Primary interface: bun run <script>"
+	@echo "Examples:"
+	@echo "  bun run examples:all      - Build all examples"
+	@echo "  bun run examples:check    - Check .ents files for errors"
+	@echo "  bun run examples:clean    - Clean build artifacts"
+	@echo "  bun run build             - Build all packages"
+	@echo "  bun run watch             - Watch packages for changes"
+	@echo "  bun test                  - Run all tests"
+	@echo ""
+	@echo "Backwards compatibility with make:"
+	@echo "  make all                  - Builds all examples"
+	@echo "  make build                - Builds all packages"
+	@echo "  make clean                - Cleans artifacts"
+	@echo "  make check                - Checks .ents files"
+	@echo "  make test                 - Runs tests"
+	@echo "  make help                 - Shows this message"
