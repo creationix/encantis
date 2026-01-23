@@ -33,29 +33,33 @@ function first<T>(iter: ohm.IterationNode): T | null {
   return iter.children[0]?.toAST() ?? null
 }
 
-// Semantics operations object
-const semanticsActions = {
+// Type for semantics operations - each rule handler receives Ohm nodes and returns AST nodes
+type OhmNode = ohm.Node
+type SemanticAction = (...args: any[]) => any
+
+// Semantics operations object with typed handlers
+// Each method corresponds to a grammar rule and transforms Ohm nodes to AST nodes
+const semanticsActions: Record<string, SemanticAction> = {
   // ============================================================================
   // Module
   // ============================================================================
 
-  Module(decls) {
+  // Module(decls: Iteration<Declaration>) -> Module
+  Module(decls): AST.Module {
     return {
       kind: 'Module',
-      decls: decls.children.map((d: ohm.Node) => d.toAST()),
-      span: span(this),
-    } as AST.Module
+      decls: decls.children.map((d: OhmNode) => d.toAST()),
+      span: span(this as any),
+    }
   },
 
-  // ============================================================================
-  // Declarations
-  // ============================================================================
-
-  Declaration(decl) {
+  // Declaration(decl: Type | Func | Global | ...) -> any (union of all declaration types)
+  Declaration(decl): AST.Declaration {
     return decl.toAST()
   },
 
-  ImportDecl_group(_import, module, _lp, items, _rp) {
+  // ImportDecl_group(...) -> ImportDecl
+  ImportDecl_group(_import, module, _lp, items, _rp): AST.ImportDecl {
     const moduleLit = module.toAST()
     const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
     return {
@@ -66,7 +70,7 @@ const semanticsActions = {
     } as AST.ImportDecl
   },
 
-  ImportDecl_single(_import, module, item) {
+  ImportDecl_single(_import, module, item): AST.ImportDecl {
     const moduleLit = module.toAST()
     const moduleName = new TextDecoder().decode(moduleLit.value.bytes)
     return {
@@ -77,7 +81,7 @@ const semanticsActions = {
     } as AST.ImportDecl
   },
 
-  ImportGroupItem(name, item) {
+  ImportGroupItem(name, item): AST.ImportItem {
     const nameLit = name.toAST()
     const itemName = new TextDecoder().decode(nameLit.value.bytes)
     return {
@@ -88,7 +92,7 @@ const semanticsActions = {
     } as AST.ImportItem
   },
 
-  ImportItem_func(_func, identOpt, sig) {
+  ImportItem_func(_func, identOpt, sig): AST.ImportFunc {
     return {
       kind: 'ImportFunc',
       ident: first(identOpt),
@@ -97,7 +101,7 @@ const semanticsActions = {
     } as AST.ImportFunc
   },
 
-  ImportItem_global(_global, ident, typeAnnotation) {
+  ImportItem_global(_global, ident, typeAnnotation): AST.ImportGlobal {
     return {
       kind: 'ImportGlobal',
       ident: ident.toAST(),
@@ -106,7 +110,7 @@ const semanticsActions = {
     } as AST.ImportGlobal
   },
 
-  ImportItem_memory(_memory, size) {
+  ImportItem_memory(_memory, size): AST.ImportMemory {
     return {
       kind: 'ImportMemory',
       min: Number(size.sourceString),
@@ -114,7 +118,7 @@ const semanticsActions = {
     } as AST.ImportMemory
   },
 
-  ExportDecl(_export, name, item) {
+  ExportDecl(_export, name, item): AST.ExportDecl {
     const literal = name.toAST()
     const exportName = new TextDecoder().decode(literal.value.bytes)
     return {
@@ -125,11 +129,11 @@ const semanticsActions = {
     } as AST.ExportDecl
   },
 
-  Exportable(item) {
+  Exportable(item): AST.Declaration {
     return item.toAST()
   },
 
-  FuncDecl(inlineOpt, _func, identOpt, sig, body) {
+  FuncDecl(inlineOpt, _func, identOpt, sig, body): AST.FuncDecl {
     return {
       kind: 'FuncDecl',
       inline: inlineOpt.sourceString !== '',
@@ -143,7 +147,7 @@ const semanticsActions = {
   // FuncSignature = BaseType ("->" Type)?
   // Uses symmetric input/output design
   // Ohm passes optional elements separately: BaseType, _arrow (optional iter), Type (optional iter)
-  FuncSignature(input, _arrowOpt, outputOpt) {
+  FuncSignature(input, _arrowOpt, outputOpt): AST.FuncSignature {
     const inputAST = input.toAST()
     // If return is omitted, default to void (empty composite type)
     const outputAST = first(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: span(this) } as AST.CompositeType)
@@ -290,7 +294,7 @@ const semanticsActions = {
 
   // Type = BaseType "->" Type   -- func
   //      | BaseType             -- base
-  Type_func(inputType, _arrow, outputType) {
+  Type_func(inputType, _arrow, outputType): AST.FuncType {
     return {
       kind: 'FuncType',
       input: inputType.toAST(),
@@ -299,7 +303,7 @@ const semanticsActions = {
     } as AST.FuncType
   },
 
-  Type_base(baseType) {
+  Type_base(baseType): AST.Type {
     return baseType.toAST()
   },
 
@@ -459,11 +463,11 @@ const semanticsActions = {
   // Statements
   // ============================================================================
 
-  Statement(stmt) {
+  Statement(stmt): AST.Statement {
     return stmt.toAST()
   },
 
-  LetStmt(_let, patternWithType, assignOpt) {
+  LetStmt(_let, patternWithType, assignOpt): AST.LetStmt {
     const pwt = patternWithType.toAST() as any
     return {
       kind: 'LetStmt',
@@ -474,7 +478,7 @@ const semanticsActions = {
     } as AST.LetStmt
   },
 
-  SetStmt(_set, patternWithType, assign) {
+  SetStmt(_set, patternWithType, assign): AST.SetStmt {
     const pwt = patternWithType.toAST() as any
     return {
       kind: 'SetStmt',
@@ -485,7 +489,7 @@ const semanticsActions = {
     } as AST.SetStmt
   },
 
-  WhileStmt(_while, condition, body) {
+  WhileStmt(_while, condition, body): AST.WhileStmt {
     return {
       kind: 'WhileStmt',
       condition: condition.toAST(),
@@ -494,7 +498,7 @@ const semanticsActions = {
     } as AST.WhileStmt
   },
 
-  ForStmt(_for, binding, _in, iterable, body) {
+  ForStmt(_for, binding, _in, iterable, body): AST.ForStmt {
     return {
       kind: 'ForStmt',
       binding: binding.toAST(),
@@ -670,11 +674,11 @@ const semanticsActions = {
   // Expressions
   // ============================================================================
 
-  Expr(expr) {
+  Expr(expr): AST.Expr {
     return expr.toAST()
   },
 
-  OrExpr_or(left, _op, right) {
+  OrExpr_or(left, _op, right): AST.BinaryExpr {
     return {
       kind: 'BinaryExpr',
       op: '||',
