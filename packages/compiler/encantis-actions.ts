@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import * as ohm from 'ohm-js'
 import type * as AST from './ast'
 import type { Span } from './ast'
@@ -14,11 +13,6 @@ type AccessSuffix =
 
 // Types for postfix operations (AccessSuffix + call)
 type PostfixOp = AccessSuffix | { kind: 'call'; args: AST.Arg[] }
-
-// Load grammar and create semantics
-const grammarPath = new URL('encantis-grammar.ohm', import.meta.url).pathname
-const grammarSource = readFileSync(grammarPath, 'utf-8')
-export const grammar = ohm.grammar(grammarSource)
 
 // Helper to create span from Ohm source interval
 function span(node: ohm.Node): Span {
@@ -39,7 +33,7 @@ type SemanticAction = (...args: any[]) => any
 
 // Semantics operations object with typed handlers
 // Each method corresponds to a grammar rule and transforms Ohm nodes to AST nodes
-const semanticsActions: Record<string, SemanticAction> = {
+export const semanticsActions: Record<string, SemanticAction> = {
   // ============================================================================
   // Module
   // ============================================================================
@@ -1240,8 +1234,10 @@ const semanticsActions: Record<string, SemanticAction> = {
   },
 }
 
-// Create semantics instance and add operations
-export const semantics = grammar.createSemantics().addOperation<unknown>('toAST', semanticsActions)
+// Create semantics instance and add operations (consumer provides grammar)
+export function createSemantics(grammar: ohm.Grammar): ohm.Semantics {
+  return grammar.createSemantics().addOperation<unknown>('toAST', semanticsActions)
+}
 
 // ============================================================================
 // Helper: Apply suffix to build AST node

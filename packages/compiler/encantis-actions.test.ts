@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { grammar, semantics } from './encantis-actions'
+import { grammar, semantics } from './encantis-grammar'
 
 describe('encantis-actions', () => {
   describe('grammar parsing', () => {
