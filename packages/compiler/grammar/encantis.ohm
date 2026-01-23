@@ -19,6 +19,7 @@ Encantis {
 
   TypeAnnotation = ":" Type
   Assign = "=" Expr
+  PatternWithType = Pattern TypeAnnotation?
 
   // ============================================================================
   // Type Declarations
@@ -79,7 +80,7 @@ Encantis {
   // Globals
   // ============================================================================
 
-  GlobalDecl = global ident TypeAnnotation? Assign?
+  GlobalDecl = global PatternWithType Assign?
 
   // ============================================================================
   // Memory
@@ -87,7 +88,9 @@ Encantis {
 
   MemoryDecl = memory intLiteral intLiteral? DataBlock?
   DataBlock = "{" DataEntry* "}"
-  DataEntry = intLiteral "=>" Expr ","?
+  DataEntry = DataEntryKey "=>" Expr ","?
+  DataEntryKey = intLiteral           -- offset
+               | PatternWithType      -- pattern
 
   // ============================================================================
   // Types
@@ -174,9 +177,9 @@ Encantis {
             | AssignmentStmt
             | ExpressionStmt
 
-  LetStmt = let Pattern TypeAnnotation? Assign?
+  LetStmt = let PatternWithType Assign?
 
-  SetStmt = set Pattern TypeAnnotation? Assign
+  SetStmt = set PatternWithType Assign
 
   WhileStmt = while Expr Body
 

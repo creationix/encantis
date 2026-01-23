@@ -188,6 +188,15 @@ semantics.addOperation<unknown>('toAST', {
     return expr.toAST()
   },
 
+  PatternWithType(pattern, typeOpt) {
+    return {
+      kind: 'PatternWithType',
+      pattern: pattern.toAST(),
+      type: first(typeOpt),
+      span: span(this),
+    } as any
+  },
+
   Body_block(block) {
     return block.toAST()
   },
@@ -226,11 +235,12 @@ semantics.addOperation<unknown>('toAST', {
     } as AST.DefDecl
   },
 
-  GlobalDecl(_global, ident, typeOpt, assignOpt) {
+  GlobalDecl(_global, patternWithType, assignOpt) {
+    const pwt = patternWithType.toAST() as any
     return {
       kind: 'GlobalDecl',
-      ident: ident.toAST(),
-      type: first(typeOpt),
+      pattern: pwt.pattern,
+      type: pwt.type,
       value: first(assignOpt),
       span: span(this),
     } as AST.GlobalDecl
@@ -251,13 +261,30 @@ semantics.addOperation<unknown>('toAST', {
     return entries.children.map((e: ohm.Node) => e.toAST())
   },
 
-  DataEntry(offset, _arrow, expr, _comma) {
+  DataEntry(key, _arrow, expr, _comma) {
+    const keyAST = key.toAST() as any
     return {
       kind: 'DataEntry',
-      offset: Number(offset.sourceString),
+      key: keyAST,
       value: expr.toAST(),
       span: span(this),
-    } as AST.DataEntry
+    } as any
+  },
+
+  DataEntryKey_offset(intLit) {
+    return {
+      kind: 'offset',
+      value: Number(intLit.sourceString),
+    }
+  },
+
+  DataEntryKey_pattern(patternWithType) {
+    const pwt = patternWithType.toAST() as any
+    return {
+      kind: 'pattern',
+      pattern: pwt.pattern,
+      type: pwt.type,
+    }
   },
 
   // ============================================================================
@@ -439,21 +466,23 @@ semantics.addOperation<unknown>('toAST', {
     return stmt.toAST()
   },
 
-  LetStmt(_let, pattern, typeOpt, assignOpt) {
+  LetStmt(_let, patternWithType, assignOpt) {
+    const pwt = patternWithType.toAST() as any
     return {
       kind: 'LetStmt',
-      pattern: pattern.toAST(),
-      type: first(typeOpt),
+      pattern: pwt.pattern,
+      type: pwt.type,
       value: first(assignOpt),
       span: span(this),
     } as AST.LetStmt
   },
 
-  SetStmt(_set, pattern, typeOpt, assign) {
+  SetStmt(_set, patternWithType, assign) {
+    const pwt = patternWithType.toAST() as any
     return {
       kind: 'SetStmt',
-      pattern: pattern.toAST(),
-      type: first(typeOpt),
+      pattern: pwt.pattern,
+      type: pwt.type,
       value: assign.toAST(),
       span: span(this),
     } as AST.SetStmt

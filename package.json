@@ -10,11 +10,12 @@
     "packages/extension"
   ],
   "scripts": {
-    "build:cli": "bun --cwd packages/cli run build",
-    "build:ext": "bun --cwd packages/extension run compile",
-    "build:ext-web": "bun --cwd packages/extension run compile-web",
-    "watch:ext": "bun --cwd packages/extension run watch",
-    "watch:ext-web": "bun --cwd packages/extension run watch-web",
+    "build:cli": "echo 'CLI uses source directly - no build needed'",
+    "cli": "bun packages/cli/src/cli.ts",
+    "build:ext": "cd packages/extension && bun run compile",
+    "build:ext-web": "cd packages/extension && bun run compile-web",
+    "watch:ext": "cd packages/extension && bun run watch",
+    "watch:ext-web": "cd packages/extension && bun run watch-web",
     "test": "bun test"
   },
   "dependencies": {},

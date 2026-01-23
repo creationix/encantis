@@ -8,7 +8,7 @@ import { buildMeta, type MetaOutput } from '../meta'
 
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')
-  const vectorDir = 'tools/tests/analyser-vectors'
+  const vectorDir = 'packages/compiler/src/tests/analyser-vectors'
 
   for (const file of glob.scanSync(vectorDir)) {
     const name = file.replace('.ents', '')

@@ -447,6 +447,9 @@ memory 1 {
   16  => x"01 02 03 04",       // raw bytes at offset 16
   32  => (100:i32, 200:i32),   // tuple of i32s at 32
   48  => (x: 1.0, y: 2.0),     // struct at 48
+  numbers => (1, 2, 3),        // tuple of i32s at auto-assigned offset (stored in `numbers`)
+  answer:u64 => 42,            // 8 byte unsigned integer at auto-assigned offset stored in `answer`
+  (name:, age:) => ("Bob", 26) // tuple of (str, i32) with `name` being a fat pointer and `age` a simple pointer.
 }
 ```
 
