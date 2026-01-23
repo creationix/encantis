@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { LineMap, positionKey } from '../position'
+import { LineMap, positionKey } from './position'
 
 describe('LineMap', () => {
   describe('constructor', () => {

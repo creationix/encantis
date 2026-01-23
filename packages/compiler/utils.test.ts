@@ -10,7 +10,7 @@ import {
   serializeFloat,
   serializeF64,
   bigintReplacer,
-} from '../utils'
+} from './utils'
 
 describe('hex encoding', () => {
   test('bytesToHex converts bytes to lowercase hex', () => {

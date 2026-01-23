@@ -1,7 +1,7 @@
 // Type parsing and stringifying library
 // Parses type strings using the Encantis grammar and converts to/from ResolvedType
 
-import { grammar, semantics } from './grammar/actions'
+import { grammar, semantics } from './encantis-actions'
 import type * as AST from './ast'
 import {
   type ResolvedType,

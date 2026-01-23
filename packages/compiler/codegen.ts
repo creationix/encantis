@@ -11,7 +11,7 @@ import {
   unwrap,
   primitiveByteSize,
 } from './types'
-import { dataToWat, buildDataSection } from './data'
+import { dataToWat, buildDataSection } from './data-pack'
 
 // === Context ===
 

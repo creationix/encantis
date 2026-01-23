@@ -3,7 +3,7 @@
 
 import type * as ohm from 'ohm-js'
 import type { Module, Span } from './ast'
-import { grammar, semantics } from './grammar/actions'
+import { grammar, semantics } from './encantis-actions'
 
 // Re-export all AST types for consumers
 export * from './ast'

@@ -3,8 +3,8 @@
 
 import { describe, test, expect } from 'bun:test'
 import { Glob } from 'bun'
-import { parse } from '../parser'
-import { buildMeta, type MetaOutput } from '../meta'
+import { parse } from './parser'
+import { buildMeta, type MetaOutput } from './meta'
 
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')

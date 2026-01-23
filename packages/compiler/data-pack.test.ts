@@ -3,8 +3,8 @@ import {
   layoutLiterals,
   type QualifiedLiteral,
   type LiteralValue,
-} from '../data'
-import { indexed, primitive } from '../types'
+} from './data-pack'
+import { indexed, primitive } from './types'
 
 // Helper to create a u8 indexed type with specifiers
 function u8Indexed(

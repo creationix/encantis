@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { extractComments, findDocComment } from '../comments'
+import { extractComments, findDocComment } from './comments'
 
 describe('extractComments', () => {
   describe('line comments', () => {

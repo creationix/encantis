@@ -1,7 +1,7 @@
 import * as ohm from 'ohm-js'
-import type * as AST from '../ast'
-import type { Span } from '../ast'
-import { hexToBytes } from '../utils'
+import type * as AST from './ast'
+import type { Span } from './ast'
+import { hexToBytes } from './utils'
 
 // Types for access suffixes parsed from grammar
 type AccessSuffix =

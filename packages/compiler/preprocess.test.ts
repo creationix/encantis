@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { parse } from '../parser'
-import type * as AST from '../ast'
-import { collectDefs, inlineDefsExpr, inlineDefs } from '../preprocess'
+import { parse } from './parser'
+import type * as AST from './ast'
+import { collectDefs, inlineDefsExpr, inlineDefs } from './preprocess'
 
 // === Test Helpers ===
 

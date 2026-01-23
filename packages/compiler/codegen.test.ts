@@ -1,15 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { parse } from '../parser'
-import { typecheck } from '../checker'
-import type * as AST from '../ast'
+import { parse } from './parser'
+import { typecheck } from './checker'
+import type * as AST from './ast'
 import {
   exprToWat,
   stmtToWat,
   funcToWat,
   moduleToWat,
   typeToWasm,
-} from '../codegen'
-import { primitive, comptimeInt, comptimeFloat, tuple, field, VOID } from '../types'
+} from './codegen'
+import { primitive, comptimeInt, comptimeFloat, tuple, field, VOID } from './types'
 
 // === Test Helpers ===
 
