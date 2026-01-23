@@ -1,189 +1,289 @@
-# Encantis Formal Grammar
+# Encantis Grammar Reference
 
-This document defines the formal syntax of the Encantis language using Extended Backus-Naur Form (EBNF).
+This document provides examples and human-readable explanations of Encantis syntax.
 
-## Notation
+**Grammar Source of Truth:** [`packages/compiler/src/grammar/encantis.ohm`](../packages/compiler/src/grammar/encantis.ohm)
 
-```
-=           definition
-|           alternation
-[ ... ]     optional (0 or 1)
-{ ... }     repetition (0 or more)
-( ... )     grouping
-"..."       terminal string
-'...'       terminal string
-UPPER       token/terminal
-lower       non-terminal
-```
+For the authoritative grammar definition, always refer to the Ohm grammar file. This document focuses on examples and clarifications.
 
-## Lexical Elements
+---
 
-### Identifiers
+## Identifiers and Naming
 
-```ebnf
-identifier      = lower_start { ident_char }
-type_identifier = upper_start { ident_char }
+[Grammar: `ident`, `typeIdent`](../packages/compiler/src/grammar/encantis.ohm#L244-L251)
 
-lower_start     = 'a'..'z'
-upper_start     = 'A'..'Z'
-ident_char      = 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' | '-'
+**Regular identifiers** (functions, variables) start with lowercase:
+```encantis
+count
+user-name
+my_value
+calculate-total
 ```
 
-### Keywords
+**Type identifiers** start with uppercase:
+```encantis
+Point          // structural type
+Vector3D
+CartesianPoint
 
-```ebnf
-keyword = "if" | "elif" | "else" | "while" | "for" | "in" | "loop" | "match"
-        | "break" | "continue" | "return" | "when"
-        | "func" | "let" | "set" | "global" | "def" | "type"
-        | "import" | "export" | "memory" | "inline" | "unique"
-        | "as"
+@FileHandle    // nominal/unique type (@ prefix)
+@UserId
 ```
 
-### Literals
+Identifiers can contain letters, digits, underscores, and hyphens.
 
-```ebnf
-literal         = number_literal | string_literal | bool_literal
+---
 
-number_literal  = [ "-" ] ( integer_literal | float_literal )
+## Literals
 
-integer_literal = decimal_literal | hex_literal | binary_literal | octal_literal | dozenal_literal
-decimal_literal = digit { digit }
-hex_literal     = "0x" hex_digit { hex_digit }
-binary_literal  = "0b" binary_digit { binary_digit }
-octal_literal   = "0o" octal_digit { octal_digit }
-dozenal_literal = "0d" dozenal_digit { dozenal_digit }
+[Grammar: `literal`](../packages/compiler/src/grammar/encantis.ohm#L189-L225)
 
-float_literal   = digit { digit } "." digit { digit } [ exponent ]
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit }
+### Numbers
 
-string_literal  = utf8_string | char_string | hex_string | base64_string
-utf8_string     = '"' { string_char | escape_seq } '"'
-char_string     = "'" { string_char | escape_seq } "'"
-hex_string      = 'x"' { hex_byte | whitespace } '"'
-base64_string   = 'b"' { base64_char | whitespace } '"'
-
-string_char     = <any UTF-8 char except '"' or '\'>
-escape_seq      = '\' ( 'n' | 't' | 'r' | '\' | '"' | 'x' hex_digit hex_digit )
-hex_byte        = hex_digit hex_digit
-base64_char     = 'A'..'Z' | 'a'..'z' | '0'..'9' | '+' | '/' | '='
-
-bool_literal    = "true" | "false"
-
-digit           = '0'..'9'
-hex_digit       = '0'..'9' | 'a'..'f' | 'A'..'F'
-binary_digit    = '0' | '1'
-octal_digit     = '0'..'7'
-dozenal_digit   = '0'..'9' | 'a'..'b' | 'A'..'B'
+**Integers** support multiple bases:
+```encantis
+42              // decimal
+0xFF            // hexadecimal
+0b1010          // binary (10)
+0o755           // octal (493)
+0d10B           // dozenal/base-12 (143 decimal)
+-123            // negative
 ```
 
-### Comments
-
-```ebnf
-comment         = line_comment | block_comment
-line_comment    = "//" { <any char except newline> } NEWLINE
-block_comment   = "/*" { <any char> } "*/"
+**Floats:**
+```encantis
+3.14159
+-2.5
+1.0e10          // scientific notation
+6.022e23
+-1.5e-10
 ```
+
+### Strings
+
+**UTF-8 strings:**
+```encantis
+"Hello, world!"
+'single quotes work too'
+"escape sequences: \n \t \\ \" \'"
+"\x48\x69"      // hex escapes in UTF-8
+```
+
+**Raw bytes:**
+```encantis
+x"48 65 6C 6C 6F"              // hex bytes (spaces optional)
+b"SGVsbG8gV29ybGQh"             // base64
+```
+
+### Booleans
+
+```encantis
+true
+false
+```
+
+---
+
+## Comments
+
+[Grammar: `comment`](../packages/compiler/src/grammar/encantis.ohm#L261-L265)
+
+```encantis
+// Single-line comment
+
+/* 
+ * Multi-line
+ * block comment
+ */
+ 
+func add(a: i32, b: i32) -> i32 {  // inline comment
+  return a + b
+}
+```
+
+---
 
 ## Top-Level Declarations
 
-```ebnf
-program         = { declaration }
+[Grammar: `Declaration`](../packages/compiler/src/grammar/encantis.ohm#L6-L14)
 
-declaration     = import_decl
-                | export_decl
-                | func_decl
-                | type_decl
-                | unique_decl
-                | def_decl
-                | global_decl
-                | memory_decl
-```
+A module consists of zero or more declarations:
 
 ### Imports
 
-```ebnf
-import_decl     = "import" string_literal string_literal import_item
-                | "import" string_literal "(" { import_group_item } ")"
+[Grammar: `ImportDecl`](../packages/compiler/src/grammar/encantis.ohm#L22-L30)
 
-import_item     = "func" [ identifier ] func_signature
-                | "global" identifier ":" type
-                | "memory" integer_literal
+**Single import:**
+```encantis
+import "env" "log" func(message: *[:0]u8)
+```
 
-import_group_item = string_literal import_item
+**Grouped imports:**
+```encantis
+import "wasi" (
+  "fd_write" func(fd: i32, iovs: *[*]u8, iovs_len: i32, nwritten: *u32) -> i32
+  "fd_read" func(fd: i32, iovs: *[*]u8, iovs_len: i32, nread: *u32) -> i32
+)
+```
+
+**Global and memory imports:**
+```encantis
+import "env" "memory_offset" global g_offset: i32
+import "env" "memory" memory 1
 ```
 
 ### Exports
 
-```ebnf
-export_decl     = "export" string_literal exportable
+[Grammar: `ExportDecl`](../packages/compiler/src/grammar/encantis.ohm#L36-L40)
 
-exportable      = func_decl
-                | global_decl
-                | memory_decl
+```encantis
+// Export a function
+export "add" func add(a: i32, b: i32) -> i32 {
+  return a + b
+}
+
+// Export a global
+export "counter" global counter: i32 = 0
+
+// Export memory
+export "memory" memory 1
 ```
 
 ### Functions
 
-```ebnf
-func_decl       = [ "inline" ] "func" [ identifier ] func_signature func_body
+[Grammar: `FuncDecl`, `FuncSignature`](../packages/compiler/src/grammar/encantis.ohm#L46-L53)
 
-func_signature  = base_type [ "->" type ]        -- input type, optional output (defaults to void)
-
-func_body       = body
+**Basic function:**
+```encantis
+func add(a: i32, b: i32) -> i32 {
+  return a + b
+}
 ```
 
-The function signature uses the same type grammar for both input and output. The output can be omitted (defaults to `()`/void). Named parameters and return values are expressed using composite types: `(x: i32)`.
+**Arrow body** (implicit return):
+```encantis
+func double(x: i32) -> i32 => x * 2
+```
 
-Examples:
+**Named outputs:**
+```encantis
+func divmod(a: i32, b: i32) -> (quotient: i32, remainder: i32) {
+  return (a / b, a % b)
+}
+```
 
-- `func foo i32 -> i32` — single anonymous input/output
-- `func foo(a:i32, b:i32) -> i32` — named inputs, single output
-- `func foo(a:i32, b:i32) -> (q:i32, r:i32)` — named inputs and outputs
-- `func foo()` — no inputs, no return
-- `func foo() -> i32` — no inputs, single output
+**Inline hint:**
+```encantis
+inline func square(x: f32) -> f32 => x * x
+```
+
+**Anonymous/lambda:**
+```encantis
+func(x: i32) -> i32 => x + 1
+```
+
+**No parameters or return:**
+```encantis
+func get_pi() -> f64 => 3.14159
+func print_hello() { /* side effects */ }
+```
+
+**Function types** (right-associative):
+```encantis
+type BinaryOp = (i32, i32) -> i32
+type Mapper = i32 -> i32
+type Curried = i32 -> i32 -> i32    // same as i32 -> (i32 -> i32)
+```
 
 ### Type Declarations
 
-```ebnf
-type_decl       = "type" type_identifier "=" type
-unique_decl     = "unique" type_identifier "=" type
+[Grammar: `TypeDecl`](../packages/compiler/src/grammar/encantis.ohm#L20)
+
+```encantis
+// Type alias
+type Coordinate = (x: f64, y: f64)
+
+// Struct type
+type Point3D = (x: f64, y: f64, z: f64)
+
+// Function type
+type BinaryOp = (i32, i32) -> i32
+
+// Pointer type
+type BytePtr = *u8
+
+// Array type
+type Buffer = [1024]u8
+
+// Nominal type (unique identity)
+type @UserId = u64
 ```
 
-### Definitions
+### Definitions (Constants)
 
-```ebnf
-def_decl        = "def" identifier "=" expression
+[Grammar: `DefDecl`](../packages/compiler/src/grammar/encantis.ohm#L59)
+
+Compile-time constants:
+```encantis
+def pi = 3.14159:f64
+def max_size = 1024:i32
+def greeting = "Hello, world!"
+def enabled = true
 ```
-
-The expression is typically a literal with optional type annotation (e.g., `def pi = 3.14159:f64`).
 
 ### Globals
 
-```ebnf
-global_decl     = "global" identifier [ ":" type ] [ "=" expression ]
+[Grammar: `GlobalDecl`](../packages/compiler/src/grammar/encantis.ohm#L65)
+
+Mutable runtime variables:
+```encantis
+// Uninitialized (zero-initialized)
+global counter: i32
+
+// Initialized
+global max_connections: i32 = 100
+
+// Type inferred
+global greeting = "Hello"
 ```
 
 ### Memory
 
-```ebnf
-memory_decl     = "memory" integer_literal [ integer_literal ] [ "{" { data_entry } "}" ]
-data_entry      = integer_literal "=>" expression [ "," ]
+[Grammar: `MemoryDecl`](../packages/compiler/src/grammar/encantis.ohm#L71-L73)
+
+```encantis
+// Basic memory: 1 page minimum (64KB)
+memory 1
+
+// With max: 1 page min, 16 pages max (1MB)
+memory 1 16
+
+// With static data
+memory 1 {
+  0 => "Hello, world!",       // UTF-8 at address 0
+  14 => 0:u8,                 // null terminator
+  16 => x"48 65 6C 6C 6F",    // raw bytes at 16
+  32 => (100:i32, 200:i32),   // two i32s at 32
+  40 => (x: 1.0, y: 2.0),     // struct at 40
+}
 ```
 
-The expression must be a compile-time constant: literals (string, bytes, number) or tuple/struct literals containing only constants.
+---
 
-Examples:
+## Types
 
-```ents
-memory 1              // 1 page minimum (64KB)
-memory 1 16           // 1 page min, 16 pages max (1MB)
+[Grammar: `Type`, `BaseType`](../packages/compiler/src/grammar/encantis.ohm#L100-L120)
 
+// Memory with max: 1 page min, 16 pages max (1MB)
+memory 1 16
+
+// Memory with static data
 memory 1 {
-  0 => "Hello",             // UTF-8 string at address 0
-  5 => 0:u8,                // null terminator at address 5
-  16 => x"48 65 6C 6C 6F",  // raw bytes at address 16
-  32 => (100:i32, 200:i32), // two i32s serialized at address 32
-  40 => (x: 1.0, y: 2.0),   // struct fields serialized at address 40
+  0 => "Hello, world!",       // UTF-8 string at address 0
+  14 => 0:u8,                 // null terminator
+  16 => x"48 65 6C 6C 6F",    // raw hex bytes at 16
+  32 => (100:i32, 200:i32),   // two i32s at 32
+  40 => (x: 1.0, y: 2.0),     // struct at 40
 }
 ```
 
@@ -197,299 +297,498 @@ base_type       = primitive_type
                 | pointer_type
                 | array_type
                 | composite_type
-                | type_identifier
+---
 
-primitive_type  = "i8" | "i16" | "i32" | "i64"
-                | "u8" | "u16" | "u32" | "u64"
-                | "f32" | "f64"
-                | "bool"
+## Types
 
-pointer_type    = "*" type
+[Grammar: `Type`, `BaseType`](../packages/compiler/src/grammar/encantis.ohm#L100-L120)
 
-array_type      = "[" array_prefix? "]" type
-array_prefix    = "*" sentinel_list?
-               | integer_literal sentinel_list?
-               | sentinel_list
-sentinel_list   = ":" sentinel { ":" sentinel }
-sentinel        = "0" | "?"
+### Primitive Types
 
-composite_type  = "(" [ field_list ] ")"
+```encantis
+i8  i16  i32  i64      // signed integers
+u8  u16  u32  u64      // unsigned integers
+f32  f64               // floats
+bool                   // boolean
+```
 
-field_list      = field { "," field }
-field           = type                           -- anonymous
-                | identifier ":" type            -- named
+### Builtin Types
+
+```encantis
+str                    // UTF-8 string (builtin, not a primitive)
+bytes                  // byte slice (builtin, not a primitive)
+```
+
+### Composite Types (Tuples/Structs)
+
+[Grammar: `BaseType` composite case](../packages/compiler/src/grammar/encantis.ohm#L113)
+
+**Anonymous tuple:**
+```encantis
+(i32, i32)             // 2-tuple
+()                     // unit type (void)
+```
+
+**Named fields (struct):**
+```encantis
+(x: f64, y: f64)       // Point struct
+(name: str, age: u32)  // Person struct
+```
+
+**Mixed (rare):**
+```encantis
+(i32, name: str)       // Positional i32, named str field
+```
+
+### Pointer Types
+
+[Grammar: `BaseType` pointer case](../packages/compiler/src/grammar/encantis.ohm#L109)
+
+```encantis
+*i32                   // pointer to i32
+*Point                 // pointer to Point type
+**u8                   // pointer to pointer
+```
+
+### Array Types
+
+[Grammar: `BaseType` array case, `arrayTypePrefix`](../packages/compiler/src/grammar/encantis.ohm#L110-L118)
+
+**Many-pointers** (unknown length at compile-time):
+```encantis
+[*]u8                  // many-pointer, no length info
+[*:0]u8                // null-terminated (C string style)
+[*:?]u8                // LEB128-prefixed length
+```
+
+**Slices** (fat pointers: ptr + length):
+```encantis
+[]u8                   // slice (pointer + length)
+[:0]u8                 // slice with null sentinel
+```
+
+**Fixed arrays** (stack/inline, by-value):
+```encantis
+[4]f32                 // 4 floats inline
+[1024]u8               // 1024-byte buffer
+[16:0]u8               // 16 bytes + null terminator
+```
+
+**Multi-dimensional arrays:**
+```encantis
+// Flat memory layout:
+[*:0:0]u8              // "hello\0world\0\0" (double null-term)
+[*:?:?]u8              // LEB128 count + per-element LEB128 lengths
+
+// Pointer indirection:
+[*][*:0]u8             // array of pointers to null-term strings
+[][]u8                 // slice of slices
+```
+
+The **left sentinel applies to the outer dimension**:
+```encantis
+[*:0:?]u8              // null-terminated outer, LEB128-prefixed inner
+[*:?:0]u8              // LEB128-prefixed outer, null-term inner
 ```
 
 ### Function Types
 
-Function types use the `->` syntax and can appear anywhere a type is expected:
+[Grammar: `Type` func case](../packages/compiler/src/grammar/encantis.ohm#L100-L101)
 
-| Syntax | Description |
-|--------|-------------|
-| `i32 -> i32` | Single input, single output |
-| `(i32, i32) -> i32` | Multiple inputs (tuple), single output |
-| `(x: i32) -> (result: i32)` | Named input and output |
-| `() -> i32` | No input, single output |
-| `i32 -> ()` | Single input, no output (void) |
-| `(i32 -> i32) -> i32` | Higher-order: function taking a function |
-| `i32 -> i32 -> i32` | Curried: same as `i32 -> (i32 -> i32)` |
-
-The `->` operator is right-associative, enabling natural curried function types.
-
-### Array Types
-
-Arrays use bracket syntax with optional prefixes and sentinel modifiers:
-
-| Syntax | Description | Runtime Representation |
-|--------|-------------|------------------------|
-| `[*]T` | Many-pointer | ptr (unknown length) |
-| `[*:0]T` | Null-terminated many-pointer | ptr (sentinel in data) |
-| `[*:?]T` | LEB128-prefixed many-pointer | ptr (length encoded in data) |
-| `[]T` | Slice | ptr + len |
-| `[:0]T` | Slice with sentinel | ptr + len (sentinel in data) |
-| `[N]T` | Fixed array | N values by-value |
-| `[N:0]T` | Fixed array with sentinel | N values + sentinel |
-
-The `?` sentinel means "how many?" — the length is stored as a LEB128 prefix.
-The `0` sentinel means "stop!" — a null sentinel terminates the array.
-
-### Nested Arrays
-
-Nesting determines flat vs pointer-indirect memory layout:
-
-**Flat memory (no inner pointer):**
-
-- `[*:0:0]u8` — double null-terminated: `"hello\0world\0\0"`
-- `[*:?:?]u8` — LEB128 count + LEB128 length per element
-
-**Pointer indirection (inner pointer type):**
-
-- `[*:0][*:0]u8` — null-term array of pointers to null-term strings
-- `[][]u8` — slice of slices (outer has ptr+len, each element has ptr+len)
-
-Examples:
-
-```ents
-["hello", "world"]:[*:0:0]u8     // Flat: "hello\0world\0\0"
-["hello", "world"]:[*:0]*[:0]u8  // Pointers: [ptr1, ptr2, 0] where ptr1→"hello\0", ptr2→"world\0"
+**Right-associative** (curried by default):
+```encantis
+i32 -> i32                    // Simple function
+(i32, i32) -> i32             // Multiple inputs
+(x: i32) -> (result: i32)     // Named params/returns
+i32 -> i32 -> i32             // Curried: i32 -> (i32 -> i32)
+(i32 -> i32) -> i32           // Higher-order function
 ```
 
-### Inline Arrays and SIMD
+### Compile-Time Types
 
-Fixed arrays `[N]T` store values directly on the stack or in registers:
+[Grammar: `ComptimeType`](../packages/compiler/src/grammar/encantis.ohm#L125-L127)
 
-- `[4]f32` — 4 floats inline (may auto-promote to v128/f32x4)
-- `[2][2]f32` — 2×2 matrix as 4 inline floats
+```encantis
+int(42)                // Comptime integer literal
+float(3.14)            // Comptime float literal
+```
 
-Composite types: `()` (unit), `(i32, i32)` (tuple), `(x:i32, y:i32)` (struct).
+These are used internally for type inference.
+
+---
 
 ## Statements
 
-```ebnf
-body            = block | "=>" expression
-block           = "{" { statement } "}"
+[Grammar: `Statement`](../packages/compiler/src/grammar/encantis.ohm#L133-L141)
 
-statement       = let_stmt
-                | set_stmt
-                | if_stmt
-                | while_stmt
-                | for_stmt
-                | loop_stmt
-                | return_stmt
-                | break_stmt
-                | continue_stmt
-                | assignment_stmt
-                | expression_stmt
+### Let (Variable Declaration)
 
-let_stmt        = "let" pattern [ ":" type ] [ "=" expression ]
-set_stmt        = "set" pattern [ ":" type ] "=" expression
+[Grammar: `LetStmt`](../packages/compiler/src/grammar/encantis.ohm#L143)
 
-if_stmt         = "if" expression body { elif_clause } [ else_clause ]
-elif_clause     = "elif" expression body
-else_clause     = "else" body
-
-while_stmt      = "while" expression body
-
-for_stmt        = "for" for_binding "in" expression body
-for_binding     = identifier [ "," identifier ]
-
-loop_stmt       = "loop" body
-
-return_stmt     = "return" [ expression ] [ "when" expression ]
-break_stmt      = "break" [ "when" expression ]
-continue_stmt   = "continue" [ "when" expression ]
-
-assignment_stmt = lvalue assign_op expression
-assign_op       = "=" | "+=" | "-=" | "*=" | "/=" | "%="
-                | "&=" | "|=" | "^=" | "<<=" | ">>=" | "<<<=" | ">>>="
-                | "+|=" | "-|=" | "*|="
-
-expression_stmt = expression
+```encantis
+let x = 42                    // Type inferred
+let y: i32 = 100              // Explicit type
+let point = (x: 1.0, y: 2.0)  // Struct binding
+let (a, b) = (10, 20)         // Destructuring
 ```
 
-## Patterns
+### Set (Assignment with Declaration)
 
-```ebnf
-pattern         = identifier
-                | "(" pattern_list ")"
+[Grammar: `SetStmt`](../packages/compiler/src/grammar/encantis.ohm#L145)
 
-pattern_list    = pattern_elem { "," pattern_elem }
-
-pattern_elem    = identifier                        -- positional binding
-                | identifier ":"                    -- named shorthand (x: binds field x to var x)
-                | identifier ":" identifier         -- named explicit (x: y binds field x to var y)
-                | "(" pattern_list ")"              -- nested pattern
+Like `let` but emphasizes reassignment intent:
+```encantis
+set count: i32 = 0
+set total = count + 10
 ```
 
-Positional vs named patterns:
+### Assignment
 
-- `(a, b)` — positional: binds by position
-- `(x:, y:)` — named shorthand: binds fields x, y to variables x, y
-- `(x: a, y: b)` — named explicit: binds field x to a, field y to b
+[Grammar: `AssignmentStmt`, `assignOp`](../packages/compiler/src/grammar/encantis.ohm#L157-L163)
+
+```encantis
+x = 42                        // Simple assignment
+count += 1                    // Compound assignment
+total *= 2
+bits &= 0xFF
+value <<= 1                   // Shift left
+value +|= 10                  // Wrapping add
+```
+
+### If/Elif/Else
+
+[Grammar: `IfExpr` (also used as statement)](../packages/compiler/src/grammar/encantis.ohm#L184-L188)
+
+```encantis
+if x > 0 {
+  return x
+} elif x < 0 {
+  return -x
+} else {
+  return 0
+}
+
+// Single-line with arrow body
+if condition => do_something()
+```
+
+### While Loop
+
+[Grammar: `WhileStmt`](../packages/compiler/src/grammar/encantis.ohm#L147)
+
+```encantis
+while count < 10 {
+  count += 1
+}
+```
+
+### For Loop
+
+[Grammar: `ForStmt`, `ForBinding`](../packages/compiler/src/grammar/encantis.ohm#L149-L152)
+
+```encantis
+// Value only
+for item in items {
+  process(item)
+}
+
+// With index
+for i, item in items {
+  print(i, item)
+}
+```
+
+### Infinite Loop
+
+[Grammar: `LoopStmt`](../packages/compiler/src/grammar/encantis.ohm#L154)
+
+```encantis
+loop {
+  if done { break }
+  // ...
+}
+```
+
+### Control Flow
+
+[Grammar: `ReturnStmt`, `BreakStmt`, `ContinueStmt`, `WhenClause`](../packages/compiler/src/grammar/encantis.ohm#L156-L161)
+
+```encantis
+return 42
+return (x, y)                 // Multiple values
+
+break
+continue
+
+// Conditional control flow
+return 0 when x == 0
+break when done
+continue when skip
+```
+
+---
+
+## Patterns (Destructuring)
+
+[Grammar: `Pattern`, `PatternList`, `PatternElem`](../packages/compiler/src/grammar/encantis.ohm#L175-L181)
+
+### Positional Binding
+
+```encantis
+let (a, b) = get_point()      // Bind by position
+let (x, y, z) = vec3
+```
+
+### Named Binding
+
+```encantis
+// Shorthand: field name = variable name
+let (x:, y:) = point
+
+// Explicit: field name : variable name
+let (x: px, y: py) = point
+
+// Mixed
+let (x:, y: pos_y) = point
+```
+
+### Nested Patterns
+
+```encantis
+let (pos: (x:, y:), vel: (vx, vy)) = entity
+```
+
+---
 
 ## Expressions
 
-Expressions are defined by precedence level (lowest to highest).
+[Grammar: `Expr` and precedence hierarchy](../packages/compiler/src/grammar/encantis.ohm#L189-L219)
 
-### Logical
+### Precedence (Low to High)
 
-```ebnf
-expression      = or_expr
-or_expr         = and_expr { "||" and_expr }
-and_expr        = not_expr { "&&" not_expr }
-not_expr        = "!" not_expr | comparison_expr
+1. **Logical OR** `||`
+2. **Logical AND** `&&`
+3. **Logical NOT** `!`
+4. **Comparison** `==` `!=` `<` `>` `<=` `>=`
+5. **Bitwise OR** `|`
+6. **Bitwise XOR** `^`
+7. **Bitwise AND** `&`
+8. **Shift** `<<` `>>` `<<<` `>>>`
+9. **Addition** `+` `-` `+|` `-|` (wrapping)
+10. **Multiplication** `*` `/` `%` `*|` (wrapping)
+11. **Unary** `-` `~` `&` (negate, complement, address-of)
+12. **Cast/Annotation** `as` `:`
+13. **Postfix** `.` `[]` `()`
+
+### Operators by Category
+
+**Logical:**
+```encantis
+a && b                        // Logical AND
+a || b                        // Logical OR
+!a                            // Logical NOT
 ```
 
-### Comparison
-
-```ebnf
-comparison_expr = bitor_expr { compare_op bitor_expr }
-compare_op      = "==" | "!=" | "<" | ">" | "<=" | ">="
+**Comparison:**
+```encantis
+a == b                        // Equal
+a != b                        // Not equal
+a < b                         // Less than
+a <= b                        // Less or equal
+a > b                         // Greater than
+a >= b                        // Greater or equal
 ```
 
-### Bitwise
+**Arithmetic:**
+```encantis
+a + b                         // Add
+a - b                         // Subtract
+a * b                         // Multiply
+a / b                         // Divide
+a % b                         // Remainder
 
-```ebnf
-bitor_expr      = bitxor_expr { "|" bitxor_expr }
-bitxor_expr     = bitand_expr { "^" bitand_expr }
-bitand_expr     = shift_expr { "&" shift_expr }
+// Wrapping (no overflow trap)
+a +| b
+a -| b
+a *| b
 ```
 
-### Shift
-
-```ebnf
-shift_expr      = add_expr { shift_op add_expr }
-shift_op        = "<<" | ">>" | "<<<" | ">>>"
+**Bitwise:**
+```encantis
+a & b                         // AND
+a | b                         // OR
+a ^ b                         // XOR
+~a                            // NOT (complement)
 ```
 
-### Arithmetic
-
-```ebnf
-add_expr        = mul_expr { add_op mul_expr }
-add_op          = "+" | "-" | "+|" | "-|"
-
-mul_expr        = unary_expr { mul_op unary_expr }
-mul_op          = "*" | "/" | "%" | "*|"
+**Shift:**
+```encantis
+a << b                        // Shift left
+a >> b                        // Shift right (arithmetic)
+a <<< b                       // Rotate left
+a >>> b                       // Rotate right
 ```
 
-### Unary
-
-```ebnf
-unary_expr      = "-" unary_expr
-               | "~" unary_expr
-               | "&" unary_expr
-               | cast_expr
+**Unary:**
+```encantis
+-x                            // Negate
+~x                            // Bitwise complement
+&x                            // Address-of (pointer)
 ```
 
-### Cast and Annotation
+### Type Annotation and Cast
 
-```ebnf
-cast_expr       = postfix_expr [ "as" type ]       -- runtime cast
-                | postfix_expr [ ":" type ]        -- type annotation
+[Grammar: `CastExpr`](../packages/compiler/src/grammar/encantis.ohm#L221-L224)
+
+```encantis
+42:i32                        // Type annotation
+3.14:f64
+value as u32                  // Runtime cast
+ptr as *u8                    // Pointer cast
 ```
 
-### Postfix
+### Member Access
 
-```ebnf
-postfix_expr    = primary_expr { postfix_op }
-postfix_op      = "." identifier                    -- field access
-               | "." integer_literal                -- tuple index (.0, .1, ...)
-               | "." "*"                            -- dereference
-               | "." type                           -- type-punned access
-               | "[" expression "]"                 -- index
-               | "(" [ arg_list ] ")"               -- call
+[Grammar: `AccessSuffix`](../packages/compiler/src/grammar/encantis.ohm#L168-L173)
+
+```encantis
+point.x                       // Field access
+tuple.0                       // Tuple index
+ptr.*                         // Dereference
+value.i32                     // Type-punned access
 ```
 
-### Primary
+### Indexing
 
-```ebnf
-primary_expr    = literal
-               | identifier
-               | type_identifier [ "(" [ arg_list ] ")" ]   -- constructor
-               | "(" expression ")"                          -- grouping
-               | "(" [ arg_list ] ")"                        -- tuple/struct literal
-               | if_expr
-               | match_expr
-
-if_expr         = "if" expression body [ elif_expr | else_expr ]
-elif_expr       = "elif" expression body [ elif_expr | else_expr ]
-else_expr       = "else" body
-
-match_expr      = "match" expression "{" { match_arm } "}"
-match_arm       = match_patterns "=>" ( block | expression )
-match_patterns  = match_pattern { "," match_pattern }
-match_pattern   = literal | "_"
-
-arg_list        = arg { "," arg }
-arg             = expression
-               | identifier ":" expression          -- named argument
-               | identifier ":"                     -- shorthand (field: field)
+```encantis
+array[i]                      // Array index
+matrix[i][j]                  // Multi-dimensional
 ```
 
-## L-Values
+### Function Call
 
-```ebnf
-lvalue          = identifier
-               | lvalue "." identifier              -- field
-               | lvalue "." integer_literal         -- tuple index
-               | lvalue "." "*"                     -- deref
-               | lvalue "." type                    -- type-pun
-               | lvalue "[" expression "]"          -- index
-               | pattern                            -- destructuring
+[Grammar: `PostfixOp` call case](../packages/compiler/src/grammar/encantis.ohm#L231)
+
+```encantis
+add(1, 2)                     // Positional args
+Point(x: 1.0, y: 2.0)         // Named args
+Point(x:, y:)                 // Shorthand (x=x, y=y)
 ```
 
-## Operator Precedence (lowest to highest)
+### Literals and Constructors
 
-| Precedence | Operators | Associativity |
-|------------|-----------|---------------|
-| 1 | `\|\|` | left |
-| 2 | `&&` | left |
-| 3 | `!` | prefix |
-| 4 | `==` `!=` `<` `>` `<=` `>=` | left |
-| 5 | `\|` | left |
-| 6 | `^` | left |
-| 7 | `&` | left |
-| 8 | `<<` `>>` `<<<` `>>>` | left |
-| 9 | `+` `-` | left |
-| 10 | `*` `/` `%` | left |
-| 11 | `-` `~` `&` (unary) | prefix |
-| 12 | `as` `:` | left |
-| 13 | `.` `[]` `()` | left (postfix) |
-
-## Builtin Functions
-
-The following identifiers are reserved as builtin functions:
-
-```ebnf
-builtin_func    = "sqrt" | "abs" | "ceil" | "floor" | "trunc" | "nearest"
-                | "min" | "max" | "copysign"
-                | "clz" | "ctz" | "popcnt"
-                | "memory-size" | "memory-grow"
+```encantis
+42                            // Integer
+3.14                          // Float
+"hello"                       // String
+true                          // Boolean
+()                            // Unit
+(1, 2)                        // Tuple
+(x: 1, y: 2)                  // Struct
+[1, 2, 3]                     // Array literal
+Point(1.0, 2.0)               // Type constructor
 ```
 
-## Whitespace and Formatting
+### If Expression
 
-- Whitespace (spaces, tabs, newlines) separates tokens but is otherwise ignored
-- Statements are separated by newlines or can appear on the same line
-- Blocks use `{` and `}` delimiters
-- No semicolons required
+[Grammar: `IfExpr`](../packages/compiler/src/grammar/encantis.ohm#L242-L246)
+
+```encantis
+let result = if x > 0 { 1 } else { -1 }
+
+let sign = if x > 0 => 1
+  elif x < 0 => -1
+  else => 0
+```
+
+### Match Expression
+
+[Grammar: `MatchExpr`, `MatchArm`](../packages/compiler/src/grammar/encantis.ohm#L252-L256)
+
+```encantis
+match value {
+  0 => "zero"
+  1 => "one"
+  2, 3, 4 => "small"
+  _ => "other"
+}
+
+match status {
+  200 => { handle_success() }
+  404 => { handle_not_found() }
+  _ => { handle_error() }
+}
+```
+
+---
+
+## Complete Examples
+
+### Hello World
+
+```encantis
+export "_start" func main() {
+  // WASI example would go here
+}
+```
+
+### Math Functions
+
+```encantis
+func abs(x: f64) -> f64 {
+  if x < 0.0 => -x else => x
+}
+
+func max(a: i32, b: i32) -> i32 {
+  if a > b => a else => b
+}
+
+func fibonacci(n: i32) -> i32 {
+  if n <= 1 => n
+  else => fibonacci(n - 1) + fibonacci(n - 2)
+}
+```
+
+### Structs and Tuples
+
+```encantis
+type Point = (x: f64, y: f64)
+type PolarPoint = (distance: f64, angle: f64)
+
+func to_polar(point: Point) -> PolarPoint {
+  let (x:, y:) = point
+  let distance = sqrt(x * x + y * y)
+  let angle = atan2(y, x)
+  return (distance:, angle:)
+}
+```
+
+### Arrays and Loops
+
+```encantis
+func sum_array(arr: []i32) -> i32 {
+  let total = 0
+  for value in arr {
+    total += value
+  }
+  return total
+}
+
+func find_max(arr: []f64) -> f64 {
+  let result = arr[0]
+  for i, value in arr {
+    if value > result {
+      result = value
+    }
+  }
+  return result
+}
+```
+
+---
+
+For the complete and authoritative grammar, always refer to [`packages/compiler/src/grammar/encantis.ohm`](../packages/compiler/src/grammar/encantis.ohm).
+
+---
+
+For the complete and authoritative grammar, always refer to [`packages/compiler/src/grammar/encantis.ohm`](../packages/compiler/src/grammar/encantis.ohm).

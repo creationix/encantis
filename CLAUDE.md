@@ -7,47 +7,73 @@ Encantis is a programming language that compiles to WebAssembly.
 - **[docs/grammar.md](docs/grammar.md)** - Formal grammar specification (EBNF). Source of truth for syntax.
 - **[docs/encantis.md](docs/encantis.md)** - Language reference. Source of truth for semantics, type system, and behavior.
 
-## Project Structure
+## Project Structure (Bun Monorepo)
 
-- `tools/` - Compiler toolchain (lexer, parser, checker, codegen)
-  - `parser2.ts` - Active parser (matches grammar spec)
-  - `compile.ts` - Compiler entry point and WAT codegen
-  - `checker.ts` - Semantic analysis
-  - `cli.ts` - CLI interface
-- `encantis-ext/` - VS Code extension (syntax highlighting only; LSP disabled pending parser update)
-- `examples/` - Example programs
-- `docs/` - Language documentation
+This is a bun workspace with three packages:
+
+- **`packages/compiler/`** - Core language implementation (`@encantis/compiler`)
+  - `src/parser.ts` - Parser (ohm-js based, matches grammar spec)
+  - `src/codegen.ts` - WAT code generation
+  - `src/checker.ts` - Type checker and semantic analysis
+  - `src/ast.ts` - AST type definitions
+  - `src/grammar/` - Grammar definitions
+  - Exported as library with named exports: `parser`, `checker`, `codegen`, `ast`
+
+- **`packages/cli/`** - Command-line interface (`@encantis/cli`)
+  - `src/cli.ts` - CLI entry point
+  - Depends on `@encantis/compiler` via workspace
+
+- **`packages/extension/`** - VS Code extension (`encantis-vscode-ext`)
+  - Dual-mode: Node.js desktop + WebWorker browser support
+  - LSP server with diagnostics, hover, and language features
+  - Depends on `@encantis/compiler` via workspace
+
+- **`examples/`** - Example programs
+- **`docs/`** - Language documentation
+
+## Setup
+
+```bash
+bun install              # Install dependencies and link workspace packages
+```
 
 ## CLI Usage
 
 ```bash
-bun run tools/cli.ts compile <file.ents>           # Output WAT to stdout
-bun run tools/cli.ts compile <file.ents> -o out.wat  # Output to file
-bun run tools/cli.ts ast <file.ents>               # Output AST as JSON
-bun run tools/cli.ts check <file.ents>             # Check for errors
+# Build the CLI first
+bun run build:cli
+
+# Then use it
+bun packages/cli/dist/cli.js compile <file.ents>              # Output WAT to stdout
+bun packages/cli/dist/cli.js compile <file.ents> -o out.wat   # Output to file
+bun packages/cli/dist/cli.js ast <file.ents>                  # Output AST as JSON
+bun packages/cli/dist/cli.js check <file.ents>                # Check for errors
 ```
 
-## Building Examples
+## Build Commands
 
 ```bash
-cd examples
-make ast    # Parse all .ents to .ast (JSON)
-make wat    # Compile all .ents to .wat
-make wasm   # Compile all .wat to .wasm (requires wat2wasm)
-make all    # Run all three
+bun run build:cli        # Build CLI package
+bun run build:ext        # Build extension (Node.js mode)
+bun run build:ext-web    # Build extension (WebWorker mode)
+bun run watch:ext        # Watch extension (Node.js)
+bun run watch:ext-web    # Watch extension (WebWorker)
+bun test                 # Run tests
 ```
 
 ## Compiler Status
 
 **Working:**
-- Parser (parser2.ts) - fully matches grammar spec
+- Parser (`packages/compiler/src/parser.ts`) - fully matches grammar spec
 - Type checker - basic semantic analysis
-- WAT codegen for `examples/math/trig/trig.ents`:
+- WAT codegen for examples:
   - Imports, exports, functions
   - Struct/tuple types (flattened to multiple wasm values, NOT memory pointers)
   - Named returns, MemberExpr, StructPattern destructuring
   - Binary operations with type inference
   - Folded S-expression WAT output
+
+**Note:** Compiler has some pre-existing TypeScript type errors that need resolution.
 
 **Pending codegen features:**
 - IndexExpr (array access)
