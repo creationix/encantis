@@ -2,6 +2,8 @@
 
 Encantis is a systems programming language that compiles to WebAssembly. It provides direct memory control, explicit types, and zero-cost abstractions while generating compact, efficient WASM modules.
 
+**Grammar source of truth:** [`packages/compiler/src/grammar/encantis.ohm`](../packages/compiler/src/grammar/encantis.ohm) (authoritative). This document is an explanatory guide with examples; consult the Ohm grammar for exact syntax.
+
 ## Sample Programs
 
 ### Hello World
@@ -24,7 +26,7 @@ func main() {
 
 ```ents
 export "fib"
-func fib(n:i32) -> i32 {
+func fib(n:i32)->i32 {
   if n < 2 {
     return n
   }
@@ -32,7 +34,7 @@ func fib(n:i32) -> i32 {
 }
 
 // Or with expression body:
-func fib2(n:i32) -> i32 =>
+func fib2(n:i32)->i32 =>
   if n < 2 { n } else { fib2(n - 1) + fib2(n - 2) }
 ```
 
@@ -40,7 +42,7 @@ func fib2(n:i32) -> i32 =>
 
 ```ents
 // Named return value, for..in iterator over slice
-func sum(arr:[]i32) -> (total:i32) {
+func sum(arr:[]i32)->(total:i32) {
   total = 0
   for elem in arr {
     total += elem
@@ -72,13 +74,15 @@ Hyphens in identifiers are idiomatic for constants and helper functions.
 
 ## Reserved Keywords
 
-The following identifiers are reserved keywords in Encantis:
+The following identifiers are reserved keywords in Encantis (aligns with `encantis.ohm`):
 
 **Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `data`, `inline`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `inline`
 
-**Operators:** `as`
+**Types / Builtins:** `int`, `float`, `str`, `bytes`
+
+**Operator:** `as`
 
 ## Builtin Functions
 
@@ -156,7 +160,7 @@ type point = (x:f32, y:f32)      // ERROR: type names must be capitalized
 
 // Unique types
 type @UserId = i64               // OK: UserId starts with capital
-type @user_id = i64              // ERROR: type names must be capitalized
+type @userId = i64               // ERROR: type names must be capitalized
 ```
 
 This convention allows the parser to distinguish type references from variable references without forward declarations:
@@ -196,19 +200,14 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 ### String Literals
 
 ```ents
-"hello"           // coerces to str, [*:0]u8, *[5]u8, [*:?]u8 or bytes
-"line1\nline2"    // escape sequences: \n \t \r \\ \"
+"hello"           // UTF-8 string literal
+"line1\nline2"    // escape sequences: \n \t \r \\\ \"
 'also a string'   // single quotes work too
 x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
-b"73gafe7FdA"     // base64 bytes
+b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals are stored in the data section and coerce to:
-
-- `str` - UTF-8 text string (the default for string literals)
-- `bytes` - structural slice of bytes (aka `[]u8`)
-- `[*:0]u8` - null-terminated pointer (single i32)
-- `*[N]u8` - pointer to fixed-size array (single i32, length known at compile time)
+Both single and double quoted strings are equivalent. String literals live in the data section. They naturally type-check as the builtin `str` (UTF-8 text) or `bytes` (byte slice) types. Other representations (e.g., null-terminated `[*:0]u8` or fixed-size buffers `*[N]u8`) are only available when explicitly required by the surrounding context and supported by codegen; do not assume implicit pointer coercions beyond `str`/`bytes`.
 
 ### Boolean Literals
 
@@ -434,14 +433,21 @@ func print(msg:str)
 
 ### Memory and Data
 
+Static data is declared inside a `memory` block. Expressions must be comptime (literals or tuples/structs of literals).
+
 ```ents
 // Declare memory (pages of 64KB)
-memory 1                   // 1 page
+memory 1                   // min 1 page
 memory 2 16                // min 2 pages, max 16 pages
 
-// Store data in linear memory
-data 0 "Hello"             // string at offset 0
-data 100 x"01 02 03 04"    // bytes at offset 100
+// Initialize memory with constants
+memory 1 {
+  0   => "Hello",             // UTF-8 string at offset 0
+  6   => 0:u8,                 // null terminator
+  16  => x"01 02 03 04",       // raw bytes at offset 16
+  32  => (100:i32, 200:i32),   // tuple of i32s at 32
+  48  => (x: 1.0, y: 2.0),     // struct at 48
+}
 ```
 
 ## Control Flow
@@ -661,13 +667,16 @@ let (ptr:, len:) = data           // by name
 let (ptr: p, len: n) = data       // renamed bindings
 ```
 
-#### `[N]T` — Fixed-Size Array
+#### `[N]T` — Fixed-Size Array (by-value)
 
-Pointer with compile-time known length:
+By-value, flattened into **N** WebAssembly values (no pointer indirection). Length is a compile-time constant; there is no runtime `len` field. Use `*[N]T` when you need a pointer to fixed storage.
 
 ```ents
-let buf:[64]u8 = 0      // 64-byte buffer
-buf.len                 // comptime constant 64
+let buf:[4]f32 = (0.0, 1.0, 2.0, 3.0)   // expands to 4 wasm locals/params
+// compile-time length = 4
+
+// Pointer to fixed array (single i32 at runtime)
+let p:*[4]f32
 ```
 
 #### `[*:0]T` — Null-Terminated
@@ -688,9 +697,9 @@ cstr.len                 // runtime scan for null, O(n)
 
 ### Type Aliases: Structural vs Unique
 
-Encantis supports two kinds of type aliases with different matching semantics. All user-defined type names must start with a capital letter.
+Encantis supports two kinds of aliases distinguished by the `@` marker on the type name. All user-defined type names must start with a capital letter.
 
-#### `type` — Structural Type
+#### `type Name = …` — Structural Type
 
 Structural types match any value with identical structure. No explicit cast needed:
 
@@ -710,28 +719,28 @@ distance(q, p)                     // ERROR: (f32, f32, f32) is not (f32, f32)
 
 The structure must be exactly identical - extra or missing fields are not allowed.
 
-#### `unique` — Unique Type
+#### `type @Name = …` — Unique / Nominal Type
 
-Unique types require explicit casts even when the underlying structure is identical:
+Unique types use the same `type` keyword but prepend `@` to the type name. They require explicit casts even when the underlying structure is identical:
 
 ```ents
-unique UserId = i64
-unique PostId = i64
+type @UserId = i64
+type @PostId = i64
 
-func get_user(id:UserId) -> User {
+func get_user(id:@UserId) -> User {
   // implementation
 }
 
-let post_id:PostId = 12345
+let post_id:@PostId = 12345
 get_user(post_id)                  // ERROR: PostId is not UserId
-get_user(UserId(post_id))          // OK: explicit cast
+get_user(@UserId(post_id))         // OK: explicit cast
 
 let raw:i64 = 99999
 get_user(raw)                      // ERROR: i64 is not UserId
-get_user(UserId(raw))              // OK: explicit cast
+get_user(@UserId(raw))             // OK: explicit cast
 ```
 
-Use `unique` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
+Use `@Name` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
 
 The built-in `str` type is a unique type based on `[]u8` that assumes UTF-8 encoding. Similarly, `bytes` is a structural alias for `[]u8` for raw binary data.
 
@@ -743,10 +752,10 @@ Structs are tuples with named fields, using the same `()` syntax:
 type Point = (x:f32, y:f32)
 type Rect = (origin:Point, size:(w:f32, h:f32))
 
-unique Color = (r:u8, g:u8, b:u8, a:u8)
+type @Color = (r:u8, g:u8, b:u8, a:u8)
 ```
 
-Like other type aliases, `type` creates structural types and `unique` creates nominal types.
+Structural aliases omit `@`; nominal aliases use `@Name` with the same `type` keyword.
 
 #### Struct Constructors
 
@@ -789,7 +798,7 @@ func length(p:Point) -> f32 {
 }
 
 let p = Point(3.0, 4.0)
-length(p)                  // passes two f32 values on the stack
+Structural aliases omit `@`; nominal aliases use `@Name` with the same `type` keyword.
 length(Point(1.0, 2.0))    // also valid
 ```
 
