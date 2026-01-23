@@ -10,14 +10,12 @@
     "packages/extension"
   ],
   "scripts": {
-    "build": "bun run -r build",
-    "watch": "bun run -r watch",
-    "test": "bun test",
-    "cli": "bun packages/cli/dist/cli.js",
-    "examples:build": "bun scripts/build-examples.ts",
-    "examples:check": "bun scripts/check-examples.ts",
-    "examples:clean": "bun scripts/clean-examples.ts",
-    "examples:all": "bun run examples:clean && bun run examples:check && bun run examples:build"
+    "build:cli": "bun --cwd packages/cli run build",
+    "build:ext": "bun --cwd packages/extension run compile",
+    "build:ext-web": "bun --cwd packages/extension run compile-web",
+    "watch:ext": "bun --cwd packages/extension run watch",
+    "watch:ext-web": "bun --cwd packages/extension run watch-web",
+    "test": "bun test"
   },
   "dependencies": {},
   "devDependencies": {
