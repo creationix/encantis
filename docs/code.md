@@ -176,7 +176,7 @@ Types in the AST mirror the source syntax:
 |----------|---------|-------------|
 | `PrimitiveType` | `i32`, `u8`, `f64`, `bool` | Built-in types |
 | `PointerType` | `*i32`, `*[u8]` | Pointer to type |
-| `IndexedType` | `*[u8]`, `*[!u8]`, `*[10]i32` | Array/slice types |
+| `IndexedType` | `*[u8]`, `*[:0]u8`, `*[10]i32` | Array/slice types |
 | `CompositeType` | `(x: i32, y: i32)` | Tuple/struct types |
 | `TaggedType` | `u8@Index` | Unique tagged type |
 | `TypeRef` | `Point`, `MyType` | Named type reference |
@@ -185,7 +185,7 @@ Types in the AST mirror the source syntax:
 
 ### Example: Array Type AST
 
-**Input:** `*[!u8]` (pointer to null-terminated u8 array)
+**Input:** `*[:0]u8` (pointer to null-terminated u8 array)
 
 **AST:**
 
@@ -196,7 +196,7 @@ Types in the AST mirror the source syntax:
     kind: 'IndexedType',
     element: { kind: 'PrimitiveType', name: 'u8' },
     size: null,           // null = slice, number = fixed, 'comptime' = comptime list
-    specifiers: [{ kind: 'null' }]  // ! = null terminator
+    specifiers: [{ kind: 'null' }]  // = null terminator
   }
 }
 ```
@@ -227,7 +227,7 @@ After type checking, AST types are converted to `ResolvedType` - semantic types 
 type ResolvedType =
   | PrimitiveRT      // i32, u8, f64, bool
   | PointerRT        // *T
-  | IndexedRT        // [T], *[T], *[N;T], *[!T], *[?T]
+  | IndexedRT        // [T], *[T], *[N;T], *[:0]T, *[:?]T
   | TupleRT          // (T, T) or (x: T, y: T)
   | FuncRT           // func(T) -> T
   | VoidRT           // ()
@@ -250,14 +250,14 @@ interface IndexedRT {
     // null     = slice (fat pointer) *[T]
     // 'comptime' = comptime list [T]
   specifiers: IndexSpecifierRT[]
-    // { kind: 'null' }   = null-terminated (!)
-    // { kind: 'prefix', prefixType: 'leb128' } = LEB128 length prefix (?)
+    // { kind: 'null' }   = null-terminated ()
+    // { kind: 'prefix' } = LEB128 length prefix (?)
 }
 ```
 
 ### Example: Type Resolution
 
-**Input:** `let msg: *[!u8] = "hello"`
+**Input:** `let msg: *[:0]u8 = "hello"`
 
 **ResolvedType for `msg`:**
 
@@ -301,7 +301,7 @@ pointer(primitive('u8'))  // → *u8
 // Arrays/slices
 slice(primitive('u8'))         // → *[u8] (fat pointer)
 array(primitive('i32'), 10)    // → [10]i32 (inline fixed)
-indexed(primitive('u8'), null, [{ kind: 'null' }])  // → *[!u8]
+indexed(primitive('u8'), null, [{ kind: 'null' }])  // → *[:0]u8
 
 // Tuples
 tuple([
@@ -366,7 +366,7 @@ For testing or tools that need to parse type strings directly:
 import { parseType, parseTypeAST, astToResolved } from './type-lib'
 
 // Parse directly to ResolvedType
-const type = parseType('*[!u8]')
+const type = parseType('*[:0]u8')
 // → { kind: 'pointer', pointee: { kind: 'indexed', ... } }
 
 // Parse to AST first
@@ -386,7 +386,7 @@ Convert ResolvedType back to a string:
 import { typeToString } from './types'
 
 const type = pointer(indexed(primitive('u8'), null, [{ kind: 'null' }]))
-console.log(typeToString(type))  // → "*[!u8]"
+console.log(typeToString(type))  // → "*[:0]u8"
 ```
 
 ## Type Checker API
@@ -530,12 +530,12 @@ Comptime types represent values known at compile time that can coerce to multipl
 |---------------|---------------|
 | `int(42)` | Any integer type where 42 fits (i8, u8, i32, u64, etc.) |
 | `float(3.14)` | f32 or f64 |
-| `[u8]` (comptime list) | `*[u8]`, `*[!u8]`, `*[?u8]`, `*[N;u8]` |
+| `[u8]` (comptime list) | `*[u8]`, `*[:0]u8`, `*[:?]u8`, `*[N;u8]` |
 
 **Example:**
 
 ```ents
 let a: u8 = 100      // int(100) coerces to u8 ✓
 let b: u8 = 256      // int(256) doesn't fit in u8 ✗
-let c: *[!u8] = "hi" // [u8] coerces to *[!u8] ✓
+let c: *[:0]u8 = "hi" // [u8] coerces to *[:0]u8 ✓
 ```

@@ -1334,7 +1334,7 @@ function resolveAstType(type: AST.Type): ResolvedType {
         element: resolveAstType(type.element),
         size: type.size === 'comptime' ? 'comptime' : type.size === 'inferred' ? null : type.size,
         specifiers: type.specifiers.map((s) =>
-          s.kind === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const, prefixType: s.prefixType },
+          s.kind === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const },
         ),
       }
     case 'CompositeType':

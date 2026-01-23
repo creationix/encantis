@@ -27,10 +27,7 @@ export function parseTypeAST(s: string): AST.Type {
 
 // Convert AST.IndexSpecifier to IndexSpecifierRT
 function astSpecifierToResolved(spec: AST.IndexSpecifier): IndexSpecifierRT {
-  if (spec.kind === 'null') {
-    return { kind: 'null' }
-  }
-  return { kind: 'prefix', prefixType: spec.prefixType }
+  return spec.kind === 'null' ? { kind: 'null' } : { kind: 'prefix' }
 }
 
 // Convert AST.Type to ResolvedType

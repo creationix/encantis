@@ -399,12 +399,10 @@
               "size": null,
               "specifiers": [
                 {
-                  "kind": "prefix",
-                  "prefixType": "u8"
+                  "kind": "prefix"
                 },
                 {
-                  "kind": "prefix",
-                  "prefixType": "u8"
+                  "kind": "prefix"
                 }
               ],
               "span": {
@@ -565,8 +563,7 @@
               "size": null,
               "specifiers": [
                 {
-                  "kind": "prefix",
-                  "prefixType": "leb128"
+                  "kind": "prefix"
                 },
                 {
                   "kind": "null"

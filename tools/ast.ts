@@ -504,14 +504,14 @@ export interface PointerType extends BaseNode {
 // Index specifiers: terminators (!) and length prefixes (?)
 export type IndexSpecifier =
   | { kind: 'null' }
-  | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
+  | { kind: 'prefix' } // LEB128 length prefix
 
 // [T] or *[T] or *[N;T] or *[!T] or *[?T] etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
   size: number | 'inferred' | 'comptime' | null // null = slice *[T], 'comptime' = [T], 'inferred' = *[N;T]
-  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for !
+  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for :0
 }
 
 // () or (type, type) or (name: type, name: type)

@@ -9,13 +9,13 @@ import { indexed, primitive } from '../types'
 // Helper to create a u8 indexed type with specifiers
 function u8Indexed(
   size: number | null,
-  ...specifiers: Array<'null' | 'u8' | 'u16' | 'u32' | 'leb128'>
+  ...specifiers: Array<'null' | 'leb128'>
 ) {
   return indexed(
     primitive('u8'),
     size,
     specifiers.map((s) =>
-      s === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const, prefixType: s },
+      s === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const },
     ),
   )
 }

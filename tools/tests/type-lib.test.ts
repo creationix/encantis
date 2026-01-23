@@ -88,7 +88,7 @@ describe('parseType', () => {
       if (t.kind === 'indexed') {
         expect(t.size).toBe(null)
         expect(t.specifiers).toHaveLength(1)
-        expect(t.specifiers[0]).toMatchObject({ kind: 'prefix', prefixType: 'leb128' })
+        expect(t.specifiers[0]).toMatchObject({ kind: 'prefix' })
       }
     })
 
@@ -204,6 +204,31 @@ describe('parseType', () => {
     test('tuple round-trips', () => {
       const t = parseType('(i32, f64)')
       expect(typeToString(t)).toBe('(i32, f64)')
+    })
+
+    test('slice round-trips', () => {
+      const t = parseType('[]u8')
+      expect(typeToString(t)).toBe('[]u8')
+    })
+
+    test('fixed array round-trips', () => {
+      const t = parseType('[10]u8')
+      expect(typeToString(t)).toBe('[10]u8')
+    })
+
+    test('null-terminated round-trips', () => {
+      const t = parseType('[:0]u8')
+      expect(typeToString(t)).toBe('[:0]u8')
+    })
+
+    test('LEB128-prefixed round-trips', () => {
+      const t = parseType('[:?]u8')
+      expect(typeToString(t)).toBe('[:?]u8')
+    })
+
+    test('nested specifiers round-trip', () => {
+      const t = parseType('[:0:?]u8')
+      expect(typeToString(t)).toBe('[:0:?]u8')
     })
   })
 })

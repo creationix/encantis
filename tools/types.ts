@@ -61,7 +61,7 @@ export interface PointerRT {
 // Index specifiers: terminators (!) and length prefixes (?)
 export type IndexSpecifierRT =
   | { kind: 'null' }
-  | { kind: 'prefix'; prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128' }
+  | { kind: 'prefix' } // LEB128 length prefix
 
 // Indexed type: [T], []T, *[N]T, [*:0]T, [*:?]T, etc.
 // Unified representation for comptime lists, slices, arrays, and prefixed/terminated strings
@@ -69,7 +69,7 @@ export interface IndexedRT {
   kind: 'indexed'
   element: ResolvedType
   size: number | 'comptime' | null // number = fixed *[N]T, null = slice []T, 'comptime' = comptime [T]
-  specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for !
+  specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for :0
 }
 
 // Tuple/struct type: (T, T) or (x: T, y: T)
@@ -199,7 +199,7 @@ export function field(
 // Uses ? (LEB128) prefix for each nesting level - compact for typical sizes
 // e.g., comptime_list of strings → *[?[?u8]] (leb128 count + leb128 length per string)
 export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
-  const LEB128_SPEC: IndexSpecifierRT = { kind: 'prefix', prefixType: 'leb128' }
+  const LEB128_SPEC: IndexSpecifierRT = { kind: 'prefix' }
 
   // Handle comptime_list: find innermost element and count depth
   if (t.kind === 'comptime_list') {
@@ -287,11 +287,7 @@ function defaultizeElement(t: ResolvedType): ResolvedType | null {
 // === Type Equality ===
 
 function specifierEquals(a: IndexSpecifierRT, b: IndexSpecifierRT): boolean {
-  if (a.kind !== b.kind) return false
-  if (a.kind === 'prefix' && b.kind === 'prefix') {
-    return a.prefixType === b.prefixType
-  }
-  return true // both are 'null'
+  return a.kind === b.kind
 }
 
 function specifiersEqual(a: IndexSpecifierRT[], b: IndexSpecifierRT[]): boolean {
@@ -685,12 +681,9 @@ export function typeAssignable(target: ResolvedType, source: ResolvedType): bool
 
 // === Type Formatting ===
 
-// Convert specifier to sentinel encoding (Zig-style)
+// Convert specifier to sentinel encoding
 function specifierToSentinel(s: IndexSpecifierRT): string {
-  if (s.kind === 'null') return '!'
-  if (s.prefixType === 'leb128') return '?'
-  // For other prefix types, fall back to descriptive style
-  return `/${s.prefixType}`
+  return s.kind === 'null' ? '0' : '?'
 }
 
 export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): string {
@@ -706,21 +699,21 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return `*${typeToString(t.pointee, opts)}`
 
     case 'indexed': {
-      // Zig-style syntax: [prefix]T where T is outside the brackets
+      // Array syntax: [specifiers]T where T is the element type
       // - []T for slice (size=null, no specifiers)
       // - [N]T for fixed array (size=N)
-      // - [!]T or [?]T for sentinel types
-      // - [N:!]T for fixed with sentinel
+      // - [:0]T or [:?]T for sentinel types (null-terminated or LEB128-prefixed)
+      // - [N:0]T for fixed with null terminator
       const elem = typeToString(t.element, opts)
       const sentinels = t.specifiers.map(specifierToSentinel).join(':')
       const sentinelPart = sentinels ? `:${sentinels}` : ''
 
       if (typeof t.size === 'number') {
-        // Fixed array: [N]T or [N:!]T
+        // Fixed array: [N]T or [N:0]T
         return `[${t.size}${sentinelPart}]${elem}`
       } else if (t.specifiers.length > 0) {
-        // Sentinel type without size: [!]T or [?]T
-        return `[${sentinels}]${elem}`
+        // Sentinel type without size: [:0]T or [:?]T
+        return `[${sentinelPart}]${elem}`
       } else {
         // Slice: []T (or comptime: []T - can't distinguish in output)
         return `[]${elem}`

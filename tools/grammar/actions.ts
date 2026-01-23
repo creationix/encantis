@@ -351,7 +351,7 @@ semantics.addOperation<unknown>('toAST', {
     if (char.sourceString === '0') {
       return { kind: 'null' } as AST.IndexSpecifier
     } else {
-      return { kind: 'prefix', prefixType: 'leb128' } as AST.IndexSpecifier
+      return { kind: 'prefix' } as AST.IndexSpecifier
     }
   },
 

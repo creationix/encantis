@@ -840,7 +840,7 @@ function encodePointerArray(
 
   const combined = concatBytes(parts)
 
-  // Apply specifiers (e.g., null terminator for !)
+  // Apply specifiers (e.g., null terminator for :0)
   if (specifiers.length > 0) {
     const spec = specifiers[specifiers.length - 1]
     // For pointer arrays, element size is 4 (i32 pointer) or 8 (slice pair)
@@ -910,24 +910,9 @@ function applySpecifier(
     return concatBytes([bytes, terminator])
   }
 
-  // Length/count prefix
-  const prefixBytes = encodeLengthPrefix(spec.prefixType, count || bytes.length)
+  // Length/count prefix (always LEB128)
+  const prefixBytes = encodeLEB128(count || bytes.length)
   return concatBytes([prefixBytes, bytes])
-}
-
-// Encode a length prefix in the specified format
-function encodeLengthPrefix(
-  prefixType: 'u8' | 'u16' | 'u32' | 'u64' | 'leb128',
-  value: number,
-): Uint8Array {
-  if (prefixType === 'leb128') {
-    return encodeLEB128(value)
-  }
-  const bytes = serializeInt(BigInt(value), prefixType)
-  if (!bytes) {
-    throw new Error(`Unknown prefix type: ${prefixType}`)
-  }
-  return bytes
 }
 
 // Get the byte size of an element type (for null terminators)

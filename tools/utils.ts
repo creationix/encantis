@@ -2,18 +2,32 @@
 
 // === Hex encoding/decoding ===
 
+// Lookup table: char code → nibble (0-15, or 255 for invalid)
+const hexCharToNibble = new Uint8Array(128).fill(255)
+for (let i = 0; i < 10; i++) hexCharToNibble[48 + i] = i // '0'-'9'
+for (let i = 10; i < 16; i++) hexCharToNibble[55 + i] = i // 'A'-'F'
+for (let i = 10; i < 16; i++) hexCharToNibble[87 + i] = i // 'a'-'f'
+
+const nibbleToHexChar = new Uint8Array(16)
+for (let i = 0; i < 16; i++) {
+  nibbleToHexChar[i] = i < 10 ? 48 + i : 87 + i // '0'-'9', 'a'-'f'
+}
+
 /** Convert bytes to hex string (lowercase, no prefix) */
 export function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  let result = ''
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i]
+    result += String.fromCharCode(nibbleToHexChar[byte >> 4], nibbleToHexChar[byte & 0xf])
+  }
+  return result
 }
 
 /** Convert hex string to bytes */
 export function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2)
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    bytes[i] = (hexCharToNibble[hex.charCodeAt(i * 2)] << 4) | hexCharToNibble[hex.charCodeAt(i * 2 + 1)]
   }
   return bytes
 }

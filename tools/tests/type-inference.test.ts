@@ -228,7 +228,7 @@ describe('type inference', () => {
         expect(type).toBeDefined()
         // Without annotation, array defaults to comptime with LEB128 encoding
         // TODO: should be pure comptime [int] without encoding
-        expect(typeToString(type!)).toBe('[?]i32')
+        expect(typeToString(type!)).toBe('[:?]i32')
       }
     })
 
@@ -290,7 +290,7 @@ describe('type inference', () => {
       const aOffset = result.symbolDefOffsets.get('a')
       if (aOffset) {
         const aType = result.types.get(typeKey(aOffset, 'IdentPattern'))
-        expect(typeToString(aType!)).toBe('[?]u8')
+        expect(typeToString(aType!)).toBe('[:?]u8')
       }
     })
 
@@ -304,7 +304,7 @@ describe('type inference', () => {
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        expect(typeToString(type!)).toBe('[?:?]u8')
+        expect(typeToString(type!)).toBe('[:?:?]u8')
       }
     })
   })
@@ -321,7 +321,7 @@ describe('type inference', () => {
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
         // TODO: should be pure comptime [u8] without encoding
-        expect(typeToString(type!)).toBe('[?]u8')
+        expect(typeToString(type!)).toBe('[:?]u8')
       }
     })
 
@@ -337,7 +337,7 @@ describe('type inference', () => {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
         // TODO: should be comptime list of comptime lists [[u8]]
         // Currently defaults string elements to LEB128
-        expect(typeToString(type!)).toBe('[?:?]u8')
+        expect(typeToString(type!)).toBe('[:?:?]u8')
       }
     })
 
@@ -352,7 +352,7 @@ describe('type inference', () => {
       const aOffset = result.symbolDefOffsets.get('a')
       const bOffset = result.symbolDefOffsets.get('b')
       if (aOffset && bOffset) {
-        expect(typeToString(result.types.get(typeKey(aOffset, 'IdentPattern'))!)).toBe('[!]u8')
+        expect(typeToString(result.types.get(typeKey(aOffset, 'IdentPattern'))!)).toBe('[:0]u8')
         expect(typeToString(result.types.get(typeKey(bOffset, 'IdentPattern'))!)).toBe('*[5]u8')
       }
     })

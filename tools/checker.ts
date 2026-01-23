@@ -210,7 +210,7 @@ export function concretizeType(
     case 'named':
       return {
         ...u,
-        underlying: concretizeType(u.underlying, opts),
+        type: concretizeType(u.type, opts),
       }
 
     default:
@@ -246,7 +246,7 @@ export function isConcreteType(t: ResolvedType): boolean {
       )
 
     case 'named':
-      return isConcreteType(u.underlying)
+      return isConcreteType(u.type)
 
     default:
       return true
@@ -702,7 +702,7 @@ class CheckContext {
       case 'IndexedType': {
         const element = this.resolveType(type.element)
         const specifiers: IndexSpecifierRT[] = type.specifiers.map((s) =>
-          s.kind === 'null' ? { kind: 'null' } : { kind: 'prefix', prefixType: s.prefixType },
+          s.kind === 'null' ? { kind: 'null' } : { kind: 'prefix' },
         )
         // Handle 'inferred' size - will be filled in by bidirectional checking
         const size = type.size === 'inferred' ? null : type.size
