@@ -1,10 +1,12 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
   layoutLiterals,
-  type QualifiedLiteral,
   type LiteralValue,
+  type QualifiedLiteral,
+  DataSectionBuilder,
 } from './data-pack'
 import { indexed, primitive } from './types'
+import { parse } from './parser'
 
 // Helper to create a u8 indexed type with specifiers
 function u8Indexed(

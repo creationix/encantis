@@ -3,6 +3,9 @@ import type * as AST from './ast'
 import type { Span } from './ast'
 import { hexToBytes } from './utils'
 
+// Per-parse defs map used to inline def values during parsing
+let currentDefs: Map<string, AST.Expr> = new Map()
+
 // Types for access suffixes parsed from grammar
 type AccessSuffix =
   | { kind: 'field'; name: string }
@@ -20,6 +23,135 @@ function span(node: ohm.Node): Span {
     start: node.source.startIdx,
     end: node.source.endIdx,
   }
+}
+
+// Deep-clone an expression, overriding the top-level span
+function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
+  switch (expr.kind) {
+    case 'LiteralExpr':
+      return { ...expr, span: newSpan }
+    case 'IdentExpr':
+      return { ...expr, span: newSpan }
+    case 'BinaryExpr':
+      return {
+        ...expr,
+        left: cloneExprWithSpan(expr.left, expr.left.span),
+        right: cloneExprWithSpan(expr.right, expr.right.span),
+        span: newSpan,
+      }
+    case 'UnaryExpr':
+      return {
+        ...expr,
+        operand: cloneExprWithSpan(expr.operand, expr.operand.span),
+        span: newSpan,
+      }
+    case 'CallExpr':
+      return {
+        ...expr,
+        callee: cloneExprWithSpan(expr.callee, expr.callee.span),
+        args: expr.args.map((a) => ({
+          ...a,
+          value: a.value ? cloneExprWithSpan(a.value, a.value.span) : undefined,
+        })),
+        span: newSpan,
+      }
+    case 'MemberExpr':
+      return {
+        ...expr,
+        object: cloneExprWithSpan(expr.object, expr.object.span),
+        span: newSpan,
+      }
+    case 'IndexExpr':
+      return {
+        ...expr,
+        object: cloneExprWithSpan(expr.object, expr.object.span),
+        index: cloneExprWithSpan(expr.index, expr.index.span),
+        span: newSpan,
+      }
+    case 'IfExpr':
+      return {
+        ...expr,
+        condition: cloneExprWithSpan(expr.condition, expr.condition.span),
+        thenBranch: cloneFuncBodyWithSpan(expr.thenBranch),
+        elifs: expr.elifs.map((e) => ({
+          ...e,
+          condition: cloneExprWithSpan(e.condition, e.condition.span),
+          thenBranch: cloneFuncBodyWithSpan(e.thenBranch),
+        })),
+        else_: expr.else_ ? cloneFuncBodyWithSpan(expr.else_) : undefined,
+        span: newSpan,
+      }
+    case 'TupleExpr':
+      return {
+        ...expr,
+        elements: expr.elements.map((el) => ({
+          ...el,
+          value: el.value ? cloneExprWithSpan(el.value, el.value.span) : undefined,
+        })),
+        span: newSpan,
+      }
+    case 'GroupExpr':
+      return { ...expr, expr: cloneExprWithSpan(expr.expr, expr.expr.span), span: newSpan }
+    case 'CastExpr':
+      return { ...expr, expr: cloneExprWithSpan(expr.expr, expr.expr.span), span: newSpan }
+    case 'AnnotationExpr':
+      return { ...expr, expr: cloneExprWithSpan(expr.expr, expr.expr.span), span: newSpan }
+    case 'ArrayExpr':
+      return { ...expr, elements: expr.elements.map((e) => cloneExprWithSpan(e, e.span)), span: newSpan }
+    case 'MatchExpr':
+      return {
+        ...expr,
+        subject: cloneExprWithSpan(expr.subject, expr.subject.span),
+        arms: expr.arms.map((arm) => ({
+          ...arm,
+          body: cloneMatchBodyWithSpan(arm.body),
+        })),
+        span: newSpan,
+      }
+    default:
+      return { ...expr, span: newSpan }
+  }
+}
+
+function cloneFuncBodyWithSpan(body: AST.FuncBody): AST.FuncBody {
+  if (body.kind === 'ArrowBody') {
+    return { ...body, expr: cloneExprWithSpan(body.expr, body.expr.span) }
+  }
+  return { ...body, stmts: body.stmts.map((s) => cloneStmtWithSpan(s)) }
+}
+
+function cloneStmtWithSpan(stmt: AST.Statement): AST.Statement {
+  switch (stmt.kind) {
+    case 'LetStmt':
+      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : undefined }
+    case 'SetStmt':
+      return { ...stmt, value: cloneExprWithSpan(stmt.value, stmt.value.span) }
+    case 'AssignmentStmt':
+      return {
+        ...stmt,
+        target: cloneExprWithSpan(stmt.target, stmt.target.span) as AST.LValue,
+        value: cloneExprWithSpan(stmt.value, stmt.value.span),
+      }
+    case 'ReturnStmt':
+      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : undefined }
+    case 'IfStmt':
+      return {
+        ...stmt,
+        condition: cloneExprWithSpan(stmt.condition, stmt.condition.span),
+        thenBranch: cloneFuncBodyWithSpan(stmt.thenBranch),
+        else_: stmt.else_ ? cloneFuncBodyWithSpan(stmt.else_) : undefined,
+      }
+    case 'WhileStmt':
+      return { ...stmt, condition: cloneExprWithSpan(stmt.condition, stmt.condition.span), body: cloneFuncBodyWithSpan(stmt.body) }
+    default:
+      return { ...stmt }
+  }
+}
+
+function cloneMatchBodyWithSpan(body: AST.Expr | AST.FuncBody): AST.Expr | AST.FuncBody {
+  return 'kind' in body
+    ? (body.kind === 'Block' || body.kind === 'ArrowBody' ? cloneFuncBodyWithSpan(body as AST.FuncBody) : cloneExprWithSpan(body as AST.Expr, (body as AST.Expr).span))
+    : body
 }
 
 // Helper to get first child if present
@@ -46,6 +178,8 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   // Module(decls: Iteration<Declaration>) -> Module
   Module(decls): AST.Module {
+    // Reset defs for this module parse
+    currentDefs = new Map()
     return {
       kind: 'Module',
       decls: decls.children.map((d: OhmNode) => d.toAST()),
@@ -228,10 +362,13 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   DefDecl(_def, ident, assign) {
+    const value = assign.toAST() as AST.Expr
+    // Record def value for subsequent inlining
+    currentDefs.set(ident.toAST() as string, value)
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
-      value: assign.toAST(),
+      value,
       span: span(this),
     } as AST.DefDecl
   },
@@ -902,9 +1039,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
   PrimaryExpr(expr) {
     // Handle ident specially - it returns a string but needs to be IdentExpr here
     if (expr.ctorName === 'ident') {
+      const name = expr.toAST() as string
+      const defValue = currentDefs.get(name)
+      if (defValue) {
+        // Inline the def value, retargeting the span to the identifier's span
+        return cloneExprWithSpan(defValue, span(expr))
+      }
       return {
         kind: 'IdentExpr',
-        name: expr.toAST(),
+        name,
         span: span(expr),
       } as AST.IdentExpr
     }

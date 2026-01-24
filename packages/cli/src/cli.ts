@@ -5,7 +5,6 @@ import { typecheck } from '@encantis/compiler/checker'
 import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat } from '@encantis/compiler/codegen'
 import { bigintReplacer } from '@encantis/compiler/utils'
-import { inlineDefs } from '@encantis/compiler/preprocess'
 
 const args = process.argv.slice(2)
 
@@ -184,11 +183,8 @@ switch (command) {
       process.exit(1)
     }
 
-    // Preprocess: inline def constants
-    const preprocessed = inlineDefs(result.module)
-
     // Type check (includes concretization)
-    const checkResult = typecheck(preprocessed)
+    const checkResult = typecheck(result.module)
 
     if (checkResult.errors.length > 0) {
       for (const error of checkResult.errors) {

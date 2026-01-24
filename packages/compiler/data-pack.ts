@@ -706,8 +706,7 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
       const bytes = serializeInt(lit.value, elementType.name)
       if (bytes) return bytes
     }
-    // Default to i32
-    return serializeI32(Number(lit.value))
+    throw new TypeError(`Cannot serialize int literal to type ${elementType.kind}`)
   }
 
   if (lit.kind === 'float') {
@@ -715,15 +714,14 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
       const bytes = serializeFloat(lit.value, elementType.name)
       if (bytes) return bytes
     }
-    // Default to f64
-    return serializeF64(lit.value)
+    throw new TypeError(`Cannot serialize float literal to type ${elementType.kind}`)
   }
 
   if (lit.kind === 'bool') {
     return new Uint8Array([lit.value ? 1 : 0])
   }
 
-  throw new Error(`Cannot convert ${lit.kind} literal to bytes`)
+  throw new TypeError(`Cannot serialize unknown literal`)
 }
 
 // Apply all specifiers to bytes (inside-out order)
