@@ -462,6 +462,12 @@ class CheckContext {
   }
 
   collectGlobal(decl: AST.GlobalDecl): void {
+    const name = this.patternIdent(decl.pattern)
+    if (!name) {
+      this.error(decl.pattern.span.start, 'global destructuring is not supported yet')
+      return
+    }
+
     let type: ResolvedType
     if (decl.type) {
       type = this.resolveType(decl.type)
@@ -471,8 +477,10 @@ class CheckContext {
       this.error(decl.span.start, 'global needs type annotation or initializer')
       type = primitive('i32')
     }
-    this.moduleScope.symbols.set(decl.ident, { kind: 'global', type })
-    this.recordDefinition(decl.ident, decl.span.start)
+
+    this.moduleScope.symbols.set(name, { kind: 'global', type })
+    this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
+    this.recordDefinition(name, decl.pattern.span.start)
   }
 
   // === Second Pass: Check Declarations ===
@@ -610,6 +618,11 @@ class CheckContext {
         // TODO: destructure tuple fields
         break
     }
+  }
+
+  private patternIdent(pattern: AST.Pattern): string | null {
+    if (pattern.kind === 'IdentPattern') return pattern.name
+    return null
   }
 
   // Convert comptime types to concrete defaults for storage

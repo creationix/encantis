@@ -130,7 +130,7 @@ export interface DefDecl extends BaseNode {
 // global name: type = expr
 export interface GlobalDecl extends BaseNode {
   kind: 'GlobalDecl'
-  ident: string
+  pattern: Pattern
   type: Type | null
   value: Expr | null
 }
@@ -550,4 +550,272 @@ export interface FuncType extends BaseNode {
   kind: 'FuncType'
   input: Type   // The input type
   output: Type  // The output type
+}
+
+// ============================================================================
+// AST Visitor Pattern
+// ============================================================================
+
+/**
+ * Visitor interface for traversing the AST.
+ * All methods are optional - implement only the ones you need.
+ * Return false from any method to skip traversing children of that node.
+ */
+export interface ASTVisitor {
+  // Declarations
+  visitModule?(node: Module): void | false
+  visitImportDecl?(node: ImportDecl): void | false
+  visitExportDecl?(node: ExportDecl): void | false
+  visitFuncDecl?(node: FuncDecl): void | false
+  visitTypeDecl?(node: TypeDecl): void | false
+  visitDefDecl?(node: DefDecl): void | false
+  visitGlobalDecl?(node: GlobalDecl): void | false
+  visitMemoryDecl?(node: MemoryDecl): void | false
+
+  // Statements
+  visitLetStmt?(node: LetStmt): void | false
+  visitSetStmt?(node: SetStmt): void | false
+  visitWhileStmt?(node: WhileStmt): void | false
+  visitForStmt?(node: ForStmt): void | false
+  visitLoopStmt?(node: LoopStmt): void | false
+  visitReturnStmt?(node: ReturnStmt): void | false
+  visitBreakStmt?(node: BreakStmt): void | false
+  visitContinueStmt?(node: ContinueStmt): void | false
+  visitAssignmentStmt?(node: AssignmentStmt): void | false
+  visitExpressionStmt?(node: ExpressionStmt): void | false
+
+  // Expressions
+  visitBinaryExpr?(node: BinaryExpr): void | false
+  visitUnaryExpr?(node: UnaryExpr): void | false
+  visitCastExpr?(node: CastExpr): void | false
+  visitAnnotationExpr?(node: AnnotationExpr): void | false
+  visitCallExpr?(node: CallExpr): void | false
+  visitMemberExpr?(node: MemberExpr): void | false
+  visitIndexExpr?(node: IndexExpr): void | false
+  visitIdentExpr?(node: IdentExpr): void | false
+  visitLiteralExpr?(node: LiteralExpr): void | false
+  visitArrayExpr?(node: ArrayExpr): void | false
+  visitIfExpr?(node: IfExpr): void | false
+  visitMatchExpr?(node: MatchExpr): void | false
+  visitTupleExpr?(node: TupleExpr): void | false
+  visitGroupExpr?(node: GroupExpr): void | false
+
+  // Bodies
+  visitBlock?(node: Block): void | false
+  visitArrowBody?(node: ArrowBody): void | false
+}
+
+/**
+ * Walk the AST starting from a module, calling visitor methods for each node.
+ * Traversal is depth-first, pre-order.
+ */
+export function walkModule(module: Module, visitor: ASTVisitor): void {
+  if (visitor.visitModule?.(module) === false) return
+
+  for (const decl of module.decls) {
+    walkDeclaration(decl, visitor)
+  }
+}
+
+function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
+  switch (decl.kind) {
+    case 'ImportDecl':
+      visitor.visitImportDecl?.(decl)
+      break
+    case 'ExportDecl':
+      if (visitor.visitExportDecl?.(decl) !== false) {
+        walkDeclaration(decl.item, visitor)
+      }
+      break
+    case 'FuncDecl':
+      if (visitor.visitFuncDecl?.(decl) !== false) {
+        walkFuncBody(decl.body, visitor)
+      }
+      break
+    case 'TypeDecl':
+      visitor.visitTypeDecl?.(decl)
+      break
+    case 'DefDecl':
+      if (visitor.visitDefDecl?.(decl) !== false) {
+        walkExpr(decl.value, visitor)
+      }
+      break
+    case 'GlobalDecl':
+      if (visitor.visitGlobalDecl?.(decl) !== false) {
+        if (decl.value) walkExpr(decl.value, visitor)
+      }
+      break
+    case 'MemoryDecl':
+      if (visitor.visitMemoryDecl?.(decl) !== false) {
+        for (const entry of decl.data) {
+          walkExpr(entry.value, visitor)
+        }
+      }
+      break
+  }
+}
+
+function walkFuncBody(body: FuncBody, visitor: ASTVisitor): void {
+  if (body.kind === 'Block') {
+    if (visitor.visitBlock?.(body) !== false) {
+      for (const stmt of body.stmts) {
+        walkStatement(stmt, visitor)
+      }
+    }
+  } else {
+    if (visitor.visitArrowBody?.(body) !== false) {
+      walkExpr(body.expr, visitor)
+    }
+  }
+}
+
+function walkStatement(stmt: Statement, visitor: ASTVisitor): void {
+  switch (stmt.kind) {
+    case 'LetStmt':
+      if (visitor.visitLetStmt?.(stmt) !== false) {
+        if (stmt.value) walkExpr(stmt.value, visitor)
+      }
+      break
+    case 'SetStmt':
+      if (visitor.visitSetStmt?.(stmt) !== false) {
+        walkExpr(stmt.value, visitor)
+      }
+      break
+    case 'WhileStmt':
+      if (visitor.visitWhileStmt?.(stmt) !== false) {
+        walkExpr(stmt.condition, visitor)
+        walkFuncBody(stmt.body, visitor)
+      }
+      break
+    case 'ForStmt':
+      if (visitor.visitForStmt?.(stmt) !== false) {
+        walkExpr(stmt.iterable, visitor)
+        walkFuncBody(stmt.body, visitor)
+      }
+      break
+    case 'LoopStmt':
+      if (visitor.visitLoopStmt?.(stmt) !== false) {
+        walkFuncBody(stmt.body, visitor)
+      }
+      break
+    case 'ReturnStmt':
+      if (visitor.visitReturnStmt?.(stmt) !== false) {
+        if (stmt.value) walkExpr(stmt.value, visitor)
+        if (stmt.when) walkExpr(stmt.when, visitor)
+      }
+      break
+    case 'BreakStmt':
+      if (visitor.visitBreakStmt?.(stmt) !== false) {
+        if (stmt.when) walkExpr(stmt.when, visitor)
+      }
+      break
+    case 'ContinueStmt':
+      if (visitor.visitContinueStmt?.(stmt) !== false) {
+        if (stmt.when) walkExpr(stmt.when, visitor)
+      }
+      break
+    case 'AssignmentStmt':
+      if (visitor.visitAssignmentStmt?.(stmt) !== false) {
+        walkExpr(stmt.value, visitor)
+      }
+      break
+    case 'ExpressionStmt':
+      if (visitor.visitExpressionStmt?.(stmt) !== false) {
+        walkExpr(stmt.expr, visitor)
+      }
+      break
+  }
+}
+
+function walkExpr(expr: Expr, visitor: ASTVisitor): void {
+  switch (expr.kind) {
+    case 'BinaryExpr':
+      if (visitor.visitBinaryExpr?.(expr) !== false) {
+        walkExpr(expr.left, visitor)
+        walkExpr(expr.right, visitor)
+      }
+      break
+    case 'UnaryExpr':
+      if (visitor.visitUnaryExpr?.(expr) !== false) {
+        walkExpr(expr.operand, visitor)
+      }
+      break
+    case 'CastExpr':
+      if (visitor.visitCastExpr?.(expr) !== false) {
+        walkExpr(expr.expr, visitor)
+      }
+      break
+    case 'AnnotationExpr':
+      if (visitor.visitAnnotationExpr?.(expr) !== false) {
+        walkExpr(expr.expr, visitor)
+      }
+      break
+    case 'CallExpr':
+      if (visitor.visitCallExpr?.(expr) !== false) {
+        walkExpr(expr.callee, visitor)
+        for (const arg of expr.args) {
+          if (arg.value) walkExpr(arg.value, visitor)
+        }
+      }
+      break
+    case 'MemberExpr':
+      if (visitor.visitMemberExpr?.(expr) !== false) {
+        walkExpr(expr.object, visitor)
+      }
+      break
+    case 'IndexExpr':
+      if (visitor.visitIndexExpr?.(expr) !== false) {
+        walkExpr(expr.object, visitor)
+        walkExpr(expr.index, visitor)
+      }
+      break
+    case 'IdentExpr':
+      visitor.visitIdentExpr?.(expr)
+      break
+    case 'LiteralExpr':
+      visitor.visitLiteralExpr?.(expr)
+      break
+    case 'ArrayExpr':
+      if (visitor.visitArrayExpr?.(expr) !== false) {
+        for (const elem of expr.elements) {
+          walkExpr(elem, visitor)
+        }
+      }
+      break
+    case 'IfExpr':
+      if (visitor.visitIfExpr?.(expr) !== false) {
+        walkExpr(expr.condition, visitor)
+        walkFuncBody(expr.thenBranch, visitor)
+        for (const elif of expr.elifs) {
+          walkExpr(elif.condition, visitor)
+          walkFuncBody(elif.thenBranch, visitor)
+        }
+        if (expr.else_) walkFuncBody(expr.else_, visitor)
+      }
+      break
+    case 'MatchExpr':
+      if (visitor.visitMatchExpr?.(expr) !== false) {
+        walkExpr(expr.subject, visitor)
+        for (const arm of expr.arms) {
+          if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
+            walkFuncBody(arm.body, visitor)
+          } else {
+            walkExpr(arm.body, visitor)
+          }
+        }
+      }
+      break
+    case 'TupleExpr':
+      if (visitor.visitTupleExpr?.(expr) !== false) {
+        for (const elem of expr.elements) {
+          if (elem.value) walkExpr(elem.value, visitor)
+        }
+      }
+      break
+    case 'GroupExpr':
+      if (visitor.visitGroupExpr?.(expr) !== false) {
+        walkExpr(expr.expr, visitor)
+      }
+      break
+  }
 }

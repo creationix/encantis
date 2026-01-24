@@ -279,16 +279,18 @@ class MetaBuilder {
   }
 
   private collectGlobal(decl: AST.GlobalDecl): void {
-    const sym = this.checkResult.symbols.get(decl.ident)
+    const name = this.patternIdent(decl.pattern)
+    if (!name) return
+
+    const sym = this.checkResult.symbols.get(name)
     if (!sym || sym.kind !== 'global') return
 
-    // Find the global name offset
     const offset = this.findGlobalIdentOffset(decl)
-    this.addSymbol(decl.ident, 'global', sym.type, offset)
+    this.addSymbol(name, 'global', sym.type, offset)
   }
 
   private findGlobalIdentOffset(decl: AST.GlobalDecl): number {
-    return this.findKeywordIdentOffset(decl.span.start, decl.span.end, 'global')
+    return decl.pattern.span.start
   }
 
   private addSymbol(
@@ -632,13 +634,21 @@ class MetaBuilder {
   }
 
   private generateHintsForGlobal(decl: AST.GlobalDecl): void {
-    const symbolIndex = this.symbolIndexByName.get(decl.ident)
-    if (symbolIndex !== undefined) {
-      const offset = this.findGlobalIdentOffset(decl)
-      this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
+    const name = this.patternIdent(decl.pattern)
+    if (name) {
+      const symbolIndex = this.symbolIndexByName.get(name)
+      if (symbolIndex !== undefined) {
+        const offset = this.findGlobalIdentOffset(decl)
+        this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
+      }
     }
     if (decl.type) this.generateHintsForTypeExpr(decl.type)
     if (decl.value) this.generateHintsForExpr(decl.value)
+  }
+
+  private patternIdent(pattern: AST.Pattern): string | null {
+    if (pattern.kind === 'IdentPattern') return pattern.name
+    return null
   }
 
   private addHint(

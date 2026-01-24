@@ -29,7 +29,13 @@ function first<T>(iter: ohm.IterationNode): T | null {
 
 // Type for semantics operations - each rule handler receives Ohm nodes and returns AST nodes
 type OhmNode = ohm.Node
-type SemanticAction = (...args: any[]) => any
+type SemanticAction = (this: OhmNode, ...args: OhmNode[]) => unknown
+type PatternWithType = {
+  kind: 'PatternWithType'
+  pattern: AST.Pattern
+  type: AST.Type | null
+  span: Span
+}
 
 // Semantics operations object with typed handlers
 // Each method corresponds to a grammar rule and transforms Ohm nodes to AST nodes
@@ -43,7 +49,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'Module',
       decls: decls.children.map((d: OhmNode) => d.toAST()),
-      span: span(this as any),
+      span: span(this),
     }
   },
 
@@ -189,7 +195,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       pattern: pattern.toAST(),
       type: first(typeOpt),
       span: span(this),
-    } as any
+    } satisfies PatternWithType
   },
 
   Body_block(block) {
@@ -231,12 +237,13 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   GlobalDecl(_global, patternWithType, assignOpt) {
-    const pwt = patternWithType.toAST() as any
+    const pwt = patternWithType.toAST() as PatternWithType
+    const value = first<AST.Expr>(assignOpt)
     return {
       kind: 'GlobalDecl',
       pattern: pwt.pattern,
       type: pwt.type,
-      value: first(assignOpt),
+      value,
       span: span(this),
     } as AST.GlobalDecl
   },
@@ -462,23 +469,25 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   LetStmt(_let, patternWithType, assignOpt): AST.LetStmt {
-    const pwt = patternWithType.toAST() as any
+    const pwt = patternWithType.toAST() as PatternWithType
+    const value = first<AST.Expr>(assignOpt)
     return {
       kind: 'LetStmt',
       pattern: pwt.pattern,
       type: pwt.type,
-      value: first(assignOpt),
+      value,
       span: span(this),
     } as AST.LetStmt
   },
 
   SetStmt(_set, patternWithType, assign): AST.SetStmt {
-    const pwt = patternWithType.toAST() as any
+    const pwt = patternWithType.toAST() as PatternWithType
+    const value = assign.toAST() as AST.Expr
     return {
       kind: 'SetStmt',
       pattern: pwt.pattern,
       type: pwt.type,
-      value: assign.toAST(),
+      value,
       span: span(this),
     } as AST.SetStmt
   },

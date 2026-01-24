@@ -1291,14 +1291,15 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: Codegen
 }
 
 function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
-  const type = ctx.types.get(typeKey(decl.span.start, decl.kind))
+  const name = patternIdent(decl.pattern)
+  const type = ctx.types.get(typeKey(decl.pattern.span.start, decl.pattern.kind))
   if (!type) {
-    throw new Error(`Missing type for global '${decl.ident}' at offset ${decl.span.start}`)
+    throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
   }
   const wasmType = typeToWasmSingle(type)
   const init = decl.value ? exprToWat(decl.value, ctx) : `(${wasmType}.const 0)`
 
-  return `  (global $${decl.ident} (mut ${wasmType}) ${init})`
+  return `  (global $${name} (mut ${wasmType}) ${init})`
 }
 
 function exportToWat(decl: AST.ExportDecl, _ctx: CodegenContext): string {
@@ -1311,7 +1312,8 @@ function exportToWat(decl: AST.ExportDecl, _ctx: CodegenContext): string {
   }
 
   if (item.kind === 'GlobalDecl') {
-    return `  (export "${name}" (global $${item.ident}))`
+    const globalName = patternIdent(item.pattern)
+    return `  (export "${name}" (global $${globalName}))`
   }
 
   if (item.kind === 'MemoryDecl') {
@@ -1319,6 +1321,11 @@ function exportToWat(decl: AST.ExportDecl, _ctx: CodegenContext): string {
   }
 
   return ''
+}
+
+function patternIdent(pattern: AST.Pattern): string {
+  if (pattern.kind === 'IdentPattern') return pattern.name
+  throw new Error('global destructuring is not supported yet')
 }
 
 // Helper to convert AST type to resolved type (simplified)

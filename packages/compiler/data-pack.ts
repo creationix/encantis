@@ -2,6 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
+import { walkModule } from './ast'
 import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
 import {
   bytesToHex,
@@ -76,17 +77,23 @@ export class DataSectionBuilder {
 
   build(module: AST.Module): void {
     // First pass: collect explicit data blocks from memory declarations
-    for (const decl of module.decls) {
-      this.collectExplicitData(decl)
-    }
+    walkModule(module, {
+      visitMemoryDecl: (decl) => {
+        this.collectMemoryData(decl)
+      },
+    })
 
     // Calculate where automatic data starts (after explicit data)
     this.currentOffset = this.calculateAutoDataStart()
 
     // Second pass: collect and intern all string literals
-    for (const decl of module.decls) {
-      this.collectLiterals(decl)
-    }
+    walkModule(module, {
+      visitLiteralExpr: (expr) => {
+        if (expr.value.kind === 'string') {
+          this.internLiteral(expr)
+        }
+      },
+    })
   }
 
   result(): DataSection {
@@ -142,14 +149,6 @@ export class DataSectionBuilder {
   }
 
   // Collect explicit data from memory declarations
-  private collectExplicitData(decl: AST.Declaration): void {
-    if (decl.kind === 'ExportDecl' && decl.item.kind === 'MemoryDecl') {
-      this.collectMemoryData(decl.item)
-    } else if (decl.kind === 'MemoryDecl') {
-      this.collectMemoryData(decl)
-    }
-  }
-
   private collectMemoryData(mem: AST.MemoryDecl): void {
     for (const entry of mem.data) {
       // Get bytes from the expression (should be a string literal)
@@ -231,163 +230,6 @@ export class DataSectionBuilder {
       return type.name
     }
     return null
-  }
-
-  // Walk AST to collect string literals
-  private collectLiterals(decl: AST.Declaration): void {
-    switch (decl.kind) {
-      case 'ImportDecl':
-        // Imports don't contain literals to embed
-        break
-      case 'ExportDecl':
-        this.collectLiteralsFromExportable(decl.item)
-        break
-      case 'FuncDecl':
-        this.collectLiteralsFromFunc(decl)
-        break
-      case 'TypeDecl':
-        // Type declarations don't contain literals
-        break
-      case 'DefDecl':
-        this.collectLiteralsFromExpr(decl.value)
-        break
-      case 'GlobalDecl':
-        if (decl.value) this.collectLiteralsFromExpr(decl.value)
-        break
-      case 'MemoryDecl':
-        // Already handled in collectExplicitData
-        break
-    }
-  }
-
-  private collectLiteralsFromExportable(
-    item: AST.FuncDecl | AST.GlobalDecl | AST.MemoryDecl,
-  ): void {
-    switch (item.kind) {
-      case 'FuncDecl':
-        this.collectLiteralsFromFunc(item)
-        break
-      case 'GlobalDecl':
-        if (item.value) this.collectLiteralsFromExpr(item.value)
-        break
-      case 'MemoryDecl':
-        // Already handled
-        break
-    }
-  }
-
-  private collectLiteralsFromFunc(func: AST.FuncDecl): void {
-    this.collectLiteralsFromBody(func.body)
-  }
-
-  private collectLiteralsFromBody(body: AST.FuncBody): void {
-    if (body.kind === 'Block') {
-      for (const stmt of body.stmts) {
-        this.collectLiteralsFromStmt(stmt)
-      }
-    } else {
-      this.collectLiteralsFromExpr(body.expr)
-    }
-  }
-
-  private collectLiteralsFromStmt(stmt: AST.Statement): void {
-    switch (stmt.kind) {
-      case 'LetStmt':
-        if (stmt.value) this.collectLiteralsFromExpr(stmt.value)
-        break
-      case 'SetStmt':
-        this.collectLiteralsFromExpr(stmt.value)
-        break
-      case 'WhileStmt':
-        this.collectLiteralsFromExpr(stmt.condition)
-        this.collectLiteralsFromBody(stmt.body)
-        break
-      case 'ForStmt':
-        this.collectLiteralsFromExpr(stmt.iterable)
-        this.collectLiteralsFromBody(stmt.body)
-        break
-      case 'LoopStmt':
-        this.collectLiteralsFromBody(stmt.body)
-        break
-      case 'ReturnStmt':
-        if (stmt.value) this.collectLiteralsFromExpr(stmt.value)
-        if (stmt.when) this.collectLiteralsFromExpr(stmt.when)
-        break
-      case 'BreakStmt':
-      case 'ContinueStmt':
-        if (stmt.when) this.collectLiteralsFromExpr(stmt.when)
-        break
-      case 'AssignmentStmt':
-        this.collectLiteralsFromExpr(stmt.value)
-        break
-      case 'ExpressionStmt':
-        this.collectLiteralsFromExpr(stmt.expr)
-        break
-    }
-  }
-
-  private collectLiteralsFromExpr(expr: AST.Expr): void {
-    switch (expr.kind) {
-      case 'LiteralExpr':
-        if (expr.value.kind === 'string') {
-          this.internLiteral(expr)
-        }
-        break
-      case 'BinaryExpr':
-        this.collectLiteralsFromExpr(expr.left)
-        this.collectLiteralsFromExpr(expr.right)
-        break
-      case 'UnaryExpr':
-        this.collectLiteralsFromExpr(expr.operand)
-        break
-      case 'CastExpr':
-      case 'AnnotationExpr':
-        this.collectLiteralsFromExpr(expr.expr)
-        break
-      case 'CallExpr':
-        this.collectLiteralsFromExpr(expr.callee)
-        for (const arg of expr.args) {
-          if (arg.value) this.collectLiteralsFromExpr(arg.value)
-        }
-        break
-      case 'MemberExpr':
-        this.collectLiteralsFromExpr(expr.object)
-        break
-      case 'IndexExpr':
-        this.collectLiteralsFromExpr(expr.object)
-        this.collectLiteralsFromExpr(expr.index)
-        break
-      case 'IdentExpr':
-        // No literals in identifiers
-        break
-      case 'IfExpr':
-        this.collectLiteralsFromExpr(expr.condition)
-        this.collectLiteralsFromBody(expr.thenBranch)
-        for (const elif of expr.elifs) {
-          this.collectLiteralsFromExpr(elif.condition)
-          this.collectLiteralsFromBody(elif.thenBranch)
-        }
-        if (expr.else_) this.collectLiteralsFromBody(expr.else_)
-        break
-      case 'MatchExpr':
-        this.collectLiteralsFromExpr(expr.subject)
-        for (const arm of expr.arms) {
-          if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
-            this.collectLiteralsFromBody(arm.body)
-          } else {
-            this.collectLiteralsFromExpr(arm.body)
-          }
-        }
-        break
-      case 'TupleExpr':
-        for (const elem of expr.elements) {
-          if (elem.value) this.collectLiteralsFromExpr(elem.value)
-        }
-        break
-      case 'GroupExpr':
-        this.collectLiteralsFromExpr(expr.expr)
-        break
-    }
   }
 
   private internLiteral(expr: AST.LiteralExpr): void {
