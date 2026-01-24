@@ -10,7 +10,8 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Themes"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -19,10 +20,10 @@
     "vscode:prepublish": "npm run compile && npm run package-web",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "compile-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external:vscode",
-    "watch-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external:vscode --watch",
-    "package-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify",
-    "package": "vsce package"
+    "compile-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode",
+    "watch-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode --watch",
+    "package-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify --external vscode",
+    "package": "bun vsce package"
   },
   "dependencies": {
     "@encantis/compiler": "workspace:*",
@@ -34,6 +35,7 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.75.0",
     "@types/bun": "^1.3.6",
+    "@vscode/vsce": "^3.0.0",
     "typescript": "^5.0.0"
   },
   "contributes": {
@@ -123,6 +125,18 @@
         }
       }
     ],
+    "themes": [
+      {
+        "label": "Encantis Dark",
+        "uiTheme": "vs-dark",
+        "path": "./dark-color-theme.json"
+      },
+      {
+        "label": "Encantis Light",
+        "uiTheme": "vs",
+        "path": "./light-color-theme.json"
+      }
+    ],
     "configurationDefaults": {
       "[encantis]": {
         "editor.semanticHighlighting.enabled": true,
@@ -136,8 +150,13 @@
           "parameter": ["variable.parameter.encantis"],
           "parameter.output": ["variable.parameter.output.encantis"],
           "variable": ["variable.other.local.encantis"],
+          "variable.readonly": ["variable.other.constant.encantis"],
           "variable.static": ["variable.other.global.encantis"],
-          "function": ["entity.name.function.encantis"]
+          "variable.static.readonly": ["variable.other.definition.encantis"],
+          "function": ["entity.name.function.encantis"],
+          "function.declaration": ["entity.name.function.declaration.encantis"],
+          "type": ["entity.name.type.encantis"],
+          "type.declaration": ["entity.name.type.declaration.encantis"]
         }
       }
     ]

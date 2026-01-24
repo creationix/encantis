@@ -92,7 +92,7 @@
                 },
                 {
                     "name": "storage.type.encantis",
-                    "match": "\\b(func|inline|memory|data|import|export|def|type|unique|global|let|set|as)(?![a-zA-Z0-9_-])"
+                    "match": "\\b(func|inline|memory|import|export|def|type|global|let|set|as)(?![a-zA-Z0-9_-])"
                 }
             ]
         },
@@ -111,12 +111,30 @@
                 {
                     "name": "string.quoted.single.encantis",
                     "begin": "'",
-                    "end": "'"
+                    "end": "'",
+                    "patterns": [
+                        { "include": "#escape-sequences" }
+                    ]
                 },
                 {
                     "name": "string.quoted.double.encantis",
                     "begin": "\"",
-                    "end": "\""
+                    "end": "\"",
+                    "patterns": [
+                        { "include": "#escape-sequences" }
+                    ]
+                }
+            ]
+        },
+        "escape-sequences": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.hex.encantis",
+                    "match": "\\\\x[0-9a-fA-F]{2}"
+                },
+                {
+                    "name": "constant.character.escape.encantis",
+                    "match": "\\\\[ntr\\\\\"']"
                 }
             ]
         },
@@ -128,23 +146,27 @@
                 },
                 {
                     "name": "constant.numeric.hex.encantis",
-                    "match": "0[xX][0-9a-fA-F]+(\\.[0-9a-fA-F]+)?(?![a-zA-Z0-9_-])"
+                    "match": "-?0x[0-9a-fA-F]+(?![a-zA-Z0-9_-])"
                 },
                 {
                     "name": "constant.numeric.binary.encantis",
-                    "match": "0[bB][0-1]+(\\.[0-1]+)?(?![a-zA-Z0-9_-])"
+                    "match": "-?0b[01]+(?![a-zA-Z0-9_-])"
                 },
                 {
                     "name": "constant.numeric.octal.encantis",
-                    "match": "0[oO][0-7]+(\\.[0-7]+)?(?![a-zA-Z0-9_-])"
+                    "match": "-?0o[0-7]+(?![a-zA-Z0-9_-])"
                 },
                 {
                     "name": "constant.numeric.dozenal.encantis",
-                    "match": "0[dD][0-9a-bA-B]+(\\.[0-9a-bA-B]+)?(?![a-zA-Z0-9_-])"
+                    "match": "-?0d[0-9a-bA-B]+(?![a-zA-Z0-9_-])"
+                },
+                {
+                    "name": "constant.numeric.float.encantis",
+                    "match": "-?[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?(?![a-zA-Z0-9_-])"
                 },
                 {
                     "name": "constant.numeric.decimal.encantis",
-                    "match": "[0-9]+(\\.[0-9]+)?(?![a-zA-Z0-9_-])"
+                    "match": "-?[0-9]+(?![a-zA-Z0-9_-])"
                 }
             ]
         },
@@ -153,6 +175,18 @@
                 {
                     "name": "entity.name.type.encantis",
                     "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|bool)(?![a-zA-Z0-9_-])"
+                },
+                {
+                    "name": "support.type.builtin.encantis",
+                    "match": "\\b(str|bytes)(?![a-zA-Z0-9_-])"
+                },
+                {
+                    "name": "support.type.comptime.encantis",
+                    "match": "\\b(int|float)(?=\\s*\\()"
+                },
+                {
+                    "name": "support.type.nominal.encantis",
+                    "match": "@[A-Z][0-9A-Za-z_-]*"
                 },
                 {
                     "name": "support.type.encantis",
