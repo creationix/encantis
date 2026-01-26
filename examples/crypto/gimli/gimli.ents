@@ -2,7 +2,9 @@
 // Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
 // State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
 
-export "mem" memory 1
+export "mem" memory 1 {
+  hash_state: [12]u32
+}
 
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
@@ -53,21 +55,49 @@ func gimli(state:*[12]u32) {
   }
 }
 
+func slice_ptr_pun_test() {
+  let slice:[]u8 = "Hello, World!"
+  // should have type [*]u8
+  let ptr = slice.ptr
+  // should allow type punning
+  let first_u32 = ptr.u32[0] // Type punning to read first 4 bytes as u32
+
+  let slice_zero = "null termination!":[:0]u8
+  // should have type [*:0]u8
+  let ptr_zero = slice_zero.ptr
+  // should allow type punning
+  let first_u32_zero = ptr_zero.u32[0] // Should read 0
+
+  let slice_prefix = "length prefix?":[:?]u8
+  // should have type [*:?]u8
+  let ptr_prefix = slice_prefix.ptr
+  // should allow type punning
+  let first_u32_prefix = ptr_prefix.u32[0] // Should read 0
+
+  let wider_slice:[]u16 = [0x1234, 0x5678, 0x9abc]
+  // should have type [*]u16
+  let wider_ptr = wider_slice.ptr
+  // should allow type punning
+  let later_ptr = &wider_ptr[2]
+  let first_u32_wide = later_ptr.u32[0] // Should read 0x56781234
+}
+
 // Gimli-Hash: absorb input and squeeze 32-byte output
 // Uses rate of 16 bytes (128 bits)
 export "gimli_hash"
 func gimli_hash(input:[]u8, output:*[32]u8) {
-  let state:[12]u32 = 0  // 48 bytes state, initialized to zero
+  // Initialize state to zero
+  memset(hash_state.ptr as *u8, 0, hash_state.len * hash_state.wid)
   let len = input.len
   let input_ptr = input.ptr
 
   // Absorb phase: process 16-byte blocks
   while len >= 16 {
     // XOR input into rate portion of state (first 16 bytes = 4 words)
-    for i in 16 {
-      state.u8[i] ^= input_ptr[i]
-    }
-    gimli(state)
+    // Do the XOR 8 bytes at a time via type punning.
+    hash_state.u64[0] ^= input_ptr.u64[0]
+    hash_state.u64[1] ^= input_ptr.u64[1]
+    gimli(hash_state)
     input_ptr += 16
     len -= 16
   }

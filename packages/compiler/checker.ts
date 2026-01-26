@@ -22,11 +22,13 @@ import {
   comptimeList,
   comptimeIndexed,
   named,
+  manyPointer,
   typeToString,
   comptimeIntFits,
   typeAssignable,
   defaultIndexedType,
   unwrap,
+  byteSize,
 } from './types'
 
 // === Symbol Table ===
@@ -307,8 +309,24 @@ class CheckContext {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
-        // Memory declarations don't add symbols
+        this.collectMemory(decl)
         break
+    }
+  }
+
+  collectMemory(decl: AST.MemoryDecl): void {
+    for (const entry of decl.data) {
+      if (entry.key.kind === 'alloc') {
+        const type = this.resolveType(entry.key.type)
+        // Create a pointer type since memory allocations are accessed by address
+        const ptrType: ResolvedType = { kind: 'pointer', pointee: type }
+        this.moduleScope.symbols.set(entry.key.name, {
+          kind: 'global',
+          type: ptrType,
+        })
+        this.recordDefinition(entry.key.name, entry.span.start)
+        this.types.set(typeKey(entry.span.start, 'DataEntry'), ptrType)
+      }
     }
   }
 
@@ -351,6 +369,7 @@ class CheckContext {
         this.collectGlobal(decl.item)
         break
       case 'MemoryDecl':
+        this.collectMemory(decl.item)
         break
     }
   }
@@ -564,10 +583,22 @@ class CheckContext {
       case 'LoopStmt':
         this.checkBody(stmt.body)
         break
-      case 'ForStmt':
-        this.inferExpr(stmt.iterable)
+      case 'ForStmt': {
+        const iterableType = this.inferExpr(stmt.iterable)
+        // Determine element type from iterable
+        let elemType: ResolvedType = primitive('i32') // fallback
+        if (iterableType.kind === 'indexed') {
+          elemType = iterableType.element
+        } else if (iterableType.kind === 'pointer' && iterableType.pointee.kind === 'indexed') {
+          elemType = iterableType.pointee.element
+        }
+        // Record the binding type and add to scope
+        this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
+        this.currentScope.symbols.set(stmt.binding.value, { kind: 'local', type: elemType })
+        this.recordDefinition(stmt.binding.value, stmt.binding.span.start)
         this.checkBody(stmt.body)
         break
+      }
       case 'BreakStmt':
       case 'ContinueStmt':
         if (stmt.when) this.inferExpr(stmt.when)
@@ -719,7 +750,7 @@ class CheckContext {
         )
         // Handle 'inferred' size - will be filled in by bidirectional checking
         const size = type.size === 'inferred' ? null : type.size
-        return indexed(element, size, specifiers)
+        return indexed(element, size, specifiers, type.manyPointer)
       }
 
       case 'CompositeType': {
@@ -1018,6 +1049,12 @@ class CheckContext {
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
+    // Check for builtin functions first
+    if (expr.callee.kind === 'IdentExpr') {
+      const builtinResult = this.inferBuiltin(expr, expr.callee.name)
+      if (builtinResult !== null) return builtinResult
+    }
+
     const calleeType = this.inferExpr(expr.callee)
 
     if (calleeType.kind === 'func') {
@@ -1059,6 +1096,59 @@ class CheckContext {
 
     this.error(expr.span.start, `cannot call non-function type: ${typeToString(calleeType)}`)
     return primitive('i32')
+  }
+
+  // Handle builtin functions: memset, memcpy, zero
+  // Returns null if not a builtin, otherwise returns the result type
+  inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
+    const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+
+    switch (name) {
+      case 'memset': {
+        // memset(dest: *u8, value: u8, len: u32) -> ()
+        // Low-level byte-based memory fill
+        if (args.length !== 3) {
+          this.error(expr.span.start, `memset expects 3 arguments (dest, value, len), got ${args.length}`)
+          return VOID
+        }
+
+        // Dest must be *u8 (byte pointer)
+        this.checkExpr(args[0].value, pointer(primitive('u8')), 'memset dest')
+
+        // Value should be u8 (byte value)
+        this.checkExpr(args[1].value, primitive('u8'), 'memset value')
+
+        // Length in bytes (u32 for full memory range)
+        this.checkExpr(args[2].value, primitive('u32'), 'memset len')
+
+        // Record as builtin call for codegen
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
+        return VOID
+      }
+
+      case 'memcpy': {
+        // memcpy(dest: *u8, src: *u8, len: u32) -> ()
+        // Low-level byte-based memory copy
+        if (args.length !== 3) {
+          this.error(expr.span.start, `memcpy expects 3 arguments (dest, src, len), got ${args.length}`)
+          return VOID
+        }
+
+        // Both must be *u8 (byte pointers)
+        this.checkExpr(args[0].value, pointer(primitive('u8')), 'memcpy dest')
+        this.checkExpr(args[1].value, pointer(primitive('u8')), 'memcpy src')
+
+        // Length in bytes (u32 for full memory range)
+        this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
+
+        // Record as builtin call for codegen
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
+        return VOID
+      }
+
+      default:
+        return null // Not a builtin
+    }
   }
 
   inferBinary(expr: AST.BinaryExpr): ResolvedType {
@@ -1104,10 +1194,24 @@ class CheckContext {
           const f = objType.fields.find((f) => f.name === expr.member.name)
           if (f) return f.type
         }
-        // Indexed type built-in fields (slice/array)
+        // Indexed type built-in fields (slice/array): .ptr, .len, .wid
         if (objType.kind === 'indexed') {
-          if (expr.member.name === 'ptr') return pointer(objType.element)
+          if (expr.member.name === 'ptr') {
+            // .ptr returns a many-pointer preserving specifiers from the slice
+            return manyPointer(objType.element, objType.specifiers)
+          }
           if (expr.member.name === 'len') return primitive('u32')
+          if (expr.member.name === 'wid') return primitive('u32')
+        }
+        // Pointer-to-indexed type built-in fields: .ptr, .len, .wid
+        if (objType.kind === 'pointer' && objType.pointee.kind === 'indexed') {
+          const indexedType = objType.pointee
+          if (expr.member.name === 'ptr') {
+            // .ptr returns a many-pointer preserving specifiers
+            return manyPointer(indexedType.element, indexedType.specifiers)
+          }
+          if (expr.member.name === 'len') return primitive('u32')
+          if (expr.member.name === 'wid') return primitive('u32')
         }
         this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
         return primitive('i32')
@@ -1135,8 +1239,27 @@ class CheckContext {
       }
 
       case 'type': {
-        // Type pun: p.u32
-        return this.resolveType(expr.member.type)
+        // Type pun: ptr.u32, array.u64, etc.
+        // Returns a plain pointer to the punned type (specifiers don't carry over)
+        const punType = this.resolveType(expr.member.type)
+
+        // For many-pointers: [*]u8.u32 → *u32
+        if (objType.kind === 'indexed' && objType.manyPointer) {
+          return pointer(punType)
+        }
+
+        // For pointer-to-indexed: *[12]u8.u32 → *u32
+        if (objType.kind === 'pointer' && objType.pointee.kind === 'indexed') {
+          return pointer(punType)
+        }
+
+        // For plain pointers: *u8.u32 → *u32
+        if (objType.kind === 'pointer') {
+          return pointer(punType)
+        }
+
+        // Default: just return the punned type
+        return punType
       }
     }
   }
@@ -1150,6 +1273,10 @@ class CheckContext {
     }
 
     if (objType.kind === 'pointer') {
+      // If pointing to an indexed type (e.g., *[12]u32), return the element type
+      if (objType.pointee.kind === 'indexed') {
+        return objType.pointee.element
+      }
       return objType.pointee
     }
 

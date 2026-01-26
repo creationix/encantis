@@ -384,6 +384,146 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
   else { x }
 ```
 
+### Unified Pattern Syntax
+
+Encantis has a unified pattern syntax that works consistently across function signatures, match expressions, if-let bindings, and let destructuring. This enables a single grammar rule to express type matching, value matching, and variable binding in all contexts.
+
+#### Pattern Forms
+
+| Syntax | Description | Bindings |
+|--------|-------------|----------|
+| `T` | Bare type | none |
+| `(T)` | Grouped type (same as bare, but affects calling convention) | none |
+| `(name: T)` | Single named binding | `name` |
+| `(a: T1, b: T2, ...)` | Tuple with named bindings | `a`, `b`, ... |
+| `T(a, b, ...)` | Constructor pattern (destructures T) | `a`, `b`, ... |
+| `literal` | Literal value match | none |
+
+Standard tuple semantics apply:
+
+- `()` is void (0-tuple)
+- `(x)` is grouping, not a tuple — the type is just `x`
+- `(x, y, ...)` is a tuple (2+ elements)
+
+#### Patterns in Function Signatures
+
+Functions internally have exactly one input value and one output value. Tuples flatten to multiple WebAssembly values, but at the language level it's always `Input -> Output`.
+
+The signature syntax determines what bindings exist inside the function body:
+
+```ents
+// Tuple syntax — named bindings, called with parens
+func to_polar(point: CartesianPoint) -> (out: PolarPoint)
+// Call: to_polar(point: p) or to_polar(p)
+// Bindings: point, out
+
+// Constructor pattern syntax — destructured bindings, called with parens
+func to_polar CartesianPoint(x, y) -> PolarPoint(d, a)
+// Call: to_polar(x: 1, y: 2) or to_polar(1, 2)
+// Bindings: x, y, d, a
+
+// Bare type — no bindings, called without parens
+func double i32 -> i32
+// Call: double 5
+// Bindings: none (use traditional return)
+```
+
+All three forms can define the same underlying function type — they differ only in bindings and calling convention.
+
+#### Calling Convention: Parens vs Bare
+
+The signature syntax determines how a function is called:
+
+| Signature Input | Call Syntax |
+|-----------------|-------------|
+| `(x: T)` | `func(value)` — parens required |
+| `(T)` | `func(value)` — parens required |
+| `T` | `func value` — bare (no parens) |
+| `T(a, b)` | `func(a, b)` — parens required (tuple fields) |
+
+```ents
+// Bare input — bare call
+func double i32 -> i32 => ...
+let x = double 5
+
+// Paren input — paren call
+func double(n: i32) -> i32 => ...
+let x = double(5)
+
+// Both define the same type (i32 -> i32) but different calling conventions
+```
+
+For multi-value inputs (tuples), parens are always required since the values are comma-separated.
+
+#### Patterns in Match and If-Let
+
+The same pattern syntax works in match arms and if-let bindings:
+
+```ents
+// Match with constructor patterns
+match point {
+  CartesianPoint(0, 0) => "origin"
+  CartesianPoint(x, 0) => format("x-axis at {}", x)
+  CartesianPoint(0, y) => format("y-axis at {}", y)
+  CartesianPoint(x, y) => format("({}, {})", x, y)
+}
+
+// If-let with pattern
+if let CartesianPoint(x, y) = maybe_point {
+  process(x, y)
+}
+
+// Let destructuring
+let CartesianPoint(x, y) = get_point()
+let (x:, y:) = get_point()  // equivalent with punning
+```
+
+### Function Overloading
+
+Functions can be overloaded by defining multiple clauses with different patterns. The compiler groups clauses and dispatches based on the pattern:
+
+```ents
+// Type-based overloading — different shapes, compile-time dispatch
+func process(x: i32) -> i32 => x * 2
+func process(x: i32, y: i32) -> i32 => x + y
+
+// Value-based overloading — same shape, runtime dispatch
+func factorial(0) -> i32 => 1
+func factorial(n: i32) -> i32 => n * factorial(n - 1)
+
+func fib(0) -> i32 => 0
+func fib(1) -> i32 => 1
+func fib(n: i32) -> i32 => fib(n - 1) + fib(n - 2)
+```
+
+#### Dispatch Semantics
+
+**Type/shape dispatch** (different tuple structures) is resolved at compile time. Each unique shape generates a separate WebAssembly function:
+
+```ents
+func process(x: i32) -> i32           // compiles to $process_i32
+func process(x: i32, y: i32) -> i32   // compiles to $process_i32_i32
+```
+
+**Value dispatch** (same shape, different value patterns) compiles to a single WebAssembly function with an internal match:
+
+```ents
+// These compile to ONE function with runtime pattern matching
+func mul(a: i32, 0) -> i32 => 0
+func mul(a: i32, 1) -> i32 => a
+func mul(a: i32, 2) -> i32 => a + a
+func mul(a: i32, b: i32) -> i32 => a * b
+
+// Compiles to approximately:
+// (func $mul (param $a i32) (param $b i32) (result i32)
+//   (if (i32.eq (local.get $b) (i32.const 0)) (return (i32.const 0)))
+//   (if (i32.eq (local.get $b) (i32.const 1)) (return (local.get $a)))
+//   (if (i32.eq (local.get $b) (i32.const 2)) (return (i32.add (local.get $a) (local.get $a))))
+//   (i32.mul (local.get $a) (local.get $b)))
+```
+
+Clauses are matched in definition order (first match wins). The catch-all pattern with a binding (`b: i32`) should come last.
+
 ### Exports
 
 ```ents
@@ -891,6 +1031,218 @@ data.to_hex()              // works on slices too
 
 Note: There are no implicit built-in methods except for operators that already look like function calls (ex: `sqrt(n)` can be written as `n.sqrt()`). Slice properties like `slice.len` and `slice.ptr` are built-in field access, not method calls.
 
+### Enum Types (Algebraic Data Types)
+
+Enums are tagged unions representing values that can be one of several variants. Each variant can optionally carry payload data:
+
+```ents
+enum Color {
+  Red,
+  Blue,
+  Green,
+  RGB(r:u8, g:u8, b:u8),
+  HSL(h:u8, s:u8, l:u8),
+  Grey(b:u8),
+  Darker(c:*Color)
+}
+
+enum Json {
+  Null,
+  Boolean(bool),
+  Number(f64),
+  String([]u8),
+  Array([]Json),
+  Object([]([]u8, Json))
+}
+```
+
+Variants without payloads (like `Red`, `Blue`, `Null`) are unit variants. Variants with payloads can have positional or named fields.
+
+**Recursive types:** Enums cannot directly contain themselves — recursion must go through an indirection. Use `*T` (pointer) or `[]T` (slice) for recursive references:
+
+```ents
+enum Tree {
+  Leaf(value:i32),
+  Node(left:*Tree, right:*Tree)   // pointer indirection
+}
+
+enum List {
+  Nil,
+  Cons(head:i32, tail:*List)      // pointer indirection
+}
+```
+
+Slices (`[]T`) are already indirect (fat pointers to heap data), so `Array([]Json)` is valid without explicit `*`.
+
+#### Enum Representations
+
+Enums have two representations: **stack** (for passing/returning values) and **memory** (for serialization to linear memory).
+
+##### Stack Representation
+
+On the stack, enums are flattened to multiple WebAssembly values using per-enum sizing. The compiler computes the minimal slot types needed to hold all variants:
+
+1. **Tag**: Always `i32`
+2. **Payload slots**: For each "position" across all variants, use the smallest wasm type that can hold all types at that position
+
+When a slot must hold both integer and float types (e.g., `i32` and `f64`), use `i64` and reinterpret:
+- `f64` ↔ `i64`: use `i64.reinterpret_f64` / `f64.reinterpret_i64`
+- `i32` → `i64`: use `i64.extend_i32_u`
+- `i64` → `i32`: use `i32.wrap_i64`
+
+**Example — Json:**
+
+| Variant | Slot 0 | Slot 1 |
+|---------|--------|--------|
+| `Null` | — | — |
+| `Boolean(bool)` | bool (→i32) | — |
+| `Number(f64)` | f64 | — |
+| `String([]u8)` | ptr (i32) | len (i32) |
+| `Array([]Json)` | ptr (i32) | len (i32) |
+| `Object(...)` | ptr (i32) | len (i32) |
+| **Union** | i32 \| f64 | i32 \| — |
+| **Wasm type** | i64 | i32 |
+
+**Stack shape: `(i32, i64, i32)`** = tag + slot0 + slot1
+
+**Example — Color:**
+
+| Variant | Slot 0 | Slot 1 | Slot 2 |
+|---------|--------|--------|--------|
+| `Red/Blue/Green` | — | — | — |
+| `RGB` | r (u8→i32) | g (i32) | b (i32) |
+| `HSL` | h (i32) | s (i32) | l (i32) |
+| `Grey` | b (i32) | — | — |
+| `Darker` | ptr (i32) | — | — |
+| **Union** | i32 \| — | i32 \| — | i32 \| — |
+| **Wasm type** | i32 | i32 | i32 |
+
+**Stack shape: `(i32, i32, i32, i32)`** = tag + 3 slots
+
+##### Memory Representation
+
+In linear memory, enums are byte-packed for compact storage:
+
+1. **Tag**: Smallest integer type for the variant count
+   - ≤256 variants: `u8`
+   - ≤65536 variants: `u16`
+   - ≤2³² variants: `u32`
+
+2. **Payload**: Fields packed at natural byte widths, end-padded to max variant size
+
+**Example — Color (5 bytes):**
+
+```
+Red:    [0][__][__][__][__]
+Blue:   [1][__][__][__][__]
+Green:  [2][__][__][__][__]
+RGB:    [3][r][g][b][__]
+HSL:    [4][h][s][l][__]
+Grey:   [5][b][__][__][__]
+Darker: [6][ptr ptr ptr ptr]
+```
+
+**Example — Json (9 bytes):**
+
+```
+Null:    [0][__ __ __ __ __ __ __ __]
+Boolean: [1][b][__ __ __ __ __ __ __]
+Number:  [2][f64 f64 f64 f64 f64 f64 f64 f64]
+String:  [3][ptr ptr ptr ptr][len len len len]
+Array:   [4][ptr ptr ptr ptr][len len len len]
+Object:  [5][ptr ptr ptr ptr][len len len len]
+```
+
+Memory layout uses end-padding (payload left-aligned) with no alignment requirements — the language is byte-oriented.
+
+#### Pattern Matching on Enums
+
+Use `match` to destructure enum variants:
+
+```ents
+func describe(c:Color) -> str {
+  match c {
+    Red => "red"
+    Blue => "blue"
+    Green => "green"
+    RGB(r, g, b) => format("rgb({}, {}, {})", r, g, b)
+    HSL(h, s, l) => format("hsl({}, {}, {})", h, s, l)
+    Grey(b) => format("grey({})", b)
+    Darker(inner) => format("darker({})", describe(inner.*))
+  }
+}
+```
+
+The compiler enforces exhaustive matching — all variants must be handled, or a wildcard `_` pattern must be present.
+
+#### Struct and Tuple Patterns
+
+Pattern matching works on structs and tuples too, not just enums:
+
+```ents
+type Point = (x:i32, y:i32)
+
+func describe_point(p:Point) -> str {
+  match p {
+    Point(0, 0) => "origin"
+    Point(0, y) => format("y-axis at {}", y)
+    Point(x, 0) => format("x-axis at {}", x)
+    Point(x, y) => format("({}, {})", x, y)
+  }
+}
+
+// Anonymous tuple patterns work too
+func check_pair(pair:(i32, i32)) -> bool {
+  match pair {
+    (0, 0) => true
+    (x, y) if x == y => true  // guard clause
+    _ => false
+  }
+}
+
+// Named field patterns
+match point {
+  Point(x: 0, y:) => use_y(y)      // match x=0, bind y
+  Point(x:, y: 0) => use_x(x)      // bind x, match y=0
+  _ => default()
+}
+```
+
+The convention distinguishes patterns by case:
+- **Uppercase** (`Point`, `RGB`) — type constructor or variant
+- **lowercase** (`x`, `y`) — binding (introduces a variable)
+- **literals** (`0`, `"hello"`) — exact match
+- **`_`** — wildcard (match anything, don't bind)
+
+#### If-Let for Single Variant Checks
+
+Use `if let` when you only need to check for one variant:
+
+```ents
+if let RGB(r, g, b) = color {
+  // only runs if color is RGB
+  draw_rgb(r, g, b)
+}
+
+// With else branch
+if let Some(value) = maybe_result {
+  process(value)
+} else {
+  handle_missing()
+}
+
+// Chained with elif let
+if let RGB(r, g, b) = color {
+  draw_rgb(r, g, b)
+} elif let HSL(h, s, l) = color {
+  draw_hsl(h, s, l)
+} else {
+  draw_default()
+}
+```
+
+This is syntactic sugar for a match with a single pattern and wildcard fallthrough. Use `if let` when you care about one specific variant; use `match` when handling multiple variants or when exhaustiveness checking is valuable.
+
 ### Stack vs Memory Allocation
 
 Encantis distinguishes between stack-allocated values (WASM locals) and memory-allocated values (linear memory):
@@ -1264,46 +1616,6 @@ type Vec<T> = (data:*T, len:u32, cap:u32)
 ```
 
 **Why:** Currently, utilities like `swap`, `min`, `max`, or data structures like vectors must be duplicated for each type. Generics enable writing code once that works for any type, critical for building reusable libraries.
-
-### Enums and Sum Types
-
-Tagged unions for representing values that can be one of several variants:
-
-```ents
-enum Option<T> {
-  None
-  Some(T)
-}
-
-enum Result<T, E> {
-  Ok(T)
-  Err(E)
-}
-
-enum State {
-  Idle
-  Running(progress:u32)
-  Done(result:i32)
-  Failed(code:u32, msg:str)
-}
-```
-
-**Why:** Enables type-safe error handling, optional values, and state machines. Currently these patterns require manual tag fields and discipline. The compiler could enforce exhaustive matching.
-
-### Match Destructuring
-
-Extending match expressions to destructure enum variants:
-
-```ents
-match state {
-  Idle => start()
-  Running(p) => update_progress(p)
-  Done(r) => handle_result(r)
-  Failed(code, _) => log_error(code)
-}
-```
-
-**Why:** Current match supports literal patterns only. With enums, match could destructure variants and the compiler could enforce exhaustive handling of all cases.
 
 ### SIMD Support
 

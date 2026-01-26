@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
-import { type ResolvedType, typeToString } from './types'
+import { type ResolvedType, typeToString, byteSize } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 
@@ -25,17 +25,19 @@ export interface MetaType {
 
 export interface MetaSymbol {
   name: string
-  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'def'
+  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'def'
   type: number // Index into types array
   def: string // "line:col" (0-indexed)
   refs: string[] // ["line:col", ...]
   doc?: string
+  value?: string // For def constants: the literal value
 }
 
 export interface MetaHint {
   len: number
   type: number // Index into types array
   symbol?: number // Index into symbols array
+  value?: string // For compile-time constant expressions
 }
 
 export interface MetaError {
@@ -129,7 +131,7 @@ class MetaBuilder {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
-        // Memory declarations handled separately
+        this.collectMemory(decl)
         break
     }
   }
@@ -176,8 +178,30 @@ class MetaBuilder {
         this.collectGlobal(decl.item)
         break
       case 'MemoryDecl':
+        this.collectMemory(decl.item)
         break
     }
+  }
+
+  private collectMemory(decl: AST.MemoryDecl): void {
+    for (const entry of decl.data) {
+      if (entry.key.kind === 'alloc') {
+        const sym = this.checkResult.symbols.get(entry.key.name)
+        if (sym && sym.kind === 'global') {
+          // Find the name position in the entry
+          const offset = this.findMemoryAllocOffset(entry, entry.key.name)
+          this.addSymbol(entry.key.name, 'global', sym.type, offset)
+        }
+      }
+    }
+  }
+
+  private findMemoryAllocOffset(entry: AST.DataEntry, name: string): number {
+    // Search for the identifier in the entry span
+    const searchText = this.source.slice(entry.span.start, entry.span.end)
+    const idx = searchText.indexOf(name)
+    if (idx !== -1) return entry.span.start + idx
+    return entry.span.start
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
@@ -227,6 +251,18 @@ class MetaBuilder {
       }
     }
 
+    // Collect named returns (only CompositeType has named fields)
+    if (decl.signature.output.kind === 'CompositeType') {
+      for (const ret of decl.signature.output.fields) {
+        if (ret.ident) {
+          const type = this.checkResult.types.get(typeKey(ret.span.start, ret.kind))
+          if (type) {
+            this.addSymbol(ret.ident, 'return', type, ret.span.start)
+          }
+        }
+      }
+    }
+
     // Collect locals from body
     if (decl.body.kind === 'Block') {
       this.collectLocalsFromBlock(decl.body)
@@ -238,9 +274,51 @@ class MetaBuilder {
       if (stmt.kind === 'LetStmt') {
         this.collectLocal(stmt.pattern)
       }
+      // Collect for loop binding variables
+      if (stmt.kind === 'ForStmt') {
+        // The value binding (e.g., 'col' in 'for col in 0..4')
+        const valueType = this.checkResult.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
+        if (valueType) {
+          this.addSymbol(stmt.binding.value, 'local', valueType, stmt.binding.span.start)
+        }
+        // The optional index binding (e.g., 'i' in 'for i, col in items')
+        if (stmt.binding.index) {
+          // Index is always u32/usize - use same type lookup for now
+          const indexType = this.checkResult.types.get(typeKey(stmt.binding.span.start, 'ForBindingIndex'))
+          if (indexType) {
+            this.addSymbol(stmt.binding.index, 'local', indexType, stmt.binding.span.start)
+          }
+        }
+      }
       // Recurse into nested blocks (while, loop, for)
       if ('body' in stmt && stmt.body.kind === 'Block') {
         this.collectLocalsFromBlock(stmt.body)
+      }
+      // Recurse into if/match expressions (they're expressions, not statements)
+      if (stmt.kind === 'ExpressionStmt') {
+        this.collectLocalsFromExpr(stmt.expr)
+      }
+    }
+  }
+
+  private collectLocalsFromExpr(expr: AST.Expr): void {
+    if (expr.kind === 'IfExpr') {
+      if (expr.thenBranch.kind === 'Block') {
+        this.collectLocalsFromBlock(expr.thenBranch)
+      }
+      for (const elif of expr.elifs) {
+        if (elif.thenBranch.kind === 'Block') {
+          this.collectLocalsFromBlock(elif.thenBranch)
+        }
+      }
+      if (expr.else_?.kind === 'Block') {
+        this.collectLocalsFromBlock(expr.else_)
+      }
+    } else if (expr.kind === 'MatchExpr') {
+      for (const arm of expr.arms) {
+        if (arm.body.kind === 'Block') {
+          this.collectLocalsFromBlock(arm.body)
+        }
       }
     }
   }
@@ -271,7 +349,18 @@ class MetaBuilder {
 
     // Find the def name offset (after "def" keyword)
     const offset = this.findDefIdentOffset(decl)
-    this.addSymbol(decl.ident, 'def', sym.type, offset)
+
+    // Format the comptime value for display
+    let valueStr: string | undefined
+    if (sym.value.kind === 'int') {
+      valueStr = sym.value.value.toString()
+    } else if (sym.value.kind === 'float') {
+      valueStr = sym.value.value.toString()
+    } else if (sym.value.kind === 'bool') {
+      valueStr = sym.value.value ? 'true' : 'false'
+    }
+
+    this.addSymbol(decl.ident, 'def', sym.type, offset, valueStr)
   }
 
   private findDefIdentOffset(decl: AST.DefDecl): number {
@@ -298,6 +387,7 @@ class MetaBuilder {
     kind: MetaSymbol['kind'],
     type: ResolvedType,
     offset: number,
+    value?: string,
   ): number {
     const typeIndex = this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
@@ -324,6 +414,7 @@ class MetaBuilder {
       refs: refPositions,
     }
     if (doc) symbol.doc = doc
+    if (value) symbol.value = value
 
     const index = this.symbols.length
     this.symbols.push(symbol)
@@ -348,6 +439,8 @@ class MetaBuilder {
       case 'ExportDecl':
         if (decl.item.kind === 'FuncDecl') {
           this.generateHintsForFunc(decl.item)
+        } else if (decl.item.kind === 'MemoryDecl') {
+          this.generateHintsForMemory(decl.item)
         }
         break
       case 'FuncDecl':
@@ -362,6 +455,21 @@ class MetaBuilder {
       case 'GlobalDecl':
         this.generateHintsForGlobal(decl)
         break
+      case 'MemoryDecl':
+        this.generateHintsForMemory(decl)
+        break
+    }
+  }
+
+  private generateHintsForMemory(decl: AST.MemoryDecl): void {
+    for (const entry of decl.data) {
+      if (entry.key.kind === 'alloc') {
+        const symbolIndex = this.symbolIndexByName.get(entry.key.name)
+        if (symbolIndex !== undefined) {
+          const offset = this.findMemoryAllocOffset(entry, entry.key.name)
+          this.addHint(offset, entry.key.name.length, this.symbols[symbolIndex].type, symbolIndex)
+        }
+      }
     }
   }
 
@@ -399,6 +507,23 @@ class MetaBuilder {
                 param.ident.length,
                 this.symbols[paramSymbolIndex].type,
                 paramSymbolIndex,
+              )
+            }
+          }
+        }
+      }
+
+      // Hints for named returns (only CompositeType has named fields)
+      if (decl.signature.output.kind === 'CompositeType') {
+        for (const ret of decl.signature.output.fields) {
+          if (ret.ident) {
+            const retSymbolIndex = this.symbolIndexByName.get(ret.ident)
+            if (retSymbolIndex !== undefined) {
+              this.addHint(
+                ret.span.start,
+                ret.ident.length,
+                this.symbols[retSymbolIndex].type,
+                retSymbolIndex,
               )
             }
           }
@@ -448,10 +573,21 @@ class MetaBuilder {
       case 'LoopStmt':
         if (stmt.body.kind === 'Block') this.generateHintsForBlock(stmt.body)
         break
-      case 'ForStmt':
+      case 'ForStmt': {
+        // Generate hint for the binding variable
+        const bindingSymbolIndex = this.symbolIndexByName.get(stmt.binding.value)
+        if (bindingSymbolIndex !== undefined) {
+          this.addHint(
+            stmt.binding.span.start,
+            stmt.binding.value.length,
+            this.symbols[bindingSymbolIndex].type,
+            bindingSymbolIndex,
+          )
+        }
         this.generateHintsForExpr(stmt.iterable)
         if (stmt.body.kind === 'Block') this.generateHintsForBlock(stmt.body)
         break
+      }
       case 'BreakStmt':
       case 'ContinueStmt':
         if (stmt.when) this.generateHintsForExpr(stmt.when)
@@ -514,6 +650,36 @@ class MetaBuilder {
 
       case 'MemberExpr':
         this.generateHintsForExpr(expr.object)
+        // Add hint for the member access itself
+        if (type && expr.member.kind === 'field') {
+          const typeIndex = this.typeRegistry.register(type)
+          // Find member name position by searching for ".name" in the expression span
+          const exprText = this.source.slice(expr.span.start, expr.span.end)
+          const dotIdx = exprText.lastIndexOf('.' + expr.member.name)
+          if (dotIdx !== -1) {
+            const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
+            // Compute compile-time value for .len and .wid on indexed types
+            let comptimeValue: string | undefined
+            const objType = this.checkResult.types.get(typeKey(expr.object.span.start, expr.object.kind))
+            if (objType) {
+              // Get the indexed type (either directly or through pointer)
+              const indexedType = objType.kind === 'indexed' ? objType
+                : (objType.kind === 'pointer' && objType.pointee.kind === 'indexed') ? objType.pointee
+                : null
+              if (indexedType && indexedType.kind === 'indexed') {
+                if (expr.member.name === 'len' && typeof indexedType.size === 'number') {
+                  comptimeValue = String(indexedType.size)
+                } else if (expr.member.name === 'wid') {
+                  const elemSize = byteSize(indexedType.element)
+                  if (elemSize !== null) {
+                    comptimeValue = String(elemSize)
+                  }
+                }
+              }
+            }
+            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue)
+          }
+        }
         break
 
       case 'IndexExpr':
@@ -656,10 +822,12 @@ class MetaBuilder {
     len: number,
     typeIndex: number,
     symbolIndex?: number,
+    value?: string,
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
+    if (value !== undefined) hint.value = value
     this.hints[key] = hint
   }
 }

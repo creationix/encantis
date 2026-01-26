@@ -361,6 +361,27 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.TypeDecl
   },
 
+  EnumDecl(_enum, ident, _lb, variants, _rb) {
+    return {
+      kind: 'EnumDecl',
+      ident: ident.sourceString,
+      variants: variants.children.map((v: ohm.Node) => v.toAST()),
+      span: span(this),
+    } as AST.EnumDecl
+  },
+
+  // EnumVariant = typeIdent ("(" FieldList ")")? ","?
+  // Ohm passes optional group elements separately: typeIdent, "("?, FieldList?, ")"?, ","?
+  EnumVariant(name, _lpOpt, fieldsOpt, _rpOpt, _commaOpt) {
+    const fields = first<AST.Field[]>(fieldsOpt)
+    return {
+      kind: 'EnumVariant',
+      name: name.sourceString,
+      fields: fields ?? null,
+      span: span(this),
+    } as AST.EnumVariant
+  },
+
   DefDecl(_def, ident, assign) {
     const value = assign.toAST() as AST.Expr
     // Record def value for subsequent inlining
@@ -400,30 +421,22 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return entries.children.map((e: ohm.Node) => e.toAST())
   },
 
-  DataEntry(key, _arrow, expr, _comma) {
-    const keyAST = key.toAST() as any
+  DataEntry_offset(intLit, _arrow, expr, _comma) {
     return {
       kind: 'DataEntry',
-      key: keyAST,
+      key: { kind: 'offset', value: Number(intLit.sourceString) },
       value: expr.toAST(),
       span: span(this),
     } as any
   },
 
-  DataEntryKey_offset(intLit) {
+  DataEntry_alloc(ident, typeAnnotation, _comma) {
     return {
-      kind: 'offset',
-      value: Number(intLit.sourceString),
-    }
-  },
-
-  DataEntryKey_pattern(patternWithType) {
-    const pwt = patternWithType.toAST() as any
-    return {
-      kind: 'pattern',
-      pattern: pwt.pattern,
-      type: pwt.type,
-    }
+      kind: 'DataEntry',
+      key: { kind: 'alloc', name: ident.sourceString, type: typeAnnotation.toAST() },
+      value: null,
+      span: span(this),
+    } as any
   },
 
   // ============================================================================
@@ -459,6 +472,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
     let size: number | 'comptime' | null
     let specifiers: AST.IndexSpecifier[]
+    let manyPointer = false
 
     if (prefix === null) {
       // []T - plain slice (no prefix)
@@ -468,19 +482,26 @@ export const semanticsActions: Record<string, SemanticAction> = {
       // [N]T or [N:0]T - fixed size array
       size = prefix.size
       specifiers = prefix.specifiers
+    } else if (prefix.kind === 'manyPointer') {
+      // [*]T, [*:0]T - many-pointer (thin pointer, no length)
+      size = null
+      specifiers = prefix.specifiers
+      manyPointer = true
     } else {
-      // [*]T, [*:0]T, [:0]T - runtime arrays with null size
+      // [:0]T - sentinel slice
       size = null
       specifiers = prefix.specifiers
     }
 
-    return {
+    const result: AST.IndexedType = {
       kind: 'IndexedType',
       element: element.toAST(),
       size,
       specifiers,
       span: span(this),
-    } as AST.IndexedType
+    }
+    if (manyPointer) result.manyPointer = true
+    return result
   },
 
   // [*]T or [*:0]T - many-pointer
@@ -1095,9 +1116,10 @@ export const semanticsActions: Record<string, SemanticAction> = {
   // If Expression
   // ============================================================================
 
-  IfExpr(_if, condition, then, elifs, elseOpt) {
+  IfExpr_ifLet(_if, _let, pattern, _eq, condition, then, elifs, elseOpt) {
     return {
       kind: 'IfExpr',
+      pattern: pattern.toAST(),
       condition: condition.toAST(),
       thenBranch: then.toAST(),
       elifs: elifs.children.map((e: ohm.Node) => e.toAST()),
@@ -1106,9 +1128,32 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.IfExpr
   },
 
-  ElifBranch(_elif, condition, then) {
+  IfExpr_if(_if, condition, then, elifs, elseOpt) {
+    return {
+      kind: 'IfExpr',
+      pattern: null,
+      condition: condition.toAST(),
+      thenBranch: then.toAST(),
+      elifs: elifs.children.map((e: ohm.Node) => e.toAST()),
+      else_: first(elseOpt),
+      span: span(this),
+    } as AST.IfExpr
+  },
+
+  ElifBranch_elifLet(_elif, _let, pattern, _eq, condition, then) {
     return {
       kind: 'ElifBranch',
+      pattern: pattern.toAST(),
+      condition: condition.toAST(),
+      thenBranch: then.toAST(),
+      span: span(this),
+    } as AST.ElifBranch
+  },
+
+  ElifBranch_elif(_elif, condition, then) {
+    return {
+      kind: 'ElifBranch',
+      pattern: null,
       condition: condition.toAST(),
       thenBranch: then.toAST(),
       span: span(this),
@@ -1132,7 +1177,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.MatchExpr
   },
 
-  MatchArm(patterns, _arrow, body) {
+  MatchArm(patterns, _arrow, body, _comma) {
     return {
       kind: 'MatchArm',
       patterns: patterns.toAST(),
@@ -1145,6 +1190,35 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return list.asIteration().children.map((p: ohm.Node) => p.toAST())
   },
 
+  MatchPattern_constructor(typeIdent, _lp, elements, _rp) {
+    return {
+      kind: 'constructor',
+      type: typeIdent.sourceString,
+      elements: elements.toAST(),
+    } as AST.MatchPattern
+  },
+
+  MatchPattern_tuple(_lp, elements, _rp) {
+    return {
+      kind: 'tuple',
+      elements: elements.toAST(),
+    } as AST.MatchPattern
+  },
+
+  MatchPattern_variant(typeIdent) {
+    return {
+      kind: 'variant',
+      type: typeIdent.sourceString,
+    } as AST.MatchPattern
+  },
+
+  MatchPattern_binding(ident) {
+    return {
+      kind: 'binding',
+      name: ident.sourceString,
+    } as AST.MatchPattern
+  },
+
   MatchPattern_literal(lit) {
     return {
       kind: 'literal',
@@ -1154,6 +1228,32 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   MatchPattern_wildcard(_underscore) {
     return { kind: 'wildcard' } as AST.MatchPattern
+  },
+
+  MatchPatternList(list) {
+    return list.asIteration().children.map((e: ohm.Node) => e.toAST())
+  },
+
+  MatchPatternElem_named(ident, _colon, pattern) {
+    return {
+      kind: 'named',
+      field: ident.sourceString,
+      pattern: pattern.toAST(),
+    } as AST.MatchPatternElement
+  },
+
+  MatchPatternElem_namedShort(ident, _colon) {
+    return {
+      kind: 'namedShort',
+      field: ident.sourceString,
+    } as AST.MatchPatternElement
+  },
+
+  MatchPatternElem_positional(pattern) {
+    return {
+      kind: 'positional',
+      pattern: pattern.toAST(),
+    } as AST.MatchPatternElement
   },
 
   // ============================================================================

@@ -1,9 +1,5 @@
-import { readFileSync } from 'node:fs'
-import * as ohm from 'ohm-js'
 import { createSemantics } from './encantis-actions'
+import { grammar } from './encantis-grammar.bundle'
 
-const grammarPath = new URL('encantis-grammar.ohm', import.meta.url).pathname
-const grammarSource = readFileSync(grammarPath, 'utf-8')
-
-export const grammar = ohm.grammar(grammarSource)
+export { grammar }
 export const semantics = createSemantics(grammar)

@@ -29,6 +29,7 @@ export type Declaration =
   | ExportDecl
   | FuncDecl
   | TypeDecl
+  | EnumDecl
   | DefDecl
   | GlobalDecl
   | MemoryDecl
@@ -120,6 +121,19 @@ export interface TypeDecl extends BaseNode {
   type: Type
 }
 
+// enum Name { Variant1, Variant2(payload), ... }
+export interface EnumDecl extends BaseNode {
+  kind: 'EnumDecl'
+  ident: string
+  variants: EnumVariant[]
+}
+
+export interface EnumVariant extends BaseNode {
+  kind: 'EnumVariant'
+  name: string
+  fields: Field[] | null // null for unit variants
+}
+
 // def name = expr
 export interface DefDecl extends BaseNode {
   kind: 'DefDecl'
@@ -145,9 +159,13 @@ export interface MemoryDecl extends BaseNode {
 
 export interface DataEntry extends BaseNode {
   kind: 'DataEntry'
-  offset: number
-  value: Expr
+  key: DataEntryKey
+  value: Expr | null
 }
+
+export type DataEntryKey =
+  | { kind: 'offset'; value: number }
+  | { kind: 'alloc'; name: string; type: Type }
 
 // ============================================================================
 // Statements
@@ -393,8 +411,10 @@ export interface ArrayExpr extends BaseNode {
 }
 
 // if expr { ... } elif ... else ...
+// if let pattern = expr { ... } elif let ... else ...
 export interface IfExpr extends BaseNode {
   kind: 'IfExpr'
+  pattern: MatchPattern | null // non-null for if-let
   condition: Expr
   thenBranch: FuncBody
   elifs: ElifBranch[]
@@ -403,6 +423,7 @@ export interface IfExpr extends BaseNode {
 
 export interface ElifBranch extends BaseNode {
   kind: 'ElifBranch'
+  pattern: MatchPattern | null // non-null for elif-let
   condition: Expr
   thenBranch: FuncBody
 }
@@ -421,8 +442,17 @@ export interface MatchArm extends BaseNode {
 }
 
 export type MatchPattern =
+  | { kind: 'constructor'; type: string; elements: MatchPatternElement[] }
+  | { kind: 'tuple'; elements: MatchPatternElement[] }
+  | { kind: 'variant'; type: string }
+  | { kind: 'binding'; name: string }
   | { kind: 'literal'; value: LiteralValue }
   | { kind: 'wildcard' }
+
+export type MatchPatternElement =
+  | { kind: 'named'; field: string; pattern: MatchPattern }
+  | { kind: 'namedShort'; field: string }
+  | { kind: 'positional'; pattern: MatchPattern }
 
 // (expr, expr) or (name: expr, name: expr)
 export interface TupleExpr extends BaseNode {
@@ -512,6 +542,7 @@ export interface IndexedType extends BaseNode {
   element: Type
   size: number | 'inferred' | 'comptime' | null // null = slice *[T], 'comptime' = [T], 'inferred' = *[N;T]
   specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for :0
+  manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat pointer slice)
 }
 
 // () or (type, type) or (name: type, name: type)
@@ -648,7 +679,7 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
     case 'MemoryDecl':
       if (visitor.visitMemoryDecl?.(decl) !== false) {
         for (const entry of decl.data) {
-          walkExpr(entry.value, visitor)
+          if (entry.value) walkExpr(entry.value, visitor)
         }
       }
       break

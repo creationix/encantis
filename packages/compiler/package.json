@@ -7,7 +7,8 @@
   "types": "./index.ts",
   "files": ["*.ts", "grammar", "tests"],
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "bundle-grammar": "bun run scripts/bundle-grammar.ts"
   },
   "dependencies": {
     "ohm-js": "^17.3.0",

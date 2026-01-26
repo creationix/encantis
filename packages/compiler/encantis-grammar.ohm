@@ -9,6 +9,7 @@ Encantis {
               | ExportDecl
               | FuncDecl
               | TypeDecl
+              | EnumDecl
               | DefDecl
               | GlobalDecl
               | MemoryDecl
@@ -26,6 +27,14 @@ Encantis {
   // ============================================================================
 
   TypeDecl = type typeIdent "=" Type
+
+  // ============================================================================
+  // Enum Declarations (Tagged Unions / ADTs)
+  // ============================================================================
+
+  EnumDecl = enum typeIdent "{" EnumVariant* "}"
+
+  EnumVariant = typeIdent ("(" FieldList ")")? ","?
 
   // ============================================================================
   // Imports
@@ -88,9 +97,8 @@ Encantis {
 
   MemoryDecl = memory intLiteral intLiteral? DataBlock?
   DataBlock = "{" DataEntry* "}"
-  DataEntry = DataEntryKey "=>" Expr ","?
-  DataEntryKey = intLiteral           -- offset
-               | PatternWithType      -- pattern
+  DataEntry = intLiteral "=>" Expr ","?     -- offset
+            | ident TypeAnnotation ","?     -- alloc
 
   // ============================================================================
   // Types
@@ -322,9 +330,11 @@ Encantis {
   // If Expression / Branches
   // ============================================================================
 
-  IfExpr = if Expr Body ElifBranch* ElseBranch?
+  IfExpr = if let MatchPattern "=" Expr Body ElifBranch* ElseBranch?  -- ifLet
+         | if Expr Body ElifBranch* ElseBranch?                       -- if
 
-  ElifBranch = elif Expr Body
+  ElifBranch = elif let MatchPattern "=" Expr Body  -- elifLet
+             | elif Expr Body                       -- elif
 
   ElseBranch = else Body
 
@@ -334,12 +344,29 @@ Encantis {
 
   MatchExpr = match Expr "{" MatchArm* "}"
 
-  MatchArm = MatchPatterns "=>" (Block | Expr)
+  MatchArm = MatchPatterns "=>" (Block | Expr) ","?
 
   MatchPatterns = NonemptyListOf<MatchPattern, ",">
 
-  MatchPattern = literal  -- literal
-               | "_"      -- wildcard
+  // Match patterns support:
+  // - Point(0, y)    constructor with nested patterns
+  // - (0, y)         tuple pattern
+  // - Red            unit variant (typeIdent)
+  // - x              binding (ident, lowercase)
+  // - 42, "hello"    literals
+  // - _              wildcard
+  MatchPattern = typeIdent "(" MatchPatternList ")"  -- constructor
+               | "(" MatchPatternList ")"            -- tuple
+               | typeIdent                           -- variant
+               | literal                             -- literal
+               | ident                               -- binding
+               | "_"                                 -- wildcard
+
+  MatchPatternList = NonemptyListOf<MatchPatternElem, ",">
+
+  MatchPatternElem = ident ":" MatchPattern  -- named
+                   | ident ":"               -- namedShort
+                   | MatchPattern            -- positional
 
   // ============================================================================
   // Arguments
@@ -437,7 +464,7 @@ Encantis {
   // Keywords
   keyword = (if | elif | else | while | for | in | loop | match
            | break | continue | return | when
-           | func | let | set | global | def | type
+           | func | let | set | global | def | type | enum
            | import | export | memory | inline
            | as | true | false | int | float
            | str | bytes) ~identChar
@@ -460,6 +487,7 @@ Encantis {
   global = "global" ~identChar
   def = "def" ~identChar
   type = "type" ~identChar
+  enum = "enum" ~identChar
   import = "import" ~identChar
   export = "export" ~identChar
   memory = "memory" ~identChar

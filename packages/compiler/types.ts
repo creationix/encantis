@@ -70,6 +70,7 @@ export interface IndexedRT {
   element: ResolvedType
   size: number | 'comptime' | null // number = fixed *[N]T, null = slice []T, 'comptime' = comptime [T]
   specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for :0
+  manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat pointer slice)
 }
 
 // Tuple/struct type: (T, T) or (x: T, y: T)
@@ -137,13 +138,20 @@ export function indexed(
   element: ResolvedType,
   size: number | 'comptime' | null = null,
   specifiers: IndexSpecifierRT[] = [],
+  manyPointer?: boolean,
 ): IndexedRT {
-  return { kind: 'indexed', element, size, specifiers }
+  const result: IndexedRT = { kind: 'indexed', element, size, specifiers }
+  if (manyPointer) result.manyPointer = true
+  return result
 }
 
 // Convenience constructors
-export function slice(element: ResolvedType): IndexedRT {
-  return indexed(element, null, [])
+export function slice(element: ResolvedType, specifiers: IndexSpecifierRT[] = []): IndexedRT {
+  return indexed(element, null, specifiers, false)
+}
+
+export function manyPointer(element: ResolvedType, specifiers: IndexSpecifierRT[] = []): IndexedRT {
+  return indexed(element, null, specifiers, true)
 }
 
 export function array(element: ResolvedType, size: number): IndexedRT {
@@ -328,6 +336,7 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       const bIdx = b as IndexedRT
       return (
         a.size === bIdx.size &&
+        !!a.manyPointer === !!bIdx.manyPointer &&
         specifiersEqual(a.specifiers, bIdx.specifiers) &&
         typeEquals(a.element, bIdx.element)
       )
@@ -700,9 +709,11 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
     case 'indexed': {
       // Array syntax: [specifiers]T where T is the element type
-      // - []T for slice (size=null, no specifiers)
+      // - []T for slice (size=null, no specifiers, manyPointer=false)
+      // - [*]T for many-pointer (size=null, no specifiers, manyPointer=true)
       // - [N]T for fixed array (size=N)
-      // - [:0]T or [:?]T for sentinel types (null-terminated or LEB128-prefixed)
+      // - [:0]T or [:?]T for sentinel slice types
+      // - [*:0]T or [*:?]T for sentinel many-pointer types
       // - [N:0]T for fixed with null terminator
       const elem = typeToString(t.element, opts)
       const sentinels = t.specifiers.map(specifierToSentinel).join(':')
@@ -711,8 +722,11 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       if (typeof t.size === 'number') {
         // Fixed array: [N]T or [N:0]T
         return `[${t.size}${sentinelPart}]${elem}`
+      } else if (t.manyPointer) {
+        // Many-pointer: [*]T or [*:0]T
+        return `[*${sentinelPart}]${elem}`
       } else if (t.specifiers.length > 0) {
-        // Sentinel type without size: [:0]T or [:?]T
+        // Sentinel slice: [:0]T or [:?]T
         return `[${sentinelPart}]${elem}`
       } else {
         // Slice: []T (or comptime: []T - can't distinguish in output)
@@ -922,4 +936,42 @@ export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
   const bounds = INT_BOUNDS[target.name]
   if (!bounds) return false
   return value >= bounds[0] && value <= bounds[1]
+}
+
+// Get byte size of any type (returns null for dynamically-sized types like slices)
+export function byteSize(t: ResolvedType): number | null {
+  const u = unwrap(t)
+
+  switch (u.kind) {
+    case 'primitive':
+      return primitiveByteSize(u)
+
+    case 'pointer':
+      // Pointers are always 4 bytes in wasm32
+      return 4
+
+    case 'indexed': {
+      // Only fixed arrays have known size
+      if (typeof u.size !== 'number') return null
+      const elemSize = byteSize(u.element)
+      if (elemSize === null) return null
+      return u.size * elemSize
+    }
+
+    case 'tuple': {
+      let total = 0
+      for (const f of u.fields) {
+        const fieldSize = byteSize(f.type)
+        if (fieldSize === null) return null
+        total += fieldSize
+      }
+      return total
+    }
+
+    case 'void':
+      return 0
+
+    default:
+      return null
+  }
 }

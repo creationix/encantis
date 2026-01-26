@@ -14,16 +14,18 @@
     "Themes"
   ],
   "activationEvents": [],
-  "main": "./out/extension.js",
+  "main": "./dist/node/extension.js",
   "browser": "./dist/web/extension.js",
   "scripts": {
-    "vscode:prepublish": "npm run compile && npm run package-web",
-    "compile": "tsc -p ./",
+    "vscode:prepublish": "bun run bundle",
+    "bundle": "bun run bundle:node && bun run bundle:web",
+    "bundle:node": "bun build src/extension.ts src/server/lsp.ts --outdir dist/node --target node --format cjs --external vscode",
+    "bundle:web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify --external vscode",
     "watch": "tsc -watch -p ./",
-    "compile-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode",
-    "watch-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode --watch",
-    "package-web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify --external vscode",
-    "package": "bun vsce package"
+    "watch:node": "bun build src/extension.ts src/server/lsp.ts --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --watch",
+    "watch:web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode --watch",
+    "typecheck": "tsc -p ./ --noEmit",
+    "package": "bun vsce package --no-dependencies"
   },
   "dependencies": {
     "@encantis/compiler": "workspace:*",
@@ -130,6 +132,11 @@
         "label": "Encantis Dark",
         "uiTheme": "vs-dark",
         "path": "./dark-color-theme.json"
+      },
+      {
+        "label": "Encantis Dark Vibrant",
+        "uiTheme": "vs-dark",
+        "path": "./dark-color-vibrant-theme.json"
       },
       {
         "label": "Encantis Light",

@@ -10,6 +10,7 @@ import {
   isFloat,
   unwrap,
   primitiveByteSize,
+  byteSize,
 } from './types'
 import { dataToWat, buildDataSection } from './data-pack'
 
@@ -413,6 +414,35 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   }
 }
 
+// Handle builtin functions (memset, memcpy, zero)
+// Returns null if not a builtin
+function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): string | null {
+  const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+
+  switch (name) {
+    case 'memset': {
+      // memset(dest, value, len) -> memory.fill
+      if (args.length !== 3) return null
+      const dest = exprToWat(args[0].value, ctx)
+      const value = exprToWat(args[1].value, ctx)
+      const len = exprToWat(args[2].value, ctx)
+      return `(memory.fill ${dest} ${value} ${len})`
+    }
+
+    case 'memcpy': {
+      // memcpy(dest, src, len) -> memory.copy
+      if (args.length !== 3) return null
+      const dest = exprToWat(args[0].value, ctx)
+      const src = exprToWat(args[1].value, ctx)
+      const len = exprToWat(args[2].value, ctx)
+      return `(memory.copy ${dest} ${src} ${len})`
+    }
+
+    default:
+      return null
+  }
+}
+
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // Get function name
   let funcName: string
@@ -422,6 +452,10 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     // Indirect call - not yet supported
     return `(call_indirect ${exprToWat(expr.callee, ctx)})`
   }
+
+  // Handle builtin functions
+  const builtin = builtinToWat(funcName, expr, ctx)
+  if (builtin !== null) return builtin
 
   // Generate argument expressions
   const args = expr.args.map((arg) => {
@@ -442,6 +476,58 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   const member = expr.member
 
   if (member.kind === 'field') {
+    // Get the type of the object to check for indexed/pointer-to-indexed
+    const objType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+
+    // Handle .ptr, .len, .wid on indexed types
+    if (objType?.kind === 'indexed') {
+      if (member.name === 'ptr') {
+        // For bare indexed type, return address (object is in memory)
+        return exprToWat(expr.object, ctx)
+      }
+      if (member.name === 'len') {
+        // For fixed array, length is compile-time constant
+        if (typeof objType.size === 'number') {
+          return `(i32.const ${objType.size})`
+        }
+        // For slices, would need runtime length (not yet implemented)
+        throw new Error('Runtime slice length not yet implemented')
+      }
+      if (member.name === 'wid') {
+        // Element byte size is always compile-time known
+        const elemSize = byteSize(objType.element)
+        if (elemSize === null) {
+          throw new Error(`Cannot determine element size for ${objType.element.kind}`)
+        }
+        return `(i32.const ${elemSize})`
+      }
+    }
+
+    // Handle .ptr, .len, .wid on pointer-to-indexed types
+    if (objType?.kind === 'pointer' && objType.pointee.kind === 'indexed') {
+      const indexed = objType.pointee
+      if (member.name === 'ptr') {
+        // For pointer-to-indexed, .ptr is just the pointer value itself
+        return exprToWat(expr.object, ctx)
+      }
+      if (member.name === 'len') {
+        // For fixed array, length is compile-time constant
+        if (typeof indexed.size === 'number') {
+          return `(i32.const ${indexed.size})`
+        }
+        // For slices, would need runtime length (not yet implemented)
+        throw new Error('Runtime slice length not yet implemented')
+      }
+      if (member.name === 'wid') {
+        // Element byte size is always compile-time known
+        const elemSize = byteSize(indexed.element)
+        if (elemSize === null) {
+          throw new Error(`Cannot determine element size for ${indexed.element.kind}`)
+        }
+        return `(i32.const ${elemSize})`
+      }
+    }
+
     // Struct field access: flatten to local.get with field suffix
     if (expr.object.kind === 'IdentExpr') {
       const baseName = expr.object.name
