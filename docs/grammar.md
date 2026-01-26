@@ -115,7 +115,7 @@ A module consists of zero or more declarations:
 
 **Single import:**
 ```encantis
-import "env" "log" func(message: *[:0]u8)
+import "env" "log" func(message: *[!]u8)
 ```
 
 **Grouped imports:**
@@ -350,45 +350,44 @@ bytes                  // byte slice (builtin, not a primitive)
 **u8                   // pointer to pointer
 ```
 
-### Array Types
+### Bracket Types (Pointers)
 
 [Grammar: `BaseType` array case, `arrayTypePrefix`](../packages/compiler/src/grammar/encantis.ohm#L110-L118)
 
-**Many-pointers** (unknown length at compile-time):
+All bracket types are pointers (no by-value arrays). Syntax: `[*? length? framing*]T`
+
+**Many-pointers** (thin, just ptr):
 ```encantis
-[*]u8                  // many-pointer, no length info
-[*:0]u8                // null-terminated (C string style)
-[*:?]u8                // LEB128-prefixed length
+[*]u8                  // many-pointer, unknown length
+[*!]u8                 // null-terminated
+[*?]u8                 // LEB128-prefixed
+[*10]u8                // known length 10
+[*_]u8                 // inferred length
+[*10!]u8               // known length + null-terminated
 ```
 
-**Slices** (fat pointers: ptr + length):
+**Slices** (fat, ptr + runtime length):
 ```encantis
-[]u8                   // slice (pointer + length)
-[:0]u8                 // slice with null sentinel
+[]u8                   // slice, runtime length only
+[!]u8                  // slice + null-terminated
+[?]u8                  // slice + LEB128-prefixed
+[5]u8                  // slice + known length 5 (redundant)
+[_]u8                  // slice + inferred length
+[5!]u8                 // slice + known length + null-terminated
 ```
 
-**Fixed arrays** (stack/inline, by-value):
+**Multi-dimensional (flat layout):**
 ```encantis
-[4]f32                 // 4 floats inline
-[1024]u8               // 1024-byte buffer
-[16:0]u8               // 16 bytes + null terminator
+[*!!]u8                // double null-terminated (2D)
+[*??]u8                // LEB128 count + per-element LEB128 lengths
+[*!?]u8                // null-term outer, LEB128 inner
 ```
 
-**Multi-dimensional arrays:**
+**Multi-dimensional (pointer indirection):**
 ```encantis
-// Flat memory layout:
-[*:0:0]u8              // "hello\0world\0\0" (double null-term)
-[*:?:?]u8              // LEB128 count + per-element LEB128 lengths
-
-// Pointer indirection:
-[*][*:0]u8             // array of pointers to null-term strings
+[*][*!]u8              // many-pointer to null-term strings
 [][]u8                 // slice of slices
-```
-
-The **left sentinel applies to the outer dimension**:
-```encantis
-[*:0:?]u8              // null-terminated outer, LEB128-prefixed inner
-[*:?:0]u8              // LEB128-prefixed outer, null-term inner
+[*][5]u8               // many-pointer to length-5 slices
 ```
 
 ### Function Types

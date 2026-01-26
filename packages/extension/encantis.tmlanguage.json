@@ -67,8 +67,27 @@
                     "match": "="
                 },
                 {
-                    "name": "keyword.operator.bracket.encantis",
-                    "match": "\\[|\\]"
+                    "name": "punctuation.definition.typeparameters.begin.encantis",
+                    "match": "\\["
+                },
+                {
+                    "name": "punctuation.definition.typeparameters.end.encantis",
+                    "match": "\\]"
+                },
+                {
+                    "comment": "Bracket type: many-pointer marker",
+                    "name": "storage.modifier.pointer.encantis",
+                    "match": "(?<=\\[)\\*"
+                },
+                {
+                    "comment": "Bracket type: framing markers",
+                    "name": "storage.modifier.framing.encantis",
+                    "match": "(?<=\\[\\*?[0-9_]*)[!?]+"
+                },
+                {
+                    "comment": "Bracket type: inferred length",
+                    "name": "keyword.other.placeholder.encantis",
+                    "match": "(?<=\\[\\*?)_(?=[!?]*\\])"
                 },
                 {
                     "name": "keyword.operator.arithmetic.encantis",

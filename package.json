@@ -12,10 +12,14 @@
   "scripts": {
     "build:cli": "echo 'CLI uses source directly - no build needed'",
     "cli": "bun packages/cli/src/cli.ts",
-    "build:ext": "cd packages/extension && bun run compile",
-    "build:ext-web": "cd packages/extension && bun run compile-web",
-    "watch:ext": "cd packages/extension && bun run watch",
-    "watch:ext-web": "cd packages/extension && bun run watch-web",
+    "build:ext": "cd packages/extension && bun run bundle",
+    "build:ext-web": "cd packages/extension && bun run bundle:web",
+    "watch:ext": "cd packages/extension && bun run watch:node",
+    "watch:ext-web": "cd packages/extension && bun run watch:web",
+    "package:ext": "cd packages/extension && bun run package",
+    "install:ext": "code --install-extension packages/extension/encantis-vscode-ext-0.0.4.vsix --force",
+    "reinstall:ext": "bun run package:ext && bun run install:ext",
+    "bundle:grammar": "bun packages/compiler/scripts/bundle-grammar.ts",
     "test": "bun test"
   },
   "dependencies": {},

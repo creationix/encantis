@@ -2,14 +2,12 @@
 // Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
 // State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
 
-export "mem" memory 1 {
-  hash_state: [12]u32
-}
+export "mem" memory 1 
 
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
 export "gimli"
-func gimli(state:*[12]u32) {
+func gimli(state:[*12]u32) {
   let round:u32 = 24
 
   loop {
@@ -62,25 +60,33 @@ func slice_ptr_pun_test() {
   // should allow type punning
   let first_u32 = ptr.u32[0] // Type punning to read first 4 bytes as u32
 
-  let slice_zero = "null termination!":[:0]u8
-  // should have type [*:0]u8
+  // A fat-pointer with redundant null termination
+  let slice_zero = "null termination!":[!]u8
+  // should have type [*!]u8
   let ptr_zero = slice_zero.ptr
   // should allow type punning
   let first_u32_zero = ptr_zero.u32[0] // Should read 0
 
-  let slice_prefix = "length prefix?":[:?]u8
-  // should have type [*:?]u8
+  let slice_prefix = "length prefix?":[?]u8
+  // should have type [*?]u8
   let ptr_prefix = slice_prefix.ptr
   // should allow type punning
   let first_u32_prefix = ptr_prefix.u32[0] // Should read 0
 
-  let wider_slice:[]u16 = [0x1234, 0x5678, 0x9abc]
+  let wider_slice:*[_]u16 = [0x1234, 0x5678, 0x9abc]
   // should have type [*]u16
   let wider_ptr = wider_slice.ptr
+  wider_slice.wid
+  wider_slice.len
   // should allow type punning
-  let later_ptr = &wider_ptr[2]
-  let first_u32_wide = later_ptr.u32[0] // Should read 0x56781234
+  let first_u32_wide = wider_ptr.u32[0] // Should read 0x56781234
+  // What about offset pointers?  Should these preserve all type state?
+  let later_ptr = wider_ptr + 2
 }
+
+// Global state for Gimli-Hash
+// This is a reserved area of linear memory to hold the state
+global hash_state:[*]u32 = [0;12]
 
 // Gimli-Hash: absorb input and squeeze 32-byte output
 // Uses rate of 16 bytes (128 bits)

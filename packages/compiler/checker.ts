@@ -490,6 +490,10 @@ class CheckContext {
     let type: ResolvedType
     if (decl.type) {
       type = this.resolveType(decl.type)
+      if (decl.value) {
+        // Use bidirectional type checking to fill in inferred sizes
+        type = this.checkExpr(decl.value, type)
+      }
     } else if (decl.value) {
       type = this.inferExpr(decl.value)
     } else {
@@ -612,7 +616,8 @@ class CheckContext {
       type = this.resolveType(stmt.type)
       if (stmt.value) {
         // Use bidirectional type checking - propagate expected type down
-        this.checkExpr(stmt.value, type)
+        // checkExpr returns the resolved type (with inferred sizes filled in)
+        type = this.checkExpr(stmt.value, type)
       }
     } else if (stmt.value) {
       const valueType = this.inferExpr(stmt.value)
@@ -745,12 +750,12 @@ class CheckContext {
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
-        const specifiers: IndexSpecifierRT[] = type.specifiers.map((s) =>
-          s.kind === 'null' ? { kind: 'null' } : { kind: 'prefix' },
+        // Specifiers are only framing markers (! and ?) - length is in type.size
+        const specifiers: IndexSpecifierRT[] = type.specifiers.map((s): IndexSpecifierRT =>
+          s.kind === 'null' ? { kind: 'null' } : { kind: 'prefix' }
         )
-        // Handle 'inferred' size - will be filled in by bidirectional checking
-        const size = type.size === 'inferred' ? null : type.size
-        return indexed(element, size, specifiers, type.manyPointer)
+        // Preserve 'inferred' size - will be filled in by bidirectional checking
+        return indexed(element, type.size, specifiers, type.manyPointer)
       }
 
       case 'CompositeType': {
@@ -840,25 +845,30 @@ class CheckContext {
 
     // Handle comptime_list against indexed types - propagate element type down
     if (inferred.kind === 'comptime_list' && expected.kind === 'indexed') {
+      // If expected has inferred size, fill it in from the literal length
+      let resolvedExpected = expected
+      if (expected.size === 'inferred' && expr.kind === 'ArrayExpr') {
+        resolvedExpected = indexed(expected.element, expr.elements.length, expected.specifiers, expected.manyPointer)
+      }
       // Check each element against the inner element type
       if (expr.kind === 'ArrayExpr') {
         // Determine what type to check each element against
         // For stacked specifiers like *[![!u8]], peel off one specifier level
         // so "hello" checks against *[!u8] (not just u8)
-        const innerType = this.peelSpecifier(expected)
+        const innerType = this.peelSpecifier(resolvedExpected)
         for (const elem of expr.elements) {
           this.checkExpr(elem, innerType)
         }
       }
       // Resolve to concrete indexed type based on expected
-      const resolved = this.resolveListToIndexed(inferred, expected)
+      const resolved = this.resolveListToIndexed(inferred, resolvedExpected)
       // For LSP, record the comptime_list type (not resolved) so user sees the literal type
       if (expr.kind === 'ArrayExpr') {
         this.types.set(typeKey(expr.span.start, expr.kind), inferred)
       }
       // Collect literal for deferred serialization (concrete types only)
-      if (expected.size !== 'comptime') {
-        this.pendingLiterals.push({ id: expr.span.start, expr, type: expected })
+      if (resolvedExpected.size !== 'comptime') {
+        this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedExpected })
       }
       return resolved
     }
@@ -871,10 +881,15 @@ class CheckContext {
       expected.kind === 'indexed' &&
       expected.size !== 'comptime'
     ) {
+      // If expected has inferred size, fill it in from the literal length
+      let resolvedExpected = expected
+      if (expected.size === 'inferred' && expr.kind === 'ArrayExpr') {
+        resolvedExpected = indexed(expected.element, expr.elements.length, expected.specifiers, expected.manyPointer)
+      }
       if (expr.kind === 'ArrayExpr') {
         // Peel specifiers to get the element type for checking
         // e.g., *[![!u8]] -> *[!u8] for first level, *[!u8] -> u8 for second level
-        const innerType = this.peelSpecifier(expected)
+        const innerType = this.peelSpecifier(resolvedExpected)
         for (const elem of expr.elements) {
           this.checkExpr(elem, innerType)
         }
@@ -882,9 +897,50 @@ class CheckContext {
       // Record the inferred comptime type
       this.types.set(typeKey(expr.span.start, expr.kind), inferred)
       // Collect literal for deferred serialization
-      this.pendingLiterals.push({ id: expr.span.start, expr, type: expected })
+      this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedExpected })
       // Return concretized type
-      return this.concretizeToTarget(inferred, expected)
+      return this.concretizeToTarget(inferred, resolvedExpected)
+    }
+
+    // Handle pointer-to-indexed with inferred size: *[_]T
+    if (
+      expected.kind === 'pointer' &&
+      expected.pointee.kind === 'indexed' &&
+      expected.pointee.size === 'inferred' &&
+      (inferred.kind === 'indexed' && inferred.size === 'comptime') &&
+      expr.kind === 'ArrayExpr'
+    ) {
+      // Fill in the size from the literal
+      const resolvedPointee = indexed(
+        expected.pointee.element,
+        expr.elements.length,
+        expected.pointee.specifiers,
+        expected.pointee.manyPointer,
+      )
+      const resolvedExpected = pointer(resolvedPointee)
+      // Check elements
+      const innerType = this.peelSpecifier(resolvedPointee)
+      for (const elem of expr.elements) {
+        this.checkExpr(elem, innerType)
+      }
+      // Record and return
+      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+      this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedPointee })
+      return resolvedExpected
+    }
+
+    // Handle indexed with inferred size against indexed with known size (e.g., RepeatExpr)
+    // [_]T or [*_]T with initializer [value; N] should fill in size from N
+    if (
+      expected.kind === 'indexed' &&
+      expected.size === 'inferred' &&
+      inferred.kind === 'indexed' &&
+      typeof inferred.size === 'number'
+    ) {
+      // Fill in the inferred size from the value's known size
+      const resolved = indexed(expected.element, inferred.size, expected.specifiers, expected.manyPointer)
+      this.types.set(typeKey(expr.span.start, expr.kind), resolved)
+      return resolved
     }
 
     // For other types, check assignability and record the inferred type
@@ -945,6 +1001,10 @@ class CheckContext {
     if (type.kind === 'comptime_list' && expected.kind === 'indexed') {
       return this.resolveListToIndexed(type, expected)
     }
+    // Handle comptime indexed type against concrete indexed type
+    if (type.kind === 'indexed' && type.size === 'comptime' && expected.kind === 'indexed') {
+      return expected
+    }
     // Fall back to default concretization
     return this.concretize(type)
   }
@@ -977,6 +1037,9 @@ class CheckContext {
 
       case 'ArrayExpr':
         return this.inferArray(expr)
+
+      case 'RepeatExpr':
+        return this.inferRepeat(expr)
 
       case 'GroupExpr':
         return this.inferExpr(expr.expr)
@@ -1200,7 +1263,18 @@ class CheckContext {
             // .ptr returns a many-pointer preserving specifiers from the slice
             return manyPointer(objType.element, objType.specifiers)
           }
-          if (expr.member.name === 'len') return primitive('u32')
+          if (expr.member.name === 'len') {
+            // .len is only valid if length is determinable:
+            // - Fat slices (manyPointer=false) store length in the pointer
+            // - Many-pointers with known size [*N]T have compile-time length
+            // - Many-pointers with framing [*!]T, [*?]T can calculate length
+            // - Bare many-pointers [*]T have no length info
+            if (objType.manyPointer && typeof objType.size !== 'number' && objType.specifiers.length === 0) {
+              this.error(expr.span.start, `cannot get .len on bare many-pointer ${typeToString(objType)} - length is unknown`)
+              return primitive('u32')
+            }
+            return primitive('u32')
+          }
           if (expr.member.name === 'wid') return primitive('u32')
         }
         // Pointer-to-indexed type built-in fields: .ptr, .len, .wid
@@ -1210,7 +1284,14 @@ class CheckContext {
             // .ptr returns a many-pointer preserving specifiers
             return manyPointer(indexedType.element, indexedType.specifiers)
           }
-          if (expr.member.name === 'len') return primitive('u32')
+          if (expr.member.name === 'len') {
+            // Same length rules apply to pointer-to-indexed
+            if (indexedType.manyPointer && typeof indexedType.size !== 'number' && indexedType.specifiers.length === 0) {
+              this.error(expr.span.start, `cannot get .len on bare many-pointer ${typeToString(indexedType)} - length is unknown`)
+              return primitive('u32')
+            }
+            return primitive('u32')
+          }
           if (expr.member.name === 'wid') return primitive('u32')
         }
         this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
@@ -1318,6 +1399,28 @@ class CheckContext {
 
     // Return comptime indexed type: T[]
     return comptimeIndexed(elementType)
+  }
+
+  inferRepeat(expr: AST.RepeatExpr): ResolvedType {
+    // [value; count] - repeat value count times
+    const valueType = this.inferExpr(expr.value)
+    this.inferExpr(expr.count) // Type check the count expression
+
+    // Count should be a compile-time integer
+    const countValue = this.evalComptimeExpr(expr.count)
+    if (!countValue || countValue.kind !== 'int') {
+      this.error(expr.count.span.start, 'repeat count must be a compile-time integer')
+      return comptimeIndexed(valueType)
+    }
+
+    const count = Number(countValue.value)
+    if (count < 0) {
+      this.error(expr.count.span.start, 'repeat count cannot be negative')
+      return comptimeIndexed(valueType)
+    }
+
+    // Return indexed type with known size - we know the count at compile time
+    return array(valueType, count)
   }
 
   inferIf(expr: AST.IfExpr): ResolvedType {

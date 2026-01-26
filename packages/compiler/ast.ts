@@ -292,6 +292,7 @@ export type Expr =
   | IdentExpr
   | LiteralExpr
   | ArrayExpr
+  | RepeatExpr
   | IfExpr
   | MatchExpr
   | TupleExpr
@@ -408,6 +409,13 @@ export type LiteralValue =
 export interface ArrayExpr extends BaseNode {
   kind: 'ArrayExpr'
   elements: Expr[]
+}
+
+// [expr; count] - repeat value count times
+export interface RepeatExpr extends BaseNode {
+  kind: 'RepeatExpr'
+  value: Expr
+  count: Expr
 }
 
 // if expr { ... } elif ... else ...
@@ -531,18 +539,19 @@ export interface PointerType extends BaseNode {
   pointee: Type
 }
 
-// Index specifiers: terminators (!) and length prefixes (?)
+// Index specifiers: framing markers for serialization
+// ! = null-terminated, ? = LEB128 length prefix
 export type IndexSpecifier =
-  | { kind: 'null' }
-  | { kind: 'prefix' } // LEB128 length prefix
+  | { kind: 'null' }   // null-terminated (!)
+  | { kind: 'prefix' } // LEB128 length prefix (?)
 
-// [T] or *[T] or *[N;T] or *[!T] or *[?T] etc.
+// Bracket types: []T, [*]T, [5]T, [!]T, [*5!]T, etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
-  size: number | 'inferred' | 'comptime' | null // null = slice *[T], 'comptime' = [T], 'inferred' = *[N;T]
-  specifiers: IndexSpecifier[] // e.g., [{ kind: 'null' }] for :0
-  manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat pointer slice)
+  size: number | 'inferred' | 'comptime' | null // number = known length, 'inferred' = from literal, null = unknown
+  specifiers: IndexSpecifier[] // framing: ! and ? markers
+  manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat slice)
 }
 
 // () or (type, type) or (name: type, name: type)
@@ -626,6 +635,7 @@ export interface ASTVisitor {
   visitIdentExpr?(node: IdentExpr): void | false
   visitLiteralExpr?(node: LiteralExpr): void | false
   visitArrayExpr?(node: ArrayExpr): void | false
+  visitRepeatExpr?(node: RepeatExpr): void | false
   visitIfExpr?(node: IfExpr): void | false
   visitMatchExpr?(node: MatchExpr): void | false
   visitTupleExpr?(node: TupleExpr): void | false
@@ -811,6 +821,12 @@ function walkExpr(expr: Expr, visitor: ASTVisitor): void {
         for (const elem of expr.elements) {
           walkExpr(elem, visitor)
         }
+      }
+      break
+    case 'RepeatExpr':
+      if (visitor.visitRepeatExpr?.(expr) !== false) {
+        walkExpr(expr.value, visitor)
+        walkExpr(expr.count, visitor)
       }
       break
     case 'IfExpr':

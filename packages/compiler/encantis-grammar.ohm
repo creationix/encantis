@@ -104,31 +104,35 @@ Encantis {
   // Types
   // ============================================================================
 
-  // Zig-inspired array/pointer syntax
-  // - *T = normal pointer
-  // - [*]T = many-pointer (comptime unknown length)
-  // - [*:0]T = many-pointer to null-terminated array of T (i.e. ->"hello\x00")
-  // - [*:?]T = many-pointer to LEB128-prefixed array of T (i.e. ->"\x05hello")
-  // You can combine these for multi-dimensional arrays:
-  // These are still a single pointer, but the data is laid out in a specific way.
-  // The left modifier is the outermost dimension.
-  // - [*:0:0]T = 2d many-pointer, null-terminated at both levels (i.e. ->"one\x00two\x00\x00")
-  // - [*:?:?]T = 2d many-pointer, LEB128-prefixed at both levels (i.e. ->"\x02\x03one\x03two")
-  // - [*:0:?]T - 2d many-pointer, null-terminated at outer level (i.e. ->"\x03one\x03two\x00")
-  // - [*:?:0]T - 2d many-pointer, null-terminated at inner level (i.e. ->"\x02one\x00two\x00")
-  // Fat Pointers (aka Slices)
-  // - []T = fat-pointer (pointer + length) (aka slice)
-  // - [:0]T = slices can have modifiers as well
-  // Fixed Length Arrays (by-value semantics)
-  // - [N]T = fixed length array of T
-  // - [_]T = fixed length array with inferred length
-  // - [N:0]T = fixed length arrays can have modifiers as well
-  // You can nest these, the left bracket is the outermost dimension:
+  // Array/pointer bracket syntax - a mini-language inside []
+  // All bracket types are pointers (no by-value arrays)
+  //
+  // Structure: [*? length? framing*]T
+  //   - Optional * at start = thin many-pointer (vs fat slice)
+  //   - Optional length = _ (inferred) or N (explicit)
+  //   - Zero or more framing = ! (null-term) or ? (LEB128 prefix)
+  //
+  // Thin many-pointers (just ptr, no runtime length):
+  // - [*]T = many-pointer, unknown length
+  // - [*!]T = many-pointer, null-terminated
+  // - [*?]T = many-pointer, LEB128-prefixed
+  // - [*5]T = many-pointer, known length 5
+  // - [*_]T = many-pointer, inferred length
+  // - [*5!]T = many-pointer, known length 5, null-terminated
+  // - [*!!]T = many-pointer, double null-terminated (2D)
+  //
+  // Fat slices (ptr + runtime length):
+  // - []T = slice, runtime length only
+  // - [!]T = slice + null-terminated
+  // - [?]T = slice + LEB128-prefixed
+  // - [5]T = slice + known length 5 (redundant: runtime + comptime)
+  // - [_]T = slice + inferred length
+  // - [5!]T = slice + known length 5 + null-terminated
+  //
+  // Nesting (left bracket = outermost dimension):
   // - [][]T - slices of slices
-  // - [N][]T - fixed length array of slices of T
-  // - [][N]T - slice of fixed length arrays of T
-  // - [*][N]T - many-pointer to fixed length arrays of T
-  // - [N][*][]T - fixed length array of many-pointers to slices of T
+  // - [*][5]T - many-pointer to length-5 slices
+  // - [*!?]T - null-term outer, LEB128 inner (flat layout)
   //
   // Function types use -> syntax:
   // - i32 -> i32 (simple types)
@@ -150,14 +154,17 @@ Encantis {
            | typeIdent                         -- named
 
 
-        arrayTypePrefix = "*" arraySentinelList?  -- manyPointer
-                                                                 | intLiteral arraySentinelList?  -- fixed
-                                                                 | arraySentinelList              -- sliceSentinel
+        // Mini-language: [*? length? framing*]
+        arrayTypePrefix = "*" arrayLength? arrayFraming*   -- manyPointer
+                        | arrayLength arrayFraming*        -- sliceWithLength
+                        | arrayFraming+                    -- sliceWithFraming
 
-        arraySentinelList = ":" arraySentinel (":" arraySentinel)*
+        // Length: _ (inferred) or decimal digits
+        arrayLength = "_"         -- inferred
+                    | digit+      -- explicit
 
-        // Array sentinels: 0 = null terminator, ? = LEB128 prefix
-        arraySentinel = "0" | "?"
+        // Framing: ! (null-terminator) or ? (LEB128 prefix)
+        arrayFraming = "!" | "?"
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"
@@ -323,8 +330,9 @@ Encantis {
               | literal
               | ident
 
-  // Array literal: [expr, expr, ...]
-  ArrayLiteral = "[" ListOf<Expr, ","> "]"
+  // Array literal: [expr, expr, ...] or [expr; count]
+  ArrayLiteral = "[" Expr ";" Expr "]"    -- repeat
+               | "[" ListOf<Expr, ","> "]"  -- list
 
   // ============================================================================
   // If Expression / Branches

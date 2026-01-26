@@ -98,6 +98,13 @@ function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
       return { ...expr, expr: cloneExprWithSpan(expr.expr, expr.expr.span), span: newSpan }
     case 'ArrayExpr':
       return { ...expr, elements: expr.elements.map((e) => cloneExprWithSpan(e, e.span)), span: newSpan }
+    case 'RepeatExpr':
+      return {
+        ...expr,
+        value: cloneExprWithSpan(expr.value, expr.value.span),
+        count: cloneExprWithSpan(expr.count, expr.count.span),
+        span: newSpan,
+      }
     case 'MatchExpr':
       return {
         ...expr,
@@ -458,84 +465,62 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return baseType.toAST()
   },
 
-  // Zig-style array syntax: [prefix?]Type
+  // Bracket syntax: [*? length? framing*]T
   // - []T = slice (fat pointer with ptr+len)
-  // - [*]T = many-pointer (just ptr, no length)
-  // - [*:0]T = null-terminated many-pointer
-  // - [*:?]T = LEB128-prefixed many-pointer
-  // - [:0]T = slice with null sentinel
-  // - [N]T = fixed length array (by-value)
-  // - [N:0]T = fixed length array with sentinel
+  // - [*]T = many-pointer (thin, just ptr)
+  // - [*!]T = many-pointer, null-terminated
+  // - [*5]T = many-pointer, known length 5
+  // - [!]T = slice + null-terminated
+  // - [5]T = slice + known length 5
+  // - [_]T = slice + inferred length
   BaseType_array(_lb, prefixOpt, _rb, element) {
-    type PrefixInfo = { kind: 'manyPointer' | 'fixed' | 'slice'; size: number | null; specifiers: AST.IndexSpecifier[] }
+    type PrefixInfo = { manyPointer: boolean; size: number | 'inferred' | null; specifiers: AST.IndexSpecifier[] }
     const prefix = first<PrefixInfo>(prefixOpt)
-
-    let size: number | 'comptime' | null
-    let specifiers: AST.IndexSpecifier[]
-    let manyPointer = false
-
-    if (prefix === null) {
-      // []T - plain slice (no prefix)
-      size = null
-      specifiers = []
-    } else if (prefix.kind === 'fixed') {
-      // [N]T or [N:0]T - fixed size array
-      size = prefix.size
-      specifiers = prefix.specifiers
-    } else if (prefix.kind === 'manyPointer') {
-      // [*]T, [*:0]T - many-pointer (thin pointer, no length)
-      size = null
-      specifiers = prefix.specifiers
-      manyPointer = true
-    } else {
-      // [:0]T - sentinel slice
-      size = null
-      specifiers = prefix.specifiers
-    }
 
     const result: AST.IndexedType = {
       kind: 'IndexedType',
       element: element.toAST(),
-      size,
-      specifiers,
+      size: prefix?.size ?? null,
+      specifiers: prefix?.specifiers ?? [],
       span: span(this),
     }
-    if (manyPointer) result.manyPointer = true
+    if (prefix?.manyPointer) result.manyPointer = true
     return result
   },
 
-  // [*]T or [*:0]T - many-pointer
-  arrayTypePrefix_manyPointer(_star, sentinelsOpt) {
-    const specifiers = first<AST.IndexSpecifier[]>(sentinelsOpt) ?? []
-    return { kind: 'manyPointer', size: null, specifiers }
+  // [*]T, [*!]T, [*5]T, [*5!]T, etc - many-pointer (thin)
+  arrayTypePrefix_manyPointer(_star, lengthOpt, framingIter) {
+    const length = first<number | 'inferred'>(lengthOpt)
+    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
+    return { manyPointer: true, size: length, specifiers }
   },
 
-  // [N]T or [N:0]T - fixed size array
-  arrayTypePrefix_fixed(intLit, sentinelsOpt) {
-    const size = Number(intLit.sourceString)
-    const specifiers = first<AST.IndexSpecifier[]>(sentinelsOpt) ?? []
-    return { kind: 'fixed', size, specifiers }
+  // [5]T, [_]T, [5!]T, [_!]T, etc - slice with length
+  arrayTypePrefix_sliceWithLength(length, framingIter) {
+    const size = length.toAST() as number | 'inferred'
+    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
+    return { manyPointer: false, size, specifiers }
   },
 
-  // [:0]T - slice with sentinel
-  arrayTypePrefix_sliceSentinel(sentinels) {
-    const specifiers = sentinels.toAST() as AST.IndexSpecifier[]
-    return { kind: 'slice', size: null, specifiers }
+  // [!]T, [?]T, [!?]T, etc - slice with framing only
+  arrayTypePrefix_sliceWithFraming(framingIter) {
+    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
+    return { manyPointer: false, size: null, specifiers }
   },
 
-  // ":" sentinel (":" sentinel)* - list of sentinels like :0 or :0:?
-  arraySentinelList(_colon1, firstSentinel, _moreColons, moreSentinels) {
-    const specifiers: AST.IndexSpecifier[] = [firstSentinel.toAST() as AST.IndexSpecifier]
-    // moreSentinels is an iteration of the additional sentinels
-    for (const child of moreSentinels.children) {
-      specifiers.push(child.toAST() as AST.IndexSpecifier)
-    }
-    return specifiers
+  // Length: _ (inferred)
+  arrayLength_inferred(_underscore) {
+    return 'inferred' as const
   },
 
-  // Single sentinel: 0 = null terminator, ? = LEB128 prefix
-  arraySentinel(char) {
-    if (char.sourceString === '0') {
+  // Length: decimal digits
+  arrayLength_explicit(digits) {
+    return Number(digits.sourceString)
+  },
+
+  // Framing: ! (null-term) or ? (LEB128 prefix)
+  arrayFraming(char) {
+    if (char.sourceString === '!') {
       return { kind: 'null' } as AST.IndexSpecifier
     } else {
       return { kind: 'prefix' } as AST.IndexSpecifier
@@ -1299,7 +1284,16 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return lit.toAST()
   },
 
-  ArrayLiteral(_lb, elements, _rb) {
+  ArrayLiteral_repeat(_lb, value, _semi, count, _rb) {
+    return {
+      kind: 'RepeatExpr',
+      value: value.toAST(),
+      count: count.toAST(),
+      span: span(this),
+    } as AST.RepeatExpr
+  },
+
+  ArrayLiteral_list(_lb, elements, _rb) {
     return {
       kind: 'ArrayExpr',
       elements: elements.asIteration().children.map((e: ohm.Node) => e.toAST()),
