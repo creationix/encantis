@@ -97,8 +97,8 @@ Encantis {
 
   MemoryDecl = memory intLiteral intLiteral? DataBlock?
   DataBlock = "{" DataEntry* "}"
-  DataEntry = intLiteral "=>" Expr ","?     -- offset
-            | ident TypeAnnotation ","?     -- alloc
+  DataEntry = intLiteral "=>" Expr ","?           -- offset
+            | ident TypeAnnotation? Assign ","?   -- named
 
   // ============================================================================
   // Types
@@ -166,8 +166,8 @@ Encantis {
         // Framing: ! (null-terminator) or ? (LEB128 prefix)
         arrayFraming = "!" | "?"
 
-  PrimitiveType = "i8" | "i16" | "i32" | "i64"
-                | "u8" | "u16" | "u32" | "u64"
+  PrimitiveType = "i8" | "i16" | "i32" | "i64" | "i128" | "i256"
+                | "u8" | "u16" | "u32" | "u64" | "u128" | "u256"
                 | "f32" | "f64"
                 | "bool"
 

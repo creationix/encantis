@@ -3,9 +3,78 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
-import { type ResolvedType, typeToString, byteSize } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
+
+// === Builtin Function Signatures ===
+
+const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
+  memset: func(
+    [
+      { name: 'dest', type: manyPointer(primitive('u8')) },
+      { name: 'value', type: primitive('u8') },
+      { name: 'len', type: primitive('u32') },
+    ],
+    [],
+  ),
+  memcpy: func(
+    [
+      { name: 'dest', type: manyPointer(primitive('u8')) },
+      { name: 'src', type: manyPointer(primitive('u8')) },
+      { name: 'len', type: primitive('u32') },
+    ],
+    [],
+  ),
+}
+
+// Build a simplified expression string for hover hints
+// Complex sub-expressions are replaced with "..."
+function simplifyExpr(expr: AST.Expr, source: string): string {
+  switch (expr.kind) {
+    case 'IdentExpr':
+      return expr.name
+    case 'LiteralExpr':
+      // Show simple literals as-is
+      if (expr.value.kind === 'int' || expr.value.kind === 'float' || expr.value.kind === 'bool') {
+        return source.slice(expr.span.start, expr.span.end)
+      }
+      return '...'
+    case 'MemberExpr': {
+      const obj = simplifyExpr(expr.object, source)
+      if (expr.member.kind === 'field') return `${obj}.${expr.member.name}`
+      if (expr.member.kind === 'deref') return `${obj}.*`
+      if (expr.member.kind === 'index') return `${obj}.${expr.member.value}`
+      if (expr.member.kind === 'type') {
+        // Get the type name from source
+        const exprText = source.slice(expr.span.start, expr.span.end)
+        const dotIdx = exprText.lastIndexOf('.')
+        return dotIdx !== -1 ? `${obj}.${exprText.slice(dotIdx + 1)}` : `${obj}.?`
+      }
+      return `${obj}.?`
+    }
+    case 'IndexExpr': {
+      const obj = simplifyExpr(expr.object, source)
+      const idx = simplifyExpr(expr.index, source)
+      // Only show index if it's simple (identifier or number)
+      if (expr.index.kind === 'IdentExpr' ||
+          (expr.index.kind === 'LiteralExpr' && (expr.index.value.kind === 'int' || expr.index.value.kind === 'float'))) {
+        return `${obj}[${idx}]`
+      }
+      return `${obj}[...]`
+    }
+    case 'CallExpr': {
+      const callee = simplifyExpr(expr.callee, source)
+      return `${callee}(...)`
+    }
+    case 'UnaryExpr': {
+      const operand = simplifyExpr(expr.operand, source)
+      return `${expr.op}${operand}`
+    }
+    default:
+      return '...'
+  }
+}
 
 // === Meta Output Types ===
 
@@ -38,6 +107,7 @@ export interface MetaHint {
   type: number // Index into types array
   symbol?: number // Index into symbols array
   value?: string // For compile-time constant expressions
+  expr?: string // Full expression path (e.g., "hash_state.u64[0]")
 }
 
 export interface MetaError {
@@ -185,7 +255,7 @@ class MetaBuilder {
 
   private collectMemory(decl: AST.MemoryDecl): void {
     for (const entry of decl.data) {
-      if (entry.key.kind === 'alloc') {
+      if (entry.key.kind === 'named') {
         const sym = this.checkResult.symbols.get(entry.key.name)
         if (sym && sym.kind === 'global') {
           // Find the name position in the entry
@@ -463,7 +533,7 @@ class MetaBuilder {
 
   private generateHintsForMemory(decl: AST.MemoryDecl): void {
     for (const entry of decl.data) {
-      if (entry.key.kind === 'alloc') {
+      if (entry.key.kind === 'named') {
         const symbolIndex = this.symbolIndexByName.get(entry.key.name)
         if (symbolIndex !== undefined) {
           const offset = this.findMemoryAllocOffset(entry, entry.key.name)
@@ -564,6 +634,10 @@ class MetaBuilder {
         if (stmt.when) this.generateHintsForExpr(stmt.when)
         break
       case 'AssignmentStmt':
+        // LValue can be IdentExpr, MemberExpr, IndexExpr, or Pattern
+        if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
+          this.generateHintsForExpr(stmt.target)
+        }
         this.generateHintsForExpr(stmt.value)
         break
       case 'WhileStmt':
@@ -611,13 +685,17 @@ class MetaBuilder {
   }
 
   private generateHintsForExpr(expr: AST.Expr): void {
-    const type = this.checkResult.types.get(typeKey(expr.span.start, expr.kind))
+    // MemberExpr uses span.end as key to distinguish chained accesses (a.b vs a.b.c)
+    const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
+    const type = this.checkResult.types.get(typeKey(typeOffset, expr.kind))
 
     switch (expr.kind) {
       case 'IdentExpr': {
         const symbolIndex = this.symbolIndexByName.get(expr.name)
-        if (type) {
-          const typeIndex = this.typeRegistry.register(type)
+        // Check for builtin functions when no symbol is found
+        const effectiveType = type ?? BUILTIN_SIGNATURES[expr.name]
+        if (effectiveType) {
+          const typeIndex = this.typeRegistry.register(effectiveType)
           this.addHint(expr.span.start, expr.name.length, typeIndex, symbolIndex)
         }
         break
@@ -660,7 +738,8 @@ class MetaBuilder {
             const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
             // Compute compile-time value for .len and .wid on indexed types
             let comptimeValue: string | undefined
-            const objType = this.checkResult.types.get(typeKey(expr.object.span.start, expr.object.kind))
+            const objTypeOffset = expr.object.kind === 'MemberExpr' ? expr.object.span.end : expr.object.span.start
+            const objType = this.checkResult.types.get(typeKey(objTypeOffset, expr.object.kind))
             if (objType) {
               // Get the indexed type (either directly or through pointer)
               const indexedType = objType.kind === 'indexed' ? objType
@@ -677,15 +756,56 @@ class MetaBuilder {
                 }
               }
             }
-            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue)
+            // Use simplified expression for cleaner hover display
+            const simplifiedExpr = simplifyExpr(expr, this.source)
+            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue, simplifiedExpr)
+          }
+        }
+        // Handle deref: .* - show full expression context
+        if (type && expr.member.kind === 'deref') {
+          const typeIndex = this.typeRegistry.register(type)
+          const exprText = this.source.slice(expr.span.start, expr.span.end)
+          const dotStarIdx = exprText.lastIndexOf('.*')
+          if (dotStarIdx !== -1) {
+            const memberOffset = expr.span.start + dotStarIdx + 1 // position of *
+            const simplifiedExpr = simplifyExpr(expr, this.source)
+            this.addHint(memberOffset, 1, typeIndex, undefined, undefined, simplifiedExpr)
+          }
+        }
+        // Handle type punning: .u8, .u32, etc. - show the resolved type after punning
+        if (type && expr.member.kind === 'type') {
+          const typeIndex = this.typeRegistry.register(type)
+          const exprText = this.source.slice(expr.span.start, expr.span.end)
+          const dotIdx = exprText.lastIndexOf('.')
+          if (dotIdx !== -1) {
+            const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
+            const typeName = exprText.slice(dotIdx + 1)
+            const simplifiedExpr = simplifyExpr(expr, this.source)
+            this.addHint(memberOffset, typeName.length, typeIndex, undefined, undefined, simplifiedExpr)
           }
         }
         break
 
-      case 'IndexExpr':
+      case 'IndexExpr': {
         this.generateHintsForExpr(expr.object)
         this.generateHintsForExpr(expr.index)
+        // Add hints for the brackets showing the element type (result of indexing)
+        if (type) {
+          const typeIndex = this.typeRegistry.register(type)
+          const exprText = this.source.slice(expr.span.start, expr.span.end)
+          const openBracketIdx = exprText.indexOf('[')
+          const closeBracketIdx = exprText.lastIndexOf(']')
+          // Use simplified expression for cleaner hover display
+          const simplifiedExpr = simplifyExpr(expr, this.source)
+          if (openBracketIdx !== -1) {
+            this.addHint(expr.span.start + openBracketIdx, 1, typeIndex, undefined, undefined, simplifiedExpr)
+          }
+          if (closeBracketIdx !== -1) {
+            this.addHint(expr.span.start + closeBracketIdx, 1, typeIndex, undefined, undefined, simplifiedExpr)
+          }
+        }
         break
+      }
 
       case 'TupleExpr':
         for (const elem of expr.elements) {
@@ -823,11 +943,13 @@ class MetaBuilder {
     typeIndex: number,
     symbolIndex?: number,
     value?: string,
+    expr?: string,
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
     if (value !== undefined) hint.value = value
+    if (expr !== undefined) hint.expr = expr
     this.hints[key] = hint
   }
 }

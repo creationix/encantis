@@ -191,12 +191,24 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
   }
 
   const typeStr = typeToString(sym.type);
-  const contents = `(${sym.kind}) ${sym.name}: ${typeStr}`;
+  // Format using proper Encantis syntax
+  let contents: string;
+  switch (sym.kind) {
+    case 'global': contents = `global ${sym.name}: ${typeStr}`; break;
+    case 'local': contents = `let ${sym.name}: ${typeStr}`; break;
+    case 'param': contents = `${sym.name}: ${typeStr}`; break;
+    case 'return': contents = `-> ${sym.name}: ${typeStr}`; break;
+    case 'func': contents = `func ${sym.name}: ${typeStr}`; break;
+    case 'type': contents = `type ${sym.name} = ${typeStr}`; break;
+    case 'unique': contents = `type ${sym.name}@ = ${typeStr}`; break;
+    case 'def': contents = `def ${sym.name}: ${typeStr}`; break;
+    default: contents = `${sym.name}: ${typeStr}`;
+  }
 
   return {
     contents: {
-      kind: MarkupKind.PlainText,
-      value: contents,
+      kind: MarkupKind.Markdown,
+      value: `\`\`\`encantis\n${contents}\n\`\`\``,
     },
   };
 });

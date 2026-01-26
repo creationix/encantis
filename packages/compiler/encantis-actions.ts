@@ -437,11 +437,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as any
   },
 
-  DataEntry_alloc(ident, typeAnnotation, _comma) {
+  DataEntry_named(ident, typeAnnotationOpt, assign, _comma) {
     return {
       kind: 'DataEntry',
-      key: { kind: 'alloc', name: ident.sourceString, type: typeAnnotation.toAST() },
-      value: null,
+      key: { kind: 'named', name: ident.sourceString, type: first(typeAnnotationOpt) },
+      value: assign.toAST(),
       span: span(this),
     } as any
   },

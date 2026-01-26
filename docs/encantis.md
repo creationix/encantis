@@ -761,22 +761,54 @@ set (x:, y:) = other_point    // updates existing x and y
 
 | Category | Types |
 |----------|-------|
-| Signed integers | `i8`, `i16`, `i32`, `i64` |
-| Unsigned integers | `u8`, `u16`, `u32`, `u64` |
+| Signed integers | `i8`, `i16`, `i32`, `i64`, `i128`, `i256` |
+| Unsigned integers | `u8`, `u16`, `u32`, `u64`, `u128`, `u256` |
 | Floating point | `f32`, `f64` |
 | Boolean | `bool` |
 
 **Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected.
 
+**Large integers:** `i128`/`u128` map to WASM SIMD `v128`. `i256`/`u256` use two `v128` registers. Bitwise operations (XOR, AND, OR) are efficient; arithmetic requires multi-instruction sequences.
+
 ### Pointer Types
 
+Encantis has three pointer types forming a hierarchy of capabilities:
+
+| Type | Name | Representation | Description |
+|------|------|----------------|-------------|
+| `*T` | Basic pointer | ptr only | Points to a single value |
+| `[*]T` | Many-pointer | ptr only | Points to multiple values (thin) |
+| `[]T` | Slice | ptr + len | Points to multiple values with runtime length (fat) |
+
 ```ents
-*T              // pointer to T
-*u8             // byte pointer
-*i32            // pointer to i32
+*T              // basic pointer - points to one T
+[*]T            // many-pointer - points to multiple T (thin, no length)
+[]T             // slice - points to multiple T with runtime length (fat)
 ```
 
-All pointers are `i32` at the WASM level (32-bit address space).
+All pointers and lengths are `u32` semantics which is `i32` at the WASM level (32-bit address space).
+
+#### Pointer Hierarchy
+
+Each type is a superset of the one above:
+
+- Anything you can do with a basic pointer, you can do with a many-pointer
+- Anything you can do with a many-pointer, you can do with a slice
+
+**Exception:** The dereference operator `.*` is only valid for basic pointers `*T`. Many-pointers and slices should use indexing `[0]` to access the first element:
+
+```ents
+let p:*u8 = ...
+let v = p.*          // OK: dereference basic pointer
+
+let mp:[*]u8 = ...
+let v = mp[0]        // OK: index into many-pointer
+let v = mp.*         // ERROR: use [0] instead
+
+let s:[]u8 = ...
+let v = s[0]         // OK: index into slice
+let v = s.*          // ERROR: use [0] instead
+```
 
 ### Array and Slice Types
 

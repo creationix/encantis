@@ -55,6 +55,8 @@ export function typeToWasm(t: ResolvedType): string[] {
       // i8, i16, u8, u16, i32, u32, bool → i32
       // i64, u64 → i64
       // f32 → f32, f64 → f64
+      // i128, u128 → v128 (SIMD)
+      // i256, u256 → v128, v128 (two SIMD registers)
       if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
         return ['i32']
       }
@@ -63,6 +65,14 @@ export function typeToWasm(t: ResolvedType): string[] {
       }
       if (u.name === 'f32') return ['f32']
       if (u.name === 'f64') return ['f64']
+      // TODO: 128-bit integers use WASM SIMD v128 type
+      if (['i128', 'u128'].includes(u.name)) {
+        throw new Error(`TODO: codegen for ${u.name} (requires WASM SIMD v128)`)
+      }
+      // TODO: 256-bit integers use two v128 registers
+      if (['i256', 'u256'].includes(u.name)) {
+        throw new Error(`TODO: codegen for ${u.name} (requires two WASM SIMD v128 values)`)
+      }
       throw new Error(`Unknown primitive type: ${u.name}`)
     }
 

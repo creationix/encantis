@@ -7,17 +7,21 @@ export type PrimitiveName =
   | 'i16'
   | 'i32'
   | 'i64'
+  | 'i128'
+  | 'i256'
   | 'u8'
   | 'u16'
   | 'u32'
   | 'u64'
+  | 'u128'
+  | 'u256'
   | 'f32'
   | 'f64'
   | 'bool'
 
 // Type classification constants
-const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64']
-const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64']
+const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256']
+const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', 'u256']
 const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
 const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
 
@@ -31,6 +35,10 @@ const INT_BOUNDS: Record<string, [bigint, bigint]> = {
   u32: [0n, 4294967295n],
   i64: [-9223372036854775808n, 9223372036854775807n],
   u64: [0n, 18446744073709551615n],
+  i128: [-(2n ** 127n), 2n ** 127n - 1n],
+  u128: [0n, 2n ** 128n - 1n],
+  i256: [-(2n ** 255n), 2n ** 255n - 1n],
+  u256: [0n, 2n ** 256n - 1n],
 }
 
 // Resolved type variants
@@ -862,6 +870,12 @@ export function primitiveByteSize(t: ResolvedType): number | null {
     case 'u64':
     case 'f64':
       return 8
+    case 'i128':
+    case 'u128':
+      return 16
+    case 'i256':
+    case 'u256':
+      return 32
     default:
       return null
   }

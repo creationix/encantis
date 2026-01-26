@@ -160,12 +160,12 @@ export interface MemoryDecl extends BaseNode {
 export interface DataEntry extends BaseNode {
   kind: 'DataEntry'
   key: DataEntryKey
-  value: Expr | null
+  value: Expr
 }
 
 export type DataEntryKey =
   | { kind: 'offset'; value: number }
-  | { kind: 'alloc'; name: string; type: Type }
+  | { kind: 'named'; name: string; type: Type | null }
 
 // ============================================================================
 // Statements

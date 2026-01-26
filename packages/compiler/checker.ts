@@ -316,8 +316,18 @@ class CheckContext {
 
   collectMemory(decl: AST.MemoryDecl): void {
     for (const entry of decl.data) {
-      if (entry.key.kind === 'alloc') {
-        const type = this.resolveType(entry.key.type)
+      if (entry.key.kind === 'named') {
+        // Named memory entry: name: Type = value or name = value
+        let type: ResolvedType
+        if (entry.key.type) {
+          // Type annotation provided - use bidirectional type checking
+          type = this.resolveType(entry.key.type)
+          type = this.checkExpr(entry.value, type)
+        } else {
+          // No type annotation - infer from value
+          type = this.inferExpr(entry.value)
+          type = this.concretize(type)
+        }
         // Create a pointer type since memory allocations are accessed by address
         const ptrType: ResolvedType = { kind: 'pointer', pointee: type }
         this.moduleScope.symbols.set(entry.key.name, {
@@ -578,6 +588,10 @@ class CheckContext {
         if (stmt.when) this.inferExpr(stmt.when)
         break
       case 'AssignmentStmt':
+        // Infer types for both target and value so hints work on both sides
+        if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
+          this.inferExpr(stmt.target)
+        }
         this.inferExpr(stmt.value)
         break
       case 'WhileStmt':
@@ -832,7 +846,10 @@ class CheckContext {
     const type = this.inferExprInner(expr)
     // Record type for ALL expressions - codegen needs this
     // Note: comptime types are stored as-is; concretization happens in a later pass
-    this.types.set(typeKey(expr.span.start, expr.kind), type)
+    // For MemberExpr, use span.end so chained accesses like a.b.c each get unique keys
+    // This allows hover to show: a -> type1, a.b -> type2, a.b.c -> type3
+    const offset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
+    this.types.set(typeKey(offset, expr.kind), type)
     return type
   }
 
@@ -1168,15 +1185,15 @@ class CheckContext {
 
     switch (name) {
       case 'memset': {
-        // memset(dest: *u8, value: u8, len: u32) -> ()
+        // memset(dest: [*]u8, value: u8, len: u32) -> ()
         // Low-level byte-based memory fill
         if (args.length !== 3) {
           this.error(expr.span.start, `memset expects 3 arguments (dest, value, len), got ${args.length}`)
           return VOID
         }
 
-        // Dest must be *u8 (byte pointer)
-        this.checkExpr(args[0].value, pointer(primitive('u8')), 'memset dest')
+        // Dest must be [*]u8 (many-pointer to bytes)
+        this.checkExpr(args[0].value, manyPointer(primitive('u8')), 'memset dest')
 
         // Value should be u8 (byte value)
         this.checkExpr(args[1].value, primitive('u8'), 'memset value')
@@ -1190,16 +1207,16 @@ class CheckContext {
       }
 
       case 'memcpy': {
-        // memcpy(dest: *u8, src: *u8, len: u32) -> ()
+        // memcpy(dest: [*]u8, src: [*]u8, len: u32) -> ()
         // Low-level byte-based memory copy
         if (args.length !== 3) {
           this.error(expr.span.start, `memcpy expects 3 arguments (dest, src, len), got ${args.length}`)
           return VOID
         }
 
-        // Both must be *u8 (byte pointers)
-        this.checkExpr(args[0].value, pointer(primitive('u8')), 'memcpy dest')
-        this.checkExpr(args[1].value, pointer(primitive('u8')), 'memcpy src')
+        // Both must be [*]u8 (many-pointers to bytes)
+        this.checkExpr(args[0].value, manyPointer(primitive('u8')), 'memcpy dest')
+        this.checkExpr(args[1].value, manyPointer(primitive('u8')), 'memcpy src')
 
         // Length in bytes (u32 for full memory range)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
@@ -1311,32 +1328,37 @@ class CheckContext {
       }
 
       case 'deref': {
-        // Pointer dereference: p.*
+        // Pointer dereference: p.* - only valid for basic pointers *T
+        // Many-pointers [*]T and slices []T should use [0] syntax instead
         if (objType.kind === 'pointer') {
           return objType.pointee
         }
-        this.error(expr.span.start, `cannot dereference non-pointer`)
+        if (objType.kind === 'indexed') {
+          this.error(expr.span.start, `cannot use .* on ${typeToString(objType)} - use [0] to access the first element`)
+          return objType.element
+        }
+        this.error(expr.span.start, `cannot dereference non-pointer type ${typeToString(objType)}`)
         return primitive('i32')
       }
 
       case 'type': {
         // Type pun: ptr.u32, array.u64, etc.
-        // Returns a plain pointer to the punned type (specifiers don't carry over)
+        // Returns a many-pointer to the punned type (specifiers don't carry over)
         const punType = this.resolveType(expr.member.type)
 
-        // For many-pointers: [*]u8.u32 → *u32
-        if (objType.kind === 'indexed' && objType.manyPointer) {
-          return pointer(punType)
+        // For any indexed type (many-pointer or fat slice): [*]u8.u32, []u8.u32, [12]u8.u32 → [*]u32
+        if (objType.kind === 'indexed') {
+          return manyPointer(punType)
         }
 
-        // For pointer-to-indexed: *[12]u8.u32 → *u32
+        // For pointer-to-indexed: *[12]u8.u32 → [*]u32
         if (objType.kind === 'pointer' && objType.pointee.kind === 'indexed') {
-          return pointer(punType)
+          return manyPointer(punType)
         }
 
-        // For plain pointers: *u8.u32 → *u32
+        // For plain pointers: *u8.u32 → [*]u32
         if (objType.kind === 'pointer') {
-          return pointer(punType)
+          return manyPointer(punType)
         }
 
         // Default: just return the punned type

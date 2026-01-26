@@ -84,16 +84,16 @@ func slice_ptr_pun_test() {
   let later_ptr = wider_ptr + 2
 }
 
-// Global state for Gimli-Hash
-// This is a reserved area of linear memory to hold the state
-global hash_state:[*]u32 = [0;12]
+// Global state for Gimli-Hash.
+// This is a reserved area of linear memory to hold the state.
+global hash_state:[*_]u32 = [0;12]
 
 // Gimli-Hash: absorb input and squeeze 32-byte output
 // Uses rate of 16 bytes (128 bits)
 export "gimli_hash"
 func gimli_hash(input:[]u8, output:*[32]u8) {
   // Initialize state to zero
-  memset(hash_state.ptr as *u8, 0, hash_state.len * hash_state.wid)
+  memset(hash_state.u8, 0, hash_state.len * hash_state.wid)
   let len = input.len
   let input_ptr = input.ptr
 
@@ -103,6 +103,10 @@ func gimli_hash(input:[]u8, output:*[32]u8) {
     // Do the XOR 8 bytes at a time via type punning.
     hash_state.u64[0] ^= input_ptr.u64[0]
     hash_state.u64[1] ^= input_ptr.u64[1]
+
+    // TODO: find out if wasm supports 128 bit xor
+    hash_state.u128[0] ^= input_ptr.u128[0]
+    let t = hash_state.u128[0]
     gimli(hash_state)
     input_ptr += 16
     len -= 16
@@ -110,23 +114,23 @@ func gimli_hash(input:[]u8, output:*[32]u8) {
 
   // Absorb remaining bytes with padding
   for i in len {
-    state.u8[i] ^= input_ptr[i]
+    hash_state.u8[i] ^= input_ptr[i]
   }
   // Pad with 0x1F at position len
-  state.u8[len] ^= 0x1f
+  hash_state.u8[len] ^= 0x1f
   // Pad with 0x80 at position 15 (end of rate)
-  state.u8[15] ^= 0x80
+  hash_state.u8[15] ^= 0x80
 
-  gimli(state)
+  gimli(hash_state)
 
   // Squeeze phase: extract 32 bytes of output (two blocks of 16 bytes)
   for i in 16 {
-    output[i] = state.u8[i]
+    output[i] = hash_state.u8[i]
   }
 
-  gimli(state)
+  gimli(hash_state)
 
   for i in 16 {
-    output[i + 16] = state.u8[i]
+    output[i + 16] = hash_state.u8[i]
   }
 }

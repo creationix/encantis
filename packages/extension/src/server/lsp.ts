@@ -20,7 +20,39 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import { buildMeta, type MetaOutput } from '@encantis/compiler/meta';
+import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+
+// Builtin function signatures for hover display
+const BUILTIN_SIGNATURES: Record<string, string> = {
+  memset: 'builtin memset(dest: [*]u8, value: u8, len: u32)',
+  memcpy: 'builtin memcpy(dest: [*]u8, src: [*]u8, len: u32)',
+};
+
+// Format symbol display using proper Encantis syntax
+function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
+  switch (symbol.kind) {
+    case 'global':
+      return `global ${symbol.name}: ${typeStr}`;
+    case 'local':
+      return `let ${symbol.name}: ${typeStr}`;
+    case 'param':
+      return `${symbol.name}: ${typeStr}`;
+    case 'return':
+      return `-> ${symbol.name}: ${typeStr}`;
+    case 'func':
+      return `func ${symbol.name}: ${typeStr}`;
+    case 'type':
+      return `type ${symbol.name} = ${typeStr}`;
+    case 'unique':
+      return `type ${symbol.name}@ = ${typeStr}`;
+    case 'def':
+      return symbol.value
+        ? `def ${symbol.name}: ${typeStr} = ${symbol.value}`
+        : `def ${symbol.name}: ${typeStr}`;
+    default:
+      return `${symbol.name}: ${typeStr}`;
+  }
+}
 
 // Cache analysis results per document
 const analysisCache = new Map<string, { text: string; meta: MetaOutput }>();
@@ -150,24 +182,26 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
   // Type docs
   const typeDocs: Record<string, string> = {
+    i8: '8-bit signed integer',
+    u8: '8-bit unsigned integer',
+    i16: '16-bit signed integer',
+    u16: '16-bit unsigned integer',
     i32: '32-bit signed integer',
     u32: '32-bit unsigned integer',
     i64: '64-bit signed integer',
     u64: '64-bit unsigned integer',
+    i128: '128-bit signed integer (SIMD v128)',
+    u128: '128-bit unsigned integer (SIMD v128)',
+    i256: '256-bit signed integer (2x SIMD v128)',
+    u256: '256-bit unsigned integer (2x SIMD v128)',
     f32: '32-bit floating point',
     f64: '64-bit floating point',
-    u8: '8-bit unsigned integer',
-    i8: '8-bit signed integer',
-    u16: '16-bit unsigned integer',
-    i16: '16-bit signed integer',
   };
 
-  const doc = builtinDocs[word] || typeDocs[word];
-  if (doc) {
-    return { contents: { kind: MarkupKind.Markdown, value: doc } };
-  }
+  // Check if this is a type punning context (preceded by a dot)
+  const isTypePunContext = wordInfo.start > 0 && text[wordInfo.start - 1] === '.';
 
-  // Look up hint from meta
+  // Look up hint from meta FIRST (handles type punning and other resolved types)
   const cached = analysisCache.get(params.textDocument.uri);
   if (cached) {
     const { meta } = cached;
@@ -181,9 +215,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       const symbol = hint.symbol !== undefined ? meta.symbols[hint.symbol] : null;
 
       if (symbol) {
-        let display = symbol.kind === 'def' && symbol.value
-          ? `(${symbol.kind}) ${symbol.name}: ${typeStr} = ${symbol.value}`
-          : `(${symbol.kind}) ${symbol.name}: ${typeStr}`;
+        const display = formatSymbolDisplay(symbol, typeStr);
         let value = `\`\`\`encantis\n${display}\n\`\`\``;
         if (symbol.doc) {
           value += `\n\n${symbol.doc}`;
@@ -191,10 +223,22 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
         return { contents: { kind: MarkupKind.Markdown, value } };
       }
 
-      // Just type, no symbol
+      // Check for builtin functions
+      const builtinSig = BUILTIN_SIGNATURES[word];
+      if (builtinSig) {
+        return {
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: `\`\`\`encantis\n${builtinSig}\n\`\`\``,
+          },
+        };
+      }
+
+      // Just type, no symbol - use expr if available for full context
+      const displayName = hint.expr ?? word;
       const display = hint.value
-        ? `${word}: ${typeStr} = ${hint.value}`
-        : `${word}: ${typeStr}`;
+        ? `${displayName}: ${typeStr} = ${hint.value}`
+        : `${displayName}: ${typeStr}`;
       return {
         contents: {
           kind: MarkupKind.Markdown,
@@ -207,9 +251,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     const symbol = meta.symbols.find(s => s.name === word);
     if (symbol) {
       const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
-      let display = symbol.kind === 'def' && symbol.value
-        ? `(${symbol.kind}) ${symbol.name}: ${typeStr} = ${symbol.value}`
-        : `(${symbol.kind}) ${symbol.name}: ${typeStr}`;
+      const display = formatSymbolDisplay(symbol, typeStr);
       let value = `\`\`\`encantis\n${display}\n\`\`\``;
       if (symbol.doc) {
         value += `\n\n${symbol.doc}`;
@@ -218,10 +260,28 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     }
   }
 
+  // Fallback to builtin/type docs (but NOT for type punning - those need meta hints)
+  if (!isTypePunContext) {
+    const doc = builtinDocs[word] || typeDocs[word];
+    if (doc) {
+      return { contents: { kind: MarkupKind.Markdown, value: doc } };
+    }
+  }
+
   return null;
 });
 
 function getWordAtOffset(text: string, offset: number): { word: string; start: number; end: number } | null {
+  // Handle brackets as single-character "words" for hover hints
+  const ch = text[offset];
+  if (ch === '[' || ch === ']') {
+    return { word: ch, start: offset, end: offset + 1 };
+  }
+  // Handle .* dereference - treat * as hoverable when preceded by dot
+  if (ch === '*' && offset > 0 && text[offset - 1] === '.') {
+    return { word: '*', start: offset, end: offset + 1 };
+  }
+
   let start = offset;
   let end = offset;
   while (start > 0 && isWordChar(text[start - 1])) start--;
