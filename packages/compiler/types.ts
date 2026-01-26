@@ -622,6 +622,17 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       // Slice reinterpret only if element is reinterpretable (same element type)
       return lossless(elemResult.reinterpret)
     }
+
+    // Allow sized arrays with no specifiers to coerce to types with specifiers
+    // [N]u8 can coerce to [!]u8 or [?]u8 because we know the data at compile time
+    // and can add the framing (null terminator, LEB128 prefix) during codegen
+    if (typeof s.size === 'number' && s.specifiers.length === 0 && t.specifiers.length > 0) {
+      // Size must be compatible (target unsized, or same size)
+      if (t.size === null || t.size === s.size) {
+        return lossless(false) // Not reinterpretable (framing transformation needed)
+      }
+    }
+
     // Check specifier compatibility
     if (!specifiersCompatible(t.specifiers, s.specifiers)) {
       return INCOMPATIBLE

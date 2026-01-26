@@ -67,18 +67,18 @@ type Tree = (
 
 // Check if a key exists in the tree
 // Returns true if found, false otherwise
-func contains(tree: *Tree, key: bytes) -> bool {
+func contains(tree: *Tree, key: []u8) -> bool {
   // TODO: traverse to candidate leaf, compare full key
 }
 
 // Look up a key and return pointer to stored value (or null if not found)
-func lookup(tree: *Tree, key: bytes) -> *u8 {
+func lookup(tree: *Tree, key: []u8) -> *u8 {
   // TODO: similar to contains but returns the key pointer
 }
 
 // Insert a key into the tree
 // Returns true if inserted, false if already present
-func insert(tree: *Tree, key: bytes) -> bool {
+func insert(tree: *Tree, key: []u8) -> bool {
   // TODO:
   // 1. Handle empty tree case
   // 2. Find best candidate leaf
@@ -90,7 +90,7 @@ func insert(tree: *Tree, key: bytes) -> bool {
 
 // Remove a key from the tree
 // Returns true if removed, false if not found
-func delete(tree: *Tree, key: bytes) -> bool {
+func delete(tree: *Tree, key: []u8) -> bool {
   // TODO:
   // 1. Find the key
   // 2. Remove external node
@@ -106,7 +106,7 @@ func walk(tree: *Tree, visitor: []u8 -> ()) {
 
 // Find all keys with a given prefix
 // Calls visitor function for each matching key
-func walk_prefix(tree: *Tree, prefix: bytes, visitor: []u8 -> ()) {
+func walk_prefix(tree: *Tree, prefix: []u8, visitor: []u8 -> ()) {
   // TODO:
   // 1. Navigate to subtree matching prefix
   // 2. Walk that subtree
@@ -116,7 +116,7 @@ func walk_prefix(tree: *Tree, prefix: bytes, visitor: []u8 -> ()) {
 
 // Get the bit at position `pos` in the key (0-indexed from MSB)
 // Returns 0 or 1
-inline func get_bit(key: bytes, pos: u32) -> u32 {
+inline func get_bit(key: []u8, pos: u32) -> u32 {
   // TODO: extract bit at position
   // byte_index = pos / 8
   // bit_index = 7 - (pos % 8)  // MSB first
@@ -124,7 +124,7 @@ inline func get_bit(key: bytes, pos: u32) -> u32 {
 
 // Find the first differing bit position between two keys
 // Returns the bit index, or -1 if keys are equal
-func find_critical_bit(a: bytes, b: bytes) -> i32 {
+func find_critical_bit(a: []u8, b: []u8) -> i32 {
   // TODO: XOR bytes, find first differing bit
 }
 
@@ -134,7 +134,7 @@ inline func is_external(node: Node) -> bool {
 }
 
 // Create an external node from a key
-func make_external(key: bytes) -> Node {
+func make_external(key: []u8) -> Node {
   // TODO: allocate and tag
 }
 

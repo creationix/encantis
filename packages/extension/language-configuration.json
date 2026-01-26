@@ -1,9 +1,11 @@
 {
     "comments": {
-        // symbol used for single line comment. Remove this entry if your language does not support line comments
-        "lineComment": "--",
-        // symbols used for start and end a block comment. Remove this entry if your language does not support block comments
-        "blockComment": [ "-<", ">-" ]
+      // symbol used for single line comment. Remove this entry if your language does not support line comments
+      "lineComment": {
+        "comment": "//"
+      },
+      // symbols used for start and end a block comment. Remove this entry if your language does not support block comments
+      "blockComment": ["/*", "*/"]
     },
     // Define what constitutes a "word" for double-click, skip-word navigation, etc.
     // Encantis identifiers can contain hyphens: prime64-1, my-func, etc.

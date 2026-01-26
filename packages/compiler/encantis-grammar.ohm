@@ -150,7 +150,6 @@ Encantis {
            | "(" FieldList? ")"                -- composite
            | ComptimeType                      -- comptimeScalar
            | PrimitiveType                     -- primitive
-           | BuiltinType                       -- builtin
            | typeIdent                         -- named
 
 
@@ -170,9 +169,6 @@ Encantis {
                 | "u8" | "u16" | "u32" | "u64" | "u128" | "u256"
                 | "f32" | "f64"
                 | "bool"
-
-  // Built-in types: str (unique UTF-8 string), bytes (u8 slice)
-  BuiltinType = str | bytes
 
   ComptimeType = int "(" intLiteral ")"      -- int
                | float "(" floatLiteral ")"  -- float
@@ -474,8 +470,7 @@ Encantis {
            | break | continue | return | when
            | func | let | set | global | def | type | enum
            | import | export | memory | inline
-           | as | true | false | int | float
-           | str | bytes) ~identChar
+           | as | true | false | int | float) ~identChar
 
   if = "if" ~identChar
   elif = "elif" ~identChar
@@ -505,8 +500,6 @@ Encantis {
   false = "false" ~identChar
   int = "int" ~identChar
   float = "float" ~identChar
-  str = "str" ~identChar
-  bytes = "bytes" ~identChar
 
   // Comments
   comment = lineComment | blockComment

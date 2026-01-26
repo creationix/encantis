@@ -551,20 +551,8 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return prim.toAST()
   },
 
-  BaseType_builtin(builtin) {
-    return builtin.toAST()
-  },
-
   BaseType_named(typeIdent) {
     return typeIdent.toAST()
-  },
-
-  BuiltinType(name) {
-    return {
-      kind: 'BuiltinType',
-      name: name.sourceString as 'str' | 'bytes',
-      span: span(this),
-    } as AST.BuiltinType
   },
 
   ComptimeType_int(_int, _lp, value, _rp) {

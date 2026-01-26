@@ -5,7 +5,6 @@ import type * as AST from './ast'
 import {
   type ResolvedType,
   type ResolvedField,
-  type PrimitiveName,
   type IndexSpecifierRT,
   type IndexedRT,
   primitive,
@@ -26,9 +25,7 @@ import {
   typeToString,
   comptimeIntFits,
   typeAssignable,
-  defaultIndexedType,
   unwrap,
-  byteSize,
 } from './types'
 
 // === Symbol Table ===
@@ -163,14 +160,14 @@ export function concretizeType(
       return primitive(opts.defaultFloat)
 
     case 'comptime_list': {
-      // Comptime lists become slices with concretized element type
+      // Comptime lists become [_]T with concretized element type
       const elemType = u.elements.length > 0
         ? concretizeType(u.elements[0], opts)
         : primitive(opts.defaultInt)
       return {
         kind: 'indexed',
         element: elemType,
-        size: null,
+        size: 'inferred',
         specifiers: [],
       }
     }
@@ -187,6 +184,9 @@ export function concretizeType(
     case 'indexed':
       return {
         ...u,
+        // Comptime indexed becomes [_]T (inferred length slice)
+        // This is the default when no explicit type annotation is given
+        size: u.size === 'comptime' ? 'inferred' : u.size,
         element: concretizeType(u.element, opts),
       }
 
@@ -630,8 +630,14 @@ class CheckContext {
       type = this.resolveType(stmt.type)
       if (stmt.value) {
         // Use bidirectional type checking - propagate expected type down
-        // checkExpr returns the resolved type (with inferred sizes filled in)
-        type = this.checkExpr(stmt.value, type)
+        // checkExpr validates compatibility and may fill in 'inferred' sizes
+        const resolved = this.checkExpr(stmt.value, type)
+        // Only update type if annotation had inferred sizes that got filled in
+        // with concrete numbers (not null, 'inferred', or 'comptime')
+        if (this.hasInferredSize(type) && this.hasConcreteSize(resolved)) {
+          type = resolved
+        }
+        // Otherwise keep the annotation type (even if there's a type error)
       }
     } else if (stmt.value) {
       const valueType = this.inferExpr(stmt.value)
@@ -690,26 +696,68 @@ class CheckContext {
         // Default: f64
         return primitive('f64')
       case 'comptime_list': {
-        // Default to ? (LEB128) encoding for each nesting level
-        const defaultType = defaultIndexedType(type)
-        if (defaultType) return defaultType
-        // Fallback for empty list or heterogeneous types
+        // Default to [_]T (inferred length fat slice)
         if (type.elements.length === 0) {
-          return slice(primitive('i32'))
+          // Empty list defaults to [_]i32
+          return indexed(primitive('i32'), 'inferred', [])
         }
-        const elemType = this.unifyTypes(type.elements)
-        return array(elemType, type.elements.length)
+        const elemType = this.concretize(this.unifyTypes(type.elements))
+        return indexed(elemType, 'inferred', [])
       }
       case 'indexed': {
-        // Handle comptime indexed ([T]) - default to ? (LEB128)
+        // Handle comptime indexed ([T]) - default to [_]T (inferred length)
         if (type.size === 'comptime') {
-          const defaultType = defaultIndexedType(type)
-          if (defaultType) return defaultType
+          const elemType = this.concretize(type.element)
+          return indexed(elemType, 'inferred', type.specifiers, type.manyPointer)
         }
         return type
       }
       default:
         return type
+    }
+  }
+
+  // Check if a type contains any 'inferred' sizes that need to be filled in
+  hasInferredSize(type: ResolvedType): boolean {
+    switch (type.kind) {
+      case 'indexed':
+        return type.size === 'inferred' || this.hasInferredSize(type.element)
+      case 'pointer':
+        return this.hasInferredSize(type.pointee)
+      case 'tuple':
+        return type.fields.some(f => this.hasInferredSize(f.type))
+      default:
+        return false
+    }
+  }
+
+  // Check if a type has concrete (numeric) sizes where annotation had 'inferred'
+  // This means the inferred sizes were successfully filled in
+  hasConcreteSize(type: ResolvedType): boolean {
+    switch (type.kind) {
+      case 'indexed':
+        return typeof type.size === 'number' && this.hasConcreteSizeOrNoInferred(type.element)
+      case 'pointer':
+        return this.hasConcreteSize(type.pointee)
+      case 'tuple':
+        return type.fields.every(f => this.hasConcreteSizeOrNoInferred(f.type))
+      default:
+        return true // Non-indexed types are "concrete" by default
+    }
+  }
+
+  // Helper: type has either concrete size or no inferred sizes at all
+  hasConcreteSizeOrNoInferred(type: ResolvedType): boolean {
+    switch (type.kind) {
+      case 'indexed':
+        if (type.size === 'inferred') return false
+        return this.hasConcreteSizeOrNoInferred(type.element)
+      case 'pointer':
+        return this.hasConcreteSizeOrNoInferred(type.pointee)
+      case 'tuple':
+        return type.fields.every(f => this.hasConcreteSizeOrNoInferred(f.type))
+      default:
+        return true
     }
   }
 
@@ -777,15 +825,6 @@ class CheckContext {
           field(f.ident, this.resolveType(f.type)),
         )
         return tuple(fields)
-      }
-
-      case 'BuiltinType': {
-        // str is a unique type (UTF-8 string), bytes is a structural alias for *[u8]
-        const sliceU8 = pointer(indexed(primitive('u8')))
-        if (type.name === 'str') {
-          return named('str', sliceU8, true) // unique
-        }
-        return sliceU8 // bytes is just *[u8]
       }
 
       case 'ComptimeIntType':
@@ -968,8 +1007,15 @@ class CheckContext {
       )
     }
 
-    // Record the type - use named type if available for better LSP hints
-    const recordType = expected.kind === 'named' ? expected : inferred
+    // Record the type for LSP hints
+    // When checking against an explicit type annotation, prefer the expected type
+    // so hovers show what the user wrote (e.g., []u8 not [13]u8 for string literals)
+    // Exception: when expected has 'inferred' size, use the resolved type with actual length
+    const isComptimeLiteral = inferred.kind === 'comptime_int' || inferred.kind === 'comptime_float' ||
+      (inferred.kind === 'indexed' && (inferred.size === 'comptime' || typeof inferred.size === 'number'))
+    const expectedHasInferredSize = expected.kind === 'indexed' && expected.size === 'inferred'
+    const recordType = expected.kind === 'named' ? expected
+      : (isComptimeLiteral && !expectedHasInferredSize ? expected : inferred)
     this.types.set(typeKey(expr.span.start, expr.kind), recordType)
 
     // For return value, concretize based on expected type
@@ -980,25 +1026,24 @@ class CheckContext {
   // *[![!u8]] -> *[!u8] (peel first !, remaining is !)
   // *[!u8] -> u8 (peel !, no remaining specifiers = element type)
   // *[*[u8]] -> *[u8] (element is already an indexed type)
-  peelSpecifier(t: { kind: 'indexed'; element: ResolvedType; size: number | null; specifiers: IndexSpecifierRT[] }): ResolvedType {
+  peelSpecifier(t: IndexedRT): ResolvedType {
     // If element is already an indexed type (separate brackets), use it directly
+    // e.g., *[*[u8]] -> *[u8]
     if (t.element.kind === 'indexed') {
       return t.element
     }
-    // If we have stacked specifiers, peel one off
+    // If we have stacked specifiers (merged brackets), peel one off
+    // e.g., *[![!u8]] -> *[!u8] (still indexed with remaining specifiers)
     if (t.specifiers.length > 1) {
       return indexed(t.element, null, t.specifiers.slice(1))
     }
-    // If we have exactly one specifier, the inner type is just the element with that specifier
-    if (t.specifiers.length === 1) {
-      return indexed(t.element, null, t.specifiers)
-    }
-    // No specifiers (plain slice/array) - inner type is just the element
+    // One or zero specifiers: inner type is just the element
+    // e.g., [!]u8 -> u8, []u8 -> u8
     return t.element
   }
 
   // Resolve a comptime_list to a concrete indexed type based on expected type
-  resolveListToIndexed(list: { kind: 'comptime_list'; elements: ResolvedType[] }, expected: { kind: 'indexed'; element: ResolvedType; size: number | null; specifiers: IndexSpecifierRT[] }): ResolvedType {
+  resolveListToIndexed(list: { kind: 'comptime_list'; elements: ResolvedType[] }, expected: IndexedRT): ResolvedType {
     // Size is either expected size or list length
     const size = expected.size ?? list.elements.length
     // Element type from expected
@@ -1091,9 +1136,10 @@ class CheckContext {
         return comptimeFloat(expr.value.value)
 
       case 'string': {
-        // String literals are comptime indexed [u8] types
-        // They coerce to *[N]u8, []u8, [*:0]u8, etc. based on context
-        return comptimeIndexed(primitive('u8'))
+        // String literals have known length at compile time
+        // They can coerce to [!]u8, [?]u8, []u8, [*]u8, etc. via type rules
+        const len = expr.value.bytes.length
+        return indexed(primitive('u8'), len, [])
       }
 
       case 'bool':

@@ -1,7 +1,25 @@
-import { describe, test, expect } from 'bun:test'
+/** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
+import { describe, expect, test } from 'bun:test'
+import { concretizeType, isConcreteType, typecheck, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
-import { typecheck, typeKey, type TypeCheckResult } from './checker'
-import { typeToString } from './types'
+import { parseType as parseTypeLib } from './type-lib'
+import {
+  comptimeFloat,
+  comptimeInt,
+  comptimeList,
+  field,
+  func,
+  indexed,
+  named,
+  pointer,
+  primitive,
+  tuple,
+  typeAssignable,
+  typeAssignResult,
+  typeToString,
+  VOID,
+  type ResolvedType,
+} from './types'
 
 // Helper to parse and typecheck a module
 function checkModule(source: string): TypeCheckResult {
@@ -85,6 +103,21 @@ describe('type inference', () => {
         expect(typeToString(type!)).toBe('f64')
       }
     })
+
+    test('let allows f32 for float literal with annotation', () => {
+      const result = checkModule(`
+        func main() {
+          let f: f32 = 3.14
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('f')
+      if (offset !== undefined) {
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
+        expect(type).toBeDefined()
+        expect(typeToString(type!)).toBe('f32')
+      }
+    })
   })
 
   describe('type annotations on expressions', () => {
@@ -144,9 +177,9 @@ describe('type inference', () => {
       expect(result.errors).toHaveLength(0)
     })
 
-    test('string literal to [*:0]u8 (null-terminated) parameter', () => {
+    test('string literal to [*!]u8 (null-terminated) parameter', () => {
       const result = checkModule(`
-        import "test" "log" func log(s: [*:0]u8)
+        import "test" "log" func log(s: [*!]u8)
         func main() {
           log("hello")
         }
@@ -215,7 +248,7 @@ describe('type inference', () => {
       }
     })
 
-    test('unannotated array literal stays comptime', () => {
+    test('unannotated array literal gets inferred length', () => {
       const result = checkModule(`
         func main() {
           let arr = [1, 2, 3]
@@ -226,9 +259,8 @@ describe('type inference', () => {
       if (offset !== undefined) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
-        // Without annotation, array defaults to comptime with LEB128 encoding
-        // TODO: should be pure comptime [int] without encoding
-        expect(typeToString(type!)).toBe('[:?]i32')
+        // Without annotation, array defaults to [_]T (inferred length)
+        expect(typeToString(type!)).toBe('[_]i32')
       }
     })
 
@@ -279,38 +311,52 @@ describe('type inference', () => {
     })
   })
 
-  describe('LEB128 encoding (:? sentinel)', () => {
-    test('[*:?]u8 for LEB128-prefixed string', () => {
+  describe('framing specifiers (! and ?)', () => {
+    test('[?]u8 for LEB128-prefixed string', () => {
       const result = checkModule(`
         func main() {
-          let a: [*:?]u8 = "hello"
+          let a: [?]u8 = "hello"
         }
       `)
       expect(result.errors).toHaveLength(0)
       const aOffset = result.symbolDefOffsets.get('a')
       if (aOffset) {
         const aType = result.types.get(typeKey(aOffset, 'IdentPattern'))
-        expect(typeToString(aType!)).toBe('[:?]u8')
+        expect(typeToString(aType!)).toBe('[?]u8')
       }
     })
 
-    test('[*:?:?]u8 for nested LEB128 arrays (flat)', () => {
+    test('[!]u8 for null-terminated string', () => {
       const result = checkModule(`
         func main() {
-          let arr: [*:?:?]u8 = ["hello", "world"]
+          let a: [!]u8 = "hello"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const aOffset = result.symbolDefOffsets.get('a')
+      if (aOffset) {
+        const aType = result.types.get(typeKey(aOffset, 'IdentPattern'))
+        expect(typeToString(aType!)).toBe('[!]u8')
+      }
+    })
+
+    test('[?]u8 for LEB128-prefixed array', () => {
+      const result = checkModule(`
+        func main() {
+          let arr: [?]u8 = [1, 2, 3]
         }
       `)
       expect(result.errors).toHaveLength(0)
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        expect(typeToString(type!)).toBe('[:?:?]u8')
+        expect(typeToString(type!)).toBe('[?]u8')
       }
     })
   })
 
   describe('comptime list behavior', () => {
-    test('string literal without annotation stays comptime', () => {
+    test('string literal without annotation gets concrete length', () => {
       const result = checkModule(`
         func main() {
           let s = "hello"
@@ -320,12 +366,12 @@ describe('type inference', () => {
       const offset = result.symbolDefOffsets.get('s')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        // TODO: should be pure comptime [u8] without encoding
-        expect(typeToString(type!)).toBe('[:?]u8')
+        // Without annotation, string literal gets [N]u8 with actual length
+        expect(typeToString(type!)).toBe('[5]u8')
       }
     })
 
-    test('nested array without annotation stays comptime', () => {
+    test('nested array without annotation gets inferred lengths', () => {
       const result = checkModule(`
         func main() {
           let arr = ["hello", "world"]
@@ -335,38 +381,58 @@ describe('type inference', () => {
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        // TODO: should be comptime list of comptime lists [[u8]]
-        // Currently defaults string elements to LEB128
-        expect(typeToString(type!)).toBe('[:?:?]u8')
+        // Outer: [_] inferred, inner: [5]u8 concrete length
+        expect(typeToString(type!)).toBe('[_][5]u8')
       }
     })
 
-    test('explicit type annotation specifies encoding', () => {
+    test('explicit type annotation is preserved', () => {
       const result = checkModule(`
         func main() {
-          let a: [*:0]u8 = "hello"
-          let b: *[5]u8 = "world"
+          let a: [!]u8 = "hello"
+          let b: [5]u8 = "world"
         }
       `)
       expect(result.errors).toHaveLength(0)
       const aOffset = result.symbolDefOffsets.get('a')
       const bOffset = result.symbolDefOffsets.get('b')
       if (aOffset && bOffset) {
-        expect(typeToString(result.types.get(typeKey(aOffset, 'IdentPattern'))!)).toBe('[:0]u8')
-        expect(typeToString(result.types.get(typeKey(bOffset, 'IdentPattern'))!)).toBe('*[5]u8')
+        expect(typeToString(result.types.get(typeKey(aOffset, 'IdentPattern'))!)).toBe('[!]u8')
+        expect(typeToString(result.types.get(typeKey(bOffset, 'IdentPattern'))!)).toBe('[5]u8')
+      }
+    })
+
+    test('explicit []u8 annotation is preserved (not replaced with length)', () => {
+      const result = checkModule(`
+        func main() {
+          let s: []u8 = "hello"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('s')
+      if (offset) {
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
+        // Explicit []u8 annotation should be preserved
+        expect(typeToString(type!)).toBe('[]u8')
+      }
+    })
+
+    test('[_]u8 annotation gets filled in with concrete length', () => {
+      const result = checkModule(`
+        func main() {
+          let s: [_]u8 = "hello"
+        }
+      `)
+      expect(result.errors).toHaveLength(0)
+      const offset = result.symbolDefOffsets.get('s')
+      if (offset) {
+        const type = result.types.get(typeKey(offset, 'IdentPattern'))
+        // [_]u8 should be filled in with actual length
+        expect(typeToString(type!)).toBe('[5]u8')
       }
     })
   })
 })
-import { describe, test, expect } from 'bun:test'
-import {
-  type ResolvedType,
-  type AssignResult,
-  named,
-  typeAssignable,
-  typeAssignResult,
-} from './types'
-import { parseType as parseTypeLib } from './type-lib'
 
 // Parse type with extended syntax for testing (named types with =)
 // Syntax: Name=underlying for aliases, @Name=underlying for unique types
@@ -420,20 +486,19 @@ describe('typeAssignable', () => {
     ['i32', 'float(3.14)', false],
 
     // Slice accepts various indexed types
-    // TODO: pointer-wrapped indexed coercion needs full implementation
     ['[]u8', '[]u8', true],
-    ['[]u8', '*[10]u8', false], // TODO: should be true (fixed to slice)
-    ['[]u8', '[*:0]u8', true], // null-term to slice is ok (checker allows)
+    ['[]u8', '[10]u8', true], // fixed size to slice
+    ['[]u8', '[!]u8', true], // null-term to slice is ok
 
     // Array size must match
-    ['*[10]u8', '*[10]u8', true],
-    ['*[10]u8', '*[5]u8', false],
-    ['*[10]u8', '[]u8', false],
+    ['[10]u8', '[10]u8', true],
+    ['[10]u8', '[5]u8', false],
+    ['[10]u8', '[]u8', false],
 
-    // Null-terminated safety
-    ['[*:0]u8', '[*:0]u8', true],
-    ['[*:0]u8', '[]u8', false], // unsafe: slice to null-term (no guarantee of terminator)
-    ['[*:0]u8', '*[10]u8', false], // unsafe: array to null-term
+    // Null-terminated / framing specifier coercion
+    ['[!]u8', '[!]u8', true],
+    ['[!]u8', '[]u8', false], // unsafe: slice to null-term (no guarantee of terminator)
+    ['[!]u8', '[10]u8', true], // sized array can coerce to framing type (compiler adds terminator)
 
     // Tuple coercion
     ['(x:i32, y:i32)', '(x:int(1), y:int(2))', true],
@@ -468,7 +533,7 @@ describe('typeAssignable', () => {
     ['u16', 'u8', true],
     ['u32', 'u8', true],
     ['u64', 'u8', true],
-    ['i16', 'u8', true],  // u8 fits in i16
+    ['i16', 'u8', true], // u8 fits in i16
     ['i32', 'u8', true],
     ['i64', 'u8', true],
     ['i32', 'u16', true], // u16 fits in i32
@@ -486,9 +551,9 @@ describe('typeAssignable', () => {
     ['f32', 'f64', false],
 
     // Cross-signed narrowing not allowed
-    ['u8', 'i8', false],  // i8 can be negative
+    ['u8', 'i8', false], // i8 can be negative
     ['u16', 'i16', false],
-    ['i8', 'u8', false],  // u8 can exceed i8 max
+    ['i8', 'u8', false], // u8 can exceed i8 max
   ]
 
   for (const [target, source, expected] of cases) {
@@ -662,25 +727,6 @@ describe('typeAssignResult', () => {
     // explicit array reinterpret cast, not handled by implicit assignability
   })
 })
-import { describe, expect, test } from 'bun:test'
-import {
-  concretizeType,
-  isConcreteType,
-  typecheck,
-} from './checker'
-import {
-  primitive,
-  comptimeInt,
-  comptimeFloat,
-  comptimeList,
-  tuple,
-  field,
-  pointer,
-  indexed,
-  func,
-  VOID,
-} from './types'
-import { parse } from './parser'
 
 // === concretizeType Tests ===
 
@@ -725,22 +771,31 @@ describe('concretizeType', () => {
   })
 
   describe('comptime_list', () => {
-    test('converts to slice with concretized element', () => {
+    test('converts to inferred-length array with concretized element', () => {
       // comptimeList takes an array of element types
       const type = comptimeList([comptimeInt(1n), comptimeInt(2n)])
       const result = concretizeType(type)
       expect(result.kind).toBe('indexed')
-      const indexed = result as { kind: 'indexed'; element: { kind: 'primitive'; name: string }; size: number | null }
-      expect(indexed.size).toBeNull() // slice
+      const indexed = result as {
+        kind: 'indexed'
+        element: { kind: 'primitive'; name: string }
+        size: number | 'inferred' | null
+      }
+      expect(indexed.size).toBe('inferred') // [_]T - inferred length
       expect(indexed.element.kind).toBe('primitive')
       expect(indexed.element.name).toBe('i32')
     })
 
-    test('empty list defaults to i32 element type', () => {
+    test('empty list defaults to i32 element type with inferred size', () => {
       const type = comptimeList([])
       const result = concretizeType(type)
       expect(result.kind).toBe('indexed')
-      const indexed = result as { kind: 'indexed'; element: { kind: 'primitive'; name: string }; size: number | null }
+      const indexed = result as {
+        kind: 'indexed'
+        element: { kind: 'primitive'; name: string }
+        size: number | 'inferred' | null
+      }
+      expect(indexed.size).toBe('inferred') // [_]T - inferred length
       expect(indexed.element.name).toBe('i32')
     })
   })
@@ -767,14 +822,14 @@ describe('concretizeType', () => {
 
   describe('tuple', () => {
     test('concretizes all fields', () => {
-      const type = tuple([
-        field('x', comptimeInt(1n)),
-        field('y', comptimeFloat(2.0)),
-      ])
+      const type = tuple([field('x', comptimeInt(1n)), field('y', comptimeFloat(2.0))])
       const result = concretizeType(type)
 
       expect(result.kind).toBe('tuple')
-      const t = result as { kind: 'tuple'; fields: Array<{ name: string | null; type: { kind: string; name?: string } }> }
+      const t = result as {
+        kind: 'tuple'
+        fields: Array<{ name: string | null; type: { kind: string; name?: string } }>
+      }
       expect(t.fields[0].type.kind).toBe('primitive')
       expect(t.fields[0].type.name).toBe('i32')
       expect(t.fields[1].type.kind).toBe('primitive')
@@ -782,10 +837,7 @@ describe('concretizeType', () => {
     })
 
     test('leaves concrete fields unchanged', () => {
-      const type = tuple([
-        field('a', primitive('i32')),
-        field('b', primitive('f64')),
-      ])
+      const type = tuple([field('a', primitive('i32')), field('b', primitive('f64'))])
       const result = concretizeType(type)
       expect(result).toEqual(type)
     })
@@ -796,7 +848,10 @@ describe('concretizeType', () => {
       const result = concretizeType(outer)
 
       expect(result.kind).toBe('tuple')
-      const t = result as { kind: 'tuple'; fields: Array<{ type: { kind: string; fields?: Array<{ type: { kind: string; name?: string } }> } }> }
+      const t = result as {
+        kind: 'tuple'
+        fields: Array<{ type: { kind: string; fields?: Array<{ type: { kind: string; name?: string } }> } }>
+      }
       expect(t.fields[0].type.kind).toBe('tuple')
       expect(t.fields[0].type.fields![0].type.kind).toBe('primitive')
       expect(t.fields[0].type.fields![0].type.name).toBe('i32')
@@ -842,10 +897,7 @@ describe('concretizeType', () => {
 
   describe('func', () => {
     test('concretizes params and returns', () => {
-      const type = func(
-        [field('x', comptimeInt(0n))],
-        [field(null, comptimeFloat(0))]
-      )
+      const type = func([field('x', comptimeInt(0n))], [field(null, comptimeFloat(0))])
       const result = concretizeType(type)
 
       expect(result.kind).toBe('func')
@@ -892,18 +944,12 @@ describe('isConcreteType', () => {
   })
 
   test('tuple with comptime field is not concrete', () => {
-    const type = tuple([
-      field('a', primitive('i32')),
-      field('b', comptimeInt(0n)),
-    ])
+    const type = tuple([field('a', primitive('i32')), field('b', comptimeInt(0n))])
     expect(isConcreteType(type)).toBe(false)
   })
 
   test('tuple with all concrete fields is concrete', () => {
-    const type = tuple([
-      field('a', primitive('i32')),
-      field('b', primitive('f64')),
-    ])
+    const type = tuple([field('a', primitive('i32')), field('b', primitive('f64'))])
     expect(isConcreteType(type)).toBe(true)
   })
 

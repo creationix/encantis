@@ -511,7 +511,6 @@ export type Type =
   | PointerType
   | IndexedType
   | CompositeType
-  | BuiltinType
   | ComptimeIntType
   | ComptimeFloatType
   | TypeRef
@@ -564,12 +563,6 @@ export interface CompositeType extends BaseNode {
 export interface TypeRef extends BaseNode {
   kind: 'TypeRef'
   name: string // e.g., "Point" or "@CleanString"
-}
-
-// Built-in types: str (unique UTF-8 string), bytes (u8 slice)
-export interface BuiltinType extends BaseNode {
-  kind: 'BuiltinType'
-  name: 'str' | 'bytes'
 }
 
 // Comptime integer: int(value)

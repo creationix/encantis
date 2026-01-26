@@ -54,6 +54,13 @@ func gimli(state:[*12]u32) {
 }
 
 func slice_ptr_pun_test() {
+  // should have type [6]u8
+  let default_string = "Gimli!"
+  // `default_string.ptr` has type [*]u8 (many-pointer, no known length)
+  let ptr_from_default = default_string.ptr
+  // Explicit [*_]u8 annotation - type error when assigned from .ptr (no known length)
+  // let p:[*_]u8 = default_string.ptr  // ERROR: cannot assign [*]u8 to [*_]u8
+  // should have type []u8 not [13]u8
   let slice:[]u8 = "Hello, World!"
   // should have type [*]u8
   let ptr = slice.ptr
@@ -61,17 +68,18 @@ func slice_ptr_pun_test() {
   let first_u32 = ptr.u32[0] // Type punning to read first 4 bytes as u32
 
   // A fat-pointer with redundant null termination
-  let slice_zero = "null termination!":[!]u8
+  let slice_zero:[!]u8 = "null termination!"
   // should have type [*!]u8
   let ptr_zero = slice_zero.ptr
   // should allow type punning
-  let first_u32_zero = ptr_zero.u32[0] // Should read 0
+  let first_u32_zero = ptr_zero.u32[0]
 
-  let slice_prefix = "length prefix?":[?]u8
+  // A fat-pointer with LEB128 length prefix
+  let slice_prefix:[?]u8 = "length prefix?"
   // should have type [*?]u8
   let ptr_prefix = slice_prefix.ptr
   // should allow type punning
-  let first_u32_prefix = ptr_prefix.u32[0] // Should read 0
+  let first_u32_prefix = ptr_prefix.u32[0]
 
   let wider_slice:*[_]u16 = [0x1234, 0x5678, 0x9abc]
   // should have type [*]u16

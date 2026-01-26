@@ -312,13 +312,6 @@ f32  f64               // floats
 bool                   // boolean
 ```
 
-### Builtin Types
-
-```encantis
-str                    // UTF-8 string (builtin, not a primitive)
-bytes                  // byte slice (builtin, not a primitive)
-```
-
 ### Composite Types (Tuples/Structs)
 
 [Grammar: `BaseType` composite case](../packages/compiler/src/grammar/encantis.ohm#L113)
@@ -332,12 +325,12 @@ bytes                  // byte slice (builtin, not a primitive)
 **Named fields (struct):**
 ```encantis
 (x: f64, y: f64)       // Point struct
-(name: str, age: u32)  // Person struct
+(name: []u8, age: u32) // Person struct
 ```
 
 **Mixed (rare):**
 ```encantis
-(i32, name: str)       // Positional i32, named str field
+(i32, name: []u8)      // Positional i32, named []u8 field
 ```
 
 ### Pointer Types

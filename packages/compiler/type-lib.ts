@@ -13,7 +13,6 @@ import {
   field,
   comptimeInt,
   comptimeFloat,
-  named,
 } from './types'
 
 // Parse a type string to AST.Type
@@ -53,16 +52,6 @@ export function astToResolved(ast: AST.Type): ResolvedType {
       return tuple(
         ast.fields.map((f) => field(f.ident, astToResolved(f.type))),
       )
-
-    case 'BuiltinType': {
-      // str is a unique type (UTF-8 string), bytes is a structural alias
-      // Both are slices of u8: *[u8]
-      const sliceU8 = pointer(indexed(primitive('u8')))
-      if (ast.name === 'str') {
-        return named('str', sliceU8, true) // unique
-      }
-      return sliceU8 // bytes is just *[u8], no wrapper
-    }
 
     case 'ComptimeIntType':
       return comptimeInt(ast.value)

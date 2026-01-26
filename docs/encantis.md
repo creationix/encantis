@@ -12,7 +12,7 @@ Encantis is a systems programming language that compiles to WebAssembly. It prov
 export "mem" memory 1
 
 // Import JavaScript console.log
-import "env" "log" func log(str)
+import "env" "log" func log([]u8)
 
 export "main"
 func main() {
@@ -80,7 +80,7 @@ The following identifiers are reserved keywords in Encantis (aligns with `encant
 
 **Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `inline`
 
-**Types / Builtins:** `int`, `float`, `str`, `bytes`
+**Types / Builtins:** `int`, `float`
 
 **Operator:** `as`
 
@@ -207,7 +207,7 @@ x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
 b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals live in the data section. They naturally type-check as the builtin `str` (UTF-8 text) or `bytes` (byte slice) types. Other representations (e.g., null-terminated `[*:0]u8` or fixed-size buffers `*[N]u8`) are only available when explicitly required by the surrounding context and supported by codegen; do not assume implicit pointer coercions beyond `str`/`bytes`.
+Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. The default type when no annotation is provided is `[_]u8` (fat slice with inferred length).
 
 ### Boolean Literals
 
@@ -533,7 +533,7 @@ func add(a:i32, b:i32) -> i32 => a + b
 
 // Export anonymous function (no internal name needed if not called internally)
 export "hash"
-func (data:bytes, seed:u32) -> u32 {
+func (data:[]u8, seed:u32) -> u32 {
   // only accessible via export, no internal calls
 }
 
@@ -548,7 +548,7 @@ export "counter" global counter:i32 = 0
 
 ```ents
 // Import function from host environment
-import "env" "log" func log(msg:str)
+import "env" "log" func log(msg:[]u8)
 
 // Import memory
 import "env" "memory" memory 1
@@ -568,7 +568,7 @@ Whitespace is flexible - the import and function signature can span multiple lin
 
 ```ents
 import "sys" "print"
-func print(msg:str)
+func print(msg:[]u8)
 ```
 
 ### Memory and Data
@@ -589,7 +589,7 @@ memory 1 {
   48  => (x: 1.0, y: 2.0),     // struct at 48
   numbers => (1, 2, 3),        // tuple of i32s at auto-assigned offset (stored in `numbers`)
   answer:u64 => 42,            // 8 byte unsigned integer at auto-assigned offset stored in `answer`
-  (name:, age:) => ("Bob", 26) // tuple of (str, i32) with `name` being a fat pointer and `age` a simple pointer.
+  (name:, age:) => ("Bob", 26) // tuple of ([]u8, i32) with `name` being a fat pointer and `age` a simple pointer.
 }
 ```
 
@@ -698,7 +698,7 @@ let result = match code {
 Match is an expression and returns a value. All arms must have compatible types:
 
 ```ents
-let msg:str = match status & 3 {
+let msg:[]u8 = match status & 3 {
   0 => "idle"
   1 => "running"
   2 => "done"
@@ -917,7 +917,7 @@ get_user(@UserId(raw))             // OK: explicit cast
 
 Use `@Name` when you want the compiler to enforce distinctions between semantically different values that happen to share the same representation.
 
-The built-in `str` type is a unique type based on `[]u8` that assumes UTF-8 encoding. Similarly, `bytes` is a structural alias for `[]u8` for raw binary data.
+String literals are byte slices (`[]u8`). Use type annotations to specify different representations like `[!]u8` for null-terminated or `[?]u8` for length-prefixed strings.
 
 ### Struct Types
 
@@ -1052,12 +1052,12 @@ UFCS works for all types, not just structs:
 
 ```ents
 func double(x:i32) -> i32 => x * 2
-func to_hex(data:bytes) -> str => ...
+func to_hex(data:[]u8) -> []u8 => ...
 
 let n = 21
 n.double()                 // 42
 
-let data:bytes = ...
+let data:[]u8 = ...
 data.to_hex()              // works on slices too
 ```
 
@@ -1192,7 +1192,7 @@ Memory layout uses end-padding (payload left-aligned) with no alignment requirem
 Use `match` to destructure enum variants:
 
 ```ents
-func describe(c:Color) -> str {
+func describe(c:Color) -> []u8 {
   match c {
     Red => "red"
     Blue => "blue"
@@ -1214,7 +1214,7 @@ Pattern matching works on structs and tuples too, not just enums:
 ```ents
 type Point = (x:i32, y:i32)
 
-func describe_point(p:Point) -> str {
+func describe_point(p:Point) -> []u8 {
   match p {
     Point(0, 0) => "origin"
     Point(0, y) => format("y-axis at {}", y)
