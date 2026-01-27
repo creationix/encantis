@@ -101,6 +101,7 @@ export interface MetaSymbol {
   refs: string[] // ["line:col", ...]
   doc?: string
   value?: string // For def constants: the literal value
+  inline?: boolean // For functions: whether it's an inline function
 }
 
 export interface MetaHint {
@@ -268,7 +269,7 @@ class MetaBuilder {
 
       // Find the function name offset (after "func" keyword)
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset)
+      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline)
 
       // Collect params and locals
       this.collectFuncBody(decl, symbolIndex)
@@ -296,10 +297,19 @@ class MetaBuilder {
   }
 
   private collectFuncBody(decl: AST.FuncDecl, _funcSymbolIndex: number): void {
+    // Build set of return names to check for input/output aliasing
+    const returnNames = new Set<string>()
+    if (decl.signature.output.kind === 'CompositeType') {
+      for (const ret of decl.signature.output.fields) {
+        if (ret.ident) returnNames.add(ret.ident)
+      }
+    }
+
     // Collect parameters (only CompositeType has named fields)
+    // Skip params that also appear in output - they'll be tagged as 'return'
     if (decl.signature.input.kind === 'CompositeType') {
       for (const param of decl.signature.input.fields) {
-        if (param.ident) {
+        if (param.ident && !returnNames.has(param.ident)) {
           const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
           if (type) {
             this.addSymbol(param.ident, 'param', type, param.span.start)
@@ -450,6 +460,7 @@ class MetaBuilder {
     type: ResolvedType,
     offset: number,
     value?: string,
+    inline?: boolean,
   ): number {
     const typeIndex = this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
@@ -477,6 +488,7 @@ class MetaBuilder {
     }
     if (doc) symbol.doc = doc
     if (value) symbol.value = value
+    if (inline) symbol.inline = true
 
     const index = this.symbols.length
     this.symbols.push(symbol)

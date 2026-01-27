@@ -161,7 +161,7 @@ export function concretizeType(
       return primitive(opts.defaultFloat)
 
     case 'comptime_list': {
-      // Comptime lists become [_]T with concretized element type
+      // Comptime lists become [*_]T with concretized element type (many-pointer default)
       const elemType = u.elements.length > 0
         ? concretizeType(u.elements[0], opts)
         : primitive(opts.defaultInt)
@@ -170,6 +170,7 @@ export function concretizeType(
         element: elemType,
         size: 'inferred',
         specifiers: [],
+        manyPointer: true,
       }
     }
 
@@ -832,13 +833,13 @@ class CheckContext {
         // Default: f64
         return primitive('f64')
       case 'comptime_list': {
-        // Default to [_]T (inferred length fat slice)
+        // Default to [*_]T (inferred length many-pointer)
         if (type.elements.length === 0) {
-          // Empty list defaults to [_]i32
-          return indexed(primitive('i32'), 'inferred', [])
+          // Empty list defaults to [*_]i32
+          return indexed(primitive('i32'), 'inferred', [], true)
         }
         const elemType = this.concretize(this.unifyTypes(type.elements))
-        return indexed(elemType, 'inferred', [])
+        return indexed(elemType, 'inferred', [], true)
       }
       case 'indexed': {
         // Handle comptime indexed ([T]) - default to [_]T (inferred length)
@@ -1288,9 +1289,9 @@ class CheckContext {
 
       case 'string': {
         // String literals have known length at compile time
-        // They can coerce to [!]u8, [?]u8, []u8, [*]u8, etc. via type rules
+        // Default to many-pointer [*N]u8 - can coerce to fat slices via bidirectional typing
         const len = expr.value.bytes.length
-        return indexed(primitive('u8'), len, [])
+        return indexed(primitive('u8'), len, [], true)
       }
 
       case 'bool':

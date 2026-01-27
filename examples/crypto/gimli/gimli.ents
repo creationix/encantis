@@ -55,10 +55,6 @@ func gimli(state:[*12]u32) {
 
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.
-// Using def with mut to allocate mutable memory without a global variable.
-// Type annotation can be on RHS or LHS - both work:
-//   def hash_state = mut [0;12]:[*_]u32
-//   def hash_state:[*_]u32 = mut [0;12]
 def hash_state:[*_]u32 = mut [0;12]
 
 // Gimli-Hash: absorb input and squeeze 32-byte output

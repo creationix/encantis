@@ -19,25 +19,24 @@ inline func round32(seed:u32, value:u32) -> u32 {
 export "xxh32"
 func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
   let ptr = data.ptr
-  let len = data.len
-  let last:*u8 = ptr + len
+  let last = ptr + data.len
 
-  if len >= 16 {
+  if data.len >= 16 {
     let v1:u32 = seed + prime32-1 + prime32-2
     let v2:u32 = seed + prime32-2
-    let v3:u32 = seed + 0
+    let v3:u32 = seed
     let v4:u32 = seed - prime32-1
 
     // For every chunk of 4 words, so 4 * 32bits = 16 bytes
-    let limit:*u8 = last - 16
+    let limit = last - 16
     loop {
-      v1 = round32(v1, ptr.u32)
+      v1 = round32(v1, ptr.u32[0])
       ptr += 4
-      v2 = round32(v2, ptr.u32)
+      v2 = round32(v2, ptr.u32[0])
       ptr += 4
-      v3 = round32(v3, ptr.u32)
+      v3 = round32(v3, ptr.u32[0])
       ptr += 4
-      v4 = round32(v4, ptr.u32)
+      v4 = round32(v4, ptr.u32[0])
       ptr += 4
       break when ptr > limit
     }
@@ -52,19 +51,19 @@ func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
     h32 = seed + prime32-5
   }
 
-  h32 += len
+  h32 += data.len
 
   // For the remaining words not covered above, either 0, 1, 2 or 3
   while ptr + 4 <= last {
-    h32 += ptr.u32 * prime32-3
+    h32 += ptr.u32[0] * prime32-3
     h32 = (h32 <<< 17) * prime32-4
     ptr += 4
   }
 
   // For the remaining bytes that didn't make a whole word,
-  // either 0, 1, 2 or 3 bytes, as 4bytes = 32bits = 1 word.
+  // either 0, 1, 2 or 3 bytes, as 4 bytes = 32bits = 1 word.
   while ptr < last {
-    h32 += ptr.u8 * prime32-5
+    h32 += ptr[0] * prime32-5
     h32 = (h32 <<< 11) * prime32-1
     ptr += 1
   }

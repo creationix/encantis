@@ -164,11 +164,13 @@ export function manyPointer(element: ResolvedType, specifiers: IndexSpecifierRT[
 }
 
 export function array(element: ResolvedType, size: number): IndexedRT {
-  return indexed(element, size, [])
+  // Default to many-pointer (thin pointer with known size)
+  return indexed(element, size, [], true)
 }
 
 export function comptimeIndexed(element: ResolvedType): IndexedRT {
-  return indexed(element, 'comptime', [])
+  // Default to many-pointer (thin pointer with comptime size)
+  return indexed(element, 'comptime', [], true)
 }
 
 export function nullterm(element: ResolvedType, size: number | 'comptime' | null = null, level: number = 1): IndexedRT {
@@ -648,6 +650,16 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     // Fixed with specifiers accepts same size with compatible specifiers
     if (typeof t.size === 'number' && t.specifiers.length > 0) {
       return s.size === t.size ? lossless(elemResult.reinterpret) : INCOMPATIBLE
+    }
+  }
+
+  // Many-pointer to plain pointer coercion: [*]T -> *T, [*N]T -> *T
+  // This is a demotion - we lose the "multiple elements" information
+  // but the pointer value itself is the same (lossless, reinterpretable)
+  if (t.kind === 'pointer' && s.kind === 'indexed' && s.manyPointer) {
+    // Element types must match exactly
+    if (typeEquals(t.pointee, s.element)) {
+      return lossless(true)
     }
   }
 

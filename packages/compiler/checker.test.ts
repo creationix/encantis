@@ -259,8 +259,8 @@ describe('type inference', () => {
       if (offset !== undefined) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
-        // Without annotation, array defaults to [_]T (inferred length)
-        expect(typeToString(type!)).toBe('[_]i32')
+        // Without annotation, array defaults to [*_]T (many-pointer with inferred length)
+        expect(typeToString(type!)).toBe('[*_]i32')
       }
     })
 
@@ -366,8 +366,8 @@ describe('type inference', () => {
       const offset = result.symbolDefOffsets.get('s')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        // Without annotation, string literal gets [N]u8 with actual length
-        expect(typeToString(type!)).toBe('[5]u8')
+        // Without annotation, string literal gets [*N]u8 with actual length (many-pointer)
+        expect(typeToString(type!)).toBe('[*5]u8')
       }
     })
 
@@ -381,8 +381,8 @@ describe('type inference', () => {
       const offset = result.symbolDefOffsets.get('arr')
       if (offset) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
-        // Outer: [_] inferred, inner: [5]u8 concrete length
-        expect(typeToString(type!)).toBe('[_][5]u8')
+        // Outer: [*_] inferred many-pointer, inner: [*5]u8 concrete length many-pointer
+        expect(typeToString(type!)).toBe('[*_][*5]u8')
       }
     })
 

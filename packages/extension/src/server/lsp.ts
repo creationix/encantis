@@ -36,11 +36,13 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
     case 'local':
       return `let ${symbol.name}: ${typeStr}`;
     case 'param':
-      return `${symbol.name}: ${typeStr}`;
+      return `input ${symbol.name}: ${typeStr}`;
     case 'return':
-      return `-> ${symbol.name}: ${typeStr}`;
+      return `output ${symbol.name}: ${typeStr}`;
     case 'func':
-      return `func ${symbol.name}: ${typeStr}`;
+      return symbol.inline
+        ? `inline func ${symbol.name}: ${typeStr}`
+        : `func ${symbol.name}: ${typeStr}`;
     case 'type':
       return `type ${symbol.name} = ${typeStr}`;
     case 'unique':
