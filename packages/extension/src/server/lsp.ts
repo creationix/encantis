@@ -283,7 +283,17 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
   // Fallback to builtin/type docs (but NOT for type punning - those need meta hints)
   if (!isTypePunContext) {
-    const doc = builtinDocs[word] || typeDocs[word];
+    // Check for builtin function signature first
+    const builtinSig = BUILTIN_SIGNATURES[word];
+    if (builtinSig) {
+      const doc = builtinDocs[word];
+      const value = doc
+        ? `\`\`\`encantis\n${builtinSig}\n\`\`\`\n\n${doc}`
+        : `\`\`\`encantis\n${builtinSig}\n\`\`\``;
+      return { contents: { kind: MarkupKind.Markdown, value } };
+    }
+
+    const doc = typeDocs[word];
     if (doc) {
       return { contents: { kind: MarkupKind.Markdown, value: doc } };
     }
