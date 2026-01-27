@@ -61,7 +61,7 @@ func xxh64(data:[]u8, seed:u64) -> (h64:u64) {
     h64 = seed + prime64-5
   }
 
-  h64 += len as u64
+  h64 += len
 
   // For the remaining words not covered above, either 0, 1, 2 or 3
   while ptr + 8 <= last {
@@ -80,7 +80,7 @@ func xxh64(data:[]u8, seed:u64) -> (h64:u64) {
   // For the remaining bytes that didn't make a half word,
   // either 0, 1, 2 or 3 bytes
   while ptr < last {
-    h64 ^= ptr.u8 as u64 * prime64-5
+    h64 ^= ptr[0] * prime64-5
     h64 = (h64 <<< 11) * prime64-1
     ptr += 1
   }
