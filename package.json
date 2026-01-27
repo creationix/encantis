@@ -17,7 +17,7 @@
     "watch:ext": "cd packages/extension && bun run watch:node",
     "watch:ext-web": "cd packages/extension && bun run watch:web",
     "package:ext": "cd packages/extension && bun run package",
-    "install:ext": "code --install-extension packages/extension/encantis-vscode-ext-0.0.4.vsix --force",
+    "install:ext": "code --install-extension packages/extension/encantis-vscode-ext-0.1.0.vsix --force",
     "reinstall:ext": "bun run package:ext && bun run install:ext",
     "bundle:grammar": "bun packages/compiler/scripts/bundle-grammar.ts",
     "test": "bun test"

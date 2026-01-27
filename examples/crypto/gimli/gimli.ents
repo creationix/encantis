@@ -2,7 +2,7 @@
 // Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
 // State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
 
-export "mem" memory 1 
+export "mem" memory 1
 
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
@@ -53,48 +53,13 @@ func gimli(state:[*12]u32) {
   }
 }
 
-func slice_ptr_pun_test() {
-  // should have type [6]u8
-  let default_string = "Gimli!"
-  // `default_string.ptr` has type [*]u8 (many-pointer, no known length)
-  let ptr_from_default = default_string.ptr
-  // Explicit [*_]u8 annotation - type error when assigned from .ptr (no known length)
-  // let p:[*_]u8 = default_string.ptr  // ERROR: cannot assign [*]u8 to [*_]u8
-  // should have type []u8 not [13]u8
-  let slice:[]u8 = "Hello, World!"
-  // should have type [*]u8
-  let ptr = slice.ptr
-  // should allow type punning
-  let first_u32 = ptr.u32[0] // Type punning to read first 4 bytes as u32
-
-  // A fat-pointer with redundant null termination
-  let slice_zero:[!]u8 = "null termination!"
-  // should have type [*!]u8
-  let ptr_zero = slice_zero.ptr
-  // should allow type punning
-  let first_u32_zero = ptr_zero.u32[0]
-
-  // A fat-pointer with LEB128 length prefix
-  let slice_prefix:[?]u8 = "length prefix?"
-  // should have type [*?]u8
-  let ptr_prefix = slice_prefix.ptr
-  // should allow type punning
-  let first_u32_prefix = ptr_prefix.u32[0]
-
-  let wider_slice:*[_]u16 = [0x1234, 0x5678, 0x9abc]
-  // should have type [*]u16
-  let wider_ptr = wider_slice.ptr
-  wider_slice.wid
-  wider_slice.len
-  // should allow type punning
-  let first_u32_wide = wider_ptr.u32[0] // Should read 0x56781234
-  // What about offset pointers?  Should these preserve all type state?
-  let later_ptr = wider_ptr + 2
-}
-
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.
-global hash_state:[*_]u32 = [0;12]
+// Using def with mut to allocate mutable memory without a global variable.
+// Type annotation can be on RHS or LHS - both work:
+//   def hash_state = mut [0;12]:[*_]u32
+//   def hash_state:[*_]u32 = mut [0;12]
+def hash_state:[*_]u32 = mut [0;12]
 
 // Gimli-Hash: absorb input and squeeze 32-byte output
 // Uses rate of 16 bytes (128 bits)

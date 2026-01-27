@@ -135,9 +135,11 @@ export interface EnumVariant extends BaseNode {
 }
 
 // def name = expr
+// def name:Type = expr
 export interface DefDecl extends BaseNode {
   kind: 'DefDecl'
   ident: string
+  type?: Type  // Optional type annotation on LHS
   value: Expr
 }
 
@@ -149,23 +151,12 @@ export interface GlobalDecl extends BaseNode {
   value: Expr | null
 }
 
-// memory min [max] { data }
+// memory min [max]
 export interface MemoryDecl extends BaseNode {
   kind: 'MemoryDecl'
   min: number
   max: number | null
-  data: DataEntry[]
 }
-
-export interface DataEntry extends BaseNode {
-  kind: 'DataEntry'
-  key: DataEntryKey
-  value: Expr
-}
-
-export type DataEntryKey =
-  | { kind: 'offset'; value: number }
-  | { kind: 'named'; name: string; type: Type | null }
 
 // ============================================================================
 // Statements
@@ -397,6 +388,8 @@ export interface IdentExpr extends BaseNode {
 export interface LiteralExpr extends BaseNode {
   kind: 'LiteralExpr'
   value: LiteralValue
+  mut?: boolean  // mutable data, skip deduplication in data section
+  dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }
 
 export type LiteralValue =
@@ -409,6 +402,8 @@ export type LiteralValue =
 export interface ArrayExpr extends BaseNode {
   kind: 'ArrayExpr'
   elements: Expr[]
+  mut?: boolean  // mutable data, skip deduplication in data section
+  dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }
 
 // [expr; count] - repeat value count times
@@ -416,6 +411,8 @@ export interface RepeatExpr extends BaseNode {
   kind: 'RepeatExpr'
   value: Expr
   count: Expr
+  mut?: boolean  // mutable data, skip deduplication in data section
+  dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }
 
 // if expr { ... } elif ... else ...
@@ -466,6 +463,7 @@ export type MatchPatternElement =
 export interface TupleExpr extends BaseNode {
   kind: 'TupleExpr'
   elements: Arg[]
+  mut?: boolean  // mutable data, skip deduplication in data section
 }
 
 // (expr)

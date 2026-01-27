@@ -2,7 +2,7 @@
   "name": "encantis-vscode-ext",
   "displayName": "Encantis Language",
   "description": "Language support for Encantis (.ents files) - syntax highlighting, diagnostics, and hover",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "repository": "https://github.com/creationix/encantis-ext",
   "publisher": "creationix",
   "icon": "icon-128.png",
@@ -154,16 +154,36 @@
       {
         "language": "encantis",
         "scopes": {
-          "parameter": ["variable.parameter.encantis"],
-          "parameter.output": ["variable.parameter.output.encantis"],
-          "variable": ["variable.other.local.encantis"],
-          "variable.readonly": ["variable.other.constant.encantis"],
-          "variable.static": ["variable.other.global.encantis"],
-          "variable.static.readonly": ["variable.other.definition.encantis"],
-          "function": ["entity.name.function.encantis"],
-          "function.declaration": ["entity.name.function.declaration.encantis"],
-          "type": ["entity.name.type.encantis"],
-          "type.declaration": ["entity.name.type.declaration.encantis"]
+          "parameter": [
+            "variable.parameter.encantis"
+          ],
+          "parameter.output": [
+            "variable.parameter.output.encantis"
+          ],
+          "variable": [
+            "variable.other.local.encantis"
+          ],
+          "variable.readonly": [
+            "variable.other.constant.encantis"
+          ],
+          "variable.static": [
+            "variable.other.global.encantis"
+          ],
+          "variable.static.readonly": [
+            "variable.other.definition.encantis"
+          ],
+          "function": [
+            "entity.name.function.encantis"
+          ],
+          "function.declaration": [
+            "entity.name.function.declaration.encantis"
+          ],
+          "type": [
+            "entity.name.type.encantis"
+          ],
+          "type.declaration": [
+            "entity.name.type.declaration.encantis"
+          ]
         }
       }
     ]

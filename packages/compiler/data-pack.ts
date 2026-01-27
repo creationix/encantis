@@ -64,9 +64,10 @@ export interface DataSection {
  * Also deduplicates by finding substrings within already-written data.
  */
 export class DataSectionBuilder {
-  private explicitEntries: { offset: number; bytes: Uint8Array }[] = []
   private internedMap = new Map<string, DataEntry>()
   private literalMap = new Map<number, DataEntry>()
+  /** Mutable entries that skip deduplication */
+  private mutEntries: DataEntry[] = []
   /** Next available offset for placing new interned data */
   private currentOffset = 0
 
@@ -76,17 +77,7 @@ export class DataSectionBuilder {
   }
 
   build(module: AST.Module): void {
-    // First pass: collect explicit data blocks from memory declarations
-    walkModule(module, {
-      visitMemoryDecl: (decl) => {
-        this.collectMemoryData(decl)
-      },
-    })
-
-    // Calculate where automatic data starts (after explicit data)
-    this.currentOffset = this.calculateAutoDataStart()
-
-    // Second pass: collect and intern all string literals
+    // Collect and intern all string literals
     walkModule(module, {
       visitLiteralExpr: (expr) => {
         if (expr.value.kind === 'string') {
@@ -97,139 +88,17 @@ export class DataSectionBuilder {
   }
 
   result(): DataSection {
-    const errors: string[] = []
-
-    // Build explicit entries (null terminators already in bytes for strings)
-    const explicitDataEntries: DataEntry[] = this.explicitEntries.map((exp) => ({
-      bytes: exp.bytes,
-      offset: exp.offset,
-      length: exp.bytes.length,
-      explicit: true,
-    }))
-
-    // Check for overlapping explicit entries (bytes.length includes null for strings)
-    const sortedExplicit = [...explicitDataEntries].sort((a, b) => a.offset - b.offset)
-    for (let i = 0; i < sortedExplicit.length - 1; i++) {
-      const current = sortedExplicit[i]
-      const next = sortedExplicit[i + 1]
-      const currentEnd = current.offset + current.length
-      if (currentEnd > next.offset) {
-        errors.push(
-          `memory data at offset ${next.offset} overlaps previous entry at offset ${current.offset} ` +
-            `(${current.length} bytes ends at ${currentEnd})`,
-        )
-      }
-    }
-
-    // Combine explicit and interned entries, sorted by offset
     const interned = Array.from(this.internedMap.values())
-    const entries = [...explicitDataEntries, ...interned].sort(
-      (a, b) => a.offset - b.offset,
-    )
+    // Include both interned (deduplicated) and mutable entries
+    const entries = [...interned, ...this.mutEntries].sort((a, b) => a.offset - b.offset)
 
     return {
       entries,
       literalMap: this.literalMap,
       totalSize: this.currentOffset,
-      autoDataStart: this.calculateAutoDataStart(),
-      errors,
+      autoDataStart: 0,
+      errors: [],
     }
-  }
-
-  private calculateAutoDataStart(): number {
-    if (this.explicitEntries.length === 0) return 0
-
-    // Find the end of the last explicit entry (bytes.length includes null for strings)
-    let maxEnd = 0
-    for (const entry of this.explicitEntries) {
-      const end = entry.offset + entry.bytes.length
-      if (end > maxEnd) maxEnd = end
-    }
-    return maxEnd
-  }
-
-  // Collect explicit data from memory declarations
-  private collectMemoryData(mem: AST.MemoryDecl): void {
-    for (const entry of mem.data) {
-      // Get bytes from the expression (should be a string literal)
-      const bytes = this.exprToBytes(entry.value)
-      if (bytes) {
-        this.explicitEntries.push({ offset: entry.offset, bytes })
-      }
-    }
-  }
-
-  // Convert an expression to bytes (for explicit data entries)
-  // Strings include null terminator in their bytes
-  private exprToBytes(expr: AST.Expr): Uint8Array | null {
-    // Handle type annotations: 1:i32, 0:u8, etc.
-    if (expr.kind === 'AnnotationExpr') {
-      return this.exprToBytesWithType(expr.expr, expr.type)
-    }
-
-    // Untyped literals
-    if (expr.kind === 'LiteralExpr') {
-      if (expr.value.kind === 'string') {
-        // Strings are slices, include null terminator
-        return stringBytesWithNull(expr.value.bytes)
-      }
-      if (expr.value.kind === 'int') {
-        // Default: comptime int → i32
-        return serializeInt(expr.value.value, 'i32')
-      }
-      if (expr.value.kind === 'float') {
-        // Default: comptime float → f64
-        return serializeFloat(expr.value.value, 'f64')
-      }
-    }
-
-    // Tuple: concatenate serialized elements
-    // Strings already include null terminators from exprToBytes
-    if (expr.kind === 'TupleExpr') {
-      const parts: Uint8Array[] = []
-      for (const arg of expr.elements) {
-        if (!arg.value) continue
-        const bytes = this.exprToBytes(arg.value)
-        if (!bytes) return null // Non-convertible element
-        parts.push(bytes)
-      }
-      return concatBytes(parts)
-    }
-
-    return null
-  }
-
-  // Convert expression with explicit type annotation
-  private exprToBytesWithType(expr: AST.Expr, type: AST.Type): Uint8Array | null {
-    if (expr.kind !== 'LiteralExpr') return null
-
-    // Get the primitive type name
-    const typeName = this.getPrimitiveTypeName(type)
-    if (!typeName) return null
-
-    if (expr.value.kind === 'int') {
-      return serializeInt(expr.value.value, typeName)
-    }
-    if (expr.value.kind === 'float') {
-      return serializeFloat(expr.value.value, typeName)
-    }
-    if (expr.value.kind === 'string') {
-      // Strings are slices, include null terminator
-      return stringBytesWithNull(expr.value.bytes)
-    }
-
-    return null
-  }
-
-  // Extract primitive type name from AST type
-  private getPrimitiveTypeName(type: AST.Type): string | null {
-    if (type.kind === 'PrimitiveType') {
-      return type.name
-    }
-    if (type.kind === 'TypeRef' && type.args.length === 0) {
-      return type.name
-    }
-    return null
   }
 
   private internLiteral(expr: AST.LiteralExpr): void {
@@ -259,30 +128,39 @@ export class DataSectionBuilder {
 
   // Intern arbitrary bytes, returning a DataRef
   // Used by type-aware serialization
-  internBytes(bytes: Uint8Array): DataRef {
+  // If skipDedup is true, always allocate new space (for mutable data)
+  internBytes(bytes: Uint8Array, skipDedup = false): DataRef {
     const key = bytesToKey(bytes)
 
-    // 1. Check exact-match cache first (fast path)
-    let entry = this.internedMap.get(key)
-    if (entry) {
-      return { ptr: entry.offset, len: entry.length }
+    if (!skipDedup) {
+      // 1. Check exact-match cache first (fast path)
+      const entry = this.internedMap.get(key)
+      if (entry) {
+        return { ptr: entry.offset, len: entry.length }
+      }
+
+      // 2. Scan existing data for substring match
+      const existingOffset = this.findSubstring(bytes)
+      if (existingOffset !== -1) {
+        // Found! Return ref without adding to entries (we're reusing, not writing)
+        return { ptr: existingOffset, len: bytes.length }
+      }
     }
 
-    // 2. Scan existing data for substring match
-    const existingOffset = this.findSubstring(bytes)
-    if (existingOffset !== -1) {
-      // Found! Return ref without adding to entries (we're reusing, not writing)
-      return { ptr: existingOffset, len: bytes.length }
-    }
-
-    // 3. Not found - write new bytes
-    entry = {
+    // 3. Not found (or skipDedup) - write new bytes
+    const entry = {
       bytes,
       offset: this.currentOffset,
       length: bytes.length,
       explicit: false,
     }
-    this.internedMap.set(key, entry)
+    if (skipDedup) {
+      // Mutable data: track separately, don't share with future lookups
+      this.mutEntries.push(entry)
+    } else {
+      // Immutable data: cache for deduplication
+      this.internedMap.set(key, entry)
+    }
     this.currentOffset += bytes.length
 
     return { ptr: entry.offset, len: entry.length }
@@ -294,13 +172,6 @@ export class DataSectionBuilder {
 
     // Build buffer from all interned entries
     const result = new Uint8Array(this.currentOffset)
-
-    // Copy explicit entries first
-    for (const exp of this.explicitEntries) {
-      result.set(exp.bytes, exp.offset)
-    }
-
-    // Copy interned entries
     for (const entry of this.internedMap.values()) {
       result.set(entry.bytes, entry.offset)
     }
@@ -500,6 +371,7 @@ function serializeSortedParts(
   const sorted = [...parts].sort((a, b) => partSortScore(b) - partSortScore(a))
 
   for (const part of sorted) {
+    const skipDedup = isMutExpr(part.expr)
     if (part.isPointerArray) {
       // Pointer array: look up child refs and encode
       const childRefs: DataRef[] = []
@@ -516,11 +388,11 @@ function serializeSortedParts(
       const childrenAreSlices = innerType.kind === 'indexed' &&
         innerType.size === null && innerType.specifiers.length === 0
       const pointerBytes = encodePointerArray(childRefs, part.type.specifiers, childrenAreSlices)
-      const ref = builder.internBytes(pointerBytes)
+      const ref = builder.internBytes(pointerBytes, skipDedup)
       refMap.set(part.id, ref)
     } else {
       // Merged or leaf: serialize directly
-      const ref = serializeMerged(part.expr, part.type, builder)
+      const ref = serializeMerged(part.expr, part.type, builder, skipDedup)
       refMap.set(part.id, ref)
     }
   }
@@ -537,15 +409,23 @@ function serializeSortedParts(
  * @param builder The data section builder for interning
  * @returns DataRef with pointer offset and length for codegen
  */
+// Check if an expression has the mut flag (mutable data, skip deduplication)
+function isMutExpr(expr: AST.Expr): boolean {
+  if ('mut' in expr && (expr as { mut?: boolean }).mut) return true
+  if (expr.kind === 'AnnotationExpr') return isMutExpr(expr.expr)
+  return false
+}
+
 export function serializeLiteral(
   expr: AST.Expr,
   targetType: IndexedRT,
   builder: DataSectionBuilder,
 ): DataRef {
+  const skipDedup = isMutExpr(expr)
   if (isMergedBrackets(targetType) || targetType.element.kind !== 'indexed') {
-    return serializeMerged(expr, targetType, builder)
+    return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
-    return serializeSeparate(expr, targetType, builder)
+    return serializeSeparate(expr, targetType, builder, skipDedup)
   }
 }
 
@@ -554,9 +434,10 @@ function serializeMerged(
   expr: AST.Expr,
   targetType: IndexedRT,
   builder: DataSectionBuilder,
+  skipDedup: boolean,
 ): DataRef {
   const bytes = buildMergedBytes(expr, targetType)
-  return builder.internBytes(bytes)
+  return builder.internBytes(bytes, skipDedup)
 }
 
 // Build the complete byte sequence for merged brackets
@@ -592,6 +473,38 @@ function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
     // Apply outer specifier (final terminator or prefix)
     if (outerSpec) {
       return applySpecifier(combined, outerSpec, getElementSize(elementType), elementParts.length)
+    }
+    return combined
+  }
+
+  // For repeat expressions [value; count], serialize value count times
+  if (expr.kind === 'RepeatExpr') {
+    // Get count from literal
+    if (expr.count.kind !== 'LiteralExpr' || expr.count.value.kind !== 'int') {
+      throw new Error(`RepeatExpr count must be an int literal`)
+    }
+    const count = Number(expr.count.value.value)
+
+    // Leftmost specifier is outermost (applies to whole array)
+    // Rightmost specifiers are innermost (apply to each element)
+    const outerSpec = specifiers[0]
+    const innerSpecs = specifiers.slice(1)
+
+    // Serialize the value once
+    const elemBytes = buildElementBytes(expr.value, elementType, innerSpecs)
+
+    // Repeat it count times
+    const elementParts: Uint8Array[] = []
+    for (let i = 0; i < count; i++) {
+      elementParts.push(elemBytes)
+    }
+
+    // Concatenate all elements
+    const combined = concatBytes(elementParts)
+
+    // Apply outer specifier (final terminator or prefix)
+    if (outerSpec) {
+      return applySpecifier(combined, outerSpec, getElementSize(elementType), count)
     }
     return combined
   }
@@ -638,6 +551,7 @@ function serializeSeparate(
   expr: AST.Expr,
   targetType: IndexedRT,
   builder: DataSectionBuilder,
+  skipDedup: boolean,
 ): DataRef {
   if (expr.kind !== 'ArrayExpr') {
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
@@ -647,6 +561,7 @@ function serializeSeparate(
   const childRefs: DataRef[] = []
 
   // Recurse to serialize each child element first
+  // Note: child elements inherit skipDedup from parent
   for (const elem of expr.elements) {
     const childRef = serializeLiteral(elem, innerType, builder)
     childRefs.push(childRef)
@@ -656,7 +571,7 @@ function serializeSeparate(
   const isSlice = targetType.size === null && targetType.specifiers.length === 0
   const pointerBytes = encodePointerArray(childRefs, targetType.specifiers, isSlice)
 
-  return builder.internBytes(pointerBytes)
+  return builder.internBytes(pointerBytes, skipDedup)
 }
 
 // Encode an array of DataRefs as a pointer array

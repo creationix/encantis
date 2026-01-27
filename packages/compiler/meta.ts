@@ -6,6 +6,7 @@ import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
+import { buildDataSection, type DataRef } from './data-pack'
 
 // === Builtin Function Signatures ===
 
@@ -137,6 +138,7 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
+  private literalRefs: Map<number, DataRef> = new Map()
 
   constructor(
     private module: AST.Module,
@@ -147,6 +149,12 @@ class MetaBuilder {
   ) {}
 
   build(srcPath: string): MetaOutput {
+    // Build data section to get literal addresses for hover hints
+    if (this.checkResult.literals.length > 0) {
+      const { literalRefs } = buildDataSection(this.checkResult.literals)
+      this.literalRefs = literalRefs
+    }
+
     // Pass 1: Collect symbols (populates typeRegistry)
     this.collectSymbols()
 
@@ -201,7 +209,7 @@ class MetaBuilder {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
-        this.collectMemory(decl)
+        // Memory declarations just specify size, no symbols to collect
         break
     }
   }
@@ -248,30 +256,9 @@ class MetaBuilder {
         this.collectGlobal(decl.item)
         break
       case 'MemoryDecl':
-        this.collectMemory(decl.item)
+        // Memory declarations just specify size, no symbols to collect
         break
     }
-  }
-
-  private collectMemory(decl: AST.MemoryDecl): void {
-    for (const entry of decl.data) {
-      if (entry.key.kind === 'named') {
-        const sym = this.checkResult.symbols.get(entry.key.name)
-        if (sym && sym.kind === 'global') {
-          // Find the name position in the entry
-          const offset = this.findMemoryAllocOffset(entry, entry.key.name)
-          this.addSymbol(entry.key.name, 'global', sym.type, offset)
-        }
-      }
-    }
-  }
-
-  private findMemoryAllocOffset(entry: AST.DataEntry, name: string): number {
-    // Search for the identifier in the entry span
-    const searchText = this.source.slice(entry.span.start, entry.span.end)
-    const idx = searchText.indexOf(name)
-    if (idx !== -1) return entry.span.start + idx
-    return entry.span.start
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
@@ -428,6 +415,11 @@ class MetaBuilder {
       valueStr = sym.value.value.toString()
     } else if (sym.value.kind === 'bool') {
       valueStr = sym.value.value ? 'true' : 'false'
+    } else if (sym.value.kind === 'data_ptr') {
+      const ref = this.literalRefs.get(sym.value.id)
+      if (ref) {
+        valueStr = `0x${ref.ptr.toString(16)}`
+      }
     }
 
     this.addSymbol(decl.ident, 'def', sym.type, offset, valueStr)
@@ -509,9 +501,8 @@ class MetaBuilder {
       case 'ExportDecl':
         if (decl.item.kind === 'FuncDecl') {
           this.generateHintsForFunc(decl.item)
-        } else if (decl.item.kind === 'MemoryDecl') {
-          this.generateHintsForMemory(decl.item)
         }
+        // MemoryDecl just specifies size, no hints needed
         break
       case 'FuncDecl':
         this.generateHintsForFunc(decl)
@@ -526,20 +517,8 @@ class MetaBuilder {
         this.generateHintsForGlobal(decl)
         break
       case 'MemoryDecl':
-        this.generateHintsForMemory(decl)
+        // Memory declarations just specify size, no hints needed
         break
-    }
-  }
-
-  private generateHintsForMemory(decl: AST.MemoryDecl): void {
-    for (const entry of decl.data) {
-      if (entry.key.kind === 'named') {
-        const symbolIndex = this.symbolIndexByName.get(entry.key.name)
-        if (symbolIndex !== undefined) {
-          const offset = this.findMemoryAllocOffset(entry, entry.key.name)
-          this.addHint(offset, entry.key.name.length, this.symbols[symbolIndex].type, symbolIndex)
-        }
-      }
     }
   }
 

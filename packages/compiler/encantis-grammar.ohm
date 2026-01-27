@@ -83,7 +83,7 @@ Encantis {
   // Definitions
   // ============================================================================
 
-  DefDecl = def ident Assign
+  DefDecl = def ident (":" Type)? Assign
 
   // ============================================================================
   // Globals
@@ -95,10 +95,7 @@ Encantis {
   // Memory
   // ============================================================================
 
-  MemoryDecl = memory intLiteral intLiteral? DataBlock?
-  DataBlock = "{" DataEntry* "}"
-  DataEntry = intLiteral "=>" Expr ","?           -- offset
-            | ident TypeAnnotation? Assign ","?   -- named
+  MemoryDecl = memory intLiteral intLiteral?
 
   // ============================================================================
   // Types
@@ -302,6 +299,7 @@ Encantis {
   UnaryExpr = "-" UnaryExpr   -- neg
             | "~" UnaryExpr   -- complement
             | "&" UnaryExpr   -- ref
+            | mut UnaryExpr   -- mut
             | CastExpr
 
   // Cast and Annotation
@@ -469,7 +467,7 @@ Encantis {
   keyword = (if | elif | else | while | for | in | loop | match
            | break | continue | return | when
            | func | let | set | global | def | type | enum
-           | import | export | memory | inline
+           | import | export | memory | inline | mut
            | as | true | false | int | float) ~identChar
 
   if = "if" ~identChar
@@ -495,6 +493,7 @@ Encantis {
   export = "export" ~identChar
   memory = "memory" ~identChar
   inline = "inline" ~identChar
+  mut = "mut" ~identChar
   as = "as" ~identChar
   true = "true" ~identChar
   false = "false" ~identChar

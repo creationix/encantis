@@ -25,16 +25,19 @@ export interface CodegenContext {
   locals: Map<string, string[]>
   // Parameters (flattened)
   params: Map<string, string[]>
+  // Literal refs from data section (AST offset → DataRef)
+  literalRefs: Map<number, { ptr: number; len: number }>
   // Indentation level for formatting
   indent: number
 }
 
-function createContext(checkResult: TypeCheckResult): CodegenContext {
+function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>): CodegenContext {
   return {
     types: checkResult.types,
     symbols: checkResult.symbols,
     locals: new Map(),
     params: new Map(),
+    literalRefs,
     indent: 0,
   }
 }
@@ -199,6 +202,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return exprToWat(expr.expr, ctx)
     case 'ArrayExpr':
       return arrayToWat(expr, ctx)
+    case 'RepeatExpr':
+      return repeatToWat(expr, ctx)
     case 'MatchExpr':
       return matchToWat(expr, ctx)
     default:
@@ -265,15 +270,24 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
     if (sym.kind === 'def') {
       // Compile-time constant - inline the value
       const val = sym.value
-      const wt = typeToWasmSingle(sym.type)
       if (val.kind === 'int') {
+        const wt = typeToWasmSingle(sym.type)
         return `(${wt}.const ${val.value})`
       }
       if (val.kind === 'float') {
+        const wt = typeToWasmSingle(sym.type)
         return `(${wt}.const ${val.value})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
+      }
+      if (val.kind === 'data_ptr') {
+        // Pointer to data section - look up address from literalRefs
+        const ref = ctx.literalRefs.get(val.id)
+        if (ref) {
+          return `(i32.const ${ref.ptr})`
+        }
+        return `(i32.const 0) ;; data_ptr not found: ${val.id}`
       }
     }
   }
@@ -719,10 +733,28 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   return inner
 }
 
-function arrayToWat(_expr: AST.ArrayExpr, _ctx: CodegenContext): string {
-  // Array literals should be in data section
-  // Return placeholder
+function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
+  // Check if this literal has a data section entry
+  // Use dataId if present (survives def substitution), otherwise span.start
+  const id = expr.dataId ?? expr.span.start
+  const ref = ctx.literalRefs.get(id)
+  if (ref) {
+    return `(i32.const ${ref.ptr})`
+  }
+  // Array literals without data section entry - placeholder
   return `(i32.const 0) ;; array literal`
+}
+
+function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
+  // Check if this literal has a data section entry
+  // Use dataId if present (survives def substitution), otherwise span.start
+  const id = expr.dataId ?? expr.span.start
+  const ref = ctx.literalRefs.get(id)
+  if (ref) {
+    return `(i32.const ${ref.ptr})`
+  }
+  // Repeat literals without data section entry - placeholder
+  return `(i32.const 0) ;; repeat literal`
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
@@ -1055,8 +1087,12 @@ function bodyToWat(body: AST.FuncBody, ctx: CodegenContext): string {
 
 // === Function Codegen ===
 
-export function funcToWat(decl: AST.FuncDecl, checkResult: TypeCheckResult): string {
-  const ctx = createContext(checkResult)
+export function funcToWat(
+  decl: AST.FuncDecl,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }> = new Map()
+): string {
+  const ctx = createContext(checkResult, literalRefs)
   const name = decl.ident ?? 'anonymous'
 
   // Get function type from checker
@@ -1224,12 +1260,12 @@ function collectLocals(
 // === Module Codegen ===
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
-  const ctx = createContext(checkResult)
-  const parts: string[] = ['(module']
-
   // Build data section from collected literals
-  const { dataBuilder } = buildDataSection(checkResult.literals)
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals)
   const dataSection = dataBuilder.result()
+
+  const ctx = createContext(checkResult, literalRefs)
+  const parts: string[] = ['(module']
   const hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module)
 
   // Collect imports
@@ -1260,10 +1296,10 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   // Collect function declarations
   for (const decl of module.decls) {
     if (decl.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl, checkResult))
+      parts.push(funcToWat(decl, checkResult, literalRefs))
     }
     if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl.item, checkResult))
+      parts.push(funcToWat(decl.item, checkResult, literalRefs))
     }
   }
 

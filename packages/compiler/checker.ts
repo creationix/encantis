@@ -35,6 +35,7 @@ export type ComptimeValue =
   | { kind: 'int'; value: bigint }
   | { kind: 'float'; value: number }
   | { kind: 'bool'; value: boolean }
+  | { kind: 'data_ptr'; id: number }  // pointer to data section literal (id is AST offset for literalRefs lookup)
 
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
@@ -72,7 +73,7 @@ export interface TypeError {
 // Pending literal for data section serialization (handled by codegen, not checker)
 export interface PendingLiteral {
   id: number          // AST offset
-  expr: AST.Expr      // The literal expression
+  expr: AST.Expr      // The literal expression (check expr.mut for mutable flag)
   type: IndexedRT     // Target type for serialization
 }
 
@@ -309,34 +310,8 @@ class CheckContext {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
-        this.collectMemory(decl)
+        // Memory declarations just specify size, no data entries
         break
-    }
-  }
-
-  collectMemory(decl: AST.MemoryDecl): void {
-    for (const entry of decl.data) {
-      if (entry.key.kind === 'named') {
-        // Named memory entry: name: Type = value or name = value
-        let type: ResolvedType
-        if (entry.key.type) {
-          // Type annotation provided - use bidirectional type checking
-          type = this.resolveType(entry.key.type)
-          type = this.checkExpr(entry.value, type)
-        } else {
-          // No type annotation - infer from value
-          type = this.inferExpr(entry.value)
-          type = this.concretize(type)
-        }
-        // Create a pointer type since memory allocations are accessed by address
-        const ptrType: ResolvedType = { kind: 'pointer', pointee: type }
-        this.moduleScope.symbols.set(entry.key.name, {
-          kind: 'global',
-          type: ptrType,
-        })
-        this.recordDefinition(entry.key.name, entry.span.start)
-        this.types.set(typeKey(entry.span.start, 'DataEntry'), ptrType)
-      }
     }
   }
 
@@ -379,7 +354,7 @@ class CheckContext {
         this.collectGlobal(decl.item)
         break
       case 'MemoryDecl':
-        this.collectMemory(decl.item)
+        // Memory declarations don't need collection
         break
     }
   }
@@ -408,8 +383,39 @@ class CheckContext {
   }
 
   collectDef(decl: AST.DefDecl): void {
-    // Defs are comptime - infer type from literal value
-    const type = this.inferExpr(decl.value)
+    // Defs are comptime - infer type from literal value or use LHS type annotation
+    const inferredType = this.inferExpr(decl.value)
+
+    // If LHS type annotation is provided, use it; otherwise use inferred type
+    const declaredType = decl.type ? this.resolveType(decl.type) : null
+
+    // Check if this is a data section literal (array/string with pointer type)
+    // e.g., def x = [0;12]:[*_]u32 or def x:[*_]u32 = [0;12]
+    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
+    if (dataLiteral) {
+      const dataId = dataLiteral.expr.span.start
+      // Set dataId on the literal so it survives def substitution cloning
+      if (dataLiteral.expr.kind === 'ArrayExpr' || dataLiteral.expr.kind === 'RepeatExpr' ||
+          dataLiteral.expr.kind === 'LiteralExpr') {
+        (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
+      }
+      // Collect literal for data section and create data_ptr comptime value
+      this.pendingLiterals.push({
+        id: dataId,
+        expr: dataLiteral.expr,
+        type: dataLiteral.indexedType,
+      })
+      this.moduleScope.symbols.set(decl.ident, {
+        kind: 'def',
+        type: dataLiteral.ptrType,
+        value: { kind: 'data_ptr', id: dataId },
+      })
+      this.recordDefinition(decl.ident, decl.span.start)
+      return
+    }
+
+    // Regular comptime value (int, float, bool)
+    const type = declaredType ?? inferredType
     const value = this.evalComptimeExpr(decl.value)
     if (!value) {
       this.error(decl.span.start, `def value must be a compile-time constant`)
@@ -418,6 +424,136 @@ class CheckContext {
       this.moduleScope.symbols.set(decl.ident, { kind: 'def', type, value })
     }
     this.recordDefinition(decl.ident, decl.span.start)
+  }
+
+  // Extract a data section literal from an expression if applicable
+  // Returns the literal expression, its indexed type, and the pointer type
+  private extractDataLiteral(
+    expr: AST.Expr,
+    inferredType: ResolvedType,
+    declaredType: ResolvedType | null = null
+  ): {
+    expr: AST.Expr
+    indexedType: IndexedRT
+    ptrType: ResolvedType
+  } | null {
+    // Handle annotation on RHS: [0;12]:[*_]u32 -> many-pointer (thin pointer) to indexed
+    if (expr.kind === 'AnnotationExpr') {
+      const innerExpr = expr.expr
+      // Check for indexed type with manyPointer (e.g., [*_]u32, [*12]u8)
+      if (this.isDataLiteralExpr(innerExpr) && inferredType.kind === 'indexed' && inferredType.manyPointer) {
+        // The element type is what gets stored in memory
+        // For [*_]u32 with [0;12], we store 12 u32s and return a pointer
+        // Infer size from literal if annotation has inferred size
+        let size = inferredType.size
+        if (size === 'inferred') {
+          size = this.getLiteralSize(innerExpr)
+        }
+        // Create an indexed type without the manyPointer for the data
+        const dataType: IndexedRT = {
+          kind: 'indexed',
+          element: inferredType.element,
+          size,
+          specifiers: inferredType.specifiers,
+        }
+        // Also update the pointer type with the concrete size
+        const ptrType: IndexedRT = {
+          kind: 'indexed',
+          element: inferredType.element,
+          size,
+          specifiers: inferredType.specifiers,
+          manyPointer: true,
+        }
+        return {
+          expr: innerExpr,
+          indexedType: dataType,
+          ptrType,
+        }
+      }
+      // Also handle explicit pointer type *[_]u32
+      if (this.isDataLiteralExpr(innerExpr) && inferredType.kind === 'pointer' && inferredType.pointee.kind === 'indexed') {
+        return {
+          expr: innerExpr,
+          indexedType: inferredType.pointee,
+          ptrType: inferredType,
+        }
+      }
+    }
+
+    // Handle type annotation on LHS: def x:[*_]u32 = [0;12]
+    // The expr is a bare literal and declaredType is the pointer type
+    if (declaredType && this.isDataLiteralExpr(expr)) {
+      // Check for indexed type with manyPointer (e.g., [*_]u32)
+      if (declaredType.kind === 'indexed' && declaredType.manyPointer) {
+        let size = declaredType.size
+        if (size === 'inferred') {
+          size = this.getLiteralSize(expr)
+        }
+        const dataType: IndexedRT = {
+          kind: 'indexed',
+          element: declaredType.element,
+          size,
+          specifiers: declaredType.specifiers,
+        }
+        const ptrType: IndexedRT = {
+          kind: 'indexed',
+          element: declaredType.element,
+          size,
+          specifiers: declaredType.specifiers,
+          manyPointer: true,
+        }
+        return {
+          expr,
+          indexedType: dataType,
+          ptrType,
+        }
+      }
+      // Handle explicit pointer type *[_]u32
+      if (declaredType.kind === 'pointer' && declaredType.pointee.kind === 'indexed') {
+        let size = declaredType.pointee.size
+        if (size === 'inferred') {
+          size = this.getLiteralSize(expr)
+        }
+        const indexedType: IndexedRT = {
+          ...declaredType.pointee,
+          size,
+        }
+        return {
+          expr,
+          indexedType,
+          ptrType: declaredType,
+        }
+      }
+    }
+
+    return null
+  }
+
+  // Check if an expression is a data literal (array, repeat, string, tuple)
+  private isDataLiteralExpr(expr: AST.Expr): boolean {
+    return expr.kind === 'ArrayExpr' ||
+           expr.kind === 'RepeatExpr' ||
+           expr.kind === 'TupleExpr' ||
+           (expr.kind === 'LiteralExpr' && expr.value.kind === 'string')
+  }
+
+  // Get the size of a literal expression (for inferring array/pointer sizes)
+  private getLiteralSize(expr: AST.Expr): number | 'inferred' {
+    if (expr.kind === 'RepeatExpr') {
+      // [value; count] - get count from the literal
+      if (expr.count.kind === 'LiteralExpr' && expr.count.value.kind === 'int') {
+        return Number(expr.count.value.value)
+      }
+    }
+    if (expr.kind === 'ArrayExpr') {
+      // [a, b, c] - count elements
+      return expr.elements.length
+    }
+    if (expr.kind === 'LiteralExpr' && expr.value.kind === 'string') {
+      // String literal - length of bytes
+      return expr.value.bytes.length
+    }
+    return 'inferred'
   }
 
   // Evaluate a compile-time constant expression
@@ -709,6 +845,11 @@ class CheckContext {
         if (type.size === 'comptime') {
           const elemType = this.concretize(type.element)
           return indexed(elemType, 'inferred', type.specifiers, type.manyPointer)
+        }
+        // Always concretize element type (e.g., [100]comptime_int -> [100]i32)
+        const elemType = this.concretize(type.element)
+        if (elemType !== type.element) {
+          return indexed(elemType, type.size, type.specifiers, type.manyPointer)
         }
         return type
       }
@@ -1120,8 +1261,18 @@ class CheckContext {
       case 'AnnotationExpr': {
         // Type annotation - use bidirectional type checking to propagate type down
         // This allows [1,2,3]:[]i8 to know each element should be i8
-        const annotationType = this.resolveType(expr.type)
+        let annotationType = this.resolveType(expr.type)
         this.checkExpr(expr.expr, annotationType)
+        // Fill in inferred size from literal if annotation has inferred size
+        if (annotationType.kind === 'indexed' && annotationType.size === 'inferred') {
+          const literalSize = this.getLiteralSize(expr.expr)
+          if (literalSize !== 'inferred') {
+            annotationType = {
+              ...annotationType,
+              size: literalSize,
+            }
+          }
+        }
         return annotationType
       }
     }

@@ -195,7 +195,7 @@ switch (command) {
     }
 
     // Generate WAT
-    const wat = moduleToWat(preprocessed, checkResult)
+    const wat = moduleToWat(result.module, checkResult)
     await output(wat)
     break
   }

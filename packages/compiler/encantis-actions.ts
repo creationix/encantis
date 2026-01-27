@@ -166,6 +166,20 @@ function first<T>(iter: ohm.IterationNode): T | null {
   return iter.children[0]?.toAST() ?? null
 }
 
+// Set dataId on literal expressions within a def value
+// This allows the literal's ID to survive cloning during def substitution
+function setDataIdOnLiteral(expr: AST.Expr): void {
+  // Handle AnnotationExpr: [0;12]:[*_]u32 -> set dataId on inner literal
+  if (expr.kind === 'AnnotationExpr') {
+    setDataIdOnLiteral(expr.expr)
+    return
+  }
+  // Set dataId on literal types using their span.start as the stable ID
+  if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
+    (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+  }
+}
+
 // Type for semantics operations - each rule handler receives Ohm nodes and returns AST nodes
 type OhmNode = ohm.Node
 type SemanticAction = (this: OhmNode, ...args: OhmNode[]) => unknown
@@ -389,13 +403,22 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.EnumVariant
   },
 
-  DefDecl(_def, ident, assign) {
+  DefDecl(_def, ident, _colonOpt, typeOpt, assign) {
     const value = assign.toAST() as AST.Expr
+    // Parse optional type annotation (: Type)?
+    // ohm splits (":" Type)? into two iters: one for ":" and one for Type
+    const typeAnnotation = typeOpt.children.length > 0
+      ? typeOpt.children[0].toAST() as AST.Type
+      : undefined
+    // Set dataId on literal expressions so it survives cloning during def substitution
+    // This allows codegen to look up the data section address for cloned literals
+    setDataIdOnLiteral(value)
     // Record def value for subsequent inlining
     currentDefs.set(ident.toAST() as string, value)
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
+      type: typeAnnotation,
       value,
       span: span(this),
     } as AST.DefDecl
@@ -413,37 +436,13 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.GlobalDecl
   },
 
-  MemoryDecl(_memory, min, maxOpt, dataBlockOpt) {
-    const dataBlock = first<AST.DataEntry[]>(dataBlockOpt)
+  MemoryDecl(_memory, min, maxOpt) {
     return {
       kind: 'MemoryDecl',
       min: Number(min.sourceString),
       max: first(maxOpt) ? Number(first(maxOpt)) : null,
-      data: dataBlock ?? [],
       span: span(this),
     } as AST.MemoryDecl
-  },
-
-  DataBlock(_lb, entries, _rb) {
-    return entries.children.map((e: ohm.Node) => e.toAST())
-  },
-
-  DataEntry_offset(intLit, _arrow, expr, _comma) {
-    return {
-      kind: 'DataEntry',
-      key: { kind: 'offset', value: Number(intLit.sourceString) },
-      value: expr.toAST(),
-      span: span(this),
-    } as any
-  },
-
-  DataEntry_named(ident, typeAnnotationOpt, assign, _comma) {
-    return {
-      kind: 'DataEntry',
-      key: { kind: 'named', name: ident.sourceString, type: first(typeAnnotationOpt) },
-      value: assign.toAST(),
-      span: span(this),
-    } as any
   },
 
   // ============================================================================
@@ -976,6 +975,25 @@ export const semanticsActions: Record<string, SemanticAction> = {
       operand: operand.toAST(),
       span: span(this),
     } as AST.UnaryExpr
+  },
+
+  UnaryExpr_mut(_mut, operand) {
+    const expr = operand.toAST() as AST.Expr
+    // Set mut flag on the literal (or on the inner literal if wrapped in AnnotationExpr)
+    if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' ||
+        expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+      expr.mut = true
+      return expr
+    }
+    if (expr.kind === 'AnnotationExpr') {
+      const inner = expr.expr
+      if (inner.kind === 'LiteralExpr' || inner.kind === 'ArrayExpr' ||
+          inner.kind === 'RepeatExpr' || inner.kind === 'TupleExpr') {
+        inner.mut = true
+        return expr
+      }
+    }
+    throw new Error(`mut can only be applied to literals (arrays, strings, tuples), not ${expr.kind}`)
   },
 
   UnaryExpr(expr) {

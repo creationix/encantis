@@ -15,8 +15,14 @@ describe('encantis-actions', () => {
       expect(match.succeeded()).toBe(true)
     })
 
-    test('parses memory block', () => {
-      const source = `memory 1 { 0 => "hello" }`
+    test('parses memory declaration', () => {
+      const source = `memory 1`
+      const match = grammar.match(source)
+      expect(match.succeeded()).toBe(true)
+    })
+
+    test('parses memory declaration with max', () => {
+      const source = `memory 1 4`
       const match = grammar.match(source)
       expect(match.succeeded()).toBe(true)
     })
