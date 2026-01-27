@@ -9,8 +9,11 @@ import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
 
 // === Builtin Function Signatures ===
+// Note: Many builtins are polymorphic. These signatures are for LSP display.
+// Actual type checking happens in checker.ts inferBuiltin.
 
 const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
+  // Memory operations
   memset: func(
     [
       { name: 'dest', type: manyPointer(primitive('u8')) },
@@ -27,6 +30,42 @@ const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
     ],
     [],
   ),
+
+  // Float math (f32/f64) - shown as f64, actual type inferred from argument
+  sqrt: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  abs: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  ceil: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  floor: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  trunc: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  nearest: func([{ name: 'x', type: primitive('f64') }], [{ name: null, type: primitive('f64') }]),
+  copysign: func(
+    [
+      { name: 'x', type: primitive('f64') },
+      { name: 'y', type: primitive('f64') },
+    ],
+    [{ name: null, type: primitive('f64') }],
+  ),
+
+  // Min/max (all numeric types)
+  min: func(
+    [
+      { name: 'a', type: primitive('i32') },
+      { name: 'b', type: primitive('i32') },
+    ],
+    [{ name: null, type: primitive('i32') }],
+  ),
+  max: func(
+    [
+      { name: 'a', type: primitive('i32') },
+      { name: 'b', type: primitive('i32') },
+    ],
+    [{ name: null, type: primitive('i32') }],
+  ),
+
+  // Integer bit operations (i32/i64/u32/u64)
+  clz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
+  ctz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
+  popcnt: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
 }
 
 // Build a simplified expression string for hover hints

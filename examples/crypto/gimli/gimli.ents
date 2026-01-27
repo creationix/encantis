@@ -45,7 +45,6 @@ func gimli(state:[*12]u32) {
         state[1] = state[3]
         state[3] = x2
       }
-      _ => {}
     }
 
     round -= 1
@@ -55,12 +54,12 @@ func gimli(state:[*12]u32) {
 
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.
-def hash_state:[*_]u32 = mut [0;12]
+def hash_state = mut [0:u32;12]
 
-// Gimli-Hash: absorb input and squeeze 32-byte output
+// Gimli-Hash: absorb input and squeeze variable-length output (XOF)
 // Uses rate of 16 bytes (128 bits)
 export "gimli_hash"
-func gimli_hash(input:[]u8, output:*[32]u8) {
+func gimli_hash(input:[]u8, output:[]u8) {
   // Initialize state to zero
   memset(hash_state.u8, 0, hash_state.len * hash_state.wid)
   let len = input.len
@@ -68,14 +67,7 @@ func gimli_hash(input:[]u8, output:*[32]u8) {
 
   // Absorb phase: process 16-byte blocks
   while len >= 16 {
-    // XOR input into rate portion of state (first 16 bytes = 4 words)
-    // Do the XOR 8 bytes at a time via type punning.
-    hash_state.u64[0] ^= input_ptr.u64[0]
-    hash_state.u64[1] ^= input_ptr.u64[1]
-
-    // TODO: find out if wasm supports 128 bit xor
     hash_state.u128[0] ^= input_ptr.u128[0]
-    let t = hash_state.u128[0]
     gimli(hash_state)
     input_ptr += 16
     len -= 16
@@ -85,21 +77,27 @@ func gimli_hash(input:[]u8, output:*[32]u8) {
   for i in len {
     hash_state.u8[i] ^= input_ptr[i]
   }
-  // Pad with 0x1F at position len
   hash_state.u8[len] ^= 0x1f
-  // Pad with 0x80 at position 15 (end of rate)
   hash_state.u8[15] ^= 0x80
 
   gimli(hash_state)
 
-  // Squeeze phase: extract 32 bytes of output (two blocks of 16 bytes)
-  for i in 16 {
-    output[i] = hash_state.u8[i]
+  // Squeeze phase: extract requested bytes
+  let out_ptr = output.ptr
+  let remaining = output.len
+
+  // Extract full 16-byte blocks
+  while remaining >= 16 {
+    out_ptr.u128[0] = hash_state.u128[0]
+    out_ptr += 16
+    remaining -= 16
+    if remaining > 0 {
+      gimli(hash_state)
+    }
   }
 
-  gimli(hash_state)
-
-  for i in 16 {
-    output[i + 16] = hash_state.u8[i]
+  // Extract final partial block
+  for i in remaining {
+    out_ptr[i] = hash_state.u8[i]
   }
 }

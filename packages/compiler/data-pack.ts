@@ -519,6 +519,11 @@ function buildElementBytes(
   elementType: ResolvedType,
   specifiers: IndexSpecifierRT[],
 ): Uint8Array {
+  // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
+  if (expr.kind === 'AnnotationExpr') {
+    return buildElementBytes(expr.expr, elementType, specifiers)
+  }
+
   if (expr.kind === 'LiteralExpr') {
     const rawBytes = literalToBytes(expr, elementType)
     if (specifiers.length === 0) {

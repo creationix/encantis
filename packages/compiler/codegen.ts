@@ -8,6 +8,7 @@ import {
   type ResolvedField,
   isSigned,
   isFloat,
+  isInteger,
   unwrap,
   primitiveByteSize,
   byteSize,
@@ -438,10 +439,17 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   }
 }
 
-// Handle builtin functions (memset, memcpy, zero)
+// Handle builtin functions
 // Returns null if not a builtin
 function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): string | null {
   const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+
+  // Helper to get the wasm type for the first argument
+  const getArgType = (): string => {
+    if (args.length === 0) return 'i32'
+    const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+    return argType ? typeToWasmSingle(argType) : 'i32'
+  }
 
   switch (name) {
     case 'memset': {
@@ -460,6 +468,79 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       const src = exprToWat(args[1].value, ctx)
       const len = exprToWat(args[2].value, ctx)
       return `(memory.copy ${dest} ${src} ${len})`
+    }
+
+    // Float-only unary: sqrt, ceil, floor, trunc, nearest
+    case 'sqrt':
+    case 'ceil':
+    case 'floor':
+    case 'trunc':
+    case 'nearest': {
+      if (args.length !== 1) return null
+      const arg = exprToWat(args[0].value, ctx)
+      const wt = getArgType()
+      return `(${wt}.${name} ${arg})`
+    }
+
+    // Float-only binary: copysign
+    case 'copysign': {
+      if (args.length !== 2) return null
+      const a = exprToWat(args[0].value, ctx)
+      const b = exprToWat(args[1].value, ctx)
+      const wt = getArgType()
+      return `(${wt}.copysign ${a} ${b})`
+    }
+
+    // min/max: native for floats, select for integers
+    case 'min':
+    case 'max': {
+      if (args.length !== 2) return null
+      const a = exprToWat(args[0].value, ctx)
+      const b = exprToWat(args[1].value, ctx)
+      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+
+      if (argType && isFloat(argType)) {
+        // Native float min/max
+        return `(${wt}.${name} ${a} ${b})`
+      } else {
+        // Integer min/max using select
+        const signed = argType ? isSigned(argType) : true
+        const cmp = name === 'min'
+          ? (signed ? `${wt}.lt_s` : `${wt}.lt_u`)
+          : (signed ? `${wt}.gt_s` : `${wt}.gt_u`)
+        return `(select ${a} ${b} (${cmp} ${a} ${b}))`
+      }
+    }
+
+    // abs: native for floats, conditional negate for signed integers
+    case 'abs': {
+      if (args.length !== 1) return null
+      const arg = exprToWat(args[0].value, ctx)
+      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+
+      if (argType && isFloat(argType)) {
+        // Native float abs
+        return `(${wt}.abs ${arg})`
+      } else if (argType && isInteger(argType) && isSigned(argType)) {
+        // Signed integer abs: select(x, -x, x >= 0)
+        // -x = 0 - x
+        return `(select ${arg} (${wt}.sub (${wt}.const 0) ${arg}) (${wt}.ge_s ${arg} (${wt}.const 0)))`
+      } else {
+        // Unsigned integer: abs is identity
+        return arg
+      }
+    }
+
+    // Integer-only unary: clz, ctz, popcnt
+    case 'clz':
+    case 'ctz':
+    case 'popcnt': {
+      if (args.length !== 1) return null
+      const arg = exprToWat(args[0].value, ctx)
+      const wt = getArgType()
+      return `(${wt}.${name} ${arg})`
     }
 
     default:

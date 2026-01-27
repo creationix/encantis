@@ -26,6 +26,9 @@ import {
   comptimeIntFits,
   typeAssignable,
   unwrap,
+  isFloat,
+  isInteger,
+  isNumeric,
 } from './types'
 
 // === Symbol Table ===
@@ -524,6 +527,30 @@ class CheckContext {
           indexedType,
           ptrType: declaredType,
         }
+      }
+    }
+
+    // Handle bare data literals without type annotation: def x = [0;12] or def x = [0:u32;12]
+    // These become many-pointers to the inferred indexed type
+    if (!declaredType && this.isDataLiteralExpr(expr) && inferredType.kind === 'indexed') {
+      const size = inferredType.size !== 'inferred' ? inferredType.size : this.getLiteralSize(expr)
+      const dataType: IndexedRT = {
+        kind: 'indexed',
+        element: inferredType.element,
+        size,
+        specifiers: inferredType.specifiers,
+      }
+      const ptrType: IndexedRT = {
+        kind: 'indexed',
+        element: inferredType.element,
+        size,
+        specifiers: inferredType.specifiers,
+        manyPointer: true,
+      }
+      return {
+        expr,
+        indexedType: dataType,
+        ptrType,
       }
     }
 
@@ -1422,6 +1449,91 @@ class CheckContext {
         // Record as builtin call for codegen
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
+      }
+
+      // Float-only unary operations: sqrt, ceil, floor, trunc, nearest
+      case 'sqrt':
+      case 'ceil':
+      case 'floor':
+      case 'trunc':
+      case 'nearest': {
+        if (args.length !== 1) {
+          this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
+          return primitive('f64')
+        }
+        const argType = this.inferExpr(args[0].value)
+        if (!isFloat(argType)) {
+          this.error(args[0].value.span.start, `${name} requires a float type, got ${typeToString(argType)}`)
+          return primitive('f64')
+        }
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
+        return argType
+      }
+
+      // Float-only binary: copysign
+      case 'copysign': {
+        if (args.length !== 2) {
+          this.error(expr.span.start, `copysign expects 2 arguments, got ${args.length}`)
+          return primitive('f64')
+        }
+        const argType = this.inferExpr(args[0].value)
+        if (!isFloat(argType)) {
+          this.error(args[0].value.span.start, `copysign requires float types, got ${typeToString(argType)}`)
+          return primitive('f64')
+        }
+        this.checkExpr(args[1].value, argType, 'copysign')
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
+        return argType
+      }
+
+      // Numeric binary: min, max (works for all numeric types)
+      case 'min':
+      case 'max': {
+        if (args.length !== 2) {
+          this.error(expr.span.start, `${name} expects 2 arguments, got ${args.length}`)
+          return primitive('i32')
+        }
+        const argType = this.inferExpr(args[0].value)
+        if (!isNumeric(argType)) {
+          this.error(args[0].value.span.start, `${name} requires a numeric type, got ${typeToString(argType)}`)
+          return primitive('i32')
+        }
+        this.checkExpr(args[1].value, argType, name)
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
+        return argType
+      }
+
+      // Numeric unary: abs (works for floats and signed integers)
+      case 'abs': {
+        if (args.length !== 1) {
+          this.error(expr.span.start, `abs expects 1 argument, got ${args.length}`)
+          return primitive('i32')
+        }
+        const argType = this.inferExpr(args[0].value)
+        if (!isNumeric(argType)) {
+          this.error(args[0].value.span.start, `abs requires a numeric type, got ${typeToString(argType)}`)
+          return primitive('i32')
+        }
+        // For unsigned types, abs is a no-op but we still allow it
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
+        return argType
+      }
+
+      // Integer-only unary: clz, ctz, popcnt
+      case 'clz':
+      case 'ctz':
+      case 'popcnt': {
+        if (args.length !== 1) {
+          this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
+          return primitive('i32')
+        }
+        const argType = this.inferExpr(args[0].value)
+        if (!isInteger(argType)) {
+          this.error(args[0].value.span.start, `${name} requires an integer type, got ${typeToString(argType)}`)
+          return primitive('i32')
+        }
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
+        return argType
       }
 
       default:
