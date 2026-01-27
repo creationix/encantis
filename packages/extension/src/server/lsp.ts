@@ -23,9 +23,26 @@ import { parse } from '@encantis/compiler/parser';
 import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 
 // Builtin function signatures for hover display
+// Polymorphic builtins show representative types
 const BUILTIN_SIGNATURES: Record<string, string> = {
+  // Memory operations
   memset: 'builtin memset(dest: [*]u8, value: u8, len: u32)',
   memcpy: 'builtin memcpy(dest: [*]u8, src: [*]u8, len: u32)',
+  // Float math (f32/f64)
+  sqrt: 'builtin sqrt(x: f64) -> f64',
+  abs: 'builtin abs(x: f64) -> f64',
+  ceil: 'builtin ceil(x: f64) -> f64',
+  floor: 'builtin floor(x: f64) -> f64',
+  trunc: 'builtin trunc(x: f64) -> f64',
+  nearest: 'builtin nearest(x: f64) -> f64',
+  copysign: 'builtin copysign(x: f64, y: f64) -> f64',
+  // Min/max (all numeric types)
+  min: 'builtin min(a: T, b: T) -> T',
+  max: 'builtin max(a: T, b: T) -> T',
+  // Integer bit operations
+  clz: 'builtin clz(x: i32) -> i32',
+  ctz: 'builtin ctz(x: i32) -> i32',
+  popcnt: 'builtin popcnt(x: i32) -> i32',
 };
 
 // Format symbol display using proper Encantis syntax
@@ -168,18 +185,20 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
   // Builtin docs
   const builtinDocs: Record<string, string> = {
-    sqrt: '```encantis\nfunc sqrt(x: f32/f64) -> same\n```\nSquare root.',
-    abs: '```encantis\nfunc abs(x: f32/f64) -> same\n```\nAbsolute value.',
-    ceil: '```encantis\nfunc ceil(x: f32/f64) -> same\n```\nRound up.',
-    floor: '```encantis\nfunc floor(x: f32/f64) -> same\n```\nRound down.',
-    trunc: '```encantis\nfunc trunc(x: f32/f64) -> same\n```\nTruncate toward zero.',
-    nearest: '```encantis\nfunc nearest(x: f32/f64) -> same\n```\nRound to nearest even.',
-    min: '```encantis\nfunc min(a, b: f32/f64) -> same\n```\nMinimum of two values.',
-    max: '```encantis\nfunc max(a, b: f32/f64) -> same\n```\nMaximum of two values.',
-    copysign: '```encantis\nfunc copysign(x, y: f32/f64) -> same\n```\nCopy sign of y to x.',
-    clz: '```encantis\nfunc clz(x: i32/i64) -> u8\n```\nCount leading zeros.',
-    ctz: '```encantis\nfunc ctz(x: i32/i64) -> u8\n```\nCount trailing zeros.',
-    popcnt: '```encantis\nfunc popcnt(x: i32/i64) -> u8\n```\nPopulation count.',
+    memset: 'Fill memory with a byte value.',
+    memcpy: 'Copy bytes from source to destination.',
+    sqrt: 'Square root (f32/f64).',
+    abs: 'Absolute value (floats and signed integers).',
+    ceil: 'Round up to nearest integer (f32/f64).',
+    floor: 'Round down to nearest integer (f32/f64).',
+    trunc: 'Truncate toward zero (f32/f64).',
+    nearest: 'Round to nearest even (f32/f64).',
+    min: 'Minimum of two values (all numeric types).',
+    max: 'Maximum of two values (all numeric types).',
+    copysign: 'Copy sign of y to x (f32/f64).',
+    clz: 'Count leading zeros (integers).',
+    ctz: 'Count trailing zeros (integers).',
+    popcnt: 'Population count - number of 1 bits (integers).',
   };
 
   // Type docs

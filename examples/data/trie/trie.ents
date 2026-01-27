@@ -9,34 +9,32 @@ func walk(trie:[]u64, key:u64) -> i64 {
   let bit_offset:u8 = 0
 
   loop {
-    // Consume 7 bits from the key bitstream
-    let index:u64 = 1 << ((key >> bit_offset) & 0x7f)
-    bit_offset = (bit_offset + 7) % 64
+    return -2 when trie_offset >= trie.len
+
+    // Consume 6 bits from the key bitstream
+    let index:u64 = 1 << ((key >> bit_offset) & 0x3f)
+    bit_offset = (bit_offset + 6) % 64
 
     // Read the bitfield from the trie
-    let bitfield:u64 = trie[trie_offset]
+    let bitfield = trie[trie_offset]
     trie_offset += 1
 
     // If the index isn't in the bitfield, it's missing.
     return -1 when (bitfield & index) == 0
 
     // Otherwise use popcnt to jump the pointer.
-    // popcnt returns u8; widen to u32 before shift (64*8=512 exceeds u8)
-    trie_offset += popcnt(bitfield & (index - 1)) as u32 << 3
+    trie_offset += popcnt(bitfield & (index - 1)) as u32
 
     // If we go out of bounds, return -2
     return -2 when trie_offset >= trie.len
 
     // Read the tagged pointer
-    let pointer:u64 = trie[trie_offset]
+    let pointer = trie[trie_offset]
 
     // If low bit is zero, we're done!
     return pointer as i64 when (pointer & 1) == 0
 
     // Follow the pointer, but ignore the bottom bit.
-    trie_offset += (pointer >> 1) as u32
-
-    // Check bounds again
-    return -2 when trie_offset >= trie.len
+    trie_offset = (pointer >> 1) as u32
   }
 }
