@@ -944,19 +944,42 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {
-    // Destructuring - generate sets for each element
-    const results: string[] = []
+    // Get tuple type to know field order
+    const tupleType = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
+    if (!tupleType || tupleType.kind !== 'tuple') {
+      throw new Error(`Missing tuple type for pattern at offset ${stmt.pattern.span.start}`)
+    }
+
+    // Build a map from field name to variable name
+    const fieldToVar = new Map<string, string>()
     for (const elem of stmt.pattern.elements) {
-      if (elem.kind === 'positional' && elem.pattern.kind === 'IdentPattern') {
-        const name = elem.pattern.name
-        ctx.locals.set(name, [name])
-        // Need to extract from tuple value
-      } else if (elem.kind === 'named') {
-        const name = elem.binding ?? elem.field
-        ctx.locals.set(name, [name])
+      if (elem.kind === 'named') {
+        fieldToVar.set(elem.field, elem.binding ?? elem.field)
+      } else if (elem.pattern.kind === 'IdentPattern') {
+        const idx = stmt.pattern.elements.indexOf(elem)
+        const fieldName = tupleType.fields[idx]?.name ?? `_${idx}`
+        fieldToVar.set(fieldName, elem.pattern.name)
       }
     }
-    return results.join('\n')
+
+    // Generate call expression
+    const value = exprToWat(stmt.value, ctx)
+
+    // Generate local.set for each field in REVERSE order (WASM stack is LIFO)
+    // The tuple fields are pushed in order, so we pop in reverse
+    const sets: string[] = []
+    for (let i = tupleType.fields.length - 1; i >= 0; i--) {
+      const field = tupleType.fields[i]
+      const varName = fieldToVar.get(field.name)
+      if (varName) {
+        sets.push(`(local.set $${varName})`)
+      } else {
+        // Field not captured by pattern - need to drop it
+        sets.push('(drop)')
+      }
+    }
+
+    return `${value}\n${sets.join('\n')}`
   }
 
   return ''
@@ -972,6 +995,40 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
       return `(local.set $${localNames[0]} ${value})`
     }
     return `(local.set $${name} ${value})`
+  }
+
+  if (stmt.pattern.kind === 'TuplePattern') {
+    // Get tuple type from the value expression
+    const tupleType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    if (!tupleType || tupleType.kind !== 'tuple') {
+      throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
+    }
+
+    // Build a map from field name to variable name
+    const fieldToVar = new Map<string, string>()
+    for (const elem of stmt.pattern.elements) {
+      if (elem.kind === 'named') {
+        fieldToVar.set(elem.field, elem.binding ?? elem.field)
+      } else if (elem.pattern.kind === 'IdentPattern') {
+        const idx = stmt.pattern.elements.indexOf(elem)
+        const fieldName = tupleType.fields[idx]?.name ?? `_${idx}`
+        fieldToVar.set(fieldName, elem.pattern.name)
+      }
+    }
+
+    // Generate local.set for each field in REVERSE order (WASM stack is LIFO)
+    const sets: string[] = []
+    for (let i = tupleType.fields.length - 1; i >= 0; i--) {
+      const field = tupleType.fields[i]
+      const varName = fieldToVar.get(field.name)
+      if (varName) {
+        sets.push(`(local.set $${varName})`)
+      } else {
+        sets.push('(drop)')
+      }
+    }
+
+    return `${value}\n${sets.join('\n')}`
   }
 
   return ''
@@ -1220,8 +1277,16 @@ export function funcToWat(
         ctx.locals.set(ret.name, [ret.name])
         namedReturns.push({ name: ret.name, types: wasmTypes })
       } else {
+        // Unwrap named types to get field names from tuple
+        const unwrappedType = unwrap(ret.type)
         const names = wasmTypes.map((wt, i) => {
-          const fieldName = `${ret.name}_${i}`
+          // Use actual field names if available from tuple type
+          let fieldName: string
+          if (unwrappedType.kind === 'tuple' && unwrappedType.fields[i]?.name) {
+            fieldName = `${ret.name}_${unwrappedType.fields[i].name}`
+          } else {
+            fieldName = `${ret.name}_${i}`
+          }
           locals.push({ name: fieldName, type: wt })
           return fieldName
         })
@@ -1269,25 +1334,66 @@ function collectLocals(
   const locals: LocalDecl[] = []
 
   function visitStmt(stmt: AST.Statement) {
-    if (stmt.kind === 'LetStmt' && stmt.pattern.kind === 'IdentPattern') {
-      const name = stmt.pattern.name
-      // Type is stored at pattern offset, not statement offset
-      const type = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
-      if (!type) {
-        throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
-      }
-      const wasmTypes = typeToWasm(type)
+    if (stmt.kind === 'LetStmt') {
+      if (stmt.pattern.kind === 'IdentPattern') {
+        const name = stmt.pattern.name
+        // Type is stored at pattern offset, not statement offset
+        const type = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
+        if (!type) {
+          throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
+        }
+        const wasmTypes = typeToWasm(type)
 
-      if (wasmTypes.length === 1) {
-        locals.push({ name, type: wasmTypes[0] })
-        ctx.locals.set(name, [name])
-      } else {
-        const names = wasmTypes.map((wt, i) => {
-          const fieldName = `${name}_${i}`
-          locals.push({ name: fieldName, type: wt })
-          return fieldName
-        })
-        ctx.locals.set(name, names)
+        if (wasmTypes.length === 1) {
+          locals.push({ name, type: wasmTypes[0] })
+          ctx.locals.set(name, [name])
+        } else {
+          const names = wasmTypes.map((wt, i) => {
+            const fieldName = `${name}_${i}`
+            locals.push({ name: fieldName, type: wt })
+            return fieldName
+          })
+          ctx.locals.set(name, names)
+        }
+      } else if (stmt.pattern.kind === 'TuplePattern') {
+        // Get the overall tuple type from the pattern
+        const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
+        if (!tupleType || tupleType.kind !== 'tuple') {
+          throw new Error(`Missing or invalid tuple type for pattern at offset ${stmt.pattern.span.start}`)
+        }
+
+        // Declare locals for each tuple pattern element
+        for (const elem of stmt.pattern.elements) {
+          let name: string
+          let fieldName: string
+          if (elem.kind === 'named') {
+            name = elem.binding ?? elem.field
+            fieldName = elem.field
+          } else if (elem.pattern.kind === 'IdentPattern') {
+            name = elem.pattern.name
+            // For positional, use index to find field name
+            const idx = stmt.pattern.elements.indexOf(elem)
+            fieldName = tupleType.fields[idx]?.name ?? `_${idx}`
+          } else {
+            continue // Nested patterns not yet supported
+          }
+
+          const field = tupleType.fields.find((f) => f.name === fieldName)
+          if (!field) continue
+
+          const wasmTypes = typeToWasm(field.type)
+          if (wasmTypes.length === 1) {
+            locals.push({ name, type: wasmTypes[0] })
+            ctx.locals.set(name, [name])
+          } else {
+            const names = wasmTypes.map((wt, i) => {
+              const localName = `${name}_${i}`
+              locals.push({ name: localName, type: wt })
+              return localName
+            })
+            ctx.locals.set(name, names)
+          }
+        }
       }
     }
     // Recurse into nested blocks

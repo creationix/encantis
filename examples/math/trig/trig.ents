@@ -5,8 +5,8 @@ export "memory" memory 1
 
 // Import math functions from the host environment
 import "math" (
-  "sin" func sin(angle:f64) -> f64
-  "cos" func cos(angle:f64) -> f64
+  "sin" func sin(a:f64) -> f64
+  "cos" func cos(a:f64) -> f64
   "atan2" func atan2(y:f64, x:f64) -> f64
 )
 
@@ -14,96 +14,23 @@ import "math" (
 import "sys" "print-f64-pair"
 func print([]u8, f64, []u8, f64, []u8)
 
+// A point in polar coordinates (distance, angle)
 type PolarPoint = (d:f64, a:f64)
+// A point in cartesian coordinates (x, y)
 type CartesianPoint = (x:f64, y:f64)
 
 // Convert from cartesian to polar coordinates
 export "to_polar"
-func to_polar CartesianPoint(x,y) -> PolarPoint(d,a) {
-  d = sqrt(x * x + y * y)
-  a = atan2(y, x)
+func to_polar(c:CartesianPoint) -> (p:PolarPoint) {
+  p.d = sqrt(c.x * c.x + c.y * c.y)
+  p.a = atan2(c.y, c.x)
 }
-
-enum Json {
-  Null,
-  Boolean(bool),
-  Number(f64),
-  String([]u8),
-  Array([]Json),
-  Object([]([]u8,Json))
-}
-
-enum Color {
-  Red,
-  Blue,
-  Green,
-  RGB(r:u8,g:u8,b:u8),
-  HSL(h:u8,s:u8,l:u8),
-  Grey(b:u8),
-  Darker(c:*Color)
-}
-
-let color:Color = Red
-
-let color:u8 = 5
-
-
-"hi"->String(2)
-
-
-[]u8
-[*]u8
-[!]u8
-[?]u8
-*[2]u8
-[2]u8
-
-
-x + 2
-
-
-
-
-
-
-
-
-
-
-
-{
-  type: "NULL"
-}
-
-{ 
-  type: "BOOLEAN",
-  value: true
-}
-
-
-
-
-import "math" "negate" func i32 -> i32
-
-
-
-func negate i32 -> i32 {
-  output = -input
-}
-
-func() {
-  let cp = CartesianPoint(1,2)
-  cp.to_polar()
-}
-
-
-
 
 // Convert from polar to cartesian coordinates
 export "from_polar"
-func from_polar(point:PolarPoint) -> (out:CartesianPoint) {
-  out.x = cos(point.a) * point.d
-  out.y = sin(point.a) * point.d
+func from_polar(p:PolarPoint) -> (c:CartesianPoint) {
+  c.x = cos(p.a) * p.d
+  c.y = sin(p.a) * p.d
 }
 
 export "_start"
@@ -113,7 +40,7 @@ func main() {
   let y:f64 = 4.2
 
   // Convert from cartesian to polar coordinates
-  let (d:, a:) = to_polar CartesianPoint(x:, y:)
+  let (d:, a:) = to_polar((x:, y:))
 
   // Print the result
   print("Polar coordinates: (", d, ", ", a, ")")

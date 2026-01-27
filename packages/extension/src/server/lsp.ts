@@ -45,6 +45,21 @@ const BUILTIN_SIGNATURES: Record<string, string> = {
   popcnt: 'builtin popcnt(x: i32) -> i32',
 };
 
+// Convert symbol kind to display prefix
+function kindToPrefix(kind: MetaSymbol['kind']): string {
+  switch (kind) {
+    case 'param': return 'input';
+    case 'return': return 'output';
+    case 'local': return 'let';
+    case 'global': return 'global';
+    case 'def': return 'def';
+    case 'func': return 'func';
+    case 'type': return 'type';
+    case 'unique': return 'type';
+    default: return '';
+  }
+}
+
 // Format symbol display using proper Encantis syntax
 function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
   switch (symbol.kind) {
@@ -56,10 +71,23 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
       return `input ${symbol.name}: ${typeStr}`;
     case 'return':
       return `output ${symbol.name}: ${typeStr}`;
-    case 'func':
+    case 'func': {
+      // Format as "func name(params) -> returns" instead of "func name: type"
+      // typeStr is like "(y:f64,x:f64)->f64" or "(x:f64)->()" for void return
+      const arrowIdx = typeStr.indexOf('->');
+      if (arrowIdx !== -1) {
+        const params = typeStr.slice(0, arrowIdx);
+        const returns = typeStr.slice(arrowIdx + 2);
+        const prefix = symbol.inline ? 'inline func' : 'func';
+        // Show "-> returns" only if not void "()"
+        const returnPart = returns === '()' ? '' : ` -> ${returns}`;
+        return `${prefix} ${symbol.name}${params}${returnPart}`;
+      }
+      // Fallback if no arrow (shouldn't happen for functions)
       return symbol.inline
         ? `inline func ${symbol.name}: ${typeStr}`
         : `func ${symbol.name}: ${typeStr}`;
+    }
     case 'type':
       return `type ${symbol.name} = ${typeStr}`;
     case 'unique':
@@ -257,9 +285,11 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
       // Just type, no symbol - use expr if available for full context
       const displayName = hint.expr ?? word;
+      // Add parent kind prefix for member access (e.g., "input c.y" vs just "c.y")
+      const kindPrefix = hint.parentKind ? kindToPrefix(hint.parentKind) + ' ' : '';
       const display = hint.value
-        ? `${displayName}: ${typeStr} = ${hint.value}`
-        : `${displayName}: ${typeStr}`;
+        ? `${kindPrefix}${displayName}: ${typeStr} = ${hint.value}`
+        : `${kindPrefix}${displayName}: ${typeStr}`;
       return {
         contents: {
           kind: MarkupKind.Markdown,

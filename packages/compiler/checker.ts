@@ -834,9 +834,40 @@ class CheckContext {
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
         break
-      case 'TuplePattern':
-        // TODO: destructure tuple fields
+      case 'TuplePattern': {
+        // Unwrap named types to get the underlying tuple
+        const unwrappedType = unwrap(type)
+        if (unwrappedType.kind !== 'tuple') {
+          this.error(pattern.span.start, `cannot destructure non-tuple type: ${typeToString(type)}`)
+          break
+        }
+
+        for (const element of pattern.elements) {
+          if (element.kind === 'named') {
+            // Named pattern: (x: a, y: b) or shorthand (x:, y:)
+            const tupleField = unwrappedType.fields.find((f) => f.name === element.field)
+            if (!tupleField) {
+              this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
+              continue
+            }
+            // binding is null for shorthand (x:) - use field name as variable name
+            const varName = element.binding ?? element.field
+            this.currentScope.symbols.set(varName, { kind: 'local', type: tupleField.type })
+            this.types.set(typeKey(pattern.span.start, pattern.kind), type)
+            this.recordDefinition(varName, pattern.span.start)
+          } else {
+            // Positional pattern: (a, b) - match by index
+            const index = pattern.elements.indexOf(element)
+            if (index >= unwrappedType.fields.length) {
+              this.error(pattern.span.start, `tuple has ${unwrappedType.fields.length} fields, but pattern has ${pattern.elements.length}`)
+              continue
+            }
+            const fieldType = unwrappedType.fields[index].type
+            this.bindPattern(element.pattern, fieldType)
+          }
+        }
         break
+      }
     }
   }
 
@@ -1185,7 +1216,9 @@ class CheckContext {
     const expectedHasInferredSize = expected.kind === 'indexed' && expected.size === 'inferred'
     const recordType = expected.kind === 'named' ? expected
       : (isComptimeLiteral && !expectedHasInferredSize ? expected : inferred)
-    this.types.set(typeKey(expr.span.start, expr.kind), recordType)
+    // Use span.end for MemberExpr to match inferExpr behavior (allows distinguishing a.b from a.b.c)
+    const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
+    this.types.set(typeKey(typeOffset, expr.kind), recordType)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
@@ -1577,11 +1610,15 @@ class CheckContext {
   inferMember(expr: AST.MemberExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
 
+    // Unwrap named types to access underlying structure
+    const unwrappedType = unwrap(objType)
+
     switch (expr.member.kind) {
       case 'field': {
+        const fieldName = expr.member.name
         // Look up field in tuple/struct
-        if (objType.kind === 'tuple') {
-          const f = objType.fields.find((f) => f.name === expr.member.name)
+        if (unwrappedType.kind === 'tuple') {
+          const f = unwrappedType.fields.find((f) => f.name === fieldName)
           if (f) return f.type
         }
         // Indexed type built-in fields (slice/array): .ptr, .len, .wid
@@ -1627,10 +1664,10 @@ class CheckContext {
 
       case 'index': {
         // Tuple index access: t.0, t.1
-        if (objType.kind === 'tuple') {
+        if (unwrappedType.kind === 'tuple') {
           const idx = expr.member.value
-          if (idx >= 0 && idx < objType.fields.length) {
-            return objType.fields[idx].type
+          if (idx >= 0 && idx < unwrappedType.fields.length) {
+            return unwrappedType.fields[idx].type
           }
         }
         this.error(expr.span.start, `invalid tuple index`)

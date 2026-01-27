@@ -287,22 +287,18 @@ Named return values are declared in the signature with `-> (name:type)`. They ac
 
 #### Calling Conventions
 
-Functions can be called with positional or named arguments:
+Functions are called with positional arguments only:
 
 ```ents
 // Positional arguments (in declaration order)
 add(1, 2)
 divmod(17, 5)
 
-// Named arguments (any order)
-add(a: 1, b: 2)
-divmod(b: 5, a: 17)
+// Receive multiple return values
+let q, r = divmod(17, 5)
 
-// Destructure return values
-let (q, r) = divmod(17, 5)      // by position
-let (q:, r:) = divmod(17, 5)    // by name (trailing colon)
-let (q: quotient , r: remainder) = divmod(17, 5)    // with explicit names
-
+// Destructure tuple return values (parens match the tuple)
+let (x:, y:) = get_point()
 ```
 
 #### Function Types and Pointers
@@ -407,19 +403,19 @@ Standard tuple semantics apply:
 
 #### Patterns in Function Signatures
 
-Functions internally have exactly one input value and one output value. Tuples flatten to multiple WebAssembly values, but at the language level it's always `Input -> Output`.
+Functions have multiple inputs and multiple outputs (0 or more each), mapping directly to WASM's multi-value semantics.
 
 The signature syntax determines what bindings exist inside the function body:
 
 ```ents
-// Tuple syntax — named bindings, called with parens
+// Named bindings with parens
 func to_polar(point: CartesianPoint) -> (out: PolarPoint)
-// Call: to_polar(point: p) or to_polar(p)
+// Call: to_polar(p)
 // Bindings: point, out
 
-// Constructor pattern syntax — destructured bindings, called with parens
+// Constructor pattern syntax — destructured bindings
 func to_polar CartesianPoint(x, y) -> PolarPoint(d, a)
-// Call: to_polar(x: 1, y: 2) or to_polar(1, 2)
+// Call: to_polar(1, 2)
 // Bindings: x, y, d, a
 
 // Bare type — no bindings, called without parens
@@ -737,13 +733,12 @@ Each level is a superset of the one above:
 This unification means the same patterns work everywhere:
 
 ```ents
-// Function calls: positional or named
-distance(p1, p2)              // positional
-distance(a: p1, b: p2)        // named (any order)
+// Function calls: positional arguments
+distance(p1, p2)
 
-// Function returns: destructure either way
-let (d, a) = to_polar(point)  // by position
-let (d:, a:) = to_polar(point)  // by name (trailing colon)
+// Function returns: destructure multiple values or tuples
+let d, a = to_polar(point)    // multiple values by position
+let (d:, a:) = get_tuple()    // tuple destructuring by name
 
 // Slices work like structs
 let (ptr, len) = slice        // by position

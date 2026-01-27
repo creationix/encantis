@@ -149,6 +149,7 @@ export interface MetaHint {
   symbol?: number // Index into symbols array
   value?: string // For compile-time constant expressions
   expr?: string // Full expression path (e.g., "hash_state.u64[0]")
+  parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
 }
 
 export interface MetaError {
@@ -310,11 +311,25 @@ class MetaBuilder {
       const offset = this.findFuncIdentOffset(decl)
       const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline)
 
-      // Collect params and locals
+      // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
+
+      // Generate hints for body NOW, while symbolIndexByName has correct symbols
+      // for this function's params/returns (before next function overwrites them)
+      if (decl.body.kind === 'Block') {
+        this.generateHintsForBlock(decl.body)
+      } else {
+        this.generateHintsForExpr(decl.body.expr)
+      }
     } else {
       // Anonymous function - still collect locals from body
       this.collectFuncBody(decl, -1)
+      // Generate hints for anonymous function body too
+      if (decl.body.kind === 'Block') {
+        this.generateHintsForBlock(decl.body)
+      } else {
+        this.generateHintsForExpr(decl.body.expr)
+      }
     }
   }
 
@@ -346,24 +361,30 @@ class MetaBuilder {
 
     // Collect parameters (only CompositeType has named fields)
     // Skip params that also appear in output - they'll be tagged as 'return'
+    // Also add hints immediately since symbolIndexByName gets overwritten by later functions
     if (decl.signature.input.kind === 'CompositeType') {
       for (const param of decl.signature.input.fields) {
         if (param.ident && !returnNames.has(param.ident)) {
           const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
           if (type) {
-            this.addSymbol(param.ident, 'param', type, param.span.start)
+            const symbolIndex = this.addSymbol(param.ident, 'param', type, param.span.start)
+            const typeIndex = this.typeRegistry.register(type)
+            this.addHint(param.span.start, param.ident.length, typeIndex, symbolIndex)
           }
         }
       }
     }
 
     // Collect named returns (only CompositeType has named fields)
+    // Also add hints immediately since symbolIndexByName gets overwritten by later functions
     if (decl.signature.output.kind === 'CompositeType') {
       for (const ret of decl.signature.output.fields) {
         if (ret.ident) {
           const type = this.checkResult.types.get(typeKey(ret.span.start, ret.kind))
           if (type) {
-            this.addSymbol(ret.ident, 'return', type, ret.span.start)
+            const symbolIndex = this.addSymbol(ret.ident, 'return', type, ret.span.start)
+            const typeIndex = this.typeRegistry.register(type)
+            this.addHint(ret.span.start, ret.ident.length, typeIndex, symbolIndex)
           }
         }
       }
@@ -595,47 +616,8 @@ class MetaBuilder {
         const offset = this.findFuncIdentOffset(decl)
         this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
       }
-
-      // Hints for parameters (only CompositeType has named fields)
-      if (decl.signature.input.kind === 'CompositeType') {
-        for (const param of decl.signature.input.fields) {
-          if (param.ident) {
-            const paramSymbolIndex = this.symbolIndexByName.get(param.ident)
-            if (paramSymbolIndex !== undefined) {
-              this.addHint(
-                param.span.start,
-                param.ident.length,
-                this.symbols[paramSymbolIndex].type,
-                paramSymbolIndex,
-              )
-            }
-          }
-        }
-      }
-
-      // Hints for named returns (only CompositeType has named fields)
-      if (decl.signature.output.kind === 'CompositeType') {
-        for (const ret of decl.signature.output.fields) {
-          if (ret.ident) {
-            const retSymbolIndex = this.symbolIndexByName.get(ret.ident)
-            if (retSymbolIndex !== undefined) {
-              this.addHint(
-                ret.span.start,
-                ret.ident.length,
-                this.symbols[retSymbolIndex].type,
-                retSymbolIndex,
-              )
-            }
-          }
-        }
-      }
-    }
-
-    // Hints for body (process even for anonymous functions)
-    if (decl.body.kind === 'Block') {
-      this.generateHintsForBlock(decl.body)
-    } else {
-      this.generateHintsForExpr(decl.body.expr)
+      // Note: Hints for params/returns/body are added during collectFunc to avoid
+      // symbolIndexByName conflicts when multiple functions share param/return names
     }
   }
 
@@ -786,9 +768,12 @@ class MetaBuilder {
                 }
               }
             }
+            // Find the root identifier's symbol kind for display (e.g., "input c.y" vs just "c.y")
+            const rootIdent = this.findRootIdent(expr)
+            const parentKind = rootIdent ? this.symbols[this.symbolIndexByName.get(rootIdent) ?? -1]?.kind : undefined
             // Use simplified expression for cleaner hover display
             const simplifiedExpr = simplifyExpr(expr, this.source)
-            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue, simplifiedExpr)
+            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue, simplifiedExpr, parentKind)
           }
         }
         // Handle deref: .* - show full expression context
@@ -967,6 +952,14 @@ class MetaBuilder {
     return null
   }
 
+  // Find the root identifier of a member expression chain (e.g., "c" for "c.x.y")
+  private findRootIdent(expr: AST.Expr): string | null {
+    if (expr.kind === 'IdentExpr') return expr.name
+    if (expr.kind === 'MemberExpr') return this.findRootIdent(expr.object)
+    if (expr.kind === 'IndexExpr') return this.findRootIdent(expr.object)
+    return null
+  }
+
   private addHint(
     offset: number,
     len: number,
@@ -974,12 +967,14 @@ class MetaBuilder {
     symbolIndex?: number,
     value?: string,
     expr?: string,
+    parentKind?: MetaSymbol['kind'],
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
     if (value !== undefined) hint.value = value
     if (expr !== undefined) hint.expr = expr
+    if (parentKind !== undefined) hint.parentKind = parentKind
     this.hints[key] = hint
   }
 }
