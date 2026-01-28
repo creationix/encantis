@@ -117,6 +117,7 @@ export interface MetaHint {
   value?: string // For compile-time constant expressions
   expr?: string // Full expression path (e.g., "hash_state.u64[0]")
   parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
+  inputParam?: boolean // True if this hint is for a function input parameter position
 }
 
 export interface MetaError {
@@ -326,24 +327,8 @@ class MetaBuilder {
       }
     }
 
-    // Collect parameters (only CompositeType has named fields)
-    // Skip params that also appear in output - they'll be tagged as 'return'
-    // Also add hints immediately since symbolIndexByName gets overwritten by later functions
-    if (decl.signature.input.kind === 'CompositeType') {
-      for (const param of decl.signature.input.fields) {
-        if (param.ident && !returnNames.has(param.ident)) {
-          const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
-          if (type) {
-            const symbolIndex = this.addSymbol(param.ident, 'param', type, param.span.start)
-            const typeIndex = this.typeRegistry.register(type)
-            this.addHint(param.span.start, param.ident.length, typeIndex, symbolIndex)
-          }
-        }
-      }
-    }
-
-    // Collect named returns (only CompositeType has named fields)
-    // Also add hints immediately since symbolIndexByName gets overwritten by later functions
+    // Collect named returns first (only CompositeType has named fields)
+    // This creates the symbol that in/out params will reference
     if (decl.signature.output.kind === 'CompositeType') {
       for (const ret of decl.signature.output.fields) {
         if (ret.ident) {
@@ -352,6 +337,33 @@ class MetaBuilder {
             const symbolIndex = this.addSymbol(ret.ident, 'return', type, ret.span.start)
             const typeIndex = this.typeRegistry.register(type)
             this.addHint(ret.span.start, ret.ident.length, typeIndex, symbolIndex)
+          }
+        }
+      }
+    }
+
+    // Collect parameters (only CompositeType has named fields)
+    // Params that also appear in output are tagged as 'return' (in/out params)
+    if (decl.signature.input.kind === 'CompositeType') {
+      for (const param of decl.signature.input.fields) {
+        if (param.ident) {
+          const isInOut = returnNames.has(param.ident)
+          const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
+          if (type) {
+            let symbolIndex: number | undefined
+            if (isInOut) {
+              // In/out param - reuse the return symbol, just add a hint for this location
+              symbolIndex = this.symbolIndexByName.get(param.ident)
+            } else {
+              // Pure input param - create new symbol
+              symbolIndex = this.addSymbol(param.ident, 'param', type, param.span.start)
+            }
+            if (symbolIndex !== undefined) {
+              const typeIndex = this.typeRegistry.register(type)
+              // Mark pure input params (not in/out) for semantic token highlighting
+              const inputParamFlag = !isInOut
+              this.addHint(param.span.start, param.ident.length, typeIndex, symbolIndex, undefined, undefined, undefined, inputParamFlag)
+            }
           }
         }
       }
@@ -933,10 +945,23 @@ class MetaBuilder {
         this.generateHintsForTypeExpr(expr.type)
         break
 
-      case 'AnnotationExpr':
-        this.generateHintsForExpr(expr.expr)
-        this.generateHintsForTypeExpr(expr.type)
+      case 'AnnotationExpr': {
+        // Check if this is a def reference (def substitution creates AnnotationExpr with the reference span)
+        const sourceText = this.source.slice(expr.span.start, expr.span.end)
+        const symbolIndex = this.symbolIndexByName.get(sourceText)
+        const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
+        if (symbol?.kind === 'def') {
+          // This is a def reference - add hint for the whole expression
+          const typeIndex = this.typeRegistry.register(type ?? primitive('i32'))
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, typeIndex, symbolIndex)
+        } else {
+          // Not a def reference - recurse normally
+          this.generateHintsForExpr(expr.expr)
+          this.generateHintsForTypeExpr(expr.type)
+        }
         break
+      }
     }
   }
 
@@ -1021,6 +1046,7 @@ class MetaBuilder {
     value?: string,
     expr?: string,
     parentKind?: MetaSymbol['kind'],
+    inputParam?: boolean,
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
@@ -1028,6 +1054,7 @@ class MetaBuilder {
     if (value !== undefined) hint.value = value
     if (expr !== undefined) hint.expr = expr
     if (parentKind !== undefined) hint.parentKind = parentKind
+    if (inputParam) hint.inputParam = true
     this.hints[key] = hint
   }
 }

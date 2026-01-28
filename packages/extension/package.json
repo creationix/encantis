@@ -157,6 +157,9 @@
           "parameter": [
             "variable.parameter.encantis"
           ],
+          "parameter.input": [
+            "variable.parameter.input.encantis"
+          ],
           "parameter.output": [
             "variable.parameter.output.encantis"
           ],
@@ -183,6 +186,12 @@
           ],
           "type.declaration": [
             "entity.name.type.declaration.encantis"
+          ],
+          "macro": [
+            "entity.name.constant.encantis"
+          ],
+          "macro.readonly": [
+            "entity.name.constant.encantis"
           ]
         }
       }

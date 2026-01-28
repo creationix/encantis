@@ -15,6 +15,8 @@ import {
   type TextDocumentPositionParams,
   type Hover,
   MarkupKind,
+  SemanticTokensBuilder,
+  SemanticTokensLegend,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -105,6 +107,81 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
 const analysisCache = new Map<string, { text: string; meta: MetaOutput }>();
 
 // -----------------------------------------------------------------------------
+// Semantic Tokens
+// -----------------------------------------------------------------------------
+
+// Standard LSP token types
+const tokenTypes = [
+  'type',       // 0 - type names
+  'function',   // 1 - function names
+  'parameter',  // 2 - input parameters
+  'variable',   // 3 - locals, returns/outputs
+  'property',   // 4 - struct field access
+  'string',     // 5 - string literals
+  'number',     // 6 - numeric literals
+  'macro',      // 7 - def constants (compile-time)
+];
+
+// Standard LSP token modifiers (bit flags)
+const tokenModifiers = [
+  'declaration',    // 1 << 0 = 1 - symbol declaration/definition
+  'readonly',       // 1 << 1 = 2 - for def constants
+  'static',         // 1 << 2 = 4 - for globals
+  'defaultLibrary', // 1 << 3 = 8 - (unused, standard LSP modifier)
+  'input',          // 1 << 4 = 16 - for input parameters
+  'output',         // 1 << 5 = 32 - for output/return parameters
+];
+
+const tokenLegend: SemanticTokensLegend = {
+  tokenTypes,
+  tokenModifiers,
+};
+
+// Map symbol kinds to token type index
+function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
+  switch (kind) {
+    case 'type':
+    case 'unique':
+      return 0; // type
+    case 'func':
+      return 1; // function
+    case 'param':
+      return 2; // parameter (input)
+    case 'return':
+      return 3; // variable (output - distinguishes from input params)
+    case 'local':
+      return 3; // variable
+    case 'global':
+      return 3; // variable (with static modifier)
+    case 'def':
+      return 7; // macro (compile-time constant)
+    default:
+      return 3; // variable
+  }
+}
+
+// Get modifiers for a symbol
+function symbolKindToModifiers(kind: MetaSymbol['kind'], isDef: boolean, isInput?: boolean): number {
+  let modifiers = 0;
+  if (isDef) {
+    modifiers |= 1; // declaration
+  }
+  if (kind === 'def') {
+    modifiers |= 2; // readonly
+  }
+  if (kind === 'global') {
+    modifiers |= 4; // static
+  }
+  if (isInput) {
+    modifiers |= 16; // input
+  }
+  if (kind === 'return') {
+    modifiers |= 32; // output
+  }
+  return modifiers;
+}
+
+// -----------------------------------------------------------------------------
 // Connection Setup
 // -----------------------------------------------------------------------------
 
@@ -120,6 +197,10 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       hoverProvider: true,
+      semanticTokensProvider: {
+        legend: tokenLegend,
+        full: true,
+      },
     },
   };
 });
@@ -334,6 +415,75 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
   }
 
   return null;
+});
+
+// -----------------------------------------------------------------------------
+// Semantic Tokens Handler
+// -----------------------------------------------------------------------------
+
+connection.languages.semanticTokens.on((params) => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document) return { data: [] };
+
+  const cached = analysisCache.get(params.textDocument.uri);
+  if (!cached) return { data: [] };
+
+  const { meta } = cached;
+  const builder = new SemanticTokensBuilder();
+
+  // Collect all tokens first, then sort by position (required by SemanticTokensBuilder)
+  const tokens: { line: number; col: number; len: number; type: number; modifiers: number }[] = [];
+
+  // Process all hints from meta - these give us positions and types
+  for (const [key, hint] of Object.entries(meta.hints)) {
+    const [lineStr, colStr] = key.split(':');
+    const line = parseInt(lineStr, 10);
+    const col = parseInt(colStr, 10);
+
+    // Determine token type and modifiers
+    let tokenType: number;
+    let modifiers = 0;
+
+    if (hint.symbol !== undefined) {
+      const symbol = meta.symbols[hint.symbol];
+      if (symbol) {
+        const isDef = symbol.def === key;
+        // Handle parameter-like symbols (param and return) specially
+        if (symbol.kind === 'param' || symbol.kind === 'return') {
+          tokenType = 2; // parameter
+          // 'param' symbols get 'input' modifier, 'return' symbols get 'output' modifier
+          modifiers = symbolKindToModifiers(symbol.kind, isDef, symbol.kind === 'param');
+        } else {
+          tokenType = symbolKindToTokenType(symbol.kind);
+          modifiers = symbolKindToModifiers(symbol.kind, isDef);
+        }
+      } else {
+        continue;
+      }
+    } else {
+      // No symbol - check the type to determine token type
+      const typeStr = meta.types[hint.type]?.type ?? '';
+      if (typeStr.startsWith('(') && typeStr.includes('->')) {
+        tokenType = 1; // function
+      } else if (hint.value && (hint.value.startsWith('0x') || hint.value.startsWith('('))) {
+        tokenType = 5; // string (data literals)
+      } else {
+        tokenType = 4; // property (field access, etc.)
+      }
+    }
+
+    tokens.push({ line, col, len: hint.len, type: tokenType, modifiers });
+  }
+
+  // Sort by line, then by column
+  tokens.sort((a, b) => a.line - b.line || a.col - b.col);
+
+  // Push sorted tokens to builder
+  for (const token of tokens) {
+    builder.push(token.line, token.col, token.len, token.type, token.modifiers);
+  }
+
+  return builder.build();
 });
 
 function getWordAtOffset(text: string, offset: number): { word: string; start: number; end: number } | null {
