@@ -51,8 +51,3 @@ func main() {
   // Print the result
   print("Cartesian coordinates: (", x, ", ", y, ")")
 }
-def long = "this is a really long string this is a really long string this is a really long string this is a really long string this is a really long string this is a really long string"
-def short = ""
-func() {
-  short.ptr
-}
