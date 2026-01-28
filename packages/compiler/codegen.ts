@@ -13,6 +13,7 @@ import {
   primitiveByteSize,
   byteSize,
 } from './types'
+import * as RT from './types'
 import { dataToWat, buildDataSection } from './data-pack'
 
 // === Context ===
@@ -207,6 +208,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return repeatToWat(expr, ctx)
     case 'MatchExpr':
       return matchToWat(expr, ctx)
+    case 'SizeofExpr':
+      return sizeofToWat(expr, ctx)
     default:
       throw new Error(`Unhandled expression kind: ${(expr as AST.Expr).kind}`)
   }
@@ -887,6 +890,40 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   }
 
   return result
+}
+
+function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
+  // Get the resolved type from the checker
+  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  if (type && type.kind === 'comptime_int') {
+    // The checker already computed the size and stored it as comptime_int
+    return `(i32.const ${type.value})`
+  }
+  // Fallback: resolve the type and compute size directly
+  const resolvedType = resolveTypeFromAST(expr.type, ctx)
+  const size = byteSize(resolvedType)
+  return `(i32.const ${size ?? 0})`
+}
+
+// Helper to resolve an AST type to a ResolvedType (for sizeof fallback)
+function resolveTypeFromAST(type: AST.Type, ctx: CodegenContext): RT.ResolvedType {
+  switch (type.kind) {
+    case 'PrimitiveType':
+      return RT.primitive(type.name)
+    case 'TypeRef': {
+      const sym = ctx.symbols.get(type.name)
+      if (sym && sym.kind === 'type') return sym.type
+      return RT.primitive('i32')
+    }
+    case 'PointerType':
+      return RT.pointer(resolveTypeFromAST(type.pointee, ctx))
+    case 'IndexedType':
+      return RT.indexed(resolveTypeFromAST(type.element, ctx), type.size, [], type.manyPointer)
+    case 'CompositeType':
+      return RT.tuple(type.fields.map(f => RT.field(f.ident, resolveTypeFromAST(f.type, ctx))))
+    default:
+      return RT.primitive('i32')
+  }
 }
 
 // === Statement Codegen ===

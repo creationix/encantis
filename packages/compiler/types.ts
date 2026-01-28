@@ -53,6 +53,7 @@ export type ResolvedType =
   | ComptimeFloatRT
   | ComptimeListRT
   | NamedRT
+  | ForwardRefRT
 
 // Primitive types: i32, u8, f64, bool, etc.
 export interface PrimitiveRT {
@@ -125,6 +126,13 @@ export interface NamedRT {
   name: string // The alias/unique name (e.g., "Point", "Index")
   type: ResolvedType // The underlying resolved type
   unique: boolean // true for unique types, false for aliases
+}
+
+// Forward reference - placeholder for recursive type definitions
+// These are resolved after all types are collected
+export interface ForwardRefRT {
+  kind: 'forward_ref'
+  name: string // The type name being referenced
 }
 
 // Field in a tuple/struct or function signature
@@ -205,6 +213,10 @@ export function comptimeList(elements: ResolvedType[]): ComptimeListRT {
 
 export function named(name: string, type: ResolvedType, unique: boolean): NamedRT {
   return { kind: 'named', name, type, unique }
+}
+
+export function forwardRef(name: string): ForwardRefRT {
+  return { kind: 'forward_ref', name }
 }
 
 export function field(
@@ -392,6 +404,10 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       // Aliases are transparent - compare underlying types
       return typeEquals(a.type, b)
     }
+
+    case 'forward_ref':
+      // Forward refs are equal if they reference the same type name
+      return b.kind === 'forward_ref' && a.name === b.name
   }
 }
 
@@ -798,6 +814,10 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
         return `${typeToString(t.type, opts)}@${t.name}`
       }
       // For aliases, just show the name
+      return t.name
+
+    case 'forward_ref':
+      // Forward reference - just show the type name
       return t.name
   }
 }

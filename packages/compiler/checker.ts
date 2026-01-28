@@ -21,6 +21,7 @@ import {
   comptimeList,
   comptimeIndexed,
   named,
+  forwardRef,
   manyPointer,
   typeToString,
   comptimeIntFits,
@@ -29,6 +30,7 @@ import {
   isFloat,
   isInteger,
   isNumeric,
+  byteSize,
 } from './types'
 
 // === Symbol Table ===
@@ -271,6 +273,9 @@ class CheckContext {
   // Cache for resolved type aliases
   typeCache = new Map<string, ResolvedType>()
 
+  // Track type names that are being defined (for recursive type detection)
+  pendingTypeNames = new Set<string>()
+
   // Reference tracking
   references = new Map<number, number[]>() // defOffset → refOffsets
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
@@ -280,14 +285,31 @@ class CheckContext {
   pendingLiterals: PendingLiteral[] = []
 
   checkModule(module: AST.Module): void {
+    // Pre-pass: register all type names (to allow forward references)
+    for (const decl of module.decls) {
+      this.preRegisterTypes(decl)
+    }
+
     // First pass: collect all type aliases, function signatures, globals, defs
     for (const decl of module.decls) {
       this.collectDeclaration(decl)
     }
 
+    // Resolve any forward references in the type cache
+    this.resolveForwardRefs()
+
     // Second pass: check function bodies and expressions
     for (const decl of module.decls) {
       this.checkDeclaration(decl)
+    }
+  }
+
+  // Pre-register type names so they can be referenced before their full definition
+  preRegisterTypes(decl: AST.Declaration): void {
+    if (decl.kind === 'TypeDecl') {
+      this.pendingTypeNames.add(decl.ident.name)
+    } else if (decl.kind === 'ExportDecl' && decl.item.kind === 'TypeDecl') {
+      this.pendingTypeNames.add((decl.item as AST.TypeDecl).ident.name)
     }
   }
 
@@ -384,6 +406,63 @@ class CheckContext {
     this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
     this.recordDefinition(name, decl.ident.span.start)
+    // Remove from pending since it's now defined
+    this.pendingTypeNames.delete(name)
+  }
+
+  // Resolve forward references in all collected types
+  resolveForwardRefs(): void {
+    // Update all type symbols to resolve forward references
+    for (const [name, sym] of this.moduleScope.symbols) {
+      if (sym.kind === 'type') {
+        const resolved = this.resolveForwardRefsInType(sym.type)
+        this.moduleScope.symbols.set(name, { ...sym, type: resolved })
+        this.typeCache.set(name, resolved)
+      }
+    }
+  }
+
+  // Recursively replace forward references with actual types
+  resolveForwardRefsInType(t: ResolvedType): ResolvedType {
+    switch (t.kind) {
+      case 'forward_ref': {
+        const sym = this.moduleScope.symbols.get(t.name)
+        if (sym && sym.kind === 'type') {
+          // Return a named reference to the type (don't inline to avoid infinite recursion)
+          return named(t.name, sym.type, sym.unique)
+        }
+        // Type was never defined - this shouldn't happen if pre-registration worked
+        this.error(0, `unresolved forward reference to type: ${t.name}`)
+        return primitive('i32')
+      }
+
+      case 'pointer':
+        return pointer(this.resolveForwardRefsInType(t.pointee))
+
+      case 'indexed':
+        return indexed(
+          this.resolveForwardRefsInType(t.element),
+          t.size,
+          t.specifiers,
+          t.manyPointer
+        )
+
+      case 'tuple':
+        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type))))
+
+      case 'func':
+        return func(
+          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type))),
+          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type)))
+        )
+
+      case 'named':
+        return named(t.name, this.resolveForwardRefsInType(t.type), t.unique)
+
+      default:
+        // Primitives, void, comptime types don't contain nested types
+        return t
+    }
   }
 
   collectDef(decl: AST.DefDecl): void {
@@ -648,6 +727,15 @@ class CheckContext {
       const sym = this.moduleScope.symbols.get(expr.name)
       if (sym?.kind === 'def') {
         return sym.value
+      }
+    }
+
+    // Handle sizeof expression
+    if (expr.kind === 'SizeofExpr') {
+      const resolvedType = this.resolveType(expr.type)
+      const size = byteSize(resolvedType)
+      if (size !== null) {
+        return { kind: 'int', value: BigInt(size) }
       }
     }
 
@@ -1042,6 +1130,10 @@ class CheckContext {
           // Wrap with named to preserve the alias/unique name
           return named(type.name, sym.type, sym.unique)
         }
+        // Check if this is a forward reference to a type being defined
+        if (this.pendingTypeNames.has(type.name)) {
+          return forwardRef(type.name)
+        }
         this.error(type.span.start, `unknown type: ${type.name}`)
         return primitive('i32')
       }
@@ -1308,6 +1400,9 @@ class CheckContext {
       case 'GroupExpr':
         return this.inferExpr(expr.expr)
 
+      case 'SizeofExpr':
+        return this.inferSizeof(expr)
+
       case 'IfExpr':
         return this.inferIf(expr)
 
@@ -1569,6 +1664,39 @@ class CheckContext {
         return argType
       }
 
+      // sizeof(T) - returns byte size of a type as comptime u32
+      case 'sizeof': {
+        if (args.length !== 1) {
+          this.error(expr.span.start, `sizeof expects 1 argument (a type), got ${args.length}`)
+          return comptimeInt(0n)
+        }
+
+        // The argument should be a type name (identifier)
+        const arg = args[0].value
+        if (arg.kind !== 'IdentExpr') {
+          this.error(arg.span.start, `sizeof expects a type name, got ${arg.kind}`)
+          return comptimeInt(0n)
+        }
+
+        // Look up the type
+        const sym = this.moduleScope.symbols.get(arg.name)
+        if (!sym || sym.kind !== 'type') {
+          this.error(arg.span.start, `sizeof: unknown type '${arg.name}'`)
+          return comptimeInt(0n)
+        }
+
+        // Compute byte size
+        const size = byteSize(sym.type)
+        if (size === null) {
+          this.error(arg.span.start, `sizeof: cannot compute size of type '${arg.name}' (dynamically sized)`)
+          return comptimeInt(0n)
+        }
+
+        // Record as builtin call for codegen
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), comptimeInt(BigInt(size)))
+        return comptimeInt(BigInt(size))
+      }
+
       default:
         return null // Not a builtin
     }
@@ -1621,6 +1749,14 @@ class CheckContext {
           const f = unwrappedType.fields.find((f) => f.name === fieldName)
           if (f) return f.type
         }
+        // Auto-deref: pointer to tuple allows field access (loads from memory)
+        if (unwrappedType.kind === 'pointer') {
+          const pointeeType = unwrap(unwrappedType.pointee)
+          if (pointeeType.kind === 'tuple') {
+            const f = pointeeType.fields.find((f) => f.name === fieldName)
+            if (f) return f.type
+          }
+        }
         // Indexed type built-in fields (slice/array): .ptr, .len, .wid
         if (objType.kind === 'indexed') {
           if (expr.member.name === 'ptr') {
@@ -1668,6 +1804,16 @@ class CheckContext {
           const idx = expr.member.value
           if (idx >= 0 && idx < unwrappedType.fields.length) {
             return unwrappedType.fields[idx].type
+          }
+        }
+        // Auto-deref: pointer to tuple allows index access
+        if (unwrappedType.kind === 'pointer') {
+          const pointeeType = unwrap(unwrappedType.pointee)
+          if (pointeeType.kind === 'tuple') {
+            const idx = expr.member.value
+            if (idx >= 0 && idx < pointeeType.fields.length) {
+              return pointeeType.fields[idx].type
+            }
           }
         }
         this.error(expr.span.start, `invalid tuple index`)
@@ -1817,6 +1963,16 @@ class CheckContext {
       }
     }
     return VOID
+  }
+
+  inferSizeof(expr: AST.SizeofExpr): ResolvedType {
+    const resolvedType = this.resolveType(expr.type)
+    const size = byteSize(resolvedType)
+    if (size === null) {
+      this.error(expr.span.start, `sizeof: cannot compute size of dynamically sized type`)
+    }
+    // sizeof always returns u32 (natural size type for WebAssembly)
+    return primitive('u32')
   }
 
   // === Scope Lookup ===

@@ -317,6 +317,7 @@ Encantis {
   PrimaryExpr = IfExpr
               | MatchExpr
               | ArrayLiteral
+              | sizeof "(" Type ")"  -- sizeof
               | "(" ArgList ")"      -- tupleOrStruct
               | "(" Expr ")"         -- group
               | "(" ")"              -- unit
@@ -468,7 +469,7 @@ Encantis {
            | break | continue | return | when
            | func | let | set | global | def | type | enum
            | import | export | memory | inline | mut
-           | as | true | false | int | float) ~identChar
+           | as | true | false | int | float | sizeof) ~identChar
 
   if = "if" ~identChar
   elif = "elif" ~identChar
@@ -499,6 +500,7 @@ Encantis {
   false = "false" ~identChar
   int = "int" ~identChar
   float = "float" ~identChar
+  sizeof = "sizeof" ~identChar
 
   // Comments
   comment = lineComment | blockComment

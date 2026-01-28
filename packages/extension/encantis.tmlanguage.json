@@ -209,7 +209,7 @@
         },
         {
           "name": "support.function.encantis",
-          "match": "\\b(sqrt|abs|ceil|floor|trunc|nearest|min|max|copysign|clz|ctz|popcnt|memory-size|memory-grow)(?![a-zA-Z0-9_-])"
+          "match": "\\b(sizeof|memset|memcpy|sqrt|abs|ceil|floor|trunc|nearest|min|max|copysign|clz|ctz|popcnt|memory-size|memory-grow)(?![a-zA-Z0-9_-])"
         },
         {
           "name": "punctuation.accessor.tuple.encantis",

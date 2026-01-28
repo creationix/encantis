@@ -288,6 +288,7 @@ export type Expr =
   | MatchExpr
   | TupleExpr
   | GroupExpr
+  | SizeofExpr
 
 // left op right
 export interface BinaryExpr extends BaseNode {
@@ -472,6 +473,12 @@ export interface GroupExpr extends BaseNode {
   expr: Expr
 }
 
+// sizeof(Type)
+export interface SizeofExpr extends BaseNode {
+  kind: 'SizeofExpr'
+  type: Type
+}
+
 // ============================================================================
 // L-Values (assignable expressions)
 // ============================================================================
@@ -631,6 +638,7 @@ export interface ASTVisitor {
   visitMatchExpr?(node: MatchExpr): void | false
   visitTupleExpr?(node: TupleExpr): void | false
   visitGroupExpr?(node: GroupExpr): void | false
+  visitSizeofExpr?(node: SizeofExpr): void | false
 
   // Bodies
   visitBlock?(node: Block): void | false
@@ -850,6 +858,10 @@ function walkExpr(expr: Expr, visitor: ASTVisitor): void {
       if (visitor.visitGroupExpr?.(expr) !== false) {
         walkExpr(expr.expr, visitor)
       }
+      break
+    case 'SizeofExpr':
+      visitor.visitSizeofExpr?.(expr)
+      // No children to walk - type is not an expression
       break
   }
 }

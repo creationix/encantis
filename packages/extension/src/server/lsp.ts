@@ -27,6 +27,8 @@ import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
 const BUILTIN_SIGNATURES: Record<string, string> = {
+  // Comptime
+  sizeof: 'sizeof(T) -> u32',
   // Memory operations
   memset: 'builtin memset(dest: [*]u8, value: u8, len: u32)',
   memcpy: 'builtin memcpy(dest: [*]u8, src: [*]u8, len: u32)',
@@ -294,6 +296,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
   // Builtin docs
   const builtinDocs: Record<string, string> = {
+    sizeof: 'Returns the byte size of a type at compile time.',
     memset: 'Fill memory with a byte value.',
     memcpy: 'Copy bytes from source to destination.',
     sqrt: 'Square root (f32/f64).',

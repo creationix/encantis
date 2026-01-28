@@ -16,25 +16,24 @@ export "alloc" func alloc(size: u32) -> (ptr:[*]u8) {
   alloc-ptr += size
 }
 
-// TODO: support recursive type definitions
+// Define a simple linked list node entity
 type LinkedListNode = (
   value: u32,
   next: *LinkedListNode
 )
-// Manual size of LinkedListNode type
-// TODO: add sizeof operator
-def linkedListNodeSize = 8
 
+// Test sizeof - should be 8 bytes (u32 + pointer)
+def node-size = sizeof(LinkedListNode)
+
+// Create a new LinkedListNode using sizeof
 func new-node(value: u32) -> (node:*LinkedListNode) {
-  node = alloc(linkedListNodeSize) as *LinkedListNode
-  // TODO: figure out how to access properties on tuple pointers
+  node = alloc(node-size) as *LinkedListNode
   node.value = value
-  node.next = 0
+  node.next = 0 as *LinkedListNode
 }
 
-export "main" func () {
+export "main" func main() {
   let node1 = new-node(42)
   let node2 = new-node(43)
-  // TODO: figure out how to access properties on tuple pointers
   node1.next = node2
 }

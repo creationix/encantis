@@ -1090,6 +1090,14 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.TupleExpr
   },
 
+  PrimaryExpr_sizeof(_sizeof, _lp, typeNode, _rp) {
+    return {
+      kind: 'SizeofExpr',
+      type: typeNode.toAST(),
+      span: span(this),
+    } as AST.SizeofExpr
+  },
+
   PrimaryExpr_constructor(typeName, _lp, argsOpt, _rp) {
     return {
       kind: 'CallExpr',
