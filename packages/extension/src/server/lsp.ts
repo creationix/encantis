@@ -284,7 +284,11 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       }
 
       // Just type, no symbol - use expr if available for full context
-      const displayName = hint.expr ?? word;
+      let displayName = hint.expr ?? word;
+      // Truncate long string literals (over 40 chars) for readability
+      if (displayName.startsWith('"') && displayName.length > 40) {
+        displayName = `${displayName.slice(0, 37)}..."`;
+      }
       // Add parent kind prefix for member access (e.g., "input c.y" vs just "c.y")
       const kindPrefix = hint.parentKind ? kindToPrefix(hint.parentKind) + ' ' : '';
       const display = hint.value
@@ -341,6 +345,45 @@ function getWordAtOffset(text: string, offset: number): { word: string; start: n
   // Handle .* dereference - treat * as hoverable when preceded by dot
   if (ch === '*' && offset > 0 && text[offset - 1] === '.') {
     return { word: '*', start: offset, end: offset + 1 };
+  }
+
+  // Handle string literals - find if we're inside or on a quoted string
+  // If we're on a quote, determine if it's opening or closing
+  if (ch === '"') {
+    // Look backward for another quote - if found, we're on the closing quote
+    for (let i = offset - 1; i >= 0; i--) {
+      if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
+        // Found opening quote - return the whole string
+        return { word: text.slice(i, offset + 1), start: i, end: offset + 1 };
+      }
+      if (text[i] === '\n') break;
+    }
+    // No quote found backward - we're on the opening quote, look forward
+    for (let i = offset + 1; i < text.length; i++) {
+      if (text[i] === '"' && text[i - 1] !== '\\') {
+        return { word: text.slice(offset, i + 1), start: offset, end: i + 1 };
+      }
+      if (text[i] === '\n') break;
+    }
+  }
+  // Not on a quote - check if inside a string by looking backwards
+  let quoteStart = -1;
+  for (let i = offset - 1; i >= 0; i--) {
+    if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
+      quoteStart = i;
+      break;
+    }
+    if (text[i] === '\n') break;
+  }
+  if (quoteStart !== -1) {
+    // Look forwards for closing quote
+    for (let i = offset; i < text.length; i++) {
+      if (text[i] === '"' && text[i - 1] !== '\\') {
+        // Found closing quote - return the whole string literal
+        return { word: text.slice(quoteStart, i + 1), start: quoteStart, end: i + 1 };
+      }
+      if (text[i] === '\n') break;
+    }
   }
 
   let start = offset;

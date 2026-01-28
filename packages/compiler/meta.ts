@@ -3,10 +3,10 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID, unwrap } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
-import { buildDataSection, type DataRef } from './data-pack'
+import { DataSectionBuilder, type DataEntry } from './data-pack'
 
 // === Builtin Function Signatures ===
 // Note: Many builtins are polymorphic. These signatures are for LSP display.
@@ -69,51 +69,18 @@ const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
 }
 
 // Build a simplified expression string for hover hints
-// Complex sub-expressions are replaced with "..."
+// Uses source text directly to handle def-substituted expressions correctly
 function simplifyExpr(expr: AST.Expr, source: string): string {
-  switch (expr.kind) {
-    case 'IdentExpr':
-      return expr.name
-    case 'LiteralExpr':
-      // Show simple literals as-is
-      if (expr.value.kind === 'int' || expr.value.kind === 'float' || expr.value.kind === 'bool') {
-        return source.slice(expr.span.start, expr.span.end)
-      }
-      return '...'
-    case 'MemberExpr': {
-      const obj = simplifyExpr(expr.object, source)
-      if (expr.member.kind === 'field') return `${obj}.${expr.member.name}`
-      if (expr.member.kind === 'deref') return `${obj}.*`
-      if (expr.member.kind === 'index') return `${obj}.${expr.member.value}`
-      if (expr.member.kind === 'type') {
-        // Get the type name from source
-        const exprText = source.slice(expr.span.start, expr.span.end)
-        const dotIdx = exprText.lastIndexOf('.')
-        return dotIdx !== -1 ? `${obj}.${exprText.slice(dotIdx + 1)}` : `${obj}.?`
-      }
-      return `${obj}.?`
-    }
-    case 'IndexExpr': {
-      const obj = simplifyExpr(expr.object, source)
-      const idx = simplifyExpr(expr.index, source)
-      // Only show index if it's simple (identifier or number)
-      if (expr.index.kind === 'IdentExpr' ||
-          (expr.index.kind === 'LiteralExpr' && (expr.index.value.kind === 'int' || expr.index.value.kind === 'float'))) {
-        return `${obj}[${idx}]`
-      }
-      return `${obj}[...]`
-    }
-    case 'CallExpr': {
-      const callee = simplifyExpr(expr.callee, source)
-      return `${callee}(...)`
-    }
-    case 'UnaryExpr': {
-      const operand = simplifyExpr(expr.operand, source)
-      return `${expr.op}${operand}`
-    }
-    default:
-      return '...'
+  // For most expressions, just use the source text directly
+  // This handles def-substituted expressions correctly (AST has literal, source has identifier)
+  const sourceText = source.slice(expr.span.start, expr.span.end)
+
+  // Truncate very long expressions
+  if (sourceText.length > 60) {
+    return `${sourceText.slice(0, 57)}...`
   }
+
+  return sourceText
 }
 
 // === Meta Output Types ===
@@ -179,7 +146,7 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
-  private literalRefs: Map<number, DataRef> = new Map()
+  private literalMap: Map<number, DataEntry> = new Map()
 
   constructor(
     private module: AST.Module,
@@ -191,10 +158,10 @@ class MetaBuilder {
 
   build(srcPath: string): MetaOutput {
     // Build data section to get literal addresses for hover hints
-    if (this.checkResult.literals.length > 0) {
-      const { literalRefs } = buildDataSection(this.checkResult.literals)
-      this.literalRefs = literalRefs
-    }
+    // Use DataSectionBuilder.build() to walk ALL string literals in the module
+    const dataBuilder = new DataSectionBuilder()
+    dataBuilder.build(this.module)
+    this.literalMap = dataBuilder.result().literalMap
 
     // Pass 1: Collect symbols (populates typeRegistry)
     this.collectSymbols()
@@ -456,8 +423,38 @@ class MetaBuilder {
       if (type) {
         this.addSymbol(pattern.name, 'local', type, pattern.span.start)
       }
+    } else if (pattern.kind === 'TuplePattern') {
+      // Get the tuple type for the whole pattern and unwrap named types
+      const rawType = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      if (!rawType) return
+      const tupleType = unwrap(rawType)
+      if (tupleType.kind !== 'tuple') return
+
+      // Get the source text for the pattern to find element offsets
+      const patternText = this.source.slice(pattern.span.start, pattern.span.end)
+
+      for (const element of pattern.elements) {
+        if (element.kind === 'named') {
+          // Find the field in the tuple type
+          const tupleField = tupleType.fields.find((f) => f.name === element.field)
+          if (!tupleField) continue
+
+          // The variable name is either the binding or the field name (for shorthand)
+          const varName = element.binding ?? element.field
+
+          // Find the offset of this element in the source by looking for "fieldname:"
+          const fieldPattern = element.field + ':'
+          const idx = patternText.indexOf(fieldPattern)
+          if (idx !== -1) {
+            const offset = pattern.span.start + idx
+            this.addSymbol(varName, 'local', tupleField.type, offset)
+          }
+        } else if (element.kind === 'positional') {
+          // For positional, recurse into the nested pattern
+          this.collectLocal(element.pattern)
+        }
+      }
     }
-    // TODO: Handle TuplePattern
   }
 
   private collectTypeDecl(decl: AST.TypeDecl): void {
@@ -486,9 +483,9 @@ class MetaBuilder {
     } else if (sym.value.kind === 'bool') {
       valueStr = sym.value.value ? 'true' : 'false'
     } else if (sym.value.kind === 'data_ptr') {
-      const ref = this.literalRefs.get(sym.value.id)
-      if (ref) {
-        valueStr = `0x${ref.ptr.toString(16)}`
+      const entry = this.literalMap.get(sym.value.id)
+      if (entry) {
+        valueStr = `0x${entry.offset.toString(16)}`
       }
     }
 
@@ -692,8 +689,35 @@ class MetaBuilder {
           symbolIndex,
         )
       }
+    } else if (pattern.kind === 'TuplePattern') {
+      // Get the source text for the pattern to find element offsets
+      const patternText = this.source.slice(pattern.span.start, pattern.span.end)
+
+      for (const element of pattern.elements) {
+        if (element.kind === 'named') {
+          // The variable name is either the binding or the field name (for shorthand)
+          const varName = element.binding ?? element.field
+          const symbolIndex = this.symbolIndexByName.get(varName)
+          if (symbolIndex === undefined) continue
+
+          // Find the offset of this element in the source by looking for "fieldname:"
+          const fieldPattern = `${element.field}:`
+          const idx = patternText.indexOf(fieldPattern)
+          if (idx !== -1) {
+            const offset = pattern.span.start + idx
+            this.addHint(
+              offset,
+              element.field.length,
+              this.symbols[symbolIndex].type,
+              symbolIndex,
+            )
+          }
+        } else if (element.kind === 'positional') {
+          // For positional, recurse into the nested pattern
+          this.generateHintsForPattern(element.pattern)
+        }
+      }
     }
-    // TODO: Handle TuplePattern
   }
 
   private generateHintsForExpr(expr: AST.Expr): void {
@@ -717,7 +741,27 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          this.addHint(expr.span.start, len, typeIndex)
+          // Check if this is a def reference (AST has substituted the literal, but source has the def name)
+          const sourceText = this.source.slice(expr.span.start, expr.span.end)
+          const symbolIndex = this.symbolIndexByName.get(sourceText)
+          const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
+          const isDefRef = symbol?.kind === 'def'
+
+          // For string literals (not def refs), include data section info
+          let dataInfo: string | undefined
+          if (expr.value.kind === 'string' && !isDefRef) {
+            const entry = this.literalMap.get(expr.span.start)
+            if (entry) {
+              const ptr = `0x${entry.offset.toString(16)}`
+              // If type is a slice (not manyPointer), show fat pointer (ptr, len)
+              if (type.kind === 'indexed' && !type.manyPointer) {
+                dataInfo = `(${ptr}, ${expr.value.bytes.length})`
+              } else {
+                dataInfo = ptr
+              }
+            }
+          }
+          this.addHint(expr.span.start, len, typeIndex, isDefRef ? symbolIndex : undefined, dataInfo)
         }
         break
       }
@@ -824,7 +868,16 @@ class MetaBuilder {
 
       case 'TupleExpr':
         for (const elem of expr.elements) {
-          if (elem.value) this.generateHintsForExpr(elem.value)
+          if (elem.value) {
+            this.generateHintsForExpr(elem.value)
+          } else if (elem.name) {
+            // Shorthand syntax: (d:, a:) - generate hint for implicit variable reference
+            const symbolIndex = this.symbolIndexByName.get(elem.name)
+            if (symbolIndex !== undefined) {
+              const symbol = this.symbols[symbolIndex]
+              this.addHint(elem.span.start, elem.name.length, symbol.type, symbolIndex)
+            }
+          }
         }
         break
 

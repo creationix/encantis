@@ -678,11 +678,7 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
       }
       break
     case 'MemoryDecl':
-      if (visitor.visitMemoryDecl?.(decl) !== false) {
-        for (const entry of decl.data) {
-          if (entry.value) walkExpr(entry.value, visitor)
-        }
-      }
+      visitor.visitMemoryDecl?.(decl)
       break
   }
 }
