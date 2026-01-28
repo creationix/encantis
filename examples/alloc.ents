@@ -1,14 +1,9 @@
 // A very simple memory allocator that just moved a pointer
 // forward in a pre-allocated buffer. No deallocation.
+export "memory" memory 1
 
-global alloc-ptr: [*]u8  // start of free memory
-global alloc-end: *u8  // end of allocated memory
-
-// Initialize the allocator with a memory region
-export "initAllocator" func (start: [*]u8, size: u32) {
-  alloc-ptr = start
-  alloc-end = start + size
-}
+global alloc-ptr = 0 as [*]u8  // start of free memory
+global alloc-end = 0x10000 as *u8  // end of allocated memory
 
 // Allocate a block of memory of given size and alignment
 // Returns pointer to allocated memory or null if out of memory
@@ -19,4 +14,27 @@ export "alloc" func alloc(size: u32) -> (ptr:[*]u8) {
   ptr = alloc-ptr
   // Update the allocation pointer
   alloc-ptr += size
+}
+
+// TODO: support recursive type definitions
+type LinkedListNode = (
+  value: u32,
+  next: *LinkedListNode
+)
+// Manual size of LinkedListNode type
+// TODO: add sizeof operator
+def linkedListNodeSize = 8
+
+func new-node(value: u32) -> (node:*LinkedListNode) {
+  node = alloc(linkedListNodeSize) as *LinkedListNode
+  // TODO: figure out how to access properties on tuple pointers
+  node.value = value
+  node.next = 0
+}
+
+export "main" func () {
+  let node1 = new-node(42)
+  let node2 = new-node(43)
+  // TODO: figure out how to access properties on tuple pointers
+  node1.next = node2
 }
