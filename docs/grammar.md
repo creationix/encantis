@@ -22,12 +22,11 @@ calculate-total
 
 **Type identifiers** start with uppercase:
 ```encantis
-Point          // structural type
+Point
 Vector3D
 CartesianPoint
-
-@FileHandle    // nominal/unique type (@ prefix)
-@UserId
+FileHandle
+UserId
 ```
 
 Identifiers can contain letters, digits, underscores, and hyphens.
@@ -217,9 +216,6 @@ type BytePtr = *u8
 
 // Array type
 type Buffer = [1024]u8
-
-// Nominal type (unique identity)
-type @UserId = u64
 ```
 
 ### Definitions (Constants)
@@ -260,15 +256,6 @@ memory 1
 
 // With max: 1 page min, 16 pages max (1MB)
 memory 1 16
-
-// With static data
-memory 1 {
-  0 => "Hello, world!",       // UTF-8 at address 0
-  14 => 0:u8,                 // null terminator
-  16 => x"48 65 6C 6C 6F",    // raw bytes at 16
-  32 => (100:i32, 200:i32),   // two i32s at 32
-  40 => (x: 1.0, y: 2.0),     // struct at 40
-}
 ```
 
 ---
@@ -276,21 +263,6 @@ memory 1 {
 ## Types
 
 [Grammar: `Type`, `BaseType`](../packages/compiler/src/grammar/encantis.ohm#L100-L120)
-
-// Memory with max: 1 page min, 16 pages max (1MB)
-memory 1 16
-
-// Memory with static data
-memory 1 {
-  0 => "Hello, world!",       // UTF-8 string at address 0
-  14 => 0:u8,                 // null terminator
-  16 => x"48 65 6C 6C 6F",    // raw hex bytes at 16
-  32 => (100:i32, 200:i32),   // two i32s at 32
-  40 => (x: 1.0, y: 2.0),     // struct at 40
-}
-```
-
-## Types
 
 ```ebnf
 type            = base_type "->" type            -- function type

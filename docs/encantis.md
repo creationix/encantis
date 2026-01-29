@@ -33,13 +33,8 @@ Hyphens in identifiers are idiomatic for constants and helper functions.
 User-defined type names must start with a capital letter. This distinguishes them from primitive types (`i32`, `f64`, etc.) and regular identifiers:
 
 ```ents
-// Structural types
 type Point = (x:f32, y:f32)      // OK: Point starts with capital
 type point = (x:f32, y:f32)      // ERROR: type names must be capitalized
-
-// Unique types
-type @UserId = i64               // OK: UserId starts with capital
-type @userId = i64               // ERROR: type names must be capitalized
 ```
 
 This convention allows the parser to distinguish type references from variable references without forward declarations:
@@ -362,11 +357,8 @@ Structs are tuples with named fields, using the same `()` syntax:
 ```ents
 type Point = (x:f32, y:f32)
 type Rect = (origin:Point, size:(w:f32, h:f32))
-
-type @Color = (r:u8, g:u8, b:u8, a:u8)
+type Color = (r:u8, g:u8, b:u8, a:u8)
 ```
-
-Structural aliases omit `@`; nominal aliases use `@Name` with the same `type` keyword.
 
 #### Struct Constructors
 
@@ -803,52 +795,6 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
   else { x }
 ```
 
-### 3.5 Function Overloading
-
-Functions can be overloaded by defining multiple clauses with different patterns. The compiler groups clauses and dispatches based on the pattern:
-
-```ents
-// Type-based overloading — different shapes, compile-time dispatch
-func process(x: i32) -> i32 => x * 2
-func process(x: i32, y: i32) -> i32 => x + y
-
-// Value-based overloading — same shape, runtime dispatch
-func factorial(0) -> i32 => 1
-func factorial(n: i32) -> i32 => n * factorial(n - 1)
-
-func fib(0) -> i32 => 0
-func fib(1) -> i32 => 1
-func fib(n: i32) -> i32 => fib(n - 1) + fib(n - 2)
-```
-
-#### Dispatch Semantics
-
-**Type/shape dispatch** (different tuple structures) is resolved at compile time. Each unique shape generates a separate WebAssembly function:
-
-```ents
-func process(x: i32) -> i32           // compiles to $process_i32
-func process(x: i32, y: i32) -> i32   // compiles to $process_i32_i32
-```
-
-**Value dispatch** (same shape, different value patterns) compiles to a single WebAssembly function with an internal match:
-
-```ents
-// These compile to ONE function with runtime pattern matching
-func mul(a: i32, 0) -> i32 => 0
-func mul(a: i32, 1) -> i32 => a
-func mul(a: i32, 2) -> i32 => a + a
-func mul(a: i32, b: i32) -> i32 => a * b
-
-// Compiles to approximately:
-// (func $mul (param $a i32) (param $b i32) (result i32)
-//   (if (i32.eq (local.get $b) (i32.const 0)) (return (i32.const 0)))
-//   (if (i32.eq (local.get $b) (i32.const 1)) (return (local.get $a)))
-//   (if (i32.eq (local.get $b) (i32.const 2)) (return (i32.add (local.get $a) (local.get $a))))
-//   (i32.mul (local.get $a) (local.get $b)))
-```
-
-Clauses are matched in definition order (first match wins). The catch-all pattern with a binding (`b: i32`) should come last.
-
 ---
 
 ## 4. Expressions & Operators
@@ -994,6 +940,8 @@ ptr.* ^= mask            // XOR through pointer
 ### 4.6 Pointer Operations
 
 #### Arithmetic
+
+Only many-pointers are allowed to do pointer arithmetic. Single pointers and fat slices do not support arithmetic.
 
 | Expression | Result |
 |------------|--------|
@@ -1214,7 +1162,7 @@ match char {
 
 ## 6. Pattern Matching
 
-Encantis has a unified pattern syntax that works consistently across function signatures, match expressions, if-let bindings, and let destructuring. This enables a single grammar rule to express type matching, value matching, and variable binding in all contexts.
+Encantis has a unified pattern syntax that works consistently across match expressions, if-let bindings, and let destructuring. This enables a single grammar rule to express type matching, value matching, and variable binding in all contexts.
 
 ### 6.1 Pattern Forms
 
@@ -1229,53 +1177,23 @@ Encantis has a unified pattern syntax that works consistently across function si
 
 ### 6.2 Patterns in Function Signatures
 
-Functions have multiple inputs and multiple outputs (0 or more each), mapping directly to WASM's multi-value semantics.
+Functions have multiple inputs and multiple outputs (0 or more each), mapping directly to WASM's multi-value semantics. All function calls require parentheses.
 
 The signature syntax determines what bindings exist inside the function body:
 
 ```ents
-// Named bindings with parens
+// Named parameter binding
 func to_polar(point: CartesianPoint) -> (out: PolarPoint)
-// Call: to_polar(p)
 // Bindings: point, out
 
-// Constructor pattern syntax — destructured bindings
+// Constructor pattern — destructures into field bindings
 func to_polar CartesianPoint(x, y) -> PolarPoint(d, a)
-// Call: to_polar(1, 2)
 // Bindings: x, y, d, a
 
-// Bare type — no bindings, called without parens
+// Anonymous parameter — no binding, use positional access
 func double i32 -> i32
-// Call: double 5
-// Bindings: none (use traditional return)
+// Bindings: none (use return statement)
 ```
-
-All three forms can define the same underlying function type — they differ only in bindings and calling convention.
-
-#### Calling Convention: Parens vs Bare
-
-The signature syntax determines how a function is called:
-
-| Signature Input | Call Syntax |
-|-----------------|-------------|
-| `(x: T)` | `func(value)` — parens required |
-| `(T)` | `func(value)` — parens required |
-| `T` | `func value` — bare (no parens) |
-| `T(a, b)` | `func(a, b)` — parens required (tuple fields) |
-
-```ents
-// Bare input — bare call
-func double i32 -> i32 => ...
-let x = double 5
-
-// Paren input — paren call
-func double(n: i32) -> i32 => ...
-let x = double(5)
-
-// Both define the same type (i32 -> i32) but different calling conventions
-```
-
-For multi-value inputs (tuples), parens are always required since the values are comma-separated.
 
 ### 6.3 Patterns in Match Arms
 
@@ -1316,7 +1234,7 @@ func describe(c:Color) -> []u8 {
 }
 ```
 
-The compiler enforces exhaustive matching — all variants must be handled, or a wildcard `_` pattern must be present.
+The compiler enforces exhaustive matching when matching an enum — all variants must be handled, or a wildcard `_` pattern must be present.
 
 #### Struct and Tuple Patterns
 
@@ -1447,24 +1365,10 @@ export global counter:i32 = 0
 
 ### 7.3 Memory Declarations
 
-Static data is declared inside a `memory` block. Expressions must be comptime (literals or tuples/structs of literals).
-
 ```ents
 // Declare memory (pages of 64KB)
 memory 1                   // min 1 page
 memory 2 16                // min 2 pages, max 16 pages
-
-// Initialize memory with constants
-memory 1 {
-  0   => "Hello",             // UTF-8 string at offset 0
-  6   => 0:u8,                 // null terminator
-  16  => x"01 02 03 04",       // raw bytes at offset 16
-  32  => (100:i32, 200:i32),   // tuple of i32s at 32
-  48  => (x: 1.0, y: 2.0),     // struct at 48
-  numbers => (1, 2, 3),        // tuple of i32s at auto-assigned offset (stored in `numbers`)
-  answer:u64 => 42,            // 8 byte unsigned integer at auto-assigned offset stored in `answer`
-  (name:, age:) => ("Bob", 26) // tuple of ([]u8, i32) with `name` being a fat pointer and `age` a simple pointer.
-}
 ```
 
 ---
@@ -1473,30 +1377,31 @@ memory 1 {
 
 ### 8.1 Stack vs Memory Allocation
 
-Encantis distinguishes between stack-allocated values (WASM locals) and memory-allocated values (linear memory):
+Encantis distinguishes between register storage (WASM locals/globals) and linear memory:
 
-| Declaration | Storage | Address |
-|-------------|---------|---------|
-| `let x:i32` | WASM local | None (no `&x`) |
-| `let p:Point` | Multiple WASM locals | None |
-| `let ptr:*Point` | Single WASM local (i32) | Points to memory |
-| `let arr:*[64]u8` | Linear memory | Has address |
-| `global g:i32` | Linear memory | Has address |
+| Declaration | Storage | Notes |
+|-------------|---------|-------|
+| `let x:i32` | WASM local | Function-scoped register |
+| `let p:Point` | Multiple WASM locals | Fields are separate registers |
+| `let ptr:*[64]u8` | Single WASM local (i32) | Holds a pointer, doesn't allocate |
+| `global g:i32` | WASM global | Module-scoped register |
+| `def buffer = [0:u8; 64]` | Linear memory | Allocates 64 bytes in data section |
 
-Primitives and small structs declared as `let` are stored in WASM locals—fast registers with no memory address. Pointers like `*Point` are single i32 values pointing to data serialized in linear memory.
+Primitives and structs are stored in WASM locals/globals—fast registers with no memory address. Pointer variables are single i32 values that reference memory allocated via `def`.
 
 ```ents
-let p:Point = Point(1.0, 2.0)   // two f32 WASM locals, no address
-let ptr:*Point = &heap_point    // one i32 local pointing to 8 bytes in memory
+let p:Point = Point(1.0, 2.0)   // two f32 WASM locals
+def buffer = [0:u8; 64]         // allocates 64 bytes in data section
+let ptr:*[64]u8 = buffer        // one i32 local holding pointer to buffer
 
-// Stack allocation: fields are separate values
+// Locals: fields are separate registers
 let a = p.x                      // reads from WASM local
 
-// Memory allocation: fields are serialized
-let b = ptr.x                    // reads from linear memory at ptr+0
+// Memory: data is serialized bytes
+let b = ptr[0]                   // reads from linear memory
 ```
 
-Fixed-size arrays (`*[N]T`) and globals are always memory-allocated and have addresses.
+Array and string literals in `def` declarations are serialized to the data section of the WASM module.
 
 ### 8.2 By-Value vs By-Reference Passing
 

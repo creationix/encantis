@@ -286,31 +286,6 @@ describe('type inference', () => {
     })
   })
 
-  describe('unique types (@ prefix)', () => {
-    test('unique type in type annotation', () => {
-      const result = checkModule(`
-        type @Index = u8
-        func main() {
-          let idx: @Index = 0
-        }
-      `)
-      expect(result.errors).toHaveLength(0)
-    })
-
-    test('unique type rejects plain value assignment', () => {
-      const result = checkModule(`
-        type @Index = u8
-        func main() {
-          let idx: @Index = 0
-          let plain: u8 = idx
-        }
-      `)
-      // The plain: u8 = idx should fail because you can't assign unique to plain
-      expect(result.errors).toHaveLength(1)
-      expect(result.errors[0].message).toContain('cannot assign')
-    })
-  })
-
   describe('framing specifiers (! and ?)', () => {
     test('[?]u8 for LEB128-prefixed string', () => {
       const result = checkModule(`
@@ -435,19 +410,16 @@ describe('type inference', () => {
 })
 
 // Parse type with extended syntax for testing (named types with =)
-// Syntax: Name=underlying for aliases, @Name=underlying for unique types
+// Syntax: Name=underlying for aliases
 function parseType(s: string): ResolvedType {
   s = s.trim()
 
-  // Named type: Name=underlying or @Name=underlying (unique)
+  // Named type: Name=underlying
   if (s.includes('=')) {
     const eqIdx = s.indexOf('=')
-    const namePart = s.slice(0, eqIdx).trim()
+    const typeName = s.slice(0, eqIdx).trim()
     const underlying = s.slice(eqIdx + 1).trim()
-    // @ prefix indicates unique type
-    const unique = namePart.startsWith('@')
-    const typeName = namePart // Keep the @ in the name for unique types
-    return named(typeName, parseType(underlying), unique)
+    return named(typeName, parseType(underlying))
   }
 
   // Use grammar-based parser for everything else
@@ -510,12 +482,6 @@ describe('typeAssignable', () => {
     // Named types (aliases)
     ['Point=(x:i32, y:i32)', '(x:int(1), y:int(2))', true],
     ['i32', 'Index=i32', true], // alias unwraps
-
-    // Unique types - uses @Name syntax
-    ['@Index=i32', '@Index=i32', true],
-    ['@Index=i32', 'i32', false], // can't assign plain to unique
-    ['i32', '@Index=i32', false], // can't assign unique to plain
-    ['@Index=u8', 'int(42)', true], // comptime coerces to unique underlying
 
     // Pointers
     ['*i32', '*i32', true],

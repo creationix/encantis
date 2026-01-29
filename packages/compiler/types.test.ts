@@ -51,10 +51,9 @@ describe('types', () => {
     })
 
     test('named creates named type', () => {
-      const type = named('Point', tuple([field('x', primitive('i32'))]), false)
+      const type = named('Point', tuple([field('x', primitive('i32'))]))
       expect(type.kind).toBe('named')
       expect(type.name).toBe('Point')
-      expect(type.unique).toBe(false)
     })
 
     test('comptimeInt creates comptime int type', () => {
@@ -107,10 +106,6 @@ describe('types', () => {
       expect(typeAssignable(primitive('i32'), primitive('i32'))).toBe(true)
     })
 
-    test('unique types are not assignable to their underlying type', () => {
-      const uniqueType = named('@UserId', primitive('i32'), true)
-      expect(typeAssignable(primitive('i32'), uniqueType)).toBe(false)
-    })
   })
 
   describe('type predicates', () => {
