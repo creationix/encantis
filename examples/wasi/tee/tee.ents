@@ -11,28 +11,25 @@ def stdin = 0:i32
 def stdout = 1:i32
 def stderr = 2:i32
 
-export "memory" memory 1
+// Reserve space for a single iovec
 
-// I/O vector (ptr, len) stored at offset 0
-// []u8 is structurally (ptr:[*]u8, len:u32) - same as WASI iovec
-global iovec:[]u8 = (ptr: 64, len: 0)
+def buffer = mut [0:u8;1024]
+def iovecs:[][]u8 = [buffer]
+def iovecs2 = [][]u8(buffer.ptr, buffer.len)
 
-// Buffer starts at offset 64 (after iovec struct at 0-7)
-def buffer_ptr = 64:*u8
-def buffer_len = 1024:u32
-
-export "_start"
-func main() {
+export "_start" func main() {
   let nread:u32 = 0
   let nwritten:u32 = 0
+  iovec[0] = buffer.ptr
+  iovec[1] = buffer.len
 
   loop {
     // Set up iovec to read into buffer
-    iovec = (ptr: buffer_ptr, len: buffer_len)
+    let iovecs = (iovec.ptr, 1)
 
     // Read up to buffer_len bytes from stdin
     // Pass slice containing single iovec: (&iovec, 1) coerces to [][]u8
-    let res = wasi_fd_read(stdin, (&iovec, 1), &nread)
+    let res = wasi_fd_read(stdin, (iovec, 1), &nread)
     break when res != 0
     break when nread == 0
 

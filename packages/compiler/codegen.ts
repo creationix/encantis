@@ -78,6 +78,10 @@ export function typeToWasm(t: ResolvedType): string[] {
       if (['i256', 'u256'].includes(u.name)) {
         throw new Error(`TODO: codegen for ${u.name} (requires two WASM SIMD v128 values)`)
       }
+      // TODO: 512-bit integers use four v128 registers
+      if (['i512', 'u512'].includes(u.name)) {
+        throw new Error(`TODO: codegen for ${u.name} (requires four WASM SIMD v128 values)`)
+      }
       throw new Error(`Unknown primitive type: ${u.name}`)
     }
 

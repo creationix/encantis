@@ -6,7 +6,7 @@ import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID, unwrap } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
-import { DataSectionBuilder, type DataEntry } from './data-pack'
+import { buildDataSection, type DataRef } from './data-pack'
 
 // === Builtin Function Signatures ===
 // Note: Many builtins are polymorphic. These signatures are for LSP display.
@@ -116,6 +116,7 @@ export interface MetaHint {
   symbol?: number // Index into symbols array
   value?: string // For compile-time constant expressions
   expr?: string // Full expression path (e.g., "hash_state.u64[0]")
+  exprStart?: number // Column where full expression starts (for highlight range)
   parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
   inputParam?: boolean // True if this hint is for a function input parameter position
 }
@@ -147,7 +148,7 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
-  private literalMap: Map<number, DataEntry> = new Map()
+  private literalMap: Map<number, DataRef> = new Map()
 
   constructor(
     private module: AST.Module,
@@ -159,10 +160,9 @@ class MetaBuilder {
 
   build(srcPath: string): MetaOutput {
     // Build data section to get literal addresses for hover hints
-    // Use DataSectionBuilder.build() to walk ALL string literals in the module
-    const dataBuilder = new DataSectionBuilder()
-    dataBuilder.build(this.module)
-    this.literalMap = dataBuilder.result().literalMap
+    // Use the checker's pending literals which include all def data (arrays, strings, repeats)
+    const { literalRefs } = buildDataSection(this.checkResult.literals)
+    this.literalMap = literalRefs
 
     // Pass 1: Collect symbols (populates typeRegistry)
     this.collectSymbols()
@@ -473,9 +473,7 @@ class MetaBuilder {
     const sym = this.checkResult.symbols.get(decl.ident.name)
     if (!sym || sym.kind !== 'type') return
 
-    // Types with @ prefix are unique/nominal, others are structural aliases
-    const kind = decl.ident.name.startsWith('@') ? 'unique' : 'type'
-    const symbolIndex = this.addSymbol(decl.ident.name, kind, sym.type, decl.ident.span.start)
+    const symbolIndex = this.addSymbol(decl.ident.name, 'type', sym.type, decl.ident.span.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
   }
 
@@ -497,7 +495,7 @@ class MetaBuilder {
     } else if (sym.value.kind === 'data_ptr') {
       const entry = this.literalMap.get(sym.value.id)
       if (entry) {
-        valueStr = `0x${entry.offset.toString(16)}`
+        valueStr = `0x${entry.ptr.toString(16)}`
       }
     }
 
@@ -764,7 +762,7 @@ class MetaBuilder {
           if (expr.value.kind === 'string' && !isDefRef) {
             const entry = this.literalMap.get(expr.span.start)
             if (entry) {
-              const ptr = `0x${entry.offset.toString(16)}`
+              const ptr = `0x${entry.ptr.toString(16)}`
               // If type is a slice (not manyPointer), show fat pointer (ptr, len)
               if (type.kind === 'indexed' && !type.manyPointer) {
                 dataInfo = `(${ptr}, ${expr.value.bytes.length})`
@@ -829,7 +827,9 @@ class MetaBuilder {
             const parentKind = rootIdent ? this.symbols[this.symbolIndexByName.get(rootIdent) ?? -1]?.kind : undefined
             // Use simplified expression for cleaner hover display
             const simplifiedExpr = simplifyExpr(expr, this.source)
-            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue, simplifiedExpr, parentKind)
+            // Include expression start column for full-expression highlighting
+            const exprStartCol = this.lineMap.offsetToPosition(expr.span.start).col
+            this.addHint(memberOffset, expr.member.name.length, typeIndex, undefined, comptimeValue, simplifiedExpr, parentKind, undefined, exprStartCol)
           }
         }
         // Handle deref: .* - show full expression context
@@ -840,7 +840,8 @@ class MetaBuilder {
           if (dotStarIdx !== -1) {
             const memberOffset = expr.span.start + dotStarIdx + 1 // position of *
             const simplifiedExpr = simplifyExpr(expr, this.source)
-            this.addHint(memberOffset, 1, typeIndex, undefined, undefined, simplifiedExpr)
+            const exprStartCol = this.lineMap.offsetToPosition(expr.span.start).col
+            this.addHint(memberOffset, 1, typeIndex, undefined, undefined, simplifiedExpr, undefined, undefined, exprStartCol)
           }
         }
         // Handle type punning: .u8, .u32, etc. - show the resolved type after punning
@@ -852,7 +853,8 @@ class MetaBuilder {
             const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
             const typeName = exprText.slice(dotIdx + 1)
             const simplifiedExpr = simplifyExpr(expr, this.source)
-            this.addHint(memberOffset, typeName.length, typeIndex, undefined, undefined, simplifiedExpr)
+            const exprStartCol = this.lineMap.offsetToPosition(expr.span.start).col
+            this.addHint(memberOffset, typeName.length, typeIndex, undefined, undefined, simplifiedExpr, undefined, undefined, exprStartCol)
           }
         }
         break
@@ -898,7 +900,13 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          this.addHint(expr.span.start, len, typeIndex)
+          // For array literals, include data section address if available
+          let dataInfo: string | undefined
+          const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
+          if (entry) {
+            dataInfo = `0x${entry.ptr.toString(16)}`
+          }
+          this.addHint(expr.span.start, len, typeIndex, undefined, dataInfo)
         }
         // Recurse into elements
         for (const elem of expr.elements) {
@@ -1047,12 +1055,14 @@ class MetaBuilder {
     expr?: string,
     parentKind?: MetaSymbol['kind'],
     inputParam?: boolean,
+    exprStart?: number,
   ): void {
     const key = this.lineMap.positionKey(offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
     if (value !== undefined) hint.value = value
     if (expr !== undefined) hint.expr = expr
+    if (exprStart !== undefined) hint.exprStart = exprStart
     if (parentKind !== undefined) hint.parentKind = parentKind
     if (inputParam) hint.inputParam = true
     this.hints[key] = hint
@@ -1066,7 +1076,7 @@ class TypeRegistry {
   private typeIndex = new Map<string, number>()
 
   register(type: ResolvedType): number {
-    // For named types (type aliases/uniques), register the underlying type
+    // For named types (type aliases), register the underlying type
     // which already has the symbol reference from collectTypeDecl
     if (type.kind === 'named') {
       return this.register(type.type)

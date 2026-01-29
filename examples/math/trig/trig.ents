@@ -1,8 +1,5 @@
 // Trigonometry example: coordinate conversion between polar and cartesian
 
-// Export memory so JS can read strings
-export "memory" memory 1
-
 // Import math functions from the host environment
 import "math" (
   "sin" func sin(a:f64) -> f64
@@ -20,21 +17,18 @@ type PolarPoint = (d:f64, a:f64)
 type CartesianPoint = (x:f64, y:f64)
 
 // Convert from cartesian to polar coordinates
-export "to_polar"
-func to_polar(c:CartesianPoint) -> (p:PolarPoint) {
+export func to_polar(c:CartesianPoint) -> (p:PolarPoint) {
   p.d = sqrt(c.x * c.x + c.y * c.y)
   p.a = atan2(c.y, c.x)
 }
 
 // Convert from polar to cartesian coordinates
-export "from_polar"
-func from_polar(p:PolarPoint) -> (c:CartesianPoint) {
+export func from_polar(p:PolarPoint) -> (c:CartesianPoint) {
   c.x = cos(p.a) * p.d
   c.y = sin(p.a) * p.d
 }
 
-export "_start"
-func main() {
+export func main() {
   // Declare some variables
   let x:f64 = 3.1
   let y:f64 = 4.2

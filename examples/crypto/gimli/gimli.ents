@@ -2,12 +2,9 @@
 // Based on the Gimli specification by Bernstein, Kölbl, Lucks, et al.
 // State is 384 bits: 12 x 32-bit words arranged as a 3x4 matrix
 
-export "mem" memory 1
-
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
-export "gimli"
-func gimli(state:[*12]u32) {
+export func gimli(state:[*12]u32) {
   let round:u32 = 24
 
   loop {
@@ -58,8 +55,7 @@ def hash_state = mut [0:u32;12]
 
 // Gimli-Hash: absorb input and squeeze variable-length output (XOF)
 // Uses rate of 16 bytes (128 bits)
-export "gimli_hash"
-func gimli_hash(input:[]u8, output:[]u8) {
+export func gimli-hash(input:[]u8, output:[]u8) {
   // Initialize state to zero
   memset(hash_state.u8, 0, hash_state.len * hash_state.wid)
   let len = input.len

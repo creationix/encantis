@@ -1,8 +1,6 @@
 // xxHash64 implementation
 // Based on the xxHash specification by Yann Collet
 
-export "mem" memory 1
-
 def prime64-1 = 11400714785074694791:u64
 def prime64-2 = 14029467366897019727:u64
 def prime64-3 =  1609587929392839161:u64
@@ -20,8 +18,7 @@ inline func merge-round64(acc:u64, value:u64) -> (acc:u64) {
   acc = (acc * prime64-1) + prime64-4
 }
 
-export "xxh64"
-func xxh64(data:[]u8, seed:u64) -> (h64:u64) {
+export func xxh64(data:[]u8, seed:u64) -> (h64:u64) {
   let ptr = data.ptr
   let len = data.len
   let last:*u8 = ptr + len

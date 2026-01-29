@@ -137,15 +137,18 @@ import "env" "memory" memory 1
 [Grammar: `ExportDecl`](../packages/compiler/src/grammar/encantis.ohm#L36-L40)
 
 ```encantis
-// Export a function
-export "add" func add(a: i32, b: i32) -> i32 {
+// Export a function (name inferred from identifier)
+export func add(a: i32, b: i32) -> i32 {
   return a + b
 }
 
-// Export a global
-export "counter" global counter: i32 = 0
+// Export with explicit name (when different from identifier)
+export "_start" func main() { }
 
-// Export memory
+// Export a global (name inferred from identifier)
+export global counter: i32 = 0
+
+// Export memory (explicit name required)
 export "memory" memory 1
 ```
 

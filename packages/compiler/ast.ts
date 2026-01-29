@@ -113,11 +113,10 @@ export interface ArrowBody extends BaseNode {
   expr: Expr
 }
 
-// type Name = Type (structural alias)
-// type @Name = Type (unique/nominal type - @ prefix makes it unique)
+// type Name = Type (type alias)
 export interface TypeDecl extends BaseNode {
   kind: 'TypeDecl'
-  ident: TypeRef // name may start with @ for unique types
+  ident: TypeRef
   type: Type
 }
 
@@ -564,10 +563,10 @@ export interface CompositeType extends BaseNode {
   fields: Field[]
 }
 
-// Named type reference (uppercase identifier, optionally prefixed with @ for unique types)
+// Named type reference (uppercase identifier)
 export interface TypeRef extends BaseNode {
   kind: 'TypeRef'
-  name: string // e.g., "Point" or "@CleanString"
+  name: string // e.g., "Point", "Color"
 }
 
 // Comptime integer: int(value)

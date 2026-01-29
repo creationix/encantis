@@ -612,7 +612,8 @@ class CheckContext {
     // Handle bare data literals without type annotation: def x = [0;12] or def x = [0:u32;12]
     // These become many-pointers to the inferred indexed type
     if (!declaredType && this.isDataLiteralExpr(expr) && inferredType.kind === 'indexed') {
-      const size = inferredType.size !== 'inferred' ? inferredType.size : this.getLiteralSize(expr)
+      // Get concrete size from literal if inferred or comptime (array literals return 'comptime')
+      const size = typeof inferredType.size === 'number' ? inferredType.size : this.getLiteralSize(expr)
       const dataType: IndexedRT = {
         kind: 'indexed',
         element: inferredType.element,

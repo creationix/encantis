@@ -9,19 +9,21 @@ export type PrimitiveName =
   | 'i64'
   | 'i128'
   | 'i256'
+  | 'i512'
   | 'u8'
   | 'u16'
   | 'u32'
   | 'u64'
   | 'u128'
   | 'u256'
+  | 'u512'
   | 'f32'
   | 'f64'
   | 'bool'
 
 // Type classification constants
-const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256']
-const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', 'u256']
+const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512']
+const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512']
 const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
 const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
 
@@ -39,6 +41,8 @@ const INT_BOUNDS: Record<string, [bigint, bigint]> = {
   u128: [0n, 2n ** 128n - 1n],
   i256: [-(2n ** 255n), 2n ** 255n - 1n],
   u256: [0n, 2n ** 256n - 1n],
+  i512: [-(2n ** 511n), 2n ** 511n - 1n],
+  u512: [0n, 2n ** 512n - 1n],
 }
 
 // Resolved type variants
@@ -119,13 +123,12 @@ export interface ComptimeListRT {
   elements: ResolvedType[] // types of each element (may be comptime types)
 }
 
-// Named type - wraps a type alias or unique type, preserving the name
+// Named type - wraps a type alias, preserving the name
 // For display purposes: shows the name instead of the underlying type
 export interface NamedRT {
   kind: 'named'
-  name: string // The alias/unique name (e.g., "Point", "Index")
+  name: string // The alias name (e.g., "Point", "Index")
   type: ResolvedType // The underlying resolved type
-  unique: boolean // true for unique types, false for aliases
 }
 
 // Forward reference - placeholder for recursive type definitions
@@ -211,8 +214,8 @@ export function comptimeList(elements: ResolvedType[]): ComptimeListRT {
   return { kind: 'comptime_list', elements }
 }
 
-export function named(name: string, type: ResolvedType, unique: boolean): NamedRT {
-  return { kind: 'named', name, type, unique }
+export function named(name: string, type: ResolvedType): NamedRT {
+  return { kind: 'named', name, type }
 }
 
 export function forwardRef(name: string): ForwardRefRT {
@@ -397,10 +400,6 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
     }
 
     case 'named': {
-      // Unique types are only equal if same name
-      if (a.unique) {
-        return b.kind === 'named' && b.unique && a.name === b.name
-      }
       // Aliases are transparent - compare underlying types
       return typeEquals(a.type, b)
     }
@@ -439,24 +438,6 @@ const lossy = (reinterpret: boolean): AssignResult => ({ compatible: true, lossi
 // Check if source type can be assigned to target type
 // Returns lossiness and reinterpretability
 export function typeAssignResult(target: ResolvedType, source: ResolvedType): AssignResult {
-  // Handle unique types first - they don't unwrap for assignability
-  // Unique types are only assignable to the same unique type
-  if (target.kind === 'named' && target.unique) {
-    if (source.kind === 'named' && source.unique) {
-      return target.name === source.name ? lossless(true) : INCOMPATIBLE
-    }
-    // Comptime values can coerce to unique types if they fit the underlying type
-    const s = unwrap(source)
-    if (s.kind === 'comptime_int' || s.kind === 'comptime_float') {
-      return typeAssignResult(target.type, s)
-    }
-    return INCOMPATIBLE
-  }
-  if (source.kind === 'named' && source.unique) {
-    // Unique source cannot be assigned to non-unique target
-    return INCOMPATIBLE
-  }
-
   const t = unwrap(target)
   const s = unwrap(source)
 
@@ -805,15 +786,7 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return `[${t.elements.map((e) => typeToString(e, opts)).join(sep)}]`
 
     case 'named':
-      // In compact mode (meta output), always use just the name
-      if (compact) {
-        return t.name
-      }
-      // For unique/tagged types, show as Type@Tag
-      if (t.unique) {
-        return `${typeToString(t.type, opts)}@${t.name}`
-      }
-      // For aliases, just show the name
+      // Just show the alias name
       return t.name
 
     case 'forward_ref':
@@ -919,6 +892,9 @@ export function primitiveByteSize(t: ResolvedType): number | null {
     case 'i256':
     case 'u256':
       return 32
+    case 'i512':
+    case 'u512':
+      return 64
     default:
       return null
   }

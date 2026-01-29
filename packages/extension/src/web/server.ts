@@ -200,7 +200,6 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     case 'return': contents = `-> ${sym.name}: ${typeStr}`; break;
     case 'func': contents = `func ${sym.name}: ${typeStr}`; break;
     case 'type': contents = `type ${sym.name} = ${typeStr}`; break;
-    case 'unique': contents = `type ${sym.name}@ = ${typeStr}`; break;
     case 'def': contents = `def ${sym.name}: ${typeStr}`; break;
     default: contents = `${sym.name}: ${typeStr}`;
   }

@@ -454,4 +454,20 @@ describe('module codegen', () => {
     expect(wat).toContain('(export "add"')
     expect(wat).toContain('(export "sub"')
   })
+
+  test('export without explicit name uses function name', () => {
+    const wat = modWat(`
+      export func multiply(a: i32, b: i32) -> i32 => a * b
+    `)
+    expect(wat).toContain('(func $multiply')
+    expect(wat).toContain('(export "multiply" (func $multiply))')
+  })
+
+  test('export with explicit name can differ from function name', () => {
+    const wat = modWat(`
+      export "_start" func main() {}
+    `)
+    expect(wat).toContain('(func $main')
+    expect(wat).toContain('(export "_start" (func $main))')
+  })
 })

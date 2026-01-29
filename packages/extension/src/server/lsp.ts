@@ -59,7 +59,6 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'def': return 'def';
     case 'func': return 'func';
     case 'type': return 'type';
-    case 'unique': return 'type';
     default: return '';
   }
 }
@@ -327,12 +326,24 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     u128: '128-bit unsigned integer (SIMD v128)',
     i256: '256-bit signed integer (2x SIMD v128)',
     u256: '256-bit unsigned integer (2x SIMD v128)',
+    i512: '512-bit signed integer (4x SIMD v128)',
+    u512: '512-bit unsigned integer (4x SIMD v128)',
     f32: '32-bit floating point',
     f64: '64-bit floating point',
   };
 
   // Check if this is a type punning context (preceded by a dot)
   const isTypePunContext = wordInfo.start > 0 && text[wordInfo.start - 1] === '.';
+
+  // Helper to create hover range - uses exprStart if available for full expression highlight
+  const makeHoverRange = (
+    startPos: { line: number; character: number },
+    len: number,
+    exprStart?: number
+  ) => ({
+    start: { line: startPos.line, character: exprStart ?? startPos.character },
+    end: { line: startPos.line, character: startPos.character + len },
+  });
 
   // Look up hint from meta FIRST (handles type punning and other resolved types)
   const cached = analysisCache.get(params.textDocument.uri);
@@ -346,6 +357,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     if (hint) {
       const typeStr = meta.types[hint.type]?.type ?? 'unknown';
       const symbol = hint.symbol !== undefined ? meta.symbols[hint.symbol] : null;
+      const range = makeHoverRange(wordStartPos, hint.len, hint.exprStart);
 
       if (symbol) {
         const display = formatSymbolDisplay(symbol, typeStr);
@@ -353,7 +365,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
         if (symbol.doc) {
           value += `\n\n${symbol.doc}`;
         }
-        return { contents: { kind: MarkupKind.Markdown, value } };
+        return { contents: { kind: MarkupKind.Markdown, value }, range };
       }
 
       // Check for builtin functions
@@ -364,6 +376,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
             kind: MarkupKind.Markdown,
             value: `\`\`\`encantis\n${builtinSig}\n\`\`\``,
           },
+          range,
         };
       }
 
@@ -383,6 +396,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
           kind: MarkupKind.Markdown,
           value: `\`\`\`encantis\n${display}\n\`\`\``,
         },
+        range,
       };
     }
 
@@ -395,12 +409,17 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       if (symbol.doc) {
         value += `\n\n${symbol.doc}`;
       }
-      return { contents: { kind: MarkupKind.Markdown, value } };
+      // Use word bounds for symbol lookup fallback
+      const range = makeHoverRange(wordStartPos, word.length);
+      return { contents: { kind: MarkupKind.Markdown, value }, range };
     }
   }
 
   // Fallback to builtin/type docs (but NOT for type punning - those need meta hints)
   if (!isTypePunContext) {
+    const wordStartPos = offsetToPosition(text, wordInfo.start);
+    const range = makeHoverRange(wordStartPos, word.length);
+
     // Check for builtin function signature first
     const builtinSig = BUILTIN_SIGNATURES[word];
     if (builtinSig) {
@@ -408,12 +427,12 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       const value = doc
         ? `\`\`\`encantis\n${builtinSig}\n\`\`\`\n\n${doc}`
         : `\`\`\`encantis\n${builtinSig}\n\`\`\``;
-      return { contents: { kind: MarkupKind.Markdown, value } };
+      return { contents: { kind: MarkupKind.Markdown, value }, range };
     }
 
     const doc = typeDocs[word];
     if (doc) {
-      return { contents: { kind: MarkupKind.Markdown, value: doc } };
+      return { contents: { kind: MarkupKind.Markdown, value: doc }, range };
     }
   }
 
@@ -500,40 +519,41 @@ function getWordAtOffset(text: string, offset: number): { word: string; start: n
     return { word: '*', start: offset, end: offset + 1 };
   }
 
-  // Handle string literals - find if we're inside or on a quoted string
-  // If we're on a quote, determine if it's opening or closing
-  if (ch === '"') {
-    // Look backward for another quote - if found, we're on the closing quote
-    for (let i = offset - 1; i >= 0; i--) {
-      if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
-        // Found opening quote - return the whole string
-        return { word: text.slice(i, offset + 1), start: i, end: offset + 1 };
-      }
-      if (text[i] === '\n') break;
-    }
-    // No quote found backward - we're on the opening quote, look forward
-    for (let i = offset + 1; i < text.length; i++) {
-      if (text[i] === '"' && text[i - 1] !== '\\') {
-        return { word: text.slice(offset, i + 1), start: offset, end: i + 1 };
-      }
-      if (text[i] === '\n') break;
-    }
-  }
-  // Not on a quote - check if inside a string by looking backwards
-  let quoteStart = -1;
-  for (let i = offset - 1; i >= 0; i--) {
+  // Handle string literals using quote counting to determine if we're inside a string
+  // Count quotes from line start to current position
+  const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+  let quoteCount = 0;
+  let lastQuotePos = -1;
+  for (let i = lineStart; i < offset; i++) {
     if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
-      quoteStart = i;
-      break;
+      quoteCount++;
+      lastQuotePos = i;
     }
-    if (text[i] === '\n') break;
   }
-  if (quoteStart !== -1) {
+
+  if (ch === '"') {
+    // We're on a quote - is it opening or closing?
+    if (quoteCount % 2 === 0) {
+      // Even quotes before us = this is an opening quote, look forward for closing
+      for (let i = offset + 1; i < text.length; i++) {
+        if (text[i] === '"' && text[i - 1] !== '\\') {
+          return { word: text.slice(offset, i + 1), start: offset, end: i + 1 };
+        }
+        if (text[i] === '\n') break;
+      }
+    } else {
+      // Odd quotes before us = this is a closing quote, use lastQuotePos as opening
+      return { word: text.slice(lastQuotePos, offset + 1), start: lastQuotePos, end: offset + 1 };
+    }
+  }
+
+  // Not on a quote - check if inside a string (odd number of quotes before us)
+  if (quoteCount % 2 === 1 && lastQuotePos !== -1) {
     // Look forwards for closing quote
     for (let i = offset; i < text.length; i++) {
       if (text[i] === '"' && text[i - 1] !== '\\') {
         // Found closing quote - return the whole string literal
-        return { word: text.slice(quoteStart, i + 1), start: quoteStart, end: i + 1 };
+        return { word: text.slice(lastQuotePos, i + 1), start: lastQuotePos, end: i + 1 };
       }
       if (text[i] === '\n') break;
     }

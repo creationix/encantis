@@ -1,8 +1,6 @@
 // xxHash32 implementation
 // Based on the xxHash specification by Yann Collet
 
-export "mem" memory 1
-
 def prime32-1 = 2654435761:u32
 def prime32-2 = 2246822519:u32
 def prime32-3 = 3266489917:u32
@@ -15,8 +13,7 @@ inline func round32(seed:u32, value:u32) -> (seed:u32) {
   seed *= prime32-1
 }
 
-export "xxh32"
-func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
+export func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
   let ptr = data.ptr
   let last:*u8 = ptr + data.len
 

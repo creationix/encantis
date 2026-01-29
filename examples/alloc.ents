@@ -7,7 +7,7 @@ global alloc-end = 0x10000 as *u8  // end of allocated memory
 
 // Allocate a block of memory of given size and alignment
 // Returns pointer to allocated memory or null if out of memory
-export "alloc" func alloc(size: u32) -> (ptr:[*]u8) {
+export func alloc(size: u32) -> (ptr:[*]u8) {
   // Check for out of memory
   return 0 when alloc-ptr + size > alloc-end
   // Get current allocation pointer
@@ -32,7 +32,7 @@ func new-node(value: u32) -> (node:*LinkedListNode) {
   node.next = 0 as *LinkedListNode
 }
 
-export "main" func main() {
+export func main() {
   let node1 = new-node(42)
   let node2 = new-node(43)
   node1.next = node2

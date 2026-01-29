@@ -3,8 +3,7 @@
 
 // Given a trie data structure and a key, find the target.
 // Returns -1 on not found, -2 on out of bounds.
-export "walk-trie"
-func walk(trie:[]u64, key:u64) -> i64 {
+export func walk-trie(trie:[]u64, key:u64) -> i64 {
   let trie_offset:u32 = 0
   let bit_offset:u8 = 0
 

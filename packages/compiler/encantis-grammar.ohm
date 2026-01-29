@@ -53,7 +53,8 @@ Encantis {
   // Exports
   // ============================================================================
 
-  ExportDecl = export stringLiteral Exportable
+  ExportDecl = export stringLiteral Exportable  -- named
+             | export Exportable                 -- unnamed
 
   Exportable = FuncDecl
              | GlobalDecl
@@ -162,8 +163,8 @@ Encantis {
         // Framing: ! (null-terminator) or ? (LEB128 prefix)
         arrayFraming = "!" | "?"
 
-  PrimitiveType = "i8" | "i16" | "i32" | "i64" | "i128" | "i256"
-                | "u8" | "u16" | "u32" | "u64" | "u128" | "u256"
+  PrimitiveType = "i8" | "i16" | "i32" | "i64" | "i128" | "i256" | "i512"
+                | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "u512"
                 | "f32" | "f64"
                 | "bool"
 
@@ -448,8 +449,8 @@ Encantis {
   // Identifiers
   ident = ~keyword lowerStart identChar*
 
-  // Type identifiers: Foo (structural) or @Foo (unique/nominal)
-  typeIdent = "@"? upperStart identChar*
+  // Type identifiers: must start with uppercase (e.g., Foo, Point, Color)
+  typeIdent = upperStart identChar*
 
   lowerStart = "a".."z"
 

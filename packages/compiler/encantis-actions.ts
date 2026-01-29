@@ -273,13 +273,37 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.ImportMemory
   },
 
-  ExportDecl(_export, name, item): AST.ExportDecl {
+  ExportDecl_named(_export, name, item): AST.ExportDecl {
     const literal = name.toAST()
     const exportName = new TextDecoder().decode(literal.value.bytes)
     return {
       kind: 'ExportDecl',
       name: exportName,
       item: item.toAST(),
+      span: span(this),
+    } as AST.ExportDecl
+  },
+
+  ExportDecl_unnamed(_export, item): AST.ExportDecl {
+    const decl = item.toAST() as AST.FuncDecl | AST.GlobalDecl | AST.MemoryDecl
+    let exportName: string
+    if (decl.kind === 'FuncDecl') {
+      if (!decl.ident) {
+        throw new Error('Cannot export anonymous function without explicit name')
+      }
+      exportName = decl.ident
+    } else if (decl.kind === 'GlobalDecl') {
+      if (decl.pattern.kind !== 'IdentPattern') {
+        throw new Error('Cannot export destructured global without explicit name')
+      }
+      exportName = decl.pattern.name
+    } else {
+      throw new Error('Memory export requires explicit name: export "name" memory ...')
+    }
+    return {
+      kind: 'ExportDecl',
+      name: exportName,
+      item: decl,
       span: span(this),
     } as AST.ExportDecl
   },
@@ -580,12 +604,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.PrimitiveType
   },
 
-  // typeIdent = "@"? upperStart identChar*
-  // The @ prefix indicates a unique/nominal type
-  typeIdent(_atOpt, _first, _rest) {
+  // typeIdent = upperStart identChar*
+  typeIdent(_first, _rest) {
     return {
       kind: 'TypeRef',
-      name: this.sourceString, // includes @ if present
+      name: this.sourceString,
       span: span(this),
     } as AST.TypeRef
   },

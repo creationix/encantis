@@ -2,7 +2,6 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { walkModule } from './ast'
 import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
 import {
   bytesToHex,
@@ -38,10 +37,6 @@ export interface DataSection {
   // All unique data entries (explicit + interned literals), sorted by offset
   entries: DataEntry[]
 
-  // Map from literal AST node start offset → data entry
-  // Used to look up where a literal was placed
-  literalMap: Map<number, DataEntry>
-
   // Total size of the data section in bytes
   totalSize: number
 
@@ -65,7 +60,6 @@ export interface DataSection {
  */
 export class DataSectionBuilder {
   private internedMap = new Map<string, DataEntry>()
-  private literalMap = new Map<number, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
   /** Next available offset for placing new interned data */
@@ -76,17 +70,6 @@ export class DataSectionBuilder {
     this.currentOffset = offset
   }
 
-  build(module: AST.Module): void {
-    // Collect and intern all string literals
-    walkModule(module, {
-      visitLiteralExpr: (expr) => {
-        if (expr.value.kind === 'string') {
-          this.internLiteral(expr)
-        }
-      },
-    })
-  }
-
   result(): DataSection {
     const interned = Array.from(this.internedMap.values())
     // Include both interned (deduplicated) and mutable entries
@@ -94,36 +77,10 @@ export class DataSectionBuilder {
 
     return {
       entries,
-      literalMap: this.literalMap,
       totalSize: this.currentOffset,
       autoDataStart: 0,
       errors: [],
     }
-  }
-
-  private internLiteral(expr: AST.LiteralExpr): void {
-    if (expr.value.kind !== 'string') return
-
-    const rawBytes = expr.value.bytes
-    const key = bytesToKey(rawBytes)
-
-    // Check if already interned
-    let entry = this.internedMap.get(key)
-    if (!entry) {
-      // Create new entry with null terminator included in bytes (strings are slices)
-      const bytesWithNull = stringBytesWithNull(rawBytes)
-      entry = {
-        bytes: bytesWithNull,
-        offset: this.currentOffset,
-        length: bytesWithNull.length,
-        explicit: false,
-      }
-      this.internedMap.set(key, entry)
-      this.currentOffset += bytesWithNull.length
-    }
-
-    // Map this literal to its entry
-    this.literalMap.set(expr.span.start, entry)
   }
 
   // Intern arbitrary bytes, returning a DataRef
@@ -192,14 +149,6 @@ export class DataSectionBuilder {
     }
     return -1
   }
-}
-
-// Append null terminator to string bytes
-function stringBytesWithNull(bytes: Uint8Array): Uint8Array {
-  const result = new Uint8Array(bytes.length + 1)
-  result.set(bytes)
-  result[bytes.length] = 0
-  return result
 }
 
 // Convert bytes to a string key for Map (for deduplication)

@@ -1,0 +1,102 @@
+// xoroshiro128+ pseudorandom number generator
+// Written in 2016-2018 by David Blackman and Sebastiano Vigna
+// Encantis implementation
+//
+// This is xoroshiro128+ 1.0, a fast small-state generator for floating-point
+// numbers. Best used for its upper bits. The state must be seeded so that
+// it is not everywhere zero.
+//
+// For more info: http://prng.di.unimi.it/xoroshiro128plus.c
+
+// Jump constants for 2^64 steps ahead
+def jump-0 = 0xdf900294d8f554a5:u64
+def jump-1 = 0x170865df4b3201fc:u64
+
+// Long-jump constants for 2^96 steps ahead
+def long-jump-0 = 0xd2a98b26625eee7b:u64
+def long-jump-1 = 0xdddf9b1090aa7ac1:u64
+
+// Generate next random number and advance state in-place
+export func next(state:*u128) -> (result:u64) {
+  let s0 = state.u64[0]
+  let s1 = state.u64[1]
+
+  result = s0 + s1
+
+  s1 ^= s0
+  state.u64[0] = (s0 <<< 24) ^ s1 ^ (s1 << 16)  // a=24, b=16
+  state.u64[1] = s1 <<< 37                       // c=37
+}
+
+// Jump function - equivalent to 2^64 calls to next()
+// Used to generate non-overlapping subsequences for parallel computations
+export func jump(state:*u128) {
+  let s0 = state.u64[0]
+  let s1 = state.u64[1]
+  let t0:u64 = 0
+  let t1:u64 = 0
+
+  // Process jump-0
+  for b in 64 {
+    if (jump-0 & (1:u64 << b)) != 0 {
+      t0 ^= s0
+      t1 ^= s1
+    }
+    // Inline next() logic to avoid repeated memory access
+    let r = s0 + s1
+    s1 ^= s0
+    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
+    s1 <<<= 37
+  }
+
+  // Process jump-1
+  for b in 64 {
+    if (jump-1 & (1:u64 << b)) != 0 {
+      t0 ^= s0
+      t1 ^= s1
+    }
+    let r = s0 + s1
+    s1 ^= s0
+    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
+    s1 <<<= 37
+  }
+
+  state.u64[0] = t0
+  state.u64[1] = t1
+}
+
+// Long-jump function - equivalent to 2^96 calls to next()
+// Used to generate 2^32 starting points for distributed computations
+export func long-jump(state:*u128) {
+  let s0 = state.u64[0]
+  let s1 = state.u64[1]
+  let t0:u64 = 0
+  let t1:u64 = 0
+
+  // Process long-jump-0
+  for b in 64 {
+    if (long-jump-0 & (1:u64 << b)) != 0 {
+      t0 ^= s0
+      t1 ^= s1
+    }
+    let r = s0 + s1
+    s1 ^= s0
+    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
+    s1 <<<= 37
+  }
+
+  // Process long-jump-1
+  for b in 64 {
+    if (long-jump-1 & (1:u64 << b)) != 0 {
+      t0 ^= s0
+      t1 ^= s1
+    }
+    let r = s0 + s1
+    s1 ^= s0
+    s0 = (s0 <<< 24) ^ s1 ^ (s1 << 16)
+    s1 <<<= 37
+  }
+
+  state.u64[0] = t0
+  state.u64[1] = t1
+}
