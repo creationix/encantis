@@ -4,7 +4,8 @@ import type { Span } from './ast'
 import { hexToBytes } from './utils'
 
 // Per-parse defs map used to inline def values during parsing
-let currentDefs: Map<string, AST.Expr> = new Map()
+// Stores both the value and optional type annotation for wrapping inlined expressions
+let currentDefs: Map<string, { value: AST.Expr; type: AST.Type | undefined }> = new Map()
 
 // Types for access suffixes parsed from grammar
 type AccessSuffix =
@@ -437,8 +438,8 @@ export const semanticsActions: Record<string, SemanticAction> = {
     // Set dataId on literal expressions so it survives cloning during def substitution
     // This allows codegen to look up the data section address for cloned literals
     setDataIdOnLiteral(value)
-    // Record def value for subsequent inlining
-    currentDefs.set(ident.toAST() as string, value)
+    // Record def value and type for subsequent inlining
+    currentDefs.set(ident.toAST() as string, { value, type: typeAnnotation })
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
@@ -488,66 +489,92 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return baseType.toAST()
   },
 
-  // Bracket syntax: [*? length? framing*]T
-  // - []T = slice (fat pointer with ptr+len)
-  // - [*]T = many-pointer (thin, just ptr)
-  // - [*!]T = many-pointer, null-terminated
-  // - [*5]T = many-pointer, known length 5
-  // - [!]T = slice + null-terminated
-  // - [5]T = slice + known length 5
-  // - [_]T = slice + inferred length
-  BaseType_array(_lb, prefixOpt, _rb, element) {
-    type PrefixInfo = { manyPointer: boolean; size: number | 'inferred' | null; specifiers: AST.IndexSpecifier[] }
-    const prefix = first<PrefixInfo>(prefixOpt)
+  // []T - slice (fat pointer with ptr+len)
+  BaseType_slice(_brackets, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
 
+  // [*]T - many-pointer (thin, just ptr)
+  BaseType_manyPointer(_brackets, element) {
     const result: AST.IndexedType = {
       kind: 'IndexedType',
       element: element.toAST(),
-      size: prefix?.size ?? null,
-      specifiers: prefix?.specifiers ?? [],
+      size: null,
+      specifiers: [],
       span: span(this),
     }
-    if (prefix?.manyPointer) result.manyPointer = true
+    result.manyPointer = true
     return result
   },
 
-  // [*]T, [*!]T, [*5]T, [*5!]T, etc - many-pointer (thin)
-  arrayTypePrefix_manyPointer(_star, lengthOpt, framingIter) {
-    const length = first<number | 'inferred'>(lengthOpt)
-    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
-    return { manyPointer: true, size: length, specifiers }
+  // [framings]T - array with size/framing
+  // [5]T, [12,16]T, [!]T, [5,!]T, etc
+  // Note: *[N]T is now parsed as pointer -> array via nested rules
+  BaseType_array(_lb, framings, _rb, element) {
+    const { size, specifiers } = framings.toAST() as { size: number | number[] | 'inferred' | null; specifiers: AST.IndexSpecifier[] }
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size,
+      specifiers,
+      span: span(this),
+    } as AST.IndexedType
   },
 
-  // [5]T, [_]T, [5!]T, [_!]T, etc - slice with length
-  arrayTypePrefix_sliceWithLength(length, framingIter) {
-    const size = length.toAST() as number | 'inferred'
-    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
-    return { manyPointer: false, size, specifiers }
+  // Comma-separated framings: dimensions and/or specifiers
+  // [5] -> size=5, [5,16] -> size=[5,16], [!] -> specifier, [5,!] -> size=5 + specifier
+  arrayFramings(first, _commas, rest) {
+    const all = [first.toAST(), ...rest.children.map((f: OhmNode) => f.toAST())]
+
+    // Separate size items (numbers, 'inferred') from specifiers (objects)
+    const sizeItems: (number | 'inferred')[] = []
+    const specifiers: AST.IndexSpecifier[] = []
+
+    for (const item of all) {
+      if (typeof item === 'number' || item === 'inferred') {
+        sizeItems.push(item)
+      } else {
+        specifiers.push(item as AST.IndexSpecifier)
+      }
+    }
+
+    // Determine size
+    let size: number | number[] | 'inferred' | null = null
+    if (sizeItems.includes('inferred')) {
+      size = 'inferred'
+    } else if (sizeItems.length === 1) {
+      size = sizeItems[0] as number
+    } else if (sizeItems.length > 1) {
+      size = sizeItems as number[]
+    }
+
+    return { size, specifiers }
   },
 
-  // [!]T, [?]T, [!?]T, etc - slice with framing only
-  arrayTypePrefix_sliceWithFraming(framingIter) {
-    const specifiers: AST.IndexSpecifier[] = framingIter.children.map((f: OhmNode) => f.toAST())
-    return { manyPointer: false, size: null, specifiers }
-  },
-
-  // Length: _ (inferred)
-  arrayLength_inferred(_underscore) {
+  // Framing: _ (inferred length)
+  arrayFraming_inferred(_underscore) {
     return 'inferred' as const
   },
 
-  // Length: decimal digits
-  arrayLength_explicit(digits) {
+  // Framing: decimal digits (explicit length)
+  arrayFraming_explicit(digits) {
     return Number(digits.sourceString)
   },
 
-  // Framing: ! (null-term) or ? (LEB128 prefix)
-  arrayFraming(char) {
-    if (char.sourceString === '!') {
-      return { kind: 'null' } as AST.IndexSpecifier
-    } else {
-      return { kind: 'prefix' } as AST.IndexSpecifier
-    }
+  // Framing: ! (null-terminated)
+  arrayFraming_nullTerminated(_bang) {
+    return { kind: 'null' } as AST.IndexSpecifier
+  },
+
+  // Framing: ? (LEB128 prefix)
+  arrayFraming_leb128Prefixed(_qmark) {
+    return { kind: 'prefix' } as AST.IndexSpecifier
   },
 
   BaseType_pointer(_star, type) {
@@ -1075,10 +1102,20 @@ export const semanticsActions: Record<string, SemanticAction> = {
     // Handle ident specially - it returns a string but needs to be IdentExpr here
     if (expr.ctorName === 'ident') {
       const name = expr.toAST() as string
-      const defValue = currentDefs.get(name)
-      if (defValue) {
+      const def = currentDefs.get(name)
+      if (def) {
         // Inline the def value, retargeting the span to the identifier's span
-        return cloneExprWithSpan(defValue, span(expr))
+        const clonedValue = cloneExprWithSpan(def.value, span(expr))
+        // If def has a type annotation, wrap in AnnotationExpr so type propagates
+        if (def.type) {
+          return {
+            kind: 'AnnotationExpr',
+            expr: clonedValue,
+            type: def.type,
+            span: span(expr),
+          } as AST.AnnotationExpr
+        }
+        return clonedValue
       }
       return {
         kind: 'IdentExpr',

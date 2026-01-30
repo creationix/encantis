@@ -88,13 +88,16 @@ export function typeToWasm(t: ResolvedType): string[] {
     case 'pointer':
       return ['i32'] // Pointers are i32 indices
 
-    case 'indexed':
+    case 'slice':
       // Slices are fat pointers: (ptr, len)
-      if (u.size === null || u.size === 'comptime') {
-        return ['i32', 'i32']
-      }
-      // Fixed arrays - just the pointer
+      return ['i32', 'i32']
+
+    case 'array':
+      // Arrays are pointers to data
       return ['i32']
+
+    case 'comptime_array':
+      throw new Error('comptime_array should be concretized before codegen')
 
     case 'tuple':
       // Flatten all fields
@@ -143,15 +146,15 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
   const u = unwrap(t)
 
   switch (u.kind) {
-    case 'indexed':
+    case 'slice':
       // Slices have ptr and len fields
-      if (u.size === null || u.size === 'comptime') {
-        return [
-          { suffix: 'ptr', wasmType: 'i32' },
-          { suffix: 'len', wasmType: 'i32' },
-        ]
-      }
-      // Fixed arrays - just the pointer
+      return [
+        { suffix: 'ptr', wasmType: 'i32' },
+        { suffix: 'len', wasmType: 'i32' },
+      ]
+
+    case 'array':
+      // Arrays are just pointers
       return [{ suffix: '', wasmType: 'i32' }]
 
     case 'tuple':
@@ -591,19 +594,22 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     // Get the type of the object to check for indexed/pointer-to-indexed
     const objType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
 
-    // Handle .ptr, .len, .wid on indexed types
-    if (objType?.kind === 'indexed') {
+    // Handle .ptr, .len, .wid on slice types
+    if (objType?.kind === 'slice') {
       if (member.name === 'ptr') {
-        // For bare indexed type, return address (object is in memory)
-        return exprToWat(expr.object, ctx)
+        // For slice, .ptr gets the pointer component
+        // If object is an identifier, access the _ptr local
+        if (expr.object.kind === 'IdentExpr') {
+          return `(local.get $${expr.object.name}_ptr)`
+        }
+        throw new Error('Slice .ptr on non-identifier not yet implemented')
       }
       if (member.name === 'len') {
-        // For fixed array, length is compile-time constant
-        if (typeof objType.size === 'number') {
-          return `(i32.const ${objType.size})`
+        // For slice, .len gets the length component
+        if (expr.object.kind === 'IdentExpr') {
+          return `(local.get $${expr.object.name}_len)`
         }
-        // For slices, would need runtime length (not yet implemented)
-        throw new Error('Runtime slice length not yet implemented')
+        throw new Error('Slice .len on non-identifier not yet implemented')
       }
       if (member.name === 'wid') {
         // Element byte size is always compile-time known
@@ -615,26 +621,68 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
       }
     }
 
-    // Handle .ptr, .len, .wid on pointer-to-indexed types
-    if (objType?.kind === 'pointer' && objType.pointee.kind === 'indexed') {
-      const indexed = objType.pointee
+    // Handle .ptr, .len, .wid on array types
+    if (objType?.kind === 'array') {
       if (member.name === 'ptr') {
-        // For pointer-to-indexed, .ptr is just the pointer value itself
+        // For array, return the array pointer itself
+        return exprToWat(expr.object, ctx)
+      }
+      if (member.name === 'len') {
+        // For fixed array, length is compile-time constant from sizes
+        const size = objType.sizes?.[0]
+        if (typeof size === 'number') {
+          return `(i32.const ${size})`
+        }
+        throw new Error('Array length must be compile-time known')
+      }
+      if (member.name === 'wid') {
+        const elemSize = byteSize(objType.element)
+        if (elemSize === null) {
+          throw new Error(`Cannot determine element size for ${objType.element.kind}`)
+        }
+        return `(i32.const ${elemSize})`
+      }
+    }
+
+    // Handle .ptr, .len, .wid on pointer-to-slice types
+    if (objType?.kind === 'pointer' && objType.pointee.kind === 'slice') {
+      const sliceType = objType.pointee
+      if (member.name === 'ptr') {
+        // For pointer-to-slice, .ptr loads the pointer field from memory
+        return `(i32.load ${exprToWat(expr.object, ctx)})`
+      }
+      if (member.name === 'len') {
+        // For pointer-to-slice, .len loads the length field (offset +4)
+        return `(i32.load offset=4 ${exprToWat(expr.object, ctx)})`
+      }
+      if (member.name === 'wid') {
+        const elemSize = byteSize(sliceType.element)
+        if (elemSize === null) {
+          throw new Error(`Cannot determine element size for ${sliceType.element.kind}`)
+        }
+        return `(i32.const ${elemSize})`
+      }
+    }
+
+    // Handle .ptr, .len, .wid on pointer-to-array types
+    if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
+      const arrayType = objType.pointee
+      if (member.name === 'ptr') {
+        // For pointer-to-array, .ptr is just the pointer value itself
         return exprToWat(expr.object, ctx)
       }
       if (member.name === 'len') {
         // For fixed array, length is compile-time constant
-        if (typeof indexed.size === 'number') {
-          return `(i32.const ${indexed.size})`
+        const size = arrayType.sizes?.[0]
+        if (typeof size === 'number') {
+          return `(i32.const ${size})`
         }
-        // For slices, would need runtime length (not yet implemented)
-        throw new Error('Runtime slice length not yet implemented')
+        throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
-        // Element byte size is always compile-time known
-        const elemSize = byteSize(indexed.element)
+        const elemSize = byteSize(arrayType.element)
         if (elemSize === null) {
-          throw new Error(`Cannot determine element size for ${indexed.element.kind}`)
+          throw new Error(`Cannot determine element size for ${arrayType.element.kind}`)
         }
         return `(i32.const ${elemSize})`
       }
@@ -709,7 +757,7 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Get element type to determine size
   const arrayType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
   let elemSize = 1
-  if (arrayType && arrayType.kind === 'indexed') {
+  if (arrayType && (arrayType.kind === 'slice' || arrayType.kind === 'array')) {
     const elemTypes = typeToWasm(arrayType.element)
     elemSize = elemTypes.length > 0 ? primitiveByteSize(arrayType.element) ?? 1 : 1
   }
@@ -921,8 +969,26 @@ function resolveTypeFromAST(type: AST.Type, ctx: CodegenContext): RT.ResolvedTyp
     }
     case 'PointerType':
       return RT.pointer(resolveTypeFromAST(type.pointee, ctx))
-    case 'IndexedType':
-      return RT.indexed(resolveTypeFromAST(type.element, ctx), type.size, [], type.manyPointer)
+    case 'IndexedType': {
+      const element = resolveTypeFromAST(type.element, ctx)
+      // Slice: []T (size is null, not many-pointer)
+      if (type.size === null && !type.manyPointer) {
+        return RT.slice(element)
+      }
+      // Array: [N]T, [_]T, [*]T, etc.
+      let sizes: RT.ArraySize[] | null = null
+      if (type.size === null && type.manyPointer) {
+        // Many-pointer [*]T - null sizes
+        sizes = null
+      } else if (type.size === 'inferred') {
+        sizes = ['_']
+      } else if (typeof type.size === 'number') {
+        sizes = [type.size]
+      } else if (Array.isArray(type.size)) {
+        sizes = type.size
+      }
+      return RT.array(element, sizes)
+    }
     case 'CompositeType':
       return RT.tuple(type.fields.map(f => RT.field(f.ident, resolveTypeFromAST(f.type, ctx))))
     default:
@@ -1695,15 +1761,26 @@ function resolveAstType(type: AST.Type): ResolvedType {
       return { kind: 'primitive', name: type.name }
     case 'PointerType':
       return { kind: 'pointer', pointee: resolveAstType(type.pointee) }
-    case 'IndexedType':
-      return {
-        kind: 'indexed',
-        element: resolveAstType(type.element),
-        size: type.size === 'comptime' ? 'comptime' : type.size === 'inferred' ? null : type.size,
-        specifiers: type.specifiers.map((s) =>
-          s.kind === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const },
-        ),
+    case 'IndexedType': {
+      const element = resolveAstType(type.element)
+      // Slice: []T (size is null, not many-pointer)
+      if (type.size === null && !type.manyPointer) {
+        return { kind: 'slice', element }
       }
+      // Array: [N]T, [_]T, [*]T, etc.
+      let sizes: RT.ArraySize[] | null = null
+      if (type.size === null && type.manyPointer) {
+        // Many-pointer [*]T - null sizes
+        sizes = null
+      } else if (type.size === 'inferred') {
+        sizes = ['_']
+      } else if (typeof type.size === 'number') {
+        sizes = [type.size]
+      } else if (Array.isArray(type.size)) {
+        sizes = type.size
+      }
+      return { kind: 'array', element, sizes }
+    }
     case 'CompositeType':
       return {
         kind: 'tuple',

@@ -763,8 +763,8 @@ class MetaBuilder {
             const entry = this.literalMap.get(expr.span.start)
             if (entry) {
               const ptr = `0x${entry.ptr.toString(16)}`
-              // If type is a slice (not manyPointer), show fat pointer (ptr, len)
-              if (type.kind === 'indexed' && !type.manyPointer) {
+              // If type is a slice, show fat pointer (ptr, len)
+              if (type.kind === 'slice') {
                 dataInfo = `(${ptr}, ${expr.value.bytes.length})`
               } else {
                 dataInfo = ptr
@@ -807,15 +807,19 @@ class MetaBuilder {
             const objTypeOffset = expr.object.kind === 'MemberExpr' ? expr.object.span.end : expr.object.span.start
             const objType = this.checkResult.types.get(typeKey(objTypeOffset, expr.object.kind))
             if (objType) {
-              // Get the indexed type (either directly or through pointer)
-              const indexedType = objType.kind === 'indexed' ? objType
-                : (objType.kind === 'pointer' && objType.pointee.kind === 'indexed') ? objType.pointee
+              // Get the array/slice type (either directly or through pointer)
+              const arrayType = (objType.kind === 'array' || objType.kind === 'slice') ? objType
+                : (objType.kind === 'pointer' && (objType.pointee.kind === 'array' || objType.pointee.kind === 'slice')) ? objType.pointee
                 : null
-              if (indexedType && indexedType.kind === 'indexed') {
-                if (expr.member.name === 'len' && typeof indexedType.size === 'number') {
-                  comptimeValue = String(indexedType.size)
+              if (arrayType) {
+                if (expr.member.name === 'len') {
+                  // For arrays, get length from sizes[0]
+                  if (arrayType.kind === 'array' && typeof arrayType.sizes?.[0] === 'number') {
+                    comptimeValue = String(arrayType.sizes[0])
+                  }
+                  // Slices have runtime length, no comptime value
                 } else if (expr.member.name === 'wid') {
-                  const elemSize = byteSize(indexedType.element)
+                  const elemSize = byteSize(arrayType.element)
                   if (elemSize !== null) {
                     comptimeValue = String(elemSize)
                   }
@@ -911,6 +915,19 @@ class MetaBuilder {
         // Recurse into elements
         for (const elem of expr.elements) {
           this.generateHintsForExpr(elem)
+        }
+        break
+      }
+
+      case 'RepeatExpr': {
+        // Recurse into value expression (e.g., 0:u8)
+        this.generateHintsForExpr(expr.value)
+        // Generate hint for the count (e.g., 1024) - it's a special repeat count
+        const countType = this.checkResult.types.get(typeKey(expr.count.span.start, expr.count.kind))
+        if (countType) {
+          const typeIndex = this.typeRegistry.register(countType)
+          const len = this.lineMap.spanLength(expr.count.span.start, expr.count.span.end)
+          this.addHint(expr.count.span.start, len, typeIndex)
         }
         break
       }

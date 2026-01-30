@@ -15,7 +15,15 @@ describe('parseType', () => {
 
   test('parses slice types', () => {
     const t = parseType('[]u8')
-    expect(t.kind).toBe('indexed')
+    expect(t.kind).toBe('slice')
+  })
+
+  test('parses pointer-to-array types', () => {
+    const t = parseType('*[10]u8')
+    expect(t.kind).toBe('pointer')
+    if (t.kind === 'pointer') {
+      expect(t.pointee.kind).toBe('array')
+    }
   })
 
   test('parses tuple types', () => {

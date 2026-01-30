@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Encantis Theme Palette Preview</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; margin: 0; padding: 20px; }
+    .themes { display: flex; gap: 20px; flex-wrap: wrap; }
+    .theme { flex: 1; min-width: 400px; padding: 20px; border-radius: 8px; }
+    .dark { background: #0d0d0f; }
+    .vibrant { background: #0d0d0f; }
+    .light { background: #faf8f5; }
+    h2 { margin-top: 0; }
+    .dark h2, .vibrant h2 { color: #e8e6e3; }
+    .light h2 { color: #2d2a26; }
+    .swatch { display: inline-flex; align-items: center; gap: 8px; margin: 4px 8px 4px 0; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+    .color-box { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(128,128,128,0.3); }
+    .section { margin: 16px 0; }
+    .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; opacity: 0.6; }
+    .dark .section-title, .vibrant .section-title { color: #888; }
+    .light .section-title { color: #666; }
+    pre { padding: 16px; border-radius: 6px; margin: 16px 0; font-size: 13px; line-height: 1.6; overflow-x: auto; }
+    .dark pre, .vibrant pre { background: #1a1a1f; }
+    .light pre { background: #f0ede8; }
+  </style>
+</head>
+<body style="background: #2a2a30;">
+
+<h1 style="color: #fff; text-align: center; margin-bottom: 30px;">Gel Pen Palette Preview v2</h1>
+<p style="color: #aaa; text-align: center;">Clean oranges (yellow-orange & red-orange) + cyan-blue & violet-blue</p>
+
+<div class="themes">
+
+<!-- DARK THEME -->
+<div class="theme dark">
+  <h2>Dark Theme</h2>
+
+  <div class="section">
+    <div class="section-title">Code Tokens</div>
+    <div class="swatch"><span class="color-box" style="background: #a6e22e;"></span><span style="color: #a6e22e;">function</span> #a6e22e lime</div>
+    <div class="swatch"><span class="color-box" style="background: #44aaee;"></span><span style="color: #44aaee;">parameter</span> #44aaee cyan-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #ff6644;"></span><span style="color: #ff6644;">output param</span> #ff6644 red-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #99ccff;"></span><span style="color: #99ccff;">variable</span> #99ccff light blue</div>
+    <div class="swatch"><span class="color-box" style="background: #66ccdd;"></span><span style="color: #66ccdd;">type</span> #66ccdd soft cyan</div>
+    <div class="swatch"><span class="color-box" style="background: #eebb55;"></span><span style="color: #eebb55;">number</span> #eebb55 amber</div>
+    <div class="swatch"><span class="color-box" style="background: #55cc99;"></span><span style="color: #55cc99;">string</span> #55cc99 seafoam</div>
+    <div class="swatch"><span class="color-box" style="background: #9988ff;"></span><span style="color: #9988ff;">boolean</span> #9988ff violet-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #ff9944;"></span><span style="color: #ff9944;">keyword</span> #ff9944 yellow-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #77bbff;"></span><span style="color: #77bbff;">control</span> #77bbff sky blue</div>
+    <div class="swatch"><span class="color-box" style="background: #ff7755;"></span><span style="color: #ff7755;">operator</span> #ff7755 orange</div>
+    <div class="swatch"><span class="color-box" style="background: #cc88ee;"></span><span style="color: #cc88ee;">nominal type</span> #cc88ee orchid</div>
+    <div class="swatch"><span class="color-box" style="background: #ff88aa;"></span><span style="color: #ff88aa;">global var</span> #ff88aa pink</div>
+    <div class="swatch"><span class="color-box" style="background: #8877aa;"></span><span style="color: #8877aa; font-style: italic;">comment</span> #8877aa muted violet</div>
+  </div>
+
+  <pre>
+<span style="color: #8877aa; font-style: italic;">// BLAKE2b hash function</span>
+<span style="color: #ff9944;">export func</span> <span style="color: #a6e22e; font-weight: bold;">blake2b</span>(<span style="color: #44aaee; font-style: italic;">data</span>:<span style="color: #66ccdd;">[]u8</span>) <span style="color: #ff7755;">-></span> (<span style="color: #ff6644; font-style: italic; font-weight: bold;">hash</span>:<span style="color: #66ccdd;">u256</span>) {
+  <span style="color: #ff9944;">let</span> <span style="color: #99ccff;">ptr</span> <span style="color: #ff7755;">=</span> <span style="color: #44aaee; font-style: italic;">data</span>.ptr
+  <span style="color: #ff9944;">let</span> <span style="color: #99ccff;">remaining</span> <span style="color: #ff7755;">=</span> <span style="color: #44aaee; font-style: italic;">data</span>.len
+
+  <span style="color: #77bbff;">while</span> <span style="color: #99ccff;">remaining</span> <span style="color: #ff7755;">></span> <span style="color: #eebb55;">128</span> {
+    <span style="color: #a6e22e;">compress</span>(<span style="color: #99ccff;">h</span>, <span style="color: #99ccff;">ptr</span>)
+    <span style="color: #99ccff;">ptr</span> <span style="color: #ff7755;">+=</span> <span style="color: #eebb55;">128</span>
+  }
+
+  <span style="color: #77bbff;">if</span> <span style="color: #99ccff;">finalize</span> <span style="color: #ff7755;">==</span> <span style="color: #9988ff; font-style: italic;">true</span> {
+    <span style="color: #77bbff;">return</span> <span style="color: #55cc99;">"done"</span>
+  }
+}</pre>
+</div>
+
+<!-- VIBRANT THEME -->
+<div class="theme vibrant">
+  <h2>Dark Vibrant Theme</h2>
+
+  <div class="section">
+    <div class="section-title">Code Tokens</div>
+    <div class="swatch"><span class="color-box" style="background: #bbff00;"></span><span style="color: #bbff00;">function</span> #bbff00 neon lime</div>
+    <div class="swatch"><span class="color-box" style="background: #44ccff;"></span><span style="color: #44ccff;">parameter</span> #44ccff bright cyan-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #ff5533;"></span><span style="color: #ff5533;">output param</span> #ff5533 bright red-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #aaddff;"></span><span style="color: #aaddff;">variable</span> #aaddff sky blue</div>
+    <div class="swatch"><span class="color-box" style="background: #44eeee;"></span><span style="color: #44eeee;">type</span> #44eeee electric cyan</div>
+    <div class="swatch"><span class="color-box" style="background: #ffcc44;"></span><span style="color: #ffcc44;">number</span> #ffcc44 bright amber</div>
+    <div class="swatch"><span class="color-box" style="background: #44ddaa;"></span><span style="color: #44ddaa;">string</span> #44ddaa bright mint</div>
+    <div class="swatch"><span class="color-box" style="background: #9977ff;"></span><span style="color: #9977ff;">boolean</span> #9977ff bright violet-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #ffaa33;"></span><span style="color: #ffaa33;">keyword</span> #ffaa33 bright yellow-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #55ddff;"></span><span style="color: #55ddff;">control</span> #55ddff electric sky</div>
+    <div class="swatch"><span class="color-box" style="background: #ff6644;"></span><span style="color: #ff6644;">operator</span> #ff6644 bright orange</div>
+    <div class="swatch"><span class="color-box" style="background: #dd77ff;"></span><span style="color: #dd77ff;">nominal type</span> #dd77ff vivid violet</div>
+    <div class="swatch"><span class="color-box" style="background: #ff77aa;"></span><span style="color: #ff77aa;">global var</span> #ff77aa hot pink</div>
+    <div class="swatch"><span class="color-box" style="background: #aa88cc;"></span><span style="color: #aa88cc; font-style: italic;">comment</span> #aa88cc lavender</div>
+  </div>
+
+  <pre>
+<span style="color: #aa88cc; font-style: italic;">// BLAKE2b hash function</span>
+<span style="color: #ffaa33;">export func</span> <span style="color: #bbff00; font-weight: bold;">blake2b</span>(<span style="color: #44ccff; font-style: italic;">data</span>:<span style="color: #44eeee;">[]u8</span>) <span style="color: #ff6644;">-></span> (<span style="color: #ff5533; font-style: italic; font-weight: bold;">hash</span>:<span style="color: #44eeee;">u256</span>) {
+  <span style="color: #ffaa33;">let</span> <span style="color: #aaddff;">ptr</span> <span style="color: #ff6644;">=</span> <span style="color: #44ccff; font-style: italic;">data</span>.ptr
+  <span style="color: #ffaa33;">let</span> <span style="color: #aaddff;">remaining</span> <span style="color: #ff6644;">=</span> <span style="color: #44ccff; font-style: italic;">data</span>.len
+
+  <span style="color: #55ddff;">while</span> <span style="color: #aaddff;">remaining</span> <span style="color: #ff6644;">></span> <span style="color: #ffcc44;">128</span> {
+    <span style="color: #bbff00;">compress</span>(<span style="color: #aaddff;">h</span>, <span style="color: #aaddff;">ptr</span>)
+    <span style="color: #aaddff;">ptr</span> <span style="color: #ff6644;">+=</span> <span style="color: #ffcc44;">128</span>
+  }
+
+  <span style="color: #55ddff;">if</span> <span style="color: #aaddff;">finalize</span> <span style="color: #ff6644;">==</span> <span style="color: #9977ff; font-style: italic;">true</span> {
+    <span style="color: #55ddff;">return</span> <span style="color: #44ddaa;">"done"</span>
+  }
+}</pre>
+</div>
+
+<!-- LIGHT THEME -->
+<div class="theme light">
+  <h2>Light Theme</h2>
+
+  <div class="section">
+    <div class="section-title">Code Tokens</div>
+    <div class="swatch"><span class="color-box" style="background: #338833;"></span><span style="color: #338833;">function</span> #338833 forest</div>
+    <div class="swatch"><span class="color-box" style="background: #2266aa;"></span><span style="color: #2266aa;">parameter</span> #2266aa dark cyan-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #cc4422;"></span><span style="color: #cc4422;">output param</span> #cc4422 dark red-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #335588;"></span><span style="color: #335588;">variable</span> #335588 dark steel</div>
+    <div class="swatch"><span class="color-box" style="background: #227799;"></span><span style="color: #227799;">type</span> #227799 dark cyan</div>
+    <div class="swatch"><span class="color-box" style="background: #996622;"></span><span style="color: #996622;">number</span> #996622 dark amber</div>
+    <div class="swatch"><span class="color-box" style="background: #228855;"></span><span style="color: #228855;">string</span> #228855 dark seafoam</div>
+    <div class="swatch"><span class="color-box" style="background: #5544aa;"></span><span style="color: #5544aa;">boolean</span> #5544aa dark violet-blue</div>
+    <div class="swatch"><span class="color-box" style="background: #cc6622;"></span><span style="color: #cc6622;">keyword</span> #cc6622 dark yellow-orange</div>
+    <div class="swatch"><span class="color-box" style="background: #2255aa;"></span><span style="color: #2255aa;">control</span> #2255aa deep blue</div>
+    <div class="swatch"><span class="color-box" style="background: #bb5533;"></span><span style="color: #bb5533;">operator</span> #bb5533 dark orange</div>
+    <div class="swatch"><span class="color-box" style="background: #884488;"></span><span style="color: #884488;">nominal type</span> #884488 plum</div>
+    <div class="swatch"><span class="color-box" style="background: #aa4466;"></span><span style="color: #aa4466;">global var</span> #aa4466 wine</div>
+    <div class="swatch"><span class="color-box" style="background: #887799;"></span><span style="color: #887799; font-style: italic;">comment</span> #887799 muted mauve</div>
+  </div>
+
+  <pre style="background: #f0ede8;">
+<span style="color: #887799; font-style: italic;">// BLAKE2b hash function</span>
+<span style="color: #cc6622;">export func</span> <span style="color: #338833; font-weight: bold;">blake2b</span>(<span style="color: #2266aa; font-style: italic;">data</span>:<span style="color: #227799;">[]u8</span>) <span style="color: #bb5533;">-></span> (<span style="color: #cc4422; font-style: italic; font-weight: bold;">hash</span>:<span style="color: #227799;">u256</span>) {
+  <span style="color: #cc6622;">let</span> <span style="color: #335588;">ptr</span> <span style="color: #bb5533;">=</span> <span style="color: #2266aa; font-style: italic;">data</span>.ptr
+  <span style="color: #cc6622;">let</span> <span style="color: #335588;">remaining</span> <span style="color: #bb5533;">=</span> <span style="color: #2266aa; font-style: italic;">data</span>.len
+
+  <span style="color: #2255aa;">while</span> <span style="color: #335588;">remaining</span> <span style="color: #bb5533;">></span> <span style="color: #996622;">128</span> {
+    <span style="color: #338833;">compress</span>(<span style="color: #335588;">h</span>, <span style="color: #335588;">ptr</span>)
+    <span style="color: #335588;">ptr</span> <span style="color: #bb5533;">+=</span> <span style="color: #996622;">128</span>
+  }
+
+  <span style="color: #2255aa;">if</span> <span style="color: #335588;">finalize</span> <span style="color: #bb5533;">==</span> <span style="color: #5544aa; font-style: italic;">true</span> {
+    <span style="color: #2255aa;">return</span> <span style="color: #228855;">"done"</span>
+  }
+}</pre>
+</div>
+
+</div>
+
+<h2 style="color: #fff; margin-top: 40px;">Color Summary Table</h2>
+<table style="width: 100%; border-collapse: collapse; color: #fff; font-size: 13px;">
+  <tr style="background: #333;">
+    <th style="padding: 8px; text-align: left;">Token</th>
+    <th style="padding: 8px; text-align: left;">Dark</th>
+    <th style="padding: 8px; text-align: left;">Vibrant</th>
+    <th style="padding: 8px; text-align: left;">Light</th>
+    <th style="padding: 8px; text-align: left;">Notes</th>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Functions</td>
+    <td style="padding: 8px;"><span style="color: #a6e22e;">#a6e22e</span></td>
+    <td style="padding: 8px;"><span style="color: #bbff00;">#bbff00</span></td>
+    <td style="padding: 8px;"><span style="color: #338833;">#338833</span></td>
+    <td style="padding: 8px;">Lime green family</td>
+  </tr>
+  <tr style="background: #2a2a2a;">
+    <td style="padding: 8px;">Parameters</td>
+    <td style="padding: 8px;"><span style="color: #44aaee;">#44aaee</span></td>
+    <td style="padding: 8px;"><span style="color: #44ccff;">#44ccff</span></td>
+    <td style="padding: 8px;"><span style="color: #2266aa;">#2266aa</span></td>
+    <td style="padding: 8px;">Cyan-leaning blue</td>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Output Params</td>
+    <td style="padding: 8px;"><span style="color: #ff6644;">#ff6644</span></td>
+    <td style="padding: 8px;"><span style="color: #ff5533;">#ff5533</span></td>
+    <td style="padding: 8px;"><span style="color: #cc4422;">#cc4422</span></td>
+    <td style="padding: 8px;">Red-orange (clean)</td>
+  </tr>
+  <tr style="background: #2a2a2a;">
+    <td style="padding: 8px;">Variables</td>
+    <td style="padding: 8px;"><span style="color: #99ccff;">#99ccff</span></td>
+    <td style="padding: 8px;"><span style="color: #aaddff;">#aaddff</span></td>
+    <td style="padding: 8px;"><span style="color: #335588;">#335588</span></td>
+    <td style="padding: 8px;">Neutral blue</td>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Types</td>
+    <td style="padding: 8px;"><span style="color: #66ccdd;">#66ccdd</span></td>
+    <td style="padding: 8px;"><span style="color: #44eeee;">#44eeee</span></td>
+    <td style="padding: 8px;"><span style="color: #227799;">#227799</span></td>
+    <td style="padding: 8px;">Cyan (slightly shifted)</td>
+  </tr>
+  <tr style="background: #2a2a2a;">
+    <td style="padding: 8px;">Numbers</td>
+    <td style="padding: 8px;"><span style="color: #eebb55;">#eebb55</span></td>
+    <td style="padding: 8px;"><span style="color: #ffcc44;">#ffcc44</span></td>
+    <td style="padding: 8px;"><span style="color: #996622;">#996622</span></td>
+    <td style="padding: 8px;">Amber/gold</td>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Strings</td>
+    <td style="padding: 8px;"><span style="color: #55cc99;">#55cc99</span></td>
+    <td style="padding: 8px;"><span style="color: #44ddaa;">#44ddaa</span></td>
+    <td style="padding: 8px;"><span style="color: #228855;">#228855</span></td>
+    <td style="padding: 8px;">Seafoam/mint</td>
+  </tr>
+  <tr style="background: #2a2a2a;">
+    <td style="padding: 8px;">Booleans</td>
+    <td style="padding: 8px;"><span style="color: #9988ff;">#9988ff</span></td>
+    <td style="padding: 8px;"><span style="color: #9977ff;">#9977ff</span></td>
+    <td style="padding: 8px;"><span style="color: #5544aa;">#5544aa</span></td>
+    <td style="padding: 8px;">Violet-leaning blue</td>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Keywords</td>
+    <td style="padding: 8px;"><span style="color: #ff9944;">#ff9944</span></td>
+    <td style="padding: 8px;"><span style="color: #ffaa33;">#ffaa33</span></td>
+    <td style="padding: 8px;"><span style="color: #cc6622;">#cc6622</span></td>
+    <td style="padding: 8px;">Yellow-orange (clean)</td>
+  </tr>
+  <tr style="background: #2a2a2a;">
+    <td style="padding: 8px;">Control (if/while)</td>
+    <td style="padding: 8px;"><span style="color: #77bbff;">#77bbff</span></td>
+    <td style="padding: 8px;"><span style="color: #55ddff;">#55ddff</span></td>
+    <td style="padding: 8px;"><span style="color: #2255aa;">#2255aa</span></td>
+    <td style="padding: 8px;">Sky blue</td>
+  </tr>
+  <tr style="background: #222;">
+    <td style="padding: 8px;">Operators</td>
+    <td style="padding: 8px;"><span style="color: #ff7755;">#ff7755</span></td>
+    <td style="padding: 8px;"><span style="color: #ff6644;">#ff6644</span></td>
+    <td style="padding: 8px;"><span style="color: #bb5533;">#bb5533</span></td>
+    <td style="padding: 8px;">Orange (between the two)</td>
+  </tr>
+</table>
+
+<h2 style="color: #fff; margin-top: 40px;">Key Design Decisions</h2>
+<ul style="color: #ccc; line-height: 1.8;">
+  <li><strong>Two distinct oranges:</strong> <span style="color: #ff9944;">Yellow-orange #ff9944</span> for keywords, <span style="color: #ff6644;">Red-orange #ff6644</span> for output params</li>
+  <li><strong>Two distinct blues:</strong> <span style="color: #44aaee;">Cyan-blue #44aaee</span> for parameters, <span style="color: #9988ff;">Violet-blue #9988ff</span> for booleans</li>
+  <li><strong>Functions:</strong> <span style="color: #a6e22e;">Lime green</span> - distinct from everything else</li>
+  <li><strong>No muddy corals:</strong> Clean, saturated oranges instead</li>
+  <li><strong>No pure primaries:</strong> All colors shifted off #ff0000, #00ff00, #0000ff, #00ffff</li>
+</ul>
+
+</body>
+</html>

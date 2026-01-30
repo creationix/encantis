@@ -5,10 +5,12 @@ import { grammar, semantics } from './encantis-grammar'
 import type * as AST from './ast'
 import {
   type ResolvedType,
-  type IndexSpecifierRT,
+  type ArraySize,
   primitive,
   pointer,
-  indexed,
+  array,
+  slice,
+  manyPointer,
   tuple,
   field,
   comptimeInt,
@@ -24,11 +26,6 @@ export function parseTypeAST(s: string): AST.Type {
   return semantics(match).toAST() as AST.Type
 }
 
-// Convert AST.IndexSpecifier to IndexSpecifierRT
-function astSpecifierToResolved(spec: AST.IndexSpecifier): IndexSpecifierRT {
-  return spec.kind === 'null' ? { kind: 'null' } : { kind: 'prefix' }
-}
-
 // Convert AST.Type to ResolvedType
 export function astToResolved(ast: AST.Type): ResolvedType {
   switch (ast.kind) {
@@ -39,13 +36,38 @@ export function astToResolved(ast: AST.Type): ResolvedType {
       return pointer(astToResolved(ast.pointee))
 
     case 'IndexedType': {
-      // Handle 'inferred' size - convert to null (slice) until context provides size
-      const size = ast.size === 'inferred' ? null : ast.size
-      return indexed(
-        astToResolved(ast.element),
-        size,
-        ast.specifiers.map(astSpecifierToResolved),
-      )
+      const element = astToResolved(ast.element)
+
+      // Many-pointer [*]T - pointer to unbounded array
+      if (ast.manyPointer) {
+        return manyPointer(element)
+      }
+
+      // Slice []T - fat pointer (ptr + len)
+      if (ast.size === null && ast.specifiers.length === 0) {
+        return slice(element)
+      }
+
+      // Build sizes array from size and specifiers
+      const sizes: ArraySize[] = []
+
+      // Add numeric size(s) if present
+      if (ast.size !== null && ast.size !== 'inferred' && ast.size !== 'comptime') {
+        if (Array.isArray(ast.size)) {
+          sizes.push(...ast.size)
+        } else {
+          sizes.push(ast.size)
+        }
+      } else if (ast.size === 'inferred' || ast.size === 'comptime') {
+        sizes.push('_')
+      }
+
+      // Add framing specifiers (! for null-terminated, ? for LEB prefix)
+      for (const spec of ast.specifiers) {
+        sizes.push(spec.kind === 'null' ? '!' : '?')
+      }
+
+      return array(element, sizes.length > 0 ? sizes : null)
     }
 
     case 'CompositeType':

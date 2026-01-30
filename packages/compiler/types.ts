@@ -49,13 +49,15 @@ const INT_BOUNDS: Record<string, [bigint, bigint]> = {
 export type ResolvedType =
   | PrimitiveRT
   | PointerRT
-  | IndexedRT
+  | SliceRT
+  | ArrayRT
   | TupleRT
   | FuncRT
   | VoidRT
   | ComptimeIntRT
   | ComptimeFloatRT
   | ComptimeListRT
+  | ComptimeArrayRT
   | NamedRT
   | ForwardRefRT
 
@@ -65,26 +67,36 @@ export interface PrimitiveRT {
   name: PrimitiveName
 }
 
-// Pointer type: *T
+// Pointer type: *T or ^T (boundary pointer)
 export interface PointerRT {
   kind: 'pointer'
   pointee: ResolvedType
+  boundary?: boolean // true for ^T - can only be compared, not dereferenced
 }
 
-// Index specifiers: framing markers for serialization
-// ! = null-terminated, ? = LEB128 length prefix
-export type IndexSpecifierRT =
-  | { kind: 'null' }   // null-terminated (!)
-  | { kind: 'prefix' } // LEB128 length prefix (?)
-
-// Indexed type: [T], []T, *[N]T, [*:0]T, [*:?]T, etc.
-// Unified representation for comptime lists, slices, arrays, and prefixed/terminated strings
-export interface IndexedRT {
-  kind: 'indexed'
+// Slice type: []T (fat pointer - contains pointer + length)
+export interface SliceRT {
+  kind: 'slice'
   element: ResolvedType
-  size: number | 'comptime' | 'inferred' | null // number = fixed [N]T, null = slice []T, 'comptime' = [T], 'inferred' = [_]T
-  specifiers: IndexSpecifierRT[] // e.g., [{ kind: 'null' }] for :0
-  manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat pointer slice)
+}
+
+// Array size specifier - can be a number or a framing marker
+// Numbers are compile-time known sizes, strings are framing:
+// - "_" = inferred at compile-time
+// - "!" = null-terminated (runtime sentinel)
+// - "?" = LEB128 prefix (runtime length header)
+export type ArraySize = number | '_' | '!' | '?'
+
+// Array type: [N]T, [N,M]T, [_]T, [!]T, [?]T
+// This is a value type (not a pointer). Use *[N]T (PointerRT wrapping ArrayRT) for pointer-to-array.
+// sizes=null means unbounded/unknown count (many-pointer [*]T)
+export interface ArrayRT {
+  kind: 'array'
+  element: ResolvedType
+  // sizes can be:
+  // - ArraySize[]: one or more dimensions/framings like [N], [N,M], [!], [!,!]
+  // - null: unbounded/unknown count (for [*]T many-pointer)
+  sizes: ArraySize[] | null
 }
 
 // Tuple/struct type: (T, T) or (x: T, y: T)
@@ -123,6 +135,14 @@ export interface ComptimeListRT {
   elements: ResolvedType[] // types of each element (may be comptime types)
 }
 
+// Compile-time array - array literal with known element type and count
+// Can coerce to []T, *[N]T, [N]T - more flexible than fixed arrays
+export interface ComptimeArrayRT {
+  kind: 'comptime_array'
+  element: ResolvedType
+  count: number
+}
+
 // Named type - wraps a type alias, preserving the name
 // For display purposes: shows the name instead of the underlying type
 export interface NamedRT {
@@ -146,47 +166,81 @@ export interface ResolvedField {
 
 // === Type Constructors ===
 
+/*
+
+     *T → { kind: 'pointer', pointee: T }
+     ^T → { kind: 'pointer', pointee: T, boundary: true }
+    []T → { kind: 'slice', element: T }
+   [_]T → { kind: 'array', element: T, sizes: ["_"] } // used for comptime
+   [N]T → { kind: 'array', element: T, sizes: [N] }
+   [!]T → { kind: 'array', element: T, sizes: ["!"] }
+   [?]T → { kind: 'array', element: T, sizes: ["?"] }
+   [*]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: null } }
+  *[N]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: [N] } }
+  *[_]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: ["_"] } }
+  *[!]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: ["!"] } }
+  *[?]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: ["?"] } }
+*[N,M]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: [N,M] } }
+*[!,!]T → { kind: 'pointer', pointee: { kind: 'array', element: T, sizes: ["!","!"] } }
+
+*/
+
+
 export function primitive(name: PrimitiveName): PrimitiveRT {
   return { kind: 'primitive', name }
 }
 
-export function pointer(pointee: ResolvedType): PointerRT {
-  return { kind: 'pointer', pointee }
-}
-
-export function indexed(
-  element: ResolvedType,
-  size: number | 'comptime' | 'inferred' | null = null,
-  specifiers: IndexSpecifierRT[] = [],
-  manyPointer?: boolean,
-): IndexedRT {
-  const result: IndexedRT = { kind: 'indexed', element, size, specifiers }
-  if (manyPointer) result.manyPointer = true
+export function pointer(pointee: ResolvedType, boundary?: boolean): PointerRT {
+  const result: PointerRT = { kind: 'pointer', pointee }
+  if (boundary) result.boundary = true
   return result
 }
 
+export function slice(element: ResolvedType): SliceRT {
+  return { kind: 'slice', element }
+}
+
+export function array(element: ResolvedType, sizes: ArraySize[] | null): ArrayRT {
+  return { kind: 'array', element, sizes }
+}
+
 // Convenience constructors
-export function slice(element: ResolvedType, specifiers: IndexSpecifierRT[] = []): IndexedRT {
-  return indexed(element, null, specifiers, false)
+
+// Many-pointer: [*]T (thin pointer to unbounded array)
+export function manyPointer(element: ResolvedType): PointerRT {
+  return pointer(array(element, null))
 }
 
-export function manyPointer(element: ResolvedType, specifiers: IndexSpecifierRT[] = []): IndexedRT {
-  return indexed(element, null, specifiers, true)
+// Pointer to sized array: *[N]T
+export function ptrArray(element: ResolvedType, size: number): PointerRT {
+  return pointer(array(element, [size]))
 }
 
-export function array(element: ResolvedType, size: number): IndexedRT {
-  // Default to many-pointer (thin pointer with known size)
-  return indexed(element, size, [], true)
+// Pointer to multi-dimensional array: *[N,M]T
+export function ptrPackedArray(element: ResolvedType, sizes: ArraySize[]): PointerRT {
+  return pointer(array(element, sizes))
 }
 
-export function comptimeIndexed(element: ResolvedType): IndexedRT {
-  // Default to many-pointer (thin pointer with comptime size)
-  return indexed(element, 'comptime', [], true)
+// Comptime array: [_]T
+export function comptimeArray(element: ResolvedType): ArrayRT {
+  return array(element, ['_'])
 }
 
-export function nullterm(element: ResolvedType, size: number | 'comptime' | null = null, level: number = 1): IndexedRT {
-  const specifiers: IndexSpecifierRT[] = Array(level).fill({ kind: 'null' })
-  return indexed(element, size, specifiers)
+// Helper to check if sizes are all fixed numbers
+export function isFixedSizes(sizes: ArraySize[] | null): sizes is number[] {
+  if (sizes === null) return false
+  return sizes.every(s => typeof s === 'number')
+}
+
+// Helper to get total element count from sizes
+export function totalElements(sizes: ArraySize[] | null): number | null {
+  if (!isFixedSizes(sizes)) return null
+  return sizes.reduce((a, b) => a * b, 1)
+}
+
+// Helper to check if a size is a framing specifier
+export function isFraming(size: ArraySize): size is '!' | '?' {
+  return size === '!' || size === '?'
 }
 
 export function tuple(fields: ResolvedField[]): TupleRT {
@@ -214,6 +268,10 @@ export function comptimeList(elements: ResolvedType[]): ComptimeListRT {
   return { kind: 'comptime_list', elements }
 }
 
+export function comptimeArrayLiteral(element: ResolvedType, count: number): ComptimeArrayRT {
+  return { kind: 'comptime_array', element, count }
+}
+
 export function named(name: string, type: ResolvedType): NamedRT {
   return { kind: 'named', name, type }
 }
@@ -229,12 +287,9 @@ export function field(
   return { name, type }
 }
 
-// Create the default concrete type for a comptime list or indexed type
-// Uses ? (LEB128) prefix for each nesting level - compact for typical sizes
-// e.g., comptime_list of strings → *[?[?u8]] (leb128 count + leb128 length per string)
-export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
-  const LEB128_SPEC: IndexSpecifierRT = { kind: 'prefix' }
-
+// Create the default concrete type for a comptime list or array
+// Comptime arrays default to *[_]T (pointer to inferred-size array)
+export function defaultArrayType(t: ResolvedType): PointerRT | null {
   // Handle comptime_list: find innermost element and count depth
   if (t.kind === 'comptime_list') {
     // Find common element type and max depth
@@ -254,7 +309,7 @@ export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
       }
     }
 
-    // Empty list defaults to [*:?]u8 (like an empty string array)
+    // Empty list defaults to *[_]u8
     if (elemType === null) {
       elemType = primitive('u8')
     }
@@ -263,16 +318,16 @@ export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
     const resolvedElem = defaultizeElement(elemType)
     if (resolvedElem === null) return null
 
-    // Build specifiers: one /L per nesting level
-    const specifiers = Array(depth).fill(LEB128_SPEC)
-    return indexed(resolvedElem, null, specifiers)
+    // Build sizes: one '_' per nesting level (comptime/inferred)
+    const sizes: ArraySize[] = Array(depth).fill('_')
+    return pointer(array(resolvedElem, sizes))
   }
 
-  // Handle comptime indexed type ([]u8)
-  if (t.kind === 'indexed' && t.size === 'comptime') {
+  // Handle comptime array type ([_]T)
+  if (t.kind === 'array' && t.sizes?.includes('_')) {
     let depth = 1
     let elem = t.element
-    while (elem.kind === 'indexed' && elem.size === 'comptime') {
+    while (elem.kind === 'array' && elem.sizes?.includes('_')) {
       depth++
       elem = elem.element
     }
@@ -280,8 +335,8 @@ export function defaultIndexedType(t: ResolvedType): IndexedRT | null {
     const resolvedElem = defaultizeElement(elem)
     if (resolvedElem === null) return null
 
-    const specifiers = Array(depth).fill(LEB128_SPEC)
-    return indexed(resolvedElem, null, specifiers)
+    const sizes: ArraySize[] = Array(depth).fill('_')
+    return pointer(array(resolvedElem, sizes))
   }
 
   return null
@@ -296,7 +351,7 @@ function findInnermostElement(t: ResolvedType): { element: ResolvedType; nesting
     const inner = findInnermostElement(t.elements[0])
     return { element: inner.element, nesting: inner.nesting + 1 }
   }
-  if (t.kind === 'indexed' && t.size === 'comptime') {
+  if (t.kind === 'array' && t.sizes?.includes('_')) {
     const inner = findInnermostElement(t.element)
     return { element: inner.element, nesting: inner.nesting + 1 }
   }
@@ -320,32 +375,28 @@ function defaultizeElement(t: ResolvedType): ResolvedType | null {
 
 // === Type Equality ===
 
-function specifierEquals(a: IndexSpecifierRT, b: IndexSpecifierRT): boolean {
-  return a.kind === b.kind
-}
-
-function specifiersEqual(a: IndexSpecifierRT[], b: IndexSpecifierRT[]): boolean {
+// Compare array sizes (handles multi-dimensional arrays)
+function sizesEqual(a: ArraySize[] | null, b: ArraySize[] | null): boolean {
+  if (a === b) return true // handles null
+  if (a === null || b === null) return false
   if (a.length !== b.length) return false
-  return a.every((spec, i) => specifierEquals(spec, b[i]))
+  return a.every((v, i) => v === b[i])
 }
 
-// Check if source specifiers are compatible with target specifiers
-// - All-null target: source must have >= target count of nulls (and all nulls)
-// - Mixed/prefix target: must match exactly
-function specifiersCompatible(target: IndexSpecifierRT[], source: IndexSpecifierRT[]): boolean {
-  if (target.length === 0) return true // slice accepts anything
+// Check if source sizes are compatible with target sizes for coercion
+// - Comptime sizes ('_') can coerce to any framing
+// - Fixed sizes must match
+function sizesCompatible(target: ArraySize[] | null, source: ArraySize[] | null): boolean {
+  // Unbounded target accepts anything
+  if (target === null) return true
+  // Unbounded source can't satisfy bounded target
+  if (source === null) return false
 
-  // Check if target is all nulls
-  const targetAllNulls = target.every(s => s.kind === 'null')
-  const sourceAllNulls = source.every(s => s.kind === 'null')
+  // Comptime source ('_') can coerce to any framing
+  if (source.length === 1 && source[0] === '_') return true
 
-  if (targetAllNulls && sourceAllNulls) {
-    // *[!u8] accepts *[![!u8]] (more nulls is still valid)
-    return source.length >= target.length
-  }
-
-  // For mixed specifiers, require exact match
-  return specifiersEqual(target, source)
+  // Otherwise sizes must match exactly
+  return sizesEqual(target, source)
 }
 
 export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
@@ -355,17 +406,17 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
     case 'primitive':
       return a.name === (b as PrimitiveRT).name
 
-    case 'pointer':
-      return typeEquals(a.pointee, (b as PointerRT).pointee)
+    case 'pointer': {
+      const bPtr = b as PointerRT
+      return !!a.boundary === !!bPtr.boundary && typeEquals(a.pointee, bPtr.pointee)
+    }
 
-    case 'indexed': {
-      const bIdx = b as IndexedRT
-      return (
-        a.size === bIdx.size &&
-        !!a.manyPointer === !!bIdx.manyPointer &&
-        specifiersEqual(a.specifiers, bIdx.specifiers) &&
-        typeEquals(a.element, bIdx.element)
-      )
+    case 'slice':
+      return typeEquals(a.element, (b as SliceRT).element)
+
+    case 'array': {
+      const bArr = b as ArrayRT
+      return sizesEqual(a.sizes, bArr.sizes) && typeEquals(a.element, bArr.element)
     }
 
     case 'tuple': {
@@ -397,6 +448,11 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       const bList = b as ComptimeListRT
       if (a.elements.length !== bList.elements.length) return false
       return a.elements.every((e, i) => typeEquals(e, bList.elements[i]))
+    }
+
+    case 'comptime_array': {
+      const bArr = b as ComptimeArrayRT
+      return a.count === bArr.count && typeEquals(a.element, bArr.element)
     }
 
     case 'named': {
@@ -455,16 +511,28 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return (t.name === 'f32' || t.name === 'f64') ? lossless(false) : INCOMPATIBLE
   }
 
-  // Comptime list can coerce to indexed types (arrays, slices, null-terminated, etc.)
-  // Note: bare indexed with size='comptime' is a comptime list (can't assign to it)
-  // But pointer-to-indexed with size='comptime' is a slice (CAN assign to it)
-  if (s.kind === 'comptime_list' && t.kind === 'indexed') {
-    // Can't assign to bare comptime indexed type [T] - it's not a runtime type
-    // This check is skipped when called from pointer-to-indexed handler below
-    if (t.size === 'comptime') return INCOMPATIBLE
+  // Comptime list can coerce to slice
+  if (s.kind === 'comptime_list' && t.kind === 'slice') {
+    // Check all elements can be assigned to target element type
+    for (const elem of s.elements) {
+      const elemResult = typeAssignResult(t.element, elem)
+      if (!elemResult.compatible || elemResult.lossiness !== 'lossless') {
+        return INCOMPATIBLE
+      }
+    }
+    return lossless(false)
+  }
+
+  // Comptime list can coerce to array types
+  if (s.kind === 'comptime_list' && t.kind === 'array') {
+    // Can't assign to comptime array type [_]T - needs to be pointer-wrapped
+    if (t.sizes?.includes('_')) return INCOMPATIBLE
     // Check size compatibility for fixed arrays
-    if (typeof t.size === 'number' && t.size !== s.elements.length) {
-      return INCOMPATIBLE
+    if (t.sizes && isFixedSizes(t.sizes)) {
+      const total = totalElements(t.sizes)
+      if (total !== null && total !== s.elements.length) {
+        return INCOMPATIBLE
+      }
     }
     // Check all elements can be assigned to target element type
     for (const elem of s.elements) {
@@ -473,22 +541,22 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
         return INCOMPATIBLE
       }
     }
-    // Comptime list can satisfy any specifiers (we know the data at compile time)
     return lossless(false)
   }
 
-  // Comptime list can coerce to pointer-to-indexed types (new syntax: *[T], *[!T], etc.)
-  // *[T] is a slice (fat pointer), *[!T] is null-terminated, *[?T] is LEB128-prefixed
-  if (s.kind === 'comptime_list' && t.kind === 'pointer' && t.pointee.kind === 'indexed') {
-    const targetIndexed = t.pointee
-    // For pointer-wrapped indexed, size='comptime' means slice (runtime type, CAN assign)
+  // Comptime list can coerce to pointer-to-array types (*[N]T, *[!]T, etc.)
+  if (s.kind === 'comptime_list' && t.kind === 'pointer' && t.pointee.kind === 'array') {
+    const targetArray = t.pointee
     // Check size compatibility for fixed arrays
-    if (typeof targetIndexed.size === 'number' && targetIndexed.size !== s.elements.length) {
-      return INCOMPATIBLE
+    if (targetArray.sizes && isFixedSizes(targetArray.sizes)) {
+      const total = totalElements(targetArray.sizes)
+      if (total !== null && total !== s.elements.length) {
+        return INCOMPATIBLE
+      }
     }
     // Check all elements can be assigned to target element type
     for (const elem of s.elements) {
-      const elemResult = typeAssignResult(targetIndexed.element, elem)
+      const elemResult = typeAssignResult(targetArray.element, elem)
       if (!elemResult.compatible || elemResult.lossiness !== 'lossless') {
         return INCOMPATIBLE
       }
@@ -496,47 +564,52 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return lossless(false)
   }
 
-  // Comptime indexed can coerce to pointer-to-indexed (new syntax: [u8] → *[u8])
-  // This handles [[u8]] → *[*[u8]], [[u8]] → *[![!u8]], etc.
-  if (s.kind === 'indexed' && s.size === 'comptime' && t.kind === 'pointer' && t.pointee.kind === 'indexed') {
-
-    // Count comptime nesting depth in source
-    let sourceDepth = 0
-    let innerSource: ResolvedType = s
-    while (innerSource.kind === 'indexed' && innerSource.size === 'comptime') {
-      sourceDepth++
-      innerSource = innerSource.element
+  // Comptime array literal can coerce to slice: comptime_array -> []T
+  if (s.kind === 'comptime_array' && t.kind === 'slice') {
+    const elemResult = typeAssignResult(t.element, s.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(false)
     }
+  }
 
-    // Count target depth (following both indexed AND pointer-to-indexed)
-    // For *[*[u8]]: depth=2, for *[![!u8]]: depth=1 with 2 specifiers
-    let targetDepth = 0
-    let targetSpecCount = 0
-    let targetInner: ResolvedType = t
-    while (true) {
-      if (targetInner.kind === 'pointer' && targetInner.pointee.kind === 'indexed') {
-        targetDepth++
-        targetSpecCount += targetInner.pointee.specifiers.length
-        targetInner = targetInner.pointee.element
-      } else if (targetInner.kind === 'indexed' && targetInner.size !== 'comptime') {
-        targetDepth++
-        targetSpecCount += targetInner.specifiers.length
-        targetInner = targetInner.element
-      } else {
-        break
+  // Comptime array literal can coerce to fixed array: comptime_array -> [N]T
+  if (s.kind === 'comptime_array' && t.kind === 'array') {
+    // Can't assign to inferred-size array [_]T
+    if (t.sizes?.includes('_')) return INCOMPATIBLE
+    // Check size compatibility
+    if (t.sizes && isFixedSizes(t.sizes)) {
+      const total = totalElements(t.sizes)
+      if (total !== null && total !== s.count) {
+        return INCOMPATIBLE
       }
     }
-
-    // For merged brackets (like *[![!u8]]): sourceDepth == targetSpecCount
-    // For separate brackets (like *[*[u8]]): sourceDepth == targetDepth
-    if (sourceDepth !== targetSpecCount && sourceDepth !== targetDepth) {
-      return INCOMPATIBLE
+    const elemResult = typeAssignResult(t.element, s.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(false)
     }
+  }
 
-    // Check innermost elements are compatible
-    const innerResult = typeAssignResult(targetInner, innerSource)
-    if (!innerResult.compatible || innerResult.lossiness !== 'lossless') return INCOMPATIBLE
+  // Comptime array literal can coerce to pointer-to-array: comptime_array -> *[N]T
+  if (s.kind === 'comptime_array' && t.kind === 'pointer' && t.pointee.kind === 'array') {
+    const targetArray = t.pointee
+    // Check size compatibility
+    if (targetArray.sizes && isFixedSizes(targetArray.sizes)) {
+      const total = totalElements(targetArray.sizes)
+      if (total !== null && total !== s.count) {
+        return INCOMPATIBLE
+      }
+    }
+    const elemResult = typeAssignResult(targetArray.element, s.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(false)
+    }
+  }
 
+  // Comptime array [_]T can coerce to pointer-to-array *[N]T, *[!]T, etc.
+  if (s.kind === 'array' && s.sizes?.includes('_') && t.kind === 'pointer' && t.pointee.kind === 'array') {
+    // Check element types are compatible
+    const elemResult = typeAssignResult(t.pointee.element, s.element)
+    if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
     return lossless(false)
   }
 
@@ -563,99 +636,57 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return lossless(allReinterpret)
   }
 
-  // Indexed type coercion (arrays/slices)
-  if (t.kind === 'indexed' && s.kind === 'indexed') {
-    // Can't assign to comptime indexed type ([]T)
-    if (t.size === 'comptime') return INCOMPATIBLE
+  // Array type coercion
+  if (t.kind === 'array' && s.kind === 'array') {
+    // Can't assign to comptime array type [_]T
+    if (t.sizes?.includes('_')) return INCOMPATIBLE
 
-    // Handle comptime source with potential bracket merging
-    // [[u8]] can coerce to:
-    //   - *[!*[!u8]] (2 brackets, each level gets a specifier)
-    //   - *[![!u8]] (1 bracket with 2 specifiers - merged)
-    if (s.size === 'comptime') {
-      // Count comptime nesting depth and find innermost element
-      let sourceDepth = 0
-      let innerElement: ResolvedType = s
-      while (innerElement.kind === 'indexed' && innerElement.size === 'comptime') {
-        sourceDepth++
-        innerElement = innerElement.element
-      }
-
-      // Count target depth (bracket levels) and total specifier count
-      let targetDepth = 0
-      let targetSpecCount = 0
-      let targetInner: ResolvedType = t
-      while (targetInner.kind === 'indexed') {
-        targetDepth++
-        targetSpecCount += targetInner.specifiers.length
-        // If target element is comptime, that's invalid
-        if (targetInner.size === 'comptime') return INCOMPATIBLE
-        targetInner = targetInner.element
-      }
-
-      // For bracket merging: source depth must equal target specifier count
-      // [[u8]] (depth 2) -> *[![!u8]] (1 bracket, 2 specs) ✓
-      // [[u8]] (depth 2) -> *[!*[!u8]] (2 brackets, 2 specs total) ✓
-      // But source depth must be >= target depth (can merge but not split)
-      if (sourceDepth < targetDepth) return INCOMPATIBLE
-      if (sourceDepth !== targetSpecCount && sourceDepth !== targetDepth) return INCOMPATIBLE
-
-      // Check innermost elements are compatible
-      const innerResult = typeAssignResult(targetInner, innerElement)
-      if (!innerResult.compatible || innerResult.lossiness !== 'lossless') return INCOMPATIBLE
-
+    // Comptime source can coerce to any framing
+    if (s.sizes?.includes('_')) {
+      const elemResult = typeAssignResult(t.element, s.element)
+      if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
       return lossless(false)
     }
 
-    // Non-comptime source: normal element matching
+    // Check element type compatibility
     const elemResult = typeAssignResult(t.element, s.element)
     if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
 
-    // For reinterpretability: element must be reinterpretable AND sizes must work
-    // u8[#] -> u16[#] is NOT reinterpretable (no space for widened elements)
-    // u8[10] -> u8[#] IS reinterpretable (same bytes, just slice view)
+    // Check sizes compatibility
+    if (!sizesCompatible(t.sizes, s.sizes)) return INCOMPATIBLE
 
-    // Slice (no specifiers) accepts any indexed type with compatible element
-    // A null-terminated/prefixed type can be assigned to a slice (it just loses the guarantee)
-    if (t.size === null && t.specifiers.length === 0) {
-      // Slice reinterpret only if element is reinterpretable (same element type)
+    return lossless(elemResult.reinterpret)
+  }
+
+  // Slice coercion
+  if (t.kind === 'slice' && s.kind === 'slice') {
+    const elemResult = typeAssignResult(t.element, s.element)
+    if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
+    return lossless(elemResult.reinterpret)
+  }
+
+  // Pointer-to-array can coerce to slice: *[N]T -> []T
+  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array') {
+    const elemResult = typeAssignResult(t.element, s.pointee.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
       return lossless(elemResult.reinterpret)
-    }
-
-    // Allow sized arrays with no specifiers to coerce to types with specifiers
-    // [N]u8 can coerce to [!]u8 or [?]u8 because we know the data at compile time
-    // and can add the framing (null terminator, LEB128 prefix) during codegen
-    if (typeof s.size === 'number' && s.specifiers.length === 0 && t.specifiers.length > 0) {
-      // Size must be compatible (target unsized, or same size)
-      if (t.size === null || t.size === s.size) {
-        return lossless(false) // Not reinterpretable (framing transformation needed)
-      }
-    }
-
-    // Check specifier compatibility
-    if (!specifiersCompatible(t.specifiers, s.specifiers)) {
-      return INCOMPATIBLE
-    }
-    // Unsized with specifiers accepts sized with compatible specifiers
-    if (t.size === null && t.specifiers.length > 0) {
-      return lossless(elemResult.reinterpret)
-    }
-    // Fixed array (no specifiers) accepts same size with no specifiers
-    if (typeof t.size === 'number' && t.specifiers.length === 0) {
-      return s.size === t.size && s.specifiers.length === 0 ? lossless(elemResult.reinterpret) : INCOMPATIBLE
-    }
-    // Fixed with specifiers accepts same size with compatible specifiers
-    if (typeof t.size === 'number' && t.specifiers.length > 0) {
-      return s.size === t.size ? lossless(elemResult.reinterpret) : INCOMPATIBLE
     }
   }
 
-  // Many-pointer to plain pointer coercion: [*]T -> *T, [*N]T -> *T
+  // Comptime array can coerce to slice: [_]T -> []T
+  // Array literals are always placed in data section, so implicit &array is taken
+  if (t.kind === 'slice' && s.kind === 'array' && s.sizes?.includes('_')) {
+    const elemResult = typeAssignResult(t.element, s.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(false)  // Not reinterpretable - creates fat pointer from array
+    }
+  }
+
+  // Many-pointer [*]T can coerce to plain pointer *T
   // This is a demotion - we lose the "multiple elements" information
-  // but the pointer value itself is the same (lossless, reinterpretable)
-  if (t.kind === 'pointer' && s.kind === 'indexed' && s.manyPointer) {
-    // Element types must match exactly
-    if (typeEquals(t.pointee, s.element)) {
+  if (t.kind === 'pointer' && s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes === null) {
+    // Check element types match
+    if (typeEquals(t.pointee, s.pointee.element)) {
       return lossless(true)
     }
   }
@@ -719,9 +750,10 @@ export function typeAssignable(target: ResolvedType, source: ResolvedType): bool
 
 // === Type Formatting ===
 
-// Convert specifier to framing character
-function specifierToFraming(s: IndexSpecifierRT): string {
-  return s.kind === 'null' ? '!' : '?'
+// Format array sizes for display
+function sizesToString(sizes: ArraySize[] | null): string {
+  if (sizes === null) return '*'  // unbounded [*]T
+  return sizes.map(s => typeof s === 'number' ? String(s) : s).join(',')
 }
 
 export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): string {
@@ -733,25 +765,19 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
     case 'primitive':
       return t.name
 
-    case 'pointer':
-      return `*${typeToString(t.pointee, opts)}`
+    case 'pointer': {
+      const prefix = t.boundary ? '^' : '*'
+      return `${prefix}${typeToString(t.pointee, opts)}`
+    }
 
-    case 'indexed': {
-      // Bracket syntax: [*? length? framing*]T
-      // - []T for slice
-      // - [*]T for many-pointer (thin)
-      // - [5]T for slice with known length
-      // - [*5]T for many-pointer with known length
-      // - [!]T for null-terminated slice
-      // - [*!]T for null-terminated many-pointer
-      // - [5!]T for slice with known length + null-terminated
+    case 'slice':
+      return `[]${typeToString(t.element, opts)}`
+
+    case 'array': {
+      // [N]T, [N,M]T, [_]T, [!]T, [?]T, [*]T
       const elem = typeToString(t.element, opts)
-      const framing = t.specifiers.map(specifierToFraming).join('')
-      const star = t.manyPointer ? '*' : ''
-      const length = typeof t.size === 'number' ? String(t.size)
-                   : t.size === 'inferred' ? '_'
-                   : ''
-      return `[${star}${length}${framing}]${elem}`
+      const sizes = sizesToString(t.sizes)
+      return `[${sizes}]${elem}`
     }
 
     case 'tuple': {
@@ -784,6 +810,9 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
     case 'comptime_list':
       return `[${t.elements.map((e) => typeToString(e, opts)).join(sep)}]`
+
+    case 'comptime_array':
+      return `[${t.count}]${typeToString(t.element, opts)}`
 
     case 'named':
       // Just show the alias name
@@ -975,12 +1004,17 @@ export function byteSize(t: ResolvedType): number | null {
       // Pointers are always 4 bytes in wasm32
       return 4
 
-    case 'indexed': {
+    case 'slice':
+      // Slices are fat pointers: ptr + len = 8 bytes in wasm32
+      return 8
+
+    case 'array': {
       // Only fixed arrays have known size
-      if (typeof u.size !== 'number') return null
+      const total = totalElements(u.sizes)
+      if (total === null) return null
       const elemSize = byteSize(u.element)
       if (elemSize === null) return null
-      return u.size * elemSize
+      return total * elemSize
     }
 
     case 'tuple': {

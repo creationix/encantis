@@ -489,8 +489,12 @@ connection.languages.semanticTokens.on((params) => {
         tokenType = 1; // function
       } else if (hint.value && (hint.value.startsWith('0x') || hint.value.startsWith('('))) {
         tokenType = 5; // string (data literals)
+      } else if (/^[iuf]\d+$|^bool$/.test(typeStr)) {
+        // Primitive types (i32, u8, f64, bool, etc.) - likely a numeric literal
+        tokenType = 6; // number
       } else {
-        tokenType = 4; // property (field access, etc.)
+        // Skip hints without symbols that don't map to a semantic token
+        continue;
       }
     }
 

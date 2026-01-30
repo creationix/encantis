@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   primitive,
   pointer,
-  indexed,
+  array,
+  slice,
   tuple,
   field,
   func,
@@ -34,10 +35,16 @@ describe('types', () => {
       expect(type.pointee.kind).toBe('primitive')
     })
 
-    test('indexed creates slice type', () => {
-      const type = indexed(primitive('u8'), null, [])
-      expect(type.kind).toBe('indexed')
-      expect(type.size).toBeNull()
+    test('slice creates slice type', () => {
+      const type = slice(primitive('u8'))
+      expect(type.kind).toBe('slice')
+      expect(type.element.kind).toBe('primitive')
+    })
+
+    test('array creates array type', () => {
+      const type = array(primitive('u8'), [10])
+      expect(type.kind).toBe('array')
+      expect(type.sizes).toEqual([10])
       expect(type.element.kind).toBe('primitive')
     })
 

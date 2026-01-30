@@ -548,11 +548,17 @@ export type IndexSpecifier =
   | { kind: 'null' }   // null-terminated (!)
   | { kind: 'prefix' } // LEB128 length prefix (?)
 
-// Bracket types: []T, [*]T, [5]T, [!]T, [*5!]T, etc.
+// Bracket types: []T, [*]T, [5]T, [12,16]T, [!]T, [*5!]T, etc.
 export interface IndexedType extends BaseNode {
   kind: 'IndexedType'
   element: Type
-  size: number | 'inferred' | 'comptime' | null // number = known length, 'inferred' = from literal, null = unknown
+  // Size can be:
+  // - number: single dimension [5]T
+  // - number[]: multi-dimensional packed [12,16]T
+  // - 'inferred': inferred from literal [_]T
+  // - 'comptime': comptime list [T]
+  // - null: unknown/slice []T
+  size: number | number[] | 'inferred' | 'comptime' | null
   specifiers: IndexSpecifier[] // framing: ! and ? markers
   manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat slice)
 }

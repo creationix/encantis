@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import type { IndexedRT, IndexSpecifierRT, ResolvedType } from './types'
+import type { ArrayRT, ArraySize, ResolvedType } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -13,15 +13,42 @@ import {
   serializeFloat,
 } from './utils'
 
+// Helper to extract framing specifiers from sizes array
+// Framings are non-numeric sizes: '!' (null-term) and '?' (LEB prefix)
+function getFramings(sizes: ArraySize[] | null): ArraySize[] {
+  if (!sizes) return []
+  return sizes.filter(s => s === '!' || s === '?')
+}
+
+// Helper to check if a size is a framing specifier
+function isFraming(s: ArraySize): s is '!' | '?' {
+  return s === '!' || s === '?'
+}
+
+// Helper to get numeric sizes from sizes array
+function getNumericSizes(sizes: ArraySize[] | null): number[] {
+  if (!sizes) return []
+  return sizes.filter((s): s is number => typeof s === 'number')
+}
+
+// Helper to get repeat count from a RepeatExpr
+function getRepeatCount(expr: AST.RepeatExpr): number {
+  if (expr.count.kind === 'LiteralExpr' && expr.count.value.kind === 'int') {
+    return Number(expr.count.value.value)
+  }
+  throw new Error('RepeatExpr count must be a literal integer')
+}
+
 /**
- * Check if indexed type uses merged brackets (single pass serialization)
+ * Check if array type uses merged brackets (single pass serialization)
  * vs separate brackets (depth-first with pointer arrays).
- * Merged: specifiers apply to contiguous data (e.g., *[![!u8]])
- * Separate: nested indexed types requiring pointer indirection (e.g., *[!*[!u8]])
+ * Merged: framings apply to contiguous data (e.g., [!,!]u8)
+ * Separate: nested array types requiring pointer indirection (e.g., [!][!]u8)
  */
-function isMergedBrackets(type: IndexedRT): boolean {
-  return type.specifiers.length > 1 ||
-    (type.specifiers.length === 1 && type.element.kind !== 'indexed')
+function isMergedBrackets(type: ArrayRT): boolean {
+  const framings = getFramings(type.sizes)
+  return framings.length > 1 ||
+    (framings.length === 1 && type.element.kind !== 'array')
 }
 
 // An interned string entry in the data section
@@ -219,7 +246,7 @@ export interface DataRef {
 interface SerializablePart {
   id: number                        // Unique ID for this part
   expr: AST.Expr                    // The expression to serialize
-  type: IndexedRT                   // Target type
+  type: ArrayRT                   // Target type
   depth: number                     // Nesting depth (0=top-level, higher=inner)
   parentId: number | null           // Parent part's ID (for separate bracket children)
   childIndices: number[]            // Indices of this part's children (filled during collection)
@@ -233,7 +260,7 @@ let partIdCounter = 0
 // Parts are returned in order they were discovered (depth-first)
 function collectParts(
   expr: AST.Expr,
-  type: IndexedRT,
+  type: ArrayRT,
   depth: number,
   parentId: number | null,
   literalId: number | string | undefined,
@@ -241,7 +268,7 @@ function collectParts(
 ): number {
   const thisId = partIdCounter++
 
-  if (isMergedBrackets(type) || type.element.kind !== 'indexed') {
+  if (isMergedBrackets(type) || type.element.kind !== 'array') {
     // Merged or leaf: serialize as a single unit
     parts.push({
       id: thisId,
@@ -261,7 +288,7 @@ function collectParts(
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
-  const innerType = type.element as IndexedRT
+  const innerType = type.element as ArrayRT
   const childIds: number[] = []
 
   // Recursively collect children at depth+1
@@ -290,20 +317,21 @@ function collectParts(
 //   1. Non-pointer-arrays first (sorted by specifier count, more = higher)
 //   2. Pointer arrays last (sorted by depth desc, then specifier count)
 function partSortScore(part: SerializablePart): number {
-  const specCount = part.type.specifiers.length
+  const specCount = part.type.sizes?.filter(s => s === '!' || s === '?').length ?? 0
 
   if (part.isPointerArray) {
     // Pointer arrays come after ALL non-pointer-arrays
     // Among pointer arrays: deeper ones first (for nested separate brackets),
     // then by specifier count
-    const specScore = specCount > 0 ? 10 + specCount : (part.type.size !== null ? 1 : 0)
+    const hasFixedSize = part.type.sizes?.some(s => typeof s === 'number') ?? false
+    const specScore = specCount > 0 ? 10 + specCount : (hasFixedSize ? 1 : 0)
     return -10000 + part.depth * 100 + specScore
   }
 
   // Non-pointer-arrays: sort by specifier count (more = higher priority)
   if (specCount > 0) {
     return 1000 + specCount
-  } else if (part.type.size !== null) {
+  } else if (part.type.sizes?.some(s => typeof s === 'number')) {
     return 100
   }
   return 0 // Slices
@@ -334,9 +362,9 @@ function serializeSortedParts(
 
       // Check if INNER type (children) are slices - determines if we store (ptr,len) pairs
       const innerType = part.type.element
-      const childrenAreSlices = innerType.kind === 'indexed' &&
-        innerType.size === null && innerType.specifiers.length === 0
-      const pointerBytes = encodePointerArray(childRefs, part.type.specifiers, childrenAreSlices)
+      const childrenAreSlices = innerType.kind === 'slice' ||
+        (innerType.kind === 'array' && (innerType.sizes === null || innerType.sizes.length === 0))
+      const pointerBytes = encodePointerArray(childRefs, getFramings(part.type.sizes), childrenAreSlices)
       const ref = builder.internBytes(pointerBytes, skipDedup)
       refMap.set(part.id, ref)
     } else {
@@ -367,11 +395,11 @@ function isMutExpr(expr: AST.Expr): boolean {
 
 export function serializeLiteral(
   expr: AST.Expr,
-  targetType: IndexedRT,
+  targetType: ArrayRT,
   builder: DataSectionBuilder,
 ): DataRef {
   const skipDedup = isMutExpr(expr)
-  if (isMergedBrackets(targetType) || targetType.element.kind !== 'indexed') {
+  if (isMergedBrackets(targetType) || targetType.element.kind !== 'array') {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
     return serializeSeparate(expr, targetType, builder, skipDedup)
@@ -381,7 +409,7 @@ export function serializeLiteral(
 // Serialize merged brackets (e.g., *[![!u8]]) - single contiguous write
 function serializeMerged(
   expr: AST.Expr,
-  targetType: IndexedRT,
+  targetType: ArrayRT,
   builder: DataSectionBuilder,
   skipDedup: boolean,
 ): DataRef {
@@ -390,38 +418,38 @@ function serializeMerged(
 }
 
 // Build the complete byte sequence for merged brackets
-// Specifier order: leftmost is outermost, rightmost is innermost
-// e.g., *[?[!u8]] means: ! applies to each element, ? applies to whole array
-function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
-  const specifiers = targetType.specifiers
+// Framing order: leftmost is outermost, rightmost is innermost
+// e.g., [?,!]u8 means: ! applies to each element, ? applies to whole array
+function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
+  const framings = getFramings(targetType.sizes)
   const elementType = targetType.element
 
   // For single-element types (string literal, int array), serialize directly
   if (expr.kind === 'LiteralExpr') {
     const rawBytes = literalToBytes(expr, elementType)
-    return applySpecifiers(rawBytes, specifiers, getElementSize(elementType))
+    return applyFramings(rawBytes, framings, getElementSize(elementType))
   }
 
-  // For array expressions, serialize each element then apply outer specifiers
+  // For array expressions, serialize each element then apply outer framings
   if (expr.kind === 'ArrayExpr') {
     const elementParts: Uint8Array[] = []
 
-    // Leftmost specifier is outermost (applies to whole array)
-    // Rightmost specifiers are innermost (apply to each element)
-    const outerSpec = specifiers[0]
-    const innerSpecs = specifiers.slice(1)
+    // Leftmost framing is outermost (applies to whole array)
+    // Rightmost framings are innermost (apply to each element)
+    const outerFraming = framings[0]
+    const innerFramings = framings.slice(1)
 
     for (const elem of expr.elements) {
-      const elemBytes = buildElementBytes(elem, elementType, innerSpecs)
+      const elemBytes = buildElementBytes(elem, elementType, innerFramings)
       elementParts.push(elemBytes)
     }
 
     // Concatenate all elements
     const combined = concatBytes(elementParts)
 
-    // Apply outer specifier (final terminator or prefix)
-    if (outerSpec) {
-      return applySpecifier(combined, outerSpec, getElementSize(elementType), elementParts.length)
+    // Apply outer framing (final terminator or prefix)
+    if (outerFraming) {
+      return applyFraming(combined, outerFraming, getElementSize(elementType), elementParts.length)
     }
     return combined
   }
@@ -434,13 +462,13 @@ function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
     }
     const count = Number(expr.count.value.value)
 
-    // Leftmost specifier is outermost (applies to whole array)
-    // Rightmost specifiers are innermost (apply to each element)
-    const outerSpec = specifiers[0]
-    const innerSpecs = specifiers.slice(1)
+    // Leftmost framing is outermost (applies to whole array)
+    // Rightmost framings are innermost (apply to each element)
+    const outerFraming = framings[0]
+    const innerFramings = framings.slice(1)
 
     // Serialize the value once
-    const elemBytes = buildElementBytes(expr.value, elementType, innerSpecs)
+    const elemBytes = buildElementBytes(expr.value, elementType, innerFramings)
 
     // Repeat it count times
     const elementParts: Uint8Array[] = []
@@ -451,59 +479,82 @@ function buildMergedBytes(expr: AST.Expr, targetType: IndexedRT): Uint8Array {
     // Concatenate all elements
     const combined = concatBytes(elementParts)
 
-    // Apply outer specifier (final terminator or prefix)
-    if (outerSpec) {
-      return applySpecifier(combined, outerSpec, getElementSize(elementType), count)
+    // Apply outer framing (final terminator or prefix)
+    if (outerFraming) {
+      return applyFraming(combined, outerFraming, getElementSize(elementType), count)
     }
     return combined
   }
 
-  throw new Error(`Cannot serialize ${expr.kind} to merged indexed type`)
+  throw new Error(`Cannot serialize ${expr.kind} to merged array type`)
 }
 
-// Build bytes for a single element with inner specifiers
-// Specifiers are ordered: leftmost is outermost, rightmost is innermost
+// Build bytes for a single element with inner framings
+// Framings are ordered: leftmost is outermost, rightmost is innermost
 function buildElementBytes(
   expr: AST.Expr,
   elementType: ResolvedType,
-  specifiers: IndexSpecifierRT[],
+  framings: ArraySize[],
 ): Uint8Array {
   // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
   if (expr.kind === 'AnnotationExpr') {
-    return buildElementBytes(expr.expr, elementType, specifiers)
+    return buildElementBytes(expr.expr, elementType, framings)
   }
 
   if (expr.kind === 'LiteralExpr') {
-    const rawBytes = literalToBytes(expr, elementType)
-    if (specifiers.length === 0) {
+    // If elementType is a slice, we need to unwrap it to get the actual element type
+    // for serialization. This happens when a literal is used where a slice is expected.
+    const actualType = elementType.kind === 'slice' ? elementType.element : elementType
+    const rawBytes = literalToBytes(expr, actualType)
+    if (framings.length === 0) {
       return rawBytes
     }
-    // Apply specifiers - for a single literal, apply all specifiers
-    return applySpecifiers(rawBytes, specifiers, getElementSize(elementType))
+    // Apply framings - for a single literal, apply all framings
+    return applyFramings(rawBytes, framings, getElementSize(actualType))
   }
 
-  if (expr.kind === 'ArrayExpr' && specifiers.length > 0) {
-    // Nested array with specifiers - recurse
+  if (expr.kind === 'ArrayExpr' && framings.length > 0) {
+    // Nested array with framings - recurse
     const parts: Uint8Array[] = []
     // Leftmost is outermost, rightmost (slice(1)) are inner
-    const outerSpec = specifiers[0]
-    const innerSpecs = specifiers.slice(1)
+    const outerFraming = framings[0]
+    const innerFramings = framings.slice(1)
+
+    // If elementType is a slice, unwrap it for the inner elements
+    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
 
     for (const elem of expr.elements) {
-      parts.push(buildElementBytes(elem, elementType, innerSpecs))
+      parts.push(buildElementBytes(elem, innerElementType, innerFramings))
     }
 
     const combined = concatBytes(parts)
-    return applySpecifier(combined, outerSpec, getElementSize(elementType), parts.length)
+    return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
+  }
+
+  if (expr.kind === 'RepeatExpr') {
+    // [value; count] - repeat the value bytes count times
+    // If elementType is a slice, unwrap it for the inner elements
+    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
+    const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1))
+    const count = getRepeatCount(expr)
+    const parts: Uint8Array[] = []
+    for (let i = 0; i < count; i++) {
+      parts.push(valueBytes)
+    }
+    const combined = concatBytes(parts)
+    if (framings.length > 0) {
+      return applyFraming(combined, framings[0], getElementSize(innerElementType), count)
+    }
+    return combined
   }
 
   throw new Error(`Cannot build element bytes for ${expr.kind}`)
 }
 
-// Serialize separate brackets (e.g., *[!*[!u8]]) - depth-first with pointer arrays
+// Serialize separate brackets (e.g., [!][!]u8) - depth-first with pointer arrays
 function serializeSeparate(
   expr: AST.Expr,
-  targetType: IndexedRT,
+  targetType: ArrayRT,
   builder: DataSectionBuilder,
   skipDedup: boolean,
 ): DataRef {
@@ -511,7 +562,7 @@ function serializeSeparate(
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
-  const innerType = targetType.element as IndexedRT
+  const innerType = targetType.element as ArrayRT
   const childRefs: DataRef[] = []
 
   // Recurse to serialize each child element first
@@ -522,8 +573,8 @@ function serializeSeparate(
   }
 
   // Now encode the pointer array based on outer type
-  const isSlice = targetType.size === null && targetType.specifiers.length === 0
-  const pointerBytes = encodePointerArray(childRefs, targetType.specifiers, isSlice)
+  const isSlice = targetType.sizes === null || (targetType.sizes.length === 0)
+  const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
 
   return builder.internBytes(pointerBytes, skipDedup)
 }
@@ -531,7 +582,7 @@ function serializeSeparate(
 // Encode an array of DataRefs as a pointer array
 function encodePointerArray(
   refs: DataRef[],
-  specifiers: IndexSpecifierRT[],
+  framings: ArraySize[],
   isSlice: boolean,
 ): Uint8Array {
   const parts: Uint8Array[] = []
@@ -551,12 +602,12 @@ function encodePointerArray(
 
   const combined = concatBytes(parts)
 
-  // Apply specifiers (e.g., null terminator for :0)
-  if (specifiers.length > 0) {
-    const spec = specifiers[specifiers.length - 1]
+  // Apply framings (e.g., null terminator for !)
+  if (framings.length > 0) {
+    const framing = framings[framings.length - 1]
     // For pointer arrays, element size is 4 (i32 pointer) or 8 (slice pair)
     const elemSize = isSlice ? 8 : 4
-    return applySpecifier(combined, spec, elemSize, refs.length)
+    return applyFraming(combined, framing, elemSize, refs.length)
   }
 
   return combined
@@ -593,35 +644,41 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
   throw new TypeError(`Cannot serialize unknown literal`)
 }
 
-// Apply all specifiers to bytes (inside-out order)
-function applySpecifiers(
+// Apply all framings to bytes (inside-out order)
+function applyFramings(
   bytes: Uint8Array,
-  specifiers: IndexSpecifierRT[],
+  framings: ArraySize[],
   elementSize: number,
 ): Uint8Array {
   let result = bytes
-  for (const spec of specifiers) {
-    result = applySpecifier(result, spec, elementSize, 0)
+  for (const framing of framings) {
+    result = applyFraming(result, framing, elementSize, 0)
   }
   return result
 }
 
-// Apply a single specifier to bytes
-function applySpecifier(
+// Apply a single framing to bytes
+// Framing is '!' (null-terminated) or '?' (LEB128 prefix)
+function applyFraming(
   bytes: Uint8Array,
-  spec: IndexSpecifierRT,
+  framing: ArraySize,
   elementSize: number,
   count: number,
 ): Uint8Array {
-  if (spec.kind === 'null') {
+  if (framing === '!') {
     // Null terminator: append zeros of element width
     const terminator = new Uint8Array(elementSize)
     return concatBytes([bytes, terminator])
   }
 
-  // Length/count prefix (always LEB128)
-  const prefixBytes = encodeLEB128(count || bytes.length)
-  return concatBytes([prefixBytes, bytes])
+  if (framing === '?') {
+    // Length/count prefix (always LEB128)
+    const prefixBytes = encodeLEB128(count || bytes.length)
+    return concatBytes([prefixBytes, bytes])
+  }
+
+  // Other sizes (numbers, '_') don't modify the bytes
+  return bytes
 }
 
 // Get the byte size of an element type (for null terminators)
@@ -646,7 +703,7 @@ function getElementSize(type: ResolvedType): number {
     }
   }
   // For pointer types (nested indexed), pointers are 4 bytes (i32)
-  if (type.kind === 'indexed' || type.kind === 'pointer') {
+  if (type.kind === 'array' || type.kind === 'pointer') {
     return 4
   }
   // Default to 1 byte
@@ -660,7 +717,7 @@ export interface QualifiedLiteral {
   // The literal value (string bytes, number array, nested arrays)
   value: LiteralValue
   // The target indexed type (determines encoding)
-  type: IndexedRT
+  type: ArrayRT
   // Optional explicit address (for memory block entries)
   address?: number
   // Optional identifier for tracking (e.g., AST offset or label)
@@ -854,7 +911,7 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
 export interface PendingLiteral {
   id: number          // AST offset
   expr: AST.Expr      // The literal expression
-  type: IndexedRT     // Target type for serialization
+  type: ArrayRT     // Target type for serialization
 }
 
 // Result of building the data section
@@ -888,7 +945,7 @@ export function buildDataSection(literals: PendingLiteral[]): DataSectionResult 
 
 // Sorting score for literals - higher = process first
 // Priority: specifiers (terminators/prefixes) > fixed-size > slices
-function literalSortScore(type: IndexedRT): number {
+function literalSortScore(type: ArrayRT): number {
   const maxSpecs = maxSpecifiersInBracket(type)
   if (maxSpecs > 0) {
     return 1000 + maxSpecs // Has specifiers - highest priority
@@ -901,18 +958,18 @@ function literalSortScore(type: IndexedRT): number {
 
 // Max specifiers in any single bracket level
 // Merged brackets like *[![!u8]] have 2, separate *[!*[!u8]] has max 1
-function maxSpecifiersInBracket(type: IndexedRT): number {
-  const thisLevel = type.specifiers.length
-  if (type.element.kind === 'indexed') {
+function maxSpecifiersInBracket(type: ArrayRT): number {
+  const thisLevel = type.sizes?.filter(s => s === '!' || s === '?').length ?? 0
+  if (type.element.kind === 'array') {
     return Math.max(thisLevel, maxSpecifiersInBracket(type.element))
   }
   return thisLevel
 }
 
 // Check if any level has a fixed size
-function hasFixedSize(type: IndexedRT): boolean {
-  if (type.size !== null) return true
-  if (type.element.kind === 'indexed') {
+function hasFixedSize(type: ArrayRT): boolean {
+  if (type.sizes?.some(s => typeof s === 'number')) return true
+  if (type.element.kind === 'array') {
     return hasFixedSize(type.element)
   }
   return false

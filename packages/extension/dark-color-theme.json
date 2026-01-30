@@ -171,42 +171,42 @@
       }
     },
     {
-      "name": "Functions - lime green",
+      "name": "Functions - soft yellow",
       "scope": [
         "entity.name.function",
         "support.function"
       ],
       "settings": {
-        "foreground": "#a6e22e"
+        "foreground": "#dcdcaa"
       }
     },
     {
-      "name": "Variables - soft white",
+      "name": "Variables - light blue",
       "scope": [
         "variable",
         "variable.other"
       ],
       "settings": {
-        "foreground": "#e8e6e3"
+        "foreground": "#9cdcfe"
       }
     },
     {
-      "name": "Parameters - light peach",
+      "name": "Parameters - gold",
       "scope": [
         "variable.parameter"
       ],
       "settings": {
-        "foreground": "#ffcab0",
+        "foreground": "#f0b500",
         "fontStyle": "italic"
       }
     },
     {
-      "name": "Output parameters - apricot",
+      "name": "Output parameters - orange",
       "scope": [
         "variable.parameter.output"
       ],
       "settings": {
-        "foreground": "#ffb86c",
+        "foreground": "#ff9500",
         "fontStyle": "italic bold"
       }
     },
@@ -414,26 +414,26 @@
   "semanticHighlighting": true,
   "semanticTokenColors": {
     "parameter": {
-      "foreground": "#ffcab0",
+      "foreground": "#f0b500",
       "fontStyle": "italic"
     },
     "parameter.output": {
-      "foreground": "#ffb86c",
+      "foreground": "#ff9500",
       "fontStyle": "italic bold"
     },
-    "variable": "#e8e6e3",
+    "variable": "#9cdcfe",
     "variable.readonly": {
       "foreground": "#b8d4e8",
       "fontStyle": "bold"
     },
-    "variable.static": "#f8a0c0",
+    "variable.static": "#4fc1ff",
     "variable.static.readonly": {
       "foreground": "#c8b8f8",
       "fontStyle": "bold"
     },
-    "function": "#a6e22e",
+    "function": "#dcdcaa",
     "function.declaration": {
-      "foreground": "#a6e22e",
+      "foreground": "#dcdcaa",
       "fontStyle": "bold"
     },
     "type": "#8be9fd",

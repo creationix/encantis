@@ -102,66 +102,31 @@ Encantis {
   // Types
   // ============================================================================
 
-  // Array/pointer bracket syntax - a mini-language inside []
-  // All bracket types are pointers (no by-value arrays)
-  //
-  // Structure: [*? length? framing*]T
-  //   - Optional * at start = thin many-pointer (vs fat slice)
-  //   - Optional length = _ (inferred) or N (explicit)
-  //   - Zero or more framing = ! (null-term) or ? (LEB128 prefix)
-  //
-  // Thin many-pointers (just ptr, no runtime length):
-  // - [*]T = many-pointer, unknown length
-  // - [*!]T = many-pointer, null-terminated
-  // - [*?]T = many-pointer, LEB128-prefixed
-  // - [*5]T = many-pointer, known length 5
-  // - [*_]T = many-pointer, inferred length
-  // - [*5!]T = many-pointer, known length 5, null-terminated
-  // - [*!!]T = many-pointer, double null-terminated (2D)
-  //
-  // Fat slices (ptr + runtime length):
-  // - []T = slice, runtime length only
-  // - [!]T = slice + null-terminated
-  // - [?]T = slice + LEB128-prefixed
-  // - [5]T = slice + known length 5 (redundant: runtime + comptime)
-  // - [_]T = slice + inferred length
-  // - [5!]T = slice + known length 5 + null-terminated
-  //
-  // Nesting (left bracket = outermost dimension):
-  // - [][]T - slices of slices
-  // - [*][5]T - many-pointer to length-5 slices
-  // - [*!?]T - null-term outer, LEB128 inner (flat layout)
-  //
-  // Function types use -> syntax:
-  // - i32 -> i32 (simple types)
-  // - (i32, i32) -> i32 (tuple input)
-  // - (x: i32) -> (result: i32) (named params/returns)
-  // - () -> i32 (void input)
-  // - i32 -> () (void output)
-  // Note: -> is right-associative, so a -> b -> c means a -> (b -> c)
   Type = BaseType "->" Type   -- func
        | BaseType             -- base
 
   // Base types (atoms that can compose into function types)
-  BaseType = "*" Type                          -- pointer
-           | "[" arrayTypePrefix? "]" Type     -- array
+  // Note: more specific patterns must come before general ones (PEG ordering)
+  BaseType = "[" arrayFramings "]" Type        -- array
+           | "[*]" Type                        -- manyPointer
+           | "[]" Type                         -- slice
+           | "*" Type                          -- pointer
+           | "^" Type                          -- boundaryPointer
            | "(" FieldList? ")"                -- composite
            | ComptimeType                      -- comptimeScalar
            | PrimitiveType                     -- primitive
            | typeIdent                         -- named
 
+        // Lengths and Framing: single or comma-separated for multi-dimensional
+        // [_]T = inferred, [5]T = 5 elements, [12,16]T = 12×16 packed
+        // [!,!]T = double null-terminated (2D), [5,?]T = 5 elements, LEB128-prefixed
+        arrayFramings = arrayFraming ("," arrayFraming)*
 
-        // Mini-language: [*? length? framing*]
-        arrayTypePrefix = "*" arrayLength? arrayFraming*   -- manyPointer
-                        | arrayLength arrayFraming*        -- sliceWithLength
-                        | arrayFraming+                    -- sliceWithFraming
-
-        // Length: _ (inferred) or decimal digits
-        arrayLength = "_"         -- inferred
+        // Single length: _ (inferred) or decimal digits
+        arrayFraming = "_"        -- inferred
                     | digit+      -- explicit
-
-        // Framing: ! (null-terminator) or ? (LEB128 prefix)
-        arrayFraming = "!" | "?"
+                    | "!"         -- nullTerminated
+                    | "?"         -- leb128Prefixed
 
   PrimitiveType = "i8" | "i16" | "i32" | "i64" | "i128" | "i256" | "i512"
                 | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "u512"

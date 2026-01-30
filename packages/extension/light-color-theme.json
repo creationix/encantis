@@ -171,42 +171,42 @@
       }
     },
     {
-      "name": "Functions - deep magenta",
+      "name": "Functions - dark olive",
       "scope": [
         "entity.name.function",
         "support.function"
       ],
       "settings": {
-        "foreground": "#8b2070"
+        "foreground": "#6b6020"
       }
     },
     {
-      "name": "Variables - charcoal",
+      "name": "Variables - dark steel blue",
       "scope": [
         "variable",
         "variable.other"
       ],
       "settings": {
-        "foreground": "#2d2a26"
+        "foreground": "#2a5580"
       }
     },
     {
-      "name": "Parameters - dark cyan",
+      "name": "Parameters - dark gold",
       "scope": [
         "variable.parameter"
       ],
       "settings": {
-        "foreground": "#1a6060",
+        "foreground": "#8b6b00",
         "fontStyle": "italic"
       }
     },
     {
-      "name": "Output parameters - ocean blue",
+      "name": "Output parameters - dark orange",
       "scope": [
         "variable.parameter.output"
       ],
       "settings": {
-        "foreground": "#1050a0",
+        "foreground": "#b86000",
         "fontStyle": "italic bold"
       }
     },
@@ -414,26 +414,26 @@
   "semanticHighlighting": true,
   "semanticTokenColors": {
     "parameter": {
-      "foreground": "#1a6060",
+      "foreground": "#8b6b00",
       "fontStyle": "italic"
     },
     "parameter.output": {
-      "foreground": "#1050a0",
+      "foreground": "#b86000",
       "fontStyle": "italic bold"
     },
-    "variable": "#2d2a26",
+    "variable": "#2a5580",
     "variable.readonly": {
-      "foreground": "#2a5070",
+      "foreground": "#1a4570",
       "fontStyle": "bold"
     },
-    "variable.static": "#a04060",
+    "variable.static": "#0070a8",
     "variable.static.readonly": {
-      "foreground": "#5a4090",
+      "foreground": "#005888",
       "fontStyle": "bold"
     },
-    "function": "#8b2070",
+    "function": "#6b6020",
     "function.declaration": {
-      "foreground": "#8b2070",
+      "foreground": "#6b6020",
       "fontStyle": "bold"
     },
     "type": "#b35900",

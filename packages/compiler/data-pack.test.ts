@@ -5,21 +5,27 @@ import {
   type QualifiedLiteral,
   DataSectionBuilder,
 } from './data-pack'
-import { indexed, primitive } from './types'
+import { array, primitive, type ArraySize } from './types'
 import { parse } from './parser'
 
-// Helper to create a u8 indexed type with specifiers
-function u8Indexed(
+// Helper to create a u8 array type with sizes/framings
+// size: numeric size or null for unbounded
+// framings: '!' for null-terminated, '?' for LEB128 prefix
+function u8Array(
   size: number | null,
-  ...specifiers: Array<'null' | 'leb128'>
+  ...framings: Array<'null' | 'leb128' | 'u8'>
 ) {
-  return indexed(
-    primitive('u8'),
-    size,
-    specifiers.map((s) =>
-      s === 'null' ? { kind: 'null' as const } : { kind: 'prefix' as const },
-    ),
-  )
+  const sizes: ArraySize[] = []
+  if (size !== null) {
+    sizes.push(size)
+  }
+  for (const f of framings) {
+    if (f === 'null') sizes.push('!')
+    else if (f === 'leb128') sizes.push('?')
+    // Note: 'u8' prefix is treated as LEB128 for now
+    else if (f === 'u8') sizes.push('?')
+  }
+  return array(primitive('u8'), sizes.length > 0 ? sizes : null)
 }
 
 // Helper to create bytes literal value
@@ -41,7 +47,7 @@ describe('layoutLiterals', () => {
   describe('simple string literals', () => {
     test('u8[4] - fixed size array without terminator', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('test'), type: u8Indexed(4) },
+        { id: 'a', value: bytes('test'), type: u8Array(4) },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -53,7 +59,7 @@ describe('layoutLiterals', () => {
 
     test('u8[/0] - null terminated string', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('hi'), type: u8Indexed(null, 'null') },
+        { id: 'a', value: bytes('hi'), type: u8Array(null, 'null') },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -65,7 +71,7 @@ describe('layoutLiterals', () => {
 
     test('u8[/u8] - length prefixed with u8', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('abc'), type: u8Indexed(null, 'u8') },
+        { id: 'a', value: bytes('abc'), type: u8Array(null, 'u8') },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -77,7 +83,7 @@ describe('layoutLiterals', () => {
 
     test('u8[/leb128] - LEB128 length prefixed', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('ab'), type: u8Indexed(null, 'leb128') },
+        { id: 'a', value: bytes('ab'), type: u8Array(null, 'leb128') },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -90,8 +96,8 @@ describe('layoutLiterals', () => {
   describe('deduplication', () => {
     test('identical strings are deduplicated', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('hello'), type: u8Indexed(null, 'null') },
-        { id: 'b', value: bytes('hello'), type: u8Indexed(null, 'null') },
+        { id: 'a', value: bytes('hello'), type: u8Array(null, 'null') },
+        { id: 'b', value: bytes('hello'), type: u8Array(null, 'null') },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -103,8 +109,8 @@ describe('layoutLiterals', () => {
 
     test('different strings are not deduplicated', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('foo'), type: u8Indexed(null, 'null') },
-        { id: 'b', value: bytes('bar'), type: u8Indexed(null, 'null') },
+        { id: 'a', value: bytes('foo'), type: u8Array(null, 'null') },
+        { id: 'b', value: bytes('bar'), type: u8Array(null, 'null') },
       ])
 
       expect(result.entries).toHaveLength(2)
@@ -117,7 +123,7 @@ describe('layoutLiterals', () => {
   describe('explicit addresses', () => {
     test('explicit address places data at specified offset', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('test'), type: u8Indexed(4), address: 100 },
+        { id: 'a', value: bytes('test'), type: u8Array(4), address: 100 },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -127,8 +133,8 @@ describe('layoutLiterals', () => {
 
     test('auto entries placed after explicit entries', () => {
       const result = layoutLiterals([
-        { id: 'explicit', value: bytes('XXXX'), type: u8Indexed(4), address: 0 },
-        { id: 'auto', value: bytes('auto'), type: u8Indexed(4) },
+        { id: 'explicit', value: bytes('XXXX'), type: u8Array(4), address: 0 },
+        { id: 'auto', value: bytes('auto'), type: u8Array(4) },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -140,8 +146,8 @@ describe('layoutLiterals', () => {
 
     test('overlapping explicit entries generate error', () => {
       const result = layoutLiterals([
-        { id: 'a', value: bytes('AAAA'), type: u8Indexed(4), address: 0 },
-        { id: 'b', value: bytes('BB'), type: u8Indexed(2), address: 2 }, // Overlaps
+        { id: 'a', value: bytes('AAAA'), type: u8Array(4), address: 0 },
+        { id: 'b', value: bytes('BB'), type: u8Array(2), address: 2 }, // Overlaps
       ])
 
       expect(result.errors).toHaveLength(1)
@@ -151,7 +157,7 @@ describe('layoutLiterals', () => {
 
   describe('integer arrays', () => {
     test('i32[3] - fixed size i32 array', () => {
-      const type = indexed(primitive('i32'), 3, [])
+      const type = array(primitive('i32'), [3])
       const result = layoutLiterals([
         { id: 'a', value: ints(1, 2, 3), type },
       ])
@@ -167,7 +173,7 @@ describe('layoutLiterals', () => {
 
     test('u8[4] - byte array', () => {
       const result = layoutLiterals([
-        { id: 'a', value: ints(0x41, 0x42, 0x43, 0x44), type: u8Indexed(4) },
+        { id: 'a', value: ints(0x41, 0x42, 0x43, 0x44), type: u8Array(4) },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -179,7 +185,7 @@ describe('layoutLiterals', () => {
     test('u8[/0/0] - double null terminated (string table)', () => {
       // This represents: ["hello", "world"] where each string is null-terminated
       // and the whole thing ends with an extra null
-      const type = u8Indexed(null, 'null', 'null')
+      const type = u8Array(null, 'null', 'null')
       const result = layoutLiterals([
         {
           id: 'table',
@@ -211,11 +217,11 @@ describe('layoutLiterals', () => {
         {
           id: 'compound',
           value: nested(bytes('hello'), bytes('world')),
-          type: u8Indexed(null, 'null', 'null'),
+          type: u8Array(null, 'null', 'null'),
         },
         // Write simple values (1 specifier) - should find substrings
-        { id: 'first', value: bytes('hello'), type: u8Indexed(null, 'null') },
-        { id: 'second', value: bytes('world'), type: u8Indexed(null, 'null') },
+        { id: 'first', value: bytes('hello'), type: u8Array(null, 'null') },
+        { id: 'second', value: bytes('world'), type: u8Array(null, 'null') },
       ])
 
       expect(result.errors).toHaveLength(0)
@@ -247,12 +253,12 @@ describe('layoutLiterals', () => {
       // it gets processed after compound due to sorting
       const result = layoutLiterals([
         // Simple value (1 specifier) - listed first but processed second
-        { id: 'simple', value: bytes('hello'), type: u8Indexed(null, 'null') },
+        { id: 'simple', value: bytes('hello'), type: u8Array(null, 'null') },
         // Compound value (2 specifiers) - listed second but processed first
         {
           id: 'compound',
           value: nested(bytes('hello'), bytes('world')),
-          type: u8Indexed(null, 'null', 'null'),
+          type: u8Array(null, 'null', 'null'),
         },
       ])
 
@@ -276,9 +282,9 @@ describe('layoutLiterals', () => {
       // Slice content (no specifiers) can be found in terminated content
       const result = layoutLiterals([
         // Null-terminated (1 specifier)
-        { id: 'terminated', value: bytes('hello'), type: u8Indexed(null, 'null') },
+        { id: 'terminated', value: bytes('hello'), type: u8Array(null, 'null') },
         // Slice (0 specifiers) - raw bytes
-        { id: 'slice', value: bytes('hello'), type: u8Indexed(null) },
+        { id: 'slice', value: bytes('hello'), type: u8Array(null) },
       ])
 
       expect(result.errors).toHaveLength(0)

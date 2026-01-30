@@ -322,38 +322,42 @@ bool                   // boolean
 
 [Grammar: `BaseType` array case, `arrayTypePrefix`](../packages/compiler/src/grammar/encantis.ohm#L110-L118)
 
-All bracket types are pointers (no by-value arrays). Syntax: `[*? length? framing*]T`
+All bracket types are pointers (no by-value arrays).
 
-**Many-pointers** (thin, just ptr):
+**Many-pointer** (thin, just ptr):
 ```encantis
 [*]u8                  // many-pointer, unknown length
-[*!]u8                 // null-terminated
-[*?]u8                 // LEB128-prefixed
-[*10]u8                // known length 10
-[*_]u8                 // inferred length
-[*10!]u8               // known length + null-terminated
 ```
 
 **Slices** (fat, ptr + runtime length):
+
 ```encantis
 []u8                   // slice, runtime length only
+[5]u8                  // slice + known length 5
+[_]u8                  // slice + inferred length
 [!]u8                  // slice + null-terminated
 [?]u8                  // slice + LEB128-prefixed
-[5]u8                  // slice + known length 5 (redundant)
-[_]u8                  // slice + inferred length
-[5!]u8                 // slice + known length + null-terminated
+[5,!]u8                // slice + known length + null-terminated
 ```
 
-**Multi-dimensional (flat layout):**
+**Pointer to array** (Zig-style):
+
 ```encantis
-[*!!]u8                // double null-terminated (2D)
-[*??]u8                // LEB128 count + per-element LEB128 lengths
-[*!?]u8                // null-term outer, LEB128 inner
+*[10]u8                // pointer to 10-element array
+*[!]u8                 // pointer to null-terminated array
+*[10,16]u8             // pointer to 10×16 packed array
+```
+
+**Multi-dimensional packed arrays:**
+
+```encantis
+[12,16]u8              // 12×16 packed (192 bytes total)
+[!,!]u8                // double null-terminated (2D)
 ```
 
 **Multi-dimensional (pointer indirection):**
 ```encantis
-[*][*!]u8              // many-pointer to null-term strings
+*[]u8                  // pointer to slice
 [][]u8                 // slice of slices
 [*][5]u8               // many-pointer to length-5 slices
 ```
