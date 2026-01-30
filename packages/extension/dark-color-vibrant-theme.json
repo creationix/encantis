@@ -171,13 +171,13 @@
       }
     },
     {
-      "name": "Functions - bright yellow",
+      "name": "Functions - lime green",
       "scope": [
         "entity.name.function",
         "support.function"
       ],
       "settings": {
-        "foreground": "#eeee88"
+        "foreground": "#a6ff4e"
       }
     },
     {
@@ -431,14 +431,19 @@
       "foreground": "#cc99ff",
       "fontStyle": "bold"
     },
-    "function": "#eeee88",
+    "function": "#a6ff4e",
     "function.declaration": {
-      "foreground": "#eeee88",
+      "foreground": "#a6ff4e",
       "fontStyle": "bold"
     },
     "type": "#00ffff",
     "type.declaration": {
       "foreground": "#00ffff",
+      "fontStyle": "bold"
+    },
+    "macro": "#ff6655",
+    "macro.readonly": {
+      "foreground": "#ff6655",
       "fontStyle": "bold"
     }
   }

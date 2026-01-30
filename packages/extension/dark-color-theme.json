@@ -166,18 +166,15 @@
         "support.type.comptime"
       ],
       "settings": {
-        "foreground": "#e6db74",
+        "foreground": "#e2d34a",
         "fontStyle": "italic"
       }
     },
     {
-      "name": "Functions - soft yellow",
-      "scope": [
-        "entity.name.function",
-        "support.function"
-      ],
+      "name": "Functions - muted lime",
+      "scope": ["entity.name.function", "support.function"],
       "settings": {
-        "foreground": "#dcdcaa"
+        "foreground": "#7bd522"
       }
     },
     {
@@ -431,14 +428,19 @@
       "foreground": "#c8b8f8",
       "fontStyle": "bold"
     },
-    "function": "#dcdcaa",
+    "function": "#a0c080",
     "function.declaration": {
-      "foreground": "#dcdcaa",
+      "foreground": "#a0c080",
       "fontStyle": "bold"
     },
     "type": "#8be9fd",
     "type.declaration": {
       "foreground": "#8be9fd",
+      "fontStyle": "bold"
+    },
+    "macro": "#ce4b30",
+    "macro.readonly": {
+      "foreground": "#d2634d",
       "fontStyle": "bold"
     }
   }
