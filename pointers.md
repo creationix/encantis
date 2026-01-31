@@ -1,5 +1,5 @@
 
-## Reference first Semantics
+# Reference first Semantics
 
 In C, pointers are address first and then thing they point to second.  To read the address of a pointer, you simply read it as-is.  The value is the address.  But if you want to read the thing it points to, you have to dereference it which means to do a typed memory read at that address.
 
@@ -9,11 +9,11 @@ int address = (int)p;  // read the address of the pointer
 int value = *p;        // dereference the pointer to read the value
 ```
 
-But what if we had a systems language that felt more like a scripting language by putting the value first and then the address second?  This is what reference first semantics are about.  In a reference first language, reading a pointer gives you the value directly.  To get the address, you have to take the reference of the value.
+But what if we had a systems language that felt more like a scripting language by putting the value first and then the address second?  This is what reference **first** semantics are about.  In a reference first language, reading a pointer gives you the value _directly_.  To get the address, you have to take the reference of the value.
 
 In webassembly there is no such thing as addresses to stack allocated values.  There is only registers (aka local variables which can be integers or floats) and linear memory (which is a big array of bytes).
 
-Sinve the registers are fixed at compile time, it is not possible to store arrays on the stack, they must exist in linear memory.  And by default, wasm doesn't have any memory allocator so you can't dynamically allocate memory.  This means that arrays must be statically allocated in linear memory.
+Since the registers are fixed at compile time, it is not possible to store arrays on the stack, they must exist in linear memory.  And by default, wasm doesn't have any memory allocator so you can't dynamically allocate memory.  This means that arrays must be statically allocated in linear memory.
 
 so how do you write useful programs with only having stack registers (ints and floats) and static serialized values in linear memory?
 
