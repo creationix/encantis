@@ -36,7 +36,7 @@ Enum literals are the bare names for unit variants, and the name with arguments 
 These enum variants can be pattern matched using a match expression.
 
 ```ents Expr
-func colorToHex(color: Color) -> u32 => match color {}
+func colorToHex(color: Color) -> u32 => match color {
   Red => 0xff0000,
   Blue => 0x0000ff,
   Green => 0x00ff00,
