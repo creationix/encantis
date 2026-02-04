@@ -284,18 +284,16 @@ Encantis {
   // Primary (atoms)
   PrimaryExpr = IfExpr
               | MatchExpr
-              | ArrayLiteral
-              | sizeof "(" Type ")"  -- sizeof
+              | "[" ListOf<Expr, ","> "]" -- array
+              | "[" Expr ";" Expr "]"     -- repeat
               | "(" ArgList ")"      -- tupleOrStruct
               | "(" Expr ")"         -- group
               | "(" ")"              -- unit
+              | sizeof "(" Type ")"  -- sizeof
               | typeIdent ("(" ArgList? ")")?  -- constructor
               | literal
               | ident
 
-  // Array literal: [expr, expr, ...] or [expr; count]
-  ArrayLiteral = "[" Expr ";" Expr "]"    -- repeat
-               | "[" ListOf<Expr, ","> "]"  -- list
 
   // ============================================================================
   // If Expression / Branches

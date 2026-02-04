@@ -29,13 +29,12 @@ enum Color {
 Enum literals are the bare names for unit variants, and the name with arguments for tuple variants.
 
 ```ents Expr
-// A slice of colors
-[Red, Green, Dark(Blue), Light(Orange)]:[Color]
+[Red, Green, Dark(Blue), Light(Orange)]
 ```
 
 These enum variants can be pattern matched using a match expression.
 
-```ents Expr
+```ents FuncDecl
 func colorToHex(color: Color) -> u32 => match color {
   Red => 0xff0000,
   Blue => 0x0000ff,
