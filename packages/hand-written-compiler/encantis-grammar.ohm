@@ -264,11 +264,11 @@ Encantis {
   mulOp = "*|" | "*" | "/" | "%"
 
   // Unary
-  UnaryExpr = "-" UnaryExpr   -- neg
-            | "~" UnaryExpr   -- complement
+  UnaryExpr = "~" UnaryExpr   -- complement
             | "&" UnaryExpr   -- ref
             | mut UnaryExpr   -- mut
             | CastExpr
+            // | "-" UnaryExpr   -- neg
 
   // Cast and Annotation
   CastExpr = PostfixExpr as Type   -- cast
@@ -286,13 +286,13 @@ Encantis {
               | MatchExpr
               | "[" ListOf<Expr, ","> "]" -- array
               | "[" Expr ";" Expr "]"     -- repeat
-              | "(" ArgList ")"      -- tupleOrStruct
-              | "(" Expr ")"         -- group
-              | "(" ")"              -- unit
-              | sizeof "(" Type ")"  -- sizeof
+              | "(" ArgList ")"           -- tupleOrStruct
+              | "(" Expr ")"              -- group
+              | "(" ")"                   -- unit
+              | sizeof "(" Type ")"       -- sizeof
               | typeIdent ("(" ArgList? ")")?  -- constructor
-              | literal
-              | ident
+              | literal                   -- literal
+              | ident                     -- ident
 
 
   // ============================================================================
@@ -358,23 +358,17 @@ Encantis {
   numberLiteral = floatLiteral
                 | intLiteral
 
-  intLiteral = "-"? 
-    ( hexLiteral
-    | binaryLiteral
-    | octalLiteral
-    | dozenalLiteral
-    | decimalLiteral
-    )
+  intLiteral = binaryLiteral
+              | octalLiteral
+              | dozenalLiteral
+              | hexLiteral
+              | decimalLiteral
 
-  decimalLiteral = digit+
-
-  hexLiteral = "0x" hexDigit+
-
-  binaryLiteral = "0b" binaryDigit+
-
-  octalLiteral = "0o" octalDigit+
-
-  dozenalLiteral = "0d" dozenalDigit+
+  binaryLiteral = "-"? "0b" (binaryDigit|"_")+
+  octalLiteral = "-"? "0o" (octalDigit|"_")+
+  decimalLiteral = "-"? (digit|"_")+
+  dozenalLiteral = "-"? "0d" (dozenalDigit|"_")+
+  hexLiteral = "-"? "0x" (hexDigit|"_")+
 
   floatLiteral = "-"? digit+ "." digit+ exponent?
 
@@ -423,12 +417,10 @@ Encantis {
 
   identChar = letter | digit | "_" | "-"
 
-  // hexDigit is built-in, but we need these custom ones
+  // digit and hexDigit are built-in, but we need these custom ones
   binaryDigit = "0" | "1"
-
   octalDigit = "0".."7"
-
-  dozenalDigit = digit | "a".."b" | "A".."B"
+  dozenalDigit = digit | "a".."b" | "A".."B" 
 
   // Keywords
   keyword = (if | elif | else | while | for | in | loop | match
