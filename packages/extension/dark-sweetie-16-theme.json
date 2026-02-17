@@ -77,10 +77,10 @@
       }
     },
     {
-      "name": "Escape sequences - gold",
+      "name": "Escape sequences - light green",
       "scope": ["constant.character.escape"],
       "settings": {
-        "foreground": "#ffcd75",
+        "foreground": "#60c888",
         "fontStyle": "bold"
       }
     },
@@ -100,10 +100,18 @@
       }
     },
     {
-      "name": "Booleans - cyan",
-      "scope": ["constant.language", "constant.language.boolean"],
+      "name": "Null - deep rose",
+      "scope": ["constant.language"],
       "settings": {
-        "foreground": "#73eff7",
+        "foreground": "#c04870",
+        "fontStyle": "italic"
+      }
+    },
+    {
+      "name": "Booleans - warm pink",
+      "scope": ["constant.language.boolean"],
+      "settings": {
+        "foreground": "#e06080",
         "fontStyle": "italic"
       }
     },
@@ -200,6 +208,20 @@
       "scope": ["punctuation.accessor.typepun"],
       "settings": {
         "foreground": "#ffcd75"
+      }
+    },
+    {
+      "name": "Attribute names - dark purple",
+      "scope": ["entity.other.attribute-name"],
+      "settings": {
+        "foreground": "#5d275d"
+      }
+    },
+    {
+      "name": "Invalid - crimson",
+      "scope": ["invalid.illegal"],
+      "settings": {
+        "foreground": "#b13e53"
       }
     },
     {

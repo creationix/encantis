@@ -58,9 +58,9 @@
       "settings": { "foreground": "#00e436" }
     },
     {
-      "name": "Escape sequences - yellow",
+      "name": "Escape sequences - light green",
       "scope": ["constant.character.escape"],
-      "settings": { "foreground": "#ffec27", "fontStyle": "bold" }
+      "settings": { "foreground": "#44e870", "fontStyle": "bold" }
     },
     {
       "name": "Numbers - yellow",
@@ -136,6 +136,16 @@
       "name": "Type punning - orange",
       "scope": ["punctuation.accessor.typepun"],
       "settings": { "foreground": "#ffa300" }
+    },
+    {
+      "name": "Attribute names - brown",
+      "scope": ["entity.other.attribute-name"],
+      "settings": { "foreground": "#ab5236" }
+    },
+    {
+      "name": "Invalid - red",
+      "scope": ["invalid.illegal"],
+      "settings": { "foreground": "#ff004d" }
     },
     {
       "name": "Markdown headings",

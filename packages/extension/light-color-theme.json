@@ -95,12 +95,12 @@
       }
     },
     {
-      "name": "Escape sequences - deep teal",
+      "name": "Escape sequences - muted green",
       "scope": [
         "constant.character.escape"
       ],
       "settings": {
-        "foreground": "#1a5a5a",
+        "foreground": "#3d8a60",
         "fontStyle": "bold"
       }
     },
@@ -256,6 +256,24 @@
       ],
       "settings": {
         "foreground": "#8b5a20"
+      }
+    },
+    {
+      "name": "Attribute names - dark rose",
+      "scope": [
+        "entity.other.attribute-name"
+      ],
+      "settings": {
+        "foreground": "#9a5070"
+      }
+    },
+    {
+      "name": "Invalid - error red",
+      "scope": [
+        "invalid.illegal"
+      ],
+      "settings": {
+        "foreground": "#cc3333"
       }
     },
     {

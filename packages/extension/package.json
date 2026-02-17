@@ -134,19 +134,9 @@
         "path": "./dark-color-theme.json"
       },
       {
-        "label": "Encantis Dark Vibrant",
-        "uiTheme": "vs-dark",
-        "path": "./dark-color-vibrant-theme.json"
-      },
-      {
         "label": "Encantis Light",
         "uiTheme": "vs",
         "path": "./light-color-theme.json"
-      },
-      {
-        "label": "Encantis Dark Blue-Orange",
-        "uiTheme": "vs-dark",
-        "path": "./dark-blue-orange-theme.json"
       },
       {
         "label": "Encantis Light Blue-Orange",
