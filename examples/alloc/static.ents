@@ -1,0 +1,31 @@
+// Static reservation pattern: fixed-size mutable buffer
+// No allocator needed — the program owns N bytes at a known offset.
+
+export "mem" memory
+
+def buf:*[4096]u8 = mut [0:u8; 4096]
+
+global cursor: u32 = 0
+
+// Reserve `size` bytes, returns offset into buffer or 0xFFFFFFFF on overflow
+export func reserve(size: u32) -> (offset: u32) {
+  return 0xFFFFFFFF when cursor + size > 4096
+  offset = cursor
+  cursor += size
+}
+
+// Reset the buffer (all reservations become invalid)
+export func reset() {
+  cursor = 0
+}
+
+// How many bytes are in use
+export func used() -> u32 => cursor
+
+// Write a byte into the buffer
+export func write(offset: u32, value: u8) {
+  buf[offset] = value
+}
+
+// Read a byte from the buffer
+export func read(offset: u32) -> u8 => buf[offset]
