@@ -184,7 +184,7 @@ What we ship is three reference allocators that span the spectrum from "everythi
 
 - [x] **`malloc` / `free` module** (`examples/alloc/heap.ents`). General-purpose allocator with explicit `free`. Surface: `malloc(size: u32) -> [*]u8`, `free(ptr: [*]u8)`, plus a usage accessor for tests. Implementation: size-classed free-lists or tagged blocks — pick the simplest correct version. Backs its heap with a static reservation that calls `memory-grow` when exhausted.
 
-- [ ] **Arena allocator on top of `malloc`/`free`** (`examples/alloc/arena.ents`). An arena owns one or more chunks obtained via `malloc`; `arena_alloc(arena, size)` bumps within the current chunk; `arena_reset(arena)` drops back to a saved mark; `arena_free(arena)` returns all chunks to the heap. This composition (arena over malloc) is the canonical example of *why* Encantis-to-Encantis imports matter, and it's what Ed25519 scratch buffers will want.
+- [x] **Arena allocator on top of `malloc`/`free`** (`examples/alloc/arena.ents`). An arena owns one or more chunks obtained via `malloc`; `arena_alloc(arena, size)` bumps within the current chunk; `arena_reset(arena)` drops back to a saved mark; `arena_free(arena)` returns all chunks to the heap. This composition (arena over malloc) is the canonical example of *why* Encantis-to-Encantis imports matter, and it's what Ed25519 scratch buffers will want.
 
 - [ ] **`memory-grow` ownership.** Document who calls it: malloc, when it's about to fail. The static-reservation pattern never grows. Arenas grow indirectly through malloc. The language has no opinion.
 
