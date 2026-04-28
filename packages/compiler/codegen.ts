@@ -1385,7 +1385,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     }
     if (member.kind === 'deref') {
       const ptr = exprToWat(target.object, ctx)
-      const type = ctx.types.get(typeKey(target.span.start, target.kind))
+      const type = ctx.types.get(typeKey(target.span.end, target.kind)) ?? ctx.types.get(typeKey(target.span.start, target.kind))
       if (!type) {
         throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
       }

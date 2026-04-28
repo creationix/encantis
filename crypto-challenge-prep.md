@@ -118,7 +118,7 @@ Resolved (no further discussion needed):
 ### Exit criteria
 
 - [ ] [blake2b.ents](examples/crypto/blake2b.ents) compiles and produces correct hashes.
-- [ ] A targeted test exercises u128 arithmetic round-trip through wasm.
+- [x] A targeted test exercises u128 arithmetic round-trip through wasm.
 
 ---
 
