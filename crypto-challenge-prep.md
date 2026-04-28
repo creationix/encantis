@@ -135,8 +135,8 @@ Today the CLI emits WAT text only. `wabt` is in [package.json](package.json#L21)
 
 ### Exit criteria
 
-- [ ] `bun cli wasm examples/crypto/xxh64/xxh64.ents` produces a working `xxh64.wasm`.
-- [ ] xxh64 test no longer skips and passes.
+- [x] `bun cli wasm examples/crypto/xxh64/xxh64.ents` produces a working `xxh64.wasm`.
+- [x] xxh64 test no longer skips and passes.
 
 ---
 
