@@ -1,0 +1,6 @@
+import "./util" (
+  "add" func add(a: i32, b: i32) -> i32
+  "mul" func mul(a: i32, b: i32) -> i32
+)
+
+export func square_sum(a: i32, b: i32) -> i32 => mul(add(a, b), add(a, b))

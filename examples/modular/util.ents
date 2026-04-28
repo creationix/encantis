@@ -1,0 +1,2 @@
+export func add(a: i32, b: i32) -> i32 => a + b
+export func mul(a: i32, b: i32) -> i32 => a * b
