@@ -266,14 +266,6 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.ImportGlobal
   },
 
-  ImportItem_memory(_memory, size): AST.ImportMemory {
-    return {
-      kind: 'ImportMemory',
-      min: Number(size.sourceString),
-      span: span(this),
-    } as AST.ImportMemory
-  },
-
   ExportDecl_named(_export, name, item): AST.ExportDecl {
     const literal = name.toAST()
     const exportName = new TextDecoder().decode(literal.value.bytes)

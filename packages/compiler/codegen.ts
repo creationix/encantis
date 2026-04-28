@@ -1571,8 +1571,8 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     }
   }
 
-  // Add memory if needed (and not imported)
-  if (hasMemory && !hasMemoryImport(module)) {
+  // Add memory if needed
+  if (hasMemory) {
     const memDecl = getMemoryDecl(module)
     if (memDecl) {
       const maxStr = memDecl.max !== null ? ` ${memDecl.max}` : ''
@@ -1646,17 +1646,6 @@ function getMemoryDecl(module: AST.Module): { exportName: string | null; min: nu
   return null
 }
 
-function hasMemoryImport(module: AST.Module): boolean {
-  for (const decl of module.decls) {
-    if (decl.kind === 'ImportDecl') {
-      for (const item of decl.items) {
-        if (item.item.kind === 'ImportMemory') return true
-      }
-    }
-  }
-  return false
-}
-
 function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: CodegenContext): string {
   const imp = item.item
 
@@ -1706,11 +1695,6 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: Codegen
   if (imp.kind === 'ImportGlobal') {
     const wasmType = typeToWasmSingle(resolveAstType(imp.type))
     return `  (import "${moduleName}" "${item.name}" (global $${imp.ident} ${wasmType}))`
-  }
-
-  if (imp.kind === 'ImportMemory') {
-    const max = imp.max !== undefined ? ` ${imp.max}` : ''
-    return `  (import "${moduleName}" "${item.name}" (memory ${imp.min}${max}))`
   }
 
   return ''

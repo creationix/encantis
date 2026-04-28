@@ -47,7 +47,6 @@ Encantis {
 
   ImportItem = func ident? FuncSignature   -- func
              | global ident TypeAnnotation -- global
-             | memory intLiteral           -- memory
 
   // ============================================================================
   // Exports

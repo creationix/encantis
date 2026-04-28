@@ -45,7 +45,7 @@ export interface ImportDecl extends BaseNode {
 export interface ImportItem extends BaseNode {
   kind: 'ImportItem'
   name: string
-  item: ImportFunc | ImportGlobal | ImportMemory
+  item: ImportFunc | ImportGlobal
 }
 
 export interface ImportFunc extends BaseNode {
@@ -58,12 +58,6 @@ export interface ImportGlobal extends BaseNode {
   kind: 'ImportGlobal'
   ident: string
   type: Type
-}
-
-export interface ImportMemory extends BaseNode {
-  kind: 'ImportMemory'
-  min: number
-  max?: number
 }
 
 // export "name" ...

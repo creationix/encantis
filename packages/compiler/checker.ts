@@ -364,9 +364,6 @@ class CheckContext {
           })
           break
         }
-        case 'ImportMemory':
-          // Memory imports don't add symbols
-          break
       }
     }
   }
