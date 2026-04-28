@@ -222,15 +222,15 @@ This is the host-side TypeScript that drives compiled wasm with known inputs and
 
 ### Subtasks
 
-- [ ] **Vector files.** RFC 8032 Ed25519 vectors, NIST SHA-512 vectors, JWS round-trip examples. Check in as JSON/hex.
-- [ ] **Reference oracles.** Bun has WebCrypto for SHA-512. Use `@noble/curves` for Ed25519 ground truth. Vendor or pin.
-- [ ] **Layout-agnostic runner.** Since the program owns memory (§6), the runner instantiates the wasm, reads the export table to find the agent's declared buffer pointers/lengths and entrypoints, writes inputs into those buffers, calls the entrypoint, and reads outputs from declared output buffers. No fixed offsets in the harness.
-- [ ] **Determinism check.** Run the same input twice; assert byte-equal output.
-- [ ] **Adversarial tests.** Truncated signatures, malformed base64url, zero-length input, etc.
+- [x] **Vector files.** RFC 8032 Ed25519 vectors, NIST SHA-512 vectors, JWS round-trip examples. Check in as JSON/hex.
+- [x] **Reference oracles.** Bun has WebCrypto for SHA-512. Use `@noble/curves` for Ed25519 ground truth. Vendor or pin.
+- [x] **Layout-agnostic runner.** Since the program owns memory (§6), the runner instantiates the wasm, reads the export table to find the agent's declared buffer pointers/lengths and entrypoints, writes inputs into those buffers, calls the entrypoint, and reads outputs from declared output buffers. No fixed offsets in the harness.
+- [x] **Determinism check.** Run the same input twice; assert byte-equal output.
+- [x] **Adversarial tests.** Truncated signatures, malformed base64url, zero-length input, etc.
 
 ### Exit criteria
 
-- [ ] At least one full primitive (probably SHA-512) wired end-to-end here as a proof of concept, then ported to the seed repo.
+- [x] At least one full primitive (probably SHA-512) wired end-to-end here as a proof of concept, then ported to the seed repo.
 
 ---
 
