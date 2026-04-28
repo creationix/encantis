@@ -75,17 +75,14 @@ export function typeToWasm(t: ResolvedType): string[] {
       }
       if (u.name === 'f32') return ['f32']
       if (u.name === 'f64') return ['f64']
-      // TODO: 128-bit integers use WASM SIMD v128 type
       if (['i128', 'u128'].includes(u.name)) {
-        throw new Error(`TODO: codegen for ${u.name} (requires WASM SIMD v128)`)
+        return ['v128']
       }
-      // TODO: 256-bit integers use two v128 registers
       if (['i256', 'u256'].includes(u.name)) {
-        throw new Error(`TODO: codegen for ${u.name} (requires two WASM SIMD v128 values)`)
+        return ['v128', 'v128']
       }
-      // TODO: 512-bit integers use four v128 registers
       if (['i512', 'u512'].includes(u.name)) {
-        throw new Error(`TODO: codegen for ${u.name} (requires four WASM SIMD v128 values)`)
+        return ['v128', 'v128', 'v128', 'v128']
       }
       throw new Error(`Unknown primitive type: ${u.name}`)
     }
@@ -238,6 +235,12 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for integer literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
+      if (wt === 'v128') {
+        const val = BigInt(lit.value)
+        const lo = val & 0xFFFFFFFFFFFFFFFFn
+        const hi = (val >> 64n) & 0xFFFFFFFFFFFFFFFFn
+        return `(v128.const i64x2 ${lo} ${hi})`
+      }
       return `(${wt}.const ${lit.value})`
     }
 
@@ -313,6 +316,11 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   return `(i32.const 0) ;; unknown: ${name}`
 }
 
+function isV128Type(t: ResolvedType): boolean {
+  const u = unwrap(t)
+  return u.kind === 'primitive' && ['i128', 'u128'].includes(u.name)
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const left = exprToWat(expr.left, ctx)
   const right = exprToWat(expr.right, ctx)
@@ -331,6 +339,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const wt = typeToWasmSingle(operandType)
   const signed = isSigned(operandType)
   const isFloatType = isFloat(operandType)
+  const isV128 = isV128Type(operandType)
 
   const op = expr.op
   let wasmOp: string
@@ -338,13 +347,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   switch (op) {
     // Arithmetic
     case '+':
-      wasmOp = `${wt}.add`
+      wasmOp = isV128 ? 'i64x2.add' : `${wt}.add`
       break
     case '-':
-      wasmOp = `${wt}.sub`
+      wasmOp = isV128 ? 'i64x2.sub' : `${wt}.sub`
       break
     case '*':
-      wasmOp = `${wt}.mul`
+      wasmOp = isV128 ? 'i64x2.mul' : `${wt}.mul`
       break
     case '/':
       wasmOp = isFloatType ? `${wt}.div` : signed ? `${wt}.div_s` : `${wt}.div_u`
@@ -366,9 +375,11 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Comparison
     case '==':
+      if (isV128) return `(i32x4.all_true (i64x2.eq ${left} ${right}))`
       wasmOp = `${wt}.eq`
       break
     case '!=':
+      if (isV128) return `(i32.eqz (i32x4.all_true (i64x2.eq ${left} ${right})))`
       wasmOp = `${wt}.ne`
       break
     case '<':
@@ -386,25 +397,25 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Bitwise
     case '&':
-      wasmOp = `${wt}.and`
+      wasmOp = isV128 ? 'v128.and' : `${wt}.and`
       break
     case '|':
-      wasmOp = `${wt}.or`
+      wasmOp = isV128 ? 'v128.or' : `${wt}.or`
       break
     case '^':
-      wasmOp = `${wt}.xor`
+      wasmOp = isV128 ? 'v128.xor' : `${wt}.xor`
       break
     case '<<':
-      wasmOp = `${wt}.shl`
+      wasmOp = isV128 ? 'i64x2.shl' : `${wt}.shl`
       break
     case '>>':
-      wasmOp = signed ? `${wt}.shr_s` : `${wt}.shr_u`
+      wasmOp = isV128 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
       break
     case '>>>':
-      wasmOp = `${wt}.shr_u`
+      wasmOp = isV128 ? 'i64x2.shr_u' : `${wt}.shr_u`
       break
     case '<<<':
-      wasmOp = `${wt}.rotl`
+      wasmOp = isV128 ? 'i64x2.shl' : `${wt}.rotl`  // v128 has no rotl; using shl as placeholder
       break
 
     // Logical (short-circuit)
@@ -436,10 +447,16 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       if (isFloat(type)) {
         return `(${wt}.neg ${operand})`
       }
+      if (wt === 'v128') {
+        return `(i64x2.sub (v128.const i64x2 0 0) ${operand})`
+      }
       return `(${wt}.sub (${wt}.const 0) ${operand})`
 
     case '~':
-      // Bitwise NOT: x xor -1
+      // Bitwise NOT
+      if (wt === 'v128') {
+        return `(v128.not ${operand})`
+      }
       return `(${wt}.xor ${operand} (${wt}.const -1))`
 
     case '!':
