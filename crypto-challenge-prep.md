@@ -178,7 +178,7 @@ What we ship is three reference allocators that span the spectrum from "everythi
 
 ### Subtasks
 
-- [ ] **Static reservation (no allocator at all).** The simplest pattern: declare a fixed-size mutable buffer at compile time and export it as a slice. The program never touches a free-list or a bump pointer — it owns N bytes at a known offset, period. This is what most of SHA-512, base64url, and JWS will reach for.
+- [x] **Static reservation (no allocator at all).** The simplest pattern: declare a fixed-size mutable buffer at compile time and export it as a slice. The program never touches a free-list or a bump pointer — it owns N bytes at a known offset, period. This is what most of SHA-512, base64url, and JWS will reach for.
 
   You mentioned having added syntax for "mutable declarations that reserve memory and export the start offset and length as a slice." **First task: confirm whether that's in-grammar today or still pending.** Search the grammar and checker for `mut` decls + `export`-of-slice. If it exists, document it. If it doesn't, spec and add it — the natural form is something like `export def buf: []u8 = mut [0:u8; 4096]`, which compiles to two exported i32 globals (ptr and len). This is a hard prerequisite for the other two allocators, since they themselves use the static-reservation pattern to claim their backing storage.
 
