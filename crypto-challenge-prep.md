@@ -163,8 +163,8 @@ Both [Makefile](Makefile) and the prose in CLAUDE.md reference `bun run examples
 
 Listed in priority order for what the challenge will hit.
 
-- [ ] **Pattern-binding validation** ([checker.ts:902](packages/compiler/checker.ts#L902) TODO). Agents will write match arms with destructuring; missing/duplicated bindings need diagnostics.
-- [ ] **Branch type unification** (TODOs near [checker.ts:1976/2007/2021](packages/compiler/checker.ts#L1976)). `if` and `match` arms must have a common type or the result type is wrong.
+- [x] **Pattern-binding validation** ([checker.ts:902](packages/compiler/checker.ts#L902) TODO). Agents will write match arms with destructuring; missing/duplicated bindings need diagnostics.
+- [x] **Branch type unification** (TODOs near [checker.ts:1976/2007/2021](packages/compiler/checker.ts#L1976)). `if` and `match` arms must have a common type or the result type is wrong.
 - [ ] **Enum codegen + checker.** [ast.ts:124](packages/compiler/ast.ts#L124) has `EnumDecl` but the checker has zero cases for it and codegen doesn't handle the stack representation described in [docs/encantis.md §2.7](docs/encantis.md#27-enum-types-algebraic-data-types). Required only if we want `Result<T, E>` style error returns. Recommend deferring unless the challenge prose explicitly leans on enums.
 - [ ] **Pre-existing TS errors in the compiler.** Per CLAUDE.md, the compiler has type errors. Either fix or add a specific allowlist — don't ship a state where `tsc` is meaningless.
 
