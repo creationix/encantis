@@ -113,7 +113,7 @@ Resolved (no further discussion needed):
   - Emit a known software sequence (Karatsuba or schoolbook on `i64x2`), OR
   - Add an `intrinsic` builtin (`mul_hi(a:u64, b:u64) -> u64`) so users can compose it.
   The second is cheaper to ship; the first is what the type system implies.
-- [ ] **Test fixture.** A small example exercising u128 add/mul/xor/load/store, plus a test that the wasm output matches a reference implementation.
+- [x] **Test fixture.** A small example exercising u128 add/mul/xor/load/store, plus a test that the wasm output matches a reference implementation.
 
 ### Exit criteria
 
