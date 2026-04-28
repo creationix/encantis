@@ -38,7 +38,7 @@ export "mem" memory 8 256           // everything explicit
 - [x] **Compute implicit min** from static data section size. Floor of 1 page.
 - [x] **Omit max field** in the emitted wasm unless one was specified.
 - [x] **Default export name = `"memory"`** when no string is given.
-- [ ] **Update grammar spec** in [docs/grammar.md](docs/grammar.md) and the §7 / §8 prose in [docs/encantis.md](docs/encantis.md).
+- [x] **Update grammar spec** in [docs/grammar.md](docs/grammar.md) and the §7 / §8 prose in [docs/encantis.md](docs/encantis.md).
 - [ ] **Update existing examples.** [examples/alloc.ents](examples/alloc.ents) uses `export "memory" memory 1` — confirm it still parses; simplify if it reads better as `export memory`.
 
 ### Exit criteria
