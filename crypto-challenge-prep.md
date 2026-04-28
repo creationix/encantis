@@ -109,7 +109,7 @@ Resolved (no further discussion needed):
 - [x] **Array layouts.** `[N]u128` should pack as N×16 bytes; `*[N]u256` as N×32 bytes. Make sure `sizeof` returns the right answer.
 - [x] **Implicit widenings.** Per [docs/encantis.md §2.8](docs/encantis.md#28-type-conversions), `u32 → u64 → u128 → …` should widen implicitly when no precision is lost. Codegen needs the conversion sequences.
 - [x] **Cast lowering.** Narrowing casts (`u128 → u64`) need to discard the high lane.
-- [ ] **64×64 → 128 multiply primitive.** WASM has no native instruction. Either:
+- [x] **64×64 → 128 multiply primitive.** WASM has no native instruction. Either:
   - Emit a known software sequence (Karatsuba or schoolbook on `i64x2`), OR
   - Add an `intrinsic` builtin (`mul_hi(a:u64, b:u64) -> u64`) so users can compose it.
   The second is cheaper to ship; the first is what the type system implies.
