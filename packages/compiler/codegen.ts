@@ -1637,10 +1637,10 @@ function hasMemoryDecl(module: AST.Module): boolean {
 function getMemoryDecl(module: AST.Module): { exportName: string | null; min: number; max: number | null } | null {
   for (const decl of module.decls) {
     if (decl.kind === 'MemoryDecl') {
-      return { exportName: null, min: decl.min, max: decl.max }
+      return { exportName: null, min: decl.min ?? 1, max: decl.max }
     }
     if (decl.kind === 'ExportDecl' && decl.item.kind === 'MemoryDecl') {
-      return { exportName: decl.name, min: decl.item.min, max: decl.item.max }
+      return { exportName: decl.name, min: decl.item.min ?? 1, max: decl.item.max }
     }
   }
   return null

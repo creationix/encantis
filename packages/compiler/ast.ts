@@ -147,7 +147,7 @@ export interface GlobalDecl extends BaseNode {
 // memory min [max]
 export interface MemoryDecl extends BaseNode {
   kind: 'MemoryDecl'
-  min: number
+  min: number | null
   max: number | null
 }
 

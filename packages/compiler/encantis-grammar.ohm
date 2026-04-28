@@ -95,7 +95,8 @@ Encantis {
   // Memory
   // ============================================================================
 
-  MemoryDecl = memory intLiteral intLiteral?
+  MemoryDecl = memory intLiteral intLiteral?  -- sized
+             | memory                          -- bare
 
   // ============================================================================
   // Types

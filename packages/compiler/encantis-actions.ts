@@ -291,7 +291,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       }
       exportName = decl.pattern.name
     } else {
-      throw new Error('Memory export requires explicit name: export "name" memory ...')
+      exportName = 'memory'
     }
     return {
       kind: 'ExportDecl',
@@ -453,11 +453,20 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.GlobalDecl
   },
 
-  MemoryDecl(_memory, min, maxOpt) {
+  MemoryDecl_sized(_memory, min, maxOpt) {
     return {
       kind: 'MemoryDecl',
       min: Number(min.sourceString),
-      max: first(maxOpt) ? Number(first(maxOpt)) : null,
+      max: maxOpt.children[0] ? Number(maxOpt.children[0].sourceString) : null,
+      span: span(this),
+    } as AST.MemoryDecl
+  },
+
+  MemoryDecl_bare(_memory) {
+    return {
+      kind: 'MemoryDecl',
+      min: null,
+      max: null,
       span: span(this),
     } as AST.MemoryDecl
   },
