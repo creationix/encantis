@@ -2,7 +2,9 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, type TypeCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { isSourceImport, resolveModulePath } from './loader'
+import type { LoadedModule } from './loader'
 import {
   type ResolvedType,
   type ResolvedField,
@@ -31,9 +33,11 @@ export interface CodegenContext {
   literalRefs: Map<number, { ptr: number; len: number }>
   // Indentation level for formatting
   indent: number
+  // Multi-module: local function name → mangled WAT name
+  nameMap: Map<string, string>
 }
 
-function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>): CodegenContext {
+function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>): CodegenContext {
   return {
     types: checkResult.types,
     symbols: checkResult.symbols,
@@ -41,6 +45,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     params: new Map(),
     literalRefs,
     indent: 0,
+    nameMap: nameMap ?? new Map(),
   }
 }
 
@@ -272,11 +277,12 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   const sym = ctx.symbols.get(name)
   if (sym) {
     if (sym.kind === 'func') {
-      // Function reference - for now just return the name
-      return `(ref.func $${name})`
+      const watName = ctx.nameMap.get(name) ?? name
+      return `(ref.func $${watName})`
     }
     if (sym.kind === 'global') {
-      return `(global.get $${name})`
+      const watName = ctx.nameMap.get(name) ?? name
+      return `(global.get $${watName})`
     }
     if (sym.kind === 'def') {
       // Compile-time constant - inline the value
@@ -584,7 +590,8 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     return ''
   }).filter(Boolean).join(' ')
 
-  return `(call $${funcName}${args ? ' ' + args : ''})`
+  const watName = ctx.nameMap.get(funcName) ?? funcName
+  return `(call $${watName}${args ? ' ' + args : ''})`
 }
 
 function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
@@ -1204,7 +1211,8 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     // Check globals
     const sym = ctx.symbols.get(name)
     if (sym?.kind === 'global') {
-      return `(global.set $${name} ${value})`
+      const watName = ctx.nameMap.get(name) ?? name
+      return `(global.set $${watName} ${value})`
     }
     return `(local.set $${name} ${value})`
   }
@@ -1335,9 +1343,11 @@ function bodyToWat(body: AST.FuncBody, ctx: CodegenContext): string {
 export function funcToWat(
   decl: AST.FuncDecl,
   checkResult: TypeCheckResult,
-  literalRefs: Map<number, { ptr: number; len: number }> = new Map()
+  literalRefs: Map<number, { ptr: number; len: number }> = new Map(),
+  nameMap?: Map<string, string>,
+  watName?: string,
 ): string {
-  const ctx = createContext(checkResult, literalRefs)
+  const ctx = createContext(checkResult, literalRefs, nameMap)
   const name = decl.ident ?? 'anonymous'
 
   // Get function type from checker
@@ -1421,7 +1431,8 @@ export function funcToWat(
   }
 
   const paramsStr = params.join(' ')
-  return `(func $${name} ${paramsStr} ${resultStr}
+  const emitName = watName ?? name
+  return `(func $${emitName} ${paramsStr} ${resultStr}
   ${localStr}
   ${body}
   ${epilogue}
@@ -1700,6 +1711,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: Codegen
 
 function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   const name = patternIdent(decl.pattern)
+  const watName = ctx.nameMap.get(name) ?? name
   const type = ctx.types.get(typeKey(decl.pattern.span.start, decl.pattern.kind))
   if (!type) {
     throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
@@ -1707,21 +1719,23 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   const wasmType = typeToWasmSingle(type)
   const init = decl.value ? exprToWat(decl.value, ctx) : `(${wasmType}.const 0)`
 
-  return `  (global $${name} (mut ${wasmType}) ${init})`
+  return `  (global $${watName} (mut ${wasmType}) ${init})`
 }
 
-function exportToWat(decl: AST.ExportDecl, _ctx: CodegenContext): string {
+function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
   const name = decl.name
   const item = decl.item
 
   if (item.kind === 'FuncDecl') {
     const funcName = item.ident ?? 'anonymous'
-    return `  (export "${name}" (func $${funcName}))`
+    const watName = ctx.nameMap.get(funcName) ?? funcName
+    return `  (export "${name}" (func $${watName}))`
   }
 
   if (item.kind === 'GlobalDecl') {
     const globalName = patternIdent(item.pattern)
-    return `  (export "${name}" (global $${globalName}))`
+    const watName = ctx.nameMap.get(globalName) ?? globalName
+    return `  (export "${name}" (global $${watName}))`
   }
 
   if (item.kind === 'MemoryDecl') {
@@ -1786,4 +1800,177 @@ function typeToFields(t: ResolvedType): ResolvedField[] {
   if (t.kind === 'void') return []
   if (t.kind === 'tuple') return t.fields
   return [{ name: null, type: t }]
+}
+
+// === Multi-module Codegen ===
+
+import { basename } from 'path'
+
+function modulePrefix(filePath: string): string {
+  return basename(filePath, '.ents').replace(/[^a-zA-Z0-9_]/g, '_')
+}
+
+export function programToWat(
+  modules: Map<string, LoadedModule>,
+  checkResults: Map<string, TypeCheckResult>,
+  entryPath: string,
+): string {
+  // Build name map: for each module, collect function/global names and mangle them
+  const nameMap = new Map<string, string>()
+  const allLiterals: import('./checker').PendingLiteral[] = []
+
+  // Collect all literals for a unified data section
+  for (const [path, result] of checkResults) {
+    allLiterals.push(...result.literals)
+  }
+  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals)
+  const dataSection = dataBuilder.result()
+
+  // Build per-module name mappings
+  const perModuleNameMap = new Map<string, Map<string, string>>()
+  for (const [path, loaded] of modules) {
+    const prefix = path === entryPath ? '' : modulePrefix(path)
+    const modNameMap = new Map<string, string>()
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'FuncDecl' && decl.ident) {
+        const mangled = prefix ? `${prefix}$${decl.ident}` : decl.ident
+        modNameMap.set(decl.ident, mangled)
+      }
+      if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && decl.item.ident) {
+        const mangled = prefix ? `${prefix}$${decl.item.ident}` : decl.item.ident
+        modNameMap.set(decl.item.ident, mangled)
+      }
+      if (decl.kind === 'GlobalDecl' && decl.pattern.kind === 'IdentPattern') {
+        const mangled = prefix ? `${prefix}$${decl.pattern.name}` : decl.pattern.name
+        modNameMap.set(decl.pattern.name, mangled)
+      }
+      if (decl.kind === 'ExportDecl' && decl.item.kind === 'GlobalDecl' && decl.item.pattern.kind === 'IdentPattern') {
+        const mangled = prefix ? `${prefix}$${decl.item.pattern.name}` : decl.item.pattern.name
+        modNameMap.set(decl.item.pattern.name, mangled)
+      }
+    }
+    perModuleNameMap.set(path, modNameMap)
+  }
+
+  // Build the full name map for each module: includes own mangled names + imported names resolved to their source's mangled names
+  function buildFullNameMap(path: string): Map<string, string> {
+    const full = new Map<string, string>()
+    const own = perModuleNameMap.get(path)
+    if (own) for (const [k, v] of own) full.set(k, v)
+
+    const loaded = modules.get(path)
+    if (!loaded) return full
+    for (const decl of loaded.module.decls) {
+      if (decl.kind !== 'ImportDecl' || !isSourceImport(decl.module)) continue
+      const depPath = resolveModulePath(decl.module, path)
+      const depNames = perModuleNameMap.get(depPath)
+      if (!depNames) continue
+      for (const item of decl.items) {
+        if (item.item.kind === 'ImportFunc') {
+          const localName = item.item.ident ?? item.name
+          const mangled = depNames.get(item.name)
+          if (mangled) full.set(localName, mangled)
+        }
+        if (item.item.kind === 'ImportGlobal') {
+          const mangled = depNames.get(item.name)
+          if (mangled) full.set(item.item.ident, mangled)
+        }
+      }
+    }
+    return full
+  }
+
+  const parts: string[] = ['(module']
+
+  // Emit host imports (only from entry module for now, but could be from any)
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (!result) continue
+    const modNameMap = buildFullNameMap(path)
+    const ctx = createContext(result, globalLiteralRefs, modNameMap)
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
+        for (const item of decl.items) {
+          parts.push(importItemToWat(decl.module, item, ctx))
+        }
+      }
+    }
+  }
+
+  // Memory
+  let hasMemory = dataSection.totalSize > 0
+  let memDecl: { exportName: string | null; min: number | null; max: number | null } | null = null
+  for (const [, loaded] of modules) {
+    if (hasMemoryDecl(loaded.module)) {
+      hasMemory = true
+      memDecl = memDecl ?? getMemoryDecl(loaded.module)
+    }
+  }
+  if (hasMemory) {
+    const implicitMin = Math.max(1, Math.ceil(dataSection.totalSize / 65536))
+    const min = memDecl ? (memDecl.min ?? implicitMin) : implicitMin
+    const max = memDecl?.max ?? null
+    const maxStr = max !== null ? ` ${max}` : ''
+    if (memDecl?.exportName) {
+      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+    } else {
+      parts.push(`  (memory ${min}${maxStr})`)
+    }
+  }
+
+  // Emit functions from all modules
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (!result) continue
+    const modNameMap = buildFullNameMap(path)
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'FuncDecl' && decl.ident) {
+        const watName = modNameMap.get(decl.ident) ?? decl.ident
+        parts.push(funcToWat(decl, result, globalLiteralRefs, modNameMap, watName))
+      }
+      if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && decl.item.ident) {
+        const watName = modNameMap.get(decl.item.ident) ?? decl.item.ident
+        parts.push(funcToWat(decl.item, result, globalLiteralRefs, modNameMap, watName))
+      }
+    }
+  }
+
+  // Emit globals from all modules
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (!result) continue
+    const modNameMap = buildFullNameMap(path)
+    const ctx = createContext(result, globalLiteralRefs, modNameMap)
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'GlobalDecl') {
+        parts.push(globalToWat(decl, ctx))
+      }
+      if (decl.kind === 'ExportDecl' && decl.item.kind === 'GlobalDecl') {
+        parts.push(globalToWat(decl.item, ctx))
+      }
+    }
+  }
+
+  // Exports — only from entry module
+  const entryModule = modules.get(entryPath)
+  if (entryModule) {
+    const entryNameMap = buildFullNameMap(entryPath)
+    const entryResult = checkResults.get(entryPath)!
+    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap)
+    for (const decl of entryModule.module.decls) {
+      if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl') {
+        parts.push(exportToWat(decl, ctx))
+      }
+    }
+  }
+
+  // Data section
+  if (dataSection.totalSize > 0) {
+    for (const seg of dataToWat(dataSection)) {
+      parts.push(`  ${seg}`)
+    }
+  }
+
+  parts.push(')')
+  return parts.join('\n')
 }

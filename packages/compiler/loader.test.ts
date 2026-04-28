@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import { loadModule, isSourceImport, resolveModulePath } from './loader'
 import { typecheckProgram } from './checker'
+import { programToWat } from './codegen'
 import { resolve } from 'path'
 
 const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
@@ -92,5 +93,28 @@ describe('cross-module type checking', () => {
     expect(result.errors.length).toBeGreaterThan(0)
     expect(result.errors[0].message).toContain('nonexistent')
     expect(result.errors[0].message).toContain('not exported')
+  })
+})
+
+describe('unified codegen', () => {
+  test('compiles multi-file project to single WAT', async () => {
+    const load = await loadModule(resolve(fixtures, 'main.ents'))
+    expect(load.errors).toEqual([])
+    const entryPath = resolve(fixtures, 'main.ents')
+    const check = typecheckProgram(load.modules, entryPath)
+    expect(check.errors).toEqual([])
+    const wat = programToWat(load.modules, check.results, entryPath)
+    // util's add should be mangled
+    expect(wat).toContain('$util$add')
+    // main's double should not be mangled (entry module)
+    expect(wat).toContain('$double')
+    // call to add should use mangled name
+    expect(wat).toContain('(call $util$add')
+    // only entry module exports reach wasm wall
+    expect(wat).toContain('(export "double"')
+    // util's export should NOT be a wasm-level export
+    expect(wat).not.toContain('(export "add"')
+    // no wasm-level source imports
+    expect(wat).not.toContain('(import "./util"')
   })
 })
