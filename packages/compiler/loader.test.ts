@@ -97,6 +97,21 @@ describe('cross-module type checking', () => {
 })
 
 describe('unified codegen', () => {
+  test('unifies data sections from multiple modules', async () => {
+    const load = await loadModule(resolve(fixtures, 'data-main.ents'))
+    expect(load.errors).toEqual([])
+    const entryPath = resolve(fixtures, 'data-main.ents')
+    const check = typecheckProgram(load.modules, entryPath)
+    expect(check.errors).toEqual([])
+    const wat = programToWat(load.modules, check.results, entryPath)
+    // Both data segments should appear in one data section
+    expect(wat).toContain('hello')
+    expect(wat).toContain('goodbye')
+    // Only one memory declaration
+    const memoryCount = (wat.match(/\(memory /g) || []).length
+    expect(memoryCount).toBe(1)
+  })
+
   test('compiles multi-file project to single WAT', async () => {
     const load = await loadModule(resolve(fixtures, 'main.ents'))
     expect(load.errors).toEqual([])

@@ -1,0 +1,3 @@
+def greeting = "hello"
+
+export func get_greeting() -> []u8 => greeting
