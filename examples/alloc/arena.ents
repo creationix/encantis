@@ -1,0 +1,47 @@
+// Arena allocator built on top of the heap allocator
+// Bumps within a malloc'd chunk; reset drops back to start.
+
+import "./heap" (
+  "malloc" func malloc(size: u32) -> u32
+  "free" func free(ptr: u32)
+  "heap_used" func heap_used() -> u32
+)
+
+global chunk_ptr: u32 = 0
+global chunk_size: u32 = 0
+global cursor: u32 = 0
+
+// Create the arena with a chunk of `size` bytes from the heap
+export func arena_init(size: u32) {
+  // Free old chunk if any
+  if chunk_ptr != 0 { free(chunk_ptr) }
+  chunk_ptr = malloc(size)
+  chunk_size = size
+  cursor = 0
+}
+
+// Allocate `size` bytes from the arena. Returns offset or 0xFFFFFFFF on overflow.
+export func arena_alloc(size: u32) -> (ptr: u32) {
+  return 0xFFFFFFFF when cursor + size > chunk_size
+  ptr = chunk_ptr + cursor
+  cursor += size
+}
+
+// Reset the arena — all allocations become invalid, but chunk stays
+export func arena_reset() {
+  cursor = 0
+}
+
+// Free the arena's backing chunk entirely
+export func arena_free() {
+  if chunk_ptr != 0 { free(chunk_ptr) }
+  chunk_ptr = 0
+  chunk_size = 0
+  cursor = 0
+}
+
+// How many bytes used in the arena
+export func arena_used() -> u32 => cursor
+
+// Re-export heap_used for testing
+export func heap_bytes_used() -> u32 => heap_used()
