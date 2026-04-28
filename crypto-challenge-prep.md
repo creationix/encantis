@@ -104,7 +104,7 @@ Resolved (no further discussion needed):
 ### Subtasks
 
 - [x] **u128/i128 → single v128.** Bitwise (XOR, AND, OR, NOT) is one v128 instruction. Add/sub via `i64x2.add` / `i64x2.sub` (paired with carry handling for true 128-bit add). Multiply via decomposed 64×64→128.
-- [ ] **u256/i256 → two v128 registers; u512/i512 → four.** Lowering passes that flatten these into multiple WASM SIMD locals, the same way structs flatten today.
+- [x] **u256/i256 → two v128 registers; u512/i512 → four.** Lowering passes that flatten these into multiple WASM SIMD locals, the same way structs flatten today.
 - [ ] **`ptr.u128` / `ptr.u256` / `ptr.u512` type-punned loads/stores.** Map to `v128.load` / `v128.store` (and pairs/quads for the larger types). Required by blake2b-style code (`h.u512[0]`, `h.u256[0]`).
 - [ ] **Array layouts.** `[N]u128` should pack as N×16 bytes; `*[N]u256` as N×32 bytes. Make sure `sizeof` returns the right answer.
 - [ ] **Implicit widenings.** Per [docs/encantis.md §2.8](docs/encantis.md#28-type-conversions), `u32 → u64 → u128 → …` should widen implicitly when no precision is lost. Codegen needs the conversion sequences.
