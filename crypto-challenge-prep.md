@@ -43,9 +43,9 @@ export "mem" memory 8 256           // everything explicit
 
 ### Exit criteria
 
-- [ ] All seven syntax variants above parse, check, and lower correctly.
-- [ ] No example imports memory.
-- [ ] A `.ents` file with no `memory` declaration at all compiles to wasm with a sensibly-sized memory.
+- [x] All seven syntax variants above parse, check, and lower correctly.
+- [x] No example imports memory.
+- [x] A `.ents` file with no `memory` declaration at all compiles to wasm with a sensibly-sized memory.
 
 ---
 
