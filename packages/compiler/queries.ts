@@ -1,0 +1,249 @@
+// Query layer for Encantis — pure functions over parsed/checked programs.
+// Used by both the LSP server and the CLI.
+
+import type * as AST from './ast'
+import type { TypeCheckResult, Symbol } from './checker'
+import { typeKey } from './checker'
+import { typeToString, type ResolvedType } from './types'
+import { LineMap, type Position } from './position'
+
+export interface Location {
+  offset: number
+  length: number
+}
+
+export interface DefinitionResult {
+  name: string
+  location: Location
+}
+
+export interface HoverResult {
+  name: string
+  type: string
+  kind: string
+  value?: string
+}
+
+export interface SymbolInfo {
+  name: string
+  kind: string
+  type: string
+  offset: number
+  length: number
+  exported: boolean
+}
+
+export interface ReferenceResult {
+  definition: Location
+  references: Location[]
+}
+
+export interface SignatureInfo {
+  name: string
+  params: { name: string; type: string }[]
+  returnType: string
+}
+
+// Find the identifier name at a byte offset by scanning the source
+function identAtOffset(source: string, offset: number): string | null {
+  if (offset < 0 || offset >= source.length) return null
+  const ch = source[offset]
+  if (!/[a-zA-Z_\-]/.test(ch)) return null
+  let start = offset
+  while (start > 0 && /[a-zA-Z0-9_\-]/.test(source[start - 1])) start--
+  let end = offset
+  while (end < source.length && /[a-zA-Z0-9_\-]/.test(source[end])) end++
+  return source.slice(start, end)
+}
+
+export function gotoDefinition(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+): DefinitionResult | null {
+  const name = identAtOffset(source, offset)
+  if (!name) return null
+
+  const defOffset = checkResult.symbolDefOffsets.get(name)
+  if (defOffset === undefined) return null
+
+  return {
+    name,
+    location: { offset: defOffset, length: name.length },
+  }
+}
+
+export function hover(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+): HoverResult | null {
+  const name = identAtOffset(source, offset)
+  if (!name) return null
+
+  const sym = checkResult.symbols.get(name)
+  if (!sym) return null
+
+  const result: HoverResult = {
+    name,
+    type: symbolTypeString(sym),
+    kind: sym.kind,
+  }
+
+  if (sym.kind === 'def') {
+    if (sym.value.kind === 'int') result.value = sym.value.value.toString()
+    if (sym.value.kind === 'float') result.value = sym.value.value.toString()
+    if (sym.value.kind === 'bool') result.value = sym.value.value.toString()
+  }
+
+  return result
+}
+
+export function findReferences(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+): ReferenceResult | null {
+  const name = identAtOffset(source, offset)
+  if (!name) return null
+
+  const defOffset = checkResult.symbolDefOffsets.get(name)
+  if (defOffset === undefined) return null
+
+  const refs = checkResult.references.get(defOffset) ?? []
+  return {
+    definition: { offset: defOffset, length: name.length },
+    references: refs.map(r => ({ offset: r, length: name.length })),
+  }
+}
+
+export function documentSymbols(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+): SymbolInfo[] {
+  const symbols: SymbolInfo[] = []
+
+  for (const decl of module.decls) {
+    switch (decl.kind) {
+      case 'FuncDecl':
+        if (decl.ident) {
+          const sym = checkResult.symbols.get(decl.ident)
+          symbols.push({
+            name: decl.ident,
+            kind: 'func',
+            type: sym ? symbolTypeString(sym) : '',
+            offset: decl.span.start,
+            length: decl.ident.length,
+            exported: false,
+          })
+        }
+        break
+      case 'TypeDecl':
+        symbols.push({
+          name: decl.ident.name,
+          kind: 'type',
+          type: '',
+          offset: decl.span.start,
+          length: decl.ident.name.length,
+          exported: false,
+        })
+        break
+      case 'DefDecl': {
+        const sym = checkResult.symbols.get(decl.ident)
+        symbols.push({
+          name: decl.ident,
+          kind: 'def',
+          type: sym ? symbolTypeString(sym) : '',
+          offset: decl.span.start,
+          length: decl.ident.length,
+          exported: false,
+        })
+        break
+      }
+      case 'GlobalDecl':
+        if (decl.pattern.kind === 'IdentPattern') {
+          const sym = checkResult.symbols.get(decl.pattern.name)
+          symbols.push({
+            name: decl.pattern.name,
+            kind: 'global',
+            type: sym ? symbolTypeString(sym) : '',
+            offset: decl.span.start,
+            length: decl.pattern.name.length,
+            exported: false,
+          })
+        }
+        break
+      case 'ExportDecl': {
+        const item = decl.item
+        if (item.kind === 'FuncDecl' && item.ident) {
+          const sym = checkResult.symbols.get(item.ident)
+          symbols.push({
+            name: item.ident,
+            kind: 'func',
+            type: sym ? symbolTypeString(sym) : '',
+            offset: item.span.start,
+            length: item.ident.length,
+            exported: true,
+          })
+        } else if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') {
+          const sym = checkResult.symbols.get(item.pattern.name)
+          symbols.push({
+            name: item.pattern.name,
+            kind: 'global',
+            type: sym ? symbolTypeString(sym) : '',
+            offset: item.span.start,
+            length: item.pattern.name.length,
+            exported: true,
+          })
+        }
+        break
+      }
+    }
+  }
+
+  return symbols
+}
+
+export function signatureHelp(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+): SignatureInfo | null {
+  const name = identAtOffset(source, offset)
+  if (!name) return null
+
+  const sym = checkResult.symbols.get(name)
+  if (!sym || sym.kind !== 'func') return null
+
+  const ft = sym.type
+  return {
+    name,
+    params: ft.params.map(p => ({
+      name: p.name ?? '',
+      type: typeToString(p.type),
+    })),
+    returnType: ft.returns.length === 0
+      ? '()'
+      : ft.returns.map(r => r.name ? `${r.name}: ${typeToString(r.type)}` : typeToString(r.type)).join(', '),
+  }
+}
+
+function symbolTypeString(sym: Symbol): string {
+  switch (sym.kind) {
+    case 'func':
+      return typeToString(sym.type)
+    case 'type':
+      return typeToString(sym.type)
+    case 'def':
+    case 'global':
+    case 'local':
+    case 'param':
+    case 'return':
+      return typeToString(sym.type)
+  }
+}

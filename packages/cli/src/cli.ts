@@ -6,6 +6,8 @@ import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
+import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp } from '@encantis/compiler/queries'
+import { LineMap } from '@encantis/compiler/position'
 import { resolve } from 'path'
 import wabt from 'wabt'
 
@@ -17,14 +19,20 @@ function usage() {
 Usage: cli.ts <command> [options]
 
 Commands:
-  check <file>            Parse and check file for errors
-  ast <file> [-o out]     Parse file and output AST as JSON
-  meta <file> [-o out]    Generate meta.json (types, symbols, hints)
-  compile <file> [-o out] Compile file to WAT
-  wasm <file> [-o out]    Compile file to WASM binary
+  check <file>                    Parse and check file for errors
+  ast <file> [-o out]             Parse file and output AST as JSON
+  meta <file> [-o out]            Generate meta.json (types, symbols, hints)
+  compile <file> [-o out]         Compile file to WAT
+  wasm <file> [-o out]            Compile file to WASM binary
+  definition <file>:<line>:<col>  Go to definition of symbol at position
+  hover <file>:<line>:<col>       Show type info at position
+  references <file>:<line>:<col>  Find all references to symbol at position
+  symbols [<file>]                List document symbols
+  signature <file>:<line>:<col>   Show function signature at position
 
 Options:
   -o <file>       Output file (default: stdout)
+  --json          Output as JSON (for query commands)
   -s, --start <rule>  Start rule for parsing (default: Module)
   --help          Show this help
 `)
@@ -41,6 +49,7 @@ const command = args[0]
 let inputFile: string | undefined
 let outputFile: string | undefined
 let startRule: string | undefined
+let jsonOutput = false
 
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '-o') {
@@ -55,9 +64,18 @@ for (let i = 1; i < args.length; i++) {
       console.error('Error: -s/--start requires a rule name')
       process.exit(1)
     }
+  } else if (args[i] === '--json') {
+    jsonOutput = true
   } else if (!inputFile) {
     inputFile = args[i]
   }
+}
+
+// Parse file:line:col for query commands
+function parseFilePos(arg: string): { file: string; line: number; col: number } | null {
+  const match = arg.match(/^(.+):(\d+):(\d+)$/)
+  if (!match) return null
+  return { file: match[1], line: parseInt(match[2]) - 1, col: parseInt(match[3]) - 1 }
 }
 
 if (!inputFile) {
@@ -75,14 +93,19 @@ async function output(content: string) {
   }
 }
 
-// Read source
-const file = Bun.file(inputFile)
-if (!(await file.exists())) {
-  console.error(`Error: File not found: ${inputFile}`)
-  process.exit(1)
+// Read source for non-query commands
+let source = ''
+let filePath = inputFile
+const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols']
+if (!queryCommands.includes(command)) {
+  const file = Bun.file(inputFile)
+  if (!(await file.exists())) {
+    console.error(`Error: File not found: ${inputFile}`)
+    process.exit(1)
+  }
+  source = await file.text()
+  filePath = file.name ?? inputFile
 }
-const source = await file.text()
-const filePath = file.name ?? inputFile
 
 switch (command) {
   case 'ast': {
@@ -212,6 +235,96 @@ switch (command) {
       console.error(`Wrote ${buffer.length} bytes to ${outPath}`)
     } else {
       await output(wat)
+    }
+    break
+  }
+
+  case 'definition':
+  case 'hover':
+  case 'references':
+  case 'signature': {
+    const pos = inputFile ? parseFilePos(inputFile) : null
+    if (!pos) {
+      console.error('Error: expected <file>:<line>:<col>')
+      process.exit(1)
+    }
+    const qSource = await Bun.file(pos.file).text()
+    const qResult = parse(qSource, { filePath: pos.file })
+    if (qResult.errors.length > 0) {
+      console.error(qResult.errors[0].message)
+      process.exit(1)
+    }
+    const qCheck = typecheck(qResult.module!)
+    const lineMap = new LineMap(qSource)
+    const offset = lineMap.positionToOffset({ line: pos.line, col: pos.col })
+
+    if (command === 'definition') {
+      const r = gotoDefinition(qSource, qResult.module!, qCheck, offset)
+      if (!r) { console.log('No definition found'); process.exit(1) }
+      const defPos = lineMap.offsetToPosition(r.location.offset)
+      if (jsonOutput) {
+        console.log(JSON.stringify({ name: r.name, file: pos.file, line: defPos.line + 1, col: defPos.col + 1 }))
+      } else {
+        console.log(`${pos.file}:${defPos.line + 1}:${defPos.col + 1} ${r.name}`)
+      }
+    } else if (command === 'hover') {
+      const r = hover(qSource, qResult.module!, qCheck, offset)
+      if (!r) { console.log('No info'); process.exit(1) }
+      if (jsonOutput) {
+        console.log(JSON.stringify(r))
+      } else {
+        console.log(`${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`)
+      }
+    } else if (command === 'references') {
+      const r = findReferences(qSource, qResult.module!, qCheck, offset)
+      if (!r) { console.log('No references found'); process.exit(1) }
+      if (jsonOutput) {
+        const locs = r.references.map(ref => {
+          const p = lineMap.offsetToPosition(ref.offset)
+          return { file: pos.file, line: p.line + 1, col: p.col + 1 }
+        })
+        console.log(JSON.stringify(locs))
+      } else {
+        for (const ref of r.references) {
+          const p = lineMap.offsetToPosition(ref.offset)
+          console.log(`${pos.file}:${p.line + 1}:${p.col + 1}`)
+        }
+      }
+    } else if (command === 'signature') {
+      const r = signatureHelp(qSource, qResult.module!, qCheck, offset)
+      if (!r) { console.log('No signature found'); process.exit(1) }
+      if (jsonOutput) {
+        console.log(JSON.stringify(r))
+      } else {
+        const params = r.params.map(p => `${p.name}: ${p.type}`).join(', ')
+        console.log(`${r.name}(${params}) -> ${r.returnType}`)
+      }
+    }
+    break
+  }
+
+  case 'symbols': {
+    const symFile = inputFile ?? '.'
+    const sSource = await Bun.file(symFile).text()
+    const sResult = parse(sSource, { filePath: symFile })
+    if (sResult.errors.length > 0) {
+      console.error(sResult.errors[0].message)
+      process.exit(1)
+    }
+    const sCheck = typecheck(sResult.module!)
+    const lineMap = new LineMap(sSource)
+    const syms = documentSymbols(sSource, sResult.module!, sCheck)
+    if (jsonOutput) {
+      console.log(JSON.stringify(syms.map(s => {
+        const p = lineMap.offsetToPosition(s.offset)
+        return { ...s, line: p.line + 1, col: p.col + 1 }
+      })))
+    } else {
+      for (const s of syms) {
+        const p = lineMap.offsetToPosition(s.offset)
+        const exp = s.exported ? ' [exported]' : ''
+        console.log(`${symFile}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+      }
     }
     break
   }
