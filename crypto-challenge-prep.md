@@ -128,10 +128,10 @@ Today the CLI emits WAT text only. `wabt` is in [package.json](package.json#L21)
 
 ### Subtasks
 
-- [ ] **Add `compile --wasm` to the CLI.** Pipe WAT through `wabt.parseWat(name, watText).toBinary({})`. Write the buffer with `Bun.write`.
-- [ ] **Or a separate `wasm` subcommand.** Less ambiguous: `cli wasm <file.ents> -o out.wasm` and keep `cli compile` as WAT.
-- [ ] **Sourcemaps?** Wabt can emit them. Probably skip for v1.
-- [ ] **Surface wabt errors.** Wabt's parse errors are unhelpful — wrap with the source span where possible.
+- [x] **Add `compile --wasm` to the CLI.** Pipe WAT through `wabt.parseWat(name, watText).toBinary({})`. Write the buffer with `Bun.write`.
+- [x] **Or a separate `wasm` subcommand.** Less ambiguous: `cli wasm <file.ents> -o out.wasm` and keep `cli compile` as WAT.
+- [x] **Sourcemaps?** Wabt can emit them. Probably skip for v1.
+- [x] **Surface wabt errors.** Wabt's parse errors are unhelpful — wrap with the source span where possible.
 
 ### Exit criteria
 
