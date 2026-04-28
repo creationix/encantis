@@ -1,0 +1,67 @@
+// Simple tagged-block heap allocator
+// Each block has an 8-byte header: [size:u32, free:u32]
+// Blocks are contiguous in a static buffer.
+
+export "mem" memory
+
+def heap:*[65536]u8 = mut [0:u8; 65536]
+def heap_size = 65536:u32
+def header_size = 8:u32
+
+global heap_init: u32 = 0
+
+// Initialize heap with one big free block
+func init() {
+  return when heap_init != 0
+  heap.u32[0] = heap_size - header_size
+  heap.u32[1] = 1
+  heap_init = 1
+}
+
+// Allocate `size` bytes. Returns offset or 0xFFFFFFFF on failure.
+export func malloc(size: u32) -> (result: u32) {
+  init()
+  let offset: u32 = 0
+  loop {
+    break when offset >= heap_size
+    let block_size = heap.u32[offset / 4]
+    let block_free = heap.u32[offset / 4 + 1]
+    if block_free != 0 {
+      if block_size >= size {
+        // Split block if remainder is large enough for another block
+        if block_size >= size + header_size + 8 {
+          let next = offset + header_size + size
+          heap.u32[next / 4] = block_size - size - header_size
+          heap.u32[next / 4 + 1] = 1
+          heap.u32[offset / 4] = size
+        }
+        heap.u32[offset / 4 + 1] = 0
+        result = offset + header_size
+        return
+      }
+    }
+    offset += header_size + block_size
+  }
+  result = 0xFFFFFFFF
+}
+
+// Free a previously allocated block
+export func free(ptr: u32) {
+  return when ptr < header_size
+  let offset = ptr - header_size
+  heap.u32[offset / 4 + 1] = 1
+}
+
+// Report bytes currently allocated (for testing)
+export func heap_used() -> (total: u32) {
+  init()
+  total = 0
+  let offset: u32 = 0
+  loop {
+    break when offset >= heap_size
+    let block_size = heap.u32[offset / 4]
+    let block_free = heap.u32[offset / 4 + 1]
+    if block_free == 0 { total += block_size }
+    offset += header_size + block_size
+  }
+}

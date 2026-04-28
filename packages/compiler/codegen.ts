@@ -37,6 +37,8 @@ export interface CodegenContext {
   nameMap: Map<string, string>
   // Track whether __mul_hi helper is needed
   needsMulHi?: boolean
+  // Named return locals for early return statements
+  namedReturnLocals: string[]
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>): CodegenContext {
@@ -48,6 +50,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     literalRefs,
     indent: 0,
     nameMap: nameMap ?? new Map(),
+    namedReturnLocals: [],
   }
 }
 
@@ -872,15 +875,11 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   return exprToWat(expr.object, ctx)
 }
 
-function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
-  const base = exprToWat(expr.object, ctx)
-  const index = exprToWat(expr.index, ctx)
-
-  // Get element type to determine size
-  const arrayTypeKey = expr.object.kind === 'MemberExpr'
-    ? typeKey(expr.object.span.end, expr.object.kind)
-    : typeKey(expr.object.span.start, expr.object.kind)
-  const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
+  const arrayTypeKey = object.kind === 'MemberExpr'
+    ? typeKey(object.span.end, object.kind)
+    : typeKey(object.span.start, object.kind)
+  const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(object.span.start, object.kind))
   let elemSize = 1
   if (arrayType) {
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
@@ -891,12 +890,16 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
       elemSize = primitiveByteSize(arrayType.pointee) ?? 1
     }
   }
+  const offset = elemSize === 1
+    ? `(i32.add ${base} ${index})`
+    : `(i32.add ${base} (i32.mul ${index} (i32.const ${elemSize})))`
+  return { offset, elemSize }
+}
 
-  // Calculate offset: base + index * elemSize
-  const offset =
-    elemSize === 1
-      ? `(i32.add ${base} ${index})`
-      : `(i32.add ${base} (i32.mul ${index} (i32.const ${elemSize})))`
+function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
+  const base = exprToWat(expr.object, ctx)
+  const index = exprToWat(expr.index, ctx)
+  const { offset } = indexOffset(expr.object, base, index, ctx)
 
   // Load from memory
   const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
@@ -1397,18 +1400,25 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     if (!type) {
       throw new Error(`Missing type for index store at offset ${target.span.start}`)
     }
-    return v128StoreSequence(type, `(i32.add ${ptr} ${idx})`, value)
+    const { offset } = indexOffset(target.object, ptr, idx, ctx)
+    return v128StoreSequence(type, offset, value)
   }
 
   return ''
 }
 
 function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
+  const namedPush = ctx.namedReturnLocals?.length > 0
+    ? ctx.namedReturnLocals.join(' ') + ' '
+    : ''
+
   if (stmt.when) {
-    // Conditional return: return x when cond
     const cond = exprToWat(stmt.when, ctx)
-    const value = stmt.value ? exprToWat(stmt.value, ctx) : ''
-    return `(if ${cond} (then ${value} (return)))`
+    if (stmt.value) {
+      const value = exprToWat(stmt.value, ctx)
+      return `(if ${cond} (then ${value} (return)))`
+    }
+    return `(if ${cond} (then ${namedPush}(return)))`
   }
 
   if (stmt.value) {
@@ -1416,7 +1426,7 @@ function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
     return `${value} (return)`
   }
 
-  return '(return)'
+  return `${namedPush}(return)`
 }
 
 function whileToWat(stmt: AST.WhileStmt, ctx: CodegenContext): string {
@@ -1565,6 +1575,12 @@ export function funcToWat(
       }
     }
   }
+  // Make named return locals available for early return statements
+  ctx.namedReturnLocals = namedReturns.flatMap(r => {
+    const localNames = ctx.locals.get(r.name)
+    return localNames ? localNames.map(n => `(local.get $${n})`) : []
+  })
+
   // Deduplicate: skip locals that collide with params or earlier locals
   const seen = new Set<string>()
   for (const [, names] of ctx.params) for (const n of names) seen.add(n)
