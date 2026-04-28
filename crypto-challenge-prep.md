@@ -165,7 +165,7 @@ Listed in priority order for what the challenge will hit.
 
 - [x] **Pattern-binding validation** ([checker.ts:902](packages/compiler/checker.ts#L902) TODO). Agents will write match arms with destructuring; missing/duplicated bindings need diagnostics.
 - [x] **Branch type unification** (TODOs near [checker.ts:1976/2007/2021](packages/compiler/checker.ts#L1976)). `if` and `match` arms must have a common type or the result type is wrong.
-- [ ] **Enum codegen + checker.** [ast.ts:124](packages/compiler/ast.ts#L124) has `EnumDecl` but the checker has zero cases for it and codegen doesn't handle the stack representation described in [docs/encantis.md §2.7](docs/encantis.md#27-enum-types-algebraic-data-types). Required only if we want `Result<T, E>` style error returns. Recommend deferring unless the challenge prose explicitly leans on enums.
+- [x] **Enum codegen + checker.** ~~Deferred~~ — enums don't fit the language's "you see what you get" philosophy. The slot-unification stack representation adds implicit compiler complexity. Crypto code uses sentinel values and booleans for errors, not sum types. If sum types are needed later, a simpler Zig-style design (enums = named integers, tagged unions separate) would be a better fit.
 - [x] **Pre-existing TS errors in the compiler.** Per CLAUDE.md, the compiler has type errors. Either fix or add a specific allowlist — don't ship a state where `tsc` is meaningless.
 
 ---
