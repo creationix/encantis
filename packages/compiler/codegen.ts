@@ -348,6 +348,31 @@ function multiV128UnaryOp(n: number, wasmOp: string, operand: string): string {
   return parts.map(p => `(${wasmOp} ${p})`).join(' ')
 }
 
+function v128LoadSequence(type: ResolvedType, ptr: string): string {
+  const nv = v128Count(type)
+  if (nv > 1) {
+    return Array.from({ length: nv }, (_, i) =>
+      `(v128.load offset=${i * 16} ${ptr})`
+    ).join(' ')
+  }
+  if (nv === 1) return `(v128.load ${ptr})`
+  const wt = typeToWasmSingle(type)
+  return `(${wt}.load ${ptr})`
+}
+
+function v128StoreSequence(type: ResolvedType, ptr: string, value: string): string {
+  const nv = v128Count(type)
+  if (nv > 1) {
+    const parts = splitV128Components(value, nv)
+    return parts.map((v, i) =>
+      `(v128.store offset=${i * 16} ${ptr} ${v})`
+    ).join('\n')
+  }
+  if (nv === 1) return `(v128.store ${ptr} ${value})`
+  const wt = typeToWasmSingle(type)
+  return `(${wt}.store ${ptr} ${value})`
+}
+
 function splitV128Components(wat: string, n: number): string[] {
   const re = /\([^()]*(?:\([^()]*\))*[^()]*\)/g
   const matches = wat.match(re)
@@ -798,19 +823,17 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   if (member.kind === 'deref') {
     // Pointer dereference: .* - load from memory
     const ptr = exprToWat(expr.object, ctx)
-    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = ctx.types.get(typeKey(expr.span.end, expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
     if (!type) {
       throw new Error(`Missing type for pointer dereference at offset ${expr.span.start}`)
     }
-    const wt = typeToWasmSingle(type)
-    return `(${wt}.load ${ptr})`
+    return v128LoadSequence(type, ptr)
   }
 
   if (member.kind === 'type') {
     // Typed dereference: ptr.u32, ptr.u8 - load from memory as specified type
     const ptr = exprToWat(expr.object, ctx)
     const loadType = resolveAstType(member.type)
-    const wt = typeToWasmSingle(loadType)
     // Handle sub-word loads (u8, i8, u16, i16) with appropriate extension
     if (loadType.kind === 'primitive') {
       const name = loadType.name
@@ -819,7 +842,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
       if (name === 'u16') return `(i32.load16_u ${ptr})`
       if (name === 'i16') return `(i32.load16_s ${ptr})`
     }
-    return `(${wt}.load ${ptr})`
+    return v128LoadSequence(loadType, ptr)
   }
 
   return exprToWat(expr.object, ctx)
@@ -848,8 +871,7 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   if (!type) {
     throw new Error(`Missing type for index expression at offset ${expr.span.start}`)
   }
-  const wt = typeToWasmSingle(type)
-  return `(${wt}.load ${offset})`
+  return v128LoadSequence(type, offset)
 }
 
 function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
@@ -1299,8 +1321,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
       if (!type) {
         throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
       }
-      const wt = typeToWasmSingle(type)
-      return `(${wt}.store ${ptr} ${value})`
+      return v128StoreSequence(type, ptr, value)
     }
   }
 
@@ -1311,8 +1332,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     if (!type) {
       throw new Error(`Missing type for index store at offset ${target.span.start}`)
     }
-    const wt = typeToWasmSingle(type)
-    return `(${wt}.store (i32.add ${ptr} ${idx}) ${value})`
+    return v128StoreSequence(type, `(i32.add ${ptr} ${idx})`, value)
   }
 
   return ''
