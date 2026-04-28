@@ -1,0 +1,42 @@
+[
+  {
+    "label": "minimal",
+    "header": "{\"alg\":\"EdDSA\"}",
+    "payload": "{}",
+    "headerB64": "eyJhbGciOiJFZERTQSJ9",
+    "payloadB64": "e30",
+    "signingInput": "eyJhbGciOiJFZERTQSJ9.e30"
+  },
+  {
+    "label": "with-kid",
+    "header": "{\"alg\":\"EdDSA\",\"kid\":\"key-1\"}",
+    "payload": "{\"sub\":\"user\"}",
+    "headerB64": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtleS0xIn0",
+    "payloadB64": "eyJzdWIiOiJ1c2VyIn0",
+    "signingInput": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtleS0xIn0.eyJzdWIiOiJ1c2VyIn0"
+  },
+  {
+    "label": "empty-payload",
+    "header": "{\"alg\":\"EdDSA\"}",
+    "payload": "",
+    "headerB64": "eyJhbGciOiJFZERTQSJ9",
+    "payloadB64": "",
+    "signingInput": "eyJhbGciOiJFZERTQSJ9."
+  },
+  {
+    "label": "large-payload",
+    "header": "{\"alg\":\"EdDSA\"}",
+    "payload": "{\"data\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+    "headerB64": "eyJhbGciOiJFZERTQSJ9",
+    "payloadB64": "eyJkYXRhIjoieHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eCJ9",
+    "signingInput": "eyJhbGciOiJFZERTQSJ9.eyJkYXRhIjoieHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eCJ9"
+  },
+  {
+    "label": "unicode",
+    "header": "{\"alg\":\"EdDSA\"}",
+    "payload": "{\"name\":\"日本語\"}",
+    "headerB64": "eyJhbGciOiJFZERTQSJ9",
+    "payloadB64": "eyJuYW1lIjoi5pel5pys6KqeIn0",
+    "signingInput": "eyJhbGciOiJFZERTQSJ9.eyJuYW1lIjoi5pel5pys6KqeIn0"
+  }
+]
