@@ -194,9 +194,9 @@ What we ship is three reference allocators that span the spectrum from "everythi
 
 ### Exit criteria
 
-- [ ] All three patterns compile, have unit tests, and are usable via `import` across files.
-- [ ] One example each: a primitive that uses static reservation only (e.g. base64url), a primitive that uses malloc/free directly, and a primitive that uses an arena.
-- [ ] An agent reading only `docs/memory.md` can pick the right pattern for their algorithm and wire it to the host without any prior coordination on offsets.
+- [x] All three patterns compile, have unit tests, and are usable via `import` across files.
+- [x] One example each: a primitive that uses static reservation only (e.g. base64url), a primitive that uses malloc/free directly, and a primitive that uses an arena.
+- [x] An agent reading only `docs/memory.md` can pick the right pattern for their algorithm and wire it to the host without any prior coordination on offsets.
 
 ---
 
