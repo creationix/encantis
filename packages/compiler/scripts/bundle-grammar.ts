@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'fs'
 
 const grammarSource = readFileSync(new URL('../encantis-grammar.ohm', import.meta.url), 'utf-8')
 const grammar = ohm.grammar(grammarSource)
-const recipe = grammar.toRecipe()
+const recipe = (grammar as any).toRecipe()
 
 const output = `// Auto-generated from encantis-grammar.ohm - do not edit
 import * as ohm from 'ohm-js'

@@ -1223,7 +1223,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     const sets: string[] = []
     for (let i = tupleType.fields.length - 1; i >= 0; i--) {
       const field = tupleType.fields[i]
-      const varName = fieldToVar.get(field.name)
+      const varName = field.name !== null ? fieldToVar.get(field.name) : undefined
       if (varName) {
         sets.push(`(local.set $${varName})`)
       } else {
@@ -1273,7 +1273,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
     const sets: string[] = []
     for (let i = tupleType.fields.length - 1; i >= 0; i--) {
       const field = tupleType.fields[i]
-      const varName = fieldToVar.get(field.name)
+      const varName = field.name !== null ? fieldToVar.get(field.name) : undefined
       if (varName) {
         sets.push(`(local.set $${varName})`)
       } else {

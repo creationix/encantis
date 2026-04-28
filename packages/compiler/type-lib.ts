@@ -83,6 +83,9 @@ export function astToResolved(ast: AST.Type): ResolvedType {
 
     case 'TypeRef':
       throw new Error(`TypeRef '${ast.name}' cannot be resolved without context`)
+
+    case 'FuncType':
+      throw new Error(`FuncType cannot be resolved in this context`)
   }
 }
 

@@ -52,7 +52,7 @@ function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
         callee: cloneExprWithSpan(expr.callee, expr.callee.span),
         args: expr.args.map((a) => ({
           ...a,
-          value: a.value ? cloneExprWithSpan(a.value, a.value.span) : undefined,
+          value: a.value ? cloneExprWithSpan(a.value, a.value.span) : null,
         })),
         span: newSpan,
       }
@@ -79,7 +79,7 @@ function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
           condition: cloneExprWithSpan(e.condition, e.condition.span),
           thenBranch: cloneFuncBodyWithSpan(e.thenBranch),
         })),
-        else_: expr.else_ ? cloneFuncBodyWithSpan(expr.else_) : undefined,
+        else_: expr.else_ ? cloneFuncBodyWithSpan(expr.else_) : null,
         span: newSpan,
       }
     case 'TupleExpr':
@@ -87,7 +87,7 @@ function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
         ...expr,
         elements: expr.elements.map((el) => ({
           ...el,
-          value: el.value ? cloneExprWithSpan(el.value, el.value.span) : undefined,
+          value: el.value ? cloneExprWithSpan(el.value, el.value.span) : null,
         })),
         span: newSpan,
       }
@@ -131,24 +131,17 @@ function cloneFuncBodyWithSpan(body: AST.FuncBody): AST.FuncBody {
 function cloneStmtWithSpan(stmt: AST.Statement): AST.Statement {
   switch (stmt.kind) {
     case 'LetStmt':
-      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : undefined }
+      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : null }
     case 'SetStmt':
       return { ...stmt, value: cloneExprWithSpan(stmt.value, stmt.value.span) }
     case 'AssignmentStmt':
       return {
         ...stmt,
-        target: cloneExprWithSpan(stmt.target, stmt.target.span) as AST.LValue,
+        target: cloneExprWithSpan(stmt.target as unknown as AST.Expr, stmt.target.span) as unknown as AST.LValue,
         value: cloneExprWithSpan(stmt.value, stmt.value.span),
       }
     case 'ReturnStmt':
-      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : undefined }
-    case 'IfStmt':
-      return {
-        ...stmt,
-        condition: cloneExprWithSpan(stmt.condition, stmt.condition.span),
-        thenBranch: cloneFuncBodyWithSpan(stmt.thenBranch),
-        else_: stmt.else_ ? cloneFuncBodyWithSpan(stmt.else_) : undefined,
-      }
+      return { ...stmt, value: stmt.value ? cloneExprWithSpan(stmt.value, stmt.value.span) : null }
     case 'WhileStmt':
       return { ...stmt, condition: cloneExprWithSpan(stmt.condition, stmt.condition.span), body: cloneFuncBodyWithSpan(stmt.body) }
     default:

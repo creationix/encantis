@@ -25,7 +25,7 @@ export async function compileToWasm(entryPath: string): Promise<Uint8Array> {
   return buffer
 }
 
-export async function instantiate(entryPath: string, imports?: WebAssembly.Imports): Promise<WebAssembly.Instance> {
+export async function instantiate(entryPath: string, imports?: Record<string, Record<string, Function | WebAssembly.Global | WebAssembly.Memory | WebAssembly.Table | number>>): Promise<WebAssembly.Instance> {
   const buffer = await compileToWasm(entryPath)
   const module = await WebAssembly.compile(buffer)
   return WebAssembly.instantiate(module, imports)

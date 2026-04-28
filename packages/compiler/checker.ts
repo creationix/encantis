@@ -116,7 +116,7 @@ export interface TypecheckOptions {
   moduleExports?: Map<string, Map<string, Symbol>>
 }
 
-const DEFAULT_OPTIONS: Required<TypecheckOptions> = {
+const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultFloat'> = {
   defaultInt: 'i32',
   defaultFloat: 'f64',
 }
@@ -219,7 +219,7 @@ export function concretizeType(
   t: ResolvedType,
   options: TypecheckOptions = DEFAULT_OPTIONS,
 ): ResolvedType {
-  const opts: Required<TypecheckOptions> = { ...DEFAULT_OPTIONS, ...options }
+  const opts = { ...DEFAULT_OPTIONS, ...options }
   const u = unwrap(t)
 
   switch (u.kind) {
@@ -374,8 +374,6 @@ class CheckContext {
   preRegisterTypes(decl: AST.Declaration): void {
     if (decl.kind === 'TypeDecl') {
       this.pendingTypeNames.add(decl.ident.name)
-    } else if (decl.kind === 'ExportDecl' && decl.item.kind === 'TypeDecl') {
-      this.pendingTypeNames.add((decl.item as AST.TypeDecl).ident.name)
     }
   }
 
@@ -1217,7 +1215,7 @@ class CheckContext {
       // All lists should have same length for fixed array, otherwise slice
       const lengths = lists.map((l) => l.elements.length)
       if (lengths.every((len) => len === lengths[0])) {
-        return array(innerType, lengths[0])
+        return array(innerType, [lengths[0]])
       }
       return slice(innerType)
     }
@@ -1293,7 +1291,7 @@ class CheckContext {
         const sym = this.moduleScope.symbols.get(type.name)
         if (sym && sym.kind === 'type') {
           // Wrap with named to preserve the alias/unique name
-          return named(type.name, sym.type, sym.unique)
+          return named(type.name, sym.type)
         }
         // Check if this is a forward reference to a type being defined
         if (this.pendingTypeNames.has(type.name)) {
@@ -2181,7 +2179,7 @@ class CheckContext {
       }
       // Block's type is the last expression statement, if any
       const last = body.stmts[body.stmts.length - 1]
-      if (last?.kind === 'ExprStmt') {
+      if (last?.kind === 'ExpressionStmt') {
         return this.types.get(typeKey(last.expr.span.start, last.expr.kind)) ?? VOID
       }
       return VOID
@@ -2193,7 +2191,9 @@ class CheckContext {
     this.inferExpr(expr.subject)
     let resultType: ResolvedType = VOID
     for (const arm of expr.arms) {
-      const armType = this.inferBody(arm.body)
+      const armType = arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
+        ? this.inferBody(arm.body)
+        : this.inferExpr(arm.body)
       if (resultType.kind === 'void' && armType.kind !== 'void') {
         resultType = armType
       }
