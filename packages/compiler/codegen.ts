@@ -236,10 +236,15 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       }
       const wt = typeToWasmSingle(type)
       if (wt === 'v128') {
+        const nv = v128Count(type)
         const val = BigInt(lit.value)
-        const lo = val & 0xFFFFFFFFFFFFFFFFn
-        const hi = (val >> 64n) & 0xFFFFFFFFFFFFFFFFn
-        return `(v128.const i64x2 ${lo} ${hi})`
+        const parts: string[] = []
+        for (let i = 0; i < nv; i++) {
+          const lo = (val >> BigInt(i * 128)) & 0xFFFFFFFFFFFFFFFFn
+          const hi = (val >> BigInt(i * 128 + 64)) & 0xFFFFFFFFFFFFFFFFn
+          parts.push(`(v128.const i64x2 ${lo} ${hi})`)
+        }
+        return parts.join(' ')
       }
       return `(${wt}.const ${lit.value})`
     }
@@ -321,6 +326,36 @@ function isV128Type(t: ResolvedType): boolean {
   return u.kind === 'primitive' && ['i128', 'u128'].includes(u.name)
 }
 
+function v128Count(t: ResolvedType): number {
+  const u = unwrap(t)
+  if (u.kind !== 'primitive') return 0
+  if (['i128', 'u128'].includes(u.name)) return 1
+  if (['i256', 'u256'].includes(u.name)) return 2
+  if (['i512', 'u512'].includes(u.name)) return 4
+  return 0
+}
+
+function multiV128BinaryOp(n: number, wasmOp: string, left: string, right: string): string {
+  if (n === 1) return `(${wasmOp} ${left} ${right})`
+  const leftParts = splitV128Components(left, n)
+  const rightParts = splitV128Components(right, n)
+  return leftParts.map((l, i) => `(${wasmOp} ${l} ${rightParts[i]})`).join(' ')
+}
+
+function multiV128UnaryOp(n: number, wasmOp: string, operand: string): string {
+  if (n === 1) return `(${wasmOp} ${operand})`
+  const parts = splitV128Components(operand, n)
+  return parts.map(p => `(${wasmOp} ${p})`).join(' ')
+}
+
+function splitV128Components(wat: string, n: number): string[] {
+  const re = /\([^()]*(?:\([^()]*\))*[^()]*\)/g
+  const matches = wat.match(re)
+  if (matches && matches.length === n) return matches
+  if (n === 1) return [wat]
+  throw new Error(`Expected ${n} v128 components, got: ${wat}`)
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const left = exprToWat(expr.left, ctx)
   const right = exprToWat(expr.right, ctx)
@@ -340,6 +375,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const signed = isSigned(operandType)
   const isFloatType = isFloat(operandType)
   const isV128 = isV128Type(operandType)
+  const nV128 = v128Count(operandType)
 
   const op = expr.op
   let wasmOp: string
@@ -347,13 +383,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   switch (op) {
     // Arithmetic
     case '+':
-      wasmOp = isV128 ? 'i64x2.add' : `${wt}.add`
+      wasmOp = nV128 > 0 ? 'i64x2.add' : `${wt}.add`
       break
     case '-':
-      wasmOp = isV128 ? 'i64x2.sub' : `${wt}.sub`
+      wasmOp = nV128 > 0 ? 'i64x2.sub' : `${wt}.sub`
       break
     case '*':
-      wasmOp = isV128 ? 'i64x2.mul' : `${wt}.mul`
+      wasmOp = nV128 > 0 ? 'i64x2.mul' : `${wt}.mul`
       break
     case '/':
       wasmOp = isFloatType ? `${wt}.div` : signed ? `${wt}.div_s` : `${wt}.div_u`
@@ -375,11 +411,23 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Comparison
     case '==':
-      if (isV128) return `(i32x4.all_true (i64x2.eq ${left} ${right}))`
+      if (nV128 > 0) {
+        if (nV128 === 1) return `(i32x4.all_true (i64x2.eq ${left} ${right}))`
+        const lp = splitV128Components(left, nV128)
+        const rp = splitV128Components(right, nV128)
+        const eqs = lp.map((l, i) => `(i32x4.all_true (i64x2.eq ${l} ${rp[i]}))`).join(' ')
+        return `(i32.and ${eqs})`
+      }
       wasmOp = `${wt}.eq`
       break
     case '!=':
-      if (isV128) return `(i32.eqz (i32x4.all_true (i64x2.eq ${left} ${right})))`
+      if (nV128 > 0) {
+        if (nV128 === 1) return `(i32.eqz (i32x4.all_true (i64x2.eq ${left} ${right})))`
+        const lp = splitV128Components(left, nV128)
+        const rp = splitV128Components(right, nV128)
+        const eqs = lp.map((l, i) => `(i32x4.all_true (i64x2.eq ${l} ${rp[i]}))`).join(' ')
+        return `(i32.eqz (i32.and ${eqs}))`
+      }
       wasmOp = `${wt}.ne`
       break
     case '<':
@@ -397,25 +445,25 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Bitwise
     case '&':
-      wasmOp = isV128 ? 'v128.and' : `${wt}.and`
+      wasmOp = nV128 > 0 ? 'v128.and' : `${wt}.and`
       break
     case '|':
-      wasmOp = isV128 ? 'v128.or' : `${wt}.or`
+      wasmOp = nV128 > 0 ? 'v128.or' : `${wt}.or`
       break
     case '^':
-      wasmOp = isV128 ? 'v128.xor' : `${wt}.xor`
+      wasmOp = nV128 > 0 ? 'v128.xor' : `${wt}.xor`
       break
     case '<<':
-      wasmOp = isV128 ? 'i64x2.shl' : `${wt}.shl`
+      wasmOp = nV128 > 0 ? 'i64x2.shl' : `${wt}.shl`
       break
     case '>>':
-      wasmOp = isV128 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
+      wasmOp = nV128 > 0 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
       break
     case '>>>':
-      wasmOp = isV128 ? 'i64x2.shr_u' : `${wt}.shr_u`
+      wasmOp = nV128 > 0 ? 'i64x2.shr_u' : `${wt}.shr_u`
       break
     case '<<<':
-      wasmOp = isV128 ? 'i64x2.shl' : `${wt}.rotl`  // v128 has no rotl; using shl as placeholder
+      wasmOp = nV128 > 0 ? 'i64x2.shl' : `${wt}.rotl`
       break
 
     // Logical (short-circuit)
@@ -428,6 +476,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
       throw new Error(`Unknown binary operator: ${op}`)
   }
 
+  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, left, right)
   return `(${wasmOp} ${left} ${right})`
 }
 
@@ -442,22 +491,24 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   const wt = typeToWasmSingle(type)
 
   switch (expr.op) {
-    case '-':
+    case '-': {
       // Negate: 0 - x for integers, neg for floats
       if (isFloat(type)) {
         return `(${wt}.neg ${operand})`
       }
-      if (wt === 'v128') {
-        return `(i64x2.sub (v128.const i64x2 0 0) ${operand})`
-      }
+      const nv = v128Count(type)
+      if (nv > 1) return multiV128UnaryOp(nv, 'i64x2.neg', operand)
+      if (nv === 1) return `(i64x2.neg ${operand})`
       return `(${wt}.sub (${wt}.const 0) ${operand})`
+    }
 
-    case '~':
+    case '~': {
       // Bitwise NOT
-      if (wt === 'v128') {
-        return `(v128.not ${operand})`
-      }
+      const nv = v128Count(type)
+      if (nv > 1) return multiV128UnaryOp(nv, 'v128.not', operand)
+      if (nv === 1) return `(v128.not ${operand})`
       return `(${wt}.xor ${operand} (${wt}.const -1))`
+    }
 
     case '!':
       // Logical NOT: x == 0
