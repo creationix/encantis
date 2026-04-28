@@ -7,7 +7,9 @@ import {
   findReferences,
   documentSymbols,
   signatureHelp,
+  workspaceSymbols,
 } from './queries'
+import { resolve } from 'path'
 
 function setup(code: string) {
   const result = parse(code)
@@ -169,5 +171,29 @@ describe('signatureHelp', () => {
     const offset = code.indexOf('x')
     const result = signatureHelp(source, module, check, offset)
     expect(result).toBeNull()
+  })
+})
+
+describe('workspaceSymbols', () => {
+  test('finds symbols across multiple files', async () => {
+    const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
+    const syms = await workspaceSymbols(fixtures)
+    const names = syms.map(s => s.name)
+    expect(names).toContain('add')
+    expect(names).toContain('double')
+    expect(syms.every(s => s.filePath !== undefined)).toBe(true)
+  })
+
+  test('filters by query string', async () => {
+    const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
+    const syms = await workspaceSymbols(fixtures, 'add')
+    expect(syms.length).toBeGreaterThan(0)
+    expect(syms.every(s => s.name.toLowerCase().includes('add'))).toBe(true)
+  })
+
+  test('returns empty for no matches', async () => {
+    const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
+    const syms = await workspaceSymbols(fixtures, 'zzz_nonexistent_zzz')
+    expect(syms).toEqual([])
   })
 })

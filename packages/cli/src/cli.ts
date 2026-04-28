@@ -6,7 +6,7 @@ import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
-import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp } from '@encantis/compiler/queries'
+import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { resolve } from 'path'
 import wabt from 'wabt'
@@ -304,26 +304,51 @@ switch (command) {
   }
 
   case 'symbols': {
-    const symFile = inputFile ?? '.'
-    const sSource = await Bun.file(symFile).text()
-    const sResult = parse(sSource, { filePath: symFile })
-    if (sResult.errors.length > 0) {
-      console.error(sResult.errors[0].message)
-      process.exit(1)
-    }
-    const sCheck = typecheck(sResult.module!)
-    const lineMap = new LineMap(sSource)
-    const syms = documentSymbols(sSource, sResult.module!, sCheck)
-    if (jsonOutput) {
-      console.log(JSON.stringify(syms.map(s => {
-        const p = lineMap.offsetToPosition(s.offset)
-        return { ...s, line: p.line + 1, col: p.col + 1 }
-      })))
+    const target = inputFile ?? '.'
+    const stat = await Bun.file(target).exists()
+
+    if (stat) {
+      // Single file: document symbols
+      const sSource = await Bun.file(target).text()
+      const sResult = parse(sSource, { filePath: target })
+      if (sResult.errors.length > 0) {
+        console.error(sResult.errors[0].message)
+        process.exit(1)
+      }
+      const sCheck = typecheck(sResult.module!)
+      const lineMap = new LineMap(sSource)
+      const syms = documentSymbols(sSource, sResult.module!, sCheck)
+      if (jsonOutput) {
+        console.log(JSON.stringify(syms.map(s => {
+          const p = lineMap.offsetToPosition(s.offset)
+          return { ...s, filePath: target, line: p.line + 1, col: p.col + 1 }
+        })))
+      } else {
+        for (const s of syms) {
+          const p = lineMap.offsetToPosition(s.offset)
+          const exp = s.exported ? ' [exported]' : ''
+          console.log(`${target}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+        }
+      }
     } else {
-      for (const s of syms) {
-        const p = lineMap.offsetToPosition(s.offset)
-        const exp = s.exported ? ' [exported]' : ''
-        console.log(`${symFile}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+      // Directory: workspace symbols
+      const syms = await workspaceSymbols(resolve(target))
+      if (jsonOutput) {
+        const enriched = await Promise.all(syms.map(async s => {
+          const src = await Bun.file(s.filePath!).text()
+          const lm = new LineMap(src)
+          const p = lm.offsetToPosition(s.offset)
+          return { ...s, line: p.line + 1, col: p.col + 1 }
+        }))
+        console.log(JSON.stringify(enriched))
+      } else {
+        for (const s of syms) {
+          const src = await Bun.file(s.filePath!).text()
+          const lm = new LineMap(src)
+          const p = lm.offsetToPosition(s.offset)
+          const exp = s.exported ? ' [exported]' : ''
+          console.log(`${s.filePath}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
+        }
       }
     }
     break

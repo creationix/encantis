@@ -3,9 +3,12 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol } from './checker'
-import { typeKey } from './checker'
+import { typeKey, typecheck } from './checker'
+import { parse } from './parser'
 import { typeToString, type ResolvedType } from './types'
 import { LineMap, type Position } from './position'
+import { resolve } from 'path'
+import { readdir } from 'fs/promises'
 
 export interface Location {
   offset: number
@@ -31,6 +34,7 @@ export interface SymbolInfo {
   offset: number
   length: number
   exported: boolean
+  filePath?: string
 }
 
 export interface ReferenceResult {
@@ -231,6 +235,41 @@ export function signatureHelp(
       ? '()'
       : ft.returns.map(r => r.name ? `${r.name}: ${typeToString(r.type)}` : typeToString(r.type)).join(', '),
   }
+}
+
+export async function workspaceSymbols(
+  rootDir: string,
+  query?: string,
+): Promise<SymbolInfo[]> {
+  const files = await findEntsFiles(rootDir)
+  const allSymbols: SymbolInfo[] = []
+
+  for (const filePath of files) {
+    const source = await Bun.file(filePath).text()
+    const result = parse(source, { filePath })
+    if (result.errors.length > 0 || !result.module) continue
+    const check = typecheck(result.module)
+    const syms = documentSymbols(source, result.module, check)
+    for (const s of syms) {
+      allSymbols.push({ ...s, filePath })
+    }
+  }
+
+  if (query) {
+    const q = query.toLowerCase()
+    return allSymbols.filter(s => s.name.toLowerCase().includes(q))
+  }
+  return allSymbols
+}
+
+async function findEntsFiles(dir: string): Promise<string[]> {
+  const files: string[] = []
+  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
+    if (entry.name.endsWith('.ents')) {
+      files.push(resolve(entry.parentPath, entry.name))
+    }
+  }
+  return files.sort()
 }
 
 function symbolTypeString(sym: Symbol): string {
