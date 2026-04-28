@@ -71,7 +71,7 @@ Discriminator: first string starts with `./`, `../`, or `/` → Encantis source 
 
 ### Subtasks
 
-- [ ] **Module loader.** New file (e.g. `packages/compiler/loader.ts`). Resolves paths relative to the importing file, reads, parses, caches by absolute path, detects cycles. Returns a DAG of parsed modules.
+- [x] **Module loader.** New file (e.g. `packages/compiler/loader.ts`). Resolves paths relative to the importing file, reads, parses, caches by absolute path, detects cycles. Returns a DAG of parsed modules.
 - [ ] **Cross-module symbol resolution.** Extend the import branch in `checker.ts` so a source import looks up the symbol in the imported module's exported decls and unifies the signature.
 - [ ] **Unified codegen.** Codegen iterates all loaded modules' decls, not just the entry module's. Internal names get mangled with a module prefix (`sha512$sha512`); only names that surface as wasm-level exports keep their clean form. Wasm-level exports come exclusively from the entry module's `export` decls — `export` in a non-entry module just means "visible to importing Encantis files," it does not punch through to the wasm wall.
 - [ ] **Unified data arena.** All modules share one linear memory and one data section. The arena assigns `def` byte offsets program-wide; `def` decls from any module emit into the same section in load order.
