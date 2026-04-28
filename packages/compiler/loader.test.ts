@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { loadModule, isSourceImport, resolveModulePath } from './loader'
+import { typecheckProgram } from './checker'
 import { resolve } from 'path'
 
 const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
@@ -68,5 +69,28 @@ describe('loadModule', () => {
     const result = await loadModule(resolve(fixtures, 'main.ents'))
     expect(result.errors).toEqual([])
     expect(result.modules.size).toBe(2)
+  })
+})
+
+describe('cross-module type checking', () => {
+  test('resolves symbols from imported module', async () => {
+    const load = await loadModule(resolve(fixtures, 'main.ents'))
+    expect(load.errors).toEqual([])
+    const entryPath = resolve(fixtures, 'main.ents')
+    const result = typecheckProgram(load.modules, entryPath)
+    expect(result.errors).toEqual([])
+    const entryResult = result.results.get(entryPath)!
+    expect(entryResult.symbols.has('add')).toBe(true)
+    expect(entryResult.symbols.has('double')).toBe(true)
+  })
+
+  test('reports symbol-not-found in imported module', async () => {
+    const load = await loadModule(resolve(fixtures, 'bad-import.ents'))
+    expect(load.errors).toEqual([])
+    const entryPath = resolve(fixtures, 'bad-import.ents')
+    const result = typecheckProgram(load.modules, entryPath)
+    expect(result.errors.length).toBeGreaterThan(0)
+    expect(result.errors[0].message).toContain('nonexistent')
+    expect(result.errors[0].message).toContain('not exported')
   })
 })

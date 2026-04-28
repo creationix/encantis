@@ -1,0 +1,3 @@
+import "./util" "nonexistent" func missing() -> i32
+
+export func test() -> i32 => missing()

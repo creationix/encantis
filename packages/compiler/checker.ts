@@ -2,6 +2,7 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
+import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
   type ResolvedField,
@@ -109,6 +110,10 @@ export interface TypecheckOptions {
   defaultInt?: 'i32' | 'i64'
   // Default concrete type for untyped floats (default: 'f64')
   defaultFloat?: 'f32' | 'f64'
+  // Absolute path of this module (for resolving source imports)
+  filePath?: string
+  // Exports from already-typechecked modules (path → symbol table)
+  moduleExports?: Map<string, Map<string, Symbol>>
 }
 
 const DEFAULT_OPTIONS: Required<TypecheckOptions> = {
@@ -128,6 +133,8 @@ const DEFAULT_OPTIONS: Required<TypecheckOptions> = {
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
   const opts = { ...DEFAULT_OPTIONS, ...options }
   const ctx = new CheckContext()
+  ctx.filePath = opts.filePath
+  ctx.moduleExports = opts.moduleExports
   ctx.checkModule(module)
 
   // Concretize all comptime types to concrete types
@@ -148,6 +155,60 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 
 /** @deprecated Use typecheck() instead */
 export const check = typecheck
+
+function getExportedSymbols(module: AST.Module, symbols: Map<string, Symbol>): Map<string, Symbol> {
+  const exports = new Map<string, Symbol>()
+  for (const decl of module.decls) {
+    if (decl.kind !== 'ExportDecl') continue
+    const item = decl.item
+    if (item.kind === 'FuncDecl' && item.ident) {
+      const sym = symbols.get(item.ident)
+      if (sym) exports.set(decl.name, sym)
+    } else if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') {
+      const sym = symbols.get(item.pattern.name)
+      if (sym) exports.set(decl.name, sym)
+    }
+  }
+  return exports
+}
+
+export interface ProgramCheckResult {
+  results: Map<string, TypeCheckResult>
+  errors: TypeError[]
+}
+
+export function typecheckProgram(
+  modules: Map<string, { module: AST.Module }>,
+  entryPath: string,
+  options?: TypecheckOptions,
+): ProgramCheckResult {
+  const results = new Map<string, TypeCheckResult>()
+  const moduleExports = new Map<string, Map<string, Symbol>>()
+  const allErrors: TypeError[] = []
+  const visited = new Set<string>()
+
+  function visit(path: string) {
+    if (visited.has(path)) return
+    visited.add(path)
+    const loaded = modules.get(path)
+    if (!loaded) return
+
+    for (const decl of loaded.module.decls) {
+      if (decl.kind === 'ImportDecl' && isSourceImport(decl.module)) {
+        const depPath = resolveModulePath(decl.module, path)
+        visit(depPath)
+      }
+    }
+
+    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
+    results.set(path, result)
+    allErrors.push(...result.errors)
+    moduleExports.set(path, getExportedSymbols(loaded.module, result.symbols))
+  }
+
+  visit(entryPath)
+  return { results, errors: allErrors }
+}
 
 // === Concretization ===
 
@@ -282,6 +343,10 @@ class CheckContext {
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
   symbolDefOffsets = new Map<string, number>() // name → defOffset
 
+  // Multi-module support
+  filePath?: string
+  moduleExports?: Map<string, Map<string, Symbol>>
+
   // Literals that need data section serialization (collected during checking)
   pendingLiterals: PendingLiteral[] = []
 
@@ -343,25 +408,55 @@ class CheckContext {
   }
 
   collectImport(decl: AST.ImportDecl): void {
+    const isSource = isSourceImport(decl.module)
+    let depExports: Map<string, Symbol> | undefined
+    if (isSource && this.filePath && this.moduleExports) {
+      const depPath = resolveModulePath(decl.module, this.filePath)
+      depExports = this.moduleExports.get(depPath)
+      if (!depExports) {
+        this.errors.push({ offset: decl.span.start, message: `Module not found: ${decl.module}` })
+        return
+      }
+    }
+
     for (const item of decl.items) {
       switch (item.item.kind) {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
-          const sig = this.resolveSignature(item.item.signature)
-          this.moduleScope.symbols.set(name, {
-            kind: 'func',
-            type: sig,
-            inline: false,
-          })
+          if (isSource && depExports) {
+            const exported = depExports.get(item.name)
+            if (!exported) {
+              this.errors.push({ offset: item.span.start, message: `'${item.name}' is not exported from '${decl.module}'` })
+              break
+            }
+            if (exported.kind !== 'func') {
+              this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a function` })
+              break
+            }
+            this.moduleScope.symbols.set(name, { kind: 'func', type: exported.type, inline: exported.inline })
+          } else {
+            const sig = this.resolveSignature(item.item.signature)
+            this.moduleScope.symbols.set(name, { kind: 'func', type: sig, inline: false })
+          }
           this.recordDefinition(name, item.item.span.start)
           break
         }
         case 'ImportGlobal': {
-          const type = this.resolveType(item.item.type)
-          this.moduleScope.symbols.set(item.item.ident, {
-            kind: 'global',
-            type,
-          })
+          if (isSource && depExports) {
+            const exported = depExports.get(item.name)
+            if (!exported) {
+              this.errors.push({ offset: item.span.start, message: `'${item.name}' is not exported from '${decl.module}'` })
+              break
+            }
+            if (exported.kind !== 'global') {
+              this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a global` })
+              break
+            }
+            this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type: exported.type })
+          } else {
+            const type = this.resolveType(item.item.type)
+            this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type })
+          }
           break
         }
       }
