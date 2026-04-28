@@ -186,11 +186,11 @@ What we ship is three reference allocators that span the spectrum from "everythi
 
 - [x] **Arena allocator on top of `malloc`/`free`** (`examples/alloc/arena.ents`). An arena owns one or more chunks obtained via `malloc`; `arena_alloc(arena, size)` bumps within the current chunk; `arena_reset(arena)` drops back to a saved mark; `arena_free(arena)` returns all chunks to the heap. This composition (arena over malloc) is the canonical example of *why* Encantis-to-Encantis imports matter, and it's what Ed25519 scratch buffers will want.
 
-- [ ] **`memory-grow` ownership.** Document who calls it: malloc, when it's about to fail. The static-reservation pattern never grows. Arenas grow indirectly through malloc. The language has no opinion.
+- [x] **`memory-grow` ownership.** Document who calls it: malloc, when it's about to fail. The static-reservation pattern never grows. Arenas grow indirectly through malloc. The language has no opinion.
 
-- [ ] **No "standard exports."** State explicitly in the docs that beyond `mem`, *nothing* is fixed. The program declares whatever entrypoints and buffers it wants; the host harness discovers them by reading the wasm export table.
+- [x] **No "standard exports."** State explicitly in the docs that beyond `mem`, *nothing* is fixed. The program declares whatever entrypoints and buffers it wants; the host harness discovers them by reading the wasm export table.
 
-- [ ] **Docs.** Write `docs/memory.md` covering: the no-conventions principle (front and center), the three reference patterns with one-line guidance on when to pick each, the static-reservation syntax, and the host-discovery pattern. Make it unambiguous that these are libraries, not language features — the language is the four primitives above.
+- [x] **Docs.** Write `docs/memory.md` covering: the no-conventions principle (front and center), the three reference patterns with one-line guidance on when to pick each, the static-reservation syntax, and the host-discovery pattern. Make it unambiguous that these are libraries, not language features — the language is the four primitives above.
 
 ### Exit criteria
 
