@@ -125,10 +125,9 @@ import "wasi" (
 )
 ```
 
-**Global and memory imports:**
+**Global imports:**
 ```encantis
 import "env" "memory_offset" global g_offset: i32
-import "env" "memory" memory 1
 ```
 
 ### Exports
@@ -147,8 +146,10 @@ export "_start" func main() { }
 // Export a global (name inferred from identifier)
 export global counter: i32 = 0
 
-// Export memory (explicit name required)
-export "memory" memory 1
+// Export memory (name defaults to "memory")
+export memory
+export memory 8
+export "mem" memory 8 256
 ```
 
 ### Functions
@@ -251,11 +252,14 @@ global greeting = "Hello"
 [Grammar: `MemoryDecl`](../packages/compiler/src/grammar/encantis.ohm#L71-L73)
 
 ```encantis
-// Basic memory: 1 page minimum (64KB)
-memory 1
+// Bare memory: compiler computes min from static data, no max
+memory
 
-// With max: 1 page min, 16 pages max (1MB)
-memory 1 16
+// Explicit min: 8 pages (512KB)
+memory 8
+
+// With max: 8 pages min, 256 pages max
+memory 8 256
 ```
 
 ---

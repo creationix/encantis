@@ -1321,8 +1321,6 @@ let (x:, y:) = get_point()  // equivalent with punning
 // Import function from host environment
 import "env" "log" func log(msg:[]u8)
 
-// Import memory
-import "env" "memory" memory 1
 ```
 
 Multiple imports from the same module can be grouped:
@@ -1356,8 +1354,10 @@ export "hash" func (data:[]u8, seed:u32) -> u32 {
   // only accessible via export, no internal calls
 }
 
-// Export memory (explicit name required - memory has no internal name)
-export "mem" memory 1      // 1 page = 64KB
+// Export memory (name defaults to "memory")
+export memory              // implicit min, unbounded max
+export memory 8            // 8 pages min
+export "mem" memory 8 256  // explicit name, 8 min, 256 max
 
 // Export global - name defaults to global identifier
 export global counter:i32 = 0
@@ -1367,9 +1367,12 @@ export global counter:i32 = 0
 
 ```ents
 // Declare memory (pages of 64KB)
-memory 1                   // min 1 page
-memory 2 16                // min 2 pages, max 16 pages
+memory                     // compiler computes min from static data, no max
+memory 8                   // min 8 pages
+memory 8 256               // min 8 pages, max 256 pages
 ```
+
+When no min is specified, the compiler computes it as `max(1, ceil(static_data_bytes / 65536))`. When no max is specified, no upper bound is emitted (the runtime caps at its own limit).
 
 ---
 
