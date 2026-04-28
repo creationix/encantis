@@ -35,7 +35,7 @@ export "mem" memory 8 256           // everything explicit
 
 - [x] **Delete `import … "memory" memory N`** from grammar, parser, checker, and codegen. Host-imported memory contradicts ownership.
 - [x] **Make all parameters optional.** Bare `memory` and `export memory` must parse and lower correctly.
-- [ ] **Compute implicit min** from static data section size. Floor of 1 page.
+- [x] **Compute implicit min** from static data section size. Floor of 1 page.
 - [ ] **Omit max field** in the emitted wasm unless one was specified.
 - [x] **Default export name = `"memory"`** when no string is given.
 - [ ] **Update grammar spec** in [docs/grammar.md](docs/grammar.md) and the §7 / §8 prose in [docs/encantis.md](docs/encantis.md).
