@@ -35,6 +35,8 @@ export interface CodegenContext {
   indent: number
   // Multi-module: local function name → mangled WAT name
   nameMap: Map<string, string>
+  // Track whether __mul_hi helper is needed
+  needsMulHi?: boolean
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>): CodegenContext {
@@ -650,6 +652,14 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       const arg = exprToWat(args[0].value, ctx)
       const wt = getArgType()
       return `(${wt}.${name} ${arg})`
+    }
+
+    case 'mul_hi': {
+      if (args.length !== 2) return null
+      const a = exprToWat(args[0].value, ctx)
+      const b = exprToWat(args[1].value, ctx)
+      ctx.needsMulHi = true
+      return `(call $__mul_hi ${a} ${b})`
     }
 
     default:
@@ -1733,6 +1743,11 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
     }
   }
 
+  // Emit helper functions if referenced
+  if (parts.some(p => p.includes('$__mul_hi'))) {
+    parts.push(MUL_HI_WAT)
+  }
+
   parts.push(')')
   return parts.join('\n')
 }
@@ -1897,6 +1912,18 @@ function resolveAstType(type: AST.Type): ResolvedType {
       return { kind: 'void' }
   }
 }
+
+const MUL_HI_WAT = `(func $__mul_hi (param $a i64) (param $b i64) (result i64)
+  (local $al i64) (local $ah i64) (local $bl i64) (local $bh i64) (local $t i64) (local $u i64)
+  (local.set $al (i64.and (local.get $a) (i64.const 4294967295)))
+  (local.set $ah (i64.shr_u (local.get $a) (i64.const 32)))
+  (local.set $bl (i64.and (local.get $b) (i64.const 4294967295)))
+  (local.set $bh (i64.shr_u (local.get $b) (i64.const 32)))
+  (local.set $t (i64.shr_u (i64.mul (local.get $al) (local.get $bl)) (i64.const 32)))
+  (local.set $t (i64.add (local.get $t) (i64.mul (local.get $ah) (local.get $bl))))
+  (local.set $u (i64.add (i64.and (local.get $t) (i64.const 4294967295)) (i64.mul (local.get $al) (local.get $bh))))
+  (i64.add (i64.add (i64.shr_u (local.get $t) (i64.const 32)) (i64.shr_u (local.get $u) (i64.const 32))) (i64.mul (local.get $ah) (local.get $bh)))
+)`
 
 function typeToFields(t: ResolvedType): ResolvedField[] {
   if (t.kind === 'void') return []
@@ -2079,6 +2106,10 @@ export function programToWat(
     for (const seg of dataToWat(dataSection)) {
       parts.push(`  ${seg}`)
     }
+  }
+
+  if (parts.some(p => p.includes('$__mul_hi'))) {
+    parts.push(MUL_HI_WAT)
   }
 
   parts.push(')')

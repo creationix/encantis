@@ -1821,6 +1821,16 @@ class CheckContext {
         return comptimeInt(BigInt(size))
       }
 
+      case 'mul_hi': {
+        if (args.length !== 2) {
+          this.error(expr.span.start, `mul_hi expects 2 arguments, got ${args.length}`)
+          return primitive('u64')
+        }
+        this.checkExpr(args[0].value, primitive('u64'), 'mul_hi a')
+        this.checkExpr(args[1].value, primitive('u64'), 'mul_hi b')
+        return primitive('u64')
+      }
+
       default:
         return null // Not a builtin
     }
