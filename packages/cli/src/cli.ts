@@ -7,6 +7,7 @@ import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { resolve } from 'path'
+import wabt from 'wabt'
 
 const args = process.argv.slice(2)
 
@@ -20,6 +21,7 @@ Commands:
   ast <file> [-o out]     Parse file and output AST as JSON
   meta <file> [-o out]    Generate meta.json (types, symbols, hints)
   compile <file> [-o out] Compile file to WAT
+  wasm <file> [-o out]    Compile file to WASM binary
 
 Options:
   -o <file>       Output file (default: stdout)
@@ -166,7 +168,8 @@ switch (command) {
     break
   }
 
-  case 'compile': {
+  case 'compile':
+  case 'wasm': {
     const entryPath = resolve(inputFile)
     const load = await loadModule(entryPath)
 
@@ -191,7 +194,25 @@ switch (command) {
     }
 
     const wat = programToWat(load.modules, check.results, entryPath)
-    await output(wat)
+
+    if (command === 'wasm') {
+      const w = await wabt()
+      let wasmModule
+      try {
+        wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
+        wasmModule.validate()
+      } catch (e: any) {
+        console.error(`WAT error: ${e.message}`)
+        process.exit(1)
+      }
+      const { buffer } = wasmModule.toBinary({})
+      wasmModule.destroy()
+      const outPath = outputFile ?? inputFile.replace(/\.ents$/, '.wasm')
+      await Bun.write(outPath, buffer)
+      console.error(`Wrote ${buffer.length} bytes to ${outPath}`)
+    } else {
+      await output(wat)
+    }
     break
   }
 

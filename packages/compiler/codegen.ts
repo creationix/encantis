@@ -1524,7 +1524,15 @@ export function funcToWat(
       }
     }
   }
-  const localStr = locals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
+  // Deduplicate: skip locals that collide with params or earlier locals
+  const seen = new Set<string>()
+  for (const [, names] of ctx.params) for (const n of names) seen.add(n)
+  const dedupedLocals = locals.filter(l => {
+    if (seen.has(l.name)) return false
+    seen.add(l.name)
+    return true
+  })
+  const localStr = dedupedLocals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
 
   // Generate body
   const body = bodyToWat(decl.body, ctx)
