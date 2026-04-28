@@ -146,16 +146,16 @@ Both [Makefile](Makefile) and the prose in CLAUDE.md reference `bun run examples
 
 ### Subtasks
 
-- [ ] **`examples:check`.** Walk `examples/`, run the parser + checker on each `.ents`, fail with a non-zero exit on any error.
-- [ ] **`examples:all`.** Walk `examples/`, run check + WAT + WASM emission, write artifacts alongside the source (`foo.ents` → `foo.wat`, `foo.wasm`).
-- [ ] **`examples:clean`.** Delete generated artifacts.
-- [ ] **CI hookup.** `bun test` already exists; add `bun run examples:all && bun test` as the canonical "everything green" command.
-- [ ] **Convention for multi-file examples.** Decide what the entry file is — probably `<dirname>/<dirname>.ents` or an explicit `main.ents`.
+- [x] **`examples:check`.** Walk `examples/`, run the parser + checker on each `.ents`, fail with a non-zero exit on any error.
+- [x] **`examples:all`.** Walk `examples/`, run check + WAT + WASM emission, write artifacts alongside the source (`foo.ents` → `foo.wat`, `foo.wasm`).
+- [x] **`examples:clean`.** Delete generated artifacts.
+- [x] **CI hookup.** `bun test` already exists; add `bun run examples:all && bun test` as the canonical "everything green" command.
+- [x] **Convention for multi-file examples.** Decide what the entry file is — probably `<dirname>/<dirname>.ents` or an explicit `main.ents`.
 
 ### Exit criteria
 
-- [ ] `bun run examples:all` produces `.wasm` for every example that's expected to compile (and lists the ones that don't, without crashing).
-- [ ] `bun test` runs the example test suites against real wasm.
+- [x] `bun run examples:all` produces `.wasm` for every example that's expected to compile (and lists the ones that don't, without crashing).
+- [x] `bun test` runs the example test suites against real wasm.
 
 ---
 
