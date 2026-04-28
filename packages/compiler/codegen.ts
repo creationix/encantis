@@ -963,6 +963,20 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     return `(i32.wrap_i64 ${inner})`
   }
 
+  // Widening to v128 (u32/i32/u64/i64 → u128/i128)
+  if (toWasm === 'v128' && (fromWasm === 'i32' || fromWasm === 'i64')) {
+    const ext = fromWasm === 'i32' ? `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})` : inner
+    return `(i64x2.replace_lane 0 (v128.const i64x2 0 0) ${ext})`
+  }
+
+  // Narrowing from v128 (u128/i128 → u64/i64)
+  if (fromWasm === 'v128' && toWasm === 'i64') {
+    return `(i64x2.extract_lane 0 ${inner})`
+  }
+  if (fromWasm === 'v128' && toWasm === 'i32') {
+    return `(i32.wrap_i64 (i64x2.extract_lane 0 ${inner}))`
+  }
+
   return inner
 }
 

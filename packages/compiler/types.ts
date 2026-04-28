@@ -938,13 +938,19 @@ export function isWideningConversion(from: PrimitiveName, to: PrimitiveName): bo
   // Integer widening rules
   const intWidening: Record<string, PrimitiveName[]> = {
     // Signed integers widen to larger signed
-    i8: ['i16', 'i32', 'i64'],
-    i16: ['i32', 'i64'],
-    i32: ['i64'],
+    i8: ['i16', 'i32', 'i64', 'i128', 'i256', 'i512'],
+    i16: ['i32', 'i64', 'i128', 'i256', 'i512'],
+    i32: ['i64', 'i128', 'i256', 'i512'],
+    i64: ['i128', 'i256', 'i512'],
+    i128: ['i256', 'i512'],
+    i256: ['i512'],
     // Unsigned integers widen to larger unsigned OR larger signed (where they fit)
-    u8: ['u16', 'u32', 'u64', 'i16', 'i32', 'i64'],
-    u16: ['u32', 'u64', 'i32', 'i64'],
-    u32: ['u64', 'i64'],
+    u8: ['u16', 'u32', 'u64', 'u128', 'u256', 'u512', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512'],
+    u16: ['u32', 'u64', 'u128', 'u256', 'u512', 'i32', 'i64', 'i128', 'i256', 'i512'],
+    u32: ['u64', 'u128', 'u256', 'u512', 'i64', 'i128', 'i256', 'i512'],
+    u64: ['u128', 'u256', 'u512', 'i128', 'i256', 'i512'],
+    u128: ['u256', 'u512', 'i256', 'i512'],
+    u256: ['u512', 'i512'],
     // Float widening
     f32: ['f64'],
   }
@@ -961,10 +967,16 @@ export function isNarrowingConversion(from: PrimitiveName, to: PrimitiveName): b
   // Narrowing is the inverse of widening (but only within same numeric category)
   const intNarrowing: Record<string, PrimitiveName[]> = {
     // Larger signed to smaller signed
+    i512: ['i256', 'i128', 'i64', 'i32', 'i16', 'i8'],
+    i256: ['i128', 'i64', 'i32', 'i16', 'i8'],
+    i128: ['i64', 'i32', 'i16', 'i8'],
     i64: ['i32', 'i16', 'i8'],
     i32: ['i16', 'i8'],
     i16: ['i8'],
     // Larger unsigned to smaller unsigned
+    u512: ['u256', 'u128', 'u64', 'u32', 'u16', 'u8'],
+    u256: ['u128', 'u64', 'u32', 'u16', 'u8'],
+    u128: ['u64', 'u32', 'u16', 'u8'],
     u64: ['u32', 'u16', 'u8'],
     u32: ['u16', 'u8'],
     u16: ['u8'],
