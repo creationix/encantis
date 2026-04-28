@@ -2040,7 +2040,8 @@ class CheckContext {
         const punType = this.resolveType(expr.member.type)
 
         // For array or slice types: [N]u8.u32, []u8.u32 → [*]u32
-        if (objType.kind === 'array' || objType.kind === 'slice') {
+        if (objType.kind === 'array' || objType.kind === 'slice' ||
+            objType.kind === 'comptime_array') {
           return manyPointer(punType)
         }
 

@@ -589,19 +589,26 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Comptime array literal can coerce to pointer-to-array: comptime_array -> *[N]T
+  // Comptime array literal can coerce to pointer-to-array: comptime_array -> *[N]T or *[N,M]T
   if (s.kind === 'comptime_array' && t.kind === 'pointer' && t.pointee.kind === 'array') {
     const targetArray = t.pointee
-    // Check size compatibility
     if (targetArray.sizes && isFixedSizes(targetArray.sizes)) {
-      const total = totalElements(targetArray.sizes)
-      if (total !== null && total !== s.count) {
-        return INCOMPATIBLE
+      if (targetArray.sizes.length === 1) {
+        // 1D: count must match
+        if (targetArray.sizes[0] !== s.count) return INCOMPATIBLE
+        const elemResult = typeAssignResult(targetArray.element, s.element)
+        if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
+      } else {
+        // Multi-dim: outer dimension must match count, element must coerce to *[remaining]T
+        if (targetArray.sizes[0] !== s.count) return INCOMPATIBLE
+        const innerTarget = pointer(array(targetArray.element, targetArray.sizes.slice(1)))
+        const elemResult = typeAssignResult(innerTarget, s.element)
+        if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
       }
-    }
-    const elemResult = typeAssignResult(targetArray.element, s.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
-      return lossless(false)
+    } else {
+      // Unsized: just check element compatibility
+      const elemResult = typeAssignResult(targetArray.element, s.element)
+      if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
     }
   }
 

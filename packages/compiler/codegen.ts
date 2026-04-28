@@ -391,11 +391,24 @@ function v128StoreSequence(type: ResolvedType, ptr: string, value: string): stri
 }
 
 function splitV128Components(wat: string, n: number): string[] {
-  const re = /\([^()]*(?:\([^()]*\))*[^()]*\)/g
-  const matches = wat.match(re)
-  if (matches && matches.length === n) return matches
   if (n === 1) return [wat]
-  throw new Error(`Expected ${n} v128 components, got: ${wat}`)
+  const parts: string[] = []
+  let depth = 0
+  let start = -1
+  for (let i = 0; i < wat.length; i++) {
+    if (wat[i] === '(') {
+      if (depth === 0) start = i
+      depth++
+    } else if (wat[i] === ')') {
+      depth--
+      if (depth === 0 && start >= 0) {
+        parts.push(wat.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+  if (parts.length === n) return parts
+  throw new Error(`Expected ${n} v128 components, got ${parts.length}: ${wat.slice(0, 80)}...`)
 }
 
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
