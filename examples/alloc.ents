@@ -1,6 +1,5 @@
 // A very simple memory allocator that just moved a pointer
 // forward in a pre-allocated buffer. No deallocation.
-export memory
 
 global alloc-ptr = 0 as [*]u8  // start of free memory
 global alloc-end = 0x10000 as *u8  // end of allocated memory
