@@ -20,7 +20,11 @@
     "install:ext": "code --install-extension packages/extension/encantis-vscode-ext-0.1.0.vsix --force",
     "reinstall:ext": "bun run package:ext && bun run install:ext",
     "bundle:grammar": "bun packages/compiler/scripts/bundle-grammar.ts",
-    "test": "bun test"
+    "examples:check": "bun scripts/examples.ts check",
+    "examples:all": "bun scripts/examples.ts all",
+    "examples:clean": "bun scripts/examples.ts clean",
+    "test": "bun test",
+    "ci": "bun run examples:all && bun test"
   },
   "dependencies": {},
   "devDependencies": {

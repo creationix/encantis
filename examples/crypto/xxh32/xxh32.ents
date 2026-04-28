@@ -1,6 +1,8 @@
 // xxHash32 implementation
 // Based on the xxHash specification by Yann Collet
 
+export "mem" memory
+
 def prime32-1 = 2654435761:u32
 def prime32-2 = 2246822519:u32
 def prime32-3 = 3266489917:u32
