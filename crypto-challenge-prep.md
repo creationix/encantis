@@ -76,7 +76,7 @@ Discriminator: first string starts with `./`, `../`, or `/` → Encantis source 
 - [x] **Unified codegen.** Codegen iterates all loaded modules' decls, not just the entry module's. Internal names get mangled with a module prefix (`sha512$sha512`); only names that surface as wasm-level exports keep their clean form. Wasm-level exports come exclusively from the entry module's `export` decls — `export` in a non-entry module just means "visible to importing Encantis files," it does not punch through to the wasm wall.
 - [x] **Unified data arena.** All modules share one linear memory and one data section. The arena assigns `def` byte offsets program-wide; `def` decls from any module emit into the same section in load order.
 - [x] **Unified function and global index spaces.** Same fix as data offsets — function indices and `global` indices are assigned across the whole program, not per-module.
-- [ ] **At most one `memory` declaration program-wide.** With §0 in place, modules don't need to declare memory at all — it's implicit. A module can still write `memory 8` or `export "mem" memory` to set sizing or export name; if more than one loaded module does so, that's an error. Non-declaring modules silently use whatever the entry module set (or the implicit defaults).
+- [x] **At most one `memory` declaration program-wide.** With §0 in place, modules don't need to declare memory at all — it's implicit. A module can still write `memory 8` or `export "mem" memory` to set sizing or export name; if more than one loaded module does so, that's an error. Non-declaring modules silently use whatever the entry module set (or the implicit defaults).
 
 ### Design decisions to nail down
 
