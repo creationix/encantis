@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 
 import { parse } from '@encantis/compiler/parser'
-import { typecheck } from '@encantis/compiler/checker'
+import { typecheck, typecheckProgram } from '@encantis/compiler/checker'
 import { buildMeta } from '@encantis/compiler/meta'
-import { moduleToWat } from '@encantis/compiler/codegen'
+import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
+import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
+import { resolve } from 'path'
 
 const args = process.argv.slice(2)
 
@@ -165,37 +167,30 @@ switch (command) {
   }
 
   case 'compile': {
-    const result = parse(source, { filePath })
+    const entryPath = resolve(inputFile)
+    const load = await loadModule(entryPath)
 
-    if (result.errors.length > 0) {
-      for (const error of result.errors) {
-        const loc = offsetToLineCol(source, error.span.start)
-        console.error(
-          `${filePath}:${loc.line}:${loc.column}: ${error.shortMessage}`,
-        )
-        console.error(error.message)
+    if (load.errors.length > 0) {
+      for (const error of load.errors) {
+        console.error(`${error.filePath}: ${error.message}`)
       }
       process.exit(1)
     }
 
-    if (!result.module) {
-      console.error('Error: Failed to parse module')
-      process.exit(1)
-    }
+    const check = typecheckProgram(load.modules, entryPath)
 
-    // Type check (includes concretization)
-    const checkResult = typecheck(result.module)
-
-    if (checkResult.errors.length > 0) {
-      for (const error of checkResult.errors) {
-        const loc = offsetToLineCol(source, error.offset)
-        console.error(`${filePath}:${loc.line}:${loc.column}: ${error.message}`)
+    if (check.errors.length > 0) {
+      for (const [path, result] of check.results) {
+        const modSource = load.modules.get(path)?.source ?? ''
+        for (const error of result.errors) {
+          const loc = offsetToLineCol(modSource, error.offset)
+          console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
+        }
       }
       process.exit(1)
     }
 
-    // Generate WAT
-    const wat = moduleToWat(result.module, checkResult)
+    const wat = programToWat(load.modules, check.results, entryPath)
     await output(wat)
     break
   }
