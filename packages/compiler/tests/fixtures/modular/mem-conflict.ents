@@ -1,0 +1,5 @@
+import "./mem-util" "noop" func noop()
+
+memory 8
+
+export func test() { noop() }

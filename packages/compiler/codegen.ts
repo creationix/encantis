@@ -1897,13 +1897,21 @@ export function programToWat(
     }
   }
 
-  // Memory
+  // Memory — at most one declaration program-wide
   let hasMemory = dataSection.totalSize > 0
   let memDecl: { exportName: string | null; min: number | null; max: number | null } | null = null
-  for (const [, loaded] of modules) {
+  let memDeclModule: string | null = null
+  for (const [path, loaded] of modules) {
     if (hasMemoryDecl(loaded.module)) {
+      if (memDeclModule !== null) {
+        throw new Error(
+          `Multiple memory declarations: '${basename(memDeclModule)}' and '${basename(path)}'. ` +
+          `At most one module may declare memory.`
+        )
+      }
       hasMemory = true
-      memDecl = memDecl ?? getMemoryDecl(loaded.module)
+      memDecl = getMemoryDecl(loaded.module)
+      memDeclModule = path
     }
   }
   if (hasMemory) {

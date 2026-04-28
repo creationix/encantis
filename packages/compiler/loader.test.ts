@@ -112,6 +112,15 @@ describe('unified codegen', () => {
     expect(memoryCount).toBe(1)
   })
 
+  test('errors on multiple memory declarations', async () => {
+    const load = await loadModule(resolve(fixtures, 'mem-conflict.ents'))
+    expect(load.errors).toEqual([])
+    const entryPath = resolve(fixtures, 'mem-conflict.ents')
+    const check = typecheckProgram(load.modules, entryPath)
+    expect(check.errors).toEqual([])
+    expect(() => programToWat(load.modules, check.results, entryPath)).toThrow(/Multiple memory declarations/)
+  })
+
   test('compiles multi-file project to single WAT', async () => {
     const load = await loadModule(resolve(fixtures, 'main.ents'))
     expect(load.errors).toEqual([])
