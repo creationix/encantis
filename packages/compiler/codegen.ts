@@ -1334,24 +1334,27 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     const isShiftOp = ['<<=', '>>=', '>>>=', '<<<='].includes(stmt.op)
     const rhs = isShiftOp ? coerceWasmType(value, valueWt, wt, false) : coercedValue
 
+    const nv = v128Count(type)
     const ops: Record<string, string> = {
-      '+=': `${wt}.add`,
-      '-=': `${wt}.sub`,
-      '*=': `${wt}.mul`,
+      '+=': nv > 0 ? 'i64x2.add' : `${wt}.add`,
+      '-=': nv > 0 ? 'i64x2.sub' : `${wt}.sub`,
+      '*=': nv > 0 ? 'i64x2.mul' : `${wt}.mul`,
       '/=': signed ? `${wt}.div_s` : `${wt}.div_u`,
       '%=': signed ? `${wt}.rem_s` : `${wt}.rem_u`,
-      '&=': `${wt}.and`,
-      '|=': `${wt}.or`,
-      '^=': `${wt}.xor`,
-      '<<=': `${wt}.shl`,
-      '>>=': signed ? `${wt}.shr_s` : `${wt}.shr_u`,
-      '>>>=': `${wt}.shr_u`,
-      '<<<=': `${wt}.rotl`,
+      '&=': nv > 0 ? 'v128.and' : `${wt}.and`,
+      '|=': nv > 0 ? 'v128.or' : `${wt}.or`,
+      '^=': nv > 0 ? 'v128.xor' : `${wt}.xor`,
+      '<<=': nv > 0 ? 'i64x2.shl' : `${wt}.shl`,
+      '>>=': nv > 0 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`),
+      '>>>=': nv > 0 ? 'i64x2.shr_u' : `${wt}.shr_u`,
+      '<<<=': nv > 0 ? 'i64x2.shl' : `${wt}.rotl`,
     }
 
     const op = ops[stmt.op]
     if (op) {
-      const combined = `(${op} ${current} ${rhs})`
+      const combined = nv > 1
+        ? multiV128BinaryOp(nv, op, current, rhs)
+        : `(${op} ${current} ${rhs})`
       return assignLvalue(stmt.target, combined, ctx)
     }
   }
@@ -1378,6 +1381,10 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     const localNames = ctx.locals.get(name)
     if (localNames && localNames.length === 1) {
       return `(local.set $${localNames[0]} ${value})`
+    }
+    if (localNames && localNames.length > 1) {
+      const parts = splitV128Components(value, localNames.length)
+      return localNames.map((n, i) => `(local.set $${n} ${parts[i]})`).join('\n')
     }
     // Check globals
     const sym = ctx.symbols.get(name)
@@ -1712,6 +1719,17 @@ function collectLocals(
       visitBody(stmt.body)
     }
     if (stmt.kind === 'ForStmt') {
+      // Collect loop binding variable
+      const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
+      if (bindingType) {
+        const wt = typeToWasmSingle(bindingType)
+        locals.push({ name: stmt.binding.value, type: wt })
+        ctx.locals.set(stmt.binding.value, [stmt.binding.value])
+      }
+      if (stmt.binding.index) {
+        locals.push({ name: stmt.binding.index, type: 'i32' })
+        ctx.locals.set(stmt.binding.index, [stmt.binding.index])
+      }
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions
