@@ -358,6 +358,13 @@ function v128LoadSequence(type: ResolvedType, ptr: string): string {
     ).join(' ')
   }
   if (nv === 1) return `(v128.load ${ptr})`
+  const u = unwrap(type)
+  if (u.kind === 'primitive') {
+    if (u.name === 'u8') return `(i32.load8_u ${ptr})`
+    if (u.name === 'i8') return `(i32.load8_s ${ptr})`
+    if (u.name === 'u16') return `(i32.load16_u ${ptr})`
+    if (u.name === 'i16') return `(i32.load16_s ${ptr})`
+  }
   const wt = typeToWasmSingle(type)
   return `(${wt}.load ${ptr})`
 }
@@ -503,8 +510,14 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
       throw new Error(`Unknown binary operator: ${op}`)
   }
 
-  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, left, right)
-  return `(${wasmOp} ${left} ${right})`
+  // Coerce right operand to match left type when needed
+  const rightType = ctx.types.get(typeKey(expr.right.span.start, expr.right.kind))
+  const rightWt = rightType ? typeToWasmSingle(rightType) : wt
+  const rightSigned = rightType ? isSigned(rightType) : signed
+  const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
+
+  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, left, coercedRight)
+  return `(${wasmOp} ${left} ${coercedRight})`
 }
 
 function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
@@ -841,18 +854,9 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   }
 
   if (member.kind === 'type') {
-    // Typed dereference: ptr.u32, ptr.u8 - load from memory as specified type
-    const ptr = exprToWat(expr.object, ctx)
-    const loadType = resolveAstType(member.type)
-    // Handle sub-word loads (u8, i8, u16, i16) with appropriate extension
-    if (loadType.kind === 'primitive') {
-      const name = loadType.name
-      if (name === 'u8') return `(i32.load8_u ${ptr})`
-      if (name === 'i8') return `(i32.load8_s ${ptr})`
-      if (name === 'u16') return `(i32.load16_u ${ptr})`
-      if (name === 'i16') return `(i32.load16_s ${ptr})`
-    }
-    return v128LoadSequence(loadType, ptr)
+    // Type pun: ptr.u64 → reinterprets the pointer, no load
+    // The result is a many-pointer [*]T — actual loads happen at index/deref
+    return exprToWat(expr.object, ctx)
   }
 
   return exprToWat(expr.object, ctx)
@@ -863,11 +867,19 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   const index = exprToWat(expr.index, ctx)
 
   // Get element type to determine size
-  const arrayType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  const arrayTypeKey = expr.object.kind === 'MemberExpr'
+    ? typeKey(expr.object.span.end, expr.object.kind)
+    : typeKey(expr.object.span.start, expr.object.kind)
+  const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
   let elemSize = 1
-  if (arrayType && (arrayType.kind === 'slice' || arrayType.kind === 'array')) {
-    const elemTypes = typeToWasm(arrayType.element)
-    elemSize = elemTypes.length > 0 ? primitiveByteSize(arrayType.element) ?? 1 : 1
+  if (arrayType) {
+    if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
+      elemSize = primitiveByteSize(arrayType.element) ?? 1
+    } else if (arrayType.kind === 'pointer' && arrayType.pointee.kind === 'array') {
+      elemSize = primitiveByteSize(arrayType.pointee.element) ?? 1
+    } else if (arrayType.kind === 'pointer') {
+      elemSize = primitiveByteSize(arrayType.pointee) ?? 1
+    }
   }
 
   // Calculate offset: base + index * elemSize
@@ -1262,20 +1274,39 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
   return ''
 }
 
+function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boolean): string {
+  if (fromWt === toWt) return wat
+  if (fromWt === 'i32' && toWt === 'i64') return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+  if (fromWt === 'i64' && toWt === 'i32') return `(i32.wrap_i64 ${wat})`
+  return wat
+}
+
 function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   const value = exprToWat(stmt.value, ctx)
 
   // Handle compound assignment operators
   if (stmt.op !== '=') {
-    // Get current value
     const current = lvalueToWat(stmt.target, ctx)
-    // Get the type from the value expression (should be recorded by checker)
-    const type = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    // Use target type for the operation, not value type
+    const targetKey = stmt.target.kind === 'MemberExpr'
+      ? typeKey(stmt.target.span.end, stmt.target.kind)
+      : typeKey(stmt.target.span.start, stmt.target.kind)
+    const targetType = ctx.types.get(targetKey)
+    const valueType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    const type = targetType ?? valueType
     if (!type) {
-      throw new Error(`Missing type for assignment value at offset ${stmt.value.span.start}`)
+      throw new Error(`Missing type for assignment at offset ${stmt.target.span.start}`)
     }
     const wt = typeToWasmSingle(type)
     const signed = isSigned(type)
+
+    // Coerce value to target type if needed
+    const valueWt = valueType ? typeToWasmSingle(valueType) : wt
+    const coercedValue = coerceWasmType(value, valueWt, wt, valueType ? isSigned(valueType) : signed)
+
+    // Shift/rotate amounts must match the value type in wasm
+    const isShiftOp = ['<<=', '>>=', '>>>=', '<<<='].includes(stmt.op)
+    const rhs = isShiftOp ? coerceWasmType(value, valueWt, wt, false) : coercedValue
 
     const ops: Record<string, string> = {
       '+=': `${wt}.add`,
@@ -1294,7 +1325,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
 
     const op = ops[stmt.op]
     if (op) {
-      const combined = `(${op} ${current} ${value})`
+      const combined = `(${op} ${current} ${rhs})`
       return assignLvalue(stmt.target, combined, ctx)
     }
   }
@@ -1691,7 +1722,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   const ctx = createContext(checkResult, literalRefs)
   const parts: string[] = ['(module']
-  const hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module)
+  let hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module) || usesMemory(checkResult)
 
   // Collect imports
   for (const decl of module.decls) {
@@ -1758,6 +1789,14 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   parts.push(')')
   return parts.join('\n')
+}
+
+function usesMemory(checkResult: TypeCheckResult): boolean {
+  for (const [, type] of checkResult.types) {
+    const u = unwrap(type)
+    if (u.kind === 'pointer' || u.kind === 'slice') return true
+  }
+  return false
 }
 
 function hasMemoryDecl(module: AST.Module): boolean {
@@ -2035,7 +2074,7 @@ export function programToWat(
   }
 
   // Memory — at most one declaration program-wide
-  let hasMemory = dataSection.totalSize > 0
+  let hasMemory = dataSection.totalSize > 0 || [...checkResults.values()].some(r => usesMemory(r))
   let memDecl: { exportName: string | null; min: number | null; max: number | null } | null = null
   let memDeclModule: string | null = null
   for (const [path, loaded] of modules) {
