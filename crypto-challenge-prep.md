@@ -33,7 +33,7 @@ export "mem" memory 8 256           // everything explicit
 
 ### Subtasks
 
-- [ ] **Delete `import … "memory" memory N`** from grammar, parser, checker, and codegen. Host-imported memory contradicts ownership.
+- [x] **Delete `import … "memory" memory N`** from grammar, parser, checker, and codegen. Host-imported memory contradicts ownership.
 - [ ] **Make all parameters optional.** Bare `memory` and `export memory` must parse and lower correctly.
 - [ ] **Compute implicit min** from static data section size. Floor of 1 page.
 - [ ] **Omit max field** in the emitted wasm unless one was specified.
