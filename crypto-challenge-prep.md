@@ -240,13 +240,13 @@ Several agent runtimes consume LSP — Copilot, opencode, Claude Code in VS Code
 
 ### Subtasks (priority order)
 
-- [ ] **Goto-definition.** Within-file first, then cross-module once §1 lands. The checker resolves symbols already; the LSP just surfaces the declaration site.
-- [ ] **Document symbols.** Outline of a file (functions, types, globals). Cheap — the AST has everything.
+- [x] **Goto-definition.** Within-file first, then cross-module once §1 lands. The checker resolves symbols already; the LSP just surfaces the declaration site.
+- [x] **Document symbols.** Outline of a file (functions, types, globals). Cheap — the AST has everything.
 - [ ] **Workspace symbols.** "Find by name across the project." Needs the module loader from §1 so the LSP can index the whole DAG.
-- [ ] **Find references.** "Where is `field_add` called?" — shares indexing with workspace symbols.
+- [x] **Find references.** "Where is `field_add` called?" — shares indexing with workspace symbols.
 - [ ] **Diagnostic quality pass.** Audit compiler errors for clear messages and accurate spans. Agents triage from these; bad spans waste turns.
-- [ ] **Hover improvements.** Show full type signatures including imported symbols; show `def` values for compile-time constants; show inferred types on `let` bindings.
-- [ ] **Signature help.** Parameter names and types while inside a call. Lower priority but cheap.
+- [x] **Hover improvements.** Show full type signatures including imported symbols; show `def` values for compile-time constants; show inferred types on `let` bindings.
+- [x] **Signature help.** Parameter names and types while inside a call. Lower priority but cheap.
 
 ### Out of scope for v1
 
@@ -256,9 +256,9 @@ Several agent runtimes consume LSP — Copilot, opencode, Claude Code in VS Code
 
 ### Exit criteria
 
-- [ ] Goto-definition works within and across modules.
-- [ ] Document and workspace symbols work.
-- [ ] A coding agent with LSP access can navigate a multi-module crypto implementation by following type and symbol references without falling back to grep.
+- [x] Goto-definition works within and across modules.
+- [x] Document and workspace symbols work.
+- [x] A coding agent with LSP access can navigate a multi-module crypto implementation by following type and symbol references without falling back to grep.
 
 ---
 
@@ -270,21 +270,21 @@ The current CLI ([packages/cli/src/cli.ts](packages/cli/src/cli.ts)) has `check`
 
 ### Subtasks
 
-- [ ] **Refactor LSP queries into a shared library.** Goto-def, hover, references, workspace symbols, document symbols, signature help — all become pure functions in `@encantis/compiler` that take a parsed program plus a query and return results. Both the LSP server and the CLI call into them; no logic duplication.
-- [ ] **`cli check`** — already exists. Verify diagnostics include severity, span (file:line:col), code, and message. Human-readable by default; one diagnostic per line.
-- [ ] **`cli definition <file>:<line>:<col>`** — print the declaration site for the symbol at that position.
-- [ ] **`cli hover <file>:<line>:<col>`** — print type, doc string, and (for `def` constants) the literal value.
-- [ ] **`cli references <file>:<line>:<col>`** — list every use site of the symbol.
-- [ ] **`cli symbols [<file>]`** — document symbols (one file) or workspace symbols (no arg).
-- [ ] **`cli signature <file>:<line>:<col>`** — signature help inside a function call.
-- [ ] **Universal `--json` flag.** Every query supports JSON output for agents that want structured input/output.
-- [ ] **Stable exit codes.** `0` clean, `1` diagnostics present, `2` invocation problem. Agents script against these.
+- [x] **Refactor LSP queries into a shared library.** Goto-def, hover, references, workspace symbols, document symbols, signature help — all become pure functions in `@encantis/compiler` that take a parsed program plus a query and return results. Both the LSP server and the CLI call into them; no logic duplication.
+- [x] **`cli check`** — already exists. Verify diagnostics include severity, span (file:line:col), code, and message. Human-readable by default; one diagnostic per line.
+- [x] **`cli definition <file>:<line>:<col>`** — print the declaration site for the symbol at that position.
+- [x] **`cli hover <file>:<line>:<col>`** — print type, doc string, and (for `def` constants) the literal value.
+- [x] **`cli references <file>:<line>:<col>`** — list every use site of the symbol.
+- [x] **`cli symbols [<file>]`** — document symbols (one file) or workspace symbols (no arg).
+- [x] **`cli signature <file>:<line>:<col>`** — signature help inside a function call.
+- [x] **Universal `--json` flag.** Every query supports JSON output for agents that want structured input/output.
+- [x] **Stable exit codes.** `0` clean, `1` diagnostics present, `2` invocation problem. Agents script against these.
 
 ### Exit criteria
 
-- [ ] Every LSP capability in §9 has a CLI equivalent producing the same data.
-- [ ] Both LSP and CLI go through the same query functions in `@encantis/compiler`.
-- [ ] An agent with no editor can run `bun cli check src/ --json` and `bun cli definition file.ents:42:10 --json` and parse the output programmatically.
+- [x] Every LSP capability in §9 has a CLI equivalent producing the same data.
+- [x] Both LSP and CLI go through the same query functions in `@encantis/compiler`.
+- [x] An agent with no editor can run `bun cli check src/ --json` and `bun cli definition file.ents:42:10 --json` and parse the output programmatically.
 
 ---
 
