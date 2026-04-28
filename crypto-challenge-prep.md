@@ -90,10 +90,10 @@ Resolved (no further discussion needed):
 
 ### Exit criteria
 
-- [ ] Two-file fixture in `examples/` (e.g. `examples/modular/main.ents` imports `examples/modular/util.ents`) compiles to one wasm and runs in the test harness.
-- [ ] Cycle detection emits a clear error (not infinite loop / stack overflow).
-- [ ] Symbol-not-found in imported file emits a diagnostic with the right span.
-- [ ] All existing single-file examples still compile.
+- [x] Two-file fixture in `examples/` (e.g. `examples/modular/main.ents` imports `examples/modular/util.ents`) compiles to one wasm and runs in the test harness.
+- [x] Cycle detection emits a clear error (not infinite loop / stack overflow).
+- [x] Symbol-not-found in imported file emits a diagnostic with the right span.
+- [x] All existing single-file examples still compile.
 
 ---
 
