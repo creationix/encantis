@@ -206,13 +206,13 @@ Crypto wants branchless code on secret data. Encantis hasn't said which construc
 
 ### Subtasks
 
-- [ ] **Document in `docs/constant-time.md`** which patterns are reliably constant-time on current codegen:
+- [x] **Document in `docs/constant-time.md`** which patterns are reliably constant-time on current codegen:
   - Bitwise ops, shifts, rotates → always
   - `match` on a small `u8` → likely `br_table`, branches but uniform
   - `if` on secret data → DO NOT
   - Memory access at secret indices → DO NOT
-- [ ] **Idiom for cmov:** show `(mask & a) | (~mask & b)` and document it as the recommended select.
-- [ ] **State the non-goal.** "Encantis does not currently guarantee constant-time codegen for any construct. The patterns below are best-effort." Don't oversell.
+- [x] **Idiom for cmov:** show `(mask & a) | (~mask & b)` and document it as the recommended select.
+- [x] **State the non-goal.** "Encantis does not currently guarantee constant-time codegen for any construct. The patterns below are best-effort." Don't oversell.
 
 ---
 
