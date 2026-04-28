@@ -1,0 +1,3 @@
+import "./cycle-a" "bar" func bar() -> i32
+
+export func foo() -> i32 => bar()
