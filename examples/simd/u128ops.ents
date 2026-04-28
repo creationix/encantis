@@ -1,0 +1,13 @@
+export func xor128(a: u128, b: u128) -> u128 => a ^ b
+export func add128(a: u128, b: u128) -> u128 => a + b
+export func and128(a: u128, b: u128) -> u128 => a & b
+export func or128(a: u128, b: u128) -> u128 => a | b
+export func not128(a: u128) -> u128 => ~a
+export func eq128(a: u128, b: u128) -> bool => a == b
+
+export func load128(p: *u128) -> u128 => p.*
+
+export func widen64(a: u64) -> u128 => a as u128
+export func narrow128(a: u128) -> u64 => a as u64
+
+export func hi(a: u64, b: u64) -> u64 => mul_hi(a, b)
