@@ -378,6 +378,11 @@ function v128StoreSequence(type: ResolvedType, ptr: string, value: string): stri
     ).join('\n')
   }
   if (nv === 1) return `(v128.store ${ptr} ${value})`
+  const u = unwrap(type)
+  if (u.kind === 'primitive') {
+    if (u.name === 'u8' || u.name === 'i8') return `(i32.store8 ${ptr} ${value})`
+    if (u.name === 'u16' || u.name === 'i16') return `(i32.store16 ${ptr} ${value})`
+  }
   const wt = typeToWasmSingle(type)
   return `(${wt}.store ${ptr} ${value})`
 }

@@ -688,6 +688,20 @@ class CheckContext {
         }
       }
 
+      // Handle when inferred type is comptime_array (from inferRepeat)
+      if (inferredType.kind === 'comptime_array') {
+        const arrayType: ArrayRT = {
+          kind: 'array',
+          element: inferredType.element,
+          sizes: [inferredType.count],
+        }
+        return {
+          expr,
+          indexedType: arrayType,
+          ptrType: pointer(arrayType),
+        }
+      }
+
       // Handle when inferred type is array (from inferArray/comptimeArray)
       if (inferredType.kind === 'array') {
         // Get concrete size from literal if inferred
