@@ -1573,17 +1573,15 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   // Add memory if needed
   if (hasMemory) {
+    const implicitMin = Math.max(1, Math.ceil(dataSection.totalSize / 65536))
     const memDecl = getMemoryDecl(module)
-    if (memDecl) {
-      const maxStr = memDecl.max !== null ? ` ${memDecl.max}` : ''
-      if (memDecl.exportName) {
-        parts.push(`  (memory (export "${memDecl.exportName}") ${memDecl.min}${maxStr})`)
-      } else {
-        parts.push(`  (memory ${memDecl.min}${maxStr})`)
-      }
+    const min = memDecl ? (memDecl.min ?? implicitMin) : implicitMin
+    const max = memDecl?.max ?? null
+    const maxStr = max !== null ? ` ${max}` : ''
+    if (memDecl?.exportName) {
+      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
     } else {
-      // Default memory for data section
-      parts.push('  (memory 1)')
+      parts.push(`  (memory ${min}${maxStr})`)
     }
   }
 
@@ -1634,13 +1632,13 @@ function hasMemoryDecl(module: AST.Module): boolean {
   return false
 }
 
-function getMemoryDecl(module: AST.Module): { exportName: string | null; min: number; max: number | null } | null {
+function getMemoryDecl(module: AST.Module): { exportName: string | null; min: number | null; max: number | null } | null {
   for (const decl of module.decls) {
     if (decl.kind === 'MemoryDecl') {
-      return { exportName: null, min: decl.min ?? 1, max: decl.max }
+      return { exportName: null, min: decl.min, max: decl.max }
     }
     if (decl.kind === 'ExportDecl' && decl.item.kind === 'MemoryDecl') {
-      return { exportName: decl.name, min: decl.item.min ?? 1, max: decl.item.max }
+      return { exportName: decl.name, min: decl.item.min, max: decl.item.max }
     }
   }
   return null
