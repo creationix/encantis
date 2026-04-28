@@ -1004,8 +1004,38 @@ class CheckContext {
 
   checkSetStmt(stmt: AST.SetStmt): void {
     const valueType = this.inferExpr(stmt.value)
-    // set doesn't create new bindings, just reassigns existing ones
-    // TODO: validate pattern bindings exist
+    this.validatePatternBindingsExist(stmt.pattern, valueType)
+  }
+
+  private validatePatternBindingsExist(pattern: AST.Pattern, type: ResolvedType): void {
+    switch (pattern.kind) {
+      case 'IdentPattern': {
+        const sym = this.lookup(pattern.name)
+        if (!sym) {
+          this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
+        }
+        break
+      }
+      case 'TuplePattern': {
+        const unwrappedType = unwrap(type)
+        if (unwrappedType.kind !== 'tuple') {
+          this.error(pattern.span.start, `cannot destructure non-tuple type in set: ${typeToString(type)}`)
+          break
+        }
+        for (const element of pattern.elements) {
+          if (element.kind === 'named') {
+            const varName = element.binding ?? element.field
+            const sym = this.lookup(varName)
+            if (!sym) {
+              this.error(pattern.span.start, `cannot set '${varName}': not defined`)
+            }
+          } else {
+            this.validatePatternBindingsExist(element.pattern, unwrappedType.fields[pattern.elements.indexOf(element)]?.type ?? type)
+          }
+        }
+        break
+      }
+    }
   }
 
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
@@ -2131,29 +2161,44 @@ class CheckContext {
 
   inferIf(expr: AST.IfExpr): ResolvedType {
     this.inferExpr(expr.condition)
-    // TODO: unify branch types
-    this.checkBody(expr.thenBranch)
+    const thenType = this.inferBody(expr.thenBranch)
     for (const elif of expr.elifs) {
       this.inferExpr(elif.condition)
-      this.checkBody(elif.thenBranch)
+      this.inferBody(elif.thenBranch)
     }
     if (expr.else_) {
-      this.checkBody(expr.else_)
+      this.inferBody(expr.else_)
     }
-    return VOID
+    // Without an else branch, the expression can't produce a value
+    if (!expr.else_) return VOID
+    return thenType
+  }
+
+  private inferBody(body: AST.FuncBody): ResolvedType {
+    if (body.kind === 'Block') {
+      for (const stmt of body.stmts) {
+        this.checkStmt(stmt)
+      }
+      // Block's type is the last expression statement, if any
+      const last = body.stmts[body.stmts.length - 1]
+      if (last?.kind === 'ExprStmt') {
+        return this.types.get(typeKey(last.expr.span.start, last.expr.kind)) ?? VOID
+      }
+      return VOID
+    }
+    return this.inferExpr(body.expr)
   }
 
   inferMatch(expr: AST.MatchExpr): ResolvedType {
     this.inferExpr(expr.subject)
-    // TODO: unify arm types
+    let resultType: ResolvedType = VOID
     for (const arm of expr.arms) {
-      if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
-        this.checkBody(arm.body)
-      } else {
-        this.inferExpr(arm.body)
+      const armType = this.inferBody(arm.body)
+      if (resultType.kind === 'void' && armType.kind !== 'void') {
+        resultType = armType
       }
     }
-    return VOID
+    return resultType
   }
 
   inferSizeof(expr: AST.SizeofExpr): ResolvedType {
