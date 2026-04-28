@@ -400,10 +400,11 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
     throw new Error(`Missing type for binary expression at offset ${expr.span.start}`)
   }
 
-  // For comparison ops, we need the operand type for signedness, not the result (which is bool)
-  // For arithmetic ops, the result type is the operand type
+  // For comparison ops, we need the operand type for signedness (result is bool)
+  // For arithmetic ops, use the result type (which is the wider operand type)
   const leftType = ctx.types.get(typeKey(expr.left.span.start, expr.left.kind))
-  const operandType = leftType ?? resultType
+  const isComparison = ['==', '!=', '<', '>', '<=', '>='].includes(expr.op)
+  const operandType = isComparison ? (leftType ?? resultType) : resultType
 
   const wt = typeToWasmSingle(operandType)
   const signed = isSigned(operandType)
@@ -510,14 +511,18 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
       throw new Error(`Unknown binary operator: ${op}`)
   }
 
-  // Coerce right operand to match left type when needed
+  // Coerce operands to match the operation type when needed
+  const leftWt = leftType ? typeToWasmSingle(leftType) : wt
+  const leftSigned = leftType ? isSigned(leftType) : signed
+  const coercedLeft = coerceWasmType(left, leftWt, wt, leftSigned)
+
   const rightType = ctx.types.get(typeKey(expr.right.span.start, expr.right.kind))
   const rightWt = rightType ? typeToWasmSingle(rightType) : wt
   const rightSigned = rightType ? isSigned(rightType) : signed
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
 
-  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, left, coercedRight)
-  return `(${wasmOp} ${left} ${coercedRight})`
+  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, coercedLeft, coercedRight)
+  return `(${wasmOp} ${coercedLeft} ${coercedRight})`
 }
 
 function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {

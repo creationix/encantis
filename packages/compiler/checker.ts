@@ -1850,8 +1850,19 @@ class CheckContext {
       return primitive('bool')
     }
 
-    // Arithmetic/bitwise: result type depends on operands
-    // For now, return left type (simplified)
+    // Arithmetic/bitwise: pick the wider integer type
+    const left = unwrap(leftType)
+    const right = unwrap(rightType)
+    if (left.kind === 'primitive' && right.kind === 'primitive') {
+      const leftSize = byteSize(left)
+      const rightSize = byteSize(right)
+      if (leftSize !== null && rightSize !== null && rightSize > leftSize) {
+        return rightType
+      }
+    }
+    // Comptime int adopts the concrete operand's type
+    if (right.kind === 'comptime_int' && left.kind === 'primitive') return leftType
+    if (left.kind === 'comptime_int' && right.kind === 'primitive') return rightType
     return leftType
   }
 
