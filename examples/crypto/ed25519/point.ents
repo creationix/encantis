@@ -1,0 +1,195 @@
+// Ed25519 point operations on the twisted Edwards curve
+// -x^2 + y^2 = 1 + d*x^2*y^2  where d = -121665/121666
+//
+// Extended coordinates (X, Y, Z, T) where x=X/Z, y=Y/Z, x*y=T/Z
+// Points stored in memory: 4 field elements × 40 bytes = 160 bytes per point
+// Fe layout: 5 × u64 (40 bytes), little-endian limb order
+
+import "./field" (
+  "fe-add" func fe-add(f: Fe, g: Fe) -> Fe
+  "fe-sub" func fe-sub(f: Fe, g: Fe) -> Fe
+  "fe-mul" func fe-mul(f: Fe, g: Fe) -> Fe
+  "fe-sq" func fe-sq(f: Fe) -> Fe
+  "fe-carry" func fe-carry(h: Fe) -> Fe
+  "fe-inv" func fe-inv(z: Fe) -> Fe
+  "fe-eq" func fe-eq(f: Fe, g: Fe) -> bool
+  "fe-d" func fe-d() -> Fe
+  "fe-2d" func fe-2d() -> Fe
+)
+
+type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
+
+func fe-zero() -> Fe => (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+func fe-one() -> Fe => (a0: 1:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+
+// === Memory layout for field elements ===
+// Fe in memory: 5 × u64 = 40 bytes, little-endian limb order
+
+// Point = 4 Fe values = 20 u64 limbs = 160 bytes
+// Layout: X=[0..5], Y=[5..10], Z=[10..15], T=[15..20]
+def pt-buf: [120]u64  // 6 point slots × 20 limbs
+
+func pt-ptr(i: u32) -> *[120]u64 => &pt-buf
+
+func pt-x(p: *[120]u64, i: u32) -> Fe => (
+  a0: p[i * 20], a1: p[i * 20 + 1], a2: p[i * 20 + 2], a3: p[i * 20 + 3], a4: p[i * 20 + 4]
+)
+func pt-y(p: *[120]u64, i: u32) -> Fe => (
+  a0: p[i * 20 + 5], a1: p[i * 20 + 6], a2: p[i * 20 + 7], a3: p[i * 20 + 8], a4: p[i * 20 + 9]
+)
+func pt-z(p: *[120]u64, i: u32) -> Fe => (
+  a0: p[i * 20 + 10], a1: p[i * 20 + 11], a2: p[i * 20 + 12], a3: p[i * 20 + 13], a4: p[i * 20 + 14]
+)
+func pt-t(p: *[120]u64, i: u32) -> Fe => (
+  a0: p[i * 20 + 15], a1: p[i * 20 + 16], a2: p[i * 20 + 17], a3: p[i * 20 + 18], a4: p[i * 20 + 19]
+)
+
+func pt-set-x(p: *[120]u64, i: u32, v: Fe) {
+  p[i * 20] = v.a0
+  p[i * 20 + 1] = v.a1
+  p[i * 20 + 2] = v.a2
+  p[i * 20 + 3] = v.a3
+  p[i * 20 + 4] = v.a4
+}
+func pt-set-y(p: *[120]u64, i: u32, v: Fe) {
+  p[i * 20 + 5] = v.a0
+  p[i * 20 + 6] = v.a1
+  p[i * 20 + 7] = v.a2
+  p[i * 20 + 8] = v.a3
+  p[i * 20 + 9] = v.a4
+}
+func pt-set-z(p: *[120]u64, i: u32, v: Fe) {
+  p[i * 20 + 10] = v.a0
+  p[i * 20 + 11] = v.a1
+  p[i * 20 + 12] = v.a2
+  p[i * 20 + 13] = v.a3
+  p[i * 20 + 14] = v.a4
+}
+func pt-set-t(p: *[120]u64, i: u32, v: Fe) {
+  p[i * 20 + 15] = v.a0
+  p[i * 20 + 16] = v.a1
+  p[i * 20 + 17] = v.a2
+  p[i * 20 + 18] = v.a3
+  p[i * 20 + 19] = v.a4
+}
+
+// === Set identity point ===
+
+func pt-set-identity(buf: *[120]u64, i: u32) {
+  pt-set-x(buf, i, fe-zero())
+  pt-set-y(buf, i, fe-one())
+  pt-set-z(buf, i, fe-one())
+  pt-set-t(buf, i, fe-zero())
+}
+
+// === Point doubling ===
+
+export func point-double(buf: *[120]u64, out: u32, p: u32) {
+  let a = fe-sq(pt-x(buf, p))
+  let b = fe-sq(pt-y(buf, p))
+  let c = fe-carry(fe-add(fe-sq(pt-z(buf, p)), fe-sq(pt-z(buf, p))))
+  let d = fe-sub(fe-zero(), a)
+  let e = fe-carry(fe-sub(
+    fe-sq(fe-carry(fe-add(pt-x(buf, p), pt-y(buf, p)))),
+    fe-carry(fe-add(a, b))
+  ))
+  let g = fe-carry(fe-add(d, b))
+  let f = fe-carry(fe-sub(g, c))
+  let h = fe-carry(fe-sub(d, b))
+  pt-set-x(buf, out, fe-mul(e, f))
+  pt-set-y(buf, out, fe-mul(g, h))
+  pt-set-z(buf, out, fe-mul(f, g))
+  pt-set-t(buf, out, fe-mul(e, h))
+}
+
+// === Point addition ===
+
+export func point-add(buf: *[120]u64, out: u32, p: u32, q: u32) {
+  let a = fe-mul(pt-x(buf, p), pt-x(buf, q))
+  let b = fe-mul(pt-y(buf, p), pt-y(buf, q))
+  let c = fe-mul(fe-mul(pt-t(buf, p), pt-t(buf, q)), fe-2d())
+  let d = fe-mul(pt-z(buf, p), pt-z(buf, q))
+
+  let e = fe-carry(fe-sub(
+    fe-mul(
+      fe-carry(fe-add(pt-x(buf, p), pt-y(buf, p))),
+      fe-carry(fe-add(pt-x(buf, q), pt-y(buf, q)))
+    ),
+    fe-carry(fe-add(a, b))
+  ))
+  let f = fe-carry(fe-sub(d, c))
+  let g = fe-carry(fe-add(d, c))
+  let h = fe-carry(fe-add(b, a))
+
+  pt-set-x(buf, out, fe-mul(e, f))
+  pt-set-y(buf, out, fe-mul(g, h))
+  pt-set-z(buf, out, fe-mul(f, g))
+  pt-set-t(buf, out, fe-mul(e, h))
+}
+
+// === Point negation ===
+
+export func point-neg(buf: *[120]u64, out: u32, p: u32) {
+  pt-set-x(buf, out, fe-sub(fe-zero(), pt-x(buf, p)))
+  pt-set-y(buf, out, pt-y(buf, p))
+  pt-set-z(buf, out, pt-z(buf, p))
+  pt-set-t(buf, out, fe-sub(fe-zero(), pt-t(buf, p)))
+}
+
+// === Point equality ===
+
+export func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool {
+  let xeq = fe-eq(
+    fe-carry(fe-mul(pt-x(buf, p), pt-z(buf, q))),
+    fe-carry(fe-mul(pt-x(buf, q), pt-z(buf, p)))
+  )
+  let yeq = fe-eq(
+    fe-carry(fe-mul(pt-y(buf, p), pt-z(buf, q))),
+    fe-carry(fe-mul(pt-y(buf, q), pt-z(buf, p)))
+  )
+  return xeq && yeq
+}
+
+// === Tests ===
+
+test "point operations" {
+  func buf() -> *[120]u64 => pt-ptr(0)
+
+  test "store and load identity" {
+    pt-set-identity(buf(), 0)
+    let x = pt-x(buf(), 0)
+    let y = pt-y(buf(), 0)
+    let z = pt-z(buf(), 0)
+    let t = pt-t(buf(), 0)
+    assert fe-eq(fe-carry(x), fe-zero())
+    assert fe-eq(fe-carry(y), fe-one())
+    assert fe-eq(fe-carry(z), fe-one())
+    assert fe-eq(fe-carry(t), fe-zero())
+  }
+
+  test "double identity gives identity" {
+    pt-set-identity(buf(), 0)
+    point-double(buf(), 1, 0)
+    assert point-eq(buf(), 1, 0)
+  }
+
+  test "identity + identity = identity" {
+    pt-set-identity(buf(), 0)
+    point-add(buf(), 1, 0, 0)
+    assert point-eq(buf(), 1, 0)
+  }
+
+  test "neg identity = identity" {
+    pt-set-identity(buf(), 0)
+    point-neg(buf(), 1, 0)
+    assert point-eq(buf(), 1, 0)
+  }
+
+  test "p + neg(p) = identity for identity" {
+    pt-set-identity(buf(), 0)
+    point-neg(buf(), 1, 0)
+    point-add(buf(), 2, 0, 1)
+    pt-set-identity(buf(), 0)
+    assert point-eq(buf(), 2, 0)
+  }
+}
