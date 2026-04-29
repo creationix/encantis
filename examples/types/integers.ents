@@ -1,0 +1,151 @@
+// Integer type kitchen sink — exercises every integer type and operation
+
+export "mem" memory
+
+// === Scalar operations ===
+
+func add_u8(a: u8, b: u8) -> u8 => a + b
+func add_i8(a: i8, b: i8) -> i8 => a + b
+func add_u16(a: u16, b: u16) -> u16 => a + b
+func add_i16(a: i16, b: i16) -> i16 => a + b
+func add_u32(a: u32, b: u32) -> u32 => a + b
+func add_i32(a: i32, b: i32) -> i32 => a + b
+func add_u64(a: u64, b: u64) -> u64 => a + b
+func add_i64(a: i64, b: i64) -> i64 => a + b
+
+// === Widening and narrowing ===
+
+func widen_u8_u32(x: u8) -> u32 => x
+func widen_u32_u64(x: u32) -> u64 => x
+func narrow_u64_u32(x: u64) -> u32 => x as u32
+func narrow_u32_u8(x: u32) -> u8 => x as u8
+
+// === Heap storage ===
+
+def buf_u8:[16]u8
+def buf_u16:[8]u16
+def buf_u32:[4]u32
+def buf_u64:[2]u64
+def buf_u128:[1]u128
+
+func store_u8(i: u32, v: u8) { buf_u8[i] = v }
+func load_u8(i: u32) -> u8 => buf_u8[i]
+
+func store_u16(i: u32, v: u16) { buf_u16[i] = v }
+func load_u16(i: u32) -> u16 => buf_u16[i]
+
+func store_u32(i: u32, v: u32) { buf_u32[i] = v }
+func load_u32(i: u32) -> u32 => buf_u32[i]
+
+func store_u64(i: u32, v: u64) { buf_u64[i] = v }
+func load_u64(i: u32) -> u64 => buf_u64[i]
+
+// === Type punning ===
+
+func pun_u8_as_u32(i: u32) -> u32 => buf_u8.u32[i]
+func pun_u32_as_u8(i: u32) -> u8 => buf_u32.u8[i]
+
+// === Bitwise ===
+
+func xor_u32(a: u32, b: u32) -> u32 => a ^ b
+func and_u64(a: u64, b: u64) -> u64 => a & b
+func or_u32(a: u32, b: u32) -> u32 => a | b
+func not_u32(a: u32) -> u32 => ~a
+func rotl_u32(x: u32, n: u32) -> u32 => x <<< n
+func shr_u64(x: u64, n: u64) -> u64 => x >> n
+
+// === Passing between functions ===
+
+func identity_u64(x: u64) -> u64 => x
+func chain_u32(x: u32) -> u32 => add_u32(add_u32(x, 1), 2)
+
+// === Tests ===
+
+test "integers" {
+  test "u8 arithmetic" {
+    assert add_u8(100, 50) == 150
+    // u8 arithmetic is done at i32 width (like C)
+    // wrapping happens at memory stores, not in registers
+    assert add_u8(200, 50) == 250
+  }
+
+  test "i8 arithmetic" {
+    assert add_i8(100, 27) == 127
+  }
+
+  test "u16 arithmetic" {
+    assert add_u16(1000, 2000) == 3000
+    assert add_u16(30000, 30000) == 60000
+  }
+
+  test "u32 arithmetic" {
+    assert add_u32(0xFFFFFFFF, 1) == 0  // wraps
+    assert add_u32(100, 200) == 300
+  }
+
+  test "u64 arithmetic" {
+    assert add_u64(0xFFFFFFFFFFFFFFFF, 1) == 0  // wraps
+    assert add_u64(100, 200) == 300
+  }
+
+  test "widening" {
+    assert widen_u8_u32(255) == 255:u32
+    assert widen_u32_u64(0xFFFFFFFF) == 0xFFFFFFFF:u64
+  }
+
+  test "narrow u64 to u32" {
+    assert narrow_u64_u32(0x1FFFFFFFF) == 0xFFFFFFFF
+  }
+
+  test "narrow u32 to u8" {
+    assert narrow_u32_u8(0x1FF) == 0xFF
+  }
+
+  test "heap u8" {
+    store_u8(0, 42)
+    store_u8(1, 99)
+    assert load_u8(0) == 42
+    assert load_u8(1) == 99
+  }
+
+  test "heap u16" {
+    store_u16(0, 0x1234)
+    assert load_u16(0) == 0x1234
+  }
+
+  test "heap u32" {
+    store_u32(0, 0xDEADBEEF)
+    assert load_u32(0) == 0xDEADBEEF
+  }
+
+  test "heap u64" {
+    store_u64(0, 0xCAFEBABE12345678)
+    assert load_u64(0) == 0xCAFEBABE12345678
+  }
+
+  test "type punning" {
+    store_u8(0, 0x78)
+    store_u8(1, 0x56)
+    store_u8(2, 0x34)
+    store_u8(3, 0x12)
+    assert pun_u8_as_u32(0) == 0x12345678
+
+    store_u32(0, 0xAABBCCDD)
+    assert pun_u32_as_u8(0) == 0xDD  // little-endian: first byte is lowest
+    assert pun_u32_as_u8(3) == 0xAA
+  }
+
+  test "bitwise" {
+    assert xor_u32(0xFF00FF00, 0x0FF00FF0) == 0xF0F0F0F0
+    assert and_u64(0xFF00FF00FF00FF00, 0x0F0F0F0F0F0F0F0F) == 0x0F000F000F000F00
+    assert or_u32(0xF0F0F0F0, 0x0F0F0F0F) == 0xFFFFFFFF
+    assert not_u32(0) == 0xFFFFFFFF
+    assert rotl_u32(1, 8) == 256
+    assert shr_u64(0x100, 4) == 0x10
+  }
+
+  test "function chaining" {
+    assert identity_u64(12345) == 12345
+    assert chain_u32(10) == 13
+  }
+}

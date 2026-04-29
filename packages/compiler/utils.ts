@@ -104,6 +104,32 @@ export function serializeInt(value: bigint, typeName: string): Uint8Array | null
       view.setBigUint64(0, BigInt.asUintN(64, value), true)
       return buf
     }
+    case 'i128':
+    case 'u128': {
+      const buf = new Uint8Array(16)
+      const view = new DataView(buf.buffer)
+      view.setBigUint64(0, BigInt.asUintN(64, value), true)
+      view.setBigUint64(8, BigInt.asUintN(64, value >> 64n), true)
+      return buf
+    }
+    case 'i256':
+    case 'u256': {
+      const buf = new Uint8Array(32)
+      const view = new DataView(buf.buffer)
+      for (let i = 0; i < 4; i++) {
+        view.setBigUint64(i * 8, BigInt.asUintN(64, value >> BigInt(i * 64)), true)
+      }
+      return buf
+    }
+    case 'i512':
+    case 'u512': {
+      const buf = new Uint8Array(64)
+      const view = new DataView(buf.buffer)
+      for (let i = 0; i < 8; i++) {
+        view.setBigUint64(i * 8, BigInt.asUintN(64, value >> BigInt(i * 64)), true)
+      }
+      return buf
+    }
     default:
       return null
   }

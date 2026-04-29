@@ -1018,7 +1018,17 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
 
-  if (fromWasm === toWasm) return inner
+  if (fromWasm === toWasm) {
+    // Same wasm type but different source types — may need masking for sub-word narrowing
+    const toU = unwrap(toType)
+    if (toU.kind === 'primitive') {
+      if (toU.name === 'u8') return `(i32.and ${inner} (i32.const 255))`
+      if (toU.name === 'i8') return `(i32.shr_s (i32.shl ${inner} (i32.const 24)) (i32.const 24))`
+      if (toU.name === 'u16') return `(i32.and ${inner} (i32.const 65535))`
+      if (toU.name === 'i16') return `(i32.shr_s (i32.shl ${inner} (i32.const 16)) (i32.const 16))`
+    }
+    return inner
+  }
 
   // Generate appropriate conversion instruction
   const fromIsFloat = isFloat(fromType)
@@ -1697,8 +1707,18 @@ export function funcToWat(
   })
   const localStr = dedupedLocals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
 
-  // Generate body
-  const body = bodyToWat(decl.body, ctx)
+  // Generate body, with implicit return coercion for arrow functions
+  let body = bodyToWat(decl.body, ctx)
+  if (decl.body.kind === 'ArrowBody' && funcType.type.returns.length === 1 && namedReturns.length === 0) {
+    const retType = funcType.type.returns[0].type
+    const retWt = typeToWasmSingle(retType)
+    const bodyType = ctx.types.get(typeKey(decl.body.expr.span.start, decl.body.expr.kind))
+    if (bodyType) {
+      const bodyWt = typeToWasmSingle(bodyType)
+      const bodySigned = isSigned(bodyType)
+      body = coerceWasmType(body, bodyWt, retWt, bodySigned)
+    }
+  }
 
   // Generate epilogue: push named returns onto stack
   let epilogue = ''
