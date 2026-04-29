@@ -407,8 +407,32 @@ switch (command) {
   }
 
   case 'test': {
-    if (!inputFile) { console.error('Error: test requires a file'); process.exit(2) }
-    const testFileArgs = args.slice(1).filter(a => !a.startsWith('-'))
+    if (!inputFile) { console.error('Error: test requires a file or directory'); process.exit(2) }
+    let testFileArgs = args.slice(1).filter(a => !a.startsWith('-'))
+
+    // Expand directories to .ents files
+    const expanded: string[] = []
+    for (const arg of testFileArgs) {
+      const stat = await Bun.file(arg).exists()
+      if (stat) {
+        expanded.push(arg)
+      } else {
+        // Try as directory
+        try {
+          const { readdir } = await import('fs/promises')
+          const { resolve: resolvePath } = await import('path')
+          const entries = await readdir(arg, { withFileTypes: true, recursive: true })
+          for (const entry of entries) {
+            if (entry.name.endsWith('.ents')) {
+              expanded.push(resolvePath(entry.parentPath, entry.name))
+            }
+          }
+        } catch {
+          expanded.push(arg) // let it fail naturally later
+        }
+      }
+    }
+    testFileArgs = expanded
 
     let totalPassed = 0
     let totalFailed = 0
