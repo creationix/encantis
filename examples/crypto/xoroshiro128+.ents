@@ -16,20 +16,40 @@ def jump-1 = 0x170865df4b3201fc:u64
 def long-jump-0 = 0xd2a98b26625eee7b:u64
 def long-jump-1 = 0xdddf9b1090aa7ac1:u64
 
-def tv_state:[2]u64
+test "xoroshiro128+" {
+  def tv_state:[2]u64
 
-// Reference test: seed s0=1, s1=2, first output = 3
-test "xoroshiro128+ first output" {
-  tv_state[0] = 1:u64
-  tv_state[1] = 2:u64
-  assert next(tv_state.u128) == 3
-}
+  func seed(s0: u64, s1: u64) {
+    tv_state[0] = s0
+    tv_state[1] = s1
+  }
 
-test "xoroshiro128+ second output" {
-  tv_state[0] = 1:u64
-  tv_state[1] = 2:u64
-  next(tv_state.u128)
-  assert next(tv_state.u128) == 0x0000006001030003
+  test "first output" {
+    seed(1, 2)
+    assert next(tv_state.u128) == 3
+  }
+
+  test "second output" {
+    seed(1, 2)
+    next(tv_state.u128)
+    assert next(tv_state.u128) == 0x0000006001030003
+  }
+
+  test "third output" {
+    seed(1, 2)
+    next(tv_state.u128)
+    next(tv_state.u128)
+    assert next(tv_state.u128) == 0x20c102c302000c03
+  }
+
+  test "state after three" {
+    seed(1, 2)
+    next(tv_state.u128)
+    next(tv_state.u128)
+    next(tv_state.u128)
+    assert tv_state[0] == 0x410000030d036d01
+    assert tv_state[1] == 0x4001806400204060
+  }
 }
 
 // Generate next random number and advance state in-place

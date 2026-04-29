@@ -50,21 +50,45 @@ export func gimli(state:*[12]u32) {
   }
 }
 
-// Gimli spec test vector: input state[i] = i * i * i + i * 0x9e3779b9
-// Expected output from reference implementation
-test "gimli spec vector" {
-  for i in 12 {
-    tv_state[i] = i * i * i + i * 0x9e3779b9
-  }
-  gimli(tv_state)
-  // First 4 words of expected output (from gimli.cr reference)
-  assert tv_state[0] == 0xba11c85a
-  assert tv_state[1] == 0x91bad119
-  assert tv_state[2] == 0x380ce880
-  assert tv_state[3] == 0xd24c2c68
-}
+test "gimli" {
+  def tv_state:[12]u32
 
-def tv_state:[12]u32
+  func zero_state() {
+    for i in 12 { tv_state[i] = 0:u32 }
+  }
+
+  test "spec vector" {
+    for i in 12 {
+      tv_state[i] = i * i * i + i * 0x9e3779b9
+    }
+    gimli(tv_state)
+    assert tv_state[0] == 0xba11c85a
+    assert tv_state[1] == 0x91bad119
+    assert tv_state[2] == 0x380ce880
+    assert tv_state[3] == 0xd24c2c68
+  }
+
+  test "all zero input" {
+    zero_state()
+    gimli(tv_state)
+    assert tv_state[0] == 0x6467d8c4
+    assert tv_state[1] == 0x07dcf83b
+    assert tv_state[2] == 0x3b0bb0d4
+    assert tv_state[3] == 0x1b21364c
+  }
+
+  test "double permute" {
+    for i in 12 {
+      tv_state[i] = i * i * i + i * 0x9e3779b9
+    }
+    gimli(tv_state)
+    gimli(tv_state)
+    assert tv_state[0] == 0xea223492
+    assert tv_state[1] == 0x3fbb2166
+    assert tv_state[2] == 0x68314a61
+    assert tv_state[3] == 0x9165986e
+  }
+}
 
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.

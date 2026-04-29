@@ -20,10 +20,26 @@ inline func merge-round64(acc:u64, value:u64) -> (acc:u64) {
   acc = (acc * prime64-1) + prime64-4
 }
 
-def tv_abc: []u8 = "abc"
+test "xxh64" {
+  def tv_abc: []u8 = "abc"
+  def tv_hello: []u8 = "hello"
+  def tv_foobar: []u8 = "foobar"
 
-test "xxh64 abc" {
-  assert xxh64(tv_abc, 0) == 0x44bc2cf5ad770999
+  test "abc" {
+    assert xxh64(tv_abc, 0) == 0x44bc2cf5ad770999
+  }
+
+  test "hello" {
+    assert xxh64(tv_hello, 0) == 0x26c7827d889f6da3
+  }
+
+  test "foobar" {
+    assert xxh64(tv_foobar, 0) == 0xa2aa05ed9085aaf9
+  }
+
+  test "seeded" {
+    assert xxh64(tv_abc, 42) == 0x13c1d910702770e6
+  }
 }
 
 export func xxh64(data:[]u8, seed:u64) -> (h64:u64) {

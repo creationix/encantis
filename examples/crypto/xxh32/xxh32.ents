@@ -3,10 +3,26 @@
 
 export "mem" memory
 
-def tv_abc: []u8 = "abc"
+test "xxh32" {
+  def tv_abc: []u8 = "abc"
+  def tv_hello: []u8 = "hello"
+  def tv_foobar: []u8 = "foobar"
 
-test "xxh32 abc" {
-  assert xxh32(tv_abc, 0) == 0x32d153ff:u32
+  test "abc" {
+    assert xxh32(tv_abc, 0) == 0x32d153ff
+  }
+
+  test "hello" {
+    assert xxh32(tv_hello, 0) == 0xfb0077f9
+  }
+
+  test "foobar" {
+    assert xxh32(tv_foobar, 0) == 0xeda34aaf
+  }
+
+  test "seeded" {
+    assert xxh32(tv_abc, 42) == 0x0147abfe
+  }
 }
 
 def prime32-1 = 2654435761:u32
