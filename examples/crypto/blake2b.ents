@@ -37,13 +37,13 @@ def sigma:*[12,16]u8 = [
 ]
 
 // Global working state (8 x u64 = 64 bytes, first 32 bytes serve as u256 output)
-def h = mut [0:u64;8]
+def h:[8]u64
 
 // Global working vector for compress (16 x u64 = 128 bytes)
-def cv = mut [0:u64;16]
+def cv:[16]u64
 
 // Global padding buffer (16 x u64 = 128 bytes)
-def pad = mut [0:u64;16]
+def pad:[16]u64
 
 // G mixing function - the core of BLAKE2
 // Mixes four state words with two message words

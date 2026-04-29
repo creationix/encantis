@@ -3,7 +3,7 @@
 
 export "mem" memory
 
-def buf:*[4096]u8 = mut [0:u8; 4096]
+def buf:[4096]u8
 
 global cursor: u32 = 0
 

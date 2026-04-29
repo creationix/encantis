@@ -4,7 +4,7 @@
 
 export "mem" memory
 
-def heap:*[65536]u8 = mut [0:u8; 65536]
+def heap:[65536]u8
 def heap_size = 65536:u32
 def header_size = 8:u32
 

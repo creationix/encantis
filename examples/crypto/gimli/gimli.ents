@@ -51,7 +51,7 @@ export func gimli(state:[*12]u32) {
 
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.
-def hash_state = mut [0:u32;12]
+def hash_state:[12]u32
 
 // Gimli-Hash: absorb input and squeeze variable-length output (XOF)
 // Uses rate of 16 bytes (128 bits)

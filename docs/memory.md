@@ -22,7 +22,7 @@ These are *examples and starting points, not requirements*. You are free to writ
 Declare a fixed-size mutable buffer at compile time. The program owns N bytes at a known offset. No free-lists, no bump pointers.
 
 ```encantis
-def buf:*[4096]u8 = mut [0:u8; 4096]
+def buf:[4096]u8
 global cursor: u32 = 0
 
 func reserve(size: u32) -> u32 {

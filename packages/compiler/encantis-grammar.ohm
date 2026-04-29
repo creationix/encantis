@@ -83,7 +83,9 @@ Encantis {
   // Definitions
   // ============================================================================
 
-  DefDecl = def ident (":" Type)? Assign
+  DefDecl = def ident ":" Type Assign  -- typed
+           | def ident Assign          -- bare
+           | def ident ":" Type        -- reserve
 
   // ============================================================================
   // Globals

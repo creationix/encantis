@@ -413,23 +413,79 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.EnumVariant
   },
 
-  DefDecl(_def, ident, _colonOpt, typeOpt, assign) {
+  DefDecl_typed(_def, ident, _colon, type, assign) {
     const value = assign.toAST() as AST.Expr
-    // Parse optional type annotation (: Type)?
-    // ohm splits (":" Type)? into two iters: one for ":" and one for Type
-    const typeAnnotation = typeOpt.children.length > 0
-      ? typeOpt.children[0].toAST() as AST.Type
-      : undefined
-    // Set dataId on literal expressions so it survives cloning during def substitution
-    // This allows codegen to look up the data section address for cloned literals
+    const typeAnnotation = type.toAST() as AST.Type
     setDataIdOnLiteral(value)
-    // Record def value and type for subsequent inlining
     currentDefs.set(ident.toAST() as string, { value, type: typeAnnotation })
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
       type: typeAnnotation,
       value,
+      span: span(this),
+    } as AST.DefDecl
+  },
+
+  DefDecl_bare(_def, ident, assign) {
+    const value = assign.toAST() as AST.Expr
+    setDataIdOnLiteral(value)
+    currentDefs.set(ident.toAST() as string, { value, type: undefined })
+    return {
+      kind: 'DefDecl',
+      ident: ident.toAST(),
+      type: undefined,
+      value,
+      span: span(this),
+    } as AST.DefDecl
+  },
+
+  DefDecl_reserve(_def, ident, _colon, type) {
+    const typeAnnotation = type.toAST() as AST.Type
+    // Synthesize a zero-initialized repeat expression from the array type
+    let totalSize = 0
+    let elemType: AST.Type = typeAnnotation
+    if (typeAnnotation.kind === 'IndexedType' && typeAnnotation.size !== null) {
+      const sizes = Array.isArray(typeAnnotation.size) ? typeAnnotation.size : [typeAnnotation.size]
+      totalSize = (sizes as number[]).reduce((a, b) => a * b, 1)
+      elemType = typeAnnotation.element
+      // For multi-dim, flatten to 1D: def x:[12,16]u8 → [0:u8; 192]
+    }
+    const zeroLit: AST.LiteralExpr = {
+      kind: 'LiteralExpr',
+      value: { kind: 'int', value: 0n },
+      span: span(this),
+    }
+    const annotatedZero: AST.AnnotationExpr = {
+      kind: 'AnnotationExpr',
+      expr: zeroLit,
+      type: elemType,
+      span: span(this),
+    }
+    const countLit: AST.LiteralExpr = {
+      kind: 'LiteralExpr',
+      value: { kind: 'int', value: BigInt(totalSize) },
+      span: span(this),
+    }
+    const syntheticValue: AST.RepeatExpr = {
+      kind: 'RepeatExpr',
+      value: annotatedZero,
+      count: countLit,
+      mut: true,
+      span: span(this),
+    }
+    setDataIdOnLiteral(syntheticValue)
+    const ptrType: AST.PointerType = {
+      kind: 'PointerType',
+      pointee: typeAnnotation,
+      span: span(this),
+    }
+    currentDefs.set(ident.toAST() as string, { value: syntheticValue, type: ptrType })
+    return {
+      kind: 'DefDecl',
+      ident: ident.toAST(),
+      type: ptrType,
+      value: syntheticValue,
       span: span(this),
     } as AST.DefDecl
   },
