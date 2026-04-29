@@ -124,11 +124,10 @@ func compress(block: *[128]u8) {
   state[7] += h
 }
 
-// Public API: hash arbitrary-length input, write 64 bytes to output
-export func sha512(input: []u8, output: *[64]u8) {
-  // Initialize state from IV
+// Core hash function: takes IV, input, writes full 64-byte state to output
+export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *[64]u8) {
   for i in 8 {
-    state[i] = iv[i]
+    state[i] = hash_iv[i]
   }
 
   let ptr = input.ptr
@@ -171,6 +170,11 @@ export func sha512(input: []u8, output: *[64]u8) {
   for i in 8 {
     store-be64(output as *u8, (i * 8) as u32, state[i])
   }
+}
+
+// Public API: SHA-512
+export func sha512(input: []u8, output: *[64]u8) {
+  sha512-with-iv(iv, input, output)
 }
 
 // === Tests ===
