@@ -1,0 +1,232 @@
+// Language features kitchen sink — exercises documented constructs
+
+export "mem" memory
+
+// === Type aliases ===
+
+type Point = (x: i32, y: i32)
+type Color = (r: u8, g: u8, b: u8)
+
+// === Named multi-value returns ===
+
+func swap(a: i32, b: i32) -> (x: i32, y: i32) {
+  x = b
+  y = a
+}
+
+func divmod(a: u32, b: u32) -> (quot: u32, rem: u32) {
+  quot = a / b
+  rem = a % b
+}
+
+// === Struct construction and field access ===
+
+func make_point(x: i32, y: i32) -> Point => (x: x, y: y)
+
+func manhattan(p: Point) -> i32 {
+  let ax = p.x
+  let ay = p.y
+  if ax < 0 { ax = 0 - ax }
+  if ay < 0 { ay = 0 - ay }
+  return ax + ay
+}
+
+// === Inline functions ===
+
+inline func double(x: i32) -> i32 => x + x
+inline func square(x: i32) -> i32 => x * x
+
+// === Globals ===
+
+global counter: i32 = 0
+
+func increment() {
+  counter += 1
+}
+
+func get_counter() -> i32 => counter
+
+// === Control flow ===
+
+func iabs(x: i32) -> i32 {
+  if x < 0 { return 0 - x }
+  return x
+}
+
+func clamp(x: i32, lo: i32, hi: i32) -> i32 {
+  return lo when x < lo
+  return hi when x > hi
+  return x
+}
+
+func fizzbuzz_type(n: u32) -> u32 {
+  // 0=normal, 1=fizz, 2=buzz, 3=fizzbuzz
+  let f = n % 3 == 0
+  let b = n % 5 == 0
+  if f {
+    if b { return 3 }
+    return 1
+  }
+  if b { return 2 }
+  return 0
+}
+
+// === Loops ===
+
+func sum_range(n: u32) -> u32 {
+  let total: u32 = 0
+  for i in n {
+    total += i
+  }
+  return total
+}
+
+func fibonacci(n: u32) -> u32 {
+  let a: u32 = 0
+  let b: u32 = 1
+  let i: u32 = 0
+  while i < n {
+    let tmp = a + b
+    a = b
+    b = tmp
+    i += 1
+  }
+  return a
+}
+
+func collatz_steps(start: u32) -> u32 {
+  let n = start
+  let steps: u32 = 0
+  loop {
+    break when n <= 1
+    if n % 2 == 0 {
+      n /= 2
+    } else {
+      n = n * 3 + 1
+    }
+    steps += 1
+  }
+  return steps
+}
+
+// === Float operations ===
+
+func lerp(a: f64, b: f64, t: f64) -> f64 => a + (b - a) * t
+
+func approx_eq(a: f64, b: f64) -> bool {
+  let diff = a - b
+  if diff < 0.0 { diff = 0.0 - diff }
+  return diff < 0.0001
+}
+
+// === Memory: def with arrays, sizeof ===
+
+def lookup:[256]u8
+
+func init_lookup() {
+  for i in 256 {
+    lookup[i] = (i * i) as u8
+  }
+}
+
+func lookup_square(x: u8) -> u8 => lookup[x]
+
+// === Sizeof ===
+
+func point_size() -> u32 => sizeof(Point)
+func u64_size() -> u32 => sizeof(u64)
+
+// === Tests ===
+
+test "language features" {
+
+  func check_swap() -> bool {
+    let (x:, y:) = swap(10, 20)
+    return x == 20
+  }
+
+  func check_divmod() -> bool {
+    let (quot:, rem:) = divmod(17, 5)
+    return quot == 3
+  }
+
+  test "swap" {
+    assert check_swap()
+  }
+
+  test "divmod" {
+    assert check_divmod()
+  }
+
+  test "struct construction" {
+    let p = make_point(3, -4)
+    assert manhattan(p) == 7
+  }
+
+  test "inline functions" {
+    assert double(21) == 42
+    assert square(7) == 49
+  }
+
+  test "globals" {
+    counter = 0
+    increment()
+    increment()
+    increment()
+    assert get_counter() == 3
+  }
+
+  test "conditional return" {
+    assert iabs(-42) == 42
+    assert iabs(42) == 42
+    assert clamp(5, 0, 10) == 5
+    assert clamp(-5, 0, 10) == 0
+    assert clamp(15, 0, 10) == 10
+  }
+
+  test "fizzbuzz" {
+    assert fizzbuzz_type(1) == 0
+    assert fizzbuzz_type(3) == 1
+    assert fizzbuzz_type(5) == 2
+    assert fizzbuzz_type(15) == 3
+  }
+
+  test "sum range" {
+    assert sum_range(0) == 0
+    assert sum_range(1) == 0
+    assert sum_range(10) == 45
+    assert sum_range(100) == 4950
+  }
+
+  test "fibonacci" {
+    assert fibonacci(0) == 0
+    assert fibonacci(1) == 1
+    assert fibonacci(10) == 55
+    assert fibonacci(20) == 6765
+  }
+
+  test "collatz" {
+    assert collatz_steps(1) == 0
+    assert collatz_steps(2) == 1
+    assert collatz_steps(27) == 111
+  }
+
+  test "float lerp" {
+    assert approx_eq(lerp(0.0, 10.0, 0.5), 5.0)
+    assert approx_eq(lerp(0.0, 10.0, 0.0), 0.0)
+    assert approx_eq(lerp(0.0, 10.0, 1.0), 10.0)
+  }
+
+  test "lookup table" {
+    init_lookup()
+    assert lookup_square(0) == 0
+    assert lookup_square(1) == 1
+    assert lookup_square(10) == 100
+    assert lookup_square(16) == 0  // 256 wraps to 0 in u8
+  }
+
+  test "sizeof" {
+    assert point_size() == 8
+    assert u64_size() == 8
+  }
+}
