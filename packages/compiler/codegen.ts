@@ -1571,12 +1571,25 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
   }
 
   if (target.kind === 'MemberExpr') {
-    // Memory store for struct fields
     const member = target.member
     if (member.kind === 'field' && target.object.kind === 'IdentExpr') {
       const baseName = target.object.name
       const fieldName = member.name
+      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
+      if (localNames) {
+        const flatName = `${baseName}_${fieldName}`
+        if (localNames.includes(flatName)) {
+          return `(local.set $${flatName} ${value})`
+        }
+      }
       return `(local.set $${baseName}_${fieldName} ${value})`
+    }
+    if (member.kind === 'index' && target.object.kind === 'IdentExpr') {
+      const baseName = target.object.name
+      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
+      if (localNames && localNames[member.value]) {
+        return `(local.set $${localNames[member.value]} ${value})`
+      }
     }
     if (member.kind === 'deref') {
       const ptr = exprToWat(target.object, ctx)

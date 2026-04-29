@@ -1009,13 +1009,20 @@ class CheckContext {
         if (stmt.value) this.inferExpr(stmt.value)
         if (stmt.when) this.inferExpr(stmt.when)
         break
-      case 'AssignmentStmt':
-        // Infer types for both target and value so hints work on both sides
+      case 'AssignmentStmt': {
+        let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
-          this.inferExpr(stmt.target)
+          targetType = this.inferExpr(stmt.target)
         }
-        this.inferExpr(stmt.value)
+        const targetUnwrapped = targetType ? unwrap(targetType) : undefined
+        const isScalarTarget = targetUnwrapped?.kind === 'primitive' || targetUnwrapped?.kind === 'tuple'
+        if (targetType && isScalarTarget) {
+          this.checkExpr(stmt.value, targetType)
+        } else {
+          this.inferExpr(stmt.value)
+        }
         break
+      }
       case 'WhileStmt':
         this.inferExpr(stmt.condition)
         this.checkBody(stmt.body)
@@ -1026,8 +1033,10 @@ class CheckContext {
       case 'ForStmt': {
         const iterableType = this.inferExpr(stmt.iterable)
         // Determine element type from iterable
-        let elemType: ResolvedType = primitive('i32') // fallback
-        if (iterableType.kind === 'array') {
+        let elemType: ResolvedType = primitive('u32') // default: unsigned index
+        if (iterableType.kind === 'comptime_int') {
+          elemType = primitive('u32')
+        } else if (iterableType.kind === 'array') {
           elemType = iterableType.element
         } else if (iterableType.kind === 'slice') {
           elemType = iterableType.element
