@@ -643,6 +643,22 @@ class CheckContext {
           ptrType: declaredType,
         }
       }
+      // Handle array type [N]T - reserves memory, type stays as array
+      if (declaredType.kind === 'array') {
+        let sizes = declaredType.sizes
+        if (sizes && sizes.includes('_')) {
+          const literalSize = this.getLiteralSize(expr)
+          if (typeof literalSize === 'number') {
+            sizes = sizes.map(s => s === '_' ? literalSize : s)
+          }
+        }
+        const arrayType: ArrayRT = { ...declaredType, sizes }
+        return {
+          expr,
+          indexedType: arrayType,
+          ptrType: arrayType,
+        }
+      }
       // Handle slice type []T - array literal coerces to slice
       if (declaredType.kind === 'slice') {
         const literalSize = this.getLiteralSize(expr)

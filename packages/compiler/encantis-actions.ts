@@ -475,16 +475,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
       span: span(this),
     }
     setDataIdOnLiteral(syntheticValue)
-    const ptrType: AST.PointerType = {
-      kind: 'PointerType',
-      pointee: typeAnnotation,
-      span: span(this),
-    }
-    currentDefs.set(ident.toAST() as string, { value: syntheticValue, type: ptrType })
+    currentDefs.set(ident.toAST() as string, { value: syntheticValue, type: typeAnnotation })
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
-      type: ptrType,
+      type: typeAnnotation,
       value: syntheticValue,
       span: span(this),
     } as AST.DefDecl

@@ -17,6 +17,7 @@ import {
 } from './types'
 import * as RT from './types'
 import { dataToWat, buildDataSection } from './data-pack'
+import { totalElements } from './types'
 
 // === Context ===
 
@@ -730,16 +731,33 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const builtin = builtinToWat(funcName, expr, ctx)
   if (builtin !== null) return builtin
 
-  // Generate argument expressions
-  const args = expr.args.map((arg) => {
+  // Get callee type for param coercions
+  const calleeSym = ctx.symbols.get(funcName)
+  const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null
+
+  // Generate argument expressions with array→slice coercion
+  const args = expr.args.map((arg, i) => {
+    let wat: string
     if (arg.value) {
-      return exprToWat(arg.value, ctx)
+      wat = exprToWat(arg.value, ctx)
+    } else if (arg.name) {
+      wat = identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    } else {
+      return ''
     }
-    // Shorthand argument: name:
-    if (arg.name) {
-      return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    // Coerce array → slice: emit ptr + compile-time length
+    if (paramTypes && i < paramTypes.length) {
+      const paramType = paramTypes[i].type
+      const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
+      const argType = ctx.types.get(typeKey(argExpr.span.start, argExpr.kind))
+      if (argType?.kind === 'array' && paramType.kind === 'slice') {
+        const len = totalElements(argType.sizes)
+        if (len !== null) {
+          return `${wat} (i32.const ${len})`
+        }
+      }
     }
-    return ''
+    return wat
   }).filter(Boolean).join(' ')
 
   const watName = ctx.nameMap.get(funcName) ?? funcName

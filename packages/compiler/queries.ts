@@ -5,7 +5,8 @@ import type * as AST from './ast'
 import type { TypeCheckResult, Symbol } from './checker'
 import { typeKey, typecheck } from './checker'
 import { parse } from './parser'
-import { typeToString, type ResolvedType } from './types'
+import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
+import { typeToWasm } from './codegen'
 import { LineMap, type Position } from './position'
 import { resolve } from 'path'
 import { readdir } from 'fs/promises'
@@ -272,17 +273,27 @@ async function findEntsFiles(dir: string): Promise<string[]> {
   return files.sort()
 }
 
-function symbolTypeString(sym: Symbol): string {
-  switch (sym.kind) {
-    case 'func':
-      return typeToString(sym.type)
-    case 'type':
-      return typeToString(sym.type)
-    case 'def':
-    case 'global':
-    case 'local':
-    case 'param':
-    case 'return':
-      return typeToString(sym.type)
+function typeCostAnnotation(type: ResolvedType): string {
+  const u = unwrap(type)
+  if (u.kind === 'array' && u.sizes && !u.sizes.includes('_')) {
+    const size = byteSize(u)
+    if (size !== null) return ` (${size} bytes)`
   }
+  if (u.kind === 'tuple') {
+    const hasArray = u.fields.some(f => unwrap(f.type).kind === 'array')
+    if (hasArray) {
+      const size = byteSize(u)
+      if (size !== null) return ` (${size} bytes)`
+    }
+    const slots = typeToWasm(u).length
+    if (slots > 1) return ` (${slots} slots)`
+  }
+  return ''
+}
+
+function symbolTypeString(sym: Symbol): string {
+  const base = typeToString(sym.type)
+  if (sym.kind === 'func') return base
+  if (sym.kind === 'type') return base
+  return base + typeCostAnnotation(sym.type)
 }
