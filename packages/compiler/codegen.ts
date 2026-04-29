@@ -214,8 +214,16 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return exprToWat(expr.expr, ctx)
     case 'CastExpr':
       return castToWat(expr, ctx)
-    case 'AnnotationExpr':
+    case 'AnnotationExpr': {
+      const annType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      if (annType?.kind === 'slice') {
+        const inner = expr.expr
+        const id = (inner as any).dataId ?? inner.span.start
+        const ref = ctx.literalRefs.get(id)
+        if (ref) return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+      }
       return exprToWat(expr.expr, ctx)
+    }
     case 'ArrayExpr':
       return arrayToWat(expr, ctx)
     case 'RepeatExpr':
@@ -312,9 +320,11 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
         return `(i32.const ${val.value ? 1 : 0})`
       }
       if (val.kind === 'data_ptr') {
-        // Pointer to data section - look up address from literalRefs
         const ref = ctx.literalRefs.get(val.id)
         if (ref) {
+          if (sym.type.kind === 'slice') {
+            return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+          }
           return `(i32.const ${ref.ptr})`
         }
         return `(i32.const 0) ;; data_ptr not found: ${val.id}`
@@ -743,22 +753,17 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     // Get the type of the object to check for indexed/pointer-to-indexed
     const objType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
 
-    // Handle .ptr, .len, .wid on slice types
+    // Handle .ptr, .len on slice types
     if (objType?.kind === 'slice') {
-      if (member.name === 'ptr') {
-        // For slice, .ptr gets the pointer component
-        // If object is an identifier, access the _ptr local
+      if (member.name === 'ptr' || member.name === 'len') {
+        const idx = member.name === 'ptr' ? 0 : 1
         if (expr.object.kind === 'IdentExpr') {
-          return `(local.get $${expr.object.name}_ptr)`
+          const localNames = ctx.locals.get(expr.object.name) ?? ctx.params.get(expr.object.name)
+          if (localNames && localNames.length >= 2) return `(local.get $${localNames[idx]})`
         }
-        throw new Error('Slice .ptr on non-identifier not yet implemented')
-      }
-      if (member.name === 'len') {
-        // For slice, .len gets the length component
-        if (expr.object.kind === 'IdentExpr') {
-          return `(local.get $${expr.object.name}_len)`
-        }
-        throw new Error('Slice .len on non-identifier not yet implemented')
+        const full = exprToWat(expr.object, ctx)
+        const parts = splitV128Components(full, 2)
+        return parts[idx]
       }
       if (member.name === 'wid') {
         // Element byte size is always compile-time known
@@ -910,8 +915,17 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
 }
 
 function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
-  const base = exprToWat(expr.object, ctx)
+  let base = exprToWat(expr.object, ctx)
   const index = exprToWat(expr.index, ctx)
+  // For slice objects, extract just the pointer (first component)
+  const objTypeKey = expr.object.kind === 'MemberExpr'
+    ? typeKey(expr.object.span.end, expr.object.kind)
+    : typeKey(expr.object.span.start, expr.object.kind)
+  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  if (objType?.kind === 'slice') {
+    const parts = splitV128Components(base, 2)
+    base = parts[0]
+  }
   const { offset } = indexOffset(expr.object, base, index, ctx)
 
   // Load from memory
@@ -1041,14 +1055,15 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
-  // Check if this literal has a data section entry
-  // Use dataId if present (survives def substitution), otherwise span.start
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
+    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    if (type?.kind === 'slice') {
+      return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+    }
     return `(i32.const ${ref.ptr})`
   }
-  // Repeat literals without data section entry - placeholder
   return `(i32.const 0) ;; repeat literal`
 }
 
@@ -1414,11 +1429,20 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
   }
 
   if (target.kind === 'IndexExpr') {
-    const ptr = exprToWat(target.object, ctx)
+    let ptr = exprToWat(target.object, ctx)
     const idx = exprToWat(target.index, ctx)
     const type = ctx.types.get(typeKey(target.span.start, target.kind))
     if (!type) {
       throw new Error(`Missing type for index store at offset ${target.span.start}`)
+    }
+    // For slice objects, extract just the pointer
+    const objTypeKey = target.object.kind === 'MemberExpr'
+      ? typeKey(target.object.span.end, target.object.kind)
+      : typeKey(target.object.span.start, target.object.kind)
+    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+    if (objType?.kind === 'slice') {
+      const parts = splitV128Components(ptr, 2)
+      ptr = parts[0]
     }
     const { offset } = indexOffset(target.object, ptr, idx, ctx)
     return v128StoreSequence(type, offset, value)
