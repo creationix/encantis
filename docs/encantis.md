@@ -281,49 +281,51 @@ let mp: [*]u8 = ...
 mp[i]                // caller must ensure bounds
 ```
 
-#### `const` Pointers
+#### Mutability
 
-By default, pointers are mutable — you can read and write through them. Add `const` to make a pointer read-only:
+By default, pointers are **read-only** (`const`). Add `mut` to allow writes:
 
 ```ents
-*const T             // read-only pointer to one T
-*const [N]T          // read-only pointer to N elements
-[]const u8           // read-only slice
-[*]const u8          // read-only many-pointer
+*T                   // read-only pointer (default)
+*mut T               // mutable pointer
+[]u8                 // read-only slice (default)
+[]mut u8             // mutable slice
+[*]u8                // read-only many-pointer (default)
+[*]mut u8            // mutable many-pointer
 ```
 
-The `const` modifier prevents writes through the pointer. This enables the compiler to deduplicate identical data in the data section — two `const` references to the same content can safely share memory.
-
 ```ents
-func print(msg: []const u8)      // can read, cannot write
-func fill(buf: []u8)             // can read and write
+func print(msg: []u8)            // read-only: cannot write through msg
+func fill(buf: []mut u8)         // mutable: can write through buf
 
-data buf = [0:u8; 1024]
-print(buf)                        // OK: mutable → const (widening)
+data buf = mut [0:u8; 1024]
+print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
 fill("hello")                     // ERROR: const literal → mutable param
 ```
 
-**Coercion rules:** mutable pointers implicitly coerce to `const`. The reverse requires an explicit cast — going from `const` to mutable is unsafe.
+**Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
 
-#### Inline Literals
+#### Literal Mutability
 
-String and array literals used inline in expressions produce `const` pointers:
+Literals are **const by default**. Use `mut` as a prefix to mark a literal as mutable:
 
 ```ents
-let msg = "hello"                 // msg: *const [5]u8
-let nums = [1, 2, 3]             // nums: const [3]i32 (value type, no pointer)
-print("hello")                    // "hello" → []const u8, embedded in data section
+"hello"                           // const, deduplicable
+mut "hello"                       // mutable unique copy
+[1, 2, 3]                         // const
+mut [0:u8; 1024]                  // mutable buffer
 ```
 
-The compiler deduplicates `const` data — two uses of `"hello"` share the same bytes. This is safe because neither can write through the pointer.
+The compiler deduplicates const literals — two uses of `"hello"` share the same data section bytes. Mutable literals always get unique allocations.
 
-To embed a mutable copy, use `data`:
+In `data` declarations:
 
 ```ents
-data greeting = "hello"           // greeting: *[5]u8 (mutable, unique allocation)
-greeting[0] = 'H' as u8          // OK: mutable pointer
+data table = [1, 2, 3, 4]        // table: *[4]i32 (const, deduplicable)
+data buf = mut [0:u8; 1024]       // buf: *mut [1024]u8 (mutable, unique)
+data msg = mut "template"         // msg: *mut [8]u8 (mutable copy)
 ```
 
 #### Nesting
@@ -339,27 +341,28 @@ greeting[0] = 'H' as u8          // OK: mutable pointer
 `[]T` is a fat pointer: a `(ptr: [*]T, len: u32)` pair. Slices are the standard way to pass variable-length data.
 
 ```ents
-let data: []u8 = ...             // mutable slice
-let text: []const u8 = "hello"   // read-only slice
+let text: []u8 = "hello"        // read-only slice (default)
+let buf: []mut u8 = get-buf()   // mutable slice
 
-data.ptr        // extract pointer
-data.len        // get length (u32)
-data[i]         // element access
+text.ptr        // extract pointer
+text.len        // get length (u32)
+text[i]         // element access (read)
+buf[i] = 0      // element write (only on []mut)
 ```
 
-Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating `data[i]` affects the underlying memory — unless the slice is `const`.
+Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating through a `[]mut` slice affects the underlying memory.
 
 #### Static Memory Allocation
 
-Use `data` to allocate mutable memory in the wasm data section:
+Use `data` to allocate in the wasm data section:
 
 ```ents
-data buf = [0:u8; 1024]                 // buf: *[1024]u8 (mutable, unique)
-data key = x"9d61b19deffd5a60"          // key: *[8]u8 (mutable, unique)
-data table = [1:u64, 2, 3, 4]           // table: *[4]u64 (mutable, unique)
+data table = [1:u64, 2, 3, 4]          // table: *[4]u64 (const, deduplicable)
+data key = x"9d61b19deffd5a60"          // key: *[8]u8 (const)
+data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, unique)
 ```
 
-The name binds to `*[N]T` by default — the tightest mutable pointer. It auto-coerces to `[]T` or `[]const T` at call sites.
+The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` at call sites.
 
 ### 2.7 Tuple Types
 
