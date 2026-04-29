@@ -8,6 +8,7 @@ import {
   documentSymbols,
   signatureHelp,
   workspaceSymbols,
+  rename,
 } from './queries'
 import { resolve } from 'path'
 
@@ -84,6 +85,38 @@ describe('hover', () => {
     const result = hover(source, module, check, offset)
     expect(result).not.toBeNull()
     expect(result!.kind).toBe('global')
+    expect(result!.type).toBe('u64')
+  })
+
+  test('shows param type inside function', () => {
+    const code = `func test(data: []u8, count: u32) -> u64 { return 0 }`
+    const { source, module, check } = setup(code)
+
+    const dataOffset = code.indexOf('data')
+    const result = hover(source, module, check, dataOffset)
+    expect(result).not.toBeNull()
+    expect(result!.name).toBe('data')
+    expect(result!.type).toContain('[]u8')
+  })
+
+  test('shows local type inside function', () => {
+    const code = `func test() { let sum: u64 = 0 }`
+    const { source, module, check } = setup(code)
+
+    const offset = code.indexOf('sum')
+    const result = hover(source, module, check, offset)
+    expect(result).not.toBeNull()
+    expect(result!.name).toBe('sum')
+    expect(result!.type).toBe('u64')
+  })
+
+  test('shows type for reference to local', () => {
+    const code = `func test() -> u64 { let x: u64 = 42\n return x }`
+    const { source, module, check } = setup(code)
+
+    const useOffset = code.lastIndexOf('x')
+    const result = hover(source, module, check, useOffset)
+    expect(result).not.toBeNull()
     expect(result!.type).toBe('u64')
   })
 })
@@ -195,5 +228,37 @@ describe('workspaceSymbols', () => {
     const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
     const syms = await workspaceSymbols(fixtures, 'zzz_nonexistent_zzz')
     expect(syms).toEqual([])
+  })
+})
+
+describe('rename', () => {
+  test('finds definition and all references', () => {
+    const code = `func add(a: i32, b: i32) -> i32 => a + b\nfunc test() -> i32 => add(1, 2)`
+    const { source, module, check } = setup(code)
+
+    const callOffset = code.lastIndexOf('add')
+    const result = rename(source, module, check, callOffset)
+    expect(result).not.toBeNull()
+    expect(result!.oldName).toBe('add')
+    // Definition + at least one reference
+    expect(result!.locations.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('works from definition site', () => {
+    const code = `func add(a: i32, b: i32) -> i32 => a + b\nfunc test() -> i32 => add(1, 2)`
+    const { source, module, check } = setup(code)
+
+    const defOffset = code.indexOf('add')
+    const result = rename(source, module, check, defOffset)
+    expect(result).not.toBeNull()
+    expect(result!.locations.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('returns null for non-identifier', () => {
+    const code = `func test() -> i32 => 42`
+    const { source, module, check } = setup(code)
+
+    const result = rename(source, module, check, code.indexOf('('))
+    expect(result).toBeNull()
   })
 })

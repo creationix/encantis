@@ -70,6 +70,13 @@ export function gotoDefinition(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  // Try exact offset via symbolRefs (works for all scopes)
+  const refTarget = checkResult.symbolRefs.get(offset)
+  if (refTarget !== undefined) {
+    return { name, location: { offset: refTarget, length: name.length } }
+  }
+
+  // Fall back to name lookup (module scope)
   const defOffset = checkResult.symbolDefOffsets.get(name)
   if (defOffset === undefined) return null
 
@@ -88,22 +95,52 @@ export function hover(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  // Check module-scope symbols first
   const sym = checkResult.symbols.get(name)
-  if (!sym) return null
-
-  const result: HoverResult = {
-    name,
-    type: symbolTypeString(sym),
-    kind: sym.kind,
+  if (sym) {
+    const result: HoverResult = {
+      name,
+      type: symbolTypeString(sym),
+      kind: sym.kind,
+    }
+    if (sym.kind === 'def') {
+      if (sym.value.kind === 'int') result.value = sym.value.value.toString()
+      if (sym.value.kind === 'float') result.value = sym.value.value.toString()
+      if (sym.value.kind === 'bool') result.value = sym.value.value.toString()
+    }
+    return result
   }
 
-  if (sym.kind === 'def') {
-    if (sym.value.kind === 'int') result.value = sym.value.value.toString()
-    if (sym.value.kind === 'float') result.value = sym.value.value.toString()
-    if (sym.value.kind === 'bool') result.value = sym.value.value.toString()
+  // Check type map for the identifier at this offset (params, locals, let bindings)
+  const type = checkResult.types.get(typeKey(offset, 'IdentPattern'))
+    ?? checkResult.types.get(typeKey(offset, 'IdentExpr'))
+    ?? checkResult.types.get(typeKey(offset, 'Field'))
+  if (type) {
+    return {
+      name,
+      type: typeToString(type) + typeCostAnnotation(type),
+      kind: 'local',
+    }
   }
 
-  return result
+  // Check if this offset references a known symbol via symbolRefs
+  const defOffset = checkResult.symbolRefs.get(offset)
+  if (defOffset !== undefined) {
+    for (const [symName, symOffset] of checkResult.symbolDefOffsets) {
+      if (symOffset === defOffset) {
+        const refSym = checkResult.symbols.get(symName)
+        if (refSym) {
+          return {
+            name: symName,
+            type: symbolTypeString(refSym),
+            kind: refSym.kind,
+          }
+        }
+      }
+    }
+  }
+
+  return null
 }
 
 export function findReferences(
@@ -123,6 +160,42 @@ export function findReferences(
     definition: { offset: defOffset, length: name.length },
     references: refs.map(r => ({ offset: r, length: name.length })),
   }
+}
+
+export interface RenameResult {
+  oldName: string
+  locations: Location[]
+}
+
+export function rename(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+): RenameResult | null {
+  const name = identAtOffset(source, offset)
+  if (!name) return null
+
+  // Find the definition for this symbol
+  let defOffset: number | undefined
+
+  // Try symbolRefs first (exact offset match, works for all scopes)
+  defOffset = checkResult.symbolRefs.get(offset)
+
+  // If the cursor is on the definition itself, check symbolDefOffsets
+  if (defOffset === undefined) {
+    defOffset = checkResult.symbolDefOffsets.get(name)
+  }
+
+  if (defOffset === undefined) return null
+
+  const refs = checkResult.references.get(defOffset) ?? []
+  const locations: Location[] = [
+    { offset: defOffset, length: name.length },
+    ...refs.map(r => ({ offset: r, length: name.length })),
+  ]
+
+  return { oldName: name, locations }
 }
 
 export function documentSymbols(
