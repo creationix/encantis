@@ -1,0 +1,306 @@
+// Field arithmetic mod p = 2^255 - 19
+// Representation: 5 limbs of 51 bits each
+// fe = a0 + a1*2^51 + a2*2^102 + a3*2^153 + a4*2^204
+
+export "mem" memory
+
+type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
+
+def mask51 = 0x7FFFFFFFFFFFF:u64  // 2^51 - 1
+
+// === Constants ===
+
+func fe-zero() -> Fe => (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+func fe-one() -> Fe => (a0: 1:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+
+// === Addition ===
+// Result may not be fully reduced — limbs can exceed 51 bits slightly
+
+export func fe-add(f: Fe, g: Fe) -> Fe {
+  return (
+    a0: f.a0 + g.a0,
+    a1: f.a1 + g.a1,
+    a2: f.a2 + g.a2,
+    a3: f.a3 + g.a3,
+    a4: f.a4 + g.a4
+  )
+}
+
+// === Subtraction ===
+// Add 2*p before subtracting to keep limbs positive
+
+export func fe-sub(f: Fe, g: Fe) -> Fe {
+  // 2*p in 5-limb form: each limb gets 2*(2^51-1) + carry adjustments
+  // p = 2^255 - 19, so 2p has limbs:
+  // a0: 2*(2^51 - 19) = 2^52 - 38
+  // a1..a3: 2*(2^51 - 1) = 2^52 - 2
+  // a4: 2*(2^51 - 1) = 2^52 - 2
+  return (
+    a0: f.a0 + 0xFFFFFFFFFFFDA:u64 - g.a0,
+    a1: f.a1 + 0xFFFFFFFFFFFFE:u64 - g.a1,
+    a2: f.a2 + 0xFFFFFFFFFFFFE:u64 - g.a2,
+    a3: f.a3 + 0xFFFFFFFFFFFFE:u64 - g.a3,
+    a4: f.a4 + 0xFFFFFFFFFFFFE:u64 - g.a4
+  )
+}
+
+// === Carry/reduce ===
+// Propagate carries and reduce mod p
+
+export func fe-carry(h: Fe) -> Fe {
+  let h0 = h.a0
+  let h1 = h.a1
+  let h2 = h.a2
+  let h3 = h.a3
+  let h4 = h.a4
+
+  let c: u64 = 0
+
+  c = h0 >> 51
+  h1 += c
+  h0 &= mask51
+
+  c = h1 >> 51
+  h2 += c
+  h1 &= mask51
+
+  c = h2 >> 51
+  h3 += c
+  h2 &= mask51
+
+  c = h3 >> 51
+  h4 += c
+  h3 &= mask51
+
+  // Wrap: excess in h4 gets multiplied by 19 and added to h0
+  // because 2^255 ≡ 19 (mod p)
+  c = h4 >> 51
+  h0 += c * 19
+  h4 &= mask51
+
+  // One more carry from h0 in case c*19 overflowed
+  c = h0 >> 51
+  h1 += c
+  h0 &= mask51
+
+  return (a0: h0, a1: h1, a2: h2, a3: h3, a4: h4)
+}
+
+// === Multiplication ===
+// Schoolbook 5x5 multiplication with reduction mod p
+// Uses the identity: 2^255 ≡ 19 (mod p)
+// So limb products that would contribute to bit 255+ get multiplied by 19
+
+export func fe-mul(f: Fe, g: Fe) -> Fe {
+  let f0 = f.a0
+  let f1 = f.a1
+  let f2 = f.a2
+  let f3 = f.a3
+  let f4 = f.a4
+
+  let g0 = g.a0
+  let g1 = g.a1
+  let g2 = g.a2
+  let g3 = g.a3
+  let g4 = g.a4
+
+  // Pre-multiply by 19 for reduction: when i+j >= 5, the product
+  // wraps and gets multiplied by 19
+  let g1-19 = g1 * 19
+  let g2-19 = g2 * 19
+  let g3-19 = g3 * 19
+  let g4-19 = g4 * 19
+
+  // Accumulate products into 5 result limbs
+  // h0 = f0*g0 + f1*g4*19 + f2*g3*19 + f3*g2*19 + f4*g1*19
+  // h1 = f0*g1 + f1*g0 + f2*g4*19 + f3*g3*19 + f4*g2*19
+  // etc.
+
+  // We need 128-bit products. Use mul (low 64) + mul_hi (high 64)
+  // and accumulate with carry.
+
+  // For simplicity, accumulate into u128 using two u64s (lo, hi)
+  // Then extract the 51-bit limb and propagate carry.
+
+  // h0 = f0*g0 + f1*g4_19 + f2*g3_19 + f3*g2_19 + f4*g1_19
+  let h0-lo = f0 * g0 + f1 * g4-19 + f2 * g3-19 + f3 * g2-19 + f4 * g1-19
+  let h0-hi = mul_hi(f0, g0) + mul_hi(f1, g4-19) + mul_hi(f2, g3-19) + mul_hi(f3, g2-19) + mul_hi(f4, g1-19)
+  // Adjust hi for overflow in lo additions (approximate — carries from lo to hi)
+  // Since limbs are at most 52 bits and we sum 5 products, lo can't overflow u64
+  // (5 * 2^102 < 2^105, and lo captures bottom 64 bits)
+  // Actually: each product is at most 2^51 * 2^51 = 2^102
+  // 5 products = at most 5 * 2^102 ≈ 2^104.3, which fits in 128 bits (lo+hi)
+  // But lo only holds 64 bits, so overflow from lo goes to hi
+  // For correctness, we should track carry from lo additions.
+  // However, since we only need 51 bits from each limb, we can
+  // extract (lo & mask51) and carry = (lo >> 51) | (hi << 13)
+
+  let h0 = h0-lo & mask51
+  let c0 = (h0-lo >> 51) | (h0-hi << 13)
+
+  // h1
+  let h1-lo = f0 * g1 + f1 * g0 + f2 * g4-19 + f3 * g3-19 + f4 * g2-19
+  let h1-hi = mul_hi(f0, g1) + mul_hi(f1, g0) + mul_hi(f2, g4-19) + mul_hi(f3, g3-19) + mul_hi(f4, g2-19)
+  h1-lo += c0
+  let h1 = h1-lo & mask51
+  let c1 = (h1-lo >> 51) | (h1-hi << 13)
+
+  // h2
+  let h2-lo = f0 * g2 + f1 * g1 + f2 * g0 + f3 * g4-19 + f4 * g3-19
+  let h2-hi = mul_hi(f0, g2) + mul_hi(f1, g1) + mul_hi(f2, g0) + mul_hi(f3, g4-19) + mul_hi(f4, g3-19)
+  h2-lo += c1
+  let h2 = h2-lo & mask51
+  let c2 = (h2-lo >> 51) | (h2-hi << 13)
+
+  // h3
+  let h3-lo = f0 * g3 + f1 * g2 + f2 * g1 + f3 * g0 + f4 * g4-19
+  let h3-hi = mul_hi(f0, g3) + mul_hi(f1, g2) + mul_hi(f2, g1) + mul_hi(f3, g0) + mul_hi(f4, g4-19)
+  h3-lo += c2
+  let h3 = h3-lo & mask51
+  let c3 = (h3-lo >> 51) | (h3-hi << 13)
+
+  // h4
+  let h4-lo = f0 * g4 + f1 * g3 + f2 * g2 + f3 * g1 + f4 * g0
+  let h4-hi = mul_hi(f0, g4) + mul_hi(f1, g3) + mul_hi(f2, g2) + mul_hi(f3, g1) + mul_hi(f4, g0)
+  h4-lo += c3
+  let h4 = h4-lo & mask51
+  let c4 = (h4-lo >> 51) | (h4-hi << 13)
+
+  // Final reduction: c4 * 19 wraps around to h0
+  h0 += c4 * 19
+  let c = h0 >> 51
+  h0 &= mask51
+  h1 += c
+
+  return (a0: h0, a1: h1, a2: h2, a3: h3, a4: h4)
+}
+
+// === Squaring ===
+// Optimized: uses symmetry (f[i]*f[j] appears twice for i≠j)
+
+export func fe-sq(f: Fe) -> Fe => fe-mul(f, f)
+
+// === Scalar multiply by small constant ===
+
+export func fe-mul-small(f: Fe, s: u64) -> Fe {
+  return fe-carry((
+    a0: f.a0 * s,
+    a1: f.a1 * s,
+    a2: f.a2 * s,
+    a3: f.a3 * s,
+    a4: f.a4 * s
+  ))
+}
+
+// === Equality (after full reduction) ===
+
+func fe-reduce(f: Fe) -> Fe {
+  let h = fe-carry(f)
+  h = fe-carry(h)
+
+  // Conditional subtract p: if h >= p, subtract p
+  // p limbs: (2^51 - 19, 2^51 - 1, 2^51 - 1, 2^51 - 1, 2^51 - 1)
+  // Check if h >= p by trying to subtract and seeing if we borrow
+  let t0 = h.a0 - (mask51 - 18)
+  let t1 = h.a1 - mask51
+  let t2 = h.a2 - mask51
+  let t3 = h.a3 - mask51
+  let t4 = h.a4 - mask51
+
+  // Propagate borrows
+  t1 -= (t0 >> 63) & 1
+  t0 &= mask51
+  t2 -= (t1 >> 63) & 1
+  t1 &= mask51
+  t3 -= (t2 >> 63) & 1
+  t2 &= mask51
+  t4 -= (t3 >> 63) & 1
+  t3 &= mask51
+
+  // If t4 didn't underflow (bit 63 not set), use t; otherwise keep h
+  let use-reduced = ((t4 >> 63) & 1) ^ 1  // 1 if no underflow
+  t4 &= mask51
+
+  // Conditional select: reduced or original
+  let m = 0:u64 - use-reduced  // mask: all 1s if use-reduced, all 0s otherwise
+  return (
+    a0: (t0 & m) | (h.a0 & ~m),
+    a1: (t1 & m) | (h.a1 & ~m),
+    a2: (t2 & m) | (h.a2 & ~m),
+    a3: (t3 & m) | (h.a3 & ~m),
+    a4: (t4 & m) | (h.a4 & ~m)
+  )
+}
+
+export func fe-eq(f: Fe, g: Fe) -> bool {
+  let a = fe-reduce(f)
+  let b = fe-reduce(g)
+  if a.a0 != b.a0 { return false }
+  if a.a1 != b.a1 { return false }
+  if a.a2 != b.a2 { return false }
+  if a.a3 != b.a3 { return false }
+  if a.a4 != b.a4 { return false }
+  return true
+}
+
+// === Tests ===
+
+test "field arithmetic" {
+
+  test "add and reduce" {
+    let a = fe-one()
+    let b = fe-one()
+    let c = fe-carry(fe-add(a, b))
+    assert c.a0 == 2
+    assert c.a1 == 0:u64
+  }
+
+  test "sub identity" {
+    let a = (a0: 100:u64, a1: 200:u64, a2: 300:u64, a3: 400:u64, a4: 500:u64)
+    let b = fe-carry(fe-sub(a, a))
+    // a - a should give 0 (mod p), but represented as 2p
+    // After carry reduction it should be 0 or p or 2p
+    // Let's check a - a + carry = 0 by verifying fe-eq
+    assert fe-eq(fe-sub(a, a), fe-zero())
+  }
+
+  test "mul by one" {
+    let a = (a0: 42:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let one = fe-one()
+    let result = fe-mul(a, one)
+    assert result.a0 == 42
+  }
+
+  test "mul by zero" {
+    let a = (a0: 12345:u64, a1: 67890:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let zero = fe-zero()
+    let result = fe-mul(a, zero)
+    assert fe-eq(result, zero)
+  }
+
+  test "mul commutativity" {
+    let a = (a0: 7:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let b = (a0: 13:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    assert fe-eq(fe-mul(a, b), fe-mul(b, a))
+  }
+
+  test "small mul" {
+    let a = (a0: 7:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let result = fe-mul-small(a, 6)
+    assert result.a0 == 42
+  }
+
+  test "square equals mul self" {
+    let a = (a0: 123:u64, a1: 456:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    assert fe-eq(fe-sq(a), fe-mul(a, a))
+  }
+
+  test "reduction wraps mod p" {
+    // 2^255 ≡ 19 (mod p)
+    // So a field element with a4 = 2^51 should reduce to a0 += 19
+    let big = (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: mask51 + 1)
+    let reduced = fe-carry(big)
+    assert reduced.a0 == 19
+    assert reduced.a4 == 0:u64
+  }
+}

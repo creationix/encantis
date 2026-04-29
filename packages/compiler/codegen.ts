@@ -1318,8 +1318,9 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
       return `(local.set $${name} ${value})`
     }
 
-    // Multiple values - flatten
-    const names = wasmTypes.map((_, i) => `${name}_${i}`)
+    // Multiple values - flatten using field names from type
+    const flattened = flattenType(type)
+    const names = flattened.map(f => f.suffix ? `${name}_${f.suffix}` : `${name}_${flattened.indexOf(f)}`)
     ctx.locals.set(name, names)
     // If value is a single expression producing multiple results (e.g. a function call),
     // emit the call then assign from the stack in reverse order
@@ -1509,8 +1510,13 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
       return `(local.set $${localNames[0]} ${value})`
     }
     if (localNames && localNames.length > 1) {
-      const parts = splitV128Components(value, localNames.length)
-      return localNames.map((n, i) => `(local.set $${n} ${parts[i]})`).join('\n')
+      try {
+        const parts = splitV128Components(value, localNames.length)
+        return localNames.map((n, i) => `(local.set $${n} ${parts[i]})`).join('\n')
+      } catch {
+        const assigns = [...localNames].reverse().map(n => `(local.set $${n})`).join('\n')
+        return `${value}\n${assigns}`
+      }
     }
     // Check globals
     const sym = ctx.symbols.get(name)
@@ -1823,9 +1829,10 @@ function collectLocals(
           locals.push({ name, type: wasmTypes[0] })
           ctx.locals.set(name, [name])
         } else {
-          const names = wasmTypes.map((wt, i) => {
-            const fieldName = `${name}_${i}`
-            locals.push({ name: fieldName, type: wt })
+          const flattened = flattenType(type)
+          const names = flattened.map((f, i) => {
+            const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
+            locals.push({ name: fieldName, type: f.wasmType })
             return fieldName
           })
           ctx.locals.set(name, names)
