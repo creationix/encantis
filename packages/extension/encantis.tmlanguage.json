@@ -110,8 +110,12 @@
           "match": "\\b(return|break|continue)(?![a-zA-Z0-9_-])"
         },
         {
+          "name": "keyword.control.flow.encantis",
+          "match": "\\bassert(?![a-zA-Z0-9_-])"
+        },
+        {
           "name": "storage.type.encantis",
-          "match": "\\b(func|builtin|inline|memory|import|export|def|type|enum|global|let|set|as|input|output|mut)(?![a-zA-Z0-9_-])"
+          "match": "\\b(func|builtin|inline|memory|import|export|def|type|enum|global|let|set|as|input|output|mut|test)(?![a-zA-Z0-9_-])"
         }
       ]
     },

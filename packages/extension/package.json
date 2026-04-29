@@ -10,8 +10,7 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages",
-    "Themes"
+    "Programming Languages"
   ],
   "activationEvents": [],
   "main": "./dist/node/extension.js",
@@ -125,53 +124,6 @@
         "embeddedLanguages": {
           "meta.embedded.block.encantis": "encantis"
         }
-      }
-    ],
-    "themes": [
-      {
-        "label": "Encantis Dark",
-        "uiTheme": "vs-dark",
-        "path": "./dark-color-theme.json"
-      },
-      {
-        "label": "Encantis Light",
-        "uiTheme": "vs",
-        "path": "./light-color-theme.json"
-      },
-      {
-        "label": "Encantis Light Blue-Orange",
-        "uiTheme": "vs",
-        "path": "./light-blue-orange-theme.json"
-      },
-      {
-        "label": "Encantis Dark Sweetie-16",
-        "uiTheme": "vs-dark",
-        "path": "./dark-sweetie-16-theme.json"
-      },
-      {
-        "label": "Encantis Light Sweetie-16",
-        "uiTheme": "vs",
-        "path": "./light-sweetie-16-theme.json"
-      },
-      {
-        "label": "Encantis Dark PICO-8",
-        "uiTheme": "vs-dark",
-        "path": "./dark-pico-8-theme.json"
-      },
-      {
-        "label": "Encantis Light PICO-8",
-        "uiTheme": "vs",
-        "path": "./light-pico-8-theme.json"
-      },
-      {
-        "label": "Encantis Dark NA16",
-        "uiTheme": "vs-dark",
-        "path": "./dark-na16-theme.json"
-      },
-      {
-        "label": "Encantis Light NA16",
-        "uiTheme": "vs",
-        "path": "./light-na16-theme.json"
       }
     ],
     "configurationDefaults": {
