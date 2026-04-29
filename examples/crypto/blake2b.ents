@@ -3,6 +3,8 @@
 // Implements both 256-bit and 512-bit variants
 // Returns hash value directly as scalar via type punning from internal state
 
+memory 2
+
 // BLAKE2b IV - from SHA-512 fractional parts of square roots of first 8 primes
 def iv:*[8]u64 = [
   0x6a09e667f3bcc908,
@@ -47,15 +49,15 @@ def pad:[16]u64
 
 // G mixing function - the core of BLAKE2
 // Mixes four state words with two message words
-inline func g(v:*[16]u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
+func g(v:*[16]u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
   v[a] += v[b] + x
-  v[d] = (v[d] ^ v[a]) >>> 32
+  v[d] = (v[d] ^ v[a]) <<< 32
   v[c] += v[d]
-  v[b] = (v[b] ^ v[c]) >>> 24
+  v[b] = (v[b] ^ v[c]) <<< 40
   v[a] += v[b] + y
-  v[d] = (v[d] ^ v[a]) >>> 16
+  v[d] = (v[d] ^ v[a]) <<< 48
   v[c] += v[d]
-  v[b] = (v[b] ^ v[c]) >>> 63
+  v[b] = (v[b] ^ v[c]) <<< 1
 }
 
 // Compress one 128-byte block into the state
@@ -63,7 +65,7 @@ inline func g(v:*[16]u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
 func compress(hs:*[8]u64, block:*[16]u64, t_lo:u64, t_hi:u64, last:u32) {
   // Initialize working vector cv[0..15] from state and IV
   cv.u512[0] = hs.u512[0]  // cv[0..7] = hs[0..7]
-  cv.u512[1] = iv.u512[1]  // cv[8..15] = iv[0..7]
+  cv.u512[1] = iv.u512[0]  // cv[8..15] = iv[0..7]
   cv[12] ^= t_lo    // XOR with lower 64 bits of counter
   cv[13] ^= t_hi    // XOR with upper 64 bits of counter
   if last != 0 {
@@ -96,14 +98,37 @@ test "blake2b" {
   def tv_empty: []u8 = ""
   def tv_abc: []u8 = "abc"
 
-  // TODO: blake2b-256 traps at runtime — needs debugging
-  // The algorithm compiles but has a runtime bug (likely in compress or padding)
-  // test "256 runs" {
-  //   blake2b-256(tv_empty)
-  // }
+  def result_buf:[32]u8
+
+  func get_hash_byte(input: []u8, idx: u32) -> u8 {
+    let hash = blake2b-256(input)
+    // Store u256 result to memory for byte access
+    result_buf.u256[0] = hash
+    return result_buf[idx]
+  }
+
+  test "256 empty first bytes" {
+    // BLAKE2b-256("") = 0e5751c026e543b2...
+    assert get_hash_byte(tv_empty, 0) == 0x0e
+    assert get_hash_byte(tv_empty, 1) == 0x57
+    assert get_hash_byte(tv_empty, 2) == 0x51
+    assert get_hash_byte(tv_empty, 3) == 0xc0
+  }
+
+  test "256 deterministic" {
+    let h1 = blake2b-256(tv_empty)
+    let h2 = blake2b-256(tv_empty)
+    assert h1 == h2
+  }
+
+  test "256 abc differs from empty" {
+    let empty = blake2b-256(tv_empty)
+    let abc = blake2b-256(tv_abc)
+    assert empty != abc
+  }
 }
 
-export func blake2b-256(data:[]u8) -> (hash:u256) {
+func blake2b-256(data:[]u8) -> (hash:u256) {
   // Initialize state with IV XOR parameters
   h.u512[0] = iv.u512[0]  // h[0..7] = iv[0..7]
   h[0] ^= param-256
@@ -135,7 +160,7 @@ export func blake2b-256(data:[]u8) -> (hash:u256) {
 }
 
 // BLAKE2b-512: Full 512-bit output
-export func blake2b-512(data:[]u8) -> (hash:u512) {
+func blake2b-512(data:[]u8) -> (hash:u512) {
   // Initialize state with IV XOR parameters
   h.u512[0] = iv.u512[0]  // h[0..7] = iv[0..7]
   h[0] ^= param-512

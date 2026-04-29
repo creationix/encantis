@@ -994,11 +994,13 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   }
   const { offset } = indexOffset(expr.object, base, index, ctx)
 
-  // Load from memory
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  // Get result type
+  const type = lookupExprType(expr, ctx)
   if (!type) {
     throw new Error(`Missing type for index expression at offset ${expr.span.start}`)
   }
+  // Multi-dim indexing returns a pointer — just compute address, don't load
+  if (type.kind === 'pointer') return offset
   return v128LoadSequence(type, offset)
 }
 
