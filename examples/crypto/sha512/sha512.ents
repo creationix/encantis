@@ -1,0 +1,215 @@
+// SHA-512 (FIPS 180-4)
+// Produces a 64-byte (512-bit) hash
+
+export "mem" memory
+
+// Initial hash values (first 64 bits of fractional parts of sqrt of first 8 primes)
+def iv:*[8]u64 = [
+  0x6a09e667f3bcc908:u64, 0xbb67ae8584caa73b:u64,
+  0x3c6ef372fe94f82b:u64, 0xa54ff53a5f1d36f1:u64,
+  0x510e527fade682d1:u64, 0x9b05688c2b3e6c1f:u64,
+  0x1f83d9abfb41bd6b:u64, 0x5be0cd19137e2179:u64
+]
+
+// Round constants (first 64 bits of fractional parts of cube roots of first 80 primes)
+def k:*[80]u64 = [
+  0x428a2f98d728ae22:u64, 0x7137449123ef65cd:u64, 0xb5c0fbcfec4d3b2f:u64, 0xe9b5dba58189dbbc:u64,
+  0x3956c25bf348b538:u64, 0x59f111f1b605d019:u64, 0x923f82a4af194f9b:u64, 0xab1c5ed5da6d8118:u64,
+  0xd807aa98a3030242:u64, 0x12835b0145706fbe:u64, 0x243185be4ee4b28c:u64, 0x550c7dc3d5ffb4e2:u64,
+  0x72be5d74f27b896f:u64, 0x80deb1fe3b1696b1:u64, 0x9bdc06a725c71235:u64, 0xc19bf174cf692694:u64,
+  0xe49b69c19ef14ad2:u64, 0xefbe4786384f25e3:u64, 0x0fc19dc68b8cd5b5:u64, 0x240ca1cc77ac9c65:u64,
+  0x2de92c6f592b0275:u64, 0x4a7484aa6ea6e483:u64, 0x5cb0a9dcbd41fbd4:u64, 0x76f988da831153b5:u64,
+  0x983e5152ee66dfab:u64, 0xa831c66d2db43210:u64, 0xb00327c898fb213f:u64, 0xbf597fc7beef0ee4:u64,
+  0xc6e00bf33da88fc2:u64, 0xd5a79147930aa725:u64, 0x06ca6351e003826f:u64, 0x142929670a0e6e70:u64,
+  0x27b70a8546d22ffc:u64, 0x2e1b21385c26c926:u64, 0x4d2c6dfc5ac42aed:u64, 0x53380d139d95b3df:u64,
+  0x650a73548baf63de:u64, 0x766a0abb3c77b2a8:u64, 0x81c2c92e47edaee6:u64, 0x92722c851482353b:u64,
+  0xa2bfe8a14cf10364:u64, 0xa81a664bbc423001:u64, 0xc24b8b70d0f89791:u64, 0xc76c51a30654be30:u64,
+  0xd192e819d6ef5218:u64, 0xd69906245565a910:u64, 0xf40e35855771202a:u64, 0x106aa07032bbd1b8:u64,
+  0x19a4c116b8d2d0c8:u64, 0x1e376c085141ab53:u64, 0x2748774cdf8eeb99:u64, 0x34b0bcb5e19b48a8:u64,
+  0x391c0cb3c5c95a63:u64, 0x4ed8aa4ae3418acb:u64, 0x5b9cca4f7763e373:u64, 0x682e6ff3d6b2b8a3:u64,
+  0x748f82ee5defb2fc:u64, 0x78a5636f43172f60:u64, 0x84c87814a1f0ab72:u64, 0x8cc702081a6439ec:u64,
+  0x90befffa23631e28:u64, 0xa4506cebde82bde9:u64, 0xbef9a3f7b2c67915:u64, 0xc67178f2e372532b:u64,
+  0xca273eceea26619c:u64, 0xd186b8c721c0c207:u64, 0xeada7dd6cde0eb1e:u64, 0xf57d4f7fee6ed178:u64,
+  0x06f067aa72176fba:u64, 0x0a637dc5a2c898a6:u64, 0x113f9804bef90dae:u64, 0x1b710b35131c471b:u64,
+  0x28db77f523047d84:u64, 0x32caab7b40c72493:u64, 0x3c9ebe0a15c9bebc:u64, 0x431d67c49c100d4c:u64,
+  0x4cc5d4becb3e42b6:u64, 0x597f299cfc657e2a:u64, 0x5fcb6fab3ad6faec:u64, 0x6c44198c4a475817:u64
+]
+
+// Working state
+def state:[8]u64
+def w:[80]u64
+def pad_block:[128]u8
+
+// SHA-512 helper functions
+inline func ch(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (~x & z)
+inline func maj(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (x & z) ^ (y & z)
+inline func big-sigma0(x: u64) -> u64 => (x <<< 36) ^ (x <<< 30) ^ (x <<< 25)
+inline func big-sigma1(x: u64) -> u64 => (x <<< 50) ^ (x <<< 46) ^ (x <<< 23)
+inline func small-sigma0(x: u64) -> u64 => (x <<< 63) ^ (x <<< 56) ^ (x >> 7)
+inline func small-sigma1(x: u64) -> u64 => (x <<< 45) ^ (x <<< 3) ^ (x >> 6)
+
+// Load 64-bit big-endian from byte pointer
+func load-be64(ptr: *u8, offset: u32) -> u64 {
+  let p = ptr + offset
+  let b0 = p[0] as u64
+  let b1 = p[1] as u64
+  let b2 = p[2] as u64
+  let b3 = p[3] as u64
+  let b4 = p[4] as u64
+  let b5 = p[5] as u64
+  let b6 = p[6] as u64
+  let b7 = p[7] as u64
+  return (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) | (b4 << 24) | (b5 << 16) | (b6 << 8) | b7
+}
+
+// Store 64-bit big-endian to byte pointer
+func store-be64(ptr: *u8, offset: u32, value: u64) {
+  let p = ptr + offset
+  p[0] = (value >> 56) as u8
+  p[1] = (value >> 48) as u8
+  p[2] = (value >> 40) as u8
+  p[3] = (value >> 32) as u8
+  p[4] = (value >> 24) as u8
+  p[5] = (value >> 16) as u8
+  p[6] = (value >> 8) as u8
+  p[7] = value as u8
+}
+
+// Process one 128-byte block
+func compress(block: *[128]u8) {
+  // Load message schedule from block (big-endian)
+  for i in 16 {
+    w[i] = load-be64(block as *u8, (i * 8) as u32)
+  }
+
+  // Extend message schedule
+  let i: u32 = 16
+  while i < 80 {
+    w[i] = small-sigma1(w[i - 2]) + w[i - 7] + small-sigma0(w[i - 15]) + w[i - 16]
+    i += 1
+  }
+
+  // Working variables
+  let a = state[0]
+  let b = state[1]
+  let c = state[2]
+  let d = state[3]
+  let e = state[4]
+  let f = state[5]
+  let g = state[6]
+  let h = state[7]
+
+  // 80 rounds
+  for round in 80 {
+    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[round] + w[round]
+    let t2 = big-sigma0(a) + maj(a, b, c)
+    h = g
+    g = f
+    f = e
+    e = d + t1
+    d = c
+    c = b
+    b = a
+    a = t1 + t2
+  }
+
+  // Add compressed chunk to running hash
+  state[0] += a
+  state[1] += b
+  state[2] += c
+  state[3] += d
+  state[4] += e
+  state[5] += f
+  state[6] += g
+  state[7] += h
+}
+
+// Public API: hash arbitrary-length input, write 64 bytes to output
+export func sha512(input: []u8, output: *[64]u8) {
+  // Initialize state from IV
+  for i in 8 {
+    state[i] = iv[i]
+  }
+
+  let ptr = input.ptr
+  let remaining = input.len
+  let total_len = input.len
+  let total_bits: u64 = total_len as u64
+  total_bits *= 8
+
+  // Process full 128-byte blocks
+  while remaining >= 128 {
+    compress(ptr as *[128]u8)
+    ptr += 128
+    remaining -= 128
+  }
+
+  // Pad final block(s)
+  // Copy remaining bytes
+  memset(pad_block as [*]u8, 0, 128)
+  let j: u32 = 0
+  while j < remaining {
+    pad_block[j] = ptr[j]
+    j += 1
+  }
+
+  // Append 0x80 byte
+  pad_block[remaining] = 0x80 as u8
+
+  if remaining >= 112 {
+    // Need two blocks: current + one more
+    compress(pad_block)
+    memset(pad_block as [*]u8, 0, 128)
+  }
+
+  // Append length in bits as big-endian u64 at end of block
+  store-be64(pad_block as *u8, 120 as u32, total_bits)
+
+  compress(pad_block)
+
+  // Write hash output as big-endian
+  for i in 8 {
+    store-be64(output as *u8, (i * 8) as u32, state[i])
+  }
+}
+
+// === Tests ===
+
+test "sha512" {
+  def hash_out:[64]u8
+
+  // Helper: compare hash output to expected hex bytes
+  func check_hash(input: []u8, expected: *[64]u8) -> bool {
+    sha512(input, hash_out)
+    let i: u32 = 0
+    while i < 64 {
+      return false when hash_out[i] != expected[i]
+      i += 1
+    }
+    return true
+  }
+
+  // NIST test vector: SHA-512("abc")
+  def tv_abc: []u8 = "abc"
+  def expected_abc:*[64]u8 = x"ddaf35a193617aba cc417349ae204131 12e6fa4e89a97ea2 0a9eeee64b55d39a 2192992a274fc1a8 36ba3c23a3feebbd 454d4423643ce80e 2a9ac94fa54ca49f"
+
+  test "abc" {
+    assert check_hash(tv_abc, expected_abc)
+  }
+
+  // NIST test vector: SHA-512("")
+  def tv_empty: []u8 = ""
+  def expected_empty:*[64]u8 = x"cf83e1357eefb8bd f1542850d66d8007 d620e4050b5715dc 83f4a921d36ce9ce 47d0d13c5d85f2b0 ff8318d2877eec2f 63b931bd47417a81 a538327af927da3e"
+
+  test "empty" {
+    assert check_hash(tv_empty, expected_empty)
+  }
+
+  // NIST test vector: SHA-512("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+  def tv_448: []u8 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  def expected_448:*[64]u8 = x"204a8fc6dda82f0a 0ced7beb8e08a416 57c16ef468b228a8 279be331a703c335 96fd15c13b1b07f9 aa1d3bea57789ca0 31ad85c7a71dd703 54ec631238ca3445"
+
+  test "448 bit message" {
+    assert check_hash(tv_448, expected_448)
+  }
+}
