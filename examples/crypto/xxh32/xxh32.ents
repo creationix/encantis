@@ -3,6 +3,12 @@
 
 export "mem" memory
 
+def tv_abc: []u8 = "abc"
+
+test "xxh32 abc" {
+  assert xxh32(tv_abc, 0) == 0x32d153ff:u32
+}
+
 def prime32-1 = 2654435761:u32
 def prime32-2 = 2246822519:u32
 def prime32-3 = 3266489917:u32

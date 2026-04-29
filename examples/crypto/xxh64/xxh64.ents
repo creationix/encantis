@@ -20,6 +20,12 @@ inline func merge-round64(acc:u64, value:u64) -> (acc:u64) {
   acc = (acc * prime64-1) + prime64-4
 }
 
+def tv_abc: []u8 = "abc"
+
+test "xxh64 abc" {
+  assert xxh64(tv_abc, 0) == 0x44bc2cf5ad770999
+}
+
 export func xxh64(data:[]u8, seed:u64) -> (h64:u64) {
   let ptr = data.ptr
   let len = data.len

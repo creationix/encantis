@@ -223,8 +223,13 @@ export function concretizeType(
   const u = unwrap(t)
 
   switch (u.kind) {
-    case 'comptime_int':
+    case 'comptime_int': {
+      const val = u.value
+      if (val >= -2147483648n && val <= 4294967295n) return primitive(opts.defaultInt)
+      if (val >= -9223372036854775808n && val <= 18446744073709551615n) return primitive('i64')
+      if (val >= -(2n ** 127n) && val <= 2n ** 128n - 1n) return primitive('i128')
       return primitive(opts.defaultInt)
+    }
 
     case 'comptime_float':
       return primitive(opts.defaultFloat)
