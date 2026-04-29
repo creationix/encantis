@@ -257,24 +257,34 @@ Use fixed arrays for small data that benefits from register access: cryptographi
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
 
-| Type      | Meaning                    | `.len`          | Indexing            |
-|-----------|----------------------------|-----------------|---------------------|
-| `*T`      | pointer to one T           | N/A             | `.*` to dereference |
-| `*[N]T`   | pointer to N elements      | N (comptime)    | `[i]`               |
-| `*[!]T`   | pointer to null-terminated | scans, O(n)     | `[i]`               |
-| `*[N,M]T` | pointer to N×M packed 2D   | N, M (comptime) | `[i,j]`             |
-| `[*]T`    | many-pointer (no bounds)   | N/A             | `[i]` (unchecked)   |
+| Type      | Meaning                    | `.len`          | `.wid`             | Indexing            |
+|-----------|----------------------------|-----------------|---------------------|---------------------|
+| `*T`      | pointer to one T           | N/A             | `sizeof(T)`         | `.*` to dereference |
+| `*[N]T`   | pointer to N elements      | N (comptime)    | `sizeof(T)`         | `[i]`               |
+| `*[!]T`   | pointer to null-terminated | scans, O(n)     | `sizeof(T)`         | `[i]`               |
+| `*[N,M]T` | pointer to N×M packed 2D   | N, M (comptime) | `sizeof(T)`         | `[i,j]`             |
+| `[*]T`    | many-pointer (no bounds)   | N/A             | `sizeof(T)`         | `[i]` (unchecked)   |
+| `[]T`     | slice (fat pointer)        | runtime         | `sizeof(T)`         | `[i]`               |
+
+`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`.
 
 ```ents
 let p: *u8 = ...
 let v = p.*          // dereference single pointer
 
 let buf: *[16]u8 = ...
-let v = buf[0]       // index into array pointer
+buf[0]               // index into array pointer
 buf.len              // 16 (compile-time constant)
+buf.wid              // 1 (sizeof(u8), compile-time constant)
+
+let s: []u64 = ...
+s.len                // element count (runtime)
+s.wid                // 8 (sizeof(u64), compile-time constant)
+s.ptr                // raw pointer ([*]u64)
 
 let mp: [*]u8 = ...
 mp[i]                // caller must ensure bounds
+mp.wid               // 1 (sizeof(u8))
 ```
 
 #### Mutability
