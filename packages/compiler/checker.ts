@@ -577,6 +577,11 @@ class CheckContext {
     // If LHS type annotation is provided, use it; otherwise use inferred type
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
+    // Use span-based key for defs inside test blocks to avoid name collisions
+    const defKey = this.currentScope === this.moduleScope
+      ? decl.ident
+      : `${decl.ident}$${decl.span.start}`
+
     // Check if this is a data section literal (array/string with pointer type)
     // e.g., def x = [0;12]:[*_]u32 or def x:[*_]u32 = [0;12]
     const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
@@ -593,11 +598,13 @@ class CheckContext {
         expr: dataLiteral.expr,
         type: dataLiteral.indexedType,
       })
-      this.moduleScope.symbols.set(decl.ident, {
-        kind: 'def',
+      const sym = {
+        kind: 'def' as const,
         type: dataLiteral.ptrType,
-        value: { kind: 'data_ptr', id: dataId },
-      })
+        value: { kind: 'data_ptr' as const, id: dataId },
+      }
+      this.moduleScope.symbols.set(defKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
       this.recordDefinition(decl.ident, decl.span.start)
       return
     }
@@ -605,12 +612,14 @@ class CheckContext {
     // Regular comptime value (int, float, bool)
     const type = declaredType ?? inferredType
     const value = this.evalComptimeExpr(decl.value)
+    const sym = value
+      ? { kind: 'def' as const, type, value }
+      : { kind: 'def' as const, type, value: { kind: 'int' as const, value: 0n } }
     if (!value) {
       this.error(decl.span.start, `def value must be a compile-time constant`)
-      this.moduleScope.symbols.set(decl.ident, { kind: 'def', type, value: { kind: 'int', value: 0n } })
-    } else {
-      this.moduleScope.symbols.set(decl.ident, { kind: 'def', type, value })
     }
+    this.moduleScope.symbols.set(defKey, sym)
+    this.currentScope.symbols.set(decl.ident, sym)
     this.recordDefinition(decl.ident, decl.span.start)
   }
 
@@ -936,7 +945,7 @@ class CheckContext {
 
   checkFuncBody(decl: AST.FuncDecl): void {
     // Create function scope with params and named returns
-    const funcScope: Scope = { parent: this.moduleScope, symbols: new Map() }
+    const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
     // Add parameters and named returns to scope
     this.bindFields(decl.signature.input, funcScope, 'param')

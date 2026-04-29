@@ -1728,8 +1728,12 @@ export function funcToWat(
   literalRefs: Map<number, { ptr: number; len: number }> = new Map(),
   nameMap?: Map<string, string>,
   watName?: string,
+  extraSymbols?: Map<string, CheckSymbol>,
 ): string {
   const ctx = createContext(checkResult, literalRefs, nameMap)
+  if (extraSymbols) {
+    for (const [k, v] of extraSymbols) ctx.symbols.set(k, v)
+  }
   const name = decl.ident ?? 'anonymous'
 
   // Get function type from checker
@@ -2083,6 +2087,15 @@ function emitTestDecl(
     ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
     : prefix
 
+  // Process defs first so they're available to functions and statements
+  for (const item of decl.children) {
+    if (item.kind === 'DefDecl') {
+      const defKey = `${item.ident}$${item.span.start}`
+      const sym = checkResult.symbols.get(defKey) ?? checkResult.symbols.get(item.ident)
+      if (sym) ctx.symbols.set(item.ident, sym)
+    }
+  }
+
   // Separate children into declarations (shared) and test cases (leaf)
   const stmts: AST.Statement[] = []
   let hasNestedTests = false
@@ -2096,9 +2109,9 @@ function emitTestDecl(
       if (item.ident) {
         ctx.nameMap.set(item.ident, watName)
       }
-      parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName))
+      parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols))
     } else if (item.kind === 'DefDecl') {
-      // Defs are handled at the checker level (data section)
+      // Already processed above
     } else {
       stmts.push(item)
     }
