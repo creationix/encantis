@@ -152,12 +152,12 @@ def buffer: [*]u8 = [0:u8; 1024]    // [*]u8 (many-pointer)
 
 Encantis has a unified model for compound values:
 
-| Level | Description | Access |
-|-------|-------------|--------|
-| **Multiple values** | Base concept - zero or more values | positional |
-| **Tuple** | Multiple values with indices | `.0`, `.1`, ... |
-| **Struct** | Tuple with named fields | `.name` |
-| **Slice** | Struct `(ptr:*T, len:u32)` via `[]T` | `.ptr`, `.len` |
+| Level               | Description                          | Access          |
+|---------------------|--------------------------------------|-----------------|
+| **Multiple values** | Base concept - zero or more values   | positional      |
+| **Tuple**           | Multiple values with indices         | `.0`, `.1`, ... |
+| **Struct**          | Tuple with named fields              | `.name`         |
+| **Slice**           | Struct `(ptr:*T, len:u32)` via `[]T` | `.ptr`, `.len`  |
 
 Each level is a superset of the one above:
 
@@ -202,12 +202,14 @@ set (x:, y:) = other_point    // updates existing x and y
 
 ### 2.3 Value vs Reference Types
 
-Encantis has a simple rule: **types without `*` or brackets are values; types with `*` or brackets are references**.
+Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
 
 | Category | Types | Semantics |
 |----------|-------|-----------|
 | **Values** | primitives, tuples, structs, `[N]T` | passed by value, copied |
 | **References** | `*T`, `*[N]T`, `[*]T`, `[]T` | pointer to memory |
+
+`[N]T` has brackets but is a value type — the `N` is a compile-time constant, so the compiler knows exactly how many wasm values to emit. The reference types all involve runtime indirection through memory addresses.
 
 Mutating a value parameter does NOT affect the caller. Mutating through a reference DOES.
 
