@@ -303,3 +303,79 @@ Aim for ~1 week of compiler work, in this order:
 9. **Harness prototype** (§8). Half a day; the bulk lives in the seed repo.
 
 Once 1–7 are green and the docs in 8 exist, the seed repo is a packaging exercise: copy `docs/`, copy a couple of working examples, write the agent-facing README, freeze the test vectors, ship.
+
+---
+
+## Status & Context (updated 2026-04-29)
+
+**All 10 sections above are complete.** The checklist items are done. The work has shifted to stress-testing the compiler by writing real crypto code and fixing every bug that surfaces.
+
+### Purpose
+
+**The goal is to find and fix bugs in the Encantis language and compiler.** The Ed25519 implementation is a vehicle for stress-testing — not the deliverable itself. When you hit a codegen crash, a type checker gap, or a design inconsistency, fix the compiler. Do not work around bugs with ugly code patterns.
+
+### Ed25519 Progress
+
+Ed25519 is being implemented step-by-step in `examples/crypto/ed25519/`:
+
+| Step | Status | Files |
+|------|--------|-------|
+| 1. Field arithmetic (mod p = 2^255-19) | **Done** | `field.ents` — 12 tests |
+| 2. Point operations (extended coordinates) | **Done** | `point.ents` — 19 tests |
+| 3. Scalar multiplication (double-and-add) | **Done** | `point.ents` — tested through 256*G |
+| 4. Key derivation (SHA-512 → clamp → scalar*G) | **Done** | `ed25519.ents` — RFC 8032 test vector passes |
+| 5. Signing | **Not started** | |
+| 6. Verification | **Not started** | |
+
+Other crypto modules used: `sha512/sha512.ents` (3 NIST vectors), `base64url/`, `blake2b.ents`, `gimli/`, `xxh64/`.
+
+**Total test count:** 375 unit tests + 121 example tests, all passing.
+
+### Bugs Found & Fixed During Crypto Work
+
+These were all found by writing Ed25519 and other crypto code:
+
+1. **Negative literal parsing** — `-128:i8` parsed as `-(128:i8)`. Fixed with AST fold in `UnaryExpr_neg`.
+2. **Meta builder missing test blocks** — LSP hovers broken for test-local variables. Fixed.
+3. **Cross-type binary ops** — `u64 + u128` crashed codegen. Added `widenToWide()`.
+4. **`concretizeType` sign-extension** — `0xdeadbeef` concretized to `i32`, corrupting when widened. Fixed.
+5. **Pointer-to-array → slice coercion** — `*[32]u8` didn't auto-coerce to `[]u8` at call sites. Fixed.
+6. **Ed25519 d constant** — wrong high limb value. Fixed.
+7. **Addition formula** — used `2d` instead of `d` for unified addition. Fixed.
+8. **`def` name collisions in test blocks** — same-named defs in different tests resolved to wrong data addresses. Fixed with span-based mangling.
+9. **Tuple field mutation codegen** — `h.0 += 1` on a param was silently dropped. Fixed.
+10. **Assignment type propagation** — assignments didn't propagate target type to value. Fixed.
+11. **For-loop index type** — `for i in N` typed `i` as `i32` instead of `u32`. Fixed.
+12. **Bidirectional type inference** — arrow body expressions didn't check against return type. Fixed.
+13. **Single-element tuple grouping** — `(expr)` created a 1-element tuple instead of being treated as grouping. Fixed.
+
+### Type System Redesign
+
+A major type system redesign was documented in `docs/encantis.md` but **not yet implemented**. See `type-system-migration.md` for the full plan. Key changes:
+
+- **`[N]T` becomes a value type** (like tuples, in registers). Currently it's memory-backed.
+- **New `data` keyword** for data section allocation. `def` becomes pure constant substitution.
+- **Const-by-default pointers** — `*T` is read-only, `*mut T` is writable.
+- **`mut` keyword on literals** — forces heap allocation + writability.
+
+Implementation is in `type-system-migration.md` with 5 phases.
+
+### Architecture Notes
+
+- **Tuples as value arrays**: `type Fe = (u64, u64, u64, u64, u64)` with `.0`-`.4` access. This is the current pattern for field elements. Works well.
+- **Points use flat memory buffers**: `point.ents` stores extended coordinates as `[120]u64` (6 slots × 20 limbs) with index-based access, because nested struct codegen doesn't work.
+- **Cross-module linking**: All modules compile to a single wasm binary. Only the entry module's `export` declarations reach the wasm wall. Memory is auto-created — library modules should NOT declare memory.
+- **Scalar multiplication**: MSB-to-LSB double-and-add. Uses slot 4 as temp in the point buffer. Tested against known n*G encodings for n=1,2,3,4,8,255,256.
+- **SHA-512**: Imports work cross-module. The ed25519 module imports from both `./point` and `../sha512/sha512`.
+
+### Resuming Ed25519
+
+To continue with signing (step 5):
+
+1. Need `fe-frombytes` (deserialize 32 LE bytes → Fe). The reverse of `fe-tobytes` in `point.ents`.
+2. Need `point-decode` (decompress 32-byte encoded point → extended coordinates). Requires square root mod p.
+3. Signing (RFC 8032 §5.1.6): hash private key, compute nonce `r = SHA-512(prefix || msg)`, compute `R = r*G`, compute `S = r + SHA-512(R || A || msg) * a mod L`.
+4. Need scalar arithmetic mod L (the group order). L is ~253 bits.
+5. Verification (RFC 8032 §5.1.7): check `S*G == R + SHA-512(R || A || msg) * A`.
+
+**Remember:** The point of implementing these is to stress-test the compiler. When you hit a bug, fix the compiler first.
