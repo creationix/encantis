@@ -50,7 +50,7 @@ The following identifiers are reserved keywords in Encantis (aligns with `encant
 
 **Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `type`, `import`, `export`, `memory`, `inline`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `data`, `type`, `import`, `export`, `memory`, `inline`
 
 **Types / Builtins:** `int`, `float`
 
@@ -122,34 +122,50 @@ String literals are array literals of `u8`:
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
 ```
 
-#### The `&` Operator — Memory Allocation
+#### `def` vs `data` — Constants vs Memory
 
-The `&` operator allocates a value in the data section and returns a pointer. This is how you create memory-backed data from literals:
+Encantis has two declaration keywords for compile-time values:
+
+**`def`** — compile-time constant, inlined at every use. No memory allocated.
 
 ```ents
-def buf = &[0:u8; 1024]             // *[1024]u8 — pointer to 1024 zero bytes
-def key = &x"9d61b19deffd5a60"      // *[8]u8 — pointer to 8 bytes
-def table = &[1:u64, 2, 3, 4]       // *[4]u64 — pointer to 4 u64s
-def origin = &(0.0, 0.0)            // *(f64, f64) — struct in memory
+def mask51 = 0x7FFFFFFFFFFFF:u64     // integer constant
+def pi = 3.14159265                  // float constant
+def fe-zero = (0, 0, 0, 0, 0)       // tuple constant
 ```
 
-Without `&`, `def` creates a compile-time constant that is inlined at every use (no memory). With `&`, the value is serialized into the wasm data section and the name binds to a pointer.
+`def` is a macro-like substitution. The value is computed at compile time and pasted inline wherever the name appears. No pointer, no address, no memory.
 
-**LHS type annotation controls the pointer type:**
+**`data`** — data section allocation. Serializes the value into wasm linear memory and binds the name to a pointer.
 
 ```ents
-def buf = &[0:u8; 1024]             // inferred *[1024]u8
-def buf: []u8 = &[0:u8; 1024]       // explicit []u8 (slice)
-def buf: [*]u8 = &[0:u8; 1024]      // explicit [*]u8 (many-pointer)
+data buf = [0:u8; 1024]             // buf: *[1024]u8
+data key = x"9d61b19deffd5a60"      // key: *[8]u8
+data table = [1:u64, 2, 3, 4]       // table: *[4]u64
+data origin = (0.0, 0.0)            // origin: *(f64, f64)
 ```
 
-**Nested data:** Struct literals with pointer fields work — the compiler allocates each piece and wires up the internal pointers:
+The inferred type is always the tightest pointer: `*[N]T`. This preserves the compile-time length in the type, allowing auto-coercion to `[]T` or `[*]T` where needed.
+
+**LHS type annotation** narrows the pointer type when needed:
 
 ```ents
-def person = &(name: "Fred", wizard: true)
+data buf = [0:u8; 1024]             // inferred *[1024]u8 (best practice)
+data buf: []u8 = [0:u8; 1024]       // explicit []u8 (loses length in type)
+data buf: [*]u8 = [0:u8; 1024]      // explicit [*]u8 (loses length entirely)
+```
+
+Best practice: let the type be inferred. `*[N]T` auto-coerces to `[]T` at call sites, so you rarely need to annotate.
+
+**Nested data:** Struct literals with pointer fields are supported — the compiler allocates each piece and wires up internal pointers:
+
+```ents
+data person = (name: "Fred", wizard: true)
 // person: *(name: []u8, wizard: bool)
-// "Fred" allocated separately, slice points to it
+// "Fred" allocated separately, name slice points to it
 ```
+
+**Zero-initialized buffers** are free — wasm memory starts as zeros, so `data buf = [0:u8; 1024]` emits no data segment.
 
 ---
 
@@ -292,15 +308,15 @@ Slices are value types at the language level (the ptr+len pair is copied), but t
 
 #### Static Memory Allocation
 
-Use `def` with `&` and a slice type annotation to allocate memory and get a slice:
+Use `data` to allocate in the wasm data section:
 
 ```ents
-def buf: []u8 = &[0:u8; 1024]           // 1024 zero bytes, buf is a slice
-def key: []u8 = &x"9d61b19deffd5a60"    // initialized from hex literal
-def table: []u64 = &[1:u64, 2, 3, 4]    // 4 u64s in memory
+data buf = [0:u8; 1024]                 // buf: *[1024]u8, auto-coerces to []u8
+data key = x"9d61b19deffd5a60"          // key: *[8]u8
+data table = [1:u64, 2, 3, 4]           // table: *[4]u64
 ```
 
-The `&` allocates in the wasm data section. The `[]T` type annotation makes the name bind to a slice (ptr + len) instead of a thin pointer. Zero-initialized buffers (`[0; N]`) are free — wasm memory starts as zeros, so no data segment is emitted.
+The name binds to `*[N]T` by default — the tightest pointer type. It auto-coerces to `[]T` when passed to functions expecting slices. Annotate the LHS only when you need a specific type: `data buf: []u8 = [0:u8; 1024]`.
 
 ### 2.7 Tuple Types
 
@@ -572,67 +588,56 @@ Casts are required for:
 
 ## 3. Declarations
 
-### 3.1 Definitions
+### 3.1 Definitions (`def`)
 
-Definitions bind compile-time constant values. The behavior depends on whether the value can exist on the stack:
-
-#### Compile-time Substitution (stack-representable values)
-
-For scalars and tuples, `def` performs textual substitution - the value is inlined at each use site:
+`def` binds compile-time constant values. The value is inlined at every use site — no memory, no pointer, no address.
 
 ```ents
 def prime32-1 = 2654435761
-def prime32-2 = 2246822519
 def max-size = 1024
 def origin = (0.0, 0.0)
+def mask51 = 0x7FFFFFFFFFFFF:u64
 
-// Using definitions - values are inlined
-let hash:u32 = seed + prime32-1
+// Using definitions — values are inlined
+let hash: u32 = seed + prime32-1
 ```
 
-Pointer values are also substituted:
+`def` is pure substitution. The compiler replaces every reference to the name with the value. Types are inferred from the value or declared on the left:
 
 ```ents
-def stack-start: *u8 = 0x1000    // pointer VALUE, not allocation
-def null-ptr: *u8 = 0
+def max-size = 1024              // inferred i32
+def max-size: u32 = 1024         // explicit u32
 ```
 
-#### Memory Allocation (array/string literals)
+### 3.2 Data Declarations (`data`)
 
-Array and string literals cannot exist on the stack, so they are automatically serialized to the data section:
+`data` allocates a value in the wasm data section and binds the name to a pointer.
 
 ```ents
-def buffer = [0:u8; 1024]         // *[1024]u8 (default inference)
-def buffer: []u8 = [0:u8; 1024]   // []u8 (explicit slice)
-def buffer: [*]u8 = [0:u8; 1024]  // [*]u8 (many-pointer)
-
-def msg = "hello"                 // *[5]u8
-def msg: []u8 = "hello"           // []u8
+data buf = [0:u8; 1024]             // buf: *[1024]u8
+data key = x"9d61b19deffd5a60"      // key: *[8]u8
+data table = [1:u64, 2, 3, 4]       // table: *[4]u64
+data msg = "hello"                   // msg: *[5]u8
+data origin = (0.0, 0.0)            // origin: *(f64, f64)
 ```
 
-#### Memory Allocation with `&` (scalars/tuples)
-
-For values that could exist on the stack but you want in memory, use `&`:
+The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:
 
 ```ents
-def pi-ptr = &3.14                // *f64, serializes 8 bytes
-def point-ptr = &(1.0, 2.0)       // *(f64, f64), serializes 16 bytes
-def answer = &42:i128             // *i128, serializes 16 bytes
+data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
+data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
 ```
-
-The `:` type annotation binds tighter than `&`, so `&42:i128` means `&(42:i128)`.
 
 #### Mutability
 
-By default, allocated data goes to the read-only data section. Use `mut` for mutable data:
+By default, data is mutable (wasm linear memory is always writable). Use `mut` on the literal to signal intent and prevent deduplication:
 
 ```ents
-def table = [0:u8; 256]           // read-only section
-def buffer = mut [0:u8; 1024]     // mutable section
-def counter = &mut 0:u32          // mutable scalar
+data table = [0:u8; 256]            // shared, may be deduplicated
+data buffer = mut [0:u8; 1024]      // unique, never deduplicated
 ```
 
-### 3.2 Variables
+### 3.3 Variables
 
 ```ents
 // Mutable let variable
@@ -651,7 +656,7 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
-### 3.3 Functions
+### 3.4 Functions
 
 ```ents
 // Basic function with block body
@@ -740,7 +745,7 @@ The `->` operator is right-associative, enabling curried function types:
 let curried: i32 -> i32 -> i32   // same as: i32 -> (i32 -> i32)
 ```
 
-### 3.4 Inline Functions
+### 3.5 Inline Functions
 
 Inline functions are guaranteed to be inlined at each call site. Unlike `def` which performs textual substitution, inline functions have proper type checking and evaluate each argument exactly once:
 
