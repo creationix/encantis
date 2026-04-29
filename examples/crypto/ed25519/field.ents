@@ -122,47 +122,173 @@ export func fe-mul(f: Fe, g: Fe) -> Fe {
   // For simplicity, accumulate into u128 using two u64s (lo, hi)
   // Then extract the 51-bit limb and propagate carry.
 
+  // Each accumulator is 128 bits (lo + hi).
+  // We add products one at a time, tracking carry from lo to hi.
+
   // h0 = f0*g0 + f1*g4_19 + f2*g3_19 + f3*g2_19 + f4*g1_19
-  let h0-lo = f0 * g0 + f1 * g4-19 + f2 * g3-19 + f3 * g2-19 + f4 * g1-19
-  let h0-hi = mul_hi(f0, g0) + mul_hi(f1, g4-19) + mul_hi(f2, g3-19) + mul_hi(f3, g2-19) + mul_hi(f4, g1-19)
-  // Adjust hi for overflow in lo additions (approximate — carries from lo to hi)
-  // Since limbs are at most 52 bits and we sum 5 products, lo can't overflow u64
-  // (5 * 2^102 < 2^105, and lo captures bottom 64 bits)
-  // Actually: each product is at most 2^51 * 2^51 = 2^102
-  // 5 products = at most 5 * 2^102 ≈ 2^104.3, which fits in 128 bits (lo+hi)
-  // But lo only holds 64 bits, so overflow from lo goes to hi
-  // For correctness, we should track carry from lo additions.
-  // However, since we only need 51 bits from each limb, we can
-  // extract (lo & mask51) and carry = (lo >> 51) | (hi << 13)
+  let h0-lo: u64 = 0
+  let h0-hi: u64 = 0
+  let prev: u64 = 0
+
+  h0-lo = f0 * g0
+  h0-hi = mul_hi(f0, g0)
+
+  prev = h0-lo
+  h0-lo += f1 * g4-19
+  if h0-lo < prev { h0-hi += 1 }
+  h0-hi += mul_hi(f1, g4-19)
+
+  prev = h0-lo
+  h0-lo += f2 * g3-19
+  if h0-lo < prev { h0-hi += 1 }
+  h0-hi += mul_hi(f2, g3-19)
+
+  prev = h0-lo
+  h0-lo += f3 * g2-19
+  if h0-lo < prev { h0-hi += 1 }
+  h0-hi += mul_hi(f3, g2-19)
+
+  prev = h0-lo
+  h0-lo += f4 * g1-19
+  if h0-lo < prev { h0-hi += 1 }
+  h0-hi += mul_hi(f4, g1-19)
 
   let h0 = h0-lo & mask51
   let c0 = (h0-lo >> 51) | (h0-hi << 13)
 
   // h1
-  let h1-lo = f0 * g1 + f1 * g0 + f2 * g4-19 + f3 * g3-19 + f4 * g2-19
-  let h1-hi = mul_hi(f0, g1) + mul_hi(f1, g0) + mul_hi(f2, g4-19) + mul_hi(f3, g3-19) + mul_hi(f4, g2-19)
+  let h1-lo: u64 = 0
+  let h1-hi: u64 = 0
+
+  h1-lo = f0 * g1
+  h1-hi = mul_hi(f0, g1)
+
+  prev = h1-lo
+  h1-lo += f1 * g0
+  if h1-lo < prev { h1-hi += 1 }
+  h1-hi += mul_hi(f1, g0)
+
+  prev = h1-lo
+  h1-lo += f2 * g4-19
+  if h1-lo < prev { h1-hi += 1 }
+  h1-hi += mul_hi(f2, g4-19)
+
+  prev = h1-lo
+  h1-lo += f3 * g3-19
+  if h1-lo < prev { h1-hi += 1 }
+  h1-hi += mul_hi(f3, g3-19)
+
+  prev = h1-lo
+  h1-lo += f4 * g2-19
+  if h1-lo < prev { h1-hi += 1 }
+  h1-hi += mul_hi(f4, g2-19)
+
+  prev = h1-lo
   h1-lo += c0
+  if h1-lo < prev { h1-hi += 1 }
+
   let h1 = h1-lo & mask51
   let c1 = (h1-lo >> 51) | (h1-hi << 13)
 
   // h2
-  let h2-lo = f0 * g2 + f1 * g1 + f2 * g0 + f3 * g4-19 + f4 * g3-19
-  let h2-hi = mul_hi(f0, g2) + mul_hi(f1, g1) + mul_hi(f2, g0) + mul_hi(f3, g4-19) + mul_hi(f4, g3-19)
+  let h2-lo: u64 = 0
+  let h2-hi: u64 = 0
+
+  h2-lo = f0 * g2
+  h2-hi = mul_hi(f0, g2)
+
+  prev = h2-lo
+  h2-lo += f1 * g1
+  if h2-lo < prev { h2-hi += 1 }
+  h2-hi += mul_hi(f1, g1)
+
+  prev = h2-lo
+  h2-lo += f2 * g0
+  if h2-lo < prev { h2-hi += 1 }
+  h2-hi += mul_hi(f2, g0)
+
+  prev = h2-lo
+  h2-lo += f3 * g4-19
+  if h2-lo < prev { h2-hi += 1 }
+  h2-hi += mul_hi(f3, g4-19)
+
+  prev = h2-lo
+  h2-lo += f4 * g3-19
+  if h2-lo < prev { h2-hi += 1 }
+  h2-hi += mul_hi(f4, g3-19)
+
+  prev = h2-lo
   h2-lo += c1
+  if h2-lo < prev { h2-hi += 1 }
+
   let h2 = h2-lo & mask51
   let c2 = (h2-lo >> 51) | (h2-hi << 13)
 
   // h3
-  let h3-lo = f0 * g3 + f1 * g2 + f2 * g1 + f3 * g0 + f4 * g4-19
-  let h3-hi = mul_hi(f0, g3) + mul_hi(f1, g2) + mul_hi(f2, g1) + mul_hi(f3, g0) + mul_hi(f4, g4-19)
+  let h3-lo: u64 = 0
+  let h3-hi: u64 = 0
+
+  h3-lo = f0 * g3
+  h3-hi = mul_hi(f0, g3)
+
+  prev = h3-lo
+  h3-lo += f1 * g2
+  if h3-lo < prev { h3-hi += 1 }
+  h3-hi += mul_hi(f1, g2)
+
+  prev = h3-lo
+  h3-lo += f2 * g1
+  if h3-lo < prev { h3-hi += 1 }
+  h3-hi += mul_hi(f2, g1)
+
+  prev = h3-lo
+  h3-lo += f3 * g0
+  if h3-lo < prev { h3-hi += 1 }
+  h3-hi += mul_hi(f3, g0)
+
+  prev = h3-lo
+  h3-lo += f4 * g4-19
+  if h3-lo < prev { h3-hi += 1 }
+  h3-hi += mul_hi(f4, g4-19)
+
+  prev = h3-lo
   h3-lo += c2
+  if h3-lo < prev { h3-hi += 1 }
+
   let h3 = h3-lo & mask51
   let c3 = (h3-lo >> 51) | (h3-hi << 13)
 
   // h4
-  let h4-lo = f0 * g4 + f1 * g3 + f2 * g2 + f3 * g1 + f4 * g0
-  let h4-hi = mul_hi(f0, g4) + mul_hi(f1, g3) + mul_hi(f2, g2) + mul_hi(f3, g1) + mul_hi(f4, g0)
+  let h4-lo: u64 = 0
+  let h4-hi: u64 = 0
+
+  h4-lo = f0 * g4
+  h4-hi = mul_hi(f0, g4)
+
+  prev = h4-lo
+  h4-lo += f1 * g3
+  if h4-lo < prev { h4-hi += 1 }
+  h4-hi += mul_hi(f1, g3)
+
+  prev = h4-lo
+  h4-lo += f2 * g2
+  if h4-lo < prev { h4-hi += 1 }
+  h4-hi += mul_hi(f2, g2)
+
+  prev = h4-lo
+  h4-lo += f3 * g1
+  if h4-lo < prev { h4-hi += 1 }
+  h4-hi += mul_hi(f3, g1)
+
+  prev = h4-lo
+  h4-lo += f4 * g0
+  if h4-lo < prev { h4-hi += 1 }
+  h4-hi += mul_hi(f4, g0)
+
+  prev = h4-lo
   h4-lo += c3
+  if h4-lo < prev { h4-hi += 1 }
+
   let h4 = h4-lo & mask51
   let c4 = (h4-lo >> 51) | (h4-hi << 13)
 
@@ -243,6 +369,69 @@ export func fe-eq(f: Fe, g: Fe) -> bool {
   return true
 }
 
+// === Repeated squaring helper ===
+
+func fe-sq-n(f: Fe, n: u32) -> Fe {
+  let r = f
+  for i in n {
+    r = fe-sq(r)
+  }
+  return r
+}
+
+// === Inversion via Fermat's little theorem ===
+// a^(-1) = a^(p-2) mod p
+// p-2 = 2^255 - 21
+// Uses an addition chain optimized for this exponent
+
+export func fe-inv(z: Fe) -> Fe {
+  let z2 = fe-sq(z)            // z^2
+  let z9 = fe-sq(fe-sq(z2))    // z^8
+  z9 = fe-mul(z9, z)           // z^9
+  let z11 = fe-mul(z9, z2)     // z^11
+  let z-5-0 = fe-sq(z11)       // z^22
+  z-5-0 = fe-mul(z-5-0, z9)    // z^(2^5 - 1) = z^31
+
+  let z-10-0 = fe-sq-n(z-5-0, 5)
+  z-10-0 = fe-mul(z-10-0, z-5-0)    // z^(2^10 - 1)
+
+  let z-20-0 = fe-sq-n(z-10-0, 10)
+  z-20-0 = fe-mul(z-20-0, z-10-0)   // z^(2^20 - 1)
+
+  let z-40-0 = fe-sq-n(z-20-0, 20)
+  z-40-0 = fe-mul(z-40-0, z-20-0)   // z^(2^40 - 1)
+
+  let z-50-0 = fe-sq-n(z-40-0, 10)
+  z-50-0 = fe-mul(z-50-0, z-10-0)   // z^(2^50 - 1)
+
+  let z-100-0 = fe-sq-n(z-50-0, 50)
+  z-100-0 = fe-mul(z-100-0, z-50-0) // z^(2^100 - 1)
+
+  let z-200-0 = fe-sq-n(z-100-0, 100)
+  z-200-0 = fe-mul(z-200-0, z-100-0) // z^(2^200 - 1)
+
+  let z-250-0 = fe-sq-n(z-200-0, 50)
+  z-250-0 = fe-mul(z-250-0, z-50-0)  // z^(2^250 - 1)
+
+  let z-255-21 = fe-sq-n(z-250-0, 5)
+  return fe-mul(z-255-21, z11)        // z^(2^255 - 21) = z^(p-2)
+}
+
+// === Constants ===
+
+// d = -121665/121666 mod p (twisted Edwards curve parameter)
+// Precomputed value
+export func fe-d() -> Fe => (
+  a0: 0x34DCA135978A3:u64,
+  a1: 0x1A8283B156EBD:u64,
+  a2: 0x5E7A26001C029:u64,
+  a3: 0x739C663A03CBB:u64,
+  a4: 0x52036CEC2BED1:u64
+)
+
+// 2*d
+export func fe-2d() -> Fe => fe-carry(fe-add(fe-d(), fe-d()))
+
 // === Tests ===
 
 test "field arithmetic" {
@@ -302,5 +491,29 @@ test "field arithmetic" {
     let reduced = fe-carry(big)
     assert reduced.a0 == 19
     assert reduced.a4 == 0:u64
+  }
+
+  test "inverse of 1 is 1" {
+    let one = fe-one()
+    let inv = fe-inv(one)
+    assert fe-eq(inv, one)
+  }
+
+  test "x * x^-1 = 1" {
+    let x = (a0: 42:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let inv = fe-inv(x)
+    let product = fe-mul(x, inv)
+    assert fe-eq(product, fe-one())
+  }
+
+  test "inverse of large value" {
+    let x = (a0: 0x123456789ABCD:u64, a1: 0xFEDCBA987654:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let inv = fe-inv(x)
+    let product = fe-mul(x, inv)
+    assert fe-eq(product, fe-one())
+  }
+
+  test "d constant nonzero" {
+    assert fe-eq(fe-d(), fe-zero()) == false
   }
 }

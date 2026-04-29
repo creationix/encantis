@@ -62,17 +62,59 @@ func chain_u32(x: u32) -> u32 => add_u32(add_u32(x, 1), 2)
 // === Tests ===
 
 test "integers" {
+  test "mixed sizes" {
+    // Cross-type equality
+    assert 123:i8 == 123:u8
+    assert 123:i8 == 123:u32
+    assert 12345:u32 == 12345:i64
+    assert 0xdeadbeef == 0xdeadbeef:i64
+    assert 42:u8 == 42
+    assert 42 == 42:u64
+
+    // Cross-type arithmetic (widens to larger type)
+    assert 1:u8 + 1:u16 == 2:u16
+    assert 100:u8 + 200:u32 == 300:u32
+    assert 1:u32 + 1:u64 == 2:u64
+    assert 100:u16 - 1:u8 == 99:u16
+    assert 10:u8 * 10:u16 == 100:u16
+
+    // Cross-type comparison
+    assert 1:u8 < 256:u16
+    assert 255:u8 == 255:u32
+    assert 0:u8 == 0:u64
+    assert 1:u8 != 2:u32
+
+    // Signed cross-type
+    assert 50:i8 + 50:i16 == 100:i16
+    assert 1000:i16 + 1000:i32 == 2000:i32
+
+    // Wide integer cross-type
+    assert 100:u64 + 200:u128 == 300:u128
+    assert 42:u32 == 42:u128
+    assert (0xFF:u128 ^ 0x0F:u256) == 0xF0:u256
+  }
   test "u8 arithmetic" {
     assert add_u8(100, 50) == 150
+    assert 100:u8 + 50:u8 == 150:u8
     assert add_u8(200, 50) == 250
+    assert 200:u8 + 50:u8 == 250:u8
     // Overflow wraps at 256
     assert add_u8(255, 1) == 0
+    assert 255:u8 + 1:u8 == 0:u8
     assert add_u8(200, 100) == 44  // 300 & 0xFF
+    assert 200:u8 + 100:u8 == 44:u8
   }
 
   test "i8 arithmetic" {
     assert add_i8(100, 27) == 127
     assert add_i8(127, 1) == -128  // signed overflow wraps
+    assert 100:i8 + 27:i8 == 127:i8
+    assert 127:i8 + 1:i8 == -128:i8
+    let expected:i8 = -128
+    let a:i8 = 127
+    let b:i8 = 1
+    assert a + b == expected
+    let expected2 = -128 as i8
   }
 
   test "u8 wrapping semantics" {
@@ -224,5 +266,6 @@ test "integers" {
     let a: i512 = 0xAB:i512
     let b: i512 = 0xCD:i512
     assert (a ^ b) == 0x66:i512
+    assert (0xAB:i512 ^ 0xCD:i512) == 0x66:i512
   }
 }
