@@ -337,6 +337,16 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   return `(i32.const 0)`
 }
 
+function truncateSubWord(wat: string, type: ResolvedType): string {
+  const u = unwrap(type)
+  if (u.kind !== 'primitive') return wat
+  if (u.name === 'u8') return `(i32.and ${wat} (i32.const 255))`
+  if (u.name === 'i8') return `(i32.shr_s (i32.shl ${wat} (i32.const 24)) (i32.const 24))`
+  if (u.name === 'u16') return `(i32.and ${wat} (i32.const 65535))`
+  if (u.name === 'i16') return `(i32.shr_s (i32.shl ${wat} (i32.const 16)) (i32.const 16))`
+  return wat
+}
+
 function isWideInt(t: ResolvedType): boolean {
   const u = unwrap(t)
   if (u.kind !== 'primitive') return false
@@ -595,7 +605,8 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
 
   if (nWide > 1) return multiV128BinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
-  return `(${wasmOp} ${coercedLeft} ${coercedRight})`
+  const raw = `(${wasmOp} ${coercedLeft} ${coercedRight})`
+  return truncateSubWord(raw, operandType)
 }
 
 function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
@@ -619,7 +630,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         const parts = splitV128Components(operand, nw)
         return parts.map(p => `(i64.sub (i64.const 0) ${p})`).join(' ')
       }
-      return `(${wt}.sub (${wt}.const 0) ${operand})`
+      return truncateSubWord(`(${wt}.sub (${wt}.const 0) ${operand})`, type)
     }
 
     case '~': {
@@ -629,7 +640,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         const parts = splitV128Components(operand, nw)
         return parts.map(p => `(i64.xor ${p} (i64.const -1))`).join(' ')
       }
-      return `(${wt}.xor ${operand} (${wt}.const -1))`
+      return truncateSubWord(`(${wt}.xor ${operand} (${wt}.const -1))`, type)
     }
 
     case '!':
@@ -1479,10 +1490,10 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
 
     const op = ops[stmt.op]
     if (op) {
-      const combined = nv > 1
+      const raw = nv > 1
         ? multiV128BinaryOp(nv, op, current, rhs)
         : `(${op} ${current} ${rhs})`
-      return assignLvalue(stmt.target, combined, ctx)
+      return assignLvalue(stmt.target, truncateSubWord(raw, type), ctx)
     }
   }
 

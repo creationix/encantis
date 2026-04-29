@@ -64,18 +64,34 @@ func chain_u32(x: u32) -> u32 => add_u32(add_u32(x, 1), 2)
 test "integers" {
   test "u8 arithmetic" {
     assert add_u8(100, 50) == 150
-    // u8 arithmetic is done at i32 width (like C)
-    // wrapping happens at memory stores, not in registers
     assert add_u8(200, 50) == 250
+    // Overflow wraps at 256
+    assert add_u8(255, 1) == 0
+    assert add_u8(200, 100) == 44  // 300 & 0xFF
   }
 
   test "i8 arithmetic" {
     assert add_i8(100, 27) == 127
+    assert add_i8(127, 1) == -128  // signed overflow wraps
+  }
+
+  test "u8 wrapping semantics" {
+    // Verify operations can't produce out-of-range values
+    let x: u8 = 200
+    let y: u8 = 100
+    let sum = x + y  // 300 → should be 44 (wraps)
+    assert sum == 44
+    assert sum < 255  // must be in u8 range
+    // Division on wrapped value gives correct u8 result
+    assert sum / 2 == 22
   }
 
   test "u16 arithmetic" {
     assert add_u16(1000, 2000) == 3000
     assert add_u16(30000, 30000) == 60000
+    // Overflow wraps at 65536
+    assert add_u16(65535, 1) == 0
+    assert add_u16(60000, 10000) == 4464  // 70000 & 0xFFFF
   }
 
   test "u32 arithmetic" {
