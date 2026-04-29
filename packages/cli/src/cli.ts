@@ -408,71 +408,77 @@ switch (command) {
 
   case 'test': {
     if (!inputFile) { console.error('Error: test requires a file'); process.exit(2) }
-    const entryPath = resolve(inputFile)
-    const load = await loadModule(entryPath)
-    if (load.errors.length > 0) {
-      for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
-      process.exit(1)
-    }
+    const testFileArgs = args.slice(1).filter(a => !a.startsWith('-'))
 
-    const entryModule = load.modules.get(entryPath)!
-    const check = typecheckProgram(load.modules, entryPath)
-    if (check.errors.length > 0) {
-      for (const [path, result] of check.results) {
-        const modSource = load.modules.get(path)?.source ?? ''
-        for (const error of result.errors) {
-          const loc = offsetToLineCol(modSource, error.offset)
-          console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
+    let totalPassed = 0
+    let totalFailed = 0
+    const allResults: { file: string; name: string; pass: boolean; error?: string }[] = []
+
+    for (const testFile of testFileArgs) {
+      const entryPath = resolve(testFile)
+      const load = await loadModule(entryPath)
+      if (load.errors.length > 0) {
+        for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
+        totalFailed++
+        continue
+      }
+
+      const check = typecheckProgram(load.modules, entryPath)
+      if (check.errors.length > 0) {
+        for (const [path, result] of check.results) {
+          const modSource = load.modules.get(path)?.source ?? ''
+          for (const error of result.errors) {
+            const loc = offsetToLineCol(modSource, error.offset)
+            console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
+          }
+        }
+        totalFailed++
+        continue
+      }
+
+      const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
+      if (testNames.length === 0) continue
+
+      const w = await wabt()
+      let wasmModule
+      try {
+        wasmModule = w.parseWat(testFile, wat, { simd: true, multi_value: true, bulk_memory: true })
+        wasmModule.validate()
+      } catch (e: any) {
+        console.error(`${testFile}: WAT error: ${e.message}`)
+        totalFailed += testNames.length
+        continue
+      }
+      const { buffer } = wasmModule.toBinary({})
+      wasmModule.destroy()
+
+      const mod = await WebAssembly.compile(buffer)
+      const instance = await WebAssembly.instantiate(mod)
+
+      for (const name of testNames) {
+        const fn = instance.exports[`test_${name}`] as Function
+        try {
+          fn()
+          totalPassed++
+          allResults.push({ file: testFile, name, pass: true })
+          console.log(`  pass: ${name.replace(/_/g, ' ')}`)
+        } catch (e: any) {
+          totalFailed++
+          allResults.push({ file: testFile, name, pass: false, error: e.message })
+          console.log(`  FAIL: ${name.replace(/_/g, ' ')}`)
         }
       }
-      process.exit(1)
     }
 
-    const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
-
-    if (testNames.length === 0) {
+    if (totalPassed + totalFailed === 0) {
       console.log('No tests found')
-      break
+    } else {
+      console.log(`\n${totalPassed} passed, ${totalFailed} failed`)
     }
-
-    const w = await wabt()
-    let wasmModule
-    try {
-      wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
-      wasmModule.validate()
-    } catch (e: any) {
-      console.error(`WAT error: ${e.message}`)
-      process.exit(1)
-    }
-    const { buffer } = wasmModule.toBinary({})
-    wasmModule.destroy()
-
-    const mod = await WebAssembly.compile(buffer)
-    const instance = await WebAssembly.instantiate(mod)
-
-    let passed = 0
-    let failed = 0
-    const results: { name: string; pass: boolean; error?: string }[] = []
-
-    for (const name of testNames) {
-      const fn = instance.exports[`test_${name}`] as Function
-      try {
-        fn()
-        passed++
-        results.push({ name, pass: true })
-        console.log(`  pass: ${name.replace(/_/g, ' ')}`)
-      } catch (e: any) {
-        failed++
-        results.push({ name, pass: false, error: e.message })
-        console.log(`  FAIL: ${name.replace(/_/g, ' ')}`)
-      }
-    }
-
-    console.log(`\n${passed} passed, ${failed} failed`)
     if (jsonOutput) {
-      console.log(JSON.stringify({ passed, failed, results }))
+      console.log(JSON.stringify({ passed: totalPassed, failed: totalFailed, results: allResults }))
     }
-    if (failed > 0) process.exit(1)
+    if (totalFailed > 0) process.exit(1)
     break
   }
 

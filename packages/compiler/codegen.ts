@@ -2091,7 +2091,7 @@ export function programToWat(
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
-  options?: { includeTests?: boolean },
+  options?: { includeTests?: boolean; testFiles?: string[] },
 ): string {
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
@@ -2251,20 +2251,23 @@ export function programToWat(
   }
 
   // Test functions (only in test mode)
-  const testNames: string[] = []
-  if (options?.includeTests && entryModule) {
-    const entryResult = checkResults.get(entryPath)!
-    const entryNameMap = buildFullNameMap(entryPath)
-    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap)
-    for (const decl of entryModule.module.decls) {
-      if (decl.kind !== 'TestDecl') continue
-      const safeName = decl.name.replace(/[^a-zA-Z0-9_]/g, '_')
-      testNames.push(safeName)
-      const body = decl.body.stmts.map(s => stmtToWat(s, ctx)).join('\n')
-      const locals = collectLocals(decl.body, ctx, entryResult)
-      const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
-      parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
-      parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+  if (options?.includeTests) {
+    const filesToTest = options.testFiles ?? [entryPath]
+    for (const testFilePath of filesToTest) {
+      const testModule = modules.get(testFilePath)
+      const testResult = checkResults.get(testFilePath)
+      if (!testModule || !testResult) continue
+      const testNameMap = buildFullNameMap(testFilePath)
+      const ctx = createContext(testResult, globalLiteralRefs, testNameMap)
+      for (const decl of testModule.module.decls) {
+        if (decl.kind !== 'TestDecl') continue
+        const safeName = decl.name.replace(/[^a-zA-Z0-9_]/g, '_')
+        const body = decl.body.stmts.map(s => stmtToWat(s, ctx)).join('\n')
+        const locals = collectLocals(decl.body, ctx, testResult)
+        const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
+        parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
+        parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+      }
     }
   }
 
@@ -2291,16 +2294,19 @@ export function programToWatWithTests(
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
+  testFiles?: string[],
 ): { wat: string; testNames: string[] } {
   const testNames: string[] = []
-  const entryModule = modules.get(entryPath)
-  if (entryModule) {
-    for (const decl of entryModule.module.decls) {
+  const filesToTest = testFiles ?? [entryPath]
+  for (const filePath of filesToTest) {
+    const mod = modules.get(filePath)
+    if (!mod) continue
+    for (const decl of mod.module.decls) {
       if (decl.kind === 'TestDecl') {
         testNames.push(decl.name.replace(/[^a-zA-Z0-9_]/g, '_'))
       }
     }
   }
-  const wat = programToWat(modules, checkResults, entryPath, { includeTests: true })
+  const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest })
   return { wat, testNames }
 }
