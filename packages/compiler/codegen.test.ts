@@ -184,7 +184,7 @@ describe('expression codegen', () => {
     })
 
     test('negative integer', () => {
-      expect(exprWat('-5')).toContain('i32.sub')
+      expect(exprWat('-5')).toBe('(i32.const -5)')
     })
 
     test('float literal', () => {

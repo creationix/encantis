@@ -380,7 +380,7 @@ Encantis {
   numberLiteral = floatLiteral
                 | intLiteral
 
-  intLiteral = "-"? 
+  intLiteral = "-"?
     ( hexLiteral
     | binaryLiteral
     | octalLiteral

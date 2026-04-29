@@ -1082,11 +1082,23 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   UnaryExpr_neg(_op, operand) {
+    const inner = operand.toAST()
+    const s = span(this)
+    // Fold negation into numeric literals, including through annotation/cast wrappers
+    const lit = inner.kind === 'AnnotationExpr' ? inner.expr
+              : inner.kind === 'CastExpr' ? inner.expr
+              : inner
+    if (lit.kind === 'LiteralExpr' && (lit.value.kind === 'int' || lit.value.kind === 'float')) {
+      lit.value.value = -lit.value.value
+      lit.span = { start: s.start, end: lit.span.end }
+      inner.span = s
+      return inner
+    }
     return {
       kind: 'UnaryExpr',
       op: '-',
-      operand: operand.toAST(),
-      span: span(this),
+      operand: inner,
+      span: s,
     } as AST.UnaryExpr
   },
 
