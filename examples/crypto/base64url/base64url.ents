@@ -1,7 +1,7 @@
 // base64url encoding/decoding (RFC 4648 §5, no padding)
 
 // Encoding alphabet: A-Z a-z 0-9 - _
-def encode_table:*[64]u8 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+data encode_table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 // Compute encoded length: ceil(input_len * 4 / 3)
 func encoded_len(input_len: u32) -> u32 {
@@ -58,7 +58,7 @@ export func encode(input: []u8, output: *[4096]u8) -> (written: u32) {
 }
 
 // Decode table: maps ASCII byte → 6-bit value (0xFF = invalid)
-def decode_table:[128]u8
+data decode_table = mut [0:u8; 128]
 
 global decode_init: u32 = 0
 
@@ -150,8 +150,8 @@ export func decode(input: []u8, output: *[4096]u8) -> (written: u32) {
 }
 
 test "base64url" {
-  def enc_buf:[4096]u8
-  def dec_buf:[4096]u8
+  data enc_buf = mut [0:u8; 4096]
+  data dec_buf = mut [0:u8; 4096]
 
   func check_encode(input: []u8, expected: []u8) -> bool {
     let n = encode(input, enc_buf)
@@ -175,18 +175,18 @@ test "base64url" {
     return true
   }
 
-  def tv_f: []u8 = "f"
-  def tv_fo: []u8 = "fo"
-  def tv_foo: []u8 = "foo"
-  def tv_foob: []u8 = "foob"
-  def tv_fooba: []u8 = "fooba"
-  def tv_foobar: []u8 = "foobar"
-  def enc_f: []u8 = "Zg"
-  def enc_fo: []u8 = "Zm8"
-  def enc_foo: []u8 = "Zm9v"
-  def enc_foob: []u8 = "Zm9vYg"
-  def enc_fooba: []u8 = "Zm9vYmE"
-  def enc_foobar: []u8 = "Zm9vYmFy"
+  data tv_f = "f"
+  data tv_fo = "fo"
+  data tv_foo = "foo"
+  data tv_foob = "foob"
+  data tv_fooba = "fooba"
+  data tv_foobar = "foobar"
+  data enc_f = "Zg"
+  data enc_fo = "Zm8"
+  data enc_foo = "Zm9v"
+  data enc_foob = "Zm9vYg"
+  data enc_fooba = "Zm9vYmE"
+  data enc_foobar = "Zm9vYmFy"
 
   test "encode" {
     assert check_encode(tv_f, enc_f)
@@ -206,7 +206,7 @@ test "base64url" {
     assert check_decode(enc_foobar, tv_foobar)
   }
 
-  def tv_bad: []u8 = "!!!"
+  data tv_bad = "!!!"
 
   test "reject invalid" {
     assert decode(tv_bad, dec_buf) == 0xFFFFFFFF

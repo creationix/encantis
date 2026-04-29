@@ -10,6 +10,7 @@ Encantis {
               | FuncDecl
               | TypeDecl
               | EnumDecl
+              | DataDecl
               | DefDecl
               | GlobalDecl
               | MemoryDecl
@@ -86,7 +87,9 @@ Encantis {
 
   DefDecl = def ident ":" Type Assign  -- typed
            | def ident Assign          -- bare
-           | def ident ":" Type        -- reserve
+
+  DataDecl = data ident ":" Type Assign  -- typed
+           | data ident Assign           -- bare
 
   // ============================================================================
   // Globals
@@ -111,6 +114,7 @@ Encantis {
   TestBlock = "{" TestItem* "}"
 
   TestItem = TestDecl
+           | DataDecl
            | DefDecl
            | FuncDecl
            | Statement
@@ -455,7 +459,7 @@ Encantis {
   // Keywords
   keyword = (if | elif | else | while | for | in | loop | match
            | break | continue | return | when
-           | func | let | set | global | def | type | enum
+           | func | let | set | global | data | def | type | enum
            | import | export | memory | inline | mut
            | as | true | false | int | float | sizeof) ~identChar
 
@@ -475,6 +479,7 @@ Encantis {
   let = "let" ~identChar
   set = "set" ~identChar
   global = "global" ~identChar
+  data = "data" ~identChar
   def = "def" ~identChar
   type = "type" ~identChar
   enum = "enum" ~identChar

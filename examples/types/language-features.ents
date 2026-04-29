@@ -121,7 +121,7 @@ func approx_eq(a: f64, b: f64) -> bool {
 
 // === Memory: def with arrays, sizeof ===
 
-def lookup:[256]u8
+data lookup = mut [0:u8; 256]
 
 func init_lookup() {
   for i in 256 {

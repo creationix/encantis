@@ -85,7 +85,8 @@ This is the biggest change. Currently `[N]T` in `def` silently becomes `*[N]T`. 
 **Checker changes:**
 - `[N]T` resolves to a value type (like tuples), not a pointer
 - Indexing `[N]T` only allowed with compile-time constant indices
-- Dynamic indexing on `[N]T` produces a clear error: "dynamic index requires a pointer type — use `*[N]T` or `[]T`"
+  - but if we're already indexing into something heap allocated, dynamic access works like normal.  structs may have inline fixed-width arrays and dynamic access works (within bounds) as calculated offsets
+- Dynamic indexing on `[N]T` (when not heap allocated) produces a clear error: "dynamic index requires a pointer type — use `*[N]T` or `[]T`"
 - `[N]T` flattens to N wasm values, like tuples
 - `[N]T` where N × sizeof(T) is too large should warn (suggested limit: 16-32 values)
 

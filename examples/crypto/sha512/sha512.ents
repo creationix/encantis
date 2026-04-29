@@ -2,15 +2,15 @@
 // Produces a 64-byte (512-bit) hash
 
 // Initial hash values (first 64 bits of fractional parts of sqrt of first 8 primes)
-def iv:*[8]u64 = [
-  0x6a09e667f3bcc908:u64, 0xbb67ae8584caa73b:u64,
-  0x3c6ef372fe94f82b:u64, 0xa54ff53a5f1d36f1:u64,
-  0x510e527fade682d1:u64, 0x9b05688c2b3e6c1f:u64,
-  0x1f83d9abfb41bd6b:u64, 0x5be0cd19137e2179:u64
+data iv = [
+  0x6a09e667f3bcc908:u64, 0xbb67ae8584caa73b,
+  0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+  0x510e527fade682d1, 0x9b05688c2b3e6c1f,
+  0x1f83d9abfb41bd6b, 0x5be0cd19137e2179
 ]
 
 // Round constants (first 64 bits of fractional parts of cube roots of first 80 primes)
-def k:*[80]u64 = [
+data k = [
   0x428a2f98d728ae22:u64, 0x7137449123ef65cd:u64, 0xb5c0fbcfec4d3b2f:u64, 0xe9b5dba58189dbbc:u64,
   0x3956c25bf348b538:u64, 0x59f111f1b605d019:u64, 0x923f82a4af194f9b:u64, 0xab1c5ed5da6d8118:u64,
   0xd807aa98a3030242:u64, 0x12835b0145706fbe:u64, 0x243185be4ee4b28c:u64, 0x550c7dc3d5ffb4e2:u64,
@@ -34,9 +34,9 @@ def k:*[80]u64 = [
 ]
 
 // Working state
-def state:[8]u64
-def w:[80]u64
-def pad_block:[128]u8
+data state = mut [0:u64; 8]
+data w = mut [0:u64; 80]
+data pad_block = mut [0:u8; 128]
 
 // SHA-512 helper functions
 inline func ch(x: u64, y: u64, z: u64) -> u64 => (x & y) ^ (~x & z)
@@ -178,7 +178,7 @@ export func sha512(input: []u8, output: *[64]u8) {
 // === Tests ===
 
 test "sha512" {
-  def hash_out:[64]u8
+  data hash_out = mut [0:u8; 64]
 
   // Helper: compare hash output to expected hex bytes
   func check_hash(input: []u8, expected: *[64]u8) -> bool {
@@ -192,24 +192,24 @@ test "sha512" {
   }
 
   // NIST test vector: SHA-512("abc")
-  def tv_abc: []u8 = "abc"
-  def expected_abc:*[64]u8 = x"ddaf35a193617aba cc417349ae204131 12e6fa4e89a97ea2 0a9eeee64b55d39a 2192992a274fc1a8 36ba3c23a3feebbd 454d4423643ce80e 2a9ac94fa54ca49f"
+  data tv_abc = "abc"
+  data expected_abc = x"ddaf35a193617aba cc417349ae204131 12e6fa4e89a97ea2 0a9eeee64b55d39a 2192992a274fc1a8 36ba3c23a3feebbd 454d4423643ce80e 2a9ac94fa54ca49f"
 
   test "abc" {
     assert check_hash(tv_abc, expected_abc)
   }
 
   // NIST test vector: SHA-512("")
-  def tv_empty: []u8 = ""
-  def expected_empty:*[64]u8 = x"cf83e1357eefb8bd f1542850d66d8007 d620e4050b5715dc 83f4a921d36ce9ce 47d0d13c5d85f2b0 ff8318d2877eec2f 63b931bd47417a81 a538327af927da3e"
+  data tv_empty = ""
+  data expected_empty = x"cf83e1357eefb8bd f1542850d66d8007 d620e4050b5715dc 83f4a921d36ce9ce 47d0d13c5d85f2b0 ff8318d2877eec2f 63b931bd47417a81 a538327af927da3e"
 
   test "empty" {
     assert check_hash(tv_empty, expected_empty)
   }
 
   // NIST test vector: SHA-512("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
-  def tv_448: []u8 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-  def expected_448:*[64]u8 = x"204a8fc6dda82f0a 0ced7beb8e08a416 57c16ef468b228a8 279be331a703c335 96fd15c13b1b07f9 aa1d3bea57789ca0 31ad85c7a71dd703 54ec631238ca3445"
+  data tv_448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  data expected_448 = x"204a8fc6dda82f0a 0ced7beb8e08a416 57c16ef468b228a8 279be331a703c335 96fd15c13b1b07f9 aa1d3bea57789ca0 31ad85c7a71dd703 54ec631238ca3445"
 
   test "448 bit message" {
     assert check_hash(tv_448, expected_448)

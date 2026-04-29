@@ -6,14 +6,14 @@ import "./sha512" (
 )
 
 // SHA-512/256 IV (generated per FIPS 180-4 §5.3.6)
-def iv256:*[8]u64 = [
-  0x22312194fc2bf72c:u64, 0x9f555fa3c84c64c2:u64,
-  0x2393b86b6f53b151:u64, 0x963877195940eabd:u64,
-  0x96283ee2a88effe3:u64, 0xbe5e1e2553863992:u64,
-  0x2b0199fc2c85b8aa:u64, 0x0eb72ddc81c52ca2:u64
+data iv256 = [
+  0x22312194fc2bf72c:u64, 0x9f555fa3c84c64c2,
+  0x2393b86b6f53b151, 0x963877195940eabd,
+  0x96283ee2a88effe3, 0xbe5e1e2553863992,
+  0x2b0199fc2c85b8aa, 0x0eb72ddc81c52ca2
 ]
 
-def full_hash:[64]u8
+data full_hash = mut [0:u8; 64]
 
 // Public API: SHA-512/256
 export func sha512-256(input: []u8, output: *[32]u8) {
@@ -22,7 +22,7 @@ export func sha512-256(input: []u8, output: *[32]u8) {
 }
 
 test "sha512-256" {
-  def hash_out:[32]u8
+  data hash_out = mut [0:u8; 32]
 
   func check_hash(input: []u8, expected: *[32]u8) -> bool {
     sha512-256(input, hash_out)
@@ -35,16 +35,16 @@ test "sha512-256" {
   }
 
   // NIST test vector: SHA-512/256("abc")
-  def tv_abc: []u8 = "abc"
-  def expected_abc:*[32]u8 = x"53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23"
+  data tv_abc = "abc"
+  data expected_abc = x"53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23"
 
   test "abc" {
     assert check_hash(tv_abc, expected_abc)
   }
 
   // SHA-512/256("")
-  def tv_empty: []u8 = ""
-  def expected_empty:*[32]u8 = x"c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a"
+  data tv_empty = ""
+  data expected_empty = x"c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a"
 
   test "empty" {
     assert check_hash(tv_empty, expected_empty)

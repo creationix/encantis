@@ -28,9 +28,9 @@ func fe-one() -> Fe => (1:u64, 0:u64, 0:u64, 0:u64, 0:u64)
 
 // Point = 4 Fe values = 20 u64 limbs = 160 bytes
 // Layout: X=[0..5], Y=[5..10], Z=[10..15], T=[15..20]
-def pt-buf: [120]u64  // 6 point slots × 20 limbs
+data pt-buf = mut [0:u64; 120]  // 6 point slots × 20 limbs
 
-func pt-ptr(i: u32) -> *[120]u64 => &pt-buf
+func pt-ptr(i: u32) -> *[120]u64 => pt-buf
 
 func pt-x(p: *[120]u64, i: u32) -> Fe => (
   p[i * 20], p[i * 20 + 1], p[i * 20 + 2], p[i * 20 + 3], p[i * 20 + 4]
@@ -287,7 +287,7 @@ export func point-encode(out: *[32]u8, buf: *[120]u64, i: u32) {
 test "point operations" {
 
   test "store and load identity" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-identity(b, 0)
     let x = pt-x(b, 0)
     let y = pt-y(b, 0)
@@ -300,28 +300,28 @@ test "point operations" {
   }
 
   test "double identity gives identity" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-identity(b, 0)
     point-double(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
   test "identity + identity = identity" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-identity(b, 0)
     point-add(b, 1, 0, 0)
     assert point-eq(b, 1, 0)
   }
 
   test "neg identity = identity" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-identity(b, 0)
     point-neg(b, 1, 0)
     assert point-eq(b, 1, 0)
   }
 
   test "p + neg(p) = identity for identity" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-identity(b, 0)
     point-neg(b, 1, 0)
     point-add(b, 2, 0, 1)
@@ -330,7 +330,7 @@ test "point operations" {
   }
 
   test "base point is on the curve" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     // Check -x^2 + y^2 == 1 + d*x^2*y^2
     let x2 = fe-carry(fe-sq(base-x()))
     let y2 = fe-carry(fe-sq(base-y()))
@@ -342,7 +342,7 @@ test "point operations" {
   }
 
   test "G + G == 2*G (double matches add)" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-base(b, 0)
     pt-set-base(b, 3)
     point-double(b, 1, 0)
@@ -351,9 +351,9 @@ test "point operations" {
   }
 
   test "encode base point" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     // 1*G should encode to 5866666666...66
-    def enc: [32]u8
+    data enc = mut [0:u8; 32]
     pt-set-base(b, 0)
     point-encode(enc, b, 0)
     assert enc[0] == 0x58:u8
@@ -362,8 +362,8 @@ test "point operations" {
   }
 
   test "scalar mult by 1 gives G" {
-    def b: [120]u64
-    def scalar1: [32]u8
+    data b = mut [0:u64; 120]
+    data scalar1 = mut [0:u8; 32]
     scalar1[0] = 1:u8
     pt-set-base(b, 0)
     scalar-mult(b, 1, 0, scalar1)
@@ -371,10 +371,10 @@ test "point operations" {
   }
 
   test "double G encodes correctly" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-base(b, 0)
     point-double(b, 2, 0)
-    def enc2: [32]u8
+    data enc2 = mut [0:u8; 32]
     point-encode(enc2, b, 2)
     // 2*G = c9a3f86a...6022
     assert enc2[0] == 0xc9:u8
@@ -382,15 +382,15 @@ test "point operations" {
   }
 
   test "add G+G eq double G" {
-    def b: [120]u64
+    data b = mut [0:u64; 120]
     pt-set-base(b, 0)
     pt-set-base(b, 3)
     point-add(b, 1, 0, 3)
     point-double(b, 2, 0)
     assert point-eq(b, 1, 2)
     // Now encode both — should be identical
-    def ea: [32]u8
-    def eb: [32]u8
+    data ea = mut [0:u8; 32]
+    data eb = mut [0:u8; 32]
     point-encode(ea, b, 1)
     point-encode(eb, b, 2)
     assert ea[0] == eb[0]
@@ -398,14 +398,14 @@ test "point operations" {
   }
 
   test "scalar mult by 2 gives 2G" {
-    def b2a: [120]u64
-    def s2a: [32]u8
+    data b2a = mut [0:u64; 120]
+    data s2a = mut [0:u8; 32]
     s2a[0] = 2:u8
     pt-set-base(b2a, 0)
     scalar-mult(b2a, 1, 0, s2a)
     point-double(b2a, 2, 0)
-    def e2a: [32]u8
-    def e2b: [32]u8
+    data e2a = mut [0:u8; 32]
+    data e2b = mut [0:u8; 32]
     point-encode(e2a, b2a, 1)
     point-encode(e2b, b2a, 2)
     assert e2a[0] == e2b[0]
@@ -414,12 +414,12 @@ test "point operations" {
   }
 
   test "encode 2G" {
-    def b2c: [120]u64
-    def s2c: [32]u8
+    data b2c = mut [0:u64; 120]
+    data s2c = mut [0:u8; 32]
     s2c[0] = 2:u8
     pt-set-base(b2c, 0)
     scalar-mult(b2c, 1, 0, s2c)
-    def e2c: [32]u8
+    data e2c = mut [0:u8; 32]
     point-encode(e2c, b2c, 1)
     assert e2c[0] == 0xc9:u8
     assert e2c[1] == 0xa3:u8
@@ -427,66 +427,66 @@ test "point operations" {
   }
 
   test "scalar mult by 3" {
-    def b3: [120]u64
-    def s3: [32]u8
+    data b3 = mut [0:u64; 120]
+    data s3 = mut [0:u8; 32]
     s3[0] = 3:u8
     pt-set-base(b3, 0)
     scalar-mult(b3, 1, 0, s3)
-    def e3: [32]u8
+    data e3 = mut [0:u8; 32]
     point-encode(e3, b3, 1)
     assert e3[0] == 0xd4:u8
     assert e3[31] == 0x12:u8
   }
 
   test "scalar mult by 4" {
-    def b4: [120]u64
-    def s4: [32]u8
+    data b4 = mut [0:u64; 120]
+    data s4 = mut [0:u8; 32]
     s4[0] = 4:u8
     pt-set-base(b4, 0)
     scalar-mult(b4, 1, 0, s4)
-    def e4: [32]u8
+    data e4 = mut [0:u8; 32]
     point-encode(e4, b4, 1)
     assert e4[0] == 0x2f:u8
     assert e4[31] == 0x47:u8
   }
 
   test "scalar mult by 8" {
-    def b8: [120]u64
-    def s8: [32]u8
+    data b8 = mut [0:u64; 120]
+    data s8 = mut [0:u8; 32]
     s8[0] = 8:u8
     pt-set-base(b8, 0)
     scalar-mult(b8, 1, 0, s8)
-    def e8: [32]u8
+    data e8 = mut [0:u8; 32]
     point-encode(e8, b8, 1)
     assert e8[0] == 0xb4:u8
     assert e8[31] == 0x21:u8
   }
 
   test "scalar mult by 255" {
-    def b255: [120]u64
-    def s255: [32]u8
+    data b255 = mut [0:u64; 120]
+    data s255 = mut [0:u8; 32]
     s255[0] = 255:u8
     pt-set-base(b255, 0)
     scalar-mult(b255, 1, 0, s255)
-    def e255: [32]u8
+    data e255 = mut [0:u8; 32]
     point-encode(e255, b255, 1)
     assert e255[0] != 0x01:u8
   }
 
   test "scalar mult by 256" {
-    def b256: [120]u64
-    def s256: [32]u8
+    data b256 = mut [0:u64; 120]
+    data s256 = mut [0:u8; 32]
     s256[1] = 1:u8
     pt-set-base(b256, 0)
     scalar-mult(b256, 1, 0, s256)
-    def e256: [32]u8
+    data e256 = mut [0:u8; 32]
     point-encode(e256, b256, 1)
     assert e256[0] != 0x01:u8
   }
 
   test "scalar mult by large value" {
-    def blg: [120]u64
-    def slg: [32]u8
+    data blg = mut [0:u64; 120]
+    data slg = mut [0:u8; 32]
     slg[0] = 0x08:u8
     slg[1] = 0x07:u8
     slg[2] = 0x06:u8
@@ -497,7 +497,7 @@ test "point operations" {
     slg[7] = 0x01:u8
     pt-set-base(blg, 0)
     scalar-mult(blg, 1, 0, slg)
-    def elg: [32]u8
+    data elg = mut [0:u8; 32]
     point-encode(elg, blg, 1)
     assert elg[0] != 0x01:u8
   }

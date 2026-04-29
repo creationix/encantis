@@ -115,7 +115,7 @@
         },
         {
           "name": "storage.type.encantis",
-          "match": "\\b(func|builtin|inline|memory|import|export|def|type|enum|global|let|set|as|input|output|mut|test)(?![a-zA-Z0-9_-])"
+          "match": "\\b(func|builtin|inline|memory|import|export|data|def|type|enum|global|let|set|as|input|output|mut|test)(?![a-zA-Z0-9_-])"
         }
       ]
     },

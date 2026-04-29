@@ -260,8 +260,8 @@ describe('type inference', () => {
       if (offset !== undefined) {
         const type = result.types.get(typeKey(offset, 'IdentPattern'))
         expect(type).toBeDefined()
-        // Without annotation, array literal is comptime_array that can coerce to various types
-        expect(typeToString(type!)).toBe('[3]int(1)')
+        // Without annotation, array literal concretizes to value array [N]T
+        expect(typeToString(type!)).toBe('[3]i32')
       }
     })
 

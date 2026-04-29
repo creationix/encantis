@@ -4,9 +4,9 @@
 export "mem" memory
 
 test "xxh32" {
-  def tv_abc: []u8 = "abc"
-  def tv_hello: []u8 = "hello"
-  def tv_foobar: []u8 = "foobar"
+  data tv_abc = "abc"
+  data tv_hello = "hello"
+  data tv_foobar = "foobar"
 
   test "abc" {
     assert xxh32(tv_abc, 0) == 0x32d153ff
@@ -37,11 +37,11 @@ inline func round32(seed:u32, value:u32) -> (seed:u32) {
   seed *= prime32-1
 }
 
-export func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
-  let ptr = data.ptr
-  let last:*u8 = ptr + data.len
+export func xxh32(input:[]u8, seed:u32) -> (h32:u32) {
+  let ptr = input.ptr
+  let last:*u8 = ptr + input.len
 
-  if data.len >= 16 {
+  if input.len >= 16 {
     let v1:u32 = seed + prime32-1 + prime32-2
     let v2:u32 = seed + prime32-2
     let v3:u32 = seed
@@ -71,7 +71,7 @@ export func xxh32(data:[]u8, seed:u32) -> (h32:u32) {
     h32 = seed + prime32-5
   }
 
-  h32 += data.len
+  h32 += input.len
 
   // For the remaining words not covered above, either 0, 1, 2 or 3
   while ptr + 4 <= last {

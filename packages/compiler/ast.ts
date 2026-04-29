@@ -30,6 +30,7 @@ export type Declaration =
   | FuncDecl
   | TypeDecl
   | EnumDecl
+  | DataDecl
   | DefDecl
   | GlobalDecl
   | MemoryDecl
@@ -137,6 +138,15 @@ export interface DefDecl extends BaseNode {
   value: Expr
 }
 
+// data name = expr
+// data name:Type = expr
+export interface DataDecl extends BaseNode {
+  kind: 'DataDecl'
+  ident: string
+  type?: Type  // Optional type annotation on LHS
+  value: Expr
+}
+
 // global name: type = expr
 export interface GlobalDecl extends BaseNode {
   kind: 'GlobalDecl'
@@ -161,6 +171,7 @@ export interface TestDecl extends BaseNode {
 
 export type TestItem =
   | TestDecl
+  | DataDecl
   | DefDecl
   | FuncDecl
   | Statement
@@ -626,6 +637,7 @@ export interface ASTVisitor {
   visitExportDecl?(node: ExportDecl): void | false
   visitFuncDecl?(node: FuncDecl): void | false
   visitTypeDecl?(node: TypeDecl): void | false
+  visitDataDecl?(node: DataDecl): void | false
   visitDefDecl?(node: DefDecl): void | false
   visitGlobalDecl?(node: GlobalDecl): void | false
   visitMemoryDecl?(node: MemoryDecl): void | false
@@ -695,6 +707,11 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
       break
     case 'TypeDecl':
       visitor.visitTypeDecl?.(decl)
+      break
+    case 'DataDecl':
+      if (visitor.visitDataDecl?.(decl) !== false) {
+        walkExpr(decl.value, visitor)
+      }
       break
     case 'DefDecl':
       if (visitor.visitDefDecl?.(decl) !== false) {

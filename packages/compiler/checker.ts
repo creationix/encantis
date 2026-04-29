@@ -409,6 +409,9 @@ class CheckContext {
       case 'TypeDecl':
         this.collectTypeDecl(decl)
         break
+      case 'DataDecl':
+        this.collectData(decl)
+        break
       case 'DefDecl':
         this.collectDef(decl)
         break
@@ -582,31 +585,9 @@ class CheckContext {
       ? decl.ident
       : `${decl.ident}$${decl.span.start}`
 
-    // Check if this is a data section literal (array/string with pointer type)
-    // e.g., def x = [0;12]:[*_]u32 or def x:[*_]u32 = [0;12]
-    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
-    if (dataLiteral) {
-      const dataId = dataLiteral.expr.span.start
-      // Set dataId on the literal so it survives def substitution cloning
-      if (dataLiteral.expr.kind === 'ArrayExpr' || dataLiteral.expr.kind === 'RepeatExpr' ||
-          dataLiteral.expr.kind === 'LiteralExpr') {
-        (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
-      }
-      // Collect literal for data section and create data_ptr comptime value
-      this.pendingLiterals.push({
-        id: dataId,
-        expr: dataLiteral.expr,
-        type: dataLiteral.indexedType,
-      })
-      const sym = {
-        kind: 'def' as const,
-        type: dataLiteral.ptrType,
-        value: { kind: 'data_ptr' as const, id: dataId },
-      }
-      this.moduleScope.symbols.set(defKey, sym)
-      this.currentScope.symbols.set(decl.ident, sym)
-      this.recordDefinition(decl.ident, decl.span.start)
-      return
+    // def is pure substitution — reject data literals that need memory
+    if (this.isDataLiteralExpr(decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value)) {
+      this.error(decl.span.start, `def cannot contain array/string literals — use 'data ${decl.ident} = ...' instead`)
     }
 
     // Regular comptime value (int, float, bool)
@@ -621,6 +602,63 @@ class CheckContext {
     this.moduleScope.symbols.set(defKey, sym)
     this.currentScope.symbols.set(decl.ident, sym)
     this.recordDefinition(decl.ident, decl.span.start)
+  }
+
+  collectData(decl: AST.DataDecl): void {
+    const inferredType = this.inferExpr(decl.value)
+    const declaredType = decl.type ? this.resolveType(decl.type) : null
+
+    // Use span-based key for data inside test blocks to avoid name collisions
+    const dataKey = this.currentScope === this.moduleScope
+      ? decl.ident
+      : `${decl.ident}$${decl.span.start}`
+
+    // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
+    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
+    if (dataLiteral) {
+      const dataId = dataLiteral.expr.span.start
+      if (dataLiteral.expr.kind === 'ArrayExpr' || dataLiteral.expr.kind === 'RepeatExpr' ||
+          dataLiteral.expr.kind === 'LiteralExpr') {
+        (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
+      }
+      this.pendingLiterals.push({
+        id: dataId,
+        expr: dataLiteral.expr,
+        type: dataLiteral.indexedType,
+      })
+      const sym = {
+        kind: 'def' as const,
+        type: dataLiteral.ptrType,
+        value: { kind: 'data_ptr' as const, id: dataId },
+      }
+      this.moduleScope.symbols.set(dataKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
+      this.recordDefinition(decl.ident, decl.span.start)
+      return
+    }
+
+    // For non-array data (scalars, tuples), still serialize to data section
+    const type = declaredType ?? inferredType
+    const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
+    const dataId = expr.span.start
+    if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
+      if (expr.kind === 'LiteralExpr') {
+        (expr as AST.LiteralExpr).dataId = dataId
+      }
+      const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
+      this.pendingLiterals.push({ id: dataId, expr, type: arrType })
+      const sym = {
+        kind: 'def' as const,
+        type: pointer(type),
+        value: { kind: 'data_ptr' as const, id: dataId },
+      }
+      this.moduleScope.symbols.set(dataKey, sym)
+      this.currentScope.symbols.set(decl.ident, sym)
+      this.recordDefinition(decl.ident, decl.span.start)
+      return
+    }
+
+    this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
   }
 
   // Extract a data section literal from an expression if applicable
@@ -940,6 +978,9 @@ class CheckContext {
           this.collectFunc(item)
           this.checkFuncBody(item)
           break
+        case 'DataDecl':
+          this.collectData(item)
+          break
         case 'DefDecl':
           this.collectDef(item)
           break
@@ -1200,6 +1241,10 @@ class CheckContext {
         }
         const elemType = this.concretize(this.unifyTypes(type.elements))
         return pointer(array(elemType, ['_']))
+      }
+      case 'comptime_array': {
+        const elemType = this.concretize(type.element)
+        return array(elemType, [type.count])
       }
       case 'array': {
         // Handle comptime array ([_]T) - default to *[_]T (pointer to inferred length array)
@@ -2191,6 +2236,16 @@ class CheckContext {
       if (objType.sizes && objType.sizes.length > 1) {
         const remainingDims = objType.sizes.slice(1)
         return pointer(array(objType.element, remainingDims))
+      }
+      // Value array [N]T: require compile-time constant index
+      if (objType.sizes && objType.sizes.length === 1 && typeof objType.sizes[0] === 'number') {
+        const n = objType.sizes[0]
+        const idx = this.evalComptimeExpr(expr.index)
+        if (idx === null || idx.kind !== 'int') {
+          this.error(expr.index.span.start, `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
+        } else if (idx.value < 0n || idx.value >= BigInt(n)) {
+          this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${n}]${typeToString(objType.element)}`)
+        }
       }
       return objType.element
     }

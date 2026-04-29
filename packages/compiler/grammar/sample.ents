@@ -21,7 +21,7 @@ import "math" "cos" func cos (x:f64):f64
 // Grouped function imports
 import "fs" (
   "read-file" func read-file (path:str):*[u8]
-  "write-file" func write-file (path:str, data:*[u8]):void
+  "write-file" func write-file (path:str, content:*[u8]):void
 )
 
 // Global variable import

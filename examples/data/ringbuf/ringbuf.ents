@@ -3,7 +3,7 @@
 
 export "mem" memory
 
-def buf:[256]u8
+data buf = mut [0:u8; 256]
 def capacity = 256:u32
 
 global head: u32 = 0

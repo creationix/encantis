@@ -56,6 +56,7 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'return': return 'output';
     case 'local': return 'let';
     case 'global': return 'global';
+    case 'data': return 'data';
     case 'def': return 'def';
     case 'func': return 'func';
     case 'type': return 'type';
@@ -95,6 +96,10 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
       return `type ${symbol.name} = ${typeStr}`;
     case 'unique':
       return `type ${symbol.name}@ = ${typeStr}`;
+    case 'data':
+      return symbol.value
+        ? `data ${symbol.name}: ${typeStr} = ${symbol.value}`
+        : `data ${symbol.name}: ${typeStr}`;
     case 'def':
       return symbol.value
         ? `def ${symbol.name}: ${typeStr} = ${symbol.value}`
@@ -154,6 +159,8 @@ function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
       return 3; // variable
     case 'global':
       return 3; // variable (with static modifier)
+    case 'data':
+      return 7; // macro (data section allocation)
     case 'def':
       return 7; // macro (compile-time constant)
     default:
@@ -167,7 +174,7 @@ function symbolKindToModifiers(kind: MetaSymbol['kind'], isDef: boolean, isInput
   if (isDef) {
     modifiers |= 1; // declaration
   }
-  if (kind === 'def') {
+  if (kind === 'def' || kind === 'data') {
     modifiers |= 2; // readonly
   }
   if (kind === 'global') {

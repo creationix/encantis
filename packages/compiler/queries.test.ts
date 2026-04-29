@@ -89,13 +89,13 @@ describe('hover', () => {
   })
 
   test('shows param type inside function', () => {
-    const code = `func test(data: []u8, count: u32) -> u64 { return 0 }`
+    const code = `func test(input: []u8, count: u32) -> u64 { return 0 }`
     const { source, module, check } = setup(code)
 
-    const dataOffset = code.indexOf('data')
+    const dataOffset = code.indexOf('input')
     const result = hover(source, module, check, dataOffset)
     expect(result).not.toBeNull()
-    expect(result!.name).toBe('data')
+    expect(result!.name).toBe('input')
     expect(result!.type).toContain('[]u8')
   })
 

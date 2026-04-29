@@ -20,9 +20,9 @@ import "./point" (
 type Fe = (u64, u64, u64, u64, u64)
 
 // Scratch buffers
-def hash-buf: [64]u8
-def scalar-buf: [32]u8
-def pt-work: [120]u64  // 6 point slots
+data hash-buf = mut [0:u8; 64]
+data scalar-buf = mut [0:u8; 32]
+data pt-work = mut [0:u64; 120]  // 6 point slots
 
 // === Scalar clamping ===
 // RFC 8032 §5.1.5: clamp the lower 32 bytes of SHA-512(privkey)
@@ -52,7 +52,7 @@ export func derive-pubkey(pubkey: *[32]u8, privkey: *[32]u8) {
   // Compute A = scalar * G
   let buf = pt-work
   pt-set-base(buf, 0)
-  scalar-mult(buf, 1, 0, &scalar-buf)
+  scalar-mult(buf, 1, 0, scalar-buf)
 
   // Encode point to 32 bytes
   point-encode(pubkey, buf, 1)
@@ -62,18 +62,18 @@ export func derive-pubkey(pubkey: *[32]u8, privkey: *[32]u8) {
 
 test "ed25519 key derivation" {
   // RFC 8032 test vector 1
-  def tv1-privkey:*[32]u8 = x"9d61b19deffd5a60 ba844af492ec2cc4 4449c5697b326919 703bac031cae7f60"
-  def tv1-expected:*[32]u8 = x"d75a980182b10ab7 d54bfed3c964073a 0ee172f3daa62325 af021a68f707511a"
+  data tv1-privkey = x"9d61b19deffd5a60 ba844af492ec2cc4 4449c5697b326919 703bac031cae7f60"
+  data tv1-expected = x"d75a980182b10ab7 d54bfed3c964073a 0ee172f3daa62325 af021a68f707511a"
 
   test "sha512 of privkey" {
-    def h: [64]u8
+    data h = mut [0:u8; 64]
     sha512(tv1-privkey, h)
     assert h[0] == 0x35:u8
     assert h[1] == 0x7c:u8
   }
 
   test "RFC 8032 test vector 1" {
-    def pubkey: [32]u8
+    data pubkey = mut [0:u8; 32]
     derive-pubkey(pubkey, tv1-privkey)
 
     let i: u32 = 0

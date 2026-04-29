@@ -20,7 +20,7 @@ import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
 
 export "mem" memory
 
-def hash_state:[12]u32
+data hash_state = mut [0:u32; 12]
 
 // Absorb 36 bytes (32 challenge + 4 nonce) with Gimli sponge
 // Rate = 16 bytes, capacity = 32 bytes
@@ -106,7 +106,7 @@ export func verify(challenge: *[32]u8, difficulty: u32, nonce: u32) -> bool {
 }
 
 test "pow" {
-  def challenge:[32]u8
+  data challenge = mut [0:u8; 32]
 
   func set_challenge() {
     // Fill with a simple pattern

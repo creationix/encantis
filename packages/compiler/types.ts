@@ -238,6 +238,11 @@ export function totalElements(sizes: ArraySize[] | null): number | null {
   return sizes.reduce((a, b) => a * b, 1)
 }
 
+// Check if an array type is a value type: [N]T with fixed 1D size, no framing
+export function isValueArray(t: ArrayRT): boolean {
+  return t.sizes !== null && t.sizes.length === 1 && typeof t.sizes[0] === 'number'
+}
+
 // Helper to check if a size is a framing specifier
 export function isFraming(size: ArraySize): size is '!' | '?' {
   return size === '!' || size === '?'
@@ -699,6 +704,15 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     const elemResult = typeAssignResult(t.element, s.pointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') {
       return lossless(elemResult.reinterpret)
+    }
+  }
+
+  // Pointer-to-array can coerce to many-pointer: *[N]T -> [*]T
+  if (t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null &&
+      s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
+    const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(true)
     }
   }
 

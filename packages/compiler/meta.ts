@@ -101,7 +101,7 @@ export interface MetaType {
 
 export interface MetaSymbol {
   name: string
-  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'def'
+  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def'
   type: number // Index into types array
   def: string // "line:col" (0-indexed)
   refs: string[] // ["line:col", ...]
@@ -211,6 +211,9 @@ class MetaBuilder {
       case 'TypeDecl':
         this.collectTypeDecl(decl)
         break
+      case 'DataDecl':
+        this.collectData(decl)
+        break
       case 'DefDecl':
         this.collectDef(decl)
         break
@@ -234,6 +237,9 @@ class MetaBuilder {
           break
         case 'FuncDecl':
           this.collectFunc(item)
+          break
+        case 'DataDecl':
+          this.collectData(item)
           break
         case 'DefDecl':
           this.collectDef(item)
@@ -524,8 +530,29 @@ class MetaBuilder {
     this.addSymbol(decl.ident, 'def', sym.type, offset, valueStr)
   }
 
+  private collectData(decl: AST.DataDecl): void {
+    const sym = this.checkResult.symbols.get(decl.ident)
+    if (!sym || sym.kind !== 'def') return
+
+    const offset = this.findDataIdentOffset(decl)
+
+    let valueStr: string | undefined
+    if (sym.value.kind === 'data_ptr') {
+      const entry = this.literalMap.get(sym.value.id)
+      if (entry) {
+        valueStr = `0x${entry.ptr.toString(16)}`
+      }
+    }
+
+    this.addSymbol(decl.ident, 'data', sym.type, offset, valueStr)
+  }
+
   private findDefIdentOffset(decl: AST.DefDecl): number {
     return this.findKeywordIdentOffset(decl.span.start, decl.span.end, 'def')
+  }
+
+  private findDataIdentOffset(decl: AST.DataDecl): number {
+    return this.findKeywordIdentOffset(decl.span.start, decl.span.end, 'data')
   }
 
   private collectGlobal(decl: AST.GlobalDecl): void {
@@ -556,7 +583,7 @@ class MetaBuilder {
 
     // Get doc comment - only for module-level declarations
     let doc: string | null = null
-    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'def') {
+    if (kind === 'func' || kind === 'type' || kind === 'unique' || kind === 'global' || kind === 'data' || kind === 'def') {
       const declLine = this.lineMap.offsetToPosition(offset).line
       doc = findDocComment(this.comments, declLine)
     }
@@ -611,6 +638,9 @@ class MetaBuilder {
       case 'TypeDecl':
         this.generateHintsForTypeDecl(decl)
         break
+      case 'DataDecl':
+        this.generateHintsForData(decl)
+        break
       case 'DefDecl':
         this.generateHintsForDef(decl)
         break
@@ -634,6 +664,9 @@ class MetaBuilder {
           break
         case 'FuncDecl':
           this.generateHintsForFunc(item)
+          break
+        case 'DataDecl':
+          this.generateHintsForData(item)
           break
         case 'DefDecl':
           this.generateHintsForDef(item)
@@ -1081,6 +1114,15 @@ class MetaBuilder {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
       const offset = this.findDefIdentOffset(decl)
+      this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
+    }
+    this.generateHintsForExpr(decl.value)
+  }
+
+  private generateHintsForData(decl: AST.DataDecl): void {
+    const symbolIndex = this.symbolIndexByName.get(decl.ident)
+    if (symbolIndex !== undefined) {
+      const offset = this.findDataIdentOffset(decl)
       this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
     }
     this.generateHintsForExpr(decl.value)

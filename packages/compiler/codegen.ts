@@ -14,10 +14,10 @@ import {
   unwrap,
   primitiveByteSize,
   byteSize,
+  totalElements,
 } from './types'
 import * as RT from './types'
 import { dataToWat, buildDataSection } from './data-pack'
-import { totalElements } from './types'
 
 // === Context ===
 
@@ -95,11 +95,17 @@ export function typeToWasm(t: ResolvedType): string[] {
       return ['i32', 'i32']
 
     case 'array':
-      // Arrays are pointers to data
+      if (u.sizes && u.sizes.length === 1 && typeof u.sizes[0] === 'number') {
+        const elemTypes = typeToWasm(u.element)
+        return Array(u.sizes[0]).fill(elemTypes).flat()
+      }
+      // Non-value arrays (many-pointer, framed) are pointers
       return ['i32']
 
-    case 'comptime_array':
-      throw new Error('comptime_array should be concretized before codegen')
+    case 'comptime_array': {
+      const elemTypes = typeToWasm(u.element)
+      return Array(u.count).fill(elemTypes).flat()
+    }
 
     case 'tuple':
       // Flatten all fields
@@ -156,7 +162,19 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
       ]
 
     case 'array':
-      // Arrays are just pointers
+      if (u.sizes && u.sizes.length === 1 && typeof u.sizes[0] === 'number') {
+        const n = u.sizes[0]
+        const nested = flattenType(u.element)
+        return Array.from({ length: n }, (_, i) => {
+          if (nested.length === 1 && nested[0].suffix === '') {
+            return { suffix: String(i), wasmType: nested[0].wasmType }
+          }
+          return nested.map(f => ({
+            suffix: `${i}_${f.suffix}`,
+            wasmType: f.wasmType,
+          }))
+        }).flat()
+      }
       return [{ suffix: '', wasmType: 'i32' }]
 
     case 'tuple':
@@ -1021,13 +1039,29 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
 }
 
 function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
-  let base = exprToWat(expr.object, ctx)
-  const index = exprToWat(expr.index, ctx)
-  // For slice objects, extract just the pointer (first component)
+  // Value array [N]T: index with comptime constant → local.get
   const objTypeKey = expr.object.kind === 'MemberExpr'
     ? typeKey(expr.object.span.end, expr.object.kind)
     : typeKey(expr.object.span.start, expr.object.kind)
   const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  if (objType?.kind === 'array' && objType.sizes && objType.sizes.length === 1 && typeof objType.sizes[0] === 'number') {
+    const idx = evalComptimeIndex(expr.index)
+    if (idx !== null && expr.object.kind === 'IdentExpr') {
+      const localNames = ctx.locals.get(expr.object.name) ?? ctx.params.get(expr.object.name)
+      if (localNames) {
+        const elemFlat = flattenType(objType.element)
+        const base = idx * elemFlat.length
+        if (elemFlat.length === 1) {
+          return `(local.get $${localNames[base]})`
+        }
+        return elemFlat.map((_, j) => `(local.get $${localNames[base + j]})`).join(' ')
+      }
+    }
+  }
+
+  let base = exprToWat(expr.object, ctx)
+  const index = exprToWat(expr.index, ctx)
+  // For slice objects, extract just the pointer (first component)
   if (objType?.kind === 'slice') {
     const parts = splitV128Components(base, 2)
     base = parts[0]
@@ -1042,6 +1076,14 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (type.kind === 'pointer') return offset
   return v128LoadSequence(type, offset)
+}
+
+function evalComptimeIndex(expr: AST.Expr): number | null {
+  if (expr.kind === 'LiteralExpr' && expr.value.kind === 'int') {
+    return Number(expr.value.value)
+  }
+  if (expr.kind === 'AnnotationExpr') return evalComptimeIndex(expr.expr)
+  return null
 }
 
 function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
@@ -1183,8 +1225,8 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   if (ref) {
     return `(i32.const ${ref.ptr})`
   }
-  // Array literals without data section entry - placeholder
-  return `(i32.const 0)`
+  // Value array literal: emit elements directly as stack values
+  return expr.elements.map(e => exprToWat(e, ctx)).join(' ')
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -1196,6 +1238,12 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
       return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
     }
     return `(i32.const ${ref.ptr})`
+  }
+  // Value repeat literal: emit element N times
+  const countVal = evalComptimeIndex(expr.count)
+  if (countVal !== null) {
+    const elem = exprToWat(expr.value, ctx)
+    return Array(countVal).fill(elem).join(' ')
   }
   return `(i32.const 0)`
 }
@@ -1602,6 +1650,27 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
   }
 
   if (target.kind === 'IndexExpr') {
+    // Value array [N]T: assignment with comptime index → local.set
+    const objTypeKey2 = target.object.kind === 'MemberExpr'
+      ? typeKey(target.object.span.end, target.object.kind)
+      : typeKey(target.object.span.start, target.object.kind)
+    const objType2 = ctx.types.get(objTypeKey2) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+    if (objType2?.kind === 'array' && objType2.sizes && objType2.sizes.length === 1 && typeof objType2.sizes[0] === 'number') {
+      const idx = evalComptimeIndex(target.index)
+      if (idx !== null && target.object.kind === 'IdentExpr') {
+        const localNames = ctx.locals.get(target.object.name) ?? ctx.params.get(target.object.name)
+        if (localNames) {
+          const elemFlat = flattenType(objType2.element)
+          const base = idx * elemFlat.length
+          if (elemFlat.length === 1) {
+            return `(local.set $${localNames[base]} ${value})`
+          }
+          const parts = splitV128Components(value, elemFlat.length)
+          return elemFlat.map((_, j) => `(local.set $${localNames[base + j]} ${parts[j]})`).join('\n')
+        }
+      }
+    }
+
     let ptr = exprToWat(target.object, ctx)
     const idx = exprToWat(target.index, ctx)
     const type = ctx.types.get(typeKey(target.span.start, target.kind))
@@ -2100,9 +2169,9 @@ function emitTestDecl(
     ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
     : prefix
 
-  // Process defs first so they're available to functions and statements
+  // Process defs and data decls first so they're available to functions and statements
   for (const item of decl.children) {
-    if (item.kind === 'DefDecl') {
+    if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       const defKey = `${item.ident}$${item.span.start}`
       const sym = checkResult.symbols.get(defKey) ?? checkResult.symbols.get(item.ident)
       if (sym) ctx.symbols.set(item.ident, sym)
@@ -2123,7 +2192,7 @@ function emitTestDecl(
         ctx.nameMap.set(item.ident, watName)
       }
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols))
-    } else if (item.kind === 'DefDecl') {
+    } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
     } else {
       stmts.push(item)

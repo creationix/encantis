@@ -230,11 +230,12 @@ export function documentSymbols(
           exported: false,
         })
         break
+      case 'DataDecl':
       case 'DefDecl': {
         const sym = checkResult.symbols.get(decl.ident)
         symbols.push({
           name: decl.ident,
-          kind: 'def',
+          kind: decl.kind === 'DataDecl' ? 'data' : 'def',
           type: sym ? symbolTypeString(sym) : '',
           offset: decl.span.start,
           length: decl.ident.length,

@@ -1,5 +1,5 @@
 import "./data-util" "get_greeting" func get_greeting() -> []u8
 
-def farewell = "goodbye"
+data farewell = "goodbye"
 
 export func get_farewell() -> []u8 => farewell
