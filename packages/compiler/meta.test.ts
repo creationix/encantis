@@ -1,10 +1,64 @@
-// Meta.json test runner
-// Compares generated meta output against expected .meta.json files
-
 import { describe, test, expect } from 'bun:test'
 import { Glob } from 'bun'
 import { parse } from './parser'
 import { buildMeta, type MetaOutput } from './meta'
+
+function metaHints(source: string): Record<string, { name: string | null; type: string }> {
+  const result = parse(source)
+  if (result.errors.length > 0) throw new Error(result.errors.map(e => e.message).join(', '))
+  const meta = buildMeta(result.module!, source)
+  const out: Record<string, { name: string | null; type: string }> = {}
+  for (const [key, hint] of Object.entries(meta.hints)) {
+    const sym = hint.symbol !== undefined ? meta.symbols[hint.symbol] : null
+    out[key] = { name: sym?.name ?? null, type: meta.types[hint.type]?.type ?? 'unknown' }
+  }
+  return out
+}
+
+describe('test block hints', () => {
+  test('locals in test blocks get hints', () => {
+    const hints = metaHints(`
+test "example" {
+  let x: u8 = 42
+  let y: u32 = 100
+  assert x == 42
+}`)
+    expect(hints['2:6']).toEqual({ name: 'x', type: 'u8' })
+    expect(hints['3:6']).toEqual({ name: 'y', type: 'u32' })
+  })
+
+  test('nested test blocks get hints', () => {
+    const hints = metaHints(`
+test "outer" {
+  test "inner" {
+    let n: i8 = -1
+    assert n == -1
+  }
+}`)
+    expect(hints['3:8']).toEqual({ name: 'n', type: 'i8' })
+  })
+
+  test('same-named locals in different test blocks get correct types', () => {
+    const hints = metaHints(`
+test "first" {
+  let a: u8 = 1
+}
+test "second" {
+  let a: u32 = 2
+}`)
+    expect(hints['2:6']?.type).toBe('u8')
+    expect(hints['5:6']?.type).toBe('u32')
+  })
+
+  test('assert expressions get hints', () => {
+    const hints = metaHints(`
+func add(a: u8, b: u8) -> u8 => a + b
+test "add" {
+  assert add(1, 2) == 3
+}`)
+    expect(hints['3:9']?.name).toBe('add')
+  })
+})
 
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')

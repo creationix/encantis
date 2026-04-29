@@ -220,6 +220,28 @@ class MetaBuilder {
       case 'MemoryDecl':
         // Memory declarations just specify size, no symbols to collect
         break
+      case 'TestDecl':
+        this.collectTestDecl(decl)
+        break
+    }
+  }
+
+  private collectTestDecl(decl: AST.TestDecl): void {
+    for (const item of decl.children) {
+      switch (item.kind) {
+        case 'TestDecl':
+          this.collectTestDecl(item)
+          break
+        case 'FuncDecl':
+          this.collectFunc(item)
+          break
+        case 'DefDecl':
+          this.collectDef(item)
+          break
+        case 'LetStmt':
+          this.collectLocal(item.pattern)
+          break
+      }
     }
   }
 
@@ -598,6 +620,28 @@ class MetaBuilder {
       case 'MemoryDecl':
         // Memory declarations just specify size, no hints needed
         break
+      case 'TestDecl':
+        this.generateHintsForTestDecl(decl)
+        break
+    }
+  }
+
+  private generateHintsForTestDecl(decl: AST.TestDecl): void {
+    for (const item of decl.children) {
+      switch (item.kind) {
+        case 'TestDecl':
+          this.generateHintsForTestDecl(item)
+          break
+        case 'FuncDecl':
+          this.generateHintsForFunc(item)
+          break
+        case 'DefDecl':
+          this.generateHintsForDef(item)
+          break
+        default:
+          this.generateHintsForStmt(item)
+          break
+      }
     }
   }
 
@@ -681,6 +725,9 @@ class MetaBuilder {
         if (stmt.body.kind === 'Block') this.generateHintsForBlock(stmt.body)
         break
       }
+      case 'AssertStmt':
+        this.generateHintsForExpr(stmt.expr)
+        break
       case 'BreakStmt':
       case 'ContinueStmt':
         if (stmt.when) this.generateHintsForExpr(stmt.when)
@@ -690,12 +737,14 @@ class MetaBuilder {
 
   private generateHintsForPattern(pattern: AST.Pattern): void {
     if (pattern.kind === 'IdentPattern') {
-      const symbolIndex = this.symbolIndexByName.get(pattern.name)
-      if (symbolIndex !== undefined) {
+      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      if (type) {
+        const typeIndex = this.typeRegistry.register(type)
+        const symbolIndex = this.symbolIndexByName.get(pattern.name)
         this.addHint(
           pattern.span.start,
           pattern.name.length,
-          this.symbols[symbolIndex].type,
+          typeIndex,
           symbolIndex,
         )
       }
