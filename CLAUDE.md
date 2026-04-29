@@ -40,14 +40,14 @@ bun install              # Install dependencies and link workspace packages
 ## CLI Usage
 
 ```bash
-# Build the CLI first
-bun run build:cli
+# Install global command (symlink to TS source, runs via bun)
+sudo ln -s /Users/tim/Code/encantis/packages/cli/src/cli.ts /usr/local/bin/encantis
 
 # Then use it
-bun packages/cli/dist/cli.js compile <file.ents>              # Output WAT to stdout
-bun packages/cli/dist/cli.js compile <file.ents> -o out.wat   # Output to file
-bun packages/cli/dist/cli.js ast <file.ents>                  # Output AST as JSON
-bun packages/cli/dist/cli.js check <file.ents>                # Check for errors
+encantis compile <file.ents>              # Output WAT to stdout
+encantis compile <file.ents> -o out.wat   # Output to file
+encantis ast <file.ents>                  # Output AST as JSON
+encantis check <file.ents>                # Check for errors
 ```
 
 ## Build Commands
