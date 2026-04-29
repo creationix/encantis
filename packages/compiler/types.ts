@@ -22,13 +22,16 @@ export type PrimitiveName =
   | 'bool'
 
 // Type classification constants
-const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512']
-const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512']
+const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512', 'i1024', 'i2048', 'i4096']
+const UNSIGNED: readonly PrimitiveName[] = ['u1', 'u2', 'u4', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512', 'u1024', 'u2048', 'u4096']
 const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
 const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
 
 // Integer bounds for comptime int checking
 const INT_BOUNDS: Record<string, [bigint, bigint]> = {
+  u1: [0n, 1n],
+  u2: [0n, 3n],
+  u4: [0n, 15n],
   i8: [-128n, 127n],
   u8: [0n, 255n],
   i16: [-32768n, 32767n],
@@ -43,6 +46,12 @@ const INT_BOUNDS: Record<string, [bigint, bigint]> = {
   u256: [0n, 2n ** 256n - 1n],
   i512: [-(2n ** 511n), 2n ** 511n - 1n],
   u512: [0n, 2n ** 512n - 1n],
+  i1024: [-(2n ** 1023n), 2n ** 1023n - 1n],
+  u1024: [0n, 2n ** 1024n - 1n],
+  i2048: [-(2n ** 2047n), 2n ** 2047n - 1n],
+  u2048: [0n, 2n ** 2048n - 1n],
+  i4096: [-(2n ** 4095n), 2n ** 4095n - 1n],
+  u4096: [0n, 2n ** 4096n - 1n],
 }
 
 // Resolved type variants
@@ -929,6 +938,9 @@ export function primitiveByteSize(t: ResolvedType): number | null {
   const u = unwrap(t)
   if (u.kind !== 'primitive') return null
   switch (u.name) {
+    case 'u1':
+    case 'u2':
+    case 'u4':
     case 'i8':
     case 'u8':
     case 'bool':
@@ -953,6 +965,15 @@ export function primitiveByteSize(t: ResolvedType): number | null {
     case 'i512':
     case 'u512':
       return 64
+    case 'i1024':
+    case 'u1024':
+      return 128
+    case 'i2048':
+    case 'u2048':
+      return 256
+    case 'i4096':
+    case 'u4096':
+      return 512
     default:
       return null
   }
@@ -961,61 +982,34 @@ export function primitiveByteSize(t: ResolvedType): number | null {
 // Check if converting from one primitive to another is a safe widening conversion
 // Widening: smaller type to larger type where all values are preserved
 export function isWideningConversion(from: PrimitiveName, to: PrimitiveName): boolean {
-  // Same type is not a widening (it's exact match)
   if (from === to) return false
-
-  // Integer widening rules
-  const intWidening: Record<string, PrimitiveName[]> = {
-    // Signed integers widen to larger signed
-    i8: ['i16', 'i32', 'i64', 'i128', 'i256', 'i512'],
-    i16: ['i32', 'i64', 'i128', 'i256', 'i512'],
-    i32: ['i64', 'i128', 'i256', 'i512'],
-    i64: ['i128', 'i256', 'i512'],
-    i128: ['i256', 'i512'],
-    i256: ['i512'],
-    // Unsigned integers widen to larger unsigned OR larger signed (where they fit)
-    u8: ['u16', 'u32', 'u64', 'u128', 'u256', 'u512', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512'],
-    u16: ['u32', 'u64', 'u128', 'u256', 'u512', 'i32', 'i64', 'i128', 'i256', 'i512'],
-    u32: ['u64', 'u128', 'u256', 'u512', 'i64', 'i128', 'i256', 'i512'],
-    u64: ['u128', 'u256', 'u512', 'i128', 'i256', 'i512'],
-    u128: ['u256', 'u512', 'i256', 'i512'],
-    u256: ['u512', 'i512'],
-    // Float widening
-    f32: ['f64'],
-  }
-
-  const allowed = intWidening[from]
-  return allowed ? allowed.includes(to) : false
+  if (from === 'f32' && to === 'f64') return true
+  const fromBounds = INT_BOUNDS[from]
+  const toBounds = INT_BOUNDS[to]
+  if (!fromBounds || !toBounds) return false
+  return fromBounds[0] >= toBounds[0] && fromBounds[1] <= toBounds[1]
 }
 
 // Check if converting from one primitive to another is a narrowing conversion
 // Narrowing: larger type to smaller type (may lose data)
 export function isNarrowingConversion(from: PrimitiveName, to: PrimitiveName): boolean {
   if (from === to) return false
-
-  // Narrowing is the inverse of widening (but only within same numeric category)
-  const intNarrowing: Record<string, PrimitiveName[]> = {
-    // Larger signed to smaller signed
-    i512: ['i256', 'i128', 'i64', 'i32', 'i16', 'i8'],
-    i256: ['i128', 'i64', 'i32', 'i16', 'i8'],
-    i128: ['i64', 'i32', 'i16', 'i8'],
-    i64: ['i32', 'i16', 'i8'],
-    i32: ['i16', 'i8'],
-    i16: ['i8'],
-    // Larger unsigned to smaller unsigned
-    u512: ['u256', 'u128', 'u64', 'u32', 'u16', 'u8'],
-    u256: ['u128', 'u64', 'u32', 'u16', 'u8'],
-    u128: ['u64', 'u32', 'u16', 'u8'],
-    u64: ['u32', 'u16', 'u8'],
-    u32: ['u16', 'u8'],
-    u16: ['u8'],
-    // Float narrowing
-    f64: ['f32'],
+  // Narrowing is the inverse of widening within same signedness category
+  if (from === 'f64' && to === 'f32') return true
+  const fromBounds = INT_BOUNDS[from]
+  const toBounds = INT_BOUNDS[to]
+  if (!fromBounds || !toBounds) return false
+  // Same sign family: narrowing if target is strictly smaller
+  const fromSigned = from.startsWith('i')
+  const toSigned = to.startsWith('i')
+  const fromUnsigned = from.startsWith('u')
+  const toUnsigned = to.startsWith('u')
+  if ((fromSigned && toSigned) || (fromUnsigned && toUnsigned)) {
+    return toBounds[1] < fromBounds[1]
   }
-
-  const allowed = intNarrowing[from]
-  return allowed ? allowed.includes(to) : false
+  return false
 }
+
 
 // Check if conversion is between float and integer types
 export function isFloatIntConversion(from: PrimitiveName, to: PrimitiveName): boolean {

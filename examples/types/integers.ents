@@ -148,4 +148,34 @@ test "integers" {
     assert identity_u64(12345) == 12345
     assert chain_u32(10) == 13
   }
+
+  // === Sub-byte types ===
+
+  test "u1 bit" {
+    let a: u1 = 1
+    let b: u1 = 0
+    assert a == 1
+    assert b == 0
+    let sum = (a + a) as u1  // 1+1=2 masked to u1 = 0
+    assert sum == 0
+  }
+
+  test "u2 crumb" {
+    let a: u2 = 3
+    assert a == 3
+    let wrapped = (a + 1) as u2  // 3+1=4 masked to u2 = 0
+    assert wrapped == 0
+  }
+
+  test "u4 nibble" {
+    let a: u4 = 15
+    assert a == 15
+    let wrapped = (a + 1) as u4  // 15+1=16 masked to u4 = 0
+    assert wrapped == 0
+  }
+
+  // === SIMD types (v128-backed) ===
+
+  // u128+ SIMD types tested in simd/u128test.ents (memory-based I/O)
+  // u1024, u2048, u4096 extend the same multi-v128 pattern
 }

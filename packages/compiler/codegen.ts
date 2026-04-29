@@ -73,7 +73,7 @@ export function typeToWasm(t: ResolvedType): string[] {
       // f32 → f32, f64 → f64
       // i128, u128 → v128 (SIMD)
       // i256, u256 → v128, v128 (two SIMD registers)
-      if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
+      if (['u1', 'u2', 'u4', 'i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
         return ['i32']
       }
       if (['i64', 'u64'].includes(u.name)) {
@@ -81,14 +81,10 @@ export function typeToWasm(t: ResolvedType): string[] {
       }
       if (u.name === 'f32') return ['f32']
       if (u.name === 'f64') return ['f64']
-      if (['i128', 'u128'].includes(u.name)) {
-        return ['v128']
-      }
-      if (['i256', 'u256'].includes(u.name)) {
-        return ['v128', 'v128']
-      }
-      if (['i512', 'u512'].includes(u.name)) {
-        return ['v128', 'v128', 'v128', 'v128']
+      // Large integers: map to v128 registers
+      const size = primitiveByteSize(u)
+      if (size !== null && size >= 16) {
+        return Array(size / 16).fill('v128')
       }
       throw new Error(`Unknown primitive type: ${u.name}`)
     }
@@ -353,9 +349,8 @@ function isV128Type(t: ResolvedType): boolean {
 function v128Count(t: ResolvedType): number {
   const u = unwrap(t)
   if (u.kind !== 'primitive') return 0
-  if (['i128', 'u128'].includes(u.name)) return 1
-  if (['i256', 'u256'].includes(u.name)) return 2
-  if (['i512', 'u512'].includes(u.name)) return 4
+  const size = primitiveByteSize(u)
+  if (size !== null && size >= 16) return size / 16
   return 0
 }
 
@@ -1022,6 +1017,9 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     // Same wasm type but different source types — may need masking for sub-word narrowing
     const toU = unwrap(toType)
     if (toU.kind === 'primitive') {
+      if (toU.name === 'u1') return `(i32.and ${inner} (i32.const 1))`
+      if (toU.name === 'u2') return `(i32.and ${inner} (i32.const 3))`
+      if (toU.name === 'u4') return `(i32.and ${inner} (i32.const 15))`
       if (toU.name === 'u8') return `(i32.and ${inner} (i32.const 255))`
       if (toU.name === 'i8') return `(i32.shr_s (i32.shl ${inner} (i32.const 24)) (i32.const 24))`
       if (toU.name === 'u16') return `(i32.and ${inner} (i32.const 65535))`
