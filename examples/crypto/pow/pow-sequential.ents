@@ -1,0 +1,84 @@
+// Sequential Proof-of-Work using Gimli hash chains
+// Each iteration depends on the previous state, so the work
+// cannot be parallelized across SIMD lanes or GPU cores.
+//
+// Protocol:
+//   1. Server picks a random 32-byte challenge and iteration count
+//   2. Server runs solve(challenge, iterations), caches the result
+//   3. Server sends challenge + iterations to client
+//   4. Client runs solve(challenge, iterations)
+//   5. Server reads hash_state from exported memory and compares
+//
+// Tradeoffs vs nonce search (pow.ents):
+//   + Immune to SIMD/GPU parallelization (each step depends on the last)
+//   + Deterministic timing (iterations maps directly to wall-clock time)
+//   + Smaller code (no nonce loop, no leading-zero check)
+//   - Server must pre-compute each challenge and cache the answer
+//   - Third parties can't verify without re-doing all the work
+//   - Attacker still gets ~2-5x from native code vs browser wasm
+//
+// The native-vs-wasm gap is inherent to any browser PoW scheme.
+// Sequential chaining eliminates the much larger GPU/SIMD multiplier.
+
+import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
+
+export "mem" memory
+
+def hash_state:[12]u32
+
+// Absorb 32-byte challenge and iterate Gimli sequentially.
+// Result is left in hash_state, readable via exported memory.
+export func solve(challenge: *[32]u8, iterations: u32) {
+  for i in 12 {
+    hash_state[i] = 0:u32
+  }
+
+  // Absorb challenge: two 16-byte rate blocks
+  hash_state.u128[0] = challenge.u128[0]
+  gimli(hash_state)
+  hash_state.u128[0] ^= challenge.u128[1]
+  gimli(hash_state)
+
+  // Sequential work
+  let i: u32 = 0
+  while i < iterations {
+    gimli(hash_state)
+    i += 1
+  }
+}
+
+test "sequential pow" {
+  def challenge:[32]u8
+
+  func set_challenge() {
+    for i in 32 {
+      challenge[i] = (i * 7 + 13) as u8
+    }
+  }
+
+  test "deterministic output" {
+    set_challenge()
+    solve(challenge, 100)
+    let a = hash_state[0]
+    // Same inputs must produce same result
+    solve(challenge, 100)
+    assert hash_state[0] == a
+  }
+
+  test "different iterations give different results" {
+    set_challenge()
+    solve(challenge, 100)
+    let a = hash_state[0]
+    solve(challenge, 101)
+    assert hash_state[0] != a
+  }
+
+  test "different challenges give different results" {
+    set_challenge()
+    solve(challenge, 100)
+    let a = hash_state[0]
+    challenge[0] ^= 1 as u8
+    solve(challenge, 100)
+    assert hash_state[0] != a
+  }
+}

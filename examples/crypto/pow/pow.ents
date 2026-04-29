@@ -7,11 +7,14 @@
 //      `difficulty` leading zero bits
 //   3. Client returns the nonce
 //
-// Gimli is ideal because:
-//   - Not in WebCrypto (can't shortcut with native APIs)
-//   - Simple enough for tiny wasm (no lookup tables, no 64-bit math)
-//   - Resistant to SIMD optimization (32-bit column operations)
-//   - Hard to parallelize on GPU (state-dependent permutation)
+// Gimli properties:
+//   + Not in WebCrypto (can't shortcut with native APIs)
+//   + Simple enough for tiny wasm (no lookup tables, no 64-bit math)
+//   - Gimli IS SIMD-friendly (4 columns map to vector lanes, ~2.5x speedup)
+//   - Nonce search IS GPU-parallelizable (independent hashes per nonce, ~8x+)
+//   - Combined attacker advantage: 40-100x vs browser wasm
+//
+// See pow-sequential.ents for a design that defeats parallelization
 
 import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
 
