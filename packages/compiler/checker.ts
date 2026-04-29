@@ -400,7 +400,8 @@ class CheckContext {
         this.collectGlobal(decl)
         break
       case 'MemoryDecl':
-        // Memory declarations just specify size, no data entries
+        break
+      case 'TestDecl':
         break
     }
   }
@@ -885,8 +886,17 @@ class CheckContext {
       case 'FuncDecl':
         this.checkFuncBody(decl)
         break
+      case 'TestDecl': {
+        const testScope: Scope = { parent: this.moduleScope, symbols: new Map() }
+        const prevScope = this.currentScope
+        this.currentScope = testScope
+        for (const stmt of decl.body.stmts) {
+          this.checkStmt(stmt)
+        }
+        this.currentScope = prevScope
+        break
+      }
       default:
-        // Other declarations don't need body checking
         break
     }
   }
@@ -976,6 +986,9 @@ class CheckContext {
         this.checkBody(stmt.body)
         break
       }
+      case 'AssertStmt':
+        this.inferExpr(stmt.expr)
+        break
       case 'BreakStmt':
       case 'ContinueStmt':
         if (stmt.when) this.inferExpr(stmt.when)

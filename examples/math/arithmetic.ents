@@ -1,0 +1,22 @@
+func add(a: i32, b: i32) -> i32 => a + b
+func mul(a: i32, b: i32) -> i32 => a * b
+
+func rotl64(x: u64, n: u64) -> u64 => (x << n) | (x >> (64 - n))
+
+test "add basics" {
+  assert add(0, 0) == 0
+  assert add(1, 2) == 3
+  assert add(-1, 1) == 0
+}
+
+test "mul basics" {
+  assert mul(0, 5) == 0
+  assert mul(3, 7) == 21
+  assert mul(-1, -1) == 1
+}
+
+test "rotl64" {
+  assert rotl64(1, 0) == 1
+  assert rotl64(1, 1) == 2
+  assert rotl64(0x8000000000000000, 1) == 1
+}

@@ -515,6 +515,25 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.MemoryDecl
   },
 
+  TestDecl(_testKw, name, block): AST.TestDecl {
+    const nameLit = name.toAST() as AST.LiteralExpr
+    const testName = new TextDecoder().decode((nameLit.value as { bytes: Uint8Array }).bytes)
+    return {
+      kind: 'TestDecl',
+      name: testName,
+      body: block.toAST() as AST.Block,
+      span: span(this),
+    } as AST.TestDecl
+  },
+
+  AssertStmt(_assert, expr): AST.AssertStmt {
+    return {
+      kind: 'AssertStmt',
+      expr: expr.toAST() as AST.Expr,
+      span: span(this),
+    } as AST.AssertStmt
+  },
+
   // ============================================================================
   // Types
   // ============================================================================

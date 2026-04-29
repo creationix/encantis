@@ -1212,6 +1212,8 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
       return breakToWat(stmt, ctx)
     case 'ContinueStmt':
       return continueToWat(stmt, ctx)
+    case 'AssertStmt':
+      return `(if (i32.eqz ${exprToWat(stmt.expr, ctx)}) (then (unreachable)))`
     default:
       throw new Error(`Unhandled statement kind: ${(stmt as AST.Statement).kind}`)
   }
@@ -1896,6 +1898,76 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
     if (u.kind === 'pointer' || u.kind === 'slice') return true
   }
   return false
+}
+
+export function moduleToWatWithTests(module: AST.Module, checkResult: TypeCheckResult): { wat: string; testNames: string[] } {
+  const testDecls = module.decls.filter((d): d is AST.TestDecl => d.kind === 'TestDecl')
+  if (testDecls.length === 0) {
+    return { wat: moduleToWat(module, checkResult), testNames: [] }
+  }
+
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals)
+  const dataSection = dataBuilder.result()
+  const ctx = createContext(checkResult, literalRefs)
+  const hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module) || usesMemory(checkResult)
+  const parts: string[] = ['(module']
+
+  for (const decl of module.decls) {
+    if (decl.kind === 'ImportDecl') {
+      for (const item of decl.items) parts.push(importItemToWat(decl.module, item, ctx))
+    }
+  }
+
+  if (hasMemory) {
+    const implicitMin = Math.max(1, Math.ceil(dataSection.totalSize / 65536))
+    const memDecl = getMemoryDecl(module)
+    const min = memDecl ? (memDecl.min ?? implicitMin) : implicitMin
+    const max = memDecl?.max ?? null
+    const maxStr = max !== null ? ` ${max}` : ''
+    if (memDecl?.exportName) {
+      parts.push(`  (memory (export "${memDecl.exportName}") ${min}${maxStr})`)
+    } else {
+      parts.push(`  (memory ${min}${maxStr})`)
+    }
+  }
+
+  for (const decl of module.decls) {
+    if (decl.kind === 'FuncDecl') parts.push(funcToWat(decl, checkResult, literalRefs))
+    if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl') {
+      parts.push(funcToWat(decl.item, checkResult, literalRefs))
+    }
+  }
+
+  const testNames: string[] = []
+  for (const test of testDecls) {
+    const safeName = test.name.replace(/[^a-zA-Z0-9_]/g, '_')
+    testNames.push(safeName)
+    const body = test.body.stmts.map(s => stmtToWat(s, ctx)).join('\n')
+    const locals = collectLocals(test.body, ctx, checkResult)
+    const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
+    parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
+    parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+  }
+
+  for (const decl of module.decls) {
+    if (decl.kind === 'GlobalDecl') parts.push(globalToWat(decl, ctx))
+    if (decl.kind === 'ExportDecl' && decl.item.kind === 'GlobalDecl') {
+      parts.push(globalToWat(decl.item, ctx))
+    }
+  }
+
+  for (const decl of module.decls) {
+    if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl') {
+      parts.push(exportToWat(decl, ctx))
+    }
+  }
+
+  if (dataSection.totalSize > 0) {
+    for (const seg of dataToWat(dataSection)) parts.push(`  ${seg}`)
+  }
+  if (parts.some(p => p.includes('$__mul_hi'))) parts.push(MUL_HI_WAT)
+  parts.push(')')
+  return { wat: parts.join('\n'), testNames }
 }
 
 function hasMemoryDecl(module: AST.Module): boolean {

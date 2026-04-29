@@ -13,6 +13,7 @@ Encantis {
               | DefDecl
               | GlobalDecl
               | MemoryDecl
+              | TestDecl
 
   // ============================================================================
   // Helpers
@@ -101,6 +102,12 @@ Encantis {
              | memory                          -- bare
 
   // ============================================================================
+  // Tests
+  // ============================================================================
+
+  TestDecl = "test" stringLiteral Block
+
+  // ============================================================================
   // Types
   // ============================================================================
 
@@ -150,8 +157,13 @@ Encantis {
             | ReturnStmt
             | BreakStmt
             | ContinueStmt
+            | AssertStmt
             | AssignmentStmt
             | ExpressionStmt
+
+  AssertStmt = assert Expr
+
+  assert = "assert" ~identChar
 
   LetStmt = let PatternWithType Assign?
 

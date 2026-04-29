@@ -3,7 +3,7 @@
 import { parse } from '@encantis/compiler/parser'
 import { typecheck, typecheckProgram } from '@encantis/compiler/checker'
 import { buildMeta } from '@encantis/compiler/meta'
-import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
+import { moduleToWat, programToWat, moduleToWatWithTests } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
@@ -30,6 +30,7 @@ Commands:
   symbols [<file|dir>]                 List document or workspace symbols
   signature <file>:<line>:<col|name>   Show function signature
   rename <file>:<line>:<col|name>      Find all locations for rename
+  test <file>                           Run inline tests
   fmt <file...>                        Format source files in place
   fmt --check <file...>                Check formatting without changing
 
@@ -120,7 +121,7 @@ async function output(content: string) {
 // Read source for non-query commands
 let source = ''
 let filePath = inputFile
-const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols', 'rename', 'fmt']
+const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols', 'rename', 'fmt', 'test']
 if (!queryCommands.includes(command)) {
   const file = Bun.file(inputFile)
   if (!(await file.exists())) {
@@ -402,6 +403,78 @@ switch (command) {
         }
       }
     }
+    break
+  }
+
+  case 'test': {
+    if (!inputFile) { console.error('Error: test requires a file'); process.exit(2) }
+    const entryPath = resolve(inputFile)
+    const load = await loadModule(entryPath)
+    if (load.errors.length > 0) {
+      for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
+      process.exit(1)
+    }
+
+    // Use single-module test compilation for now (entry module only)
+    const entryModule = load.modules.get(entryPath)!
+    const check = typecheckProgram(load.modules, entryPath)
+    if (check.errors.length > 0) {
+      for (const [path, result] of check.results) {
+        const modSource = load.modules.get(path)?.source ?? ''
+        for (const error of result.errors) {
+          const loc = offsetToLineCol(modSource, error.offset)
+          console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
+        }
+      }
+      process.exit(1)
+    }
+
+    const entryCheck = check.results.get(entryPath)!
+    const { wat, testNames } = moduleToWatWithTests(entryModule.module, entryCheck)
+
+    if (testNames.length === 0) {
+      console.log('No tests found')
+      break
+    }
+
+    const w = await wabt()
+    let wasmModule
+    try {
+      wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
+      wasmModule.validate()
+    } catch (e: any) {
+      console.error(`WAT error: ${e.message}`)
+      process.exit(1)
+    }
+    const { buffer } = wasmModule.toBinary({})
+    wasmModule.destroy()
+
+    const mod = await WebAssembly.compile(buffer)
+    const instance = await WebAssembly.instantiate(mod)
+
+    let passed = 0
+    let failed = 0
+    const results: { name: string; pass: boolean; error?: string }[] = []
+
+    for (const name of testNames) {
+      const fn = instance.exports[`test_${name}`] as Function
+      try {
+        fn()
+        passed++
+        results.push({ name, pass: true })
+        console.log(`  pass: ${name.replace(/_/g, ' ')}`)
+      } catch (e: any) {
+        failed++
+        results.push({ name, pass: false, error: e.message })
+        console.log(`  FAIL: ${name.replace(/_/g, ' ')}`)
+      }
+    }
+
+    console.log(`\n${passed} passed, ${failed} failed`)
+    if (jsonOutput) {
+      console.log(JSON.stringify({ passed, failed, results }))
+    }
+    if (failed > 0) process.exit(1)
     break
   }
 

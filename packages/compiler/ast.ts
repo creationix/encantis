@@ -33,6 +33,7 @@ export type Declaration =
   | DefDecl
   | GlobalDecl
   | MemoryDecl
+  | TestDecl
 
 // import "module" "name" func ...
 // import "module" ( "name" func ... )
@@ -151,6 +152,13 @@ export interface MemoryDecl extends BaseNode {
   max: number | null
 }
 
+// test "name" { ... }
+export interface TestDecl extends BaseNode {
+  kind: 'TestDecl'
+  name: string
+  body: Block
+}
+
 // ============================================================================
 // Statements
 // ============================================================================
@@ -164,8 +172,15 @@ export type Statement =
   | ReturnStmt
   | BreakStmt
   | ContinueStmt
+  | AssertStmt
   | AssignmentStmt
   | ExpressionStmt
+
+// assert expr
+export interface AssertStmt extends BaseNode {
+  kind: 'AssertStmt'
+  expr: Expr
+}
 
 // let pattern: type = expr
 export interface LetStmt extends BaseNode {
@@ -608,6 +623,7 @@ export interface ASTVisitor {
   visitDefDecl?(node: DefDecl): void | false
   visitGlobalDecl?(node: GlobalDecl): void | false
   visitMemoryDecl?(node: MemoryDecl): void | false
+  visitTestDecl?(node: TestDecl): void | false
 
   // Statements
   visitLetStmt?(node: LetStmt): void | false
@@ -686,6 +702,9 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
       break
     case 'MemoryDecl':
       visitor.visitMemoryDecl?.(decl)
+      break
+    case 'TestDecl':
+      visitor.visitTestDecl?.(decl)
       break
   }
 }
