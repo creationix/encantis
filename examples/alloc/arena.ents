@@ -45,3 +45,29 @@ export func arena_used() -> u32 => cursor
 
 // Re-export heap_used for testing
 export func heap_bytes_used() -> u32 => heap_used()
+
+test "init alloc and reset" {
+  arena_init(1024)
+  assert arena_used() == 0
+  let p1 = arena_alloc(64)
+  assert p1 != 0xFFFFFFFF
+  assert arena_used() == 64
+  let p2 = arena_alloc(128)
+  assert p2 == p1 + 64
+  assert arena_used() == 192
+  arena_reset()
+  assert arena_used() == 0
+}
+
+test "overflow" {
+  arena_init(100)
+  arena_alloc(90)
+  assert arena_alloc(20) == 0xFFFFFFFF
+}
+
+test "arena free releases heap" {
+  arena_init(512)
+  assert heap_bytes_used() >= 512
+  arena_free()
+  assert arena_used() == 0
+}

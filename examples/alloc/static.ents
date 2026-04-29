@@ -29,3 +29,25 @@ export func write(offset: u32, value: u8) {
 
 // Read a byte from the buffer
 export func read(offset: u32) -> u8 => buf[offset]
+
+test "reserve and read write" {
+  assert used() == 0
+  let off1 = reserve(16)
+  assert used() == 16
+  let off2 = reserve(32)
+  assert off2 == 16
+  assert used() == 48
+  write(off1, 42)
+  write(off1 + 1, 99)
+  assert read(off1) == 42
+  assert read(off1 + 1) == 99
+  reset()
+  assert used() == 0
+}
+
+test "overflow" {
+  reset()
+  reserve(4000)
+  assert reserve(200) == 0xFFFFFFFF
+  assert used() == 4000
+}

@@ -65,3 +65,18 @@ export func heap_used() -> (total: u32) {
     offset += header_size + block_size
   }
 }
+
+test "malloc returns valid offsets" {
+  let p1 = malloc(16)
+  assert p1 != 0xFFFFFFFF
+  let p2 = malloc(32)
+  assert p2 != 0xFFFFFFFF
+  assert p2 > p1
+}
+
+test "malloc and free cycle" {
+  let p = malloc(100)
+  assert p != 0xFFFFFFFF
+  assert heap_used() >= 100
+  free(p)
+}

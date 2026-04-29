@@ -1200,8 +1200,16 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
       return assignToWat(stmt, ctx)
     case 'ReturnStmt':
       return returnToWat(stmt, ctx)
-    case 'ExpressionStmt':
-      return exprToWat(stmt.expr, ctx)
+    case 'ExpressionStmt': {
+      const exprWat = exprToWat(stmt.expr, ctx)
+      const exprType = ctx.types.get(typeKey(stmt.expr.span.start, stmt.expr.kind))
+        ?? ctx.types.get(typeKey(stmt.expr.span.end, stmt.expr.kind))
+      if (exprType && exprType.kind !== 'void') {
+        const slots = typeToWasm(exprType).length
+        if (slots > 0) return exprWat + '\n' + Array(slots).fill('(drop)').join('\n')
+      }
+      return exprWat
+    }
     case 'WhileStmt':
       return whileToWat(stmt, ctx)
     case 'LoopStmt':
