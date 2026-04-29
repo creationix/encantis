@@ -515,15 +515,32 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.MemoryDecl
   },
 
-  TestDecl(_testKw, name, block): AST.TestDecl {
+  TestDecl_named(_testKw, name, block): AST.TestDecl {
     const nameLit = name.toAST() as AST.LiteralExpr
     const testName = new TextDecoder().decode((nameLit.value as { bytes: Uint8Array }).bytes)
     return {
       kind: 'TestDecl',
       name: testName,
-      body: block.toAST() as AST.Block,
+      children: block.toAST() as AST.TestItem[],
       span: span(this),
     } as AST.TestDecl
+  },
+
+  TestDecl_anonymous(_testKw, block): AST.TestDecl {
+    return {
+      kind: 'TestDecl',
+      name: null,
+      children: block.toAST() as AST.TestItem[],
+      span: span(this),
+    } as AST.TestDecl
+  },
+
+  TestBlock(_open, items, _close) {
+    return items.children.map((i: any) => i.toAST())
+  },
+
+  TestItem(item) {
+    return item.toAST()
   },
 
   AssertStmt(_assert, expr): AST.AssertStmt {

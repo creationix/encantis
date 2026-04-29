@@ -1936,6 +1936,67 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
   return false
 }
 
+function emitTestDecl(
+  decl: AST.TestDecl,
+  prefix: string,
+  ctx: CodegenContext,
+  checkResult: TypeCheckResult,
+  literalRefs: Map<number, { ptr: number; len: number }>,
+  nameMap: Map<string, string>,
+  parts: string[],
+): void {
+  const myPrefix = decl.name
+    ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
+    : prefix
+
+  // Separate children into declarations (shared) and test cases (leaf)
+  const stmts: AST.Statement[] = []
+  let hasNestedTests = false
+
+  for (const item of decl.children) {
+    if (item.kind === 'TestDecl') {
+      hasNestedTests = true
+    } else if (item.kind === 'FuncDecl') {
+      // Emit shared helper function
+      const watName = item.ident ? `__test_${myPrefix}_${item.ident}` : `__test_${myPrefix}_anon`
+      if (item.ident) {
+        ctx.nameMap.set(item.ident, watName)
+      }
+      parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName))
+    } else if (item.kind === 'DefDecl') {
+      // Defs are handled at the checker level (data section)
+    } else {
+      stmts.push(item)
+    }
+  }
+
+  if (hasNestedTests) {
+    // Group: recurse into nested tests
+    for (const item of decl.children) {
+      if (item.kind === 'TestDecl') {
+        emitTestDecl(item, myPrefix, ctx, checkResult, literalRefs, nameMap, parts)
+      }
+    }
+  } else if (stmts.length > 0 && decl.name) {
+    // Leaf test: emit as a function
+    const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
+    const body = stmts.map(s => stmtToWat(s, ctx)).join('\n')
+    const locals = collectTestLocals(stmts, ctx, checkResult)
+    const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
+    parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
+    parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+  }
+}
+
+function collectTestLocals(
+  stmts: AST.Statement[],
+  ctx: CodegenContext,
+  checkResult: TypeCheckResult,
+): { name: string; type: string }[] {
+  const fakeBody: AST.Block = { kind: 'Block', stmts, span: { start: 0, end: 0 } }
+  return collectLocals(fakeBody, ctx, checkResult)
+}
+
 function hasMemoryDecl(module: AST.Module): boolean {
   for (const decl of module.decls) {
     if (decl.kind === 'MemoryDecl') return true
@@ -2297,12 +2358,7 @@ export function programToWat(
       const ctx = createContext(testResult, globalLiteralRefs, testNameMap)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        const safeName = decl.name.replace(/[^a-zA-Z0-9_]/g, '_')
-        const body = decl.body.stmts.map(s => stmtToWat(s, ctx)).join('\n')
-        const locals = collectLocals(decl.body, ctx, testResult)
-        const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
-        parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
-        parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
+        emitTestDecl(decl, '', ctx, testResult, globalLiteralRefs, testNameMap, parts)
       }
     }
   }
@@ -2333,14 +2389,27 @@ export function programToWatWithTests(
   testFiles?: string[],
 ): { wat: string; testNames: string[] } {
   const testNames: string[] = []
+
+  function collectTestNames(decl: AST.TestDecl, prefix: string) {
+    const myPrefix = decl.name
+      ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
+      : prefix
+    const hasNested = decl.children.some(c => c.kind === 'TestDecl')
+    if (hasNested) {
+      for (const child of decl.children) {
+        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix)
+      }
+    } else if (decl.name) {
+      testNames.push(myPrefix)
+    }
+  }
+
   const filesToTest = testFiles ?? [entryPath]
   for (const filePath of filesToTest) {
     const mod = modules.get(filePath)
     if (!mod) continue
     for (const decl of mod.module.decls) {
-      if (decl.kind === 'TestDecl') {
-        testNames.push(decl.name.replace(/[^a-zA-Z0-9_]/g, '_'))
-      }
+      if (decl.kind === 'TestDecl') collectTestNames(decl, '')
     }
   }
   const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest })

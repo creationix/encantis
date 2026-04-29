@@ -891,19 +891,36 @@ class CheckContext {
       case 'FuncDecl':
         this.checkFuncBody(decl)
         break
-      case 'TestDecl': {
-        const testScope: Scope = { parent: this.moduleScope, symbols: new Map() }
-        const prevScope = this.currentScope
-        this.currentScope = testScope
-        for (const stmt of decl.body.stmts) {
-          this.checkStmt(stmt)
-        }
-        this.currentScope = prevScope
+      case 'TestDecl':
+        this.checkTestDecl(decl)
         break
-      }
       default:
         break
     }
+  }
+
+  checkTestDecl(decl: AST.TestDecl): void {
+    const testScope: Scope = { parent: this.currentScope, symbols: new Map() }
+    const prevScope = this.currentScope
+    this.currentScope = testScope
+    for (const item of decl.children) {
+      switch (item.kind) {
+        case 'TestDecl':
+          this.checkTestDecl(item)
+          break
+        case 'FuncDecl':
+          this.collectFunc(item)
+          this.checkFuncBody(item)
+          break
+        case 'DefDecl':
+          this.collectDef(item)
+          break
+        default:
+          this.checkStmt(item)
+          break
+      }
+    }
+    this.currentScope = prevScope
   }
 
   checkFuncBody(decl: AST.FuncDecl): void {

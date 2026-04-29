@@ -152,12 +152,18 @@ export interface MemoryDecl extends BaseNode {
   max: number | null
 }
 
-// test "name" { ... }
+// test "name" { ... } or test { ... }
 export interface TestDecl extends BaseNode {
   kind: 'TestDecl'
-  name: string
-  body: Block
+  name: string | null
+  children: TestItem[]
 }
+
+export type TestItem =
+  | TestDecl
+  | DefDecl
+  | FuncDecl
+  | Statement
 
 // ============================================================================
 // Statements

@@ -105,7 +105,15 @@ Encantis {
   // Tests
   // ============================================================================
 
-  TestDecl = "test" stringLiteral Block
+  TestDecl = "test" stringLiteral TestBlock  -- named
+           | "test" TestBlock               -- anonymous
+
+  TestBlock = "{" TestItem* "}"
+
+  TestItem = TestDecl
+           | DefDecl
+           | FuncDecl
+           | Statement
 
   // ============================================================================
   // Types
