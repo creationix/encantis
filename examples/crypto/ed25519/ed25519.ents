@@ -159,11 +159,14 @@ test "ed25519 key derivation" {
     def pubkey: [32]u8
     derive-pubkey(pubkey, privkey)
 
-    // Expected public key: d75a980182b10ab7d54bfed3c964073a0ee172f3daa3f4a18446b0b8d558cd85
+    // Expected: d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     assert pubkey[0] == 0xd7:u8
     assert pubkey[1] == 0x5a:u8
     assert pubkey[2] == 0x98:u8
     assert pubkey[3] == 0x01:u8
-    assert pubkey[31] == 0x85:u8
+    assert pubkey[20] == 0xda:u8
+    assert pubkey[21] == 0xa6:u8
+    assert pubkey[30] == 0x51:u8
+    assert pubkey[31] == 0x1a:u8
   }
 }
