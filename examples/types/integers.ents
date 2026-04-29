@@ -176,6 +176,27 @@ test "integers" {
 
   // === SIMD types (v128-backed) ===
 
-  // u128+ SIMD types tested in simd/u128test.ents (memory-based I/O)
-  // u1024, u2048, u4096 extend the same multi-v128 pattern
+  test "i128 add" {
+    let a: i128 = 100
+    let b: i128 = 200
+    assert a + b == 300:i128
+  }
+
+  test "u128 xor" {
+    let a: u128 = 0xFF
+    let b: u128 = 0x0F
+    assert (a ^ b) == 0xF0:u128
+  }
+
+  test "u256 xor" {
+    let a: u256 = 0xFF:u256
+    let b: u256 = 0x0F:u256
+    assert (a ^ b) == 0xF0:u256
+  }
+
+  test "u512 not" {
+    let zero: u512 = 0:u512
+    let all_ones = ~zero
+    assert all_ones != zero
+  }
 }

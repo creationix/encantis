@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, exprTypeOffset, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -425,21 +425,60 @@ function splitV128Components(wat: string, n: number): string[] {
   throw new Error(`Expected ${n} v128 components, got ${parts.length}: ${wat.slice(0, 80)}...`)
 }
 
+function lookupExprType(expr: { kind: string; span: { start: number; end: number } }, ctx: CodegenContext): ResolvedType | undefined {
+  return ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind))
+    ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
+    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+}
+
+function resolveExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
+  // Try direct lookup — MemberExpr and BinaryExpr use span.end to avoid collisions
+  const key = (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr')
+    ? typeKey(expr.span.end, expr.kind)
+    : typeKey(expr.span.start, expr.kind)
+  const direct = ctx.types.get(key)
+  if (direct) return direct
+
+  // For expressions that may collide with parent (same start offset),
+  // try looking up based on span end
+  const byEnd = ctx.types.get(typeKey(expr.span.end, expr.kind))
+  if (byEnd) return byEnd
+
+  if (expr.kind === 'IdentExpr') {
+    const sym = ctx.symbols.get(expr.name)
+    if (sym && sym.kind !== 'func' && sym.kind !== 'type') return sym.type
+  }
+
+  // For binary expressions whose type collided with parent, infer from children
+  if (expr.kind === 'BinaryExpr') {
+    const lt = resolveExprType(expr.left, ctx)
+    if (lt && !['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op)) {
+      return lt
+    }
+  }
+
+  return undefined
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const left = exprToWat(expr.left, ctx)
   const right = exprToWat(expr.right, ctx)
 
   // Get result type from checker
-  const resultType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const resultType = lookupExprType(expr, ctx)
   if (!resultType) {
     throw new Error(`Missing type for binary expression at offset ${expr.span.start}`)
   }
 
   // For comparison ops, we need the operand type for signedness (result is bool)
   // For arithmetic ops, use the result type (which is the wider operand type)
-  const leftType = ctx.types.get(typeKey(expr.left.span.start, expr.left.kind))
+  let leftType = lookupExprType(expr.left, ctx)
   const isComparison = ['==', '!=', '<', '>', '<=', '>='].includes(expr.op)
-  const operandType = isComparison ? (leftType ?? resultType) : resultType
+  let operandType = isComparison ? (leftType ?? resultType) : resultType
+  // Unwrap 1-element tuple from parenthesized expressions
+  if (operandType.kind === 'tuple' && operandType.fields.length === 1) {
+    operandType = operandType.fields[0].type
+  }
 
   const wt = typeToWasmSingle(operandType)
   const signed = isSigned(operandType)
@@ -485,8 +524,11 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
         if (nV128 === 1) return `(i32x4.all_true (i64x2.eq ${left} ${right}))`
         const lp = splitV128Components(left, nV128)
         const rp = splitV128Components(right, nV128)
-        const eqs = lp.map((l, i) => `(i32x4.all_true (i64x2.eq ${l} ${rp[i]}))`).join(' ')
-        return `(i32.and ${eqs})`
+        let eq = `(i32x4.all_true (i64x2.eq ${lp[0]} ${rp[0]}))`
+        for (let i = 1; i < nV128; i++) {
+          eq = `(i32.and ${eq} (i32x4.all_true (i64x2.eq ${lp[i]} ${rp[i]})))`
+        }
+        return eq
       }
       wasmOp = `${wt}.eq`
       break
@@ -495,8 +537,11 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
         if (nV128 === 1) return `(i32.eqz (i32x4.all_true (i64x2.eq ${left} ${right})))`
         const lp = splitV128Components(left, nV128)
         const rp = splitV128Components(right, nV128)
-        const eqs = lp.map((l, i) => `(i32x4.all_true (i64x2.eq ${l} ${rp[i]}))`).join(' ')
-        return `(i32.eqz (i32.and ${eqs}))`
+        let neq = `(i32x4.all_true (i64x2.eq ${lp[0]} ${rp[0]}))`
+        for (let i = 1; i < nV128; i++) {
+          neq = `(i32.and ${neq} (i32x4.all_true (i64x2.eq ${lp[i]} ${rp[i]})))`
+        }
+        return `(i32.eqz ${neq})`
       }
       wasmOp = `${wt}.ne`
       break
@@ -551,7 +596,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const leftSigned = leftType ? isSigned(leftType) : signed
   const coercedLeft = coerceWasmType(left, leftWt, wt, leftSigned)
 
-  const rightType = ctx.types.get(typeKey(expr.right.span.start, expr.right.kind))
+  const rightType = lookupExprType(expr.right, ctx)
   const rightWt = rightType ? typeToWasmSingle(rightType) : wt
   const rightSigned = rightType ? isSigned(rightType) : signed
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)

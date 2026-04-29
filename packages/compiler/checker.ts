@@ -72,6 +72,10 @@ export function typeKey(offset: number, kind: string): string {
   return `${offset}:${kind}`
 }
 
+export function exprTypeOffset(expr: { kind: string; span: { start: number; end: number } }): number {
+  return (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr') ? expr.span.end : expr.span.start
+}
+
 // === Type Check Result ===
 
 export interface TypeError {
@@ -1399,7 +1403,7 @@ class CheckContext {
     // Note: comptime types are stored as-is; concretization happens in a later pass
     // For MemberExpr, use span.end so chained accesses like a.b.c each get unique keys
     // This allows hover to show: a -> type1, a.b -> type2, a.b.c -> type3
-    const offset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
+    const offset = exprTypeOffset(expr)
     this.types.set(typeKey(offset, expr.kind), type)
     return type
   }
@@ -1536,7 +1540,7 @@ class CheckContext {
     const recordType = expected.kind === 'named' ? expected
       : (isComptimeLiteral && !expectedHasInferredSize ? expected : inferred)
     // Use span.end for MemberExpr to match inferExpr behavior (allows distinguishing a.b from a.b.c)
-    const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
+    const typeOffset = exprTypeOffset(expr)
     this.types.set(typeKey(typeOffset, expr.kind), recordType)
 
     // For return value, concretize based on expected type
