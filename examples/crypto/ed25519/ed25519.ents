@@ -17,8 +17,6 @@ import "./point" (
   "point-eq" func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool
 )
 
-export "mem" memory
-
 type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
 
 // Scratch buffers
@@ -63,44 +61,11 @@ export func derive-pubkey(pubkey: *[32]u8, privkey: *[32]u8) {
 // === Tests ===
 
 test "ed25519 key derivation" {
-  def tv1-privkey: [32]u8
-  func init-tv1() {
-    tv1-privkey[0] = 0x9d:u8
-    tv1-privkey[1] = 0x61:u8
-    tv1-privkey[2] = 0xb1:u8
-    tv1-privkey[3] = 0x9d:u8
-    tv1-privkey[4] = 0xef:u8
-    tv1-privkey[5] = 0xfd:u8
-    tv1-privkey[6] = 0x5a:u8
-    tv1-privkey[7] = 0x60:u8
-    tv1-privkey[8] = 0xba:u8
-    tv1-privkey[9] = 0x84:u8
-    tv1-privkey[10] = 0x4a:u8
-    tv1-privkey[11] = 0xf4:u8
-    tv1-privkey[12] = 0x92:u8
-    tv1-privkey[13] = 0xec:u8
-    tv1-privkey[14] = 0x2c:u8
-    tv1-privkey[15] = 0xc4:u8
-    tv1-privkey[16] = 0x44:u8
-    tv1-privkey[17] = 0x49:u8
-    tv1-privkey[18] = 0xc5:u8
-    tv1-privkey[19] = 0x69:u8
-    tv1-privkey[20] = 0x7b:u8
-    tv1-privkey[21] = 0x32:u8
-    tv1-privkey[22] = 0x69:u8
-    tv1-privkey[23] = 0x19:u8
-    tv1-privkey[24] = 0x70:u8
-    tv1-privkey[25] = 0x3b:u8
-    tv1-privkey[26] = 0xac:u8
-    tv1-privkey[27] = 0x03:u8
-    tv1-privkey[28] = 0x1c:u8
-    tv1-privkey[29] = 0xae:u8
-    tv1-privkey[30] = 0x7f:u8
-    tv1-privkey[31] = 0x60:u8
-  }
+  // RFC 8032 test vector 1
+  def tv1-privkey:*[32]u8 = x"9d61b19deffd5a60 ba844af492ec2cc4 4449c5697b326919 703bac031cae7f60"
+  def tv1-expected:*[32]u8 = x"d75a980182b10ab7 d54bfed3c964073a 0ee172f3daa62325 af021a68f707511a"
 
   test "sha512 of privkey" {
-    init-tv1()
     def h: [64]u8
     sha512(tv1-privkey, h)
     assert h[0] == 0x35:u8
@@ -108,65 +73,14 @@ test "ed25519 key derivation" {
   }
 
   test "RFC 8032 test vector 1" {
-    // Private key: all zeros (32 bytes of 0x00) — wait, RFC 8032 test 1 uses:
-    // SECRET KEY: 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60
-    // PUBLIC KEY: d75a980182b10ab7d54bfed3c964073a0ee172f3daa3f4a18446b0b8d558cd85e
-
-    // But let's start with the simplest: all-zero private key
-    // SHA-512(00..00) is known, and we can verify the public key
-
-    // Use a simpler test: private key = 0x9d61b19d...
-    def privkey: [32]u8
-    privkey[0] = 0x9d:u8
-    privkey[1] = 0x61:u8
-    privkey[2] = 0xb1:u8
-    privkey[3] = 0x9d:u8
-    privkey[4] = 0xef:u8
-    privkey[5] = 0xfd:u8
-    privkey[6] = 0x5a:u8
-    privkey[7] = 0x60:u8
-    privkey[8] = 0xba:u8
-    privkey[9] = 0x84:u8
-    privkey[10] = 0x4a:u8
-    privkey[11] = 0xf4:u8
-    privkey[12] = 0x92:u8
-    privkey[13] = 0xec:u8
-    privkey[14] = 0x2c:u8
-    privkey[15] = 0xc4:u8
-    privkey[16] = 0x44:u8
-    privkey[17] = 0x49:u8
-    privkey[18] = 0xc5:u8
-    privkey[19] = 0x69:u8
-    privkey[20] = 0x7b:u8
-    privkey[21] = 0x32:u8
-    privkey[22] = 0x69:u8
-    privkey[23] = 0x19:u8
-    privkey[24] = 0x70:u8
-    privkey[25] = 0x3b:u8
-    privkey[26] = 0xac:u8
-    privkey[27] = 0x03:u8
-    privkey[28] = 0x1c:u8
-    privkey[29] = 0xae:u8
-    privkey[30] = 0x7f:u8
-    privkey[31] = 0x60:u8
-
-    // First check SHA-512 of the full private key
-    def hash-out: [64]u8
-    sha512(privkey, hash-out)
-    assert hash-out[0] == 0x35:u8
-    assert hash-out[1] == 0x7c:u8
-
     def pubkey: [32]u8
-    derive-pubkey(pubkey, privkey)
+    derive-pubkey(pubkey, tv1-privkey)
 
-    // Expected: d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
-    assert pubkey[0] == 0xd7:u8
-    assert pubkey[1] == 0x5a:u8
-    assert pubkey[2] == 0x98:u8
-    assert pubkey[3] == 0x01:u8
-    assert pubkey[20] == 0xda:u8
-    assert pubkey[21] == 0xa6:u8
-    assert pubkey[30] == 0x51:u8
-    assert pubkey[31] == 0x1a:u8
+    let i: u32 = 0
+    loop {
+      assert pubkey[i] == tv1-expected[i]
+      i += 1
+      break when i == 32
+    }
   }
 }
