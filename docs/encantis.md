@@ -106,15 +106,10 @@ Booleans are distinct from integers. No implicit truthiness - use explicit compa
 
 #### Array Literals
 
-Array literals create fixed-size value arrays:
-
 ```ents
 [1, 2, 3]           // [3]i32 — value type
-[0:u8; 1024]        // [1024]u8 — value type (large, probably want &)
-[[1, 2], [3, 4]]    // [2][2]i32 — nested value arrays
+[0:u8; 1024]        // [1024]u8 — repeat syntax (value; count)
 ```
-
-The repeat syntax `[expr; count]` creates an array with `count` copies of `expr`. The count must be a compile-time constant.
 
 String literals are array literals of `u8`:
 
@@ -122,50 +117,51 @@ String literals are array literals of `u8`:
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
 ```
 
-#### `def` vs `data` — Constants vs Memory
+#### The `mut` Keyword on Literals
 
-Encantis has two declaration keywords for compile-time values:
-
-**`def`** — compile-time constant, inlined at every use. No memory allocated.
+`mut` does two things: it forces the value into memory and marks it writable.
 
 ```ents
-def mask51 = 0x7FFFFFFFFFFFF:u64     // integer constant
-def pi = 3.14159265                  // float constant
-def fe-zero = (0, 0, 0, 0, 0)       // tuple constant
+5                   // value, lives in a register
+mut 5               // heap-allocated, type becomes *mut i32
+(1.0, 2.0)          // value, two registers
+mut (1.0, 2.0)      // heap-allocated, type becomes *mut (f64, f64)
+"hello"             // already in memory (strings always are), const, deduplicable
+mut "hello"          // in memory, mutable, unique copy
+[1, 2, 3]           // value, three registers
+mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 ```
 
-`def` is a macro-like substitution. The value is computed at compile time and pasted inline wherever the name appears. No pointer, no address, no memory.
+Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
-**`data`** — data section allocation. Serializes the value into wasm linear memory and binds the name to a pointer.
+#### `def` — Compile-Time Constants
+
+`def` binds a name to a compile-time value. It's pure substitution — the value is inlined wherever the name appears. No memory, no pointer.
 
 ```ents
-data buf = [0:u8; 1024]             // buf: *[1024]u8
-data key = x"9d61b19deffd5a60"      // key: *[8]u8
-data table = [1:u64, 2, 3, 4]       // table: *[4]u64
-data origin = (0.0, 0.0)            // origin: *(f64, f64)
+def mask51 = 0x7FFFFFFFFFFFF:u64
+def pi = 3.14159265
+def fe-zero = (0, 0, 0, 0, 0)
 ```
 
-The inferred type is always the tightest pointer: `*[N]T`. This preserves the compile-time length in the type, allowing auto-coercion to `[]T` or `[*]T` where needed.
+#### `data` — Data Section Embedding
 
-**LHS type annotation** narrows the pointer type when needed:
+`data` serializes a literal into the wasm data section and binds the name to a pointer. The RHS is a normal literal — no special rules.
 
 ```ents
-data buf = [0:u8; 1024]             // inferred *[1024]u8 (best practice)
-data buf: []u8 = [0:u8; 1024]       // explicit []u8 (loses length in type)
-data buf: [*]u8 = [0:u8; 1024]      // explicit [*]u8 (loses length entirely)
+data table = [1:u64, 2, 3, 4]      // table: *[4]u64 (const)
+data key = x"9d61b19deffd5a60"      // key: *[8]u8 (const)
+data buf = mut [0:u8; 1024]         // buf: *mut [1024]u8 (mutable)
+data count = 5:i32                  // count: *i32 (const, embedded as 4 bytes)
+data count = mut 5:i32              // count: *mut i32 (mutable)
+data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 ```
 
-Best practice: let the type be inferred. `*[N]T` auto-coerces to `[]T` at call sites, so you rarely need to annotate.
+`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` at call sites.
 
-**Nested data:** Struct literals with pointer fields are supported — the compiler allocates each piece and wires up internal pointers:
+The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
 
-```ents
-data person = (name: "Fred", wizard: true)
-// person: *(name: []u8, wizard: bool)
-// "Fred" allocated separately, name slice points to it
-```
-
-**Zero-initialized buffers** are free — wasm memory starts as zeros, so `data buf = [0:u8; 1024]` emits no data segment.
+**Zero-initialized buffers** are free — wasm memory starts as zeros, so `data buf = mut [0:u8; 1024]` emits no data segment.
 
 ---
 
@@ -307,26 +303,7 @@ fill("hello")                     // ERROR: const literal → mutable param
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
 
-#### Literal Mutability
-
-Literals are **const by default**. Use `mut` as a prefix to mark a literal as mutable:
-
-```ents
-"hello"                           // const, deduplicable
-mut "hello"                       // mutable unique copy
-[1, 2, 3]                         // const
-mut [0:u8; 1024]                  // mutable buffer
-```
-
-The compiler deduplicates const literals — two uses of `"hello"` share the same data section bytes. Mutable literals always get unique allocations.
-
-In `data` declarations:
-
-```ents
-data table = [1, 2, 3, 4]        // table: *[4]i32 (const, deduplicable)
-data buf = mut [0:u8; 1024]       // buf: *mut [1024]u8 (mutable, unique)
-data msg = mut "template"         // msg: *mut [8]u8 (mutable copy)
-```
+See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` interacts with literal expressions and `data` declarations.
 
 #### Nesting
 
