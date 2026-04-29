@@ -4,3 +4,9 @@ import "./util" (
 )
 
 export func square_sum(a: i32, b: i32) -> i32 => mul(add(a, b), add(a, b))
+
+test "square_sum" {
+  assert square_sum(3, 4) == 49
+  assert square_sum(0, 0) == 0
+  assert square_sum(1, 1) == 4
+}

@@ -3,7 +3,7 @@
 import { parse } from '@encantis/compiler/parser'
 import { typecheck, typecheckProgram } from '@encantis/compiler/checker'
 import { buildMeta } from '@encantis/compiler/meta'
-import { moduleToWat, programToWat, moduleToWatWithTests } from '@encantis/compiler/codegen'
+import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
@@ -415,7 +415,6 @@ switch (command) {
       process.exit(1)
     }
 
-    // Use single-module test compilation for now (entry module only)
     const entryModule = load.modules.get(entryPath)!
     const check = typecheckProgram(load.modules, entryPath)
     if (check.errors.length > 0) {
@@ -429,8 +428,7 @@ switch (command) {
       process.exit(1)
     }
 
-    const entryCheck = check.results.get(entryPath)!
-    const { wat, testNames } = moduleToWatWithTests(entryModule.module, entryCheck)
+    const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
 
     if (testNames.length === 0) {
       console.log('No tests found')
