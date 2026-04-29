@@ -336,13 +336,13 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
           }
           return `(i32.const ${ref.ptr})`
         }
-        return `(i32.const 0) ;; data_ptr not found: ${val.id}`
+        return `(i32.const 0)`
       }
     }
   }
 
   // Unknown - emit error comment
-  return `(i32.const 0) ;; unknown: ${name}`
+  return `(i32.const 0)`
 }
 
 function isV128Type(t: ResolvedType): boolean {
@@ -884,7 +884,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 
     // For non-identifier bases, need memory access
     const base = exprToWat(expr.object, ctx)
-    return `${base} ;; .${member.name}`
+    return base
   }
 
   if (member.kind === 'index') {
@@ -1077,7 +1077,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
     return `(i32.const ${ref.ptr})`
   }
   // Array literals without data section entry - placeholder
-  return `(i32.const 0) ;; array literal`
+  return `(i32.const 0)`
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -1090,7 +1090,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
     }
     return `(i32.const ${ref.ptr})`
   }
-  return `(i32.const 0) ;; repeat literal`
+  return `(i32.const 0)`
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
@@ -1257,7 +1257,8 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     // Multiple values - flatten
     const names = wasmTypes.map((_, i) => `${name}_${i}`)
     ctx.locals.set(name, names)
-    return names.map((n, i) => `(local.set $${n} ;; part ${i})`).join('\n')
+    const valParts = splitV128Components(value, names.length)
+    return names.map((n, i) => `(local.set $${n} ${valParts[i]})`).join('\n')
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {

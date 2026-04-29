@@ -460,6 +460,11 @@ switch (command) {
         continue
       }
 
+      // Check if this file has any test blocks before compiling
+      const entryMod = load.modules.get(entryPath)
+      const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
+      if (!hasTests) continue
+
       const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
       if (testNames.length === 0) continue
 

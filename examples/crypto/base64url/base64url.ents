@@ -214,7 +214,8 @@ test "decode rfc4648 vectors" {
   assert check_decode(enc_foobar, tv_foobar)
 }
 
+def tv_bad: []u8 = "!!!"
+
 test "decode invalid input" {
-  let bad: []u8 = "!!!"
-  assert decode(bad, dec_buf) == 0xFFFFFFFF
+  assert decode(tv_bad, dec_buf) == 0xFFFFFFFF
 }
