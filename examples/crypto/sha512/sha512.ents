@@ -1,8 +1,6 @@
 // SHA-512 (FIPS 180-4)
 // Produces a 64-byte (512-bit) hash
 
-export "mem" memory
-
 // Initial hash values (first 64 bits of fractional parts of sqrt of first 8 primes)
 def iv:*[8]u64 = [
   0x6a09e667f3bcc908:u64, 0xbb67ae8584caa73b:u64,

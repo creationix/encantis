@@ -11,6 +11,7 @@ import "./field" (
   "fe-mul" func fe-mul(f: Fe, g: Fe) -> Fe
   "fe-sq" func fe-sq(f: Fe) -> Fe
   "fe-carry" func fe-carry(h: Fe) -> Fe
+  "fe-reduce" func fe-reduce(f: Fe) -> Fe
   "fe-inv" func fe-inv(z: Fe) -> Fe
   "fe-eq" func fe-eq(f: Fe, g: Fe) -> bool
   "fe-d" func fe-d() -> Fe
@@ -166,7 +167,7 @@ func base-y() -> Fe => (
   a4: 0x6666666666666:u64
 )
 
-func pt-set-base(buf: *[120]u64, i: u32) {
+export func pt-set-base(buf: *[120]u64, i: u32) {
   pt-set-x(buf, i, base-x())
   pt-set-y(buf, i, base-y())
   pt-set-z(buf, i, fe-one())
@@ -214,6 +215,71 @@ export func scalar-mult(buf: *[120]u64, out: u32, base: u32, scalar: *[32]u8) {
     break when byte-idx == 0
     byte-idx -= 1
   }
+}
+
+// === Field element serialization ===
+// Serialize fully-reduced Fe to 32 bytes little-endian
+
+export func fe-tobytes(out: *[32]u8, f: Fe) {
+  let r = fe-reduce(fe-carry(f))
+  // 5 limbs × 51 bits = 255 bits → 32 bytes
+  // Pack limbs into bytes, little-endian
+  let h0 = r.a0
+  let h1 = r.a1
+  let h2 = r.a2
+  let h3 = r.a3
+  let h4 = r.a4
+
+  // Byte 0..5: h0 (51 bits)
+  out[0] = h0 as u8
+  out[1] = (h0 >> 8) as u8
+  out[2] = (h0 >> 16) as u8
+  out[3] = (h0 >> 24) as u8
+  out[4] = (h0 >> 32) as u8
+  out[5] = (h0 >> 40) as u8
+  // Byte 6: h0[48..51] | h1[0..5]
+  out[6] = ((h0 >> 48) | (h1 << 3)) as u8
+  out[7] = (h1 >> 5) as u8
+  out[8] = (h1 >> 13) as u8
+  out[9] = (h1 >> 21) as u8
+  out[10] = (h1 >> 29) as u8
+  out[11] = (h1 >> 37) as u8
+  // Byte 12: h1[45..51] | h2[0..2]
+  out[12] = ((h1 >> 45) | (h2 << 6)) as u8
+  out[13] = (h2 >> 2) as u8
+  out[14] = (h2 >> 10) as u8
+  out[15] = (h2 >> 18) as u8
+  out[16] = (h2 >> 26) as u8
+  out[17] = (h2 >> 34) as u8
+  out[18] = (h2 >> 42) as u8
+  // Byte 19: h2[50..51] | h3[0..7] → h2 has 1 bit left at position 50
+  out[19] = ((h2 >> 50) | (h3 << 1)) as u8
+  out[20] = (h3 >> 7) as u8
+  out[21] = (h3 >> 15) as u8
+  out[22] = (h3 >> 23) as u8
+  out[23] = (h3 >> 31) as u8
+  out[24] = (h3 >> 39) as u8
+  // Byte 25: h3[47..51] | h4[0..4]
+  out[25] = ((h3 >> 47) | (h4 << 4)) as u8
+  out[26] = (h4 >> 4) as u8
+  out[27] = (h4 >> 12) as u8
+  out[28] = (h4 >> 20) as u8
+  out[29] = (h4 >> 28) as u8
+  out[30] = (h4 >> 36) as u8
+  out[31] = (h4 >> 44) as u8
+}
+
+// === Point encoding ===
+// RFC 8032 §5.1.2: compress (X,Y,Z,T) → 32 bytes
+// Encode y as 255 bits LE, set high bit of byte 31 to sign of x
+
+export func point-encode(out: *[32]u8, buf: *[120]u64, i: u32) {
+  let zinv = fe-inv(pt-z(buf, i))
+  let x = fe-reduce(fe-carry(fe-mul(pt-x(buf, i), zinv)))
+  let y = fe-reduce(fe-carry(fe-mul(pt-y(buf, i), zinv)))
+  fe-tobytes(out, y)
+  // Set high bit of last byte to x's parity (low bit of x.a0)
+  out[31] = out[31] | ((x.a0 & 1:u64) << 7) as u8
 }
 
 // === Tests ===

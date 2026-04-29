@@ -835,8 +835,11 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
       const paramType = paramTypes[i].type
       const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
       const argType = ctx.types.get(typeKey(argExpr.span.start, argExpr.kind))
-      if (argType?.kind === 'array' && paramType.kind === 'slice') {
-        const len = totalElements(argType.sizes)
+      const innerArray = argType?.kind === 'array' ? argType
+        : (argType?.kind === 'pointer' && argType.pointee.kind === 'array') ? argType.pointee
+        : null
+      if (innerArray && paramType.kind === 'slice') {
+        const len = totalElements(innerArray.sizes)
         if (len !== null) {
           return `${wat} (i32.const ${len})`
         }

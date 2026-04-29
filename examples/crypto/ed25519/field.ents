@@ -2,8 +2,6 @@
 // Representation: 5 limbs of 51 bits each
 // fe = a0 + a1*2^51 + a2*2^102 + a3*2^153 + a4*2^204
 
-export "mem" memory
-
 type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
 
 def mask51 = 0x7FFFFFFFFFFFF:u64  // 2^51 - 1
@@ -320,7 +318,7 @@ export func fe-mul-small(f: Fe, s: u64) -> Fe {
 
 // === Equality (after full reduction) ===
 
-func fe-reduce(f: Fe) -> Fe {
+export func fe-reduce(f: Fe) -> Fe {
   let h = fe-carry(f)
   h = fe-carry(h)
 
