@@ -21,7 +21,7 @@ export func test_add() { store(32, load(0) + load(16)) }
 export func test_and() { store(32, load(0) & load(16)) }
 export func test_or()  { store(32, load(0) | load(16)) }
 export func test_not() { store(32, ~load(0)) }
-export func test_eq() -> i32 => load(0) == load(16)
+export func test_eq() -> bool => load(0) == load(16)
 
 export func test_widen(val: u64) { store(32, val as u128) }
 export func test_narrow() -> u64 => load(0) as u64

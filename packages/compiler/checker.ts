@@ -634,14 +634,22 @@ class CheckContext {
     indexedType: ArrayRT
     ptrType: ResolvedType
   } | null {
-    // Handle annotation on RHS with explicit pointer type: [0;12]:*[_]u32
+    // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
     if (expr.kind === 'AnnotationExpr') {
       const innerExpr = expr.expr
-      if (this.isDataLiteralExpr(innerExpr) && inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
-        return {
-          expr: innerExpr,
-          indexedType: inferredType.pointee,
-          ptrType: inferredType,
+      if (this.isDataLiteralExpr(innerExpr)) {
+        if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
+          return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
+        }
+        if (inferredType.kind === 'slice') {
+          const litSize = this.getLiteralSize(innerExpr)
+          if (typeof litSize === 'number') {
+            const arrType = array(inferredType.element, [litSize])
+            return { expr: innerExpr, indexedType: arrType, ptrType: pointer(arrType) }
+          }
+        }
+        if (inferredType.kind === 'array') {
+          return { expr: innerExpr, indexedType: inferredType, ptrType: pointer(inferredType) }
         }
       }
     }
@@ -954,7 +962,12 @@ class CheckContext {
     // Check body
     const prevScope = this.currentScope
     this.currentScope = funcScope
-    this.checkBody(decl.body)
+    if (decl.body.kind === 'Block') {
+      this.checkBody(decl.body)
+    } else {
+      const returnType = this.resolveType(decl.signature.output)
+      this.checkExpr(decl.body.expr, returnType)
+    }
     this.currentScope = prevScope
   }
 
@@ -1533,6 +1546,21 @@ class CheckContext {
       }
     }
 
+    // Propagate expected type into tuple elements for bidirectional inference
+    const unwrappedExpected = unwrap(expected)
+    if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
+        unwrappedExpected.fields.length === inferred.fields.length &&
+        expr.kind === 'TupleExpr') {
+      for (let i = 0; i < unwrappedExpected.fields.length; i++) {
+        const elemExpr = (expr as AST.TupleExpr).elements[i]
+        if (elemExpr?.value) {
+          this.checkExpr(elemExpr.value, unwrappedExpected.fields[i].type)
+        }
+      }
+      this.types.set(typeKey(exprTypeOffset(expr), expr.kind), expected)
+      return expected
+    }
+
     // For other types, check assignability and record the inferred type
     if (!typeAssignable(expected, inferred)) {
       this.error(
@@ -1548,8 +1576,9 @@ class CheckContext {
     const isComptimeLiteral = inferred.kind === 'comptime_int' || inferred.kind === 'comptime_float' ||
       (inferred.kind === 'array' && (hasInferredMarker(inferred.sizes) || isFixedSizes(inferred.sizes)))
     const expectedHasInferredSize = expected.kind === 'array' && hasInferredMarker(expected.sizes)
+    const compatible = typeAssignable(expected, inferred)
     const recordType = expected.kind === 'named' ? expected
-      : (isComptimeLiteral && !expectedHasInferredSize ? expected : inferred)
+      : (isComptimeLiteral && !expectedHasInferredSize && compatible ? expected : inferred)
     // Use span.end for MemberExpr to match inferExpr behavior (allows distinguishing a.b from a.b.c)
     const typeOffset = exprTypeOffset(expr)
     this.types.set(typeKey(typeOffset, expr.kind), recordType)
@@ -2190,6 +2219,8 @@ class CheckContext {
       }
       fields.push(field(arg.name, argType))
     }
+    // (x) is grouping, not a 1-element tuple
+    if (fields.length === 1 && !fields[0].name) return fields[0].type
     return tuple(fields)
   }
 
