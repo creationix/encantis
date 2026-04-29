@@ -244,7 +244,7 @@ Several agent runtimes consume LSP — Copilot, opencode, Claude Code in VS Code
 - [x] **Document symbols.** Outline of a file (functions, types, globals). Cheap — the AST has everything.
 - [x] **Workspace symbols.** "Find by name across the project." Needs the module loader from §1 so the LSP can index the whole DAG.
 - [x] **Find references.** "Where is `field_add` called?" — shares indexing with workspace symbols.
-- [ ] **Diagnostic quality pass.** Audit compiler errors for clear messages and accurate spans. Agents triage from these; bad spans waste turns.
+- [x] **Diagnostic quality pass.** Audit compiler errors for clear messages and accurate spans. Agents triage from these; bad spans waste turns.
 - [x] **Hover improvements.** Show full type signatures including imported symbols; show `def` values for compile-time constants; show inferred types on `let` bindings.
 - [x] **Signature help.** Parameter names and types while inside a call. Lower priority but cheap.
 
