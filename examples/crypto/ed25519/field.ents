@@ -426,7 +426,7 @@ export func fe-d() -> Fe => (
   a1: 0x1A8283B156EBD:u64,
   a2: 0x5E7A26001C029:u64,
   a3: 0x739C663A03CBB:u64,
-  a4: 0x52036CEC2BED1:u64
+  a4: 0x52036CEE2B6FF:u64
 )
 
 // 2*d

@@ -107,7 +107,7 @@ export func point-double(buf: *[120]u64, out: u32, p: u32) {
 export func point-add(buf: *[120]u64, out: u32, p: u32, q: u32) {
   let a = fe-mul(pt-x(buf, p), pt-x(buf, q))
   let b = fe-mul(pt-y(buf, p), pt-y(buf, q))
-  let c = fe-mul(fe-mul(pt-t(buf, p), pt-t(buf, q)), fe-2d())
+  let c = fe-mul(fe-mul(pt-t(buf, p), pt-t(buf, q)), fe-d())
   let d = fe-mul(pt-z(buf, p), pt-z(buf, q))
 
   let e = fe-carry(fe-sub(
@@ -148,6 +148,72 @@ export func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool {
     fe-carry(fe-mul(pt-y(buf, q), pt-z(buf, p)))
   )
   return xeq && yeq
+}
+
+// === Base point G ===
+// RFC 8032 §5.1: y = 4/5 mod p, x is the positive root
+// These are the 5-limb representations of the affine coordinates.
+
+func base-x() -> Fe => (
+  a0: 0x62D608F25D51A:u64, a1: 0x412A4B4F6592A:u64,
+  a2: 0x75B7171A4B31D:u64, a3: 0x1FF60527118FE:u64,
+  a4: 0x216936D3CD6E5:u64
+)
+
+func base-y() -> Fe => (
+  a0: 0x6666666666658:u64, a1: 0x4CCCCCCCCCCCC:u64,
+  a2: 0x1999999999999:u64, a3: 0x3333333333333:u64,
+  a4: 0x6666666666666:u64
+)
+
+func pt-set-base(buf: *[120]u64, i: u32) {
+  pt-set-x(buf, i, base-x())
+  pt-set-y(buf, i, base-y())
+  pt-set-z(buf, i, fe-one())
+  pt-set-t(buf, i, fe-carry(fe-mul(base-x(), base-y())))
+}
+
+// === Scalar multiplication ===
+// Fixed-base double-and-add, processing bits from MSB to LSB.
+// scalar is a 32-byte little-endian buffer (256 bits).
+// Result goes into buf[out].
+
+export func scalar-mult(buf: *[120]u64, out: u32, base: u32, scalar: *[32]u8) {
+  // slot 'out' = accumulator (starts as identity)
+  // slot 'base' = the point to multiply
+  // slot 'out+1' or 'base+1' used as temp — we use slot 4 and 5 as temps
+  let tmp: u32 = 4
+  pt-set-identity(buf, out)
+
+  let byte-idx: u32 = 31
+  loop {
+    let byte = scalar[byte-idx]
+    let bit: u32 = 7
+    loop {
+      // Double
+      point-double(buf, tmp, out)
+      // Copy tmp back to out
+      pt-set-x(buf, out, pt-x(buf, tmp))
+      pt-set-y(buf, out, pt-y(buf, tmp))
+      pt-set-z(buf, out, pt-z(buf, tmp))
+      pt-set-t(buf, out, pt-t(buf, tmp))
+
+      // Conditionally add base if bit is set
+      let mask = (byte >> bit) & 1:u8
+      if mask == 1 {
+        point-add(buf, tmp, out, base)
+        pt-set-x(buf, out, pt-x(buf, tmp))
+        pt-set-y(buf, out, pt-y(buf, tmp))
+        pt-set-z(buf, out, pt-z(buf, tmp))
+        pt-set-t(buf, out, pt-t(buf, tmp))
+      }
+
+      break when bit == 0
+      bit -= 1
+    }
+    break when byte-idx == 0
+    byte-idx -= 1
+  }
 }
 
 // === Tests ===
@@ -191,5 +257,41 @@ test "point operations" {
     point-add(buf(), 2, 0, 1)
     pt-set-identity(buf(), 0)
     assert point-eq(buf(), 2, 0)
+  }
+
+  test "base point is on the curve" {
+    // Check -x^2 + y^2 == 1 + d*x^2*y^2
+    let x2 = fe-carry(fe-sq(base-x()))
+    let y2 = fe-carry(fe-sq(base-y()))
+    let lhs = fe-carry(fe-sub(y2, x2))
+    let x2y2 = fe-carry(fe-mul(x2, y2))
+    let dx2y2 = fe-carry(fe-mul(fe-d(), x2y2))
+    let rhs = fe-carry(fe-add(fe-one(), dx2y2))
+    assert fe-eq(fe-carry(lhs), fe-carry(rhs))
+  }
+
+  test "G + G == 2*G (double matches add)" {
+    pt-set-base(buf(), 0)
+    pt-set-base(buf(), 3)
+    point-double(buf(), 1, 0)
+    point-add(buf(), 2, 0, 3)
+    assert point-eq(buf(), 1, 2)
+  }
+
+  test "scalar mult by 1 gives G" {
+    def scalar1: [32]u8
+    scalar1[0] = 1:u8
+    pt-set-base(buf(), 0)
+    scalar-mult(buf(), 1, 0, &scalar1)
+    assert point-eq(buf(), 1, 0)
+  }
+
+  test "scalar mult by 2 gives 2G" {
+    def scalar2: [32]u8
+    scalar2[0] = 2:u8
+    pt-set-base(buf(), 0)
+    scalar-mult(buf(), 1, 0, &scalar2)
+    point-double(buf(), 2, 0)
+    assert point-eq(buf(), 1, 2)
   }
 }
