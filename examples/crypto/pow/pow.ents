@@ -80,15 +80,8 @@ func gimli_absorb_36(challenge: *[32]u8, nonce: u32) {
 }
 
 // Count leading zero bits in first 4 bytes of hash state
-func leading_zeros() -> u32 {
-  let word = hash_state[0]
-  // Byte-swap to big-endian for bit counting
-  let b0 = word & 0xFF
-  let b1 = word >> 8 & 0xFF
-  let b2 = word >> 16 & 0xFF
-  let b3 = word >> 24 & 0xFF
-  let be = b0 << 24 | b1 << 16 | b2 << 8 | b3
-  return clz(be)
+func trailing_zeros() -> u32 {
+  return ctz(hash_state[0])
 }
 
 // Solve: find nonce where gimli_hash(challenge || nonce) has >= difficulty leading zero bits
@@ -97,7 +90,7 @@ export func solve(challenge: *[32]u8, difficulty: u32) -> u32 {
   let nonce: u32 = 0
   loop {
     gimli_absorb_36(challenge, nonce)
-    break when leading_zeros() >= difficulty
+    break when trailing_zeros() >= difficulty
     nonce += 1
   }
   return nonce
@@ -106,7 +99,7 @@ export func solve(challenge: *[32]u8, difficulty: u32) -> u32 {
 // Verify: check that a nonce produces the required difficulty
 export func verify(challenge: *[32]u8, difficulty: u32, nonce: u32) -> bool {
   gimli_absorb_36(challenge, nonce)
-  return leading_zeros() >= difficulty
+  return trailing_zeros() >= difficulty
 }
 
 test "pow" {
