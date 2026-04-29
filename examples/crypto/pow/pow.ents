@@ -1,0 +1,139 @@
+// Proof-of-Work challenge solver using Gimli hash
+// Designed for browser bot challenges: small wasm, esoteric hash
+//
+// Protocol:
+//   1. Server sends challenge (32 bytes) + difficulty (number of leading zero bits)
+//   2. Client finds a 4-byte nonce such that gimli_hash(challenge || nonce) has
+//      `difficulty` leading zero bits
+//   3. Client returns the nonce
+//
+// Gimli is ideal because:
+//   - Not in WebCrypto (can't shortcut with native APIs)
+//   - Simple enough for tiny wasm (no lookup tables, no 64-bit math)
+//   - Resistant to SIMD optimization (32-bit column operations)
+//   - Hard to parallelize on GPU (state-dependent permutation)
+
+import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
+
+export "mem" memory
+
+def hash_state:[12]u32
+
+// Absorb 36 bytes (32 challenge + 4 nonce) with Gimli sponge
+// Rate = 16 bytes, capacity = 32 bytes
+func gimli_absorb_36(challenge: *[32]u8, nonce: u32) {
+  // Zero state
+  for i in 12 {
+    hash_state[i] = 0:u32
+  }
+
+  // Absorb first 16 bytes (rate block 1)
+  hash_state.u8[0] = challenge[0]
+  hash_state.u8[1] = challenge[1]
+  hash_state.u8[2] = challenge[2]
+  hash_state.u8[3] = challenge[3]
+  hash_state.u8[4] = challenge[4]
+  hash_state.u8[5] = challenge[5]
+  hash_state.u8[6] = challenge[6]
+  hash_state.u8[7] = challenge[7]
+  hash_state.u8[8] = challenge[8]
+  hash_state.u8[9] = challenge[9]
+  hash_state.u8[10] = challenge[10]
+  hash_state.u8[11] = challenge[11]
+  hash_state.u8[12] = challenge[12]
+  hash_state.u8[13] = challenge[13]
+  hash_state.u8[14] = challenge[14]
+  hash_state.u8[15] = challenge[15]
+
+  gimli(hash_state)
+
+  // Absorb next 16 bytes (rate block 2)
+  hash_state.u8[0] ^= challenge[16]
+  hash_state.u8[1] ^= challenge[17]
+  hash_state.u8[2] ^= challenge[18]
+  hash_state.u8[3] ^= challenge[19]
+  hash_state.u8[4] ^= challenge[20]
+  hash_state.u8[5] ^= challenge[21]
+  hash_state.u8[6] ^= challenge[22]
+  hash_state.u8[7] ^= challenge[23]
+  hash_state.u8[8] ^= challenge[24]
+  hash_state.u8[9] ^= challenge[25]
+  hash_state.u8[10] ^= challenge[26]
+  hash_state.u8[11] ^= challenge[27]
+  hash_state.u8[12] ^= challenge[28]
+  hash_state.u8[13] ^= challenge[29]
+  hash_state.u8[14] ^= challenge[30]
+  hash_state.u8[15] ^= challenge[31]
+
+  gimli(hash_state)
+
+  // Absorb 4-byte nonce + padding
+  hash_state.u8[0] ^= (nonce) as u8
+  hash_state.u8[1] ^= (nonce >> 8) as u8
+  hash_state.u8[2] ^= (nonce >> 16) as u8
+  hash_state.u8[3] ^= (nonce >> 24) as u8
+  // Gimli padding: domain separation + final bit
+  hash_state.u8[4] ^= 0x1f as u8
+  hash_state.u8[15] ^= 0x80 as u8
+
+  gimli(hash_state)
+}
+
+// Count leading zero bits in first 4 bytes of hash state
+func leading_zeros() -> u32 {
+  let word = hash_state[0]
+  // Byte-swap to big-endian for bit counting
+  let b0 = word & 0xFF
+  let b1 = word >> 8 & 0xFF
+  let b2 = word >> 16 & 0xFF
+  let b3 = word >> 24 & 0xFF
+  let be = b0 << 24 | b1 << 16 | b2 << 8 | b3
+  return clz(be)
+}
+
+// Solve: find nonce where gimli_hash(challenge || nonce) has >= difficulty leading zero bits
+// Returns the winning nonce
+export func solve(challenge: *[32]u8, difficulty: u32) -> u32 {
+  let nonce: u32 = 0
+  loop {
+    gimli_absorb_36(challenge, nonce)
+    break when leading_zeros() >= difficulty
+    nonce += 1
+  }
+  return nonce
+}
+
+// Verify: check that a nonce produces the required difficulty
+export func verify(challenge: *[32]u8, difficulty: u32, nonce: u32) -> bool {
+  gimli_absorb_36(challenge, nonce)
+  return leading_zeros() >= difficulty
+}
+
+test "pow" {
+  def challenge:[32]u8
+
+  func set_challenge() {
+    // Fill with a simple pattern
+    for i in 32 {
+      challenge[i] = (i * 7 + 13) as u8
+    }
+  }
+
+  test "verify accepts solved nonce" {
+    set_challenge()
+    let nonce = solve(challenge, 4)  // 4 leading zero bits = ~16 attempts avg
+    assert verify(challenge, 4, nonce)
+  }
+
+  test "verify rejects wrong nonce" {
+    set_challenge()
+    let nonce = solve(challenge, 12)  // higher difficulty = won't collide
+    assert verify(challenge, 12, nonce + 1) == false
+  }
+
+  test "difficulty 8 solvable" {
+    set_challenge()
+    let nonce = solve(challenge, 8)  // 8 bits = ~256 attempts avg
+    assert verify(challenge, 8, nonce)
+  }
+}
