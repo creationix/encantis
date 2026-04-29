@@ -1,0 +1,98 @@
+// Ring buffer (circular queue) — practical data structure example
+// Exercises: modular arithmetic, pointer indexing, global state, conditionals
+
+export "mem" memory
+
+def buf:[256]u8
+def capacity = 256:u32
+
+global head: u32 = 0
+global tail: u32 = 0
+global count: u32 = 0
+
+export func push(value: u8) -> bool {
+  return false when count >= capacity
+  buf[tail] = value
+  tail = (tail + 1) % capacity
+  count += 1
+  return true
+}
+
+export func pop() -> (value: u8) {
+  return 0 when count == 0
+  value = buf[head]
+  head = (head + 1) % capacity
+  count -= 1
+}
+
+export func peek() -> u8 {
+  return 0 when count == 0
+  return buf[head]
+}
+
+export func size() -> u32 => count
+export func is-empty() -> bool => count == 0
+export func is-full() -> bool => count >= capacity
+
+func reset() {
+  head = 0
+  tail = 0
+  count = 0
+}
+
+test "ring buffer" {
+
+  test "push and pop FIFO" {
+    reset()
+    push(10)
+    push(20)
+    push(30)
+    assert size() == 3
+    assert pop() == 10
+    assert pop() == 20
+    assert pop() == 30
+    assert is-empty()
+  }
+
+  test "peek does not consume" {
+    reset()
+    push(42)
+    assert peek() == 42
+    assert peek() == 42
+    assert size() == 1
+  }
+
+  test "wraparound" {
+    reset()
+    // Fill and drain to advance head/tail past the boundary
+    for i in 200 {
+      push(i as u8)
+    }
+    for i in 200 {
+      pop()
+    }
+    assert is-empty()
+    // Now push again — this wraps around the 256-byte buffer
+    for i in 100 {
+      push((i + 50) as u8)
+    }
+    assert size() == 100
+    assert pop() == 50  // first pushed value
+  }
+
+  test "full rejects push" {
+    reset()
+    for i in 256 {
+      assert push(i as u8)
+    }
+    assert is-full()
+    assert push(99) == false
+    assert size() == 256
+  }
+
+  test "empty pop returns zero" {
+    reset()
+    assert pop() == 0
+    assert is-empty()
+  }
+}

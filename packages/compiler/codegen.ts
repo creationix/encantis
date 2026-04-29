@@ -2056,7 +2056,13 @@ function emitTestDecl(
     // Leaf test: emit as a function
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
     const body = stmts.map(s => stmtToWat(s, ctx)).join('\n')
-    const locals = collectTestLocals(stmts, ctx, checkResult)
+    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
+    const seen = new Set<string>()
+    const locals = rawLocals.filter(l => {
+      if (seen.has(l.name)) return false
+      seen.add(l.name)
+      return true
+    })
     const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
     parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
