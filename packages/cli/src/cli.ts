@@ -6,9 +6,9 @@ import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
-import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols } from '@encantis/compiler/queries'
+import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
-import { resolve } from 'path'
+import { resolve } from 'node:path'
 import wabt from 'wabt'
 
 const args = process.argv.slice(2)
@@ -16,7 +16,7 @@ const args = process.argv.slice(2)
 function usage() {
   console.log(`Encantis Compiler
 
-Usage: cli.ts <command> [options]
+Usage: encantis <command> [options]
 
 Commands:
   check <file>                    Parse and check file for errors
@@ -24,11 +24,12 @@ Commands:
   meta <file> [-o out]            Generate meta.json (types, symbols, hints)
   compile <file> [-o out]         Compile file to WAT
   wasm <file> [-o out]            Compile file to WASM binary
-  definition <file>:<line>:<col>  Go to definition of symbol at position
-  hover <file>:<line>:<col>       Show type info at position
-  references <file>:<line>:<col>  Find all references to symbol at position
-  symbols [<file>]                List document symbols
-  signature <file>:<line>:<col>   Show function signature at position
+  definition <file>:<line>:<col|name>  Go to definition of symbol
+  hover <file>:<line>:<col|name>       Show type info for symbol
+  references <file>:<line>:<col|name>  Find all references to symbol
+  symbols [<file|dir>]                 List document or workspace symbols
+  signature <file>:<line>:<col|name>   Show function signature
+  rename <file>:<line>:<col|name>      Find all locations for rename
 
 Options:
   -o <file>       Output file (default: stdout)
@@ -71,11 +72,32 @@ for (let i = 1; i < args.length; i++) {
   }
 }
 
-// Parse file:line:col for query commands
-function parseFilePos(arg: string): { file: string; line: number; col: number } | null {
-  const match = arg.match(/^(.+):(\d+):(\d+)$/)
+// Parse file:line:col or file:line:name for query commands
+// file:line:col — exact position (1-indexed)
+// file:line:name — find symbol `name` on that line (LLM-friendly)
+async function parseFilePos(arg: string): Promise<{ file: string; line: number; col: number } | null> {
+  const match = arg.match(/^(.+):(\d+):(.+)$/)
   if (!match) return null
-  return { file: match[1], line: parseInt(match[2]) - 1, col: parseInt(match[3]) - 1 }
+  const file = match[1]
+  const line = parseInt(match[2]) - 1
+  const third = match[3]
+
+  // If third part is all digits, it's a column number
+  if (/^\d+$/.test(third)) {
+    return { file, line, col: parseInt(third) - 1 }
+  }
+
+  // Otherwise it's a symbol name — find it on the specified line
+  const source = await Bun.file(file).text()
+  const lines = source.split('\n')
+  if (line < 0 || line >= lines.length) return null
+  const lineText = lines[line]
+  const nameIdx = lineText.indexOf(third)
+  if (nameIdx === -1) {
+    console.error(`'${third}' not found on line ${line + 1} of ${file}`)
+    process.exit(1)
+  }
+  return { file, line, col: nameIdx }
 }
 
 if (!inputFile) {
@@ -96,7 +118,7 @@ async function output(content: string) {
 // Read source for non-query commands
 let source = ''
 let filePath = inputFile
-const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols']
+const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols', 'rename']
 if (!queryCommands.includes(command)) {
   const file = Bun.file(inputFile)
   if (!(await file.exists())) {
@@ -242,8 +264,9 @@ switch (command) {
   case 'definition':
   case 'hover':
   case 'references':
-  case 'signature': {
-    const pos = inputFile ? parseFilePos(inputFile) : null
+  case 'signature':
+  case 'rename': {
+    const pos = inputFile ? await parseFilePos(inputFile) : null
     if (!pos) {
       console.error('Error: expected <file>:<line>:<col>')
       process.exit(1)
@@ -298,6 +321,22 @@ switch (command) {
       } else {
         const params = r.params.map(p => `${p.name}: ${p.type}`).join(', ')
         console.log(`${r.name}(${params}) -> ${r.returnType}`)
+      }
+    } else if (command === 'rename') {
+      const r = rename(qSource, qResult.module!, qCheck, offset)
+      if (!r) { console.log('No symbol found'); process.exit(1) }
+      if (jsonOutput) {
+        const locs = r.locations.map(loc => {
+          const p = lineMap.offsetToPosition(loc.offset)
+          return { file: pos.file, line: p.line + 1, col: p.col + 1, length: loc.length }
+        })
+        console.log(JSON.stringify({ oldName: r.oldName, locations: locs }))
+      } else {
+        console.log(`${r.oldName}: ${r.locations.length} locations`)
+        for (const loc of r.locations) {
+          const p = lineMap.offsetToPosition(loc.offset)
+          console.log(`  ${pos.file}:${p.line + 1}:${p.col + 1}`)
+        }
       }
     }
     break
