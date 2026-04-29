@@ -229,8 +229,10 @@ export function concretizeType(
   switch (u.kind) {
     case 'comptime_int': {
       const val = u.value
-      if (val >= -2147483648n && val <= 4294967295n) return primitive(opts.defaultInt)
-      if (val >= -9223372036854775808n && val <= 18446744073709551615n) return primitive('i64')
+      if (val >= -2147483648n && val <= 2147483647n) return primitive(opts.defaultInt)
+      if (val >= 0n && val <= 4294967295n) return primitive('u32')
+      if (val >= -9223372036854775808n && val <= 9223372036854775807n) return primitive('i64')
+      if (val >= 0n && val <= 18446744073709551615n) return primitive('u64')
       // Auto-size to smallest power-of-two type that fits
       for (const bits of [128, 256, 512]) {
         if (val >= -(2n ** BigInt(bits - 1)) && val <= 2n ** BigInt(bits) - 1n) {

@@ -466,9 +466,23 @@ function resolveExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | un
   return undefined
 }
 
+function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: number): string {
+  const fromParts = fromType ? wideIntParts(fromType) : 0
+  if (fromParts >= toParts) return wat
+  if (fromParts === 0) {
+    const fromWt = fromType ? typeToWasmSingle(fromType) : 'i32'
+    const first = fromWt === 'i64' ? wat : `(i64.extend_i32_u ${wat})`
+    const zeros = Array(toParts - 1).fill('(i64.const 0)').join(' ')
+    return `${first} ${zeros}`
+  }
+  const parts = splitV128Components(wat, fromParts)
+  while (parts.length < toParts) parts.push('(i64.const 0)')
+  return parts.join(' ')
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
-  const left = exprToWat(expr.left, ctx)
-  const right = exprToWat(expr.right, ctx)
+  let left = exprToWat(expr.left, ctx)
+  let right = exprToWat(expr.right, ctx)
 
   // Get result type from checker
   const resultType = lookupExprType(expr, ctx)
@@ -479,8 +493,18 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   // For comparison ops, we need the operand type for signedness (result is bool)
   // For arithmetic ops, use the result type (which is the wider operand type)
   let leftType = lookupExprType(expr.left, ctx)
+  if (leftType?.kind === 'tuple' && leftType.fields.length === 1) leftType = leftType.fields[0].type
+  let rightType = lookupExprType(expr.right, ctx)
+  if (rightType?.kind === 'tuple' && rightType.fields.length === 1) rightType = rightType.fields[0].type
   const isComparison = ['==', '!=', '<', '>', '<=', '>='].includes(expr.op)
-  let operandType = isComparison ? (leftType ?? resultType) : resultType
+  let operandType: ResolvedType
+  if (isComparison) {
+    const lSize = leftType ? primitiveByteSize(unwrap(leftType)) ?? 0 : 0
+    const rSize = rightType ? primitiveByteSize(unwrap(rightType)) ?? 0 : 0
+    operandType = rSize > lSize ? (rightType ?? resultType) : (leftType ?? resultType)
+  } else {
+    operandType = resultType
+  }
   // Unwrap 1-element tuple from parenthesized expressions
   if (operandType.kind === 'tuple' && operandType.fields.length === 1) {
     operandType = operandType.fields[0].type
@@ -490,6 +514,12 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const signed = isSigned(operandType)
   const isFloatType = isFloat(operandType)
   const nWide = wideIntParts(operandType)
+
+  // Widen operands if they have fewer i64 parts than the operation requires
+  if (nWide > 0) {
+    if (leftType && wideIntParts(leftType) < nWide) left = widenToWide(left, leftType, nWide)
+    if (rightType && wideIntParts(rightType) < nWide) right = widenToWide(right, rightType, nWide)
+  }
 
   const op = expr.op
   let wasmOp: string
@@ -599,7 +629,6 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const leftSigned = leftType ? isSigned(leftType) : signed
   const coercedLeft = coerceWasmType(left, leftWt, wt, leftSigned)
 
-  const rightType = lookupExprType(expr.right, ctx)
   const rightWt = rightType ? typeToWasmSingle(rightType) : wt
   const rightSigned = rightType ? isSigned(rightType) : signed
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
