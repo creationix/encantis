@@ -2,25 +2,25 @@
 // Representation: 5 limbs of 51 bits each
 // fe = a0 + a1*2^51 + a2*2^102 + a3*2^153 + a4*2^204
 
-type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
+type Fe = (u64, u64, u64, u64, u64)
 
 def mask51 = 0x7FFFFFFFFFFFF:u64  // 2^51 - 1
 
 // === Constants ===
 
-func fe-zero() -> Fe => (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
-func fe-one() -> Fe => (a0: 1:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+func fe-zero() -> Fe => (0:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+func fe-one() -> Fe => (1:u64, 0:u64, 0:u64, 0:u64, 0:u64)
 
 // === Addition ===
 // Result may not be fully reduced — limbs can exceed 51 bits slightly
 
 export func fe-add(f: Fe, g: Fe) -> Fe {
   return (
-    a0: f.a0 + g.a0,
-    a1: f.a1 + g.a1,
-    a2: f.a2 + g.a2,
-    a3: f.a3 + g.a3,
-    a4: f.a4 + g.a4
+    f.0 + g.0,
+    f.1 + g.1,
+    f.2 + g.2,
+    f.3 + g.3,
+    f.4 + g.4
   )
 }
 
@@ -31,14 +31,14 @@ export func fe-sub(f: Fe, g: Fe) -> Fe {
   // 2*p in 5-limb form: each limb gets 2*(2^51-1) + carry adjustments
   // p = 2^255 - 19, so 2p has limbs:
   // a0: 2*(2^51 - 19) = 2^52 - 38
-  // a1..a3: 2*(2^51 - 1) = 2^52 - 2
+  // a1..3: 2*(2^51 - 1) = 2^52 - 2
   // a4: 2*(2^51 - 1) = 2^52 - 2
   return (
-    a0: f.a0 + 0xFFFFFFFFFFFDA:u64 - g.a0,
-    a1: f.a1 + 0xFFFFFFFFFFFFE:u64 - g.a1,
-    a2: f.a2 + 0xFFFFFFFFFFFFE:u64 - g.a2,
-    a3: f.a3 + 0xFFFFFFFFFFFFE:u64 - g.a3,
-    a4: f.a4 + 0xFFFFFFFFFFFFE:u64 - g.a4
+    f.0 + 0xFFFFFFFFFFFDA:u64 - g.0,
+    f.1 + 0xFFFFFFFFFFFFE:u64 - g.1,
+    f.2 + 0xFFFFFFFFFFFFE:u64 - g.2,
+    f.3 + 0xFFFFFFFFFFFFE:u64 - g.3,
+    f.4 + 0xFFFFFFFFFFFFE:u64 - g.4
   )
 }
 
@@ -46,11 +46,11 @@ export func fe-sub(f: Fe, g: Fe) -> Fe {
 // Propagate carries and reduce mod p
 
 export func fe-carry(h: Fe) -> Fe {
-  let h0 = h.a0
-  let h1 = h.a1
-  let h2 = h.a2
-  let h3 = h.a3
-  let h4 = h.a4
+  let h0 = h.0
+  let h1 = h.1
+  let h2 = h.2
+  let h3 = h.3
+  let h4 = h.4
 
   let c: u64 = 0
 
@@ -81,7 +81,7 @@ export func fe-carry(h: Fe) -> Fe {
   h1 += c
   h0 &= mask51
 
-  return (a0: h0, a1: h1, a2: h2, a3: h3, a4: h4)
+  return (h0, h1, h2, h3, h4)
 }
 
 // === Multiplication ===
@@ -90,17 +90,17 @@ export func fe-carry(h: Fe) -> Fe {
 // So limb products that would contribute to bit 255+ get multiplied by 19
 
 export func fe-mul(f: Fe, g: Fe) -> Fe {
-  let f0 = f.a0
-  let f1 = f.a1
-  let f2 = f.a2
-  let f3 = f.a3
-  let f4 = f.a4
+  let f0 = f.0
+  let f1 = f.1
+  let f2 = f.2
+  let f3 = f.3
+  let f4 = f.4
 
-  let g0 = g.a0
-  let g1 = g.a1
-  let g2 = g.a2
-  let g3 = g.a3
-  let g4 = g.a4
+  let g0 = g.0
+  let g1 = g.1
+  let g2 = g.2
+  let g3 = g.3
+  let g4 = g.4
 
   // Pre-multiply by 19 for reduction: when i+j >= 5, the product
   // wraps and gets multiplied by 19
@@ -296,7 +296,7 @@ export func fe-mul(f: Fe, g: Fe) -> Fe {
   h0 &= mask51
   h1 += c
 
-  return (a0: h0, a1: h1, a2: h2, a3: h3, a4: h4)
+  return (h0, h1, h2, h3, h4)
 }
 
 // === Squaring ===
@@ -308,11 +308,11 @@ export func fe-sq(f: Fe) -> Fe => fe-mul(f, f)
 
 export func fe-mul-small(f: Fe, s: u64) -> Fe {
   return fe-carry((
-    a0: f.a0 * s,
-    a1: f.a1 * s,
-    a2: f.a2 * s,
-    a3: f.a3 * s,
-    a4: f.a4 * s
+    f.0 * s,
+    f.1 * s,
+    f.2 * s,
+    f.3 * s,
+    f.4 * s
   ))
 }
 
@@ -325,11 +325,11 @@ export func fe-reduce(f: Fe) -> Fe {
   // Conditional subtract p: if h >= p, subtract p
   // p limbs: (2^51 - 19, 2^51 - 1, 2^51 - 1, 2^51 - 1, 2^51 - 1)
   // Check if h >= p by trying to subtract and seeing if we borrow
-  let t0 = h.a0 - (mask51 - 18)
-  let t1 = h.a1 - mask51
-  let t2 = h.a2 - mask51
-  let t3 = h.a3 - mask51
-  let t4 = h.a4 - mask51
+  let t0 = h.0 - (mask51 - 18)
+  let t1 = h.1 - mask51
+  let t2 = h.2 - mask51
+  let t3 = h.3 - mask51
+  let t4 = h.4 - mask51
 
   // Propagate borrows
   t1 -= (t0 >> 63) & 1
@@ -348,22 +348,22 @@ export func fe-reduce(f: Fe) -> Fe {
   // Conditional select: reduced or original
   let m = 0:u64 - use-reduced  // mask: all 1s if use-reduced, all 0s otherwise
   return (
-    a0: (t0 & m) | (h.a0 & ~m),
-    a1: (t1 & m) | (h.a1 & ~m),
-    a2: (t2 & m) | (h.a2 & ~m),
-    a3: (t3 & m) | (h.a3 & ~m),
-    a4: (t4 & m) | (h.a4 & ~m)
+    (t0 & m) | (h.0 & ~m),
+    (t1 & m) | (h.1 & ~m),
+    (t2 & m) | (h.2 & ~m),
+    (t3 & m) | (h.3 & ~m),
+    (t4 & m) | (h.4 & ~m)
   )
 }
 
 export func fe-eq(f: Fe, g: Fe) -> bool {
   let a = fe-reduce(f)
   let b = fe-reduce(g)
-  if a.a0 != b.a0 { return false }
-  if a.a1 != b.a1 { return false }
-  if a.a2 != b.a2 { return false }
-  if a.a3 != b.a3 { return false }
-  if a.a4 != b.a4 { return false }
+  if a.0 != b.0 { return false }
+  if a.1 != b.1 { return false }
+  if a.2 != b.2 { return false }
+  if a.3 != b.3 { return false }
+  if a.4 != b.4 { return false }
   return true
 }
 
@@ -420,11 +420,11 @@ export func fe-inv(z: Fe) -> Fe {
 // d = -121665/121666 mod p (twisted Edwards curve parameter)
 // Precomputed value
 export func fe-d() -> Fe => (
-  a0: 0x34DCA135978A3:u64,
-  a1: 0x1A8283B156EBD:u64,
-  a2: 0x5E7A26001C029:u64,
-  a3: 0x739C663A03CBB:u64,
-  a4: 0x52036CEE2B6FF:u64
+  0x34DCA135978A3:u64,
+  0x1A8283B156EBD:u64,
+  0x5E7A26001C029:u64,
+  0x739C663A03CBB:u64,
+  0x52036CEE2B6FF:u64
 )
 
 // 2*d
@@ -438,12 +438,12 @@ test "field arithmetic" {
     let a = fe-one()
     let b = fe-one()
     let c = fe-carry(fe-add(a, b))
-    assert c.a0 == 2
-    assert c.a1 == 0:u64
+    assert c.0 == 2
+    assert c.1 == 0:u64
   }
 
   test "sub identity" {
-    let a = (a0: 100:u64, a1: 200:u64, a2: 300:u64, a3: 400:u64, a4: 500:u64)
+    let a = (100:u64, 200:u64, 300:u64, 400:u64, 500:u64)
     let b = fe-carry(fe-sub(a, a))
     // a - a should give 0 (mod p), but represented as 2p
     // After carry reduction it should be 0 or p or 2p
@@ -452,43 +452,43 @@ test "field arithmetic" {
   }
 
   test "mul by one" {
-    let a = (a0: 42:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let a = (42:u64, 0:u64, 0:u64, 0:u64, 0:u64)
     let one = fe-one()
     let result = fe-mul(a, one)
-    assert result.a0 == 42
+    assert result.0 == 42
   }
 
   test "mul by zero" {
-    let a = (a0: 12345:u64, a1: 67890:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let a = (12345:u64, 67890:u64, 0:u64, 0:u64, 0:u64)
     let zero = fe-zero()
     let result = fe-mul(a, zero)
     assert fe-eq(result, zero)
   }
 
   test "mul commutativity" {
-    let a = (a0: 7:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
-    let b = (a0: 13:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let a = (7:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+    let b = (13:u64, 0:u64, 0:u64, 0:u64, 0:u64)
     assert fe-eq(fe-mul(a, b), fe-mul(b, a))
   }
 
   test "small mul" {
-    let a = (a0: 7:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let a = (7:u64, 0:u64, 0:u64, 0:u64, 0:u64)
     let result = fe-mul-small(a, 6)
-    assert result.a0 == 42
+    assert result.0 == 42
   }
 
   test "square equals mul self" {
-    let a = (a0: 123:u64, a1: 456:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let a = (123:u64, 456:u64, 0:u64, 0:u64, 0:u64)
     assert fe-eq(fe-sq(a), fe-mul(a, a))
   }
 
   test "reduction wraps mod p" {
     // 2^255 ≡ 19 (mod p)
     // So a field element with a4 = 2^51 should reduce to a0 += 19
-    let big = (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: mask51 + 1)
+    let big = (0:u64, 0:u64, 0:u64, 0:u64, mask51 + 1)
     let reduced = fe-carry(big)
-    assert reduced.a0 == 19
-    assert reduced.a4 == 0:u64
+    assert reduced.0 == 19
+    assert reduced.4 == 0:u64
   }
 
   test "inverse of 1 is 1" {
@@ -498,14 +498,14 @@ test "field arithmetic" {
   }
 
   test "x * x^-1 = 1" {
-    let x = (a0: 42:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let x = (42:u64, 0:u64, 0:u64, 0:u64, 0:u64)
     let inv = fe-inv(x)
     let product = fe-mul(x, inv)
     assert fe-eq(product, fe-one())
   }
 
   test "inverse of large value" {
-    let x = (a0: 0x123456789ABCD:u64, a1: 0xFEDCBA987654:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+    let x = (0x123456789ABCD:u64, 0xFEDCBA987654:u64, 0:u64, 0:u64, 0:u64)
     let inv = fe-inv(x)
     let product = fe-mul(x, inv)
     assert fe-eq(product, fe-one())

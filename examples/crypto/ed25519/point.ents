@@ -18,10 +18,10 @@ import "./field" (
   "fe-2d" func fe-2d() -> Fe
 )
 
-type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
+type Fe = (u64, u64, u64, u64, u64)
 
-func fe-zero() -> Fe => (a0: 0:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
-func fe-one() -> Fe => (a0: 1:u64, a1: 0:u64, a2: 0:u64, a3: 0:u64, a4: 0:u64)
+func fe-zero() -> Fe => (0:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+func fe-one() -> Fe => (1:u64, 0:u64, 0:u64, 0:u64, 0:u64)
 
 // === Memory layout for field elements ===
 // Fe in memory: 5 × u64 = 40 bytes, little-endian limb order
@@ -33,45 +33,45 @@ def pt-buf: [120]u64  // 6 point slots × 20 limbs
 func pt-ptr(i: u32) -> *[120]u64 => &pt-buf
 
 func pt-x(p: *[120]u64, i: u32) -> Fe => (
-  a0: p[i * 20], a1: p[i * 20 + 1], a2: p[i * 20 + 2], a3: p[i * 20 + 3], a4: p[i * 20 + 4]
+  p[i * 20], p[i * 20 + 1], p[i * 20 + 2], p[i * 20 + 3], p[i * 20 + 4]
 )
 func pt-y(p: *[120]u64, i: u32) -> Fe => (
-  a0: p[i * 20 + 5], a1: p[i * 20 + 6], a2: p[i * 20 + 7], a3: p[i * 20 + 8], a4: p[i * 20 + 9]
+  p[i * 20 + 5], p[i * 20 + 6], p[i * 20 + 7], p[i * 20 + 8], p[i * 20 + 9]
 )
 func pt-z(p: *[120]u64, i: u32) -> Fe => (
-  a0: p[i * 20 + 10], a1: p[i * 20 + 11], a2: p[i * 20 + 12], a3: p[i * 20 + 13], a4: p[i * 20 + 14]
+  p[i * 20 + 10], p[i * 20 + 11], p[i * 20 + 12], p[i * 20 + 13], p[i * 20 + 14]
 )
 func pt-t(p: *[120]u64, i: u32) -> Fe => (
-  a0: p[i * 20 + 15], a1: p[i * 20 + 16], a2: p[i * 20 + 17], a3: p[i * 20 + 18], a4: p[i * 20 + 19]
+  p[i * 20 + 15], p[i * 20 + 16], p[i * 20 + 17], p[i * 20 + 18], p[i * 20 + 19]
 )
 
 func pt-set-x(p: *[120]u64, i: u32, v: Fe) {
-  p[i * 20] = v.a0
-  p[i * 20 + 1] = v.a1
-  p[i * 20 + 2] = v.a2
-  p[i * 20 + 3] = v.a3
-  p[i * 20 + 4] = v.a4
+  p[i * 20] = v.0
+  p[i * 20 + 1] = v.1
+  p[i * 20 + 2] = v.2
+  p[i * 20 + 3] = v.3
+  p[i * 20 + 4] = v.4
 }
 func pt-set-y(p: *[120]u64, i: u32, v: Fe) {
-  p[i * 20 + 5] = v.a0
-  p[i * 20 + 6] = v.a1
-  p[i * 20 + 7] = v.a2
-  p[i * 20 + 8] = v.a3
-  p[i * 20 + 9] = v.a4
+  p[i * 20 + 5] = v.0
+  p[i * 20 + 6] = v.1
+  p[i * 20 + 7] = v.2
+  p[i * 20 + 8] = v.3
+  p[i * 20 + 9] = v.4
 }
 func pt-set-z(p: *[120]u64, i: u32, v: Fe) {
-  p[i * 20 + 10] = v.a0
-  p[i * 20 + 11] = v.a1
-  p[i * 20 + 12] = v.a2
-  p[i * 20 + 13] = v.a3
-  p[i * 20 + 14] = v.a4
+  p[i * 20 + 10] = v.0
+  p[i * 20 + 11] = v.1
+  p[i * 20 + 12] = v.2
+  p[i * 20 + 13] = v.3
+  p[i * 20 + 14] = v.4
 }
 func pt-set-t(p: *[120]u64, i: u32, v: Fe) {
-  p[i * 20 + 15] = v.a0
-  p[i * 20 + 16] = v.a1
-  p[i * 20 + 17] = v.a2
-  p[i * 20 + 18] = v.a3
-  p[i * 20 + 19] = v.a4
+  p[i * 20 + 15] = v.0
+  p[i * 20 + 16] = v.1
+  p[i * 20 + 17] = v.2
+  p[i * 20 + 18] = v.3
+  p[i * 20 + 19] = v.4
 }
 
 // === Set identity point ===
@@ -156,15 +156,15 @@ export func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool {
 // These are the 5-limb representations of the affine coordinates.
 
 func base-x() -> Fe => (
-  a0: 0x62D608F25D51A:u64, a1: 0x412A4B4F6592A:u64,
-  a2: 0x75B7171A4B31D:u64, a3: 0x1FF60527118FE:u64,
-  a4: 0x216936D3CD6E5:u64
+  0x62D608F25D51A:u64, 0x412A4B4F6592A:u64,
+  0x75B7171A4B31D:u64, 0x1FF60527118FE:u64,
+  0x216936D3CD6E5:u64
 )
 
 func base-y() -> Fe => (
-  a0: 0x6666666666658:u64, a1: 0x4CCCCCCCCCCCC:u64,
-  a2: 0x1999999999999:u64, a3: 0x3333333333333:u64,
-  a4: 0x6666666666666:u64
+  0x6666666666658:u64, 0x4CCCCCCCCCCCC:u64,
+  0x1999999999999:u64, 0x3333333333333:u64,
+  0x6666666666666:u64
 )
 
 export func pt-set-base(buf: *[120]u64, i: u32) {
@@ -224,11 +224,11 @@ export func fe-tobytes(out: *[32]u8, f: Fe) {
   let r = fe-reduce(fe-carry(f))
   // 5 limbs × 51 bits = 255 bits → 32 bytes
   // Pack limbs into bytes, little-endian
-  let h0 = r.a0
-  let h1 = r.a1
-  let h2 = r.a2
-  let h3 = r.a3
-  let h4 = r.a4
+  let h0 = r.0
+  let h1 = r.1
+  let h2 = r.2
+  let h3 = r.3
+  let h4 = r.4
 
   // Byte 0..5: h0 (51 bits)
   out[0] = h0 as u8
@@ -278,8 +278,8 @@ export func point-encode(out: *[32]u8, buf: *[120]u64, i: u32) {
   let x = fe-reduce(fe-carry(fe-mul(pt-x(buf, i), zinv)))
   let y = fe-reduce(fe-carry(fe-mul(pt-y(buf, i), zinv)))
   fe-tobytes(out, y)
-  // Set high bit of last byte to x's parity (low bit of x.a0)
-  out[31] = out[31] | ((x.a0 & 1:u64) << 7) as u8
+  // Set high bit of last byte to x's parity (low bit of x.0)
+  out[31] = out[31] | ((x.0 & 1:u64) << 7) as u8
 }
 
 // === Tests ===

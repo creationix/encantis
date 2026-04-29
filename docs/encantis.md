@@ -350,6 +350,35 @@ Standard tuple semantics apply:
 - `(x)` is grouping, not a tuple — the type is just `x`
 - `(x, y, ...)` is a tuple (2+ elements)
 
+#### Tuples as value arrays
+
+Tuples of uniform type serve as fixed-size value arrays that stay in wasm registers (not memory). Access fields with `.0`, `.1`, etc.:
+
+```ents
+type Fe = (u64, u64, u64, u64, u64)
+
+func fe-zero() -> Fe => (0:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+
+func fe-add(a: Fe, b: Fe) -> Fe => (
+  a.0 + b.0,
+  a.1 + b.1,
+  a.2 + b.2,
+  a.3 + b.3,
+  a.4 + b.4
+)
+```
+
+This compiles to 5 `i64` wasm values passed directly — no memory allocation, no pointers. Use this pattern for small fixed-size data like cryptographic limbs, SIMD-style vectors, or multi-word arithmetic.
+
+For memory-backed arrays (indexable by dynamic expressions), use `[N]T` with `def` or pointers:
+
+```ents
+def buf: [1024]u8             // static buffer in linear memory
+func read(p: *[64]u8) -> u8  // pointer to memory array
+```
+
+The key distinction: **tuples are values** (registers, stack, multi-value returns), **arrays are memory** (linear memory, pointer-indexed).
+
 ### 2.6 Struct Types
 
 Structs are tuples with named fields, using the same `()` syntax:

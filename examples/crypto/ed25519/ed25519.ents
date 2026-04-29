@@ -17,7 +17,7 @@ import "./point" (
   "point-eq" func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool
 )
 
-type Fe = (a0: u64, a1: u64, a2: u64, a3: u64, a4: u64)
+type Fe = (u64, u64, u64, u64, u64)
 
 // Scratch buffers
 def hash-buf: [64]u8
