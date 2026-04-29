@@ -30,6 +30,8 @@ Commands:
   symbols [<file|dir>]                 List document or workspace symbols
   signature <file>:<line>:<col|name>   Show function signature
   rename <file>:<line>:<col|name>      Find all locations for rename
+  fmt <file...>                        Format source files in place
+  fmt --check <file...>                Check formatting without changing
 
 Options:
   -o <file>       Output file (default: stdout)
@@ -118,7 +120,7 @@ async function output(content: string) {
 // Read source for non-query commands
 let source = ''
 let filePath = inputFile
-const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols', 'rename']
+const queryCommands = ['definition', 'hover', 'references', 'signature', 'symbols', 'rename', 'fmt']
 if (!queryCommands.includes(command)) {
   const file = Bun.file(inputFile)
   if (!(await file.exists())) {
@@ -393,10 +395,108 @@ switch (command) {
     break
   }
 
+  case 'fmt': {
+    const checkOnly = args.includes('--check')
+    const files = args.slice(1).filter(a => a !== '--check')
+    if (files.length === 0) {
+      console.error('Error: fmt requires at least one file')
+      process.exit(2)
+    }
+
+    let dirty = 0
+    for (const file of files) {
+      const f = Bun.file(file)
+      if (!(await f.exists())) {
+        console.error(`Error: File not found: ${file}`)
+        process.exit(2)
+      }
+      const source = await f.text()
+      const formatted = formatEncantis(source)
+      if (source !== formatted) {
+        dirty++
+        if (checkOnly) {
+          console.log(`needs formatting: ${file}`)
+        } else {
+          await Bun.write(file, formatted)
+          console.log(`formatted: ${file}`)
+        }
+      }
+    }
+    if (checkOnly && dirty > 0) {
+      process.exit(1)
+    }
+    break
+  }
+
   default:
     console.error(`Error: Unknown command: ${command}`)
     usage()
     process.exit(1)
+}
+
+function formatEncantis(source: string): string {
+  // Phase 1: compute bracket depth at each character, skipping strings/comments
+  const depths = new Int32Array(source.length)
+  let depth = 0
+  let i = 0
+  while (i < source.length) {
+    const ch = source[i]
+    // Skip line comments
+    if (ch === '/' && source[i + 1] === '/') {
+      while (i < source.length && source[i] !== '\n') { depths[i] = depth; i++ }
+      continue
+    }
+    // Skip string literals
+    if (ch === '"' || ch === "'") {
+      const quote = ch
+      depths[i] = depth; i++
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\') { depths[i] = depth; i++ }
+        depths[i] = depth; i++
+      }
+      if (i < source.length) { depths[i] = depth; i++ }
+      continue
+    }
+    // Skip hex string literals x"..."
+    if (ch === 'x' && source[i + 1] === '"') {
+      depths[i] = depth; i++
+      depths[i] = depth; i++
+      while (i < source.length && source[i] !== '"') { depths[i] = depth; i++ }
+      if (i < source.length) { depths[i] = depth; i++ }
+      continue
+    }
+    if (ch === '{') { depths[i] = depth; depth++; i++; continue }
+    if (ch === '}') { depth = Math.max(0, depth - 1); depths[i] = depth; i++; continue }
+    depths[i] = depth; i++
+  }
+
+  // Phase 2: re-indent each line based on the depth at its first non-whitespace char
+  const lines = source.split('\n')
+  const out: string[] = []
+  let prevBlank = false
+  let offset = 0
+
+  for (const raw of lines) {
+    const trimmed = raw.trim()
+    if (trimmed === '') {
+      if (!prevBlank && out.length > 0) out.push('')
+      prevBlank = true
+      offset += raw.length + 1
+      continue
+    }
+    prevBlank = false
+
+    // Find the depth at the first non-whitespace character
+    const firstCharOffset = offset + raw.indexOf(trimmed)
+    const lineDepth = firstCharOffset < depths.length ? depths[firstCharOffset] : 0
+
+    out.push('  '.repeat(lineDepth) + trimmed)
+    offset += raw.length + 1
+  }
+
+  while (out.length > 0 && out[out.length - 1] === '') out.pop()
+  out.push('')
+  return out.join('\n')
 }
 
 // Convert byte offset to line:column
