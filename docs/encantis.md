@@ -198,188 +198,135 @@ set (x:, y:) = other_point    // updates existing x and y
 
 **Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected.
 
-**Large integers:** `i128`/`u128` map to WASM SIMD `v128`. `i256`/`u256` use two `v128` registers. `i512`/`u512` use four `v128` registers. Bitwise operations (XOR, AND, OR) are efficient; arithmetic requires multi-instruction sequences.
+**Large integers:** `i128`/`u128` through `i512`/`u512` are lowered to multiple `i64` values. Bitwise operations (XOR, AND, OR) are efficient; arithmetic requires multi-instruction sequences.
 
-### 2.3 Pointer Types
+### 2.3 Value vs Reference Types
 
-Encantis distinguishes between data layouts (how bytes are arranged in memory) and pointer types (how we reference that data).
+Encantis has a simple rule: **types without `*` or brackets are values; types with `*` or brackets are references**.
 
-#### Data Layouts
+| Category | Types | Semantics |
+|----------|-------|-----------|
+| **Values** | primitives, tuples, structs, `[N]T` | passed by value, copied |
+| **References** | `*T`, `*[N]T`, `[*]T`, `[]T` | pointer to memory |
 
-Data layouts describe memory shape but are not instantiable as variables:
+Mutating a value parameter does NOT affect the caller. Mutating through a reference DOES.
 
-| Syntax | Meaning |
-|--------|---------|
-| `[N]T` | N elements of T |
-| `[N,M]T` | N×M elements packed (2D contiguous) |
-| `[!]T` | null-terminated array |
-| `[!,N]T` | null-terminated rows of N elements |
+### 2.4 Fixed Arrays (Value Type)
 
-#### Pointer Types
-
-| Type | Kind | `.len` | Indexing |
-|------|------|--------|----------|
-| `*T` | single pointer | N/A | `.*` only |
-| `*[N]T` | thin, known length | N (comptime) | `[i]` |
-| `*[!]T` | thin, null-terminated | scans | `[i]` |
-| `*[N,M]T` | thin, packed 2D | N,M (comptime) | `[i,j]` or `[i][j]` |
-| `[*]T` | thin, unknown length | N/A | `[i]` |
-| `[]T` | fat slice (ptr+len) | runtime | `[i]` |
+`[N]T` is a fixed-size array of N elements, passed by value. Like tuples, small fixed arrays compile to multiple wasm values — no memory allocation.
 
 ```ents
-*T              // single pointer - points to one T, dereference with .*
-*[N]T           // thin pointer to N elements, compile-time length
-*[!]T           // thin pointer to null-terminated array
-[*]T            // thin many-pointer, unknown length
-[]T             // fat slice - ptr + runtime length
+[5]u64              // 5 u64 values (same wasm representation as a 5-tuple)
+[4]u8               // 4 u8 values
+[3](f32, f32)       // 3 pairs of f32
 ```
 
-All pointers and lengths are `u32` semantics which is `i32` at the WASM level (32-bit address space).
-
-#### Pointer Operations
-
-The dereference operator `.*` is only valid for single pointers `*T`. Array pointers and slices use indexing:
+Fixed arrays can only be indexed by **compile-time constant** expressions, since the elements live in registers, not addressable memory:
 
 ```ents
-let p:*u8 = ...
-let v = p.*          // OK: dereference single pointer
-
-let arr:*[16]u8 = ...
-let v = arr[0]       // OK: index into array pointer
-let v = arr.*        // ERROR: use [0] instead
-
-let s:[]u8 = ...
-let v = s[0]         // OK: index into slice
-let v = s.*          // ERROR: use [0] instead
+let v: [4]u32 = [1, 2, 3, 4]
+let x = v[0]        // OK: constant index
+let y = v[3]        // OK: constant index
+let z = v[i]        // ERROR: dynamic index requires memory — use a slice or pointer
 ```
 
-#### Nesting Examples
+Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
+
+### 2.5 Pointer Types
+
+All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
+
+| Type | Meaning | `.len` | Indexing |
+|------|---------|--------|----------|
+| `*T` | pointer to one T | N/A | `.*` to dereference |
+| `*[N]T` | pointer to N elements | N (comptime) | `[i]` |
+| `*[!]T` | pointer to null-terminated | scans, O(n) | `[i]` |
+| `*[N,M]T` | pointer to N×M packed 2D | N, M (comptime) | `[i,j]` |
+| `[*]T` | many-pointer (no bounds) | N/A | `[i]` (unchecked) |
 
 ```ents
-[][]T       // slice of slices (element = ptr+len, 8 bytes each)
-[]*T        // slice of pointers (element = 4 bytes each)
-*[]T        // pointer to a slice struct (points to 8 bytes)
-[][N]T      // slice of N-element arrays (element = N×sizeof(T))
+let p: *u8 = ...
+let v = p.*          // dereference single pointer
+
+let buf: *[16]u8 = ...
+let v = buf[0]       // index into array pointer
+buf.len              // 16 (compile-time constant)
+
+let mp: [*]u8 = ...
+mp[i]                // caller must ensure bounds
+```
+
+#### Nesting
+
+```ents
+*[]T        // pointer to a slice (points to ptr+len pair)
 *[N][M]T    // pointer to N pointers to M-element arrays
 *[N,M]T     // pointer to N×M packed elements (contiguous 2D)
 ```
 
-### 2.4 Array and Slice Types
+### 2.6 Slices
 
-Arrays cannot exist on the stack (only pointers/slices to them can) because dynamic indexing requires memory access.
-
-#### `[]T` — Runtime Slice (Fat Pointer)
-
-Fat pointer containing pointer and length. Slices behave like a struct `(ptr:[*]T, len:u32)`:
+`[]T` is a fat pointer: a `(ptr: [*]T, len: u32)` pair. Slices are the standard way to pass variable-length data.
 
 ```ents
-let data:[]u8 = ...
+let data: []u8 = ...
 
-// Property access
 data.ptr        // extract pointer ([*]u8)
-data.len        // get length (u32), O(1)
+data.len        // get length (u32)
 data[i]         // element access
 
-// Tuple-style access (0-indexed)
-data.0          // same as data.ptr
-data.1          // same as data.len
-
 // Destructuring
-let (ptr, len) = data             // by position
-let (ptr:, len:) = data           // by name
-let (ptr: p, len: n) = data       // renamed bindings
+let (ptr:, len:) = data
 ```
 
-#### `*[N]T` — Thin Pointer to Fixed Array
+Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating `data[i]` affects the underlying memory.
 
-Pointer to N elements with compile-time known length:
+#### Static Memory Allocation
 
-```ents
-let buf:*[16]u8 = ...
-buf[0]              // first element
-buf[15]             // last element
-buf.len             // 16 (compile-time constant)
-```
-
-#### `*[!]T` — Thin Pointer to Null-Terminated
-
-Pointer to null-terminated data:
+Use `def` with a slice type and an initializer to reserve memory at compile time:
 
 ```ents
-let cstr:*[!]u8 = ...
-cstr[0]             // first byte
-cstr.len            // runtime scan for null, O(n)
-```
-
-#### `*[N,M]T` — Thin Pointer to Packed Multi-Dimensional
-
-Pointer to contiguous N×M elements (2D array with no pointer indirection):
-
-```ents
-def sigma:*[12,16]u8 = [
-  x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f",
-  x"0e 0a 04 08 09 0f 0d 06 01 0c 00 02 0b 07 05 03",
-  // ... 10 more rows
+def buf: []u8 = [0; 1024]               // 1024 zero bytes
+def key: []u8 = x"9d61b19deffd5a60"     // initialized from hex literal
+def table: []u64 = [1, 2, 3, 4]         // 4 u64s in memory
+def sigma: []u8 = [                      // array literal
+  0x00, 0x01, 0x02, 0x03,
+  0x04, 0x05, 0x06, 0x07
 ]
-
-sigma[round]        // returns *[16]u8 (pointer to row)
-sigma[round, i]     // returns u8 (element at row,col)
-sigma[round][i]     // same as above (chained indexing)
 ```
 
-#### `[*]T` — Thin Many-Pointer (Unknown Length)
+The `def` allocates in the wasm data section. The name binds to a slice with compile-time known pointer and length. Zero-initialized buffers (`[0; N]`) are free — wasm memory starts as zeros, so no data segment is emitted.
 
-Thin pointer to multiple elements with unknown length:
-
-```ents
-let mp:[*]u8 = ...
-mp[i]               // element access (caller must ensure bounds)
-// mp.len          // not available - length unknown
-```
-
-### 2.5 Tuple Types
+### 2.7 Tuple Types
 
 ```ents
 (i32, i32)           // pair of i32
 (f64, f64, f64)      // triple of f64
 ```
 
-Standard tuple semantics apply:
+Standard tuple semantics:
 
 - `()` is void (0-tuple)
 - `(x)` is grouping, not a tuple — the type is just `x`
 - `(x, y, ...)` is a tuple (2+ elements)
 
-#### Tuples as value arrays
-
-Tuples of uniform type serve as fixed-size value arrays that stay in wasm registers (not memory). Access fields with `.0`, `.1`, etc.:
+Tuples compile to multiple wasm values — no memory, no pointers. Access elements by position or name:
 
 ```ents
 type Fe = (u64, u64, u64, u64, u64)
 
-func fe-zero() -> Fe => (0:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+func fe-zero() -> Fe => (0, 0, 0, 0, 0)
 
 func fe-add(a: Fe, b: Fe) -> Fe => (
-  a.0 + b.0,
-  a.1 + b.1,
-  a.2 + b.2,
-  a.3 + b.3,
-  a.4 + b.4
+  a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4
 )
 ```
 
-This compiles to 5 `i64` wasm values passed directly — no memory allocation, no pointers. Use this pattern for small fixed-size data like cryptographic limbs, SIMD-style vectors, or multi-word arithmetic.
-
-For memory-backed arrays (indexable by dynamic expressions), use `[N]T` with `def` or pointers:
-
-```ents
-def buf: [1024]u8             // static buffer in linear memory
-func read(p: *[64]u8) -> u8  // pointer to memory array
-```
+Tuples and fixed arrays `[N]T` are closely related — both are value types stored in registers. The difference: tuples can have mixed field types and named fields; fixed arrays have uniform element type and integer indices.
 
 The key distinction: **tuples are values** (registers, stack, multi-value returns), **arrays are memory** (linear memory, pointer-indexed).
 
-### 2.6 Struct Types
+### 2.8 Struct Types
 
 Structs are tuples with named fields, using the same `()` syntax:
 
@@ -417,7 +364,7 @@ let x = p.x              // field read
 p.y = 5.0                // field write
 ```
 
-### 2.7 Enum Types (Algebraic Data Types)
+### 2.9 Enum Types (Algebraic Data Types)
 
 Enums are tagged unions representing values that can be one of several variants. Each variant can optionally carry payload data:
 
@@ -541,7 +488,7 @@ Object:  [5][ptr ptr ptr ptr][len len len len]
 
 Memory layout uses end-padding (payload left-aligned) with no alignment requirements — the language is byte-oriented.
 
-### 2.8 Type Conversions
+### 2.10 Type Conversions
 
 #### Implicit Widening
 
