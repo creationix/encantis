@@ -23,7 +23,7 @@ Commands:
   ast <file> [-o out]             Parse file and output AST as JSON
   meta <file> [-o out]            Generate meta.json (types, symbols, hints)
   compile <file> [-o out]         Compile file to WAT
-  wasm <file> [-o out]            Compile file to WASM binary
+  wasm <file> [-o out] [-O]        Compile file to WASM binary (-O optimizes)
   definition <file>:<line>:<col|name>  Go to definition of symbol
   hover <file>:<line>:<col|name>       Show type info for symbol
   references <file>:<line>:<col|name>  Find all references to symbol
@@ -54,6 +54,7 @@ let inputFile: string | undefined
 let outputFile: string | undefined
 let startRule: string | undefined
 let jsonOutput = false
+let optimize = false
 
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '-o') {
@@ -70,6 +71,8 @@ for (let i = 1; i < args.length; i++) {
     }
   } else if (args[i] === '--json') {
     jsonOutput = true
+  } else if (args[i] === '-O' || args[i] === '--optimize') {
+    optimize = true
   } else if (!inputFile) {
     inputFile = args[i]
   }
@@ -263,8 +266,26 @@ switch (command) {
         console.error(`WAT error: ${e.message}`)
         process.exit(1)
       }
-      const { buffer } = wasmModule.toBinary({})
+      let { buffer } = wasmModule.toBinary({})
       wasmModule.destroy()
+
+      if (optimize) {
+        const { execSync } = await import('child_process')
+        const tmpIn = `/tmp/encantis-opt-in-${process.pid}.wasm`
+        const tmpOut = `/tmp/encantis-opt-out-${process.pid}.wasm`
+        await Bun.write(tmpIn, buffer)
+        try {
+          execSync(`npx wasm-opt -Oz --enable-bulk-memory --enable-simd --enable-multivalue ${tmpIn} -o ${tmpOut}`, { stdio: 'pipe' })
+          const optimized = await Bun.file(tmpOut).arrayBuffer()
+          const saved = buffer.length - optimized.byteLength
+          buffer = new Uint8Array(optimized)
+          console.error(`Optimized: ${buffer.length + saved} → ${buffer.length} bytes (-${Math.round(saved * 100 / (buffer.length + saved))}%)`)
+        } catch (e: any) {
+          console.error(`Warning: wasm-opt failed, using unoptimized output`)
+        }
+        try { const { unlinkSync } = await import('fs'); unlinkSync(tmpIn); unlinkSync(tmpOut) } catch {}
+      }
+
       const outPath = outputFile ?? inputFile.replace(/\.ents$/, '.wasm')
       await Bun.write(outPath, buffer)
       console.error(`Wrote ${buffer.length} bytes to ${outPath}`)
