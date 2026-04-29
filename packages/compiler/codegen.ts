@@ -71,9 +71,7 @@ export function typeToWasm(t: ResolvedType): string[] {
       // i8, i16, u8, u16, i32, u32, bool → i32
       // i64, u64 → i64
       // f32 → f32, f64 → f64
-      // i128, u128 → v128 (SIMD)
-      // i256, u256 → v128, v128 (two SIMD registers)
-      if (['u1', 'u2', 'u4', 'i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
+      if (['i8', 'i16', 'u8', 'u16', 'i32', 'u32', 'bool'].includes(u.name)) {
         return ['i32']
       }
       if (['i64', 'u64'].includes(u.name)) {
@@ -81,10 +79,10 @@ export function typeToWasm(t: ResolvedType): string[] {
       }
       if (u.name === 'f32') return ['f32']
       if (u.name === 'f64') return ['f64']
-      // Large integers: map to v128 registers
+      // Large integers: flatten to multiple i64 values
       const size = primitiveByteSize(u)
       if (size !== null && size >= 16) {
-        return Array(size / 16).fill('v128')
+        return Array(size / 8).fill('i64')
       }
       throw new Error(`Unknown primitive type: ${u.name}`)
     }
@@ -245,14 +243,12 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for integer literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      if (wt === 'v128') {
-        const nv = v128Count(type)
+      const np = wideIntParts(type)
+      if (np > 0) {
         const val = BigInt(lit.value)
         const parts: string[] = []
-        for (let i = 0; i < nv; i++) {
-          const lo = (val >> BigInt(i * 128)) & 0xFFFFFFFFFFFFFFFFn
-          const hi = (val >> BigInt(i * 128 + 64)) & 0xFFFFFFFFFFFFFFFFn
-          parts.push(`(v128.const i64x2 ${lo} ${hi})`)
+        for (let i = 0; i < np; i++) {
+          parts.push(`(i64.const ${BigInt.asIntN(64, (val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn)})`)
         }
         return parts.join(' ')
       }
@@ -341,16 +337,18 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
   return `(i32.const 0)`
 }
 
-function isV128Type(t: ResolvedType): boolean {
+function isWideInt(t: ResolvedType): boolean {
   const u = unwrap(t)
-  return u.kind === 'primitive' && ['i128', 'u128'].includes(u.name)
+  if (u.kind !== 'primitive') return false
+  const size = primitiveByteSize(u)
+  return size !== null && size >= 16
 }
 
-function v128Count(t: ResolvedType): number {
+function wideIntParts(t: ResolvedType): number {
   const u = unwrap(t)
   if (u.kind !== 'primitive') return 0
   const size = primitiveByteSize(u)
-  if (size !== null && size >= 16) return size / 16
+  if (size !== null && size >= 16) return size / 8
   return 0
 }
 
@@ -361,20 +359,19 @@ function multiV128BinaryOp(n: number, wasmOp: string, left: string, right: strin
   return leftParts.map((l, i) => `(${wasmOp} ${l} ${rightParts[i]})`).join(' ')
 }
 
-function multiV128UnaryOp(n: number, wasmOp: string, operand: string): string {
-  if (n === 1) return `(${wasmOp} ${operand})`
+function multiV128UnaryOp(n: number, wasmOp: string, operand: string, constant?: string): string {
+  if (n === 1) return constant ? `(${wasmOp} ${constant} ${operand})` : `(${wasmOp} ${operand})`
   const parts = splitV128Components(operand, n)
-  return parts.map(p => `(${wasmOp} ${p})`).join(' ')
+  return parts.map(p => constant ? `(${wasmOp} ${constant} ${p})` : `(${wasmOp} ${p})`).join(' ')
 }
 
 function v128LoadSequence(type: ResolvedType, ptr: string): string {
-  const nv = v128Count(type)
-  if (nv > 1) {
-    return Array.from({ length: nv }, (_, i) =>
-      `(v128.load offset=${i * 16} ${ptr})`
+  const nw = wideIntParts(type)
+  if (nw > 0) {
+    return Array.from({ length: nw }, (_, i) =>
+      `(i64.load offset=${i * 8} ${ptr})`
     ).join(' ')
   }
-  if (nv === 1) return `(v128.load ${ptr})`
   const u = unwrap(type)
   if (u.kind === 'primitive') {
     if (u.name === 'u8') return `(i32.load8_u ${ptr})`
@@ -387,14 +384,13 @@ function v128LoadSequence(type: ResolvedType, ptr: string): string {
 }
 
 function v128StoreSequence(type: ResolvedType, ptr: string, value: string): string {
-  const nv = v128Count(type)
-  if (nv > 1) {
-    const parts = splitV128Components(value, nv)
+  const nw = wideIntParts(type)
+  if (nw > 0) {
+    const parts = splitV128Components(value, nw)
     return parts.map((v, i) =>
-      `(v128.store offset=${i * 16} ${ptr} ${v})`
+      `(i64.store offset=${i * 8} ${ptr} ${v})`
     ).join('\n')
   }
-  if (nv === 1) return `(v128.store ${ptr} ${value})`
   const u = unwrap(type)
   if (u.kind === 'primitive') {
     if (u.name === 'u8' || u.name === 'i8') return `(i32.store8 ${ptr} ${value})`
@@ -483,8 +479,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const wt = typeToWasmSingle(operandType)
   const signed = isSigned(operandType)
   const isFloatType = isFloat(operandType)
-  const isV128 = isV128Type(operandType)
-  const nV128 = v128Count(operandType)
+  const nWide = wideIntParts(operandType)
 
   const op = expr.op
   let wasmOp: string
@@ -492,13 +487,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   switch (op) {
     // Arithmetic
     case '+':
-      wasmOp = nV128 > 0 ? 'i64x2.add' : `${wt}.add`
+      wasmOp = nWide > 0 ? 'i64.add' : `${wt}.add`
       break
     case '-':
-      wasmOp = nV128 > 0 ? 'i64x2.sub' : `${wt}.sub`
+      wasmOp = nWide > 0 ? 'i64.sub' : `${wt}.sub`
       break
     case '*':
-      wasmOp = nV128 > 0 ? 'i64x2.mul' : `${wt}.mul`
+      wasmOp = nWide > 0 ? 'i64.mul' : `${wt}.mul`
       break
     case '/':
       wasmOp = isFloatType ? `${wt}.div` : signed ? `${wt}.div_s` : `${wt}.div_u`
@@ -520,26 +515,24 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Comparison
     case '==':
-      if (nV128 > 0) {
-        if (nV128 === 1) return `(i32x4.all_true (i64x2.eq ${left} ${right}))`
-        const lp = splitV128Components(left, nV128)
-        const rp = splitV128Components(right, nV128)
-        let eq = `(i32x4.all_true (i64x2.eq ${lp[0]} ${rp[0]}))`
-        for (let i = 1; i < nV128; i++) {
-          eq = `(i32.and ${eq} (i32x4.all_true (i64x2.eq ${lp[i]} ${rp[i]})))`
+      if (nWide > 0) {
+        const lp = splitV128Components(left, nWide)
+        const rp = splitV128Components(right, nWide)
+        let eq = `(i64.eq ${lp[0]} ${rp[0]})`
+        for (let i = 1; i < nWide; i++) {
+          eq = `(i32.and ${eq} (i64.eq ${lp[i]} ${rp[i]}))`
         }
         return eq
       }
       wasmOp = `${wt}.eq`
       break
     case '!=':
-      if (nV128 > 0) {
-        if (nV128 === 1) return `(i32.eqz (i32x4.all_true (i64x2.eq ${left} ${right})))`
-        const lp = splitV128Components(left, nV128)
-        const rp = splitV128Components(right, nV128)
-        let neq = `(i32x4.all_true (i64x2.eq ${lp[0]} ${rp[0]}))`
-        for (let i = 1; i < nV128; i++) {
-          neq = `(i32.and ${neq} (i32x4.all_true (i64x2.eq ${lp[i]} ${rp[i]})))`
+      if (nWide > 0) {
+        const lp = splitV128Components(left, nWide)
+        const rp = splitV128Components(right, nWide)
+        let neq = `(i64.eq ${lp[0]} ${rp[0]})`
+        for (let i = 1; i < nWide; i++) {
+          neq = `(i32.and ${neq} (i64.eq ${lp[i]} ${rp[i]}))`
         }
         return `(i32.eqz ${neq})`
       }
@@ -560,25 +553,25 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
 
     // Bitwise
     case '&':
-      wasmOp = nV128 > 0 ? 'v128.and' : `${wt}.and`
+      wasmOp = nWide > 0 ? 'i64.and' : `${wt}.and`
       break
     case '|':
-      wasmOp = nV128 > 0 ? 'v128.or' : `${wt}.or`
+      wasmOp = nWide > 0 ? 'i64.or' : `${wt}.or`
       break
     case '^':
-      wasmOp = nV128 > 0 ? 'v128.xor' : `${wt}.xor`
+      wasmOp = nWide > 0 ? 'i64.xor' : `${wt}.xor`
       break
     case '<<':
-      wasmOp = nV128 > 0 ? 'i64x2.shl' : `${wt}.shl`
+      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.shl`
       break
     case '>>':
-      wasmOp = nV128 > 0 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
+      wasmOp = nWide > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
       break
     case '>>>':
-      wasmOp = nV128 > 0 ? 'i64x2.shr_u' : `${wt}.shr_u`
+      wasmOp = nWide > 0 ? 'i64.shr_u' : `${wt}.shr_u`
       break
     case '<<<':
-      wasmOp = nV128 > 0 ? 'i64x2.shl' : `${wt}.rotl`
+      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.rotl`
       break
 
     // Logical (short-circuit)
@@ -601,7 +594,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const rightSigned = rightType ? isSigned(rightType) : signed
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
 
-  if (nV128 > 1) return multiV128BinaryOp(nV128, wasmOp, coercedLeft, coercedRight)
+  if (nWide > 1) return multiV128BinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
   return `(${wasmOp} ${coercedLeft} ${coercedRight})`
 }
 
@@ -621,17 +614,21 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       if (isFloat(type)) {
         return `(${wt}.neg ${operand})`
       }
-      const nv = v128Count(type)
-      if (nv > 1) return multiV128UnaryOp(nv, 'i64x2.neg', operand)
-      if (nv === 1) return `(i64x2.neg ${operand})`
+      const nw = wideIntParts(type)
+      if (nw > 0) {
+        const parts = splitV128Components(operand, nw)
+        return parts.map(p => `(i64.sub (i64.const 0) ${p})`).join(' ')
+      }
       return `(${wt}.sub (${wt}.const 0) ${operand})`
     }
 
     case '~': {
       // Bitwise NOT
-      const nv = v128Count(type)
-      if (nv > 1) return multiV128UnaryOp(nv, 'v128.not', operand)
-      if (nv === 1) return `(v128.not ${operand})`
+      const nw = wideIntParts(type)
+      if (nw > 0) {
+        const parts = splitV128Components(operand, nw)
+        return parts.map(p => `(i64.xor ${p} (i64.const -1))`).join(' ')
+      }
       return `(${wt}.xor ${operand} (${wt}.const -1))`
     }
 
@@ -1064,9 +1061,6 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     // Same wasm type but different source types — may need masking for sub-word narrowing
     const toU = unwrap(toType)
     if (toU.kind === 'primitive') {
-      if (toU.name === 'u1') return `(i32.and ${inner} (i32.const 1))`
-      if (toU.name === 'u2') return `(i32.and ${inner} (i32.const 3))`
-      if (toU.name === 'u4') return `(i32.and ${inner} (i32.const 15))`
       if (toU.name === 'u8') return `(i32.and ${inner} (i32.const 255))`
       if (toU.name === 'i8') return `(i32.shr_s (i32.shl ${inner} (i32.const 24)) (i32.const 24))`
       if (toU.name === 'u16') return `(i32.and ${inner} (i32.const 65535))`
@@ -1106,18 +1100,33 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     return `(i32.wrap_i64 ${inner})`
   }
 
-  // Widening to v128 (u32/i32/u64/i64 → u128/i128)
-  if (toWasm === 'v128' && (fromWasm === 'i32' || fromWasm === 'i64')) {
+  // Widening to multi-i64 (u32/i32/u64/i64 → u128+)
+  const toWide = wideIntParts(toType)
+  if (toWide > 0 && (fromWasm === 'i32' || fromWasm === 'i64')) {
     const ext = fromWasm === 'i32' ? `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})` : inner
-    return `(i64x2.replace_lane 0 (v128.const i64x2 0 0) ${ext})`
+    const zeros = Array(toWide - 1).fill('(i64.const 0)').join(' ')
+    return `${ext} ${zeros}`
   }
 
-  // Narrowing from v128 (u128/i128 → u64/i64)
-  if (fromWasm === 'v128' && toWasm === 'i64') {
-    return `(i64x2.extract_lane 0 ${inner})`
+  // Narrowing from multi-i64 (u128+ → u64/i64 or u32/i32)
+  const fromWide = wideIntParts(fromType)
+  if (fromWide > 0 && toWasm === 'i64') {
+    // Take the first i64 — but inner produces multiple values on stack
+    // Use a block to extract just the first
+    try {
+      const parts = splitV128Components(inner, fromWide)
+      return parts[0]
+    } catch {
+      return inner // single expression, just take first stack value
+    }
   }
-  if (fromWasm === 'v128' && toWasm === 'i32') {
-    return `(i32.wrap_i64 (i64x2.extract_lane 0 ${inner}))`
+  if (fromWide > 0 && toWasm === 'i32') {
+    try {
+      const parts = splitV128Components(inner, fromWide)
+      return `(i32.wrap_i64 ${parts[0]})`
+    } catch {
+      return `(i32.wrap_i64 ${inner})`
+    }
   }
 
   return inner
@@ -1451,20 +1460,20 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     const isShiftOp = ['<<=', '>>=', '>>>=', '<<<='].includes(stmt.op)
     const rhs = isShiftOp ? coerceWasmType(value, valueWt, wt, false) : coercedValue
 
-    const nv = v128Count(type)
+    const nv = wideIntParts(type)
     const ops: Record<string, string> = {
-      '+=': nv > 0 ? 'i64x2.add' : `${wt}.add`,
-      '-=': nv > 0 ? 'i64x2.sub' : `${wt}.sub`,
-      '*=': nv > 0 ? 'i64x2.mul' : `${wt}.mul`,
+      '+=': nv > 0 ? 'i64.add' : `${wt}.add`,
+      '-=': nv > 0 ? 'i64.sub' : `${wt}.sub`,
+      '*=': nv > 0 ? 'i64.mul' : `${wt}.mul`,
       '/=': signed ? `${wt}.div_s` : `${wt}.div_u`,
       '%=': signed ? `${wt}.rem_s` : `${wt}.rem_u`,
-      '&=': nv > 0 ? 'v128.and' : `${wt}.and`,
-      '|=': nv > 0 ? 'v128.or' : `${wt}.or`,
-      '^=': nv > 0 ? 'v128.xor' : `${wt}.xor`,
-      '<<=': nv > 0 ? 'i64x2.shl' : `${wt}.shl`,
-      '>>=': nv > 0 ? (signed ? 'i64x2.shr_s' : 'i64x2.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`),
-      '>>>=': nv > 0 ? 'i64x2.shr_u' : `${wt}.shr_u`,
-      '<<<=': nv > 0 ? 'i64x2.shl' : `${wt}.rotl`,
+      '&=': nv > 0 ? 'i64.and' : `${wt}.and`,
+      '|=': nv > 0 ? 'i64.or' : `${wt}.or`,
+      '^=': nv > 0 ? 'i64.xor' : `${wt}.xor`,
+      '<<=': nv > 0 ? 'i64.shl' : `${wt}.shl`,
+      '>>=': nv > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`),
+      '>>>=': nv > 0 ? 'i64.shr_u' : `${wt}.shr_u`,
+      '<<<=': nv > 0 ? 'i64.shl' : `${wt}.rotl`,
     }
 
     const op = ops[stmt.op]

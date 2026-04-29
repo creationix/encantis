@@ -232,7 +232,7 @@ export function concretizeType(
       if (val >= -2147483648n && val <= 4294967295n) return primitive(opts.defaultInt)
       if (val >= -9223372036854775808n && val <= 18446744073709551615n) return primitive('i64')
       // Auto-size to smallest power-of-two type that fits
-      for (const bits of [128, 256, 512, 1024, 2048, 4096]) {
+      for (const bits of [128, 256, 512]) {
         if (val >= -(2n ** BigInt(bits - 1)) && val <= 2n ** BigInt(bits) - 1n) {
           return primitive(val < 0n ? `i${bits}` as any : `u${bits}` as any)
         }

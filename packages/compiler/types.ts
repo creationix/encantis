@@ -22,16 +22,13 @@ export type PrimitiveName =
   | 'bool'
 
 // Type classification constants
-const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512', 'i1024', 'i2048', 'i4096']
-const UNSIGNED: readonly PrimitiveName[] = ['u1', 'u2', 'u4', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512', 'u1024', 'u2048', 'u4096']
+const SIGNED: readonly PrimitiveName[] = ['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512']
+const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512']
 const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
 const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
 
 // Integer bounds for comptime int checking
 const INT_BOUNDS: Record<string, [bigint, bigint]> = {
-  u1: [0n, 1n],
-  u2: [0n, 3n],
-  u4: [0n, 15n],
   i8: [-128n, 127n],
   u8: [0n, 255n],
   i16: [-32768n, 32767n],
@@ -46,12 +43,6 @@ const INT_BOUNDS: Record<string, [bigint, bigint]> = {
   u256: [0n, 2n ** 256n - 1n],
   i512: [-(2n ** 511n), 2n ** 511n - 1n],
   u512: [0n, 2n ** 512n - 1n],
-  i1024: [-(2n ** 1023n), 2n ** 1023n - 1n],
-  u1024: [0n, 2n ** 1024n - 1n],
-  i2048: [-(2n ** 2047n), 2n ** 2047n - 1n],
-  u2048: [0n, 2n ** 2048n - 1n],
-  i4096: [-(2n ** 4095n), 2n ** 4095n - 1n],
-  u4096: [0n, 2n ** 4096n - 1n],
 }
 
 // Resolved type variants
@@ -938,9 +929,6 @@ export function primitiveByteSize(t: ResolvedType): number | null {
   const u = unwrap(t)
   if (u.kind !== 'primitive') return null
   switch (u.name) {
-    case 'u1':
-    case 'u2':
-    case 'u4':
     case 'i8':
     case 'u8':
     case 'bool':
@@ -965,15 +953,6 @@ export function primitiveByteSize(t: ResolvedType): number | null {
     case 'i512':
     case 'u512':
       return 64
-    case 'i1024':
-    case 'u1024':
-      return 128
-    case 'i2048':
-    case 'u2048':
-      return 256
-    case 'i4096':
-    case 'u4096':
-      return 512
     default:
       return null
   }

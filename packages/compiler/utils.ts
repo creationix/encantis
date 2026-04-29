@@ -122,15 +122,8 @@ export function serializeInt(value: bigint, typeName: string): Uint8Array | null
       return buf
     }
     case 'i512':
-    case 'u512':
-    case 'i1024':
-    case 'u1024':
-    case 'i2048':
-    case 'u2048':
-    case 'i4096':
-    case 'u4096': {
-      const sizes: Record<string, number> = { i512: 64, u512: 64, i1024: 128, u1024: 128, i2048: 256, u2048: 256, i4096: 512, u4096: 512 }
-      const sz = sizes[typeName]
+    case 'u512': {
+      const sz = 64
       const buf = new Uint8Array(sz)
       const view = new DataView(buf.buffer)
       for (let i = 0; i < sz / 8; i++) {

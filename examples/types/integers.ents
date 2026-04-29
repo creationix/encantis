@@ -149,32 +149,30 @@ test "integers" {
     assert chain_u32(10) == 13
   }
 
-  // === Sub-byte types ===
+  // === Signed types ===
 
-  test "u1 bit" {
-    let a: u1 = 1
-    let b: u1 = 0
-    assert a == 1
-    assert b == 0
-    let sum = (a + a) as u1  // 1+1=2 masked to u1 = 0
-    assert sum == 0
+  test "i16 arithmetic" {
+    assert add_i16(100, 200) == 300
+    assert add_i16(-50, 50) == 0
   }
 
-  test "u2 crumb" {
-    let a: u2 = 3
-    assert a == 3
-    let wrapped = (a + 1) as u2  // 3+1=4 masked to u2 = 0
-    assert wrapped == 0
+  test "i32 arithmetic" {
+    assert add_i32(-100, 100) == 0
+    assert add_i32(1000000, 2000000) == 3000000
   }
 
-  test "u4 nibble" {
-    let a: u4 = 15
-    assert a == 15
-    let wrapped = (a + 1) as u4  // 15+1=16 masked to u4 = 0
-    assert wrapped == 0
+  test "i64 arithmetic" {
+    assert add_i64(-1:i64, 1:i64) == 0:i64
+    assert add_i64(0x7FFFFFFFFFFFFFFF, 0:i64) == 0x7FFFFFFFFFFFFFFF
   }
 
-  // === SIMD types (v128-backed) ===
+  // === Wide integer types (i64-pair backed) ===
+
+  test "u128 add" {
+    let a: u128 = 100
+    let b: u128 = 200
+    assert a + b == 300:u128
+  }
 
   test "i128 add" {
     let a: i128 = 100
@@ -194,9 +192,21 @@ test "integers" {
     assert (a ^ b) == 0xF0:u256
   }
 
+  test "i256 add" {
+    let a: i256 = 1000:i256
+    let b: i256 = 2000:i256
+    assert a + b == 3000:i256
+  }
+
   test "u512 not" {
     let zero: u512 = 0:u512
     let all_ones = ~zero
     assert all_ones != zero
+  }
+
+  test "i512 xor" {
+    let a: i512 = 0xAB:i512
+    let b: i512 = 0xCD:i512
+    assert (a ^ b) == 0x66:i512
   }
 }
