@@ -1257,8 +1257,18 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     // Multiple values - flatten
     const names = wasmTypes.map((_, i) => `${name}_${i}`)
     ctx.locals.set(name, names)
-    const valParts = splitV128Components(value, names.length)
-    return names.map((n, i) => `(local.set $${n} ${valParts[i]})`).join('\n')
+    // If value is a single expression producing multiple results (e.g. a function call),
+    // emit the call then assign from the stack in reverse order
+    // Try to split value into components (works for multi-expression values)
+    try {
+      const topLevelParts = splitV128Components(value, names.length)
+      return names.map((n, i) => `(local.set $${n} ${topLevelParts[i]})`).join('\n')
+    } catch {
+      // Single expression producing multiple stack values (e.g. function call)
+      // Assign from stack in reverse order
+      const assigns = [...names].reverse().map(n => `(local.set $${n})`).join('\n')
+      return `${value}\n${assigns}`
+    }
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {
