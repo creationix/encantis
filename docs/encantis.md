@@ -281,6 +281,51 @@ let mp: [*]u8 = ...
 mp[i]                // caller must ensure bounds
 ```
 
+#### `const` Pointers
+
+By default, pointers are mutable — you can read and write through them. Add `const` to make a pointer read-only:
+
+```ents
+*const T             // read-only pointer to one T
+*const [N]T          // read-only pointer to N elements
+[]const u8           // read-only slice
+[*]const u8          // read-only many-pointer
+```
+
+The `const` modifier prevents writes through the pointer. This enables the compiler to deduplicate identical data in the data section — two `const` references to the same content can safely share memory.
+
+```ents
+func print(msg: []const u8)      // can read, cannot write
+func fill(buf: []u8)             // can read and write
+
+data buf = [0:u8; 1024]
+print(buf)                        // OK: mutable → const (widening)
+fill(buf)                         // OK: mutable → mutable
+print("hello")                    // OK: const literal → const param
+fill("hello")                     // ERROR: const literal → mutable param
+```
+
+**Coercion rules:** mutable pointers implicitly coerce to `const`. The reverse requires an explicit cast — going from `const` to mutable is unsafe.
+
+#### Inline Literals
+
+String and array literals used inline in expressions produce `const` pointers:
+
+```ents
+let msg = "hello"                 // msg: *const [5]u8
+let nums = [1, 2, 3]             // nums: const [3]i32 (value type, no pointer)
+print("hello")                    // "hello" → []const u8, embedded in data section
+```
+
+The compiler deduplicates `const` data — two uses of `"hello"` share the same bytes. This is safe because neither can write through the pointer.
+
+To embed a mutable copy, use `data`:
+
+```ents
+data greeting = "hello"           // greeting: *[5]u8 (mutable, unique allocation)
+greeting[0] = 'H' as u8          // OK: mutable pointer
+```
+
 #### Nesting
 
 ```ents
@@ -294,29 +339,27 @@ mp[i]                // caller must ensure bounds
 `[]T` is a fat pointer: a `(ptr: [*]T, len: u32)` pair. Slices are the standard way to pass variable-length data.
 
 ```ents
-let data: []u8 = ...
+let data: []u8 = ...             // mutable slice
+let text: []const u8 = "hello"   // read-only slice
 
-data.ptr        // extract pointer ([*]u8)
+data.ptr        // extract pointer
 data.len        // get length (u32)
 data[i]         // element access
-
-// Destructuring
-let (ptr:, len:) = data
 ```
 
-Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating `data[i]` affects the underlying memory.
+Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating `data[i]` affects the underlying memory — unless the slice is `const`.
 
 #### Static Memory Allocation
 
-Use `data` to allocate in the wasm data section:
+Use `data` to allocate mutable memory in the wasm data section:
 
 ```ents
-data buf = [0:u8; 1024]                 // buf: *[1024]u8, auto-coerces to []u8
-data key = x"9d61b19deffd5a60"          // key: *[8]u8
-data table = [1:u64, 2, 3, 4]           // table: *[4]u64
+data buf = [0:u8; 1024]                 // buf: *[1024]u8 (mutable, unique)
+data key = x"9d61b19deffd5a60"          // key: *[8]u8 (mutable, unique)
+data table = [1:u64, 2, 3, 4]           // table: *[4]u64 (mutable, unique)
 ```
 
-The name binds to `*[N]T` by default — the tightest pointer type. It auto-coerces to `[]T` when passed to functions expecting slices. Annotate the LHS only when you need a specific type: `data buf: []u8 = [0:u8; 1024]`.
+The name binds to `*[N]T` by default — the tightest mutable pointer. It auto-coerces to `[]T` or `[]const T` at call sites.
 
 ### 2.7 Tuple Types
 
