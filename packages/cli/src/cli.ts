@@ -153,38 +153,48 @@ switch (command) {
   }
 
   case 'check': {
-    const result = parse(source, { filePath })
+    const entryPath = resolve(inputFile)
+    const load = await loadModule(entryPath)
 
-    if (result.errors.length > 0) {
-      for (const error of result.errors) {
-        const loc = offsetToLineCol(source, error.span.start)
-        console.error(
-          `${filePath}:${loc.line}:${loc.column}: ${error.shortMessage}`,
-        )
-        console.error(error.message)
+    if (load.errors.length > 0) {
+      if (jsonOutput) {
+        console.log(JSON.stringify(load.errors.map(e => ({ file: e.filePath, message: e.message }))))
+      } else {
+        for (const error of load.errors) {
+          console.error(`${error.filePath}: ${error.message}`)
+        }
       }
       process.exit(1)
     }
 
-    if (!result.module) {
-      console.error('Error: Failed to parse module')
-      process.exit(1)
-    }
+    const check = typecheckProgram(load.modules, entryPath)
 
-    // Type check
-    const checkResult = typecheck(result.module)
-
-    if (checkResult.errors.length > 0) {
-      for (const error of checkResult.errors) {
-        const loc = offsetToLineCol(source, error.offset)
-        console.error(`${filePath}:${loc.line}:${loc.column}: ${error.message}`)
+    if (check.errors.length > 0) {
+      const diagnostics: { file: string; line: number; col: number; message: string }[] = []
+      for (const [path, result] of check.results) {
+        const modSource = load.modules.get(path)?.source ?? ''
+        for (const error of result.errors) {
+          const loc = offsetToLineCol(modSource, error.offset)
+          diagnostics.push({ file: path, line: loc.line, col: loc.column, message: error.message })
+        }
+      }
+      if (jsonOutput) {
+        console.log(JSON.stringify(diagnostics))
+      } else {
+        for (const d of diagnostics) {
+          console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
+        }
       }
       process.exit(1)
     }
 
-    console.log(
-      `${filePath}: OK (${result.module.decls.length} declarations)`,
-    )
+    const moduleCount = load.modules.size
+    const declCount = [...load.modules.values()].reduce((sum, m) => sum + m.module.decls.length, 0)
+    if (jsonOutput) {
+      console.log(JSON.stringify({ ok: true, modules: moduleCount, declarations: declCount }))
+    } else {
+      console.log(`OK: ${declCount} declarations across ${moduleCount} module${moduleCount > 1 ? 's' : ''}`)
+    }
     break
   }
 
