@@ -275,10 +275,18 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
     case 'bool':
       return `(i32.const ${lit.value ? 1 : 0})`
 
-    case 'string':
-      // String literals should be handled via data section
-      // Return placeholder - codegen should use literalRefs
-      return `(i32.const 0) ;; string literal`
+    case 'string': {
+      const id = (expr as any).dataId ?? expr.span.start
+      const ref = ctx.literalRefs.get(id)
+      if (ref) {
+        const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+        if (type?.kind === 'slice') {
+          return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+        }
+        return `(i32.const ${ref.ptr})`
+      }
+      return `(i32.const 0)`
+    }
   }
 }
 

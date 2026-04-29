@@ -1,0 +1,220 @@
+// base64url encoding/decoding (RFC 4648 §5, no padding)
+
+// Encoding alphabet: A-Z a-z 0-9 - _
+def encode_table:*[64]u8 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// Compute encoded length: ceil(input_len * 4 / 3)
+func encoded_len(input_len: u32) -> u32 {
+  let full_groups = input_len / 3
+  let remainder = input_len % 3
+  let len = full_groups * 4
+  if remainder == 1 { len += 2 }
+  if remainder == 2 { len += 3 }
+  return len
+}
+
+// Encode input bytes to base64url, writing to output buffer.
+// Returns number of bytes written.
+export func encode(input: []u8, output: *[4096]u8) -> (written: u32) {
+  let i: u32 = 0
+  let o: u32 = 0
+  let len = input.len
+
+  // Process full 3-byte groups
+  while i + 3 <= len {
+    let a = input[i]:u32
+    let b = input[i + 1]:u32
+    let c = input[i + 2]:u32
+    let triple = (a << 16) | (b << 8) | c
+
+    output[o]     = encode_table[(triple >> 18) & 0x3F]
+    output[o + 1] = encode_table[(triple >> 12) & 0x3F]
+    output[o + 2] = encode_table[(triple >> 6) & 0x3F]
+    output[o + 3] = encode_table[triple & 0x3F]
+
+    i += 3
+    o += 4
+  }
+
+  // Handle remainder
+  let remaining = len - i
+  if remaining == 1 {
+    let a = input[i]:u32
+    output[o]     = encode_table[(a >> 2) & 0x3F]
+    output[o + 1] = encode_table[(a << 4) & 0x3F]
+    o += 2
+  }
+  if remaining == 2 {
+    let a = input[i]:u32
+    let b = input[i + 1]:u32
+    let pair = (a << 8) | b
+    output[o]     = encode_table[(pair >> 10) & 0x3F]
+    output[o + 1] = encode_table[(pair >> 4) & 0x3F]
+    output[o + 2] = encode_table[(pair << 2) & 0x3F]
+    o += 3
+  }
+
+  written = o
+}
+
+// Decode table: maps ASCII byte → 6-bit value (0xFF = invalid)
+def decode_table:[128]u8
+
+global decode_init: u32 = 0
+
+func init_decode() {
+  return when decode_init != 0
+  // Fill with 0xFF (invalid)
+  memset(decode_table, 0xFF, 128)
+  // A-Z = 0..25
+  let i: u32 = 0
+  while i < 26 {
+    decode_table[65 + i] = i as u8
+    i += 1
+  }
+  // a-z = 26..51
+  i = 0
+  while i < 26 {
+    decode_table[97 + i] = (26 + i) as u8
+    i += 1
+  }
+  // 0-9 = 52..61
+  i = 0
+  while i < 10 {
+    decode_table[48 + i] = (52 + i) as u8
+    i += 1
+  }
+  // - = 62, _ = 63
+  decode_table[45] = 62 as u8
+  decode_table[95] = 63 as u8
+  decode_init = 1
+}
+
+// Compute decoded length from encoded length
+func decoded_len(encoded_len: u32) -> u32 {
+  let full_groups = encoded_len / 4
+  let remainder = encoded_len % 4
+  let len = full_groups * 3
+  if remainder == 2 { len += 1 }
+  if remainder == 3 { len += 2 }
+  return len
+}
+
+// Decode base64url input to bytes, writing to output buffer.
+// Returns number of bytes written, or 0xFFFFFFFF on invalid input.
+export func decode(input: []u8, output: *[4096]u8) -> (written: u32) {
+  init_decode()
+  let i: u32 = 0
+  let o: u32 = 0
+  let len = input.len
+
+  // Process full 4-char groups
+  while i + 4 <= len {
+    let a = decode_table[input[i]]:u32
+    let b = decode_table[input[i + 1]]:u32
+    let c = decode_table[input[i + 2]]:u32
+    let d = decode_table[input[i + 3]]:u32
+    return 0xFFFFFFFF when (a | b | c | d) & 0x80 != 0
+
+    let quad = (a << 18) | (b << 12) | (c << 6) | d
+    output[o]     = (quad >> 16) as u8
+    output[o + 1] = (quad >> 8) as u8
+    output[o + 2] = quad as u8
+
+    i += 4
+    o += 3
+  }
+
+  // Handle remainder
+  let remaining = len - i
+  if remaining == 2 {
+    let a = decode_table[input[i]]:u32
+    let b = decode_table[input[i + 1]]:u32
+    return 0xFFFFFFFF when (a | b) & 0x80 != 0
+    output[o] = ((a << 2) | (b >> 4)) as u8
+    o += 1
+  }
+  if remaining == 3 {
+    let a = decode_table[input[i]]:u32
+    let b = decode_table[input[i + 1]]:u32
+    let c = decode_table[input[i + 2]]:u32
+    return 0xFFFFFFFF when (a | b | c) & 0x80 != 0
+    let triple = (a << 10) | (b << 4) | (c >> 2)
+    output[o]     = (triple >> 8) as u8
+    output[o + 1] = triple as u8
+    o += 2
+  }
+  return 0xFFFFFFFF when remaining == 1
+
+  written = o
+}
+
+// Test buffers
+def enc_buf:[4096]u8
+def dec_buf:[4096]u8
+
+// Helper: check encode output matches expected string
+func check_encode(input: []u8, expected: []u8) -> bool {
+  let n = encode(input, enc_buf)
+  return false when n != expected.len
+  let i: u32 = 0
+  while i < n {
+    return false when enc_buf[i] != expected[i]
+    i += 1
+  }
+  return true
+}
+
+// Helper: check decode output matches expected bytes
+func check_decode(input: []u8, expected: []u8) -> bool {
+  let n = decode(input, dec_buf)
+  return false when n != expected.len
+  let i: u32 = 0
+  while i < n {
+    return false when dec_buf[i] != expected[i]
+    i += 1
+  }
+  return true
+}
+
+// RFC 4648 test vectors (adapted for base64url, no padding)
+def tv_empty: []u8 = ""
+def tv_f: []u8 = "f"
+def tv_fo: []u8 = "fo"
+def tv_foo: []u8 = "foo"
+def tv_foob: []u8 = "foob"
+def tv_fooba: []u8 = "fooba"
+def tv_foobar: []u8 = "foobar"
+
+def enc_empty: []u8 = ""
+def enc_f: []u8 = "Zg"
+def enc_fo: []u8 = "Zm8"
+def enc_foo: []u8 = "Zm9v"
+def enc_foob: []u8 = "Zm9vYg"
+def enc_fooba: []u8 = "Zm9vYmE"
+def enc_foobar: []u8 = "Zm9vYmFy"
+
+test "encode rfc4648 vectors" {
+  assert check_encode(tv_empty, enc_empty)
+  assert check_encode(tv_f, enc_f)
+  assert check_encode(tv_fo, enc_fo)
+  assert check_encode(tv_foo, enc_foo)
+  assert check_encode(tv_foob, enc_foob)
+  assert check_encode(tv_fooba, enc_fooba)
+  assert check_encode(tv_foobar, enc_foobar)
+}
+
+test "decode rfc4648 vectors" {
+  assert check_decode(enc_empty, tv_empty)
+  assert check_decode(enc_f, tv_f)
+  assert check_decode(enc_fo, tv_fo)
+  assert check_decode(enc_foo, tv_foo)
+  assert check_decode(enc_foob, tv_foob)
+  assert check_decode(enc_fooba, tv_fooba)
+  assert check_decode(enc_foobar, tv_foobar)
+}
+
+test "decode invalid input" {
+  let bad: []u8 = "!!!"
+  assert decode(bad, dec_buf) == 0xFFFFFFFF
+}
