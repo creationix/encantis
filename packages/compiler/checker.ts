@@ -522,8 +522,7 @@ class CheckContext {
           // Return a named reference to the type (don't inline to avoid infinite recursion)
           return named(t.name, sym.type)
         }
-        // Type was never defined - this shouldn't happen if pre-registration worked
-        this.error(0, `unresolved forward reference to type: ${t.name}`)
+        this.error(0, `unresolved forward reference to type '${t.name}' — is it defined in this module?`)
         return primitive('i32')
       }
 
@@ -1297,7 +1296,9 @@ class CheckContext {
         if (this.pendingTypeNames.has(type.name)) {
           return forwardRef(type.name)
         }
-        this.error(type.span.start, `unknown type: ${type.name}`)
+        const similar = this.findSimilar(type.name)
+        const hint = similar ? ` — did you mean '${similar}'?` : ''
+        this.error(type.span.start, `unknown type '${type.name}'${hint}`)
         return primitive('i32')
       }
 
@@ -1623,7 +1624,9 @@ class CheckContext {
   inferIdent(expr: AST.IdentExpr): ResolvedType {
     const sym = this.lookup(expr.name)
     if (!sym) {
-      this.error(expr.span.start, `unknown identifier: ${expr.name}`)
+      const similar = this.findSimilar(expr.name)
+      const hint = similar ? ` — did you mean '${similar}'?` : ''
+      this.error(expr.span.start, `unknown identifier '${expr.name}'${hint}`)
       return primitive('i32')
     }
 
@@ -1660,9 +1663,10 @@ class CheckContext {
       // Check argument count
       const argCount = expr.args.filter((a) => a.value).length
       if (argCount !== calleeType.params.length) {
+        const calleeName = expr.callee.kind === 'IdentExpr' ? `'${expr.callee.name}' ` : ''
         this.error(
           expr.span.start,
-          `expected ${calleeType.params.length} arguments, got ${argCount}`,
+          `${calleeName}expected ${calleeType.params.length} argument${calleeType.params.length === 1 ? '' : 's'}, got ${argCount}`,
         )
       }
 
@@ -2096,7 +2100,7 @@ class CheckContext {
       return objType.pointee
     }
 
-    this.error(expr.span.start, `cannot index type: ${typeToString(objType)}`)
+    this.error(expr.span.start, `cannot index type ${typeToString(objType)} — indexing requires an array, slice, or pointer type`)
     return primitive('i32')
   }
 
@@ -2226,6 +2230,26 @@ class CheckContext {
 
   // === Error Reporting ===
 
+  private findSimilar(name: string): string | null {
+    let best: string | null = null
+    let bestDist = 3
+    for (const [candidate] of this.currentScope.symbols) {
+      const dist = editDistance(name, candidate)
+      if (dist < bestDist) {
+        bestDist = dist
+        best = candidate
+      }
+    }
+    for (const [candidate] of this.moduleScope.symbols) {
+      const dist = editDistance(name, candidate)
+      if (dist < bestDist) {
+        bestDist = dist
+        best = candidate
+      }
+    }
+    return best
+  }
+
   error(offset: number, message: string): void {
     // Avoid duplicate errors at the same offset
     if (!this.errors.some((e) => e.offset === offset && e.message === message)) {
@@ -2252,4 +2276,20 @@ class CheckContext {
       this.symbolRefs.set(refOffset, defOffset)
     }
   }
+}
+
+function editDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length
+  if (b.length === 0) return a.length
+  const dp = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  )
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+    }
+  }
+  return dp[a.length][b.length]
 }
