@@ -1526,9 +1526,6 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 }
 
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
-  // For loops need iterator desugaring
-  // for item in iterable { ... }
-  // becomes: let i = 0; while i < len { let item = arr[i]; ...; i += 1 }
   const valueName = stmt.binding.value
   const indexName = stmt.binding.index
 
@@ -1539,7 +1536,25 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
 
   const body = bodyToWat(stmt.body, ctx)
 
-  // Simplified: just emit loop structure
+  // Check if iterable is a comptime integer (for i in N)
+  const iterType = ctx.types.get(typeKey(stmt.iterable.span.start, stmt.iterable.kind))
+  const iterWat = exprToWat(stmt.iterable, ctx)
+
+  if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
+    // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
+    return `(local.set $${valueName} (i32.const 0))
+(block $break
+    (loop $continue
+      (br_if $break (i32.ge_u (local.get $${valueName}) ${iterWat}))
+      ${body}
+      (local.set $${valueName} (i32.add (local.get $${valueName}) (i32.const 1)))
+      (br $continue)
+    )
+  )`
+  }
+
+  // Array/slice loop: for value in arr → iterate elements
+  // TODO: implement array iteration
   return `(block $break
     (loop $continue
       ${body}
@@ -1804,7 +1819,11 @@ function collectLocals(
         visitBody(expr.else_)
       }
     }
-    // Recurse into other expression types that may contain blocks
+    if (expr.kind === 'MatchExpr') {
+      for (const arm of expr.arms) {
+        visitBody(arm.body)
+      }
+    }
     if (expr.kind === 'GroupExpr') {
       visitExpr(expr.expr)
     }

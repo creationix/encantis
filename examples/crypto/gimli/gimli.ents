@@ -4,7 +4,7 @@
 
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
-export func gimli(state:[*12]u32) {
+export func gimli(state:*[12]u32) {
   let round:u32 = 24
 
   loop {
@@ -42,12 +42,29 @@ export func gimli(state:[*12]u32) {
         state[1] = state[3]
         state[3] = x2
       }
+      _ => {}
     }
 
     round -= 1
     break when round == 0
   }
 }
+
+// Gimli spec test vector: input state[i] = i * i * i + i * 0x9e3779b9
+// Expected output from reference implementation
+test "gimli spec vector" {
+  for i in 12 {
+    tv_state[i] = i * i * i + i * 0x9e3779b9
+  }
+  gimli(tv_state)
+  // First 4 words of expected output (from gimli.cr reference)
+  assert tv_state[0] == 0xba11c85a
+  assert tv_state[1] == 0x91bad119
+  assert tv_state[2] == 0x380ce880
+  assert tv_state[3] == 0xd24c2c68
+}
+
+def tv_state:[12]u32
 
 // Global state for Gimli-Hash.
 // This is a reserved area of linear memory to hold the state.
