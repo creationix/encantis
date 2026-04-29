@@ -106,42 +106,49 @@ Booleans are distinct from integers. No implicit truthiness - use explicit compa
 
 #### Array Literals
 
-Array literals create fixed-size arrays. Since arrays cannot exist on the stack (only pointers/slices to them), array literals are always memory-backed.
+Array literals create fixed-size value arrays:
 
 ```ents
-[1, 2, 3]           // list literal → *[3]i32
-[0:u8; 1024]        // repeat literal → *[1024]u8 (1024 copies of 0)
-[[1, 2], [3, 4]]    // nested → *[2,2]i32 (packed 2D)
+[1, 2, 3]           // [3]i32 — value type
+[0:u8; 1024]        // [1024]u8 — value type (large, probably want &)
+[[1, 2], [3, 4]]    // [2][2]i32 — nested value arrays
 ```
 
 The repeat syntax `[expr; count]` creates an array with `count` copies of `expr`. The count must be a compile-time constant.
 
-**Compile-time values only:** Array literals must contain only compile-time constant values. This allows the compiler to intern them in the data section (like strings). For arrays with runtime values, use explicitly pre-allocated mutable buffers via `def mut` at module level.
-
-String literals are just array literals of `u8`:
+String literals are array literals of `u8`:
 
 ```ents
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
-"ABC"               // equivalent to [0x41:u8, 0x42, 0x43]
 ```
 
-**Inline usage:** Like strings, array literals can appear inline in function bodies. The compiler interns identical literals:
+#### The `&` Operator — Memory Allocation
+
+The `&` operator allocates a value in the data section and returns a pointer. This is how you create memory-backed data from literals:
 
 ```ents
-func example() {
-  let coefficients = [1.0, 0.5, 0.25]  // interned, immutable
-  let message = "hello"                 // same treatment as arrays
-}
+def buf = &[0:u8; 1024]             // *[1024]u8 — pointer to 1024 zero bytes
+def key = &x"9d61b19deffd5a60"      // *[8]u8 — pointer to 8 bytes
+def table = &[1:u64, 2, 3, 4]       // *[4]u64 — pointer to 4 u64s
+def origin = &(0.0, 0.0)            // *(f64, f64) — struct in memory
 ```
 
-**Type Annotation Controls Pointer Type:**
+Without `&`, `def` creates a compile-time constant that is inlined at every use (no memory). With `&`, the value is serialized into the wasm data section and the name binds to a pointer.
 
-The default inferred type for array literals is `*[N]T` (thin pointer with known length). Use type annotations to get other pointer types:
+**LHS type annotation controls the pointer type:**
 
 ```ents
-def buffer = [0:u8; 1024]           // *[1024]u8 (default)
-def buffer: []u8 = [0:u8; 1024]     // []u8 (slice)
-def buffer: [*]u8 = [0:u8; 1024]    // [*]u8 (many-pointer)
+def buf = &[0:u8; 1024]             // inferred *[1024]u8
+def buf: []u8 = &[0:u8; 1024]       // explicit []u8 (slice)
+def buf: [*]u8 = &[0:u8; 1024]      // explicit [*]u8 (many-pointer)
+```
+
+**Nested data:** Struct literals with pointer fields work — the compiler allocates each piece and wires up the internal pointers:
+
+```ents
+def person = &(name: "Fred", wizard: true)
+// person: *(name: []u8, wizard: bool)
+// "Fred" allocated separately, slice points to it
 ```
 
 ---
@@ -204,10 +211,10 @@ set (x:, y:) = other_point    // updates existing x and y
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
 
-| Category | Types | Semantics |
-|----------|-------|-----------|
-| **Values** | primitives, tuples, structs, `[N]T` | passed by value, copied |
-| **References** | `*T`, `*[N]T`, `[*]T`, `[]T` | pointer to memory |
+| Category       | Types                               | Semantics               |
+|----------------|-------------------------------------|-------------------------|
+| **Values**     | primitives, tuples, structs, `[N]T` | passed by value, copied |
+| **References** | `*T`, `*[N]T`, `[*]T`, `[]T`        | pointer to memory       |
 
 `[N]T` has brackets but is a value type — the `N` is a compile-time constant, so the compiler knows exactly how many wasm values to emit. The reference types all involve runtime indirection through memory addresses.
 
@@ -238,13 +245,13 @@ Use fixed arrays for small data that benefits from register access: cryptographi
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
 
-| Type | Meaning | `.len` | Indexing |
-|------|---------|--------|----------|
-| `*T` | pointer to one T | N/A | `.*` to dereference |
-| `*[N]T` | pointer to N elements | N (comptime) | `[i]` |
-| `*[!]T` | pointer to null-terminated | scans, O(n) | `[i]` |
-| `*[N,M]T` | pointer to N×M packed 2D | N, M (comptime) | `[i,j]` |
-| `[*]T` | many-pointer (no bounds) | N/A | `[i]` (unchecked) |
+| Type      | Meaning                    | `.len`          | Indexing            |
+|-----------|----------------------------|-----------------|---------------------|
+| `*T`      | pointer to one T           | N/A             | `.*` to dereference |
+| `*[N]T`   | pointer to N elements      | N (comptime)    | `[i]`               |
+| `*[!]T`   | pointer to null-terminated | scans, O(n)     | `[i]`               |
+| `*[N,M]T` | pointer to N×M packed 2D   | N, M (comptime) | `[i,j]`             |
+| `[*]T`    | many-pointer (no bounds)   | N/A             | `[i]` (unchecked)   |
 
 ```ents
 let p: *u8 = ...
@@ -285,19 +292,15 @@ Slices are value types at the language level (the ptr+len pair is copied), but t
 
 #### Static Memory Allocation
 
-Use `def` with a slice type and an initializer to reserve memory at compile time:
+Use `def` with `&` and a slice type annotation to allocate memory and get a slice:
 
 ```ents
-def buf: []u8 = [0; 1024]               // 1024 zero bytes
-def key: []u8 = x"9d61b19deffd5a60"     // initialized from hex literal
-def table: []u64 = [1, 2, 3, 4]         // 4 u64s in memory
-def sigma: []u8 = [                      // array literal
-  0x00, 0x01, 0x02, 0x03,
-  0x04, 0x05, 0x06, 0x07
-]
+def buf: []u8 = &[0:u8; 1024]           // 1024 zero bytes, buf is a slice
+def key: []u8 = &x"9d61b19deffd5a60"    // initialized from hex literal
+def table: []u64 = &[1:u64, 2, 3, 4]    // 4 u64s in memory
 ```
 
-The `def` allocates in the wasm data section. The name binds to a slice with compile-time known pointer and length. Zero-initialized buffers (`[0; N]`) are free — wasm memory starts as zeros, so no data segment is emitted.
+The `&` allocates in the wasm data section. The `[]T` type annotation makes the name bind to a slice (ptr + len) instead of a thin pointer. Zero-initialized buffers (`[0; N]`) are free — wasm memory starts as zeros, so no data segment is emitted.
 
 ### 2.7 Tuple Types
 
