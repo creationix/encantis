@@ -9,7 +9,7 @@ func load(offset: u32) -> u128 {
 
 // Write u128 to memory at byte offset
 func store(offset: u32, val: u128) {
-  let p = offset as *u128
+  let p = offset as *mut u128
   p.* = val
 }
 

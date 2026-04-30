@@ -28,7 +28,7 @@ data pt-work = mut [0:u64; 120]  // 6 point slots
 // RFC 8032 §5.1.5: clamp the lower 32 bytes of SHA-512(privkey)
 // Clear bits 0,1,2 of first byte, clear bit 7 and set bit 6 of last byte
 
-func clamp-scalar(s: *[32]u8) {
+func clamp-scalar(s: *mut [32]u8) {
   s[0] = s[0] & 248:u8
   s[31] = (s[31] & 127:u8) | 64:u8
 }
@@ -36,7 +36,7 @@ func clamp-scalar(s: *[32]u8) {
 // === Key derivation ===
 // Compute public key from 32-byte private key
 
-export func derive-pubkey(pubkey: *[32]u8, privkey: *[32]u8) {
+export func derive-pubkey(pubkey: *mut [32]u8, privkey: *[32]u8) {
   // Hash private key with SHA-512
   sha512(privkey, hash-buf)
 

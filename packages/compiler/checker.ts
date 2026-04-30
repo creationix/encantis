@@ -832,6 +832,37 @@ class CheckContext {
     return null
   }
 
+  // Check that an assignment target is mutable (for pointer writes)
+  private checkMutability(target: AST.LValue, offset: number): void {
+    // IndexExpr: arr[i] = x — check if arr's pointer type is mutable
+    if (target.kind === 'IndexExpr') {
+      const objType = this.inferExpr(target.object)
+      const u = unwrap(objType)
+      if (u.kind === 'pointer' && !u.mutable) {
+        this.error(offset, `cannot write through const pointer — use *mut or []mut for mutable access`)
+      }
+      if (u.kind === 'slice' && !u.mutable) {
+        this.error(offset, `cannot write through const slice — use []mut for mutable access`)
+      }
+    }
+    // MemberExpr with deref: p.* = x — check pointer mutability
+    if (target.kind === 'MemberExpr' && target.member.kind === 'deref') {
+      const objType = this.inferExpr(target.object)
+      const u = unwrap(objType)
+      if (u.kind === 'pointer' && !u.mutable) {
+        this.error(offset, `cannot write through const pointer — use *mut for mutable access`)
+      }
+    }
+    // MemberExpr with type pun: p.u32 = x — check pointer mutability
+    if (target.kind === 'MemberExpr' && target.member.kind === 'type') {
+      const objType = this.inferExpr(target.object)
+      const u = unwrap(objType)
+      if (u.kind === 'pointer' && !u.mutable) {
+        this.error(offset, `cannot write through const pointer — use *mut for mutable access`)
+      }
+    }
+  }
+
   // Check if an expression (or its inner literal) has the mut flag
   private exprHasMut(expr: AST.Expr): boolean {
     if (expr.kind === 'AnnotationExpr') return this.exprHasMut(expr.expr)
@@ -1084,6 +1115,7 @@ class CheckContext {
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
         }
+        this.checkMutability(stmt.target, stmt.span.start)
         const targetUnwrapped = targetType ? unwrap(targetType) : undefined
         const isScalarTarget = targetUnwrapped?.kind === 'primitive' || targetUnwrapped?.kind === 'tuple'
         if (targetType && isScalarTarget) {
@@ -2151,7 +2183,7 @@ class CheckContext {
         // Slice built-in fields: .ptr, .len
         if (objType.kind === 'slice') {
           if (expr.member.name === 'ptr') {
-            return manyPointer(objType.element)
+            return manyPointer(objType.element, objType.mutable)
           }
           if (expr.member.name === 'len') {
             return primitive('u32')
@@ -2240,23 +2272,22 @@ class CheckContext {
 
       case 'type': {
         // Type pun: ptr.u32, array.u64, etc.
-        // Returns a many-pointer to the punned type (sizes don't carry over)
+        // Returns a many-pointer to the punned type, preserving mutability
         const punType = this.resolveType(expr.member.type)
 
-        // For array or slice types: [N]u8.u32, []u8.u32 → [*]u32
-        if (objType.kind === 'array' || objType.kind === 'slice' ||
-            objType.kind === 'comptime_array') {
+        // For slice types: []u8.u32 → [*]u32 (preserves slice mutability)
+        if (objType.kind === 'slice') {
+          return manyPointer(punType, objType.mutable)
+        }
+
+        // For array or comptime_array: [N]u8.u32 → [*]u32
+        if (objType.kind === 'array' || objType.kind === 'comptime_array') {
           return manyPointer(punType)
         }
 
-        // For pointer-to-array: *[12]u8.u32 → [*]u32
-        if (objType.kind === 'pointer' && objType.pointee.kind === 'array') {
-          return manyPointer(punType)
-        }
-
-        // For plain pointers: *u8.u32 → [*]u32
+        // For pointer types: preserve mutability through type pun
         if (objType.kind === 'pointer') {
-          return manyPointer(punType)
+          return manyPointer(punType, objType.mutable)
         }
 
         // Default: just return the punned type
