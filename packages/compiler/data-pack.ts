@@ -585,8 +585,11 @@ function serializeSeparate(
   const childRefs: DataRef[] = []
 
   for (const elem of expr.elements) {
-    const childRef = serializeLiteral(elem, innerType, builder)
-    childRefs.push(childRef)
+    if (isSerializableExpr(elem)) {
+      childRefs.push(serializeLiteral(elem, innerType, builder))
+    } else {
+      childRefs.push({ ptr: 0, len: 0 })
+    }
   }
 
   const isSlice = elemIsSlice || targetType.sizes === null || (targetType.sizes.length === 0)
@@ -594,6 +597,12 @@ function serializeSeparate(
 
   const ref = builder.internBytes(pointerBytes, skipDedup)
   return { ptr: ref.ptr, len: childRefs.length }
+}
+
+function isSerializableExpr(expr: AST.Expr): boolean {
+  if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') return true
+  if (expr.kind === 'AnnotationExpr') return isSerializableExpr(expr.expr)
+  return false
 }
 
 // Encode an array of DataRefs as a pointer array

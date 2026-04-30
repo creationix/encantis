@@ -33,21 +33,17 @@ data errnos:[][]u8 = [
   "ENOTCAPABLE"
 ]
 
-data err_iovecs:[]mut[]u8 = ["Error ", "", ": ", "", "\n"]
-
 func try(msg: []u8, code: i32) {
   return when code == 0
-  let nwritten = &0:u32
-  err_iovecs[1] = msg
-  err_iovecs[3] = errnos[code]
-  wasi_fd_write(stderr, err_iovecs, nwritten)
+  let iovs:[]mut []u8 = ["Error ", msg, ": ", errnos[code], "\n"]
+  wasi_fd_write(stderr, iovs, &0:u32)
   wasi_proc_exit(code)
 }
 
-// TODO: template literals — try2 would replace try
-// func try2(msg: []u8, code: i32) {
+// TODO: template literals would simplify try to:
+// func try(msg: []u8, code: i32) {
 //   return when code == 0
-//   wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, &0)
+//   wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, &0:u32)
 //   wasi_proc_exit(code)
 // }
 

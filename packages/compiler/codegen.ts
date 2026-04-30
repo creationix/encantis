@@ -1323,19 +1323,57 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
 }
 
 function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
-  // Check if this literal has a data section entry
-  // Use dataId if present (survives def substitution), otherwise span.start
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
     const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    // Emit runtime stores for mixed arrays (elements that aren't compile-time literals)
+    const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
-      return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+      return `${stores}(i32.const ${ref.ptr}) (i32.const ${ref.len})`
     }
-    return `(i32.const ${ref.ptr})`
+    return `${stores}(i32.const ${ref.ptr})`
   }
   // Value array literal: emit elements directly as stack values
   return expr.elements.map(e => exprToWat(e, ctx)).join(' ')
+}
+
+function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
+  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  if (!type) return ''
+  // Get the element type to determine stride
+  const elemType = type.kind === 'slice' ? type.element
+    : type.kind === 'pointer' && type.pointee.kind === 'array' ? type.pointee.element
+    : null
+  if (!elemType) return ''
+  const elemSize = byteSize(elemType) ?? 0
+  if (elemSize === 0) return ''
+
+  const parts: string[] = []
+  const u = unwrap(elemType)
+  for (let i = 0; i < expr.elements.length; i++) {
+    const elem = expr.elements[i]
+    if (isRuntimeExpr(elem)) {
+      const base = ref.ptr + i * elemSize
+      const value = exprToWat(elem, ctx)
+      if (u.kind === 'slice') {
+        const valParts = splitV128Components(value, 2)
+        parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
+        parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+      } else {
+        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value))
+      }
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') + '\n' : ''
+}
+
+function isRuntimeExpr(expr: AST.Expr): boolean {
+  if (expr.kind === 'LiteralExpr') return false
+  if (expr.kind === 'ArrayExpr') return false
+  if (expr.kind === 'RepeatExpr') return false
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr)
+  return true
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
