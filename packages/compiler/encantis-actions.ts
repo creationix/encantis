@@ -1586,26 +1586,25 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   TemplateLiteral_interpolated(head, firstExpr, middles, restExprs, tail) {
     const elements: AST.Expr[] = []
-    const pushText = (text: string, node: OhmNode) => {
+    const pushSegment = (text: string, node: OhmNode, trimStart: number, trimEnd: number) => {
       if (text.length > 0) {
         const bytes = new TextEncoder().encode(text)
-        elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: span(node) } as AST.LiteralExpr)
+        const s = span(node)
+        elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: { start: s.start + trimStart, end: s.end - trimEnd } } as AST.LiteralExpr)
       }
     }
-    const headText = templateTokenText(head)
-    if (headText.length > 0) {
-      const bytes = new TextEncoder().encode(headText)
-      const headSpan = span(head)
-      elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: { start: headSpan.start + 1, end: headSpan.end - 2 } } as AST.LiteralExpr)
-    }
+    // head: `text${ — skip 1 (`) at start, 2 (${) at end
+    pushSegment(templateTokenText(head), head, 1, 2)
     elements.push(firstExpr.toAST() as AST.Expr)
     const mids = middles.children
     const rests = restExprs.children
     for (let i = 0; i < mids.length; i++) {
-      pushText(templateTokenText(mids[i]), mids[i])
+      // middle: }text${ — skip 1 (}) at start, 2 (${) at end
+      pushSegment(templateTokenText(mids[i]), mids[i], 1, 2)
       elements.push(rests[i].toAST() as AST.Expr)
     }
-    pushText(templateTokenText(tail), tail)
+    // tail: }text` — skip 1 (}) at start, 1 (`) at end
+    pushSegment(templateTokenText(tail), tail, 1, 1)
     return { kind: 'ArrayExpr', elements, span: span(this) } as AST.ArrayExpr
   },
 

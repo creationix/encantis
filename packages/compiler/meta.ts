@@ -568,9 +568,6 @@ class MetaBuilder {
 
   private formatDataRef(ref: DataRef, type: ResolvedType): string {
     const u = unwrap(type)
-    if (u.kind === 'slice') {
-      return `(ptr: 0x${ref.ptr.toString(16)}, len: ${ref.len})`
-    }
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
       return `0x${ref.ptr.toString(16)}`
     }
