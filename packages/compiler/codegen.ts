@@ -219,6 +219,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return memberToWat(expr, ctx)
     case 'IndexExpr':
       return indexToWat(expr, ctx)
+    case 'CoalesceExpr':
+      return coalesceToWat(expr, ctx)
     case 'IfExpr':
       return ifExprToWat(expr, ctx)
     case 'TupleExpr':
@@ -1191,7 +1193,187 @@ function evalComptimeIndex(expr: AST.Expr): number | null {
   return null
 }
 
+function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
+  const elemType = ctx.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
+  if (!elemType) throw new Error('Missing element type for coalesce')
+
+  const fallbackVal = exprToWat(expr.fallback, ctx)
+  const resultTypes = typeToWasm(elemType)
+  const resultStr = `(result ${resultTypes.join(' ')})`
+
+  // Check if this is a bounds-checked index expression
+  if (expr.expr.kind === 'IndexExpr') {
+    return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, expr.span.start, ctx)
+  }
+
+  // Generic optional unwrap: check ptr != 0
+  const uid = expr.span.start
+  const ptrLocal = `__coal_ptr_${uid}`
+  const parts: string[] = []
+  const leftWat = exprToWat(expr.expr, ctx)
+
+  if (resultTypes.length === 2) {
+    // Slice optional: (ptr, len) — check ptr component
+    const lenLocal = `__coal_len_${uid}`
+    const components = splitV128Components(leftWat, 2)
+    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
+    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then (local.get $${ptrLocal}) (local.get $${lenLocal})) (else ${fallbackVal}))`
+  }
+
+  // Pointer optional: single i32 — check nonzero
+  parts.push(`(local.set $${ptrLocal} ${leftWat})`)
+  return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then (local.get $${ptrLocal})) (else ${fallbackVal}))`
+}
+
+function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fallbackVal: string, resultStr: string, uid: number, ctx: CodegenContext): string {
+  const idxLocal = `__coal_idx_${uid}`
+  const ptrLocal = `__coal_ptr_${uid}`
+  const lenLocal = `__coal_len_${uid}`
+
+  const objTypeKey = indexExpr.object.kind === 'MemberExpr'
+    ? typeKey(indexExpr.object.span.end, indexExpr.object.kind)
+    : typeKey(indexExpr.object.span.start, indexExpr.object.kind)
+  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+
+  const parts: string[] = []
+  parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+
+  if (objType?.kind === 'slice') {
+    const obj = exprToWat(indexExpr.object, ctx)
+    const components = splitV128Components(obj, 2)
+    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
+    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+  } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
+    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    const arrayType = objType.pointee
+    if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+      parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+    }
+  }
+
+  const elemSize = byteSize(elemType) ?? 1
+  const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
+  const offset = elemSize === 1
+    ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
+    : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
+  const loadVal = loadFromMemory(elemType, offset)
+
+  return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
+}
+
+function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
+  const pattern = expr.pattern
+  if (!pattern || pattern.kind !== 'binding') {
+    throw new Error('Invalid if-let expression')
+  }
+
+  const elemType = ctx.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+  if (!elemType) throw new Error('Missing element type for if-let')
+
+  const thenBody = bodyToWat(expr.thenBranch, ctx)
+  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const resultTypes = type ? typeToWasm(type) : []
+  const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  let elseBody = ''
+  if (expr.else_) {
+    elseBody = bodyToWat(expr.else_, ctx)
+  }
+
+  // Bind helper
+  const bindingNames = ctx.locals.get(pattern.name)
+  if (!bindingNames) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
+  function makeBind(loadVal: string): string {
+    if (bindingNames.length === 1) {
+      return `(local.set $${bindingNames[0]} ${loadVal})`
+    }
+    const wasmVals = splitV128Components(loadVal, bindingNames.length)
+    return bindingNames.map((n, i) => `(local.set $${n} ${wasmVals[i]})`).join('\n')
+  }
+
+  // Index expression: bounds check
+  if (expr.condition.kind === 'IndexExpr') {
+    const indexExpr = expr.condition
+    const uid = expr.span.start
+    const idxLocal = `__iflet_idx_${uid}`
+    const ptrLocal = `__iflet_ptr_${uid}`
+    const lenLocal = `__iflet_len_${uid}`
+
+    const objTypeKey = indexExpr.object.kind === 'MemberExpr'
+      ? typeKey(indexExpr.object.span.end, indexExpr.object.kind)
+      : typeKey(indexExpr.object.span.start, indexExpr.object.kind)
+    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+
+    const parts: string[] = []
+    parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
+
+    if (objType?.kind === 'slice') {
+      const obj = exprToWat(indexExpr.object, ctx)
+      const components = splitV128Components(obj, 2)
+      parts.push(`(local.set $${ptrLocal} ${components[0]})`)
+      parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
+      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      const arrayType = objType.pointee
+      if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+        parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+      } else {
+        parts.push(`(local.set $${lenLocal} (i32.const 0))`)
+      }
+    } else {
+      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${lenLocal} (i32.const 0))`)
+    }
+
+    const elemSize = byteSize(elemType) ?? 1
+    const boundsCheck = `(i32.lt_u (local.get $${idxLocal}) (local.get $${lenLocal}))`
+    const offset = elemSize === 1
+      ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
+      : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
+    const loadVal = loadFromMemory(elemType, offset)
+    const bindWat = makeBind(loadVal)
+
+    if (elseBody) {
+      return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${bindWat}\n${thenBody}) (else ${elseBody}))`
+    }
+    return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${bindWat}\n${thenBody}))`
+  }
+
+  // Generic optional expression: null check (ptr != 0)
+  const uid = expr.span.start
+  const ptrLocal = `__iflet_ptr_${uid}`
+  const parts: string[] = []
+  const condWat = exprToWat(expr.condition, ctx)
+
+  if (bindingNames.length >= 2) {
+    // Slice optional: (ptr, len) — check ptr, bind both
+    const lenLocal = `__iflet_len_${uid}`
+    const components = splitV128Components(condWat, 2)
+    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
+    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    const bindWat = bindingNames.map((n, i) =>
+      `(local.set $${n} (local.get $${i === 0 ? ptrLocal : lenLocal}))`
+    ).join('\n')
+    if (elseBody) {
+      return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}) (else ${elseBody}))`
+    }
+    return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}))`
+  }
+
+  // Pointer optional: single i32
+  parts.push(`(local.set $${ptrLocal} ${condWat})`)
+  const bindWat = `(local.set $${bindingNames[0]} (local.get $${ptrLocal}))`
+  if (elseBody) {
+    return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}) (else ${elseBody}))`
+  }
+  return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}))`
+}
+
 function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
+  if (expr.pattern) {
+    return ifLetToWat(expr, ctx)
+  }
+
   const cond = exprToWat(expr.condition, ctx)
   const thenBody = bodyToWat(expr.thenBranch, ctx)
 
@@ -1357,9 +1539,19 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
-        const valParts = splitV128Components(value, 2)
-        parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
-        parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+        // For multi-statement expressions (coalesce, if-let), use temp locals
+        const isSimple = value.startsWith('(') && !value.includes('\n')
+        if (isSimple) {
+          const valParts = splitV128Components(value, 2)
+          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
+          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+        } else {
+          const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
+          const tmpLen = `__arr_tmp_len_${elem.span.start}`
+          parts.push(`${value}\n(local.set $${tmpLen})\n(local.set $${tmpPtr})`)
+          parts.push(`(i32.store (i32.const ${base}) (local.get $${tmpPtr}))`)
+          parts.push(`(i32.store (i32.const ${base + 4}) (local.get $${tmpLen}))`)
+        }
       } else {
         parts.push(storeToMemory(elemType, `(i32.const ${base})`, value))
       }
@@ -2201,16 +2393,76 @@ function collectLocals(
     if (stmt.kind === 'AssignmentStmt') {
       visitExpr(stmt.value)
     }
+    // Handle let statements that may have coalesce/if expressions in value
+    if (stmt.kind === 'LetStmt' && stmt.value) {
+      visitExpr(stmt.value)
+    }
   }
 
   function visitExpr(expr: AST.Expr) {
     if (expr.kind === 'IfExpr') {
+      // Collect if-let binding locals
+      if (expr.pattern && expr.pattern.kind === 'binding' && expr.condition.kind === 'IndexExpr') {
+        const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+        if (elemType) {
+          const name = expr.pattern.name
+          const wasmTypes = typeToWasm(elemType)
+          if (wasmTypes.length === 1) {
+            locals.push({ name, type: wasmTypes[0] })
+            ctx.locals.set(name, [name])
+          } else {
+            const flattened = flattenType(elemType)
+            const names = flattened.map((f, i) => {
+              const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
+              locals.push({ name: fieldName, type: f.wasmType })
+              return fieldName
+            })
+            ctx.locals.set(name, names)
+          }
+          // Temporary locals for bounds checking
+          const uid = expr.span.start
+          locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
+          locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
+          locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
+          ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
+          ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
+          ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
+        }
+      }
       visitBody(expr.thenBranch)
       for (const elif of expr.elifs) {
         visitBody(elif.thenBranch)
       }
       if (expr.else_) {
         visitBody(expr.else_)
+      }
+    }
+    if (expr.kind === 'CoalesceExpr') {
+      const uid = expr.span.start
+      if (expr.expr.kind === 'IndexExpr') {
+        locals.push({ name: `__coal_idx_${uid}`, type: 'i32' })
+      }
+      locals.push({ name: `__coal_ptr_${uid}`, type: 'i32' })
+      locals.push({ name: `__coal_len_${uid}`, type: 'i32' })
+      if (expr.expr.kind === 'IndexExpr') {
+        ctx.locals.set(`__coal_idx_${uid}`, [`__coal_idx_${uid}`])
+      }
+      ctx.locals.set(`__coal_ptr_${uid}`, [`__coal_ptr_${uid}`])
+      ctx.locals.set(`__coal_len_${uid}`, [`__coal_len_${uid}`])
+      visitExpr(expr.expr)
+      visitExpr(expr.fallback)
+    }
+    if (expr.kind === 'ArrayExpr') {
+      for (const elem of expr.elements) {
+        if (elem.kind === 'CoalesceExpr' || elem.kind === 'IfExpr') {
+          const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
+          const tmpLen = `__arr_tmp_len_${elem.span.start}`
+          locals.push({ name: tmpPtr, type: 'i32' })
+          locals.push({ name: tmpLen, type: 'i32' })
+          ctx.locals.set(tmpPtr, [tmpPtr])
+          ctx.locals.set(tmpLen, [tmpLen])
+        }
+        visitExpr(elem)
       }
     }
     if (expr.kind === 'MatchExpr') {
@@ -2220,6 +2472,18 @@ function collectLocals(
     }
     if (expr.kind === 'GroupExpr') {
       visitExpr(expr.expr)
+    }
+    if (expr.kind === 'CallExpr') {
+      for (const arg of expr.args) {
+        if (arg.value) visitExpr(arg.value)
+      }
+    }
+    if (expr.kind === 'UnaryExpr') {
+      visitExpr(expr.operand)
+    }
+    if (expr.kind === 'BinaryExpr') {
+      visitExpr(expr.left)
+      visitExpr(expr.right)
     }
   }
 

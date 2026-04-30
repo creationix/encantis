@@ -97,8 +97,6 @@ Both single and double quoted strings are equivalent. String literals live in th
 
 #### Template Literals
 
-> **Status: Not yet implemented.**
-
 Template literals use backticks and `${expr}` interpolation to combine static text with runtime values:
 
 ```ents
@@ -317,6 +315,34 @@ let mp: [*]u8 = ...
 mp[i]                // caller must ensure bounds
 mp.wid               // 1 (sizeof(u8))
 ```
+
+#### Optional Types
+
+Pointers and slices can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
+
+```ents
+?*T              // optional pointer — either valid *T or none (ptr=0)
+?[]T             // optional slice — either valid []T or none (ptr=0)
+?*[N]T           // optional pointer to array
+?[*]T            // optional many-pointer
+```
+
+Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
+
+Optional values cannot be used directly where non-optional values are expected. You must resolve them using `if let` or `??`:
+
+```ents
+let p: ?*u8 = get_optional_ptr()
+p.*                              // type error: ?*u8 is not *u8
+if let val = p { val.* }         // OK: unwrapped inside if-let
+p ?? default_ptr                 // OK: resolved with fallback
+```
+
+**Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
+
+**Data section layout:** To ensure address `0` is never a valid data pointer, the compiler reserves the first 4 bytes of linear memory when any optional types are used and the first data entry would otherwise start at offset 0.
+
+**Assignability:** Non-optional values widen to optional implicitly (`*T` → `?*T`), but the reverse requires explicit unwrapping.
 
 #### Mutability
 
@@ -1008,12 +1034,14 @@ Only many-pointers are allowed to do pointer arithmetic. Single pointers and fat
 #### Indexing
 
 ```ents
-let arr:*i32 = ...
+let arr:[*]i32 = ...
 arr[2]          // offset by 2 elements (8 bytes for i32)
 (arr + 8).*     // equivalent to arr[2]
 ```
 
 Note: `ptr + n` offsets by bytes, `ptr[n]` offsets by elements.
+
+For arrays and slices with known bounds, runtime indexing is bounds-checked. See [4.7 Bounds-Checked Indexing](#47-bounds-checked-indexing) for details on how `if let`, `??`, and optional types interact with indexing.
 
 #### Type-Punned Memory Access
 
@@ -1029,7 +1057,95 @@ ptr.(MyStruct)
 ptr.([]u8)
 ```
 
-### 4.7 Slice/Range Syntax
+### 4.7 Bounds-Checked Indexing
+
+Array and slice indexing follows strict rules based on whether the index is known at compile time:
+
+**Compile-time constant indices** are statically verified against the known array length:
+
+```ents
+data table = [10, 20, 30, 40]    // *[4]i32
+let x = table[0]                  // OK: 0 < 4
+let y = table[3]                  // OK: 3 < 4
+let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
+```
+
+**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds:
+
+```ents
+data names:[][]u8 = ["Alice", "Bob", "Charlie"]
+let name = names[i]               // type: ?[]u8 (optional — might be OOB)
+```
+
+The optional result must be resolved before use via `if let` or `??`:
+
+```ents
+// Resolve with fallback value
+let name = names[i] ?? "Unknown"  // type: []u8
+
+// Resolve with branching
+if let name = names[i] {
+  // name is []u8 here, guaranteed in bounds
+  print(name)
+} else {
+  print("not found")
+}
+```
+
+**Primitive element types** cannot be optional (no sentinel value exists for `u8`, `i32`, etc.), so runtime indexing into arrays of primitives requires immediate resolution:
+
+```ents
+data values = [1, 2, 3, 4]
+let v = values[i]                 // type error: no ?i32 type exists
+let v = values[i] ?? 0            // OK: resolved immediately
+if let v = values[i] { ... }      // OK: resolved with branching
+```
+
+**Explicit optional storage:** When inferring an optional type, you can also store the result for later resolution:
+
+```ents
+let msg = strings[idx]            // inferred as ?[]u8
+// ... later ...
+let resolved = msg ?? "default"   // resolve when needed
+```
+
+This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check.
+
+#### The `??` Operator
+
+The coalesce operator `??` resolves an optional or out-of-bounds index with a fallback value:
+
+```ents
+let name = names[i] ?? "Unknown"     // bounds-checked index with fallback
+let ptr = optional_ptr ?? default    // null-checked pointer with fallback
+```
+
+The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type.
+
+#### `if let` Bindings
+
+`if let` checks an optional value or performs a bounds-checked index, binding the result on success:
+
+```ents
+// Bounds-checked indexing
+if let name = names[i] {
+  // name is []u8 — guaranteed in bounds
+  print(name)
+}
+
+// Optional pointer unwrapping
+if let data = entry.dynamic {
+  // data is *Dynamic — guaranteed non-null
+  process(data)
+} else {
+  // entry.dynamic was none (ptr=0)
+  handle_missing()
+}
+```
+
+`if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
+
+### 4.8 Slice/Range Syntax
 
 > **Status: Not yet implemented.**
 
@@ -1333,24 +1449,45 @@ The convention distinguishes patterns by case:
 
 ### 6.4 If-Let Bindings
 
-> **Status: Parsed but not yet implemented** — the pattern is ignored in checker/codegen.
+`if let` has two primary uses: bounds-checked indexing and optional unwrapping.
 
-Use `if let` when you only need to check for one variant:
+#### Bounds-Checked Indexing
+
+`if let` with an index expression performs a runtime bounds check. If the index is in range, the element is loaded and bound to the variable. If out of bounds, the else branch executes:
 
 ```ents
-if let RGB(r, g, b) = color {
-  // only runs if color is RGB
-  draw_rgb(r, g, b)
-}
+data names = ["Alice", "Bob", "Charlie"]
 
-// With else branch
-if let Some(value) = maybe_result {
-  process(value)
+if let name = names[i] {
+  // name is []u8 — index was in bounds
+  print(name)
 } else {
-  handle_missing()
+  print("index out of range")
 }
+```
 
-// Chained with elif let
+For arrays with compile-time known lengths (e.g., `*[N]T`), the bounds check compares the runtime index against the constant length. For slices (`[]T`), it compares against the runtime `.len` field.
+
+#### Optional Unwrapping
+
+`if let` with an optional expression (`?*T` or `?[]T`) performs a null check. If the pointer is non-zero, the value is bound; otherwise the else branch executes:
+
+```ents
+type Entry = (name: []u8, next: ?*Entry)
+
+if let next = entry.next {
+  // next is *Entry — guaranteed non-null
+  process(next)
+}
+```
+
+#### Pattern Matching
+
+> **Status: Not yet implemented** — pattern matching with constructors depends on enum type support.
+
+`if let` will also support constructor patterns for enum destructuring:
+
+```ents
 if let RGB(r, g, b) = color {
   draw_rgb(r, g, b)
 } elif let HSL(h, s, l) = color {
@@ -1359,8 +1496,6 @@ if let RGB(r, g, b) = color {
   draw_default()
 }
 ```
-
-This is syntactic sugar for a match with a single pattern and wildcard fallthrough. Use `if let` when you care about one specific variant; use `match` when handling multiple variants or when exhaustiveness checking is valuable.
 
 ### 6.5 Let Destructuring
 

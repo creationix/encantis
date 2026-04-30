@@ -73,6 +73,7 @@ export interface PointerRT {
   pointee: ResolvedType
   boundary?: boolean // true for ^T - can only be compared, not dereferenced
   mutable?: boolean  // true for *mut T, false/undefined for *T (const)
+  optional?: boolean // true for ?*T - nullable pointer (0 = none)
 }
 
 // Slice type: []T or []mut T (fat pointer - contains pointer + length)
@@ -80,6 +81,7 @@ export interface SliceRT {
   kind: 'slice'
   element: ResolvedType
   mutable?: boolean  // true for []mut T, false/undefined for []T (const)
+  optional?: boolean // true for ?[]T - nullable slice (ptr=0 = none)
 }
 
 // Array size specifier - can be a number or a framing marker
@@ -192,17 +194,43 @@ export function primitive(name: PrimitiveName): PrimitiveRT {
   return { kind: 'primitive', name }
 }
 
-export function pointer(pointee: ResolvedType, boundary?: boolean, mutable?: boolean): PointerRT {
+export function pointer(pointee: ResolvedType, boundary?: boolean, mutable?: boolean, optional?: boolean): PointerRT {
   const result: PointerRT = { kind: 'pointer', pointee }
   if (boundary) result.boundary = true
   if (mutable) result.mutable = true
+  if (optional) result.optional = true
   return result
 }
 
-export function slice(element: ResolvedType, mutable?: boolean): SliceRT {
+export function slice(element: ResolvedType, mutable?: boolean, optional?: boolean): SliceRT {
   const result: SliceRT = { kind: 'slice', element }
   if (mutable) result.mutable = true
+  if (optional) result.optional = true
   return result
+}
+
+export function optionalOf(type: ResolvedType): ResolvedType {
+  if (type.kind === 'pointer') return { ...type, optional: true }
+  if (type.kind === 'slice') return { ...type, optional: true }
+  return type
+}
+
+export function isOptional(type: ResolvedType): boolean {
+  return (type.kind === 'pointer' || type.kind === 'slice') && !!type.optional
+}
+
+export function unwrapOptional(type: ResolvedType): ResolvedType {
+  if (type.kind === 'pointer' && type.optional) {
+    const result: PointerRT = { ...type }
+    delete result.optional
+    return result
+  }
+  if (type.kind === 'slice' && type.optional) {
+    const result: SliceRT = { ...type }
+    delete result.optional
+    return result
+  }
+  return type
 }
 
 export function array(element: ResolvedType, sizes: ArraySize[] | null): ArrayRT {
@@ -418,12 +446,12 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
 
     case 'pointer': {
       const bPtr = b as PointerRT
-      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && typeEquals(a.pointee, bPtr.pointee)
+      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && !!a.optional === !!bPtr.optional && typeEquals(a.pointee, bPtr.pointee)
     }
 
     case 'slice': {
       const bSlice = b as SliceRT
-      return !!a.mutable === !!bSlice.mutable && typeEquals(a.element, bSlice.element)
+      return !!a.mutable === !!bSlice.mutable && !!a.optional === !!bSlice.optional && typeEquals(a.element, bSlice.element)
     }
 
     case 'array': {
@@ -517,6 +545,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Exact match (after unwrapping aliases)
   if (typeEquals(t, s)) return lossless(true)
+
+  // Non-optional widens to optional: *T → ?*T, []T → ?[]T
+  if (isOptional(t) && !isOptional(s)) {
+    return typeAssignResult(unwrapOptional(t), s)
+  }
 
   // Comptime int can coerce to any integer type that fits
   // Not reinterpretable: comptime has no bytes, concrete type does
@@ -707,10 +740,17 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Slice coercion
   if (t.kind === 'slice' && s.kind === 'slice') {
+    // Optional slice cannot implicitly narrow to non-optional
+    if (s.optional && !t.optional) return INCOMPATIBLE
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.element)
     if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
     return lossless(elemResult.reinterpret)
+  }
+
+  // Optional pointer cannot implicitly narrow to non-optional
+  if (t.kind === 'pointer' && s.kind === 'pointer' && s.optional && !t.optional) {
+    return INCOMPATIBLE
   }
 
   // Mutable pointer coerces to const pointer: *mut T -> *T (widening)
@@ -840,19 +880,21 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return t.name
 
     case 'pointer': {
+      const opt = t.optional ? '?' : ''
       // Many-pointer: [*]T or [*]mut T
       if (t.pointee.kind === 'array' && t.pointee.sizes === null) {
         const mut = t.mutable ? 'mut ' : ''
-        return `[*]${mut}${typeToString(t.pointee.element, opts)}`
+        return `${opt}[*]${mut}${typeToString(t.pointee.element, opts)}`
       }
       const prefix = t.boundary ? '^' : '*'
       const mut = t.mutable ? 'mut ' : ''
-      return `${prefix}${mut}${typeToString(t.pointee, opts)}`
+      return `${opt}${prefix}${mut}${typeToString(t.pointee, opts)}`
     }
 
     case 'slice': {
+      const opt = t.optional ? '?' : ''
       const mut = t.mutable ? 'mut ' : ''
-      return `[]${mut}${typeToString(t.element, opts)}`
+      return `${opt}[]${mut}${typeToString(t.element, opts)}`
     }
 
     case 'array': {

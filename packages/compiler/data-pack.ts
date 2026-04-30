@@ -652,12 +652,22 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
       const bytes = serializeInt(lit.value, elementType.name)
       if (bytes) return bytes
     }
+    // Default comptime_int to i32
+    if (elementType.kind === 'comptime_int') {
+      const bytes = serializeInt(lit.value, 'i32')
+      if (bytes) return bytes
+    }
     throw new TypeError(`Cannot serialize int literal to type ${elementType.kind}`)
   }
 
   if (lit.kind === 'float') {
     if (elementType.kind === 'primitive') {
       const bytes = serializeFloat(lit.value, elementType.name)
+      if (bytes) return bytes
+    }
+    // Default comptime_float to f64
+    if (elementType.kind === 'comptime_float') {
+      const bytes = serializeFloat(lit.value, 'f64')
       if (bytes) return bytes
     }
     throw new TypeError(`Cannot serialize float literal to type ${elementType.kind}`)

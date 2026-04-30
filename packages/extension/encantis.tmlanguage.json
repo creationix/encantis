@@ -126,6 +126,31 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.interpolated.encantis",
+          "begin": "`",
+          "end": "`",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.template.begin.encantis" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.template.end.encantis" } },
+          "patterns": [
+            {
+              "name": "meta.template.expression.encantis",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.encantis" } },
+              "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.encantis" } },
+              "patterns": [
+                { "include": "#comments" },
+                { "include": "#keywords" },
+                { "include": "#operators" },
+                { "include": "#strings" },
+                { "include": "#constants" },
+                { "include": "#variables" }
+              ]
+            },
+            { "include": "#escape-sequences" }
+          ]
+        },
+        {
           "name": "string.quoted.other.hex.encantis",
           "begin": "x\"",
           "end": "\""

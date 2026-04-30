@@ -242,7 +242,20 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
   }
 
   // Build meta info (includes type checking)
-  const meta = buildMeta(parseResult.module, text, { srcPath: textDocument.uri });
+  let meta: MetaOutput;
+  try {
+    meta = buildMeta(parseResult.module, text, { srcPath: textDocument.uri });
+  } catch (e) {
+    // Never crash on partially written code — show the error as a diagnostic
+    diagnostics.push({
+      severity: DiagnosticSeverity.Error,
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      message: `Internal compiler error: ${e instanceof Error ? e.message : String(e)}`,
+      source: 'encantis',
+    });
+    connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+    return;
+  }
 
   analysisCache.set(textDocument.uri, { text, meta });
 
@@ -494,8 +507,6 @@ connection.languages.semanticTokens.on((params) => {
       const typeStr = meta.types[hint.type]?.type ?? '';
       if (typeStr.startsWith('(') && typeStr.includes('->')) {
         tokenType = 1; // function
-      } else if (hint.value && (hint.value.startsWith('0x') || hint.value.startsWith('('))) {
-        tokenType = 5; // string (data literals)
       } else if (/^[iuf]\d+$|^bool$/.test(typeStr)) {
         // Primitive types (i32, u8, f64, bool, etc.) - likely a numeric literal
         tokenType = 6; // number

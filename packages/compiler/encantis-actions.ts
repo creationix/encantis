@@ -561,6 +561,75 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   // []mut T - mutable slice
+  BaseType_optManyPointerMut(_q, _brackets, _mut, element) {
+    const result: AST.IndexedType = {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      mutable: true,
+      optional: true,
+      span: span(this),
+    }
+    result.manyPointer = true
+    return result
+  },
+
+  BaseType_optManyPointer(_q, _brackets, element) {
+    const result: AST.IndexedType = {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      optional: true,
+      span: span(this),
+    }
+    result.manyPointer = true
+    return result
+  },
+
+  BaseType_optSliceMut(_q, _brackets, _mut, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      mutable: true,
+      optional: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  BaseType_optSlice(_q, _brackets, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      optional: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  BaseType_optPointerMut(_q, _star, _mut, type) {
+    return {
+      kind: 'PointerType',
+      pointee: type.toAST(),
+      mutable: true,
+      optional: true,
+      span: span(this),
+    } as AST.PointerType
+  },
+
+  BaseType_optPointer(_q, _star, type) {
+    return {
+      kind: 'PointerType',
+      pointee: type.toAST(),
+      optional: true,
+      span: span(this),
+    } as AST.PointerType
+  },
+
   BaseType_sliceMut(_brackets, _mut, element) {
     return {
       kind: 'IndexedType',
@@ -977,6 +1046,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
   // ============================================================================
 
   Expr(expr): AST.Expr {
+    return expr.toAST()
+  },
+
+  CoalesceExpr_coalesce(left, _op, right): AST.CoalesceExpr {
+    return {
+      kind: 'CoalesceExpr',
+      expr: left.toAST(),
+      fallback: right.toAST(),
+      span: span(this),
+    } as AST.CoalesceExpr
+  },
+
+  CoalesceExpr(expr) {
     return expr.toAST()
   },
 

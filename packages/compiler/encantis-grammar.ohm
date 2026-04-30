@@ -128,7 +128,13 @@ Encantis {
 
   // Base types (atoms that can compose into function types)
   // Note: more specific patterns must come before general ones (PEG ordering)
-  BaseType = "[" arrayFramings "]" mut Type     -- arrayMut
+  BaseType = "?" "[*]" mut Type                 -- optManyPointerMut
+           | "?" "[*]" Type                    -- optManyPointer
+           | "?" "[]" mut Type                 -- optSliceMut
+           | "?" "[]" Type                     -- optSlice
+           | "?" "*" mut Type                  -- optPointerMut
+           | "?" "*" Type                      -- optPointer
+           | "[" arrayFramings "]" mut Type     -- arrayMut
            | "[" arrayFramings "]" Type        -- array
            | "[*]" mut Type                    -- manyPointerMut
            | "[*]" Type                        -- manyPointer
@@ -241,7 +247,11 @@ Encantis {
   // Expressions (by precedence, lowest to highest)
   // ============================================================================
 
-  Expr = OrExpr
+  Expr = CoalesceExpr
+
+  // Coalesce: arr[i] ?? default (bounds-checked index with fallback)
+  CoalesceExpr = PostfixExpr "??" OrExpr  -- coalesce
+               | OrExpr
 
   // Logical OR (lowest precedence)
   OrExpr = OrExpr "||" AndExpr  -- or

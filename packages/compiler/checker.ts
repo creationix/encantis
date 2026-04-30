@@ -26,6 +26,7 @@ import {
   named,
   forwardRef,
   typeToString,
+  typeEquals,
   comptimeIntFits,
   typeAssignable,
   unwrap,
@@ -35,6 +36,9 @@ import {
   byteSize,
   isFixedSizes,
   totalElements,
+  optionalOf,
+  isOptional,
+  unwrapOptional,
 } from './types'
 
 // === Symbol Table ===
@@ -266,7 +270,7 @@ export function concretizeType(
       }
 
     case 'slice':
-      return slice(concretizeType(u.element, opts), u.mutable)
+      return slice(concretizeType(u.element, opts), u.mutable, u.optional)
 
     case 'array': {
       // Concretize element type
@@ -351,6 +355,7 @@ class CheckContext {
   errors: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
+  insideIfLetCondition = false
 
   // Cache for resolved type aliases
   typeCache = new Map<string, ResolvedType>()
@@ -1252,12 +1257,16 @@ class CheckContext {
 
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
     switch (pattern.kind) {
-      case 'IdentPattern':
+      case 'IdentPattern': {
+        const existing = this.lookup(pattern.name)
+        if (existing) {
+          this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
+        }
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
-        // Record type at pattern offset for LSP
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
         break
+      }
       case 'TuplePattern': {
         // Unwrap named types to get the underlying tuple
         const unwrappedType = unwrap(type)
@@ -1451,6 +1460,20 @@ class CheckContext {
       return slice(innerType)
     }
 
+    // Check if all are pointers to fixed arrays with the same element type
+    // e.g., *[8]u8, *[5]u8, *[3]u8 → unify to []u8 if sizes differ, keep *[N]u8 if same
+    if (types.every((t) => t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes?.length === 1 && typeof t.pointee.sizes[0] === 'number')) {
+      const ptrs = types as { kind: 'pointer'; pointee: ArrayRT }[]
+      const elemType = ptrs[0].pointee.element
+      if (ptrs.every((p) => typeEquals(p.pointee.element, elemType))) {
+        const sizes = ptrs.map((p) => p.pointee.sizes?.[0] as number)
+        if (sizes.every((s) => s === sizes[0])) {
+          return this.concretize(types[0])
+        }
+        return slice(elemType)
+      }
+    }
+
     // Mixed or other types - concretize first element as fallback
     return this.concretize(types[0])
   }
@@ -1463,19 +1486,21 @@ class CheckContext {
         return primitive(type.name)
 
       case 'PointerType':
-        return pointer(this.resolveType(type.pointee), false, type.mutable)
+        return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
 
         // Many-pointer [*]T or [*]mut T
         if (type.manyPointer) {
-          return manyPointer(element, type.mutable)
+          const result = manyPointer(element, type.mutable)
+          if (type.optional) result.optional = true
+          return result
         }
 
         // Slice []T or []mut T
         if (type.size === null && type.specifiers.length === 0) {
-          return slice(element, type.mutable)
+          return slice(element, type.mutable, type.optional)
         }
 
         // Build sizes array from size and specifiers
@@ -1584,6 +1609,14 @@ class CheckContext {
   // This allows comptime types to resolve based on context
   // Optional errorContext is prepended to error messages (e.g., "argument 1: ")
   checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
+    // Bidirectional: propagate expected type through & (ref) expressions
+    if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
+      this.checkExpr(expr.operand, expected.pointee)
+      const result = pointer(expected.pointee, false, expected.mutable)
+      this.types.set(typeKey(expr.span.start, expr.kind), result)
+      return result
+    }
+
     const inferred = this.inferExprInner(expr)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
@@ -1827,6 +1860,9 @@ class CheckContext {
 
       case 'IndexExpr':
         return this.inferIndex(expr)
+
+      case 'CoalesceExpr':
+        return this.inferCoalesce(expr)
 
       case 'TupleExpr':
         return this.inferTuple(expr)
@@ -2360,6 +2396,17 @@ class CheckContext {
     this.inferExpr(expr.index)
 
     if (objType.kind === 'slice') {
+      const idx = this.evalComptimeExpr(expr.index)
+      if (idx === null || idx.kind !== 'int') {
+        // Runtime index: return optional if element can be optional, error otherwise
+        const elem = objType.element
+        if (elem.kind === 'pointer' || elem.kind === 'slice') {
+          return optionalOf(elem)
+        }
+        if (!this.insideIfLetCondition) {
+          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+        }
+      }
       return objType.element
     }
 
@@ -2395,6 +2442,23 @@ class CheckContext {
           const remainingDims = arrayType.sizes.slice(1)
           return pointer(array(arrayType.element, remainingDims))
         }
+        // Fixed-size pointer array *[N]T: check bounds
+        if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+          const n = arrayType.sizes[0]
+          const idx = this.evalComptimeExpr(expr.index)
+          if (idx === null || idx.kind !== 'int') {
+            // Runtime index: return optional if element can be optional, error otherwise
+            const elem = arrayType.element
+            if (elem.kind === 'pointer' || elem.kind === 'slice') {
+              return optionalOf(elem)
+            }
+            if (!this.insideIfLetCondition) {
+              this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+            }
+          } else if (idx.value < 0n || idx.value >= BigInt(n)) {
+            this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${n}]${typeToString(arrayType.element)}`)
+          }
+        }
         return arrayType.element
       }
       return objType.pointee
@@ -2402,6 +2466,33 @@ class CheckContext {
 
     this.error(expr.span.start, `cannot index type ${typeToString(objType)} — indexing requires an array, slice, or pointer type`)
     return primitive('i32')
+  }
+
+  inferCoalesce(expr: AST.CoalesceExpr): ResolvedType {
+    // Infer the left expression — allow runtime indexing for primitive elements
+    this.insideIfLetCondition = true
+    const leftType = this.inferExpr(expr.expr)
+    this.insideIfLetCondition = false
+
+    // Determine the unwrapped type
+    let elemType: ResolvedType
+    if (isOptional(leftType)) {
+      elemType = unwrapOptional(leftType)
+    } else if (expr.expr.kind === 'IndexExpr') {
+      // Primitive element: leftType is already the unwrapped element type
+      elemType = leftType
+    } else {
+      this.error(expr.span.start, '?? requires an optional expression or bounds-checked index')
+      elemType = leftType
+    }
+
+    // Check fallback type is compatible (checkExpr handles coercion)
+    this.checkExpr(expr.fallback, elemType)
+
+    // Record element type for codegen
+    this.types.set(typeKey(expr.span.start, 'CoalesceBinding'), elemType)
+
+    return elemType
   }
 
   inferTuple(expr: AST.TupleExpr): ResolvedType {
@@ -2431,12 +2522,9 @@ class CheckContext {
       return comptimeList([])
     }
 
-    // Infer element types
+    // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
-
-    // Use first element's type as the element type (arrays are homogeneous)
-    // TODO: unify element types properly
-    const elementType = elemTypes[0]
+    const elementType = this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(elementType, expr.elements.length)
@@ -2465,6 +2553,9 @@ class CheckContext {
   }
 
   inferIf(expr: AST.IfExpr): ResolvedType {
+    if (expr.pattern) {
+      return this.inferIfLet(expr)
+    }
     this.inferExpr(expr.condition)
     const thenType = this.inferBody(expr.thenBranch)
     for (const elif of expr.elifs) {
@@ -2475,6 +2566,50 @@ class CheckContext {
       this.inferBody(expr.else_)
     }
     // Without an else branch, the expression can't produce a value
+    if (!expr.else_) return VOID
+    return thenType
+  }
+
+  inferIfLet(expr: AST.IfExpr): ResolvedType {
+    const pattern = expr.pattern
+    if (!pattern || pattern.kind !== 'binding') {
+      this.error(expr.span.start, 'if let only supports simple bindings')
+      return VOID
+    }
+
+    // Infer the condition — allow runtime indexing for primitive elements
+    this.insideIfLetCondition = true
+    const condType = this.inferExpr(expr.condition)
+    this.insideIfLetCondition = false
+
+    // Determine the unwrapped type
+    let elemType: ResolvedType
+    if (isOptional(condType)) {
+      elemType = unwrapOptional(condType)
+    } else if (expr.condition.kind === 'IndexExpr') {
+      // Primitive element: condType is already the unwrapped element type
+      elemType = condType
+    } else {
+      this.error(expr.span.start, 'if let requires an optional expression or bounds-checked index')
+      elemType = condType
+    }
+
+    // Bind the pattern variable in a new scope for the then-branch
+    const prevScope = this.currentScope
+    this.currentScope = { parent: prevScope, symbols: new Map() }
+    this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
+    this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
+    this.recordDefinition(pattern.name, expr.condition.span.start)
+    const thenType = this.inferBody(expr.thenBranch)
+    this.currentScope = prevScope
+
+    for (const elif of expr.elifs) {
+      this.inferExpr(elif.condition)
+      this.inferBody(elif.thenBranch)
+    }
+    if (expr.else_) {
+      this.inferBody(expr.else_)
+    }
     if (!expr.else_) return VOID
     return thenType
   }

@@ -305,6 +305,7 @@ export type Expr =
   | CallExpr
   | MemberExpr
   | IndexExpr
+  | CoalesceExpr
   | IdentExpr
   | LiteralExpr
   | ArrayExpr
@@ -402,6 +403,13 @@ export interface IndexExpr extends BaseNode {
   kind: 'IndexExpr'
   object: Expr
   index: Expr
+}
+
+// expr ?? default — optional unwrap or bounds-checked index with fallback
+export interface CoalesceExpr extends BaseNode {
+  kind: 'CoalesceExpr'
+  expr: Expr
+  fallback: Expr
 }
 
 // identifier
@@ -567,6 +575,7 @@ export interface PointerType extends BaseNode {
   kind: 'PointerType'
   pointee: Type
   mutable?: boolean
+  optional?: boolean
 }
 
 // Index specifiers: framing markers for serialization
@@ -589,6 +598,7 @@ export interface IndexedType extends BaseNode {
   specifiers: IndexSpecifier[] // framing: ! and ? markers
   manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat slice)
   mutable?: boolean // true for []mut T, [*]mut T
+  optional?: boolean // true for ?[]T, ?[*]T
 }
 
 // () or (type, type) or (name: type, name: type)
@@ -665,6 +675,7 @@ export interface ASTVisitor {
   visitCallExpr?(node: CallExpr): void | false
   visitMemberExpr?(node: MemberExpr): void | false
   visitIndexExpr?(node: IndexExpr): void | false
+  visitCoalesceExpr?(node: CoalesceExpr): void | false
   visitIdentExpr?(node: IdentExpr): void | false
   visitLiteralExpr?(node: LiteralExpr): void | false
   visitArrayExpr?(node: ArrayExpr): void | false
@@ -846,6 +857,12 @@ function walkExpr(expr: Expr, visitor: ASTVisitor): void {
       if (visitor.visitIndexExpr?.(expr) !== false) {
         walkExpr(expr.object, visitor)
         walkExpr(expr.index, visitor)
+      }
+      break
+    case 'CoalesceExpr':
+      if (visitor.visitCoalesceExpr?.(expr) !== false) {
+        walkExpr(expr.expr, visitor)
+        walkExpr(expr.fallback, visitor)
       }
       break
     case 'IdentExpr':

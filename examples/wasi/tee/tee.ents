@@ -14,7 +14,7 @@ def stdin = 0:i32
 def stdout = 1:i32
 def stderr = 2:i32
 
-data errnos:[][]u8 = [
+data errnos = [
   "ESUCCESS", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL",
   "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG",
   "EBUSY", "ECANCELED", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET",
@@ -35,7 +35,7 @@ data errnos:[][]u8 = [
 
 func try(msg: []u8, code: i32) {
   return when code == 0
-  wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, &0:u32)
+  wasi_fd_write(stderr, `Error ${msg}: ${errnos[code] ?? "UNKNOWN"}\n`, &0)
   wasi_proc_exit(code)
 }
 

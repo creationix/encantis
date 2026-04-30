@@ -574,7 +574,7 @@ class MetaBuilder {
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
       const sizes = u.pointee.sizes
       if (sizes && sizes.length === 1 && typeof sizes[0] === 'number') {
-        return `0x${ref.ptr.toString(16)} (${sizes[0]} elements, ${ref.len} bytes)`
+        return `0x${ref.ptr.toString(16)} (${sizes[0]} elements)`
       }
     }
     return `0x${ref.ptr.toString(16)} (${ref.len} bytes)`
@@ -1072,6 +1072,18 @@ class MetaBuilder {
         break
 
       case 'IfExpr':
+        if (expr.pattern && expr.pattern.kind === 'binding' && expr.condition.kind === 'IndexExpr') {
+          const elemType = this.checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+          if (elemType && this.source) {
+            const src = this.source.slice(expr.span.start, expr.condition.span.end)
+            const letIdx = src.indexOf('let ')
+            if (letIdx >= 0) {
+              const nameOffset = expr.span.start + letIdx + 4
+              const typeIndex = this.typeRegistry.register(elemType)
+              this.addHint(nameOffset, expr.pattern.name.length, typeIndex)
+            }
+          }
+        }
         this.generateHintsForExpr(expr.condition)
         if (expr.thenBranch.kind === 'Block') {
           this.generateHintsForBlock(expr.thenBranch)
@@ -1085,6 +1097,11 @@ class MetaBuilder {
         if (expr.else_?.kind === 'Block') {
           this.generateHintsForBlock(expr.else_)
         }
+        break
+
+      case 'CoalesceExpr':
+        this.generateHintsForExpr(expr.expr)
+        this.generateHintsForExpr(expr.fallback)
         break
 
       case 'MatchExpr':
