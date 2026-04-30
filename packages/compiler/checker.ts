@@ -1657,6 +1657,26 @@ class CheckContext {
       return resolvedExpected
     }
 
+    // Handle mut literal against pointer/slice target: allocate in data section
+    if (
+      this.isDataLiteralExpr(expr) &&
+      this.exprHasMut(expr) &&
+      (expected.kind === 'pointer' && expected.pointee.kind === 'array' ||
+       expected.kind === 'slice')
+    ) {
+      const litSize = this.getLiteralSize(expr)
+      const arrType: ArrayRT = expected.kind === 'slice'
+        ? array(expected.element, [typeof litSize === 'number' ? litSize : 0])
+        : (expected.pointee as ArrayRT)
+      this.pendingLiterals.push({ id: expr.span.start, expr, type: arrType })
+      if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
+        (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+      }
+      // Record the expected type so codegen knows to emit ptr+len for slices
+      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      return expected
+    }
+
     // Handle array with inferred size against array with known size (e.g., RepeatExpr)
     // [_]T with initializer [value; N] should fill in size from N
     if (

@@ -5,8 +5,9 @@
 import "wasi_snapshot_preview1" (
   "fd_read" func wasi_fd_read(fd:i32, iovs:[][]u8, nread:*mut u32) -> i32
   "fd_write" func wasi_fd_write(fd:i32, iovs:[][]u8, nwritten:*mut u32) -> i32
-  "proc_exit" func wasi_proc_exit(code:i32)
 )
+
+export memory
 
 def stdin = 0:i32
 def stdout = 1:i32

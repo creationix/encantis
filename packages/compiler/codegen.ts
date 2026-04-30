@@ -1278,6 +1278,10 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
+    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    if (type?.kind === 'slice') {
+      return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+    }
     return `(i32.const ${ref.ptr})`
   }
   // Value array literal: emit elements directly as stack values
@@ -2320,14 +2324,19 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: Codegen
     // Parse input type for params
     if (imp.signature.input.kind === 'CompositeType') {
       for (const field of imp.signature.input.fields) {
-        const wasmTypes = typeToWasm(resolveAstType(field.type))
+        const resolved = resolveAstType(field.type)
+        const flattened = flattenType(resolved)
         if (field.ident) {
-          for (const wt of wasmTypes) {
-            params.push(`(param $${field.ident} ${wt})`)
+          if (flattened.length === 1) {
+            params.push(`(param $${field.ident} ${flattened[0].wasmType})`)
+          } else {
+            for (const f of flattened) {
+              params.push(`(param $${field.ident}_${f.suffix} ${f.wasmType})`)
+            }
           }
         } else {
-          for (const wt of wasmTypes) {
-            params.push(`(param ${wt})`)
+          for (const f of flattened) {
+            params.push(`(param ${f.wasmType})`)
           }
         }
       }

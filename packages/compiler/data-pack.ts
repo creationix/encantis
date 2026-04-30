@@ -268,7 +268,7 @@ function collectParts(
 ): number {
   const thisId = partIdCounter++
 
-  if (isMergedBrackets(type) || type.element.kind !== 'array') {
+  if (isMergedBrackets(type) || (type.element.kind !== 'array' && type.element.kind !== 'slice')) {
     // Merged or leaf: serialize as a single unit
     parts.push({
       id: thisId,
@@ -283,12 +283,15 @@ function collectParts(
     return thisId
   }
 
-  // Separate brackets: extract children first, then this part as pointer array
+  // Separate brackets or slice elements: extract children first, then this part as pointer array
   if (expr.kind !== 'ArrayExpr') {
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
-  const innerType = type.element as ArrayRT
+  // For slice elements []T, the inner type is an array to be allocated separately
+  const innerType: ArrayRT = type.element.kind === 'slice'
+    ? { kind: 'array', element: type.element.element, sizes: ['_'] }
+    : type.element as ArrayRT
   const childIds: number[] = []
 
   // Recursively collect children at depth+1
