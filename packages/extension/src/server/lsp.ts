@@ -538,6 +538,42 @@ function getWordAtOffset(text: string, offset: number): { word: string; start: n
     return { word: '*', start: offset, end: offset + 1 };
   }
 
+  // Handle template literal segments — find the segment boundaries
+  // Look backwards for ` or }  and forwards for ${ or `
+  if (ch !== '`' && ch !== '$' && ch !== '{' && ch !== '}') {
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    const lineEnd = text.indexOf('\n', offset);
+    const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+    const col = offset - lineStart;
+
+    // Check if we're inside a template literal by scanning for unmatched backtick
+    let inTemplate = false;
+    let segStart = -1;
+    for (let i = 0; i < col; i++) {
+      if (line[i] === '`' && (i === 0 || line[i - 1] !== '\\')) {
+        inTemplate = !inTemplate;
+        if (inTemplate) segStart = i + 1;
+      } else if (inTemplate && line[i] === '$' && line[i + 1] === '{') {
+        segStart = -1; // in interpolation
+      } else if (inTemplate && line[i] === '}' && segStart === -1) {
+        segStart = i + 1; // back in text segment
+      }
+    }
+    if (inTemplate && segStart !== -1 && segStart <= col) {
+      // Find segment end: ${ or `
+      let segEnd = col;
+      for (let i = col; i < line.length; i++) {
+        if (line[i] === '`' || (line[i] === '$' && line[i + 1] === '{')) {
+          segEnd = i;
+          break;
+        }
+      }
+      if (segEnd > segStart) {
+        return { word: text.slice(lineStart + segStart, lineStart + segEnd), start: lineStart + segStart, end: lineStart + segEnd };
+      }
+    }
+  }
+
   // Handle string literals using quote counting to determine if we're inside a string
   // Count quotes from line start to current position
   const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
