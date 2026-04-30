@@ -95,6 +95,37 @@ b"SGVsbG8="       // base64 bytes
 
 Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. The default type when no annotation is provided is `[_]u8` (fat slice with inferred length).
 
+#### Template Literals
+
+> **Status: Not yet implemented.**
+
+Template literals use backticks and `${expr}` interpolation to combine static text with runtime values:
+
+```ents
+`hello ${name}\n`
+`Error ${msg}: ${errnos[code]}\n`
+`${x} + ${y} = ${x + y}`
+```
+
+Template literals produce a **slice of slices** (`[][]u8`) — an array of fragments where static parts are const strings and interpolated parts are runtime `[]u8` values. This maps directly to scatter-gather I/O (WASI's `writev`/iovec pattern):
+
+```ents
+// Template literal:
+wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, nwritten)
+
+// Equivalent manual construction:
+data err_iovecs:[]mut []u8 = ["Error ", "", ": ", "", "\n"]
+err_iovecs[1] = msg
+err_iovecs[3] = errnos[code]
+wasi_fd_write(stderr, err_iovecs, nwritten)
+```
+
+**Implementation:** Each template literal gets a unique mutable iovec array in the data section. Static fragments (e.g., `"Error "`, `": "`, `"\n"`) are const and may be deduplicated across the program. The iovec array itself is `mut` (unique per source location) since its dynamic slots are filled at runtime.
+
+**Type coercion:** The default type is `[][]u8`, suitable for any function accepting a slice of slices. Other coercions may be supported in the future (e.g., concatenating into a single `[]u8` with a buffer).
+
+Each `${expr}` must produce a `[]u8` value. Non-string types would require an explicit conversion (no implicit `toString`).
+
 #### Boolean Literals
 
 ```ents

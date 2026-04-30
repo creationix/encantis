@@ -1122,19 +1122,19 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
   let elemSize = 1
   if (arrayType) {
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
-      elemSize = primitiveByteSize(arrayType.element) ?? 1
+      elemSize = byteSize(arrayType.element) ?? 1
     } else if (arrayType.kind === 'pointer' && arrayType.pointee.kind === 'array') {
       // Multi-dim *[N,M]T: stride is the full inner dimension size, not just the element
       const innerArray = arrayType.pointee
       if (innerArray.sizes && innerArray.sizes.length > 1) {
         const innerSizes = innerArray.sizes.slice(1)
         const innerTotal = innerSizes.reduce((a: number, b) => a * (typeof b === 'number' ? b : 1), 1)
-        elemSize = (primitiveByteSize(innerArray.element) ?? 1) * innerTotal
+        elemSize = (byteSize(innerArray.element) ?? 1) * innerTotal
       } else {
-        elemSize = primitiveByteSize(innerArray.element) ?? 1
+        elemSize = byteSize(innerArray.element) ?? 1
       }
     } else if (arrayType.kind === 'pointer') {
-      elemSize = primitiveByteSize(arrayType.pointee) ?? 1
+      elemSize = byteSize(arrayType.pointee) ?? 1
     }
   }
   const offset = elemSize === 1

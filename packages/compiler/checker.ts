@@ -866,15 +866,14 @@ class CheckContext {
     if (target.kind === 'MemberExpr' && target.member.kind === 'type') {
       return this.inferExpr(target.object)
     }
-    // Field access: obj.field = x — the write goes through whatever pointer/slice
-    // holds obj in memory. Walk inward to find it.
+    // Field access: obj.field = x — modifying a field of the element struct
+    // requires the container holding that struct to be mutable.
+    // arr[i].field = x → check arr's mutability (we're modifying arr's element)
+    // BUT: arr[i].field[j] = x → check field's type mutability (writing through a pointer in the field)
     if (target.kind === 'MemberExpr' && target.member.kind === 'field') {
       if (target.object.kind === 'IndexExpr') {
-        // arr[i].field = x — the element type determines mutability
-        const arrType = this.inferExpr(target.object.object)
-        const u = unwrap(arrType)
-        if (u.kind === 'pointer' && u.pointee.kind === 'array') return this.elementPointerType(u.pointee.element)
-        if (u.kind === 'slice') return this.elementPointerType(u.element)
+        // arr[i].field = x — modifying element struct, check outer container
+        return this.inferExpr(target.object.object)
       }
       if (target.object.kind === 'MemberExpr' && target.object.member.kind === 'deref') {
         return this.inferExpr(target.object.object)
@@ -883,13 +882,6 @@ class CheckContext {
     return null
   }
 
-  // If a type is a pointer or slice, return it as-is (it has its own mutability).
-  // Otherwise return null (value types don't have pointer-level mutability).
-  private elementPointerType(type: ResolvedType): ResolvedType | null {
-    const u = unwrap(type)
-    if (u.kind === 'pointer' || u.kind === 'slice') return u
-    return null
-  }
 
   // Check if an expression (or its inner literal) has the mut flag
   private exprHasMut(expr: AST.Expr): boolean {
@@ -1695,6 +1687,12 @@ class CheckContext {
       const arrType: ArrayRT = expected.kind === 'slice'
         ? array(expected.element, [typeof litSize === 'number' ? litSize : 0])
         : (expected.pointee as ArrayRT)
+      // Infer mut from target type — no need for explicit mut on the literal
+      const targetMut = (expected.kind === 'pointer' && expected.mutable) ||
+        (expected.kind === 'slice' && expected.mutable)
+      if (targetMut || this.exprHasMut(expr)) {
+        if ('mut' in expr) (expr as { mut?: boolean }).mut = true
+      }
       this.pendingLiterals.push({ id: expr.span.start, expr, type: arrType })
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start

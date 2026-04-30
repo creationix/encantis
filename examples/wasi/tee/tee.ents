@@ -17,7 +17,7 @@ def stderr = 2:i32
 data errnos:[][]u8 = [
   "ESUCCESS", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL",
   "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG",
-  "EBUSY", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET",
+  "EBUSY", "ECANCELED", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET",
   "EDEADLK", "EDESTADDRREQ", "EDOM", "EDQUOT", "EEXIST",
   "EFAULT", "EFBIG", "EHOSTUNREACH", "EIDRM", "EILSEQ",
   "EINPROGRESS", "EINTR", "EINVAL", "EIO", "EISCONN",
@@ -33,31 +33,57 @@ data errnos:[][]u8 = [
   "ENOTCAPABLE"
 ]
 
-data err_iovecs:[]mut[]u8 = mut ["", "", "\n"]
+data err_iovecs:[]mut[]u8 = ["Error ", "", ": ", "", "\n"]
 
-func die(msg:[]u8, code:i32) {
+func try(msg: []u8, code: i32) {
+  return when code == 0
   let nwritten = &0:u32
-  err_iovecs[0] = msg
-  err_iovecs[1] = errnos[code]
-  let res = wasi_fd_write(stderr, err_iovecs, nwritten)
+  err_iovecs[1] = msg
+  err_iovecs[3] = errnos[code]
+  wasi_fd_write(stderr, err_iovecs, nwritten)
   wasi_proc_exit(code)
 }
+
+// TODO: template literals — try2 would replace try
+// func try2(msg: []u8, code: i32) {
+//   return when code == 0
+//   wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, &0)
+//   wasi_proc_exit(code)
+// }
 
 export "_start" func main() {
   let nread = &0:u32
   let nwritten = &0:u32
-  let iovecs:[][]mut u8 = [mut [0:u8;1024]]
+  let iovecs:[]mut []mut u8 = [[0:u8; 1024]]
+  // Remember the original offset so we can restore it later
+  let buf_ptr = iovecs[0].ptr
   loop {
-    iovecs[0].len = 1024
-    let res = wasi_fd_read(stdin, iovecs, nread)
-    if res != 0 { die("Error reading from stdin: ", res) }
+    try("reading from stdin", wasi_fd_read(stdin, iovecs, nread))
     break when nread.* == 0
 
+    // Write all bytes to stdout
+    iovecs[0].ptr = buf_ptr
     iovecs[0].len = nread.*
-    res = wasi_fd_write(stdout, iovecs, nwritten)
-    if res != 0 { die("Error writing to stdout: ", res) }
+    loop {
+      try("writing to stdout", wasi_fd_write(stdout, iovecs, nwritten))
+      break when nwritten.* == iovecs[0].len
+      iovecs[0].ptr = iovecs[0].ptr + nwritten.*
+      iovecs[0].len = iovecs[0].len - nwritten.*
+    }
 
-    res = wasi_fd_write(stderr, iovecs, nwritten)
-    if res != 0 { wasi_proc_exit(res) }
+    // Write all bytes to stderr
+    iovecs[0].ptr = buf_ptr
+    iovecs[0].len = nread.*
+    loop {
+      let res = wasi_fd_write(stderr, iovecs, nwritten)
+      if res != 0 { wasi_proc_exit(res) }
+      break when nwritten.* == iovecs[0].len
+      iovecs[0].ptr = iovecs[0].ptr + nwritten.*
+      iovecs[0].len = iovecs[0].len - nwritten.*
+    }
+
+    // Reset to original
+    iovecs[0].ptr = buf_ptr
+    iovecs[0].len = 1024
   }
 }
