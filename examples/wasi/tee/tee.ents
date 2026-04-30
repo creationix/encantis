@@ -1,5 +1,6 @@
-// Poor man's tee
-// Outputs to stderr and stdout whatever comes in stdin
+#!/usr/bin/env encantis run
+// Poor man's tee — outputs to stderr and stdout whatever comes in stdin
+// Usage: echo "hello" | ./tee.ents
 
 import "wasi_snapshot_preview1" (
   "fd_read" func wasi_fd_read(fd:i32, iovs:[][]u8, nread:*mut u32) -> i32

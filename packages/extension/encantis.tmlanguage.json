@@ -3,6 +3,10 @@
   "name": "encantis",
   "patterns": [
     {
+      "name": "comment.line.shebang.encantis",
+      "match": "\\A#!.*$"
+    },
+    {
       "include": "#comments"
     },
     {

@@ -35,6 +35,12 @@ export interface ParseResult {
 export function parse(source: string, options: ParseOptions = {}): ParseResult {
   const { filePath, startRule } = options
 
+  // Blank out shebang line to preserve byte offsets
+  if (source.startsWith('#!')) {
+    const newline = source.indexOf('\n')
+    source = newline >= 0 ? ' '.repeat(newline) + source.slice(newline) : ' '.repeat(source.length)
+  }
+
   const matchResult = grammar.match(source, startRule)
 
   if (matchResult.failed()) {
