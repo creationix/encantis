@@ -400,12 +400,13 @@ export function serializeLiteral(
   expr: AST.Expr,
   targetType: ArrayRT,
   builder: DataSectionBuilder,
+  childRefs?: Map<number, DataRef>,
 ): DataRef {
   const skipDedup = isMutExpr(expr)
   if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
-    return serializeSeparate(expr, targetType, builder, skipDedup)
+    return serializeSeparate(expr, targetType, builder, skipDedup, childRefs)
   }
 }
 
@@ -573,6 +574,7 @@ function serializeSeparate(
   targetType: ArrayRT,
   builder: DataSectionBuilder,
   skipDedup: boolean,
+  refsMap?: Map<number, DataRef>,
 ): DataRef {
   if (expr.kind !== 'ArrayExpr') {
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
@@ -586,7 +588,11 @@ function serializeSeparate(
 
   for (const elem of expr.elements) {
     if (isSerializableExpr(elem)) {
-      childRefs.push(serializeLiteral(elem, innerType, builder))
+      const ref = serializeLiteral(elem, innerType, builder)
+      childRefs.push(ref)
+      if (refsMap && elem.span.start !== 0) {
+        refsMap.set(elem.span.start, ref)
+      }
     } else {
       childRefs.push({ ptr: 0, len: 0 })
     }
@@ -972,7 +978,7 @@ export function buildDataSection(literals: PendingLiteral[]): DataSectionResult 
 
   // Serialize each literal
   for (const lit of sorted) {
-    const ref = serializeLiteral(lit.expr, lit.type, dataBuilder)
+    const ref = serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs)
     literalRefs.set(lit.id, ref)
   }
 

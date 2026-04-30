@@ -572,10 +572,7 @@ class MetaBuilder {
       return `(ptr: 0x${ref.ptr.toString(16)}, len: ${ref.len})`
     }
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      const sizes = u.pointee.sizes
-      if (sizes && sizes.length === 1 && typeof sizes[0] === 'number') {
-        return `0x${ref.ptr.toString(16)} (${sizes[0]} elements)`
-      }
+      return `0x${ref.ptr.toString(16)}`
     }
     return `0x${ref.ptr.toString(16)} (${ref.len} bytes)`
   }
@@ -862,7 +859,7 @@ class MetaBuilder {
     }
   }
 
-  private generateHintsForExpr(expr: AST.Expr): void {
+  private generateHintsForExpr(expr: AST.Expr, contextType?: ResolvedType): void {
     // MemberExpr uses span.end as key to distinguish chained accesses (a.b vs a.b.c)
     const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
     const type = this.checkResult.types.get(typeKey(typeOffset, expr.kind))
@@ -880,10 +877,10 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
-        if (type) {
-          const typeIndex = this.typeRegistry.register(type)
+        const displayType = contextType ?? type
+        if (displayType) {
+          const typeIndex = this.typeRegistry.register(displayType)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          // Check if this is a def reference (AST has substituted the literal, but source has the def name)
           const sourceText = this.source.slice(expr.span.start, expr.span.end)
           const symbolIndex = this.symbolIndexByName.get(sourceText)
           const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
@@ -893,7 +890,7 @@ class MetaBuilder {
           if (!isDefRef) {
             const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
             if (entry) {
-              dataInfo = this.formatDataRef(entry, type)
+              dataInfo = this.formatDataRef(entry, displayType)
             }
           }
           this.addHint(expr.span.start, len, typeIndex, isDefRef ? symbolIndex : undefined, dataInfo)
@@ -1036,9 +1033,14 @@ class MetaBuilder {
           }
           this.addHint(expr.span.start, len, typeIndex, undefined, dataInfo)
         }
-        // Recurse into elements
+        // Recurse into elements with parent element type for context
+        const u = type ? unwrap(type) : null
+        const parentElemType = u?.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
+          : u?.kind === 'slice' ? u.element
+          : u?.kind === 'array' ? u.element
+          : null
         for (const elem of expr.elements) {
-          this.generateHintsForExpr(elem)
+          this.generateHintsForExpr(elem, parentElemType ?? undefined)
         }
         break
       }
