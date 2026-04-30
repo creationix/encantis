@@ -55,8 +55,8 @@ export "_start" func main() {
     loop {
       try("writing to stdout", wasi_fd_write(stdout, iovecs, nwritten))
       break when nwritten.* == iovecs[0].len
-      iovecs[0].ptr = iovecs[0].ptr + nwritten.*
-      iovecs[0].len = iovecs[0].len - nwritten.*
+      iovecs[0].ptr += nwritten.*
+      iovecs[0].len -= nwritten.*
     }
 
     // Write all bytes to stderr
@@ -66,8 +66,8 @@ export "_start" func main() {
       let res = wasi_fd_write(stderr, iovecs, nwritten)
       if res != 0 { wasi_proc_exit(res) }
       break when nwritten.* == iovecs[0].len
-      iovecs[0].ptr = iovecs[0].ptr + nwritten.*
-      iovecs[0].len = iovecs[0].len - nwritten.*
+      iovecs[0].ptr += nwritten.*
+      iovecs[0].len -= nwritten.*
     }
 
     // Reset to original

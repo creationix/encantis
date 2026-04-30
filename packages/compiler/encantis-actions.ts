@@ -1592,7 +1592,12 @@ export const semanticsActions: Record<string, SemanticAction> = {
         elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: span(node) } as AST.LiteralExpr)
       }
     }
-    pushText(templateTokenText(head), head)
+    const headText = templateTokenText(head)
+    if (headText.length > 0) {
+      const bytes = new TextEncoder().encode(headText)
+      const headSpan = span(head)
+      elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: { start: headSpan.start + 1, end: headSpan.end - 2 } } as AST.LiteralExpr)
+    }
     elements.push(firstExpr.toAST() as AST.Expr)
     const mids = middles.children
     const rests = restExprs.children
