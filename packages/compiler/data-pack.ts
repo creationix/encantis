@@ -402,7 +402,7 @@ export function serializeLiteral(
   builder: DataSectionBuilder,
 ): DataRef {
   const skipDedup = isMutExpr(expr)
-  if (isMergedBrackets(targetType) || targetType.element.kind !== 'array') {
+  if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
     return serializeSeparate(expr, targetType, builder, skipDedup)
@@ -578,21 +578,22 @@ function serializeSeparate(
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
-  const innerType = targetType.element as ArrayRT
+  const elemIsSlice = targetType.element.kind === 'slice'
+  const innerType: ArrayRT = elemIsSlice
+    ? { kind: 'array', element: targetType.element.element, sizes: ['_'] }
+    : targetType.element as ArrayRT
   const childRefs: DataRef[] = []
 
-  // Recurse to serialize each child element first
-  // Note: child elements inherit skipDedup from parent
   for (const elem of expr.elements) {
     const childRef = serializeLiteral(elem, innerType, builder)
     childRefs.push(childRef)
   }
 
-  // Now encode the pointer array based on outer type
-  const isSlice = targetType.sizes === null || (targetType.sizes.length === 0)
+  const isSlice = elemIsSlice || targetType.sizes === null || (targetType.sizes.length === 0)
   const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
 
-  return builder.internBytes(pointerBytes, skipDedup)
+  const ref = builder.internBytes(pointerBytes, skipDedup)
+  return { ptr: ref.ptr, len: childRefs.length }
 }
 
 // Encode an array of DataRefs as a pointer array
