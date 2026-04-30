@@ -967,16 +967,21 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     }
 
     // Struct field access: flatten to local.get with field suffix
-    if (expr.object.kind === 'IdentExpr') {
-      const baseName = expr.object.name
-      const fieldName = member.name
-      const wasmName = `${baseName}_${fieldName}`
-
-      // Check if it's in locals or params
-      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
+    // Supports chained access: r.origin.x → local.get $r_origin_x
+    const chain = resolveFieldChain(expr.object, member.name)
+    if (chain) {
+      const localNames = ctx.locals.get(chain.root) ?? ctx.params.get(chain.root)
       if (localNames) {
-        // Find the field index - for now assume sequential naming
-        return `(local.get $${wasmName})`
+        const wasmName = `${chain.root}_${chain.path}`
+        if (localNames.includes(wasmName)) {
+          return `(local.get $${wasmName})`
+        }
+        // Field might expand to multiple locals (nested struct)
+        const prefix = `${wasmName}_`
+        const matching = localNames.filter(n => n === wasmName || n.startsWith(prefix))
+        if (matching.length > 0) {
+          return matching.map(n => `(local.get $${n})`).join(' ')
+        }
       }
     }
 
@@ -987,6 +992,21 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 
   if (member.kind === 'index') {
     // Tuple positional access: .0, .1, etc.
+    const chain = resolveFieldChain(expr.object, String(member.value))
+    if (chain) {
+      const localNames = ctx.locals.get(chain.root) ?? ctx.params.get(chain.root)
+      if (localNames) {
+        const wasmName = `${chain.root}_${chain.path}`
+        if (localNames.includes(wasmName)) {
+          return `(local.get $${wasmName})`
+        }
+        const prefix = `${wasmName}_`
+        const matching = localNames.filter(n => n === wasmName || n.startsWith(prefix))
+        if (matching.length > 0) {
+          return matching.map(n => `(local.get $${n})`).join(' ')
+        }
+      }
+    }
     if (expr.object.kind === 'IdentExpr') {
       const baseName = expr.object.name
       const idx = member.value
@@ -1017,6 +1037,21 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   return exprToWat(expr.object, ctx)
 }
 
+function resolveFieldChain(expr: AST.Expr, field: string): { root: string; path: string } | null {
+  if (expr.kind === 'IdentExpr') {
+    return { root: expr.name, path: field }
+  }
+  if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
+    const inner = resolveFieldChain(expr.object, expr.member.name)
+    if (inner) return { root: inner.root, path: `${inner.path}_${field}` }
+  }
+  if (expr.kind === 'MemberExpr' && expr.member.kind === 'index') {
+    const inner = resolveFieldChain(expr.object, String(expr.member.value))
+    if (inner) return { root: inner.root, path: `${inner.path}_${field}` }
+  }
+  return null
+}
+
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
   const arrayTypeKey = object.kind === 'MemberExpr'
     ? typeKey(object.span.end, object.kind)
@@ -1027,7 +1062,15 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
       elemSize = primitiveByteSize(arrayType.element) ?? 1
     } else if (arrayType.kind === 'pointer' && arrayType.pointee.kind === 'array') {
-      elemSize = primitiveByteSize(arrayType.pointee.element) ?? 1
+      // Multi-dim *[N,M]T: stride is the full inner dimension size, not just the element
+      const innerArray = arrayType.pointee
+      if (innerArray.sizes && innerArray.sizes.length > 1) {
+        const innerSizes = innerArray.sizes.slice(1)
+        const innerTotal = innerSizes.reduce((a: number, b) => a * (typeof b === 'number' ? b : 1), 1)
+        elemSize = (primitiveByteSize(innerArray.element) ?? 1) * innerTotal
+      } else {
+        elemSize = primitiveByteSize(innerArray.element) ?? 1
+      }
     } else if (arrayType.kind === 'pointer') {
       elemSize = primitiveByteSize(arrayType.pointee) ?? 1
     }
@@ -1134,8 +1177,8 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
 
 function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   const inner = exprToWat(expr.expr, ctx)
-  const fromType = ctx.types.get(typeKey(expr.expr.span.start, expr.expr.kind))
-  const toType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const fromType = lookupExprType(expr.expr, ctx)
+  const toType = lookupExprType(expr, ctx)
 
   if (!fromType || !toType) return inner
 
@@ -1532,7 +1575,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   if (stmt.op !== '=') {
     const current = lvalueToWat(stmt.target, ctx)
     // Use target type for the operation, not value type
-    const targetKey = stmt.target.kind === 'MemberExpr'
+    const targetKey = (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr')
       ? typeKey(stmt.target.span.end, stmt.target.kind)
       : typeKey(stmt.target.span.start, stmt.target.kind)
     const targetType = ctx.types.get(targetKey)
@@ -1673,7 +1716,8 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
 
     let ptr = exprToWat(target.object, ctx)
     const idx = exprToWat(target.index, ctx)
-    const type = ctx.types.get(typeKey(target.span.start, target.kind))
+    const type = ctx.types.get(typeKey(target.span.end, target.kind))
+      ?? ctx.types.get(typeKey(target.span.start, target.kind))
     if (!type) {
       throw new Error(`Missing type for index store at offset ${target.span.start}`)
     }

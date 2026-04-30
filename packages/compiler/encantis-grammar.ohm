@@ -128,9 +128,13 @@ Encantis {
 
   // Base types (atoms that can compose into function types)
   // Note: more specific patterns must come before general ones (PEG ordering)
-  BaseType = "[" arrayFramings "]" Type        -- array
+  BaseType = "[" arrayFramings "]" mut Type     -- arrayMut
+           | "[" arrayFramings "]" Type        -- array
+           | "[*]" mut Type                    -- manyPointerMut
            | "[*]" Type                        -- manyPointer
+           | "[]" mut Type                     -- sliceMut
            | "[]" Type                         -- slice
+           | "*" mut Type                      -- pointerMut
            | "*" Type                          -- pointer
            | "^" Type                          -- boundaryPointer
            | "(" FieldList? ")"                -- composite
@@ -257,16 +261,16 @@ Encantis {
 
   compareOp = "==" | "!=" | "<=" | ">=" | "<" | ">"
 
-  // Bitwise OR
-  BitOrExpr = BitOrExpr "|" BitXorExpr  -- or
+  // Bitwise OR (must not match || which is logical OR)
+  BitOrExpr = BitOrExpr "|" ~"|" BitXorExpr  -- or
             | BitXorExpr
 
   // Bitwise XOR
   BitXorExpr = BitXorExpr "^" BitAndExpr  -- xor
              | BitAndExpr
 
-  // Bitwise AND
-  BitAndExpr = BitAndExpr "&" ShiftExpr  -- and
+  // Bitwise AND (must not match && which is logical AND)
+  BitAndExpr = BitAndExpr "&" ~"&" ShiftExpr  -- and
              | ShiftExpr
 
   // Shift

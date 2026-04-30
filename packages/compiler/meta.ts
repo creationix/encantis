@@ -135,7 +135,7 @@ export function buildMeta(
 ): MetaOutput {
   const lineMap = new LineMap(source)
   const comments = extractComments(source)
-  const checkResult = typecheck(module)
+  const checkResult = typecheck(module, { source })
 
   const builder = new MetaBuilder(module, source, lineMap, comments, checkResult)
   return builder.build(options?.srcPath ?? 'file://./source.ents')
@@ -506,7 +506,8 @@ class MetaBuilder {
   }
 
   private collectDef(decl: AST.DefDecl): void {
-    const sym = this.checkResult.symbols.get(decl.ident)
+    const mangledKey = `${decl.ident}$${decl.span.start}`
+    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
     if (!sym || sym.kind !== 'def') return
 
     // Find the def name offset (after "def" keyword)
@@ -531,7 +532,8 @@ class MetaBuilder {
   }
 
   private collectData(decl: AST.DataDecl): void {
-    const sym = this.checkResult.symbols.get(decl.ident)
+    const mangledKey = `${decl.ident}$${decl.span.start}`
+    const sym = this.checkResult.symbols.get(decl.ident) ?? this.checkResult.symbols.get(mangledKey)
     if (!sym || sym.kind !== 'def') return
 
     const offset = this.findDataIdentOffset(decl)

@@ -67,17 +67,19 @@ export interface PrimitiveRT {
   name: PrimitiveName
 }
 
-// Pointer type: *T or ^T (boundary pointer)
+// Pointer type: *T or *mut T or ^T (boundary pointer)
 export interface PointerRT {
   kind: 'pointer'
   pointee: ResolvedType
   boundary?: boolean // true for ^T - can only be compared, not dereferenced
+  mutable?: boolean  // true for *mut T, false/undefined for *T (const)
 }
 
-// Slice type: []T (fat pointer - contains pointer + length)
+// Slice type: []T or []mut T (fat pointer - contains pointer + length)
 export interface SliceRT {
   kind: 'slice'
   element: ResolvedType
+  mutable?: boolean  // true for []mut T, false/undefined for []T (const)
 }
 
 // Array size specifier - can be a number or a framing marker
@@ -190,14 +192,17 @@ export function primitive(name: PrimitiveName): PrimitiveRT {
   return { kind: 'primitive', name }
 }
 
-export function pointer(pointee: ResolvedType, boundary?: boolean): PointerRT {
+export function pointer(pointee: ResolvedType, boundary?: boolean, mutable?: boolean): PointerRT {
   const result: PointerRT = { kind: 'pointer', pointee }
   if (boundary) result.boundary = true
+  if (mutable) result.mutable = true
   return result
 }
 
-export function slice(element: ResolvedType): SliceRT {
-  return { kind: 'slice', element }
+export function slice(element: ResolvedType, mutable?: boolean): SliceRT {
+  const result: SliceRT = { kind: 'slice', element }
+  if (mutable) result.mutable = true
+  return result
 }
 
 export function array(element: ResolvedType, sizes: ArraySize[] | null): ArrayRT {
@@ -206,9 +211,9 @@ export function array(element: ResolvedType, sizes: ArraySize[] | null): ArrayRT
 
 // Convenience constructors
 
-// Many-pointer: [*]T (thin pointer to unbounded array)
-export function manyPointer(element: ResolvedType): PointerRT {
-  return pointer(array(element, null))
+// Many-pointer: [*]T or [*]mut T (thin pointer to unbounded array)
+export function manyPointer(element: ResolvedType, mutable?: boolean): PointerRT {
+  return pointer(array(element, null), false, mutable)
 }
 
 // Pointer to sized array: *[N]T
@@ -413,11 +418,13 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
 
     case 'pointer': {
       const bPtr = b as PointerRT
-      return !!a.boundary === !!bPtr.boundary && typeEquals(a.pointee, bPtr.pointee)
+      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && typeEquals(a.pointee, bPtr.pointee)
     }
 
-    case 'slice':
-      return typeEquals(a.element, (b as SliceRT).element)
+    case 'slice': {
+      const bSlice = b as SliceRT
+      return !!a.mutable === !!bSlice.mutable && typeEquals(a.element, bSlice.element)
+    }
 
     case 'array': {
       const bArr = b as ArrayRT
@@ -495,6 +502,12 @@ export type AssignResult =
 const INCOMPATIBLE: AssignResult = { compatible: false }
 const lossless = (reinterpret: boolean): AssignResult => ({ compatible: true, lossiness: 'lossless', reinterpret })
 const lossy = (reinterpret: boolean): AssignResult => ({ compatible: true, lossiness: 'lossy', reinterpret })
+
+// Mutability compatibility: mut→const OK, const→mut NOT OK
+function mutCompatible(targetMut: boolean | undefined, sourceMut: boolean | undefined): boolean {
+  if (targetMut && !sourceMut) return false
+  return true
+}
 
 // Check if source type can be assigned to target type
 // Returns lossiness and reinterpretability
@@ -694,22 +707,39 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Slice coercion
   if (t.kind === 'slice' && s.kind === 'slice') {
+    if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.element)
     if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
     return lossless(elemResult.reinterpret)
   }
 
-  // Pointer-to-array can coerce to slice: *[N]T -> []T
+  // Mutable pointer coerces to const pointer: *mut T -> *T (widening)
+  if (t.kind === 'pointer' && s.kind === 'pointer' && s.mutable && !t.mutable) {
+    if (typeEquals(t.pointee, s.pointee)) {
+      return lossless(true)
+    }
+    // Also handle *mut [N]T -> *[N]T where pointees match structurally
+    if (t.pointee.kind === s.pointee.kind) {
+      const innerResult = typeAssignResult(pointer(t.pointee), pointer(s.pointee))
+      if (innerResult.compatible && innerResult.lossiness === 'lossless') {
+        return lossless(true)
+      }
+    }
+  }
+
+  // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability)
   if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array') {
+    if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.pointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') {
       return lossless(elemResult.reinterpret)
     }
   }
 
-  // Pointer-to-array can coerce to many-pointer: *[N]T -> [*]T
+  // Pointer-to-array can coerce to many-pointer: *[N]T -> [*]T (respects mutability)
   if (t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null &&
       s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
+    if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') {
       return lossless(true)
@@ -753,6 +783,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Lossy+reinterpret: pointer to same-size pointee type
   if (t.kind === 'pointer' && s.kind === 'pointer') {
+    if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const tSize = primitiveByteSize(t.pointee)
     const sSize = primitiveByteSize(s.pointee)
     if (tSize !== null && sSize !== null && tSize === sSize) {
@@ -809,12 +840,20 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return t.name
 
     case 'pointer': {
+      // Many-pointer: [*]T or [*]mut T
+      if (t.pointee.kind === 'array' && t.pointee.sizes === null) {
+        const mut = t.mutable ? 'mut ' : ''
+        return `[*]${mut}${typeToString(t.pointee.element, opts)}`
+      }
       const prefix = t.boundary ? '^' : '*'
-      return `${prefix}${typeToString(t.pointee, opts)}`
+      const mut = t.mutable ? 'mut ' : ''
+      return `${prefix}${mut}${typeToString(t.pointee, opts)}`
     }
 
-    case 'slice':
-      return `[]${typeToString(t.element, opts)}`
+    case 'slice': {
+      const mut = t.mutable ? 'mut ' : ''
+      return `[]${mut}${typeToString(t.element, opts)}`
+    }
 
     case 'array': {
       // [N]T, [N,M]T, [_]T, [!]T, [?]T, [*]T

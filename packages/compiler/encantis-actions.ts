@@ -551,6 +551,18 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return baseType.toAST()
   },
 
+  // []mut T - mutable slice
+  BaseType_sliceMut(_brackets, _mut, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      mutable: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
   // []T - slice (fat pointer with ptr+len)
   BaseType_slice(_brackets, element) {
     return {
@@ -560,6 +572,20 @@ export const semanticsActions: Record<string, SemanticAction> = {
       specifiers: [],
       span: span(this),
     } as AST.IndexedType
+  },
+
+  // [*]mut T - mutable many-pointer
+  BaseType_manyPointerMut(_brackets, _mut, element) {
+    const result: AST.IndexedType = {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: null,
+      specifiers: [],
+      mutable: true,
+      span: span(this),
+    }
+    result.manyPointer = true
+    return result
   },
 
   // [*]T - many-pointer (thin, just ptr)
@@ -573,6 +599,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
     }
     result.manyPointer = true
     return result
+  },
+
+  // [framings]mut T - mutable array pointer
+  BaseType_arrayMut(_lb, framings, _rb, _mut, element) {
+    const { size, specifiers } = framings.toAST() as { size: number | number[] | 'inferred' | null; specifiers: AST.IndexSpecifier[] }
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size,
+      specifiers,
+      mutable: true,
+      span: span(this),
+    } as AST.IndexedType
   },
 
   // [framings]T - array with size/framing
@@ -637,6 +676,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
   // Framing: ? (LEB128 prefix)
   arrayFraming_leb128Prefixed(_qmark) {
     return { kind: 'prefix' } as AST.IndexSpecifier
+  },
+
+  BaseType_pointerMut(_star, _mut, type) {
+    return {
+      kind: 'PointerType',
+      pointee: type.toAST(),
+      mutable: true,
+      span: span(this),
+    } as AST.PointerType
   },
 
   BaseType_pointer(_star, type) {

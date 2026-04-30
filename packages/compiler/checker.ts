@@ -73,7 +73,7 @@ export function typeKey(offset: number, kind: string): string {
 }
 
 export function exprTypeOffset(expr: { kind: string; span: { start: number; end: number } }): number {
-  return (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr') ? expr.span.end : expr.span.start
+  return (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr' || expr.kind === 'IndexExpr') ? expr.span.end : expr.span.start
 }
 
 // === Type Check Result ===
@@ -118,6 +118,8 @@ export interface TypecheckOptions {
   filePath?: string
   // Exports from already-typechecked modules (path → symbol table)
   moduleExports?: Map<string, Map<string, Symbol>>
+  // Source text (enables identifier offset resolution for hover)
+  source?: string
 }
 
 const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultFloat'> = {
@@ -137,6 +139,7 @@ const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultF
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
   const opts = { ...DEFAULT_OPTIONS, ...options }
   const ctx = new CheckContext()
+  ctx.source = opts.source
   ctx.filePath = opts.filePath
   ctx.moduleExports = opts.moduleExports
   ctx.checkModule(module)
@@ -343,6 +346,7 @@ export function isConcreteType(t: ResolvedType): boolean {
 // === Check Context ===
 
 class CheckContext {
+  source?: string
   types = new Map<string, ResolvedType>()
   errors: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -601,6 +605,8 @@ class CheckContext {
     }
     this.moduleScope.symbols.set(defKey, sym)
     this.currentScope.symbols.set(decl.ident, sym)
+    const defIdentOff = this.findIdentOffset(decl.span.start, 'def')
+    if (defIdentOff !== null) this.types.set(typeKey(defIdentOff, 'IdentPattern'), type)
     this.recordDefinition(decl.ident, decl.span.start)
   }
 
@@ -612,6 +618,10 @@ class CheckContext {
     const dataKey = this.currentScope === this.moduleScope
       ? decl.ident
       : `${decl.ident}$${decl.span.start}`
+
+    // Check if literal has mut flag
+    const isMut = this.exprHasMut(decl.value)
+    const dataIdentOff = this.findIdentOffset(decl.span.start, 'data')
 
     // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
     const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
@@ -626,19 +636,27 @@ class CheckContext {
         expr: dataLiteral.expr,
         type: dataLiteral.indexedType,
       })
+      // Set mutability on the pointer type
+      let ptrType = dataLiteral.ptrType
+      if (isMut && ptrType.kind === 'pointer') {
+        ptrType = pointer(ptrType.pointee, ptrType.boundary, true)
+      } else if (isMut && ptrType.kind === 'slice') {
+        ptrType = slice(ptrType.element, true)
+      }
       const sym = {
         kind: 'def' as const,
-        type: dataLiteral.ptrType,
+        type: ptrType,
         value: { kind: 'data_ptr' as const, id: dataId },
       }
       this.moduleScope.symbols.set(dataKey, sym)
       this.currentScope.symbols.set(decl.ident, sym)
+      if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), ptrType)
       this.recordDefinition(decl.ident, decl.span.start)
       return
     }
 
     // For non-array data (scalars, tuples), still serialize to data section
-    const type = declaredType ?? inferredType
+    const type = declaredType ?? this.concretize(inferredType)
     const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
     const dataId = expr.span.start
     if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
@@ -649,11 +667,12 @@ class CheckContext {
       this.pendingLiterals.push({ id: dataId, expr, type: arrType })
       const sym = {
         kind: 'def' as const,
-        type: pointer(type),
+        type: pointer(type, false, isMut),
         value: { kind: 'data_ptr' as const, id: dataId },
       }
       this.moduleScope.symbols.set(dataKey, sym)
       this.currentScope.symbols.set(decl.ident, sym)
+      if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), pointer(type, false, isMut))
       this.recordDefinition(decl.ident, decl.span.start)
       return
     }
@@ -811,6 +830,16 @@ class CheckContext {
     }
 
     return null
+  }
+
+  // Check if an expression (or its inner literal) has the mut flag
+  private exprHasMut(expr: AST.Expr): boolean {
+    if (expr.kind === 'AnnotationExpr') return this.exprHasMut(expr.expr)
+    if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' ||
+        expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
+      return !!(expr as { mut?: boolean }).mut
+    }
+    return false
   }
 
   // Check if an expression is a data literal (array, repeat, string, tuple)
@@ -1267,6 +1296,19 @@ class CheckContext {
         }
         return type
       }
+      case 'tuple': {
+        let changed = false
+        const fields = type.fields.map(f => {
+          const ct = this.concretize(f.type)
+          if (ct !== f.type) changed = true
+          return field(f.name, ct)
+        })
+        return changed ? tuple(fields) : type
+      }
+      case 'pointer': {
+        const ct = this.concretize(type.pointee)
+        return ct !== type.pointee ? pointer(ct, type.boundary, type.mutable) : type
+      }
       default:
         return type
     }
@@ -1369,19 +1411,19 @@ class CheckContext {
         return primitive(type.name)
 
       case 'PointerType':
-        return pointer(this.resolveType(type.pointee))
+        return pointer(this.resolveType(type.pointee), false, type.mutable)
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
 
-        // Many-pointer [*]T - pointer to unbounded array
+        // Many-pointer [*]T or [*]mut T
         if (type.manyPointer) {
-          return manyPointer(element)
+          return manyPointer(element, type.mutable)
         }
 
-        // Slice []T - fat pointer (ptr + len)
+        // Slice []T or []mut T
         if (type.size === null && type.specifiers.length === 0) {
-          return slice(element)
+          return slice(element, type.mutable)
         }
 
         // Build sizes array from size and specifiers
@@ -2076,6 +2118,10 @@ class CheckContext {
       case '~':
         return operandType
       case '&':
+        if (operandType.kind === 'pointer' || operandType.kind === 'slice') {
+          return operandType
+        }
+        this.error(expr.span.start, `& (address-of) cannot be applied to value types — values live in registers, not addressable memory`)
         return pointer(operandType)
     }
   }
@@ -2425,7 +2471,13 @@ class CheckContext {
 
   // === Reference Tracking ===
 
-  // Record a symbol definition at the given offset
+  findIdentOffset(declStart: number, keyword: string): number | null {
+    if (!this.source) return null
+    let i = declStart + keyword.length
+    while (i < this.source.length && /\s/.test(this.source[i])) i++
+    return i
+  }
+
   recordDefinition(name: string, offset: number): void {
     this.symbolDefOffsets.set(name, offset)
     this.references.set(offset, [])

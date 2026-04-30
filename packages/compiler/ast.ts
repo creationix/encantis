@@ -562,10 +562,11 @@ export interface PrimitiveType extends BaseNode {
     | 'bool'
 }
 
-// *type
+// *type or *mut type
 export interface PointerType extends BaseNode {
   kind: 'PointerType'
   pointee: Type
+  mutable?: boolean
 }
 
 // Index specifiers: framing markers for serialization
@@ -587,6 +588,7 @@ export interface IndexedType extends BaseNode {
   size: number | number[] | 'inferred' | 'comptime' | null
   specifiers: IndexSpecifier[] // framing: ! and ? markers
   manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat slice)
+  mutable?: boolean // true for []mut T, [*]mut T
 }
 
 // () or (type, type) or (name: type, name: type)

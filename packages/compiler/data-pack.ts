@@ -486,6 +486,19 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     return combined
   }
 
+  // For tuple expressions, serialize each element according to the tuple field types
+  if (expr.kind === 'TupleExpr' && elementType.kind === 'tuple') {
+    const parts: Uint8Array[] = []
+    for (let i = 0; i < expr.elements.length; i++) {
+      const elemExpr = expr.elements[i].value ?? expr.elements[i]
+      const fieldType = elementType.fields[i]?.type ?? elementType.fields[0]?.type
+      if (!fieldType) throw new Error('Tuple field type mismatch in data packer')
+      const elemBytes = buildElementBytes(elemExpr as AST.Expr, fieldType, [])
+      parts.push(elemBytes)
+    }
+    return concatBytes(parts)
+  }
+
   throw new Error(`Cannot serialize ${expr.kind} to merged array type`)
 }
 
