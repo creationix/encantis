@@ -507,9 +507,6 @@ connection.languages.semanticTokens.on((params) => {
       const typeStr = meta.types[hint.type]?.type ?? '';
       if (typeStr.startsWith('(') && typeStr.includes('->')) {
         tokenType = 1; // function
-      } else if (/^[iuf]\d+$|^bool$/.test(typeStr)) {
-        // Primitive types (i32, u8, f64, bool, etc.) - likely a numeric literal
-        tokenType = 6; // number
       } else {
         // Skip hints without symbols that don't map to a semantic token
         continue;

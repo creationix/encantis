@@ -246,7 +246,7 @@
         },
         {
           "name": "punctuation.accessor.tuple.encantis",
-          "match": "(?<=[a-zA-Z0-9_-])\\.[0-9]+"
+          "match": "(?<=[a-zA-Z0-9_*\\]))])\\.[0-9]+"
         },
         {
           "name": "punctuation.accessor.typepun.encantis",
@@ -271,11 +271,11 @@
         },
         {
           "name": "punctuation.accessor.property.encantis",
-          "match": "(?<=[a-zA-Z0-9_-])\\.[a-z][0-9A-Za-z_-]*"
+          "match": "(?<=[a-zA-Z0-9_*\\]))])\\.[a-z][0-9A-Za-z_-]*"
         },
         {
           "name": "punctuation.accessor.pointer.encantis",
-          "match": "(?<=[a-zA-Z0-9_-])\\.\\*"
+          "match": "(?<=[a-zA-Z0-9_*\\]))])\\.\\*"
         },
         {
           "name": "variable.other.encantis",
