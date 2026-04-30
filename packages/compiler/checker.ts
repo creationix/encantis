@@ -266,7 +266,7 @@ export function concretizeType(
       }
 
     case 'slice':
-      return slice(concretizeType(u.element, opts))
+      return slice(concretizeType(u.element, opts), u.mutable)
 
     case 'array': {
       // Concretize element type
@@ -2149,12 +2149,26 @@ class CheckContext {
       case '-':
       case '~':
         return operandType
-      case '&':
+      case '&': {
         if (operandType.kind === 'pointer' || operandType.kind === 'slice') {
           return operandType
         }
-        this.error(expr.span.start, `& (address-of) cannot be applied to value types — values live in registers, not addressable memory`)
-        return pointer(operandType)
+        // Address-of on a value: anonymous data section allocation
+        const innerExpr = expr.operand
+        const litExpr = innerExpr.kind === 'AnnotationExpr' ? innerExpr.expr : innerExpr
+        if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
+            litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr') {
+          const dataId = litExpr.span.start
+          if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') {
+            (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
+          }
+          const arrType: ArrayRT = { kind: 'array', element: operandType, sizes: [1] }
+          this.pendingLiterals.push({ id: dataId, expr: litExpr, type: arrType })
+          return pointer(operandType, false, true)
+        }
+        this.error(expr.span.start, `& requires a literal or a pointer/slice operand`)
+        return pointer(operandType, false, true)
+      }
     }
   }
 

@@ -694,9 +694,21 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       // Logical NOT: x == 0
       return `(i32.eqz ${operand})`
 
-    case '&':
-      // Address-of: for now just return the operand (should be a pointer)
+    case '&': {
+      // If operand is already a pointer, just return it
+      const innerType = lookupExprType(expr.operand, ctx)
+      if (innerType && (innerType.kind === 'pointer' || innerType.kind === 'slice')) {
+        return operand
+      }
+      // Anonymous data allocation: look up data section ref
+      const innerExpr = expr.operand.kind === 'AnnotationExpr' ? (expr.operand as AST.AnnotationExpr).expr : expr.operand
+      const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
+      const ref = ctx.literalRefs.get(dataId)
+      if (ref) {
+        return `(i32.const ${ref.ptr})`
+      }
       return operand
+    }
 
     default:
       throw new Error(`Unknown unary operator: ${expr.op}`)

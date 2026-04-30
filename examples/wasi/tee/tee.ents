@@ -11,10 +11,9 @@ def stdin = 0:i32
 def stdout = 1:i32
 def stderr = 2:i32
 
-data nread = mut 0:u32
-data nwritten = mut 0:u32
-
 export "_start" func main() {
+  let nread = &0:u32
+  let nwritten = &0:u32
   let iovecs:[][]u8 = mut [[0:u8;1024]]
   loop {
     let res = wasi_fd_read(stdin, iovecs, nread)
