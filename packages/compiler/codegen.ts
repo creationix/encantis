@@ -401,6 +401,10 @@ function v128LoadSequence(type: ResolvedType, ptr: string): string {
     ).join(' ')
   }
   const u = unwrap(type)
+  // Slice: load ptr + len (two i32s) — same layout as tuple (ptr, len)
+  if (u.kind === 'slice') {
+    return `(i32.load ${ptr}) (i32.load offset=4 ${ptr})`
+  }
   if (u.kind === 'primitive') {
     if (u.name === 'u8') return `(i32.load8_u ${ptr})`
     if (u.name === 'i8') return `(i32.load8_s ${ptr})`
@@ -882,6 +886,33 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   return `(call $${watName}${args ? ' ' + args : ''})`
 }
 
+function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
+  if (expr.kind === 'IndexExpr') {
+    const objType = lookupExprType(expr.object, ctx)
+    if (!objType) return null
+    if (objType.kind === 'slice') {
+      const elemSize = byteSize(objType.element)
+      if (elemSize === null) return null
+      const base = exprToWat(expr.object, ctx)
+      const ptr = splitV128Components(base, 2)[0]
+      const idx = exprToWat(expr.index, ctx)
+      if (elemSize === 1) return `(i32.add ${ptr} ${idx})`
+      return `(i32.add ${ptr} (i32.mul ${idx} (i32.const ${elemSize})))`
+    }
+    if (objType.kind === 'pointer' && objType.pointee.kind === 'array') {
+      const elemSize = byteSize(objType.pointee.element) ?? 1
+      const base = exprToWat(expr.object, ctx)
+      const idx = exprToWat(expr.index, ctx)
+      if (elemSize === 1) return `(i32.add ${base} ${idx})`
+      return `(i32.add ${base} (i32.mul ${idx} (i32.const ${elemSize})))`
+    }
+  }
+  if (expr.kind === 'MemberExpr' && expr.member.kind === 'deref') {
+    return exprToWat(expr.object, ctx)
+  }
+  return null
+}
+
 function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   const member = expr.member
 
@@ -997,7 +1028,22 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
       }
     }
 
-    // For non-identifier bases, need memory access
+    // Field access on memory-backed expression (e.g., iovecs[0].len)
+    const memObjType = lookupExprType(expr.object, ctx)
+    if (memObjType) {
+      const fieldOff = RT.fieldByteOffset(memObjType, member.name)
+      if (fieldOff !== null) {
+        const addr = lvalueAddressOf(expr.object, ctx)
+        if (addr !== null) {
+          const fieldType = lookupExprType(expr, ctx)
+          if (fieldType) {
+            const fieldAddr = fieldOff === 0 ? addr : `(i32.add ${addr} (i32.const ${fieldOff}))`
+            return v128LoadSequence(fieldType, fieldAddr)
+          }
+        }
+      }
+    }
+
     const base = exprToWat(expr.object, ctx)
     return base
   }
@@ -1705,6 +1751,23 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
         throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
       }
       return v128StoreSequence(type, ptr, value)
+    }
+    // Field access on memory-backed value (e.g., iovecs[0].len = x)
+    if (member.kind === 'field') {
+      const objType = lookupExprType(target.object, ctx)
+      if (objType) {
+        const fieldOff = RT.fieldByteOffset(objType, member.name)
+        if (fieldOff !== null) {
+          const ptr = lvalueAddressOf(target.object, ctx)
+          if (ptr !== null) {
+            const fieldType = lookupExprType(target, ctx)
+            if (fieldType) {
+              const addr = fieldOff === 0 ? ptr : `(i32.add ${ptr} (i32.const ${fieldOff}))`
+              return v128StoreSequence(fieldType, addr, value)
+            }
+          }
+        }
+      }
     }
   }
 

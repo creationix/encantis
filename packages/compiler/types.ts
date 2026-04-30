@@ -1052,6 +1052,27 @@ export function isFloatIntConversion(from: PrimitiveName, to: PrimitiveName): bo
   return (fromIsFloat && toIsInt) || (fromIsInt && toIsFloat)
 }
 
+// Get byte offset of a field within a compound type stored in memory
+export function fieldByteOffset(t: ResolvedType, fieldName: string): number | null {
+  const u = unwrap(t)
+  if (u.kind === 'slice') {
+    if (fieldName === 'ptr') return 0
+    if (fieldName === 'len') return 4
+    return null
+  }
+  if (u.kind === 'tuple') {
+    let offset = 0
+    for (const f of u.fields) {
+      if (f.name === fieldName) return offset
+      const size = byteSize(f.type)
+      if (size === null) return null
+      offset += size
+    }
+    return null
+  }
+  return null
+}
+
 // Check if comptime int value fits in a given integer type
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
   const bounds = INT_BOUNDS[target.name]
