@@ -312,6 +312,7 @@ Encantis {
   // Primary (atoms)
   PrimaryExpr = IfExpr
               | MatchExpr
+              | TemplateLiteral
               | ArrayLiteral
               | sizeof "(" Type ")"  -- sizeof
               | "(" ArgList ")"      -- tupleOrStruct
@@ -320,6 +321,22 @@ Encantis {
               | typeIdent "(" ArgList? ")"  -- constructor
               | literal
               | ident
+
+  // Template literal: `text ${expr} text`
+  // Lexical tokens consume entire text spans with their delimiters
+  // Syntactic layer handles expression parsing between tokens
+  TemplateLiteral = noSubTemplate                                         -- plain
+                  | templateHead Expr (templateMiddle Expr)* templateTail  -- interpolated
+
+  noSubTemplate = "`" templateChar* "`"
+  templateHead = "`" templateChar* "${"
+  templateMiddle = "}" templateChar* "${"
+  templateTail = "}" templateChar* "`"
+
+  templateChar = "\\`"                          -- escapeTick
+               | "\\${"                        -- escapeDollar
+               | escapeSeq                      -- escape
+               | ~("`" | "${" | "}" | "\\") any -- plain
 
   // Array literal: [expr, expr, ...] or [expr; count]
   ArrayLiteral = "[" Expr ";" Expr "]"    -- repeat

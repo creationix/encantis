@@ -7,6 +7,7 @@ import { hexToBytes } from './utils'
 // Stores both the value and optional type annotation for wrapping inlined expressions
 let currentDefs: Map<string, { value: AST.Expr; type: AST.Type | undefined }> = new Map()
 
+
 // Types for access suffixes parsed from grammar
 type AccessSuffix =
   | { kind: 'field'; name: string }
@@ -158,6 +159,14 @@ function cloneMatchBodyWithSpan(body: AST.Expr | AST.FuncBody): AST.Expr | AST.F
 // Helper to get first child if present
 function first<T>(iter: ohm.IterationNode): T | null {
   return iter.children[0]?.toAST() ?? null
+}
+
+// Extract text content from a template token (head/middle/tail/noSub)
+// The token has delimiters at start/end and templateChar* in between
+function templateTokenText(node: OhmNode): string {
+  // The second child is always the templateChar* iteration
+  const charsNode = node.children[1]
+  return charsNode.children.map((c: OhmNode) => c.toAST()).join('')
 }
 
 // Set dataId on literal expressions within a def value
@@ -1475,6 +1484,48 @@ export const semanticsActions: Record<string, SemanticAction> = {
   // ============================================================================
   // Literals
   // ============================================================================
+
+  TemplateLiteral_plain(tmpl) {
+    const text = templateTokenText(tmpl)
+    if (text.length === 0) {
+      return { kind: 'ArrayExpr', elements: [], span: span(this) } as AST.ArrayExpr
+    }
+    const bytes = new TextEncoder().encode(text)
+    return {
+      kind: 'ArrayExpr',
+      elements: [{
+        kind: 'LiteralExpr',
+        value: { kind: 'string', bytes },
+        span: span(this),
+      } as AST.LiteralExpr],
+      span: span(this),
+    } as AST.ArrayExpr
+  },
+
+  TemplateLiteral_interpolated(head, firstExpr, middles, restExprs, tail) {
+    const elements: AST.Expr[] = []
+    const pushText = (text: string, node: OhmNode) => {
+      if (text.length > 0) {
+        const bytes = new TextEncoder().encode(text)
+        elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: span(node) } as AST.LiteralExpr)
+      }
+    }
+    pushText(templateTokenText(head), head)
+    elements.push(firstExpr.toAST() as AST.Expr)
+    const mids = middles.children
+    const rests = restExprs.children
+    for (let i = 0; i < mids.length; i++) {
+      pushText(templateTokenText(mids[i]), mids[i])
+      elements.push(rests[i].toAST() as AST.Expr)
+    }
+    pushText(templateTokenText(tail), tail)
+    return { kind: 'ArrayExpr', elements, span: span(this) } as AST.ArrayExpr
+  },
+
+  templateChar_escapeTick(_seq) { return '`' },
+  templateChar_escapeDollar(_seq) { return '${' },
+  templateChar_escape(seq) { return seq.toAST() },
+  templateChar_plain(c) { return c.sourceString },
 
   literal(lit) {
     return lit.toAST()
