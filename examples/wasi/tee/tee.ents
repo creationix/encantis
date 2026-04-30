@@ -3,7 +3,7 @@
 // Usage: echo "hello" | ./tee.ents
 
 import "wasi_snapshot_preview1" (
-  "fd_read" func wasi_fd_read(fd:i32, iovs:[][]u8, nread:*mut u32) -> i32
+  "fd_read" func wasi_fd_read(fd:i32, iovs:[][]mut u8, nread:*mut u32) -> i32
   "fd_write" func wasi_fd_write(fd:i32, iovs:[][]u8, nwritten:*mut u32) -> i32
 )
 
@@ -16,7 +16,7 @@ def stderr = 2:i32
 export "_start" func main() {
   let nread = &0:u32
   let nwritten = &0:u32
-  let iovecs:[]mut []u8 = mut [[0:u8;1024]]
+  let iovecs:[]mut []mut u8 = mut [mut [0:u8;1024]]
   loop {
     // Set iovec buf_len to full buffer size for reading
     iovecs[0].len = 1024

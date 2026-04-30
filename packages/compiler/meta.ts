@@ -524,7 +524,7 @@ class MetaBuilder {
     } else if (sym.value.kind === 'data_ptr') {
       const entry = this.literalMap.get(sym.value.id)
       if (entry) {
-        valueStr = `0x${entry.ptr.toString(16)}`
+        valueStr = this.formatDataRef(entry, sym.type)
       }
     }
 
@@ -542,11 +542,25 @@ class MetaBuilder {
     if (sym.value.kind === 'data_ptr') {
       const entry = this.literalMap.get(sym.value.id)
       if (entry) {
-        valueStr = `0x${entry.ptr.toString(16)}`
+        valueStr = this.formatDataRef(entry, sym.type)
       }
     }
 
     this.addSymbol(decl.ident, 'data', sym.type, offset, valueStr)
+  }
+
+  private formatDataRef(ref: DataRef, type: ResolvedType): string {
+    const u = unwrap(type)
+    if (u.kind === 'slice') {
+      return `(ptr: 0x${ref.ptr.toString(16)}, len: ${ref.len})`
+    }
+    if (u.kind === 'pointer' && u.pointee.kind === 'array') {
+      const sizes = u.pointee.sizes
+      if (sizes && sizes.length === 1 && typeof sizes[0] === 'number') {
+        return `0x${ref.ptr.toString(16)} (${sizes[0]} elements, ${ref.len} bytes)`
+      }
+    }
+    return `0x${ref.ptr.toString(16)} (${ref.len} bytes)`
   }
 
   private findDefIdentOffset(decl: AST.DefDecl): number {
@@ -841,18 +855,11 @@ class MetaBuilder {
           const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
           const isDefRef = symbol?.kind === 'def'
 
-          // For string literals (not def refs), include data section info
           let dataInfo: string | undefined
-          if (expr.value.kind === 'string' && !isDefRef) {
-            const entry = this.literalMap.get(expr.span.start)
+          if (!isDefRef) {
+            const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
             if (entry) {
-              const ptr = `0x${entry.ptr.toString(16)}`
-              // If type is a slice, show fat pointer (ptr, len)
-              if (type.kind === 'slice') {
-                dataInfo = `(${ptr}, ${expr.value.bytes.length})`
-              } else {
-                dataInfo = ptr
-              }
+              dataInfo = this.formatDataRef(entry, type)
             }
           }
           this.addHint(expr.span.start, len, typeIndex, isDefRef ? symbolIndex : undefined, dataInfo)
@@ -988,11 +995,10 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          // For array literals, include data section address if available
           let dataInfo: string | undefined
           const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
-          if (entry) {
-            dataInfo = `0x${entry.ptr.toString(16)}`
+          if (entry && type) {
+            dataInfo = this.formatDataRef(entry, type)
           }
           this.addHint(expr.span.start, len, typeIndex, undefined, dataInfo)
         }
@@ -1004,9 +1010,20 @@ class MetaBuilder {
       }
 
       case 'RepeatExpr': {
+        // Add hint for repeat literal with data section info
+        if (type) {
+          const typeIndex = this.typeRegistry.register(type)
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          let dataInfo: string | undefined
+          const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
+          if (entry) {
+            dataInfo = this.formatDataRef(entry, type)
+          }
+          this.addHint(expr.span.start, len, typeIndex, undefined, dataInfo)
+        }
         // Recurse into value expression (e.g., 0:u8)
         this.generateHintsForExpr(expr.value)
-        // Generate hint for the count (e.g., 1024) - it's a special repeat count
+        // Generate hint for the count (e.g., 1024)
         const countType = this.checkResult.types.get(typeKey(expr.count.span.start, expr.count.kind))
         if (countType) {
           const typeIndex = this.typeRegistry.register(countType)
