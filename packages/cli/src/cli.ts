@@ -30,6 +30,7 @@ Commands:
   symbols [<file|dir>]                 List document or workspace symbols
   signature <file>:<line>:<col|name>   Show function signature
   rename <file>:<line>:<col|name>      Find all locations for rename
+  run <file> [args...]                   Compile and run with WASI
   test <file>                           Run inline tests
   fmt <file...>                        Format source files in place
   fmt --check <file...>                Check formatting without changing
@@ -423,6 +424,63 @@ switch (command) {
           console.log(`${s.filePath}:${p.line + 1}:${p.col + 1} ${s.kind} ${s.name}: ${s.type}${exp}`)
         }
       }
+    }
+    break
+  }
+
+  case 'run': {
+    if (!inputFile) { console.error('Error: run requires a file (.ents or .wasm)'); process.exit(2) }
+
+    let buffer: Uint8Array
+    if (inputFile.endsWith('.wasm')) {
+      buffer = new Uint8Array(await Bun.file(resolve(inputFile)).arrayBuffer())
+    } else {
+      const entryPath = resolve(inputFile)
+      const load = await loadModule(entryPath)
+      if (load.errors.length > 0) {
+        for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
+        process.exit(1)
+      }
+      const check = typecheckProgram(load.modules, entryPath)
+      if (check.errors.length > 0) {
+        for (const [path, result] of check.results) {
+          const modSource = load.modules.get(path)?.source ?? ''
+          for (const error of result.errors) {
+            const loc = offsetToLineCol(modSource, error.offset)
+            console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
+          }
+        }
+        process.exit(1)
+      }
+      const wat = programToWat(load.modules, check.results, entryPath)
+      const w = await wabt()
+      const wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
+      try {
+        wasmModule.validate()
+      } catch (e: unknown) {
+        console.error(`WAT error: ${(e as Error).message}`)
+        wasmModule.destroy()
+        process.exit(1)
+      }
+      buffer = wasmModule.toBinary({}).buffer
+      wasmModule.destroy()
+    }
+
+    const { WASI } = await import('node:wasi')
+    const wasi = new WASI({
+      version: 'preview1',
+      args: [inputFile, ...args.slice(2)],
+      env: process.env as Record<string, string>,
+    })
+    const compiled = await WebAssembly.compile(buffer)
+    const instance = await WebAssembly.instantiate(compiled, {
+      wasi_snapshot_preview1: wasi.wasiImport,
+    })
+    try {
+      wasi.start(instance)
+    } catch (e: unknown) {
+      const err = e as { code?: string; exitCode?: number }
+      if (err.code !== 'ERR_WASI_EXIT' || err.exitCode !== 0) throw e
     }
     break
   }
