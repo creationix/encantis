@@ -281,9 +281,8 @@ describe('type inference', () => {
           let arr:*[4]u8 = [1, 10, 100, 1000]
         }
       `)
-      // TODO: This should catch element overflow when coercing to *[4]u8
-      // Currently the checker doesn't validate element values during coercion
-      expect(result.errors).toHaveLength(0)
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors[0].message).toContain('cannot assign')
     })
   })
 

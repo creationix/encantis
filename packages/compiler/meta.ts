@@ -856,7 +856,7 @@ class MetaBuilder {
     }
   }
 
-  private generateHintsForExpr(expr: AST.Expr, contextType?: ResolvedType): void {
+  private generateHintsForExpr(expr: AST.Expr): void {
     // MemberExpr uses span.end as key to distinguish chained accesses (a.b vs a.b.c)
     const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
     const type = this.checkResult.types.get(typeKey(typeOffset, expr.kind))
@@ -874,9 +874,8 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
-        const displayType = contextType ?? type
-        if (displayType) {
-          const typeIndex = this.typeRegistry.register(displayType)
+        if (type) {
+          const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
           const sourceText = this.source.slice(expr.span.start, expr.span.end)
           const symbolIndex = this.symbolIndexByName.get(sourceText)
@@ -887,7 +886,7 @@ class MetaBuilder {
           if (!isDefRef) {
             const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
             if (entry) {
-              dataInfo = this.formatDataRef(entry, displayType)
+              dataInfo = this.formatDataRef(entry, type)
             }
           }
           this.addHint(expr.span.start, len, typeIndex, isDefRef ? symbolIndex : undefined, dataInfo)
@@ -1030,14 +1029,8 @@ class MetaBuilder {
           }
           this.addHint(expr.span.start, len, typeIndex, undefined, dataInfo)
         }
-        // Recurse into elements with parent element type for context
-        const u = type ? unwrap(type) : null
-        const parentElemType = u?.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
-          : u?.kind === 'slice' ? u.element
-          : u?.kind === 'array' ? u.element
-          : null
         for (const elem of expr.elements) {
-          this.generateHintsForExpr(elem, parentElemType ?? undefined)
+          this.generateHintsForExpr(elem)
         }
         break
       }

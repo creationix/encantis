@@ -356,6 +356,7 @@ class CheckContext {
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
+  currentReturnType: ResolvedType | null = null
 
   // Cache for resolved type aliases
   typeCache = new Map<string, ResolvedType>()
@@ -631,23 +632,31 @@ class CheckContext {
     // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
     const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
     if (dataLiteral) {
-      const dataId = dataLiteral.expr.span.start
-      if (dataLiteral.expr.kind === 'ArrayExpr' || dataLiteral.expr.kind === 'RepeatExpr' ||
-          dataLiteral.expr.kind === 'LiteralExpr') {
-        (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
-      }
-      this.pendingLiterals.push({
-        id: dataId,
-        expr: dataLiteral.expr,
-        type: dataLiteral.indexedType,
-      })
-      // Set mutability on the pointer type
+      // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
       if (isMut && ptrType.kind === 'pointer') {
         ptrType = pointer(ptrType.pointee, ptrType.boundary, true)
       } else if (isMut && ptrType.kind === 'slice') {
         ptrType = slice(ptrType.element, true)
       }
+      // Use checkExpr to propagate element types and register the data literal
+      // checkExpr's data literal path handles pendingLiterals, dataId, and element checking
+      if (ptrType.kind === 'pointer' || ptrType.kind === 'slice') {
+        this.checkExpr(dataLiteral.expr, ptrType)
+      } else {
+        // Rare case: bare array type — register manually
+        const dataId = dataLiteral.expr.span.start
+        if (dataLiteral.expr.kind === 'ArrayExpr' || dataLiteral.expr.kind === 'RepeatExpr' ||
+            dataLiteral.expr.kind === 'LiteralExpr') {
+          (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
+        }
+        this.pendingLiterals.push({
+          id: dataId,
+          expr: dataLiteral.expr,
+          type: dataLiteral.indexedType,
+        })
+      }
+      const dataId = dataLiteral.expr.span.start
       const sym = {
         kind: 'def' as const,
         type: ptrType,
@@ -1087,14 +1096,16 @@ class CheckContext {
 
     // Check body
     const prevScope = this.currentScope
+    const prevReturnType = this.currentReturnType
     this.currentScope = funcScope
+    this.currentReturnType = this.resolveType(decl.signature.output)
     if (decl.body.kind === 'Block') {
       this.checkBody(decl.body)
     } else {
-      const returnType = this.resolveType(decl.signature.output)
-      this.checkExpr(decl.body.expr, returnType)
+      this.checkExpr(decl.body.expr, this.currentReturnType)
     }
     this.currentScope = prevScope
+    this.currentReturnType = prevReturnType
   }
 
   private bindFields(type: AST.Type, scope: Scope, kind: 'param' | 'return'): void {
@@ -1132,7 +1143,18 @@ class CheckContext {
         this.inferExpr(stmt.expr)
         break
       case 'ReturnStmt':
-        if (stmt.value) this.inferExpr(stmt.value)
+        if (stmt.value) {
+          // For single-field named returns like (ptr: u32), check against the inner type
+          let checkType = this.currentReturnType
+          if (checkType?.kind === 'tuple' && checkType.fields.length === 1) {
+            checkType = checkType.fields[0].type
+          }
+          if (checkType && checkType.kind !== 'void') {
+            this.checkExpr(stmt.value, checkType)
+          } else {
+            this.inferExpr(stmt.value)
+          }
+        }
         if (stmt.when) this.inferExpr(stmt.when)
         break
       case 'AssignmentStmt': {
@@ -1142,8 +1164,9 @@ class CheckContext {
         }
         this.checkMutability(stmt.target, stmt.span.start)
         const targetUnwrapped = targetType ? unwrap(targetType) : undefined
-        const isScalarTarget = targetUnwrapped?.kind === 'primitive' || targetUnwrapped?.kind === 'tuple'
-        if (targetType && isScalarTarget) {
+        if (targetType && stmt.op === '=') {
+          this.checkExpr(stmt.value, targetType)
+        } else if (targetType && targetUnwrapped?.kind === 'primitive') {
           this.checkExpr(stmt.value, targetType)
         } else {
           this.inferExpr(stmt.value)
@@ -1617,6 +1640,33 @@ class CheckContext {
       return result
     }
 
+    // Bidirectional: propagate expected type into if-expression branches
+    if (expr.kind === 'IfExpr' && !expr.pattern && expr.else_) {
+      this.inferExpr(expr.condition)
+      this.checkBodyAgainst(expr.thenBranch, expected)
+      for (const elif of expr.elifs) {
+        this.inferExpr(elif.condition)
+        this.checkBodyAgainst(elif.thenBranch, expected)
+      }
+      this.checkBodyAgainst(expr.else_, expected)
+      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      return expected
+    }
+
+    // Bidirectional: propagate expected type into match-expression arms
+    if (expr.kind === 'MatchExpr') {
+      this.inferExpr(expr.subject)
+      for (const arm of expr.arms) {
+        if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
+          this.checkBodyAgainst(arm.body, expected)
+        } else {
+          this.checkExpr(arm.body, expected)
+        }
+      }
+      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      return expected
+    }
+
     const inferred = this.inferExprInner(expr)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
@@ -1729,6 +1779,17 @@ class CheckContext {
       this.pendingLiterals.push({ id: expr.span.start, expr, type: arrType })
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+      }
+      // Propagate element type into array elements
+      if (expr.kind === 'ArrayExpr') {
+        const elemType = expected.kind === 'slice' ? expected.element
+          : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? expected.pointee.element
+          : null
+        if (elemType) {
+          for (const elem of (expr as AST.ArrayExpr).elements) {
+            this.checkExpr(elem, elemType)
+          }
+        }
       }
       // Record the expected type so codegen knows to emit ptr+len for slices
       this.types.set(typeKey(expr.span.start, expr.kind), expected)
@@ -2195,30 +2256,46 @@ class CheckContext {
     const leftType = this.inferExpr(expr.left)
     const rightType = this.inferExpr(expr.right)
 
-    // Comparison operators return bool
+    const left = unwrap(leftType)
+    const right = unwrap(rightType)
+    const leftIsComptime = left.kind === 'comptime_int' || left.kind === 'comptime_float'
+    const rightIsComptime = right.kind === 'comptime_int' || right.kind === 'comptime_float'
+
+    // Comparison and logical operators: propagate concrete type to comptime operand
     if (['==', '!=', '<', '>', '<=', '>='].includes(expr.op)) {
+      if (leftIsComptime && right.kind === 'primitive') {
+        this.checkExpr(expr.left, rightType)
+      } else if (rightIsComptime && left.kind === 'primitive') {
+        this.checkExpr(expr.right, leftType)
+      }
       return primitive('bool')
     }
-
-    // Logical operators
     if (['&&', '||'].includes(expr.op)) {
       return primitive('bool')
     }
 
-    // Arithmetic/bitwise: pick the wider integer type
-    const left = unwrap(leftType)
-    const right = unwrap(rightType)
+    // Arithmetic/bitwise: determine result type, then propagate to comptime operands
+    let resultType = leftType
     if (left.kind === 'primitive' && right.kind === 'primitive') {
       const leftSize = byteSize(left)
       const rightSize = byteSize(right)
       if (leftSize !== null && rightSize !== null && rightSize > leftSize) {
-        return rightType
+        resultType = rightType
       }
+    } else if (rightIsComptime && left.kind === 'primitive') {
+      resultType = leftType
+    } else if (leftIsComptime && right.kind === 'primitive') {
+      resultType = rightType
     }
-    // Comptime int adopts the concrete operand's type
-    if (right.kind === 'comptime_int' && left.kind === 'primitive') return leftType
-    if (left.kind === 'comptime_int' && right.kind === 'primitive') return rightType
-    return leftType
+
+    // Propagate concrete type to comptime operands (only for numeric types)
+    if (leftIsComptime && right.kind === 'primitive') {
+      this.checkExpr(expr.left, resultType)
+    } else if (rightIsComptime && left.kind === 'primitive') {
+      this.checkExpr(expr.right, resultType)
+    }
+
+    return resultType
   }
 
   inferUnary(expr: AST.UnaryExpr): ResolvedType {
@@ -2612,6 +2689,22 @@ class CheckContext {
     }
     if (!expr.else_) return VOID
     return thenType
+  }
+
+  private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
+    if (body.kind === 'Block') {
+      for (let i = 0; i < body.stmts.length - 1; i++) {
+        this.checkStmt(body.stmts[i])
+      }
+      const last = body.stmts[body.stmts.length - 1]
+      if (last?.kind === 'ExpressionStmt') {
+        this.checkExpr(last.expr, expected)
+      } else if (last) {
+        this.checkStmt(last)
+      }
+    } else {
+      this.checkExpr(body.expr, expected)
+    }
   }
 
   private inferBody(body: AST.FuncBody): ResolvedType {
