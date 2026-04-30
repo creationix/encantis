@@ -53,7 +53,7 @@ test "xoroshiro128+" {
 }
 
 // Generate next random number and advance state in-place
-export func next(state:*u128) -> (result:u64) {
+export func next(state:*mut u128) -> (result:u64) {
   let s0 = state.u64[0]
   let s1 = state.u64[1]
 
@@ -66,7 +66,7 @@ export func next(state:*u128) -> (result:u64) {
 
 // Jump function - equivalent to 2^64 calls to next()
 // Used to generate non-overlapping subsequences for parallel computations
-export func jump(state:*u128) {
+export func jump(state:*mut u128) {
   let s0 = state.u64[0]
   let s1 = state.u64[1]
   let t0:u64 = 0
@@ -103,7 +103,7 @@ export func jump(state:*u128) {
 
 // Long-jump function - equivalent to 2^96 calls to next()
 // Used to generate 2^32 starting points for distributed computations
-export func long-jump(state:*u128) {
+export func long-jump(state:*mut u128) {
   let s0 = state.u64[0]
   let s1 = state.u64[1]
   let t0:u64 = 0

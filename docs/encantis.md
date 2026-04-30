@@ -420,6 +420,8 @@ p.y = 5.0                // field write
 
 ### 2.9 Enum Types (Algebraic Data Types)
 
+> **Status: Design only** — enums are parsed but not yet type-checked or compiled.
+
 Enums are tagged unions representing values that can be one of several variants. Each variant can optionally carry payload data:
 
 ```ents
@@ -780,6 +782,8 @@ let curried: i32 -> i32 -> i32   // same as: i32 -> (i32 -> i32)
 
 ### 3.5 Inline Functions
 
+> **Status: Parsed but not yet implemented** — `inline` is accepted by the parser but functions are compiled as regular calls.
+
 Inline functions are guaranteed to be inlined at each call site. Unlike `def` which performs textual substitution, inline functions have proper type checking and evaluate each argument exactly once:
 
 ```ents
@@ -827,9 +831,9 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
 | `*` | multiplication | numeric |
 | `/` | division | numeric |
 | `%` | remainder | integers only |
-| `+\|` | saturating add | integers |
-| `-\|` | saturating subtract | integers |
-| `*\|` | saturating multiply | integers |
+| `+\|` | saturating add (not yet implemented) | integers |
+| `-\|` | saturating subtract (not yet implemented) | integers |
+| `*\|` | saturating multiply (not yet implemented) | integers |
 
 Saturating operators clamp at type boundaries instead of wrapping:
 
@@ -899,6 +903,8 @@ Assignment targets (lvalues) can be:
 | `ptr.T` | Type-punned memory location |
 | `(a, b, ...)` | Positional destructuring |
 | `(x:, y:, ...)` | Named destructuring (trailing colon) |
+
+> **Status: Destructuring is not yet fully implemented in codegen.**
 
 Positional destructuring unpacks multiple values in a single assignment:
 
@@ -994,6 +1000,8 @@ ptr.([]u8)
 
 ### 4.7 Slice/Range Syntax
 
+> **Status: Not yet implemented.**
+
 Create slices from existing arrays using range syntax:
 
 ```ents
@@ -1018,6 +1026,8 @@ buffer[0..1024] = 0       // zero 1024 bytes
 ```
 
 ### 4.8 UFCS (Uniform Function Call Syntax)
+
+> **Status: Not yet implemented.**
 
 Any function can be called using method syntax. If `f(a, b, c)` is valid, then `a.f(b, c)` is also valid:
 
@@ -1100,11 +1110,11 @@ for i in num {           // iterate 0 to n-1
   process(i)
 }
 
-for elem in arr {        // iterate over array/slice elements
+for elem in arr {        // iterate over array/slice elements (not yet implemented)
   process(elem)
 }
 
-for i, elem in arr {     // iterate with index
+for i, elem in arr {     // iterate with index (not yet implemented)
   process(i, elem)
 }
 
@@ -1237,6 +1247,8 @@ match point {
 
 #### Pattern Matching on Enums
 
+> **Status: Not yet implemented** — depends on enum type support.
+
 Use `match` to destructure enum variants:
 
 ```ents
@@ -1290,6 +1302,8 @@ The convention distinguishes patterns by case:
 
 ### 6.4 If-Let Bindings
 
+> **Status: Parsed but not yet implemented** — the pattern is ignored in checker/codegen.
+
 Use `if let` when you only need to check for one variant:
 
 ```ents
@@ -1318,6 +1332,8 @@ if let RGB(r, g, b) = color {
 This is syntactic sugar for a match with a single pattern and wildcard fallthrough. Use `if let` when you care about one specific variant; use `match` when handling multiple variants or when exhaustiveness checking is valuable.
 
 ### 6.5 Let Destructuring
+
+> **Status: Not yet fully implemented in codegen.**
 
 ```ents
 // If-let with pattern

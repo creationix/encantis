@@ -20,7 +20,7 @@
 // The native-vs-wasm gap is inherent to any browser PoW scheme.
 // Sequential chaining eliminates the much larger GPU/SIMD multiplier.
 
-import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
+import "../gimli/gimli" "gimli" func gimli(state: *mut [12]u32)
 
 export "mem" memory
 

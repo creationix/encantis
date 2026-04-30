@@ -16,7 +16,7 @@
 //
 // See pow-sequential.ents for a design that defeats parallelization
 
-import "../gimli/gimli" "gimli" func gimli(state: *[12]u32)
+import "../gimli/gimli" "gimli" func gimli(state: *mut [12]u32)
 
 export "mem" memory
 

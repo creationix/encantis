@@ -12,11 +12,15 @@ Encantis is a programming language that compiles to WebAssembly.
 This is a bun workspace with three packages:
 
 - **`packages/compiler/`** - Core language implementation (`@encantis/compiler`)
-  - `src/parser.ts` - Parser (ohm-js based, matches grammar spec)
-  - `src/codegen.ts` - WAT code generation
-  - `src/checker.ts` - Type checker and semantic analysis
-  - `src/ast.ts` - AST type definitions
-  - `src/grammar/` - Grammar definitions
+  - `parser.ts` - Parser (ohm-js based, matches grammar spec)
+  - `codegen.ts` - WAT code generation
+  - `checker.ts` - Type checker and semantic analysis
+  - `ast.ts` - AST type definitions
+  - `types.ts` - Resolved type system (ResolvedType, type assignability)
+  - `meta.ts` - LSP metadata (symbols, hints, hover)
+  - `encantis-grammar.ohm` - Ohm grammar (bundle with `scripts/bundle-grammar.ts`)
+  - `encantis-actions.ts` - Parser semantic actions (Ohm → AST)
+  - `data-pack.ts` - Data section serialization
   - Exported as library with named exports: `parser`, `checker`, `codegen`, `ast`
 
 - **`packages/cli/`** - Command-line interface (`@encantis/cli`)
@@ -61,43 +65,10 @@ bun run watch:ext-web    # Watch extension (WebWorker)
 bun test                 # Run tests
 ```
 
-## Compiler Status
+## Key Design Decisions
 
-**Working:**
-- Parser (`packages/compiler/src/parser.ts`) - fully matches grammar spec
-- Type checker - basic semantic analysis
-- WAT codegen for examples:
-  - Imports, exports, functions
-  - Struct/tuple types (flattened to multiple wasm values, NOT memory pointers)
-  - Named returns, MemberExpr, StructPattern destructuring
-  - Binary operations with type inference
-  - Folded S-expression WAT output
+**Value types are register-flattened:** Structs, tuples, and `[N]T` fixed arrays compile to multiple wasm locals/params — no memory, no pointers. `point.x` → `(local.get $point_x)`. Nested access works: `rect.origin.x` → `(local.get $rect_origin_x)`.
 
-**Note:** Compiler has some pre-existing TypeScript type errors that need resolution.
+**`def` vs `data`:** `def` is pure compile-time substitution (scalars only). `data` embeds literals in the wasm data section and returns a pointer. `data buf = mut [0:u8; 1024]` → `*mut [1024]u8`.
 
-**Pending codegen features:**
-- IndexExpr (array access)
-- LoopStmt, WhileStmt, ForStmt
-- MatchExpr
-- CastExpr
-- GroupExpr passthrough
-
-## Key Design Decision: Struct/Tuple Semantics
-
-Structs and tuples are passed **by-value as multiple wasm values**, NOT as memory pointers:
-
-```encantis
-func to_polar(point: CartesianPoint) -> (out: PolarPoint)
-```
-
-Compiles to:
-```wat
-(func $to_polar (param $point_x f64) (param $point_y f64) (result f64 f64)
-  (local $out_d f64)
-  (local $out_a f64)
-  ...
-)
-```
-
-- `point.x` becomes `(local.get $point_x)` - simple local access, no memory loads
-- Struct fields are flattened with underscore: `point` → `$point_x`, `$point_y`
+**Const-by-default pointers:** `*T` is read-only, `*mut T` is writable. Same for `[]T`/`[]mut T` and `[*]T`/`[*]mut T`. Writes through const pointers are checker errors. Mutable pointers coerce to const (widening).

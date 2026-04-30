@@ -322,11 +322,11 @@ bool                   // boolean
 **u8                   // pointer to pointer
 ```
 
-### Bracket Types (Pointers)
+### Bracket Types
 
 [Grammar: `BaseType` array case, `arrayTypePrefix`](../packages/compiler/src/grammar/encantis.ohm#L110-L118)
 
-All bracket types are pointers (no by-value arrays).
+`[N]T` with a fixed numeric size is a value type (flattened to N wasm values). Other bracket types are pointers.
 
 **Many-pointer** (thin, just ptr):
 ```encantis
