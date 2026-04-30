@@ -402,6 +402,10 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
       // Just type, no symbol - use expr if available for full context
       let displayName = hint.expr ?? word;
+      // Wrap unquoted string values (template literal segments) in quotes
+      if (/^\[?]?u8$|^\*\[\d+]u8$/.test(typeStr) && !/^["'`[]/.test(displayName)) {
+        displayName = `"${displayName}"`;
+      }
       // Truncate long string literals (over 40 chars) for readability
       if (displayName.startsWith('"') && displayName.length > 40) {
         displayName = `${displayName.slice(0, 37)}..."`;
