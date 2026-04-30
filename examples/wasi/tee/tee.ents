@@ -5,6 +5,7 @@
 import "wasi_snapshot_preview1" (
   "fd_read" func wasi_fd_read(fd:i32, iovs:[][]mut u8, nread:*mut u32) -> i32
   "fd_write" func wasi_fd_write(fd:i32, iovs:[][]u8, nwritten:*mut u32) -> i32
+  "proc_exit" func wasi_proc_exit(code:i32)
 )
 
 export memory
@@ -13,23 +14,50 @@ def stdin = 0:i32
 def stdout = 1:i32
 def stderr = 2:i32
 
+data errnos:[][]u8 = [
+  "ESUCCESS", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL",
+  "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG",
+  "EBUSY", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET",
+  "EDEADLK", "EDESTADDRREQ", "EDOM", "EDQUOT", "EEXIST",
+  "EFAULT", "EFBIG", "EHOSTUNREACH", "EIDRM", "EILSEQ",
+  "EINPROGRESS", "EINTR", "EINVAL", "EIO", "EISCONN",
+  "EISDIR", "ELOOP", "EMFILE", "EMLINK", "EMSGSIZE",
+  "EMULTIHOP", "ENAMETOOLONG", "ENETDOWN", "ENETRESET", "ENETUNREACH",
+  "ENFILE", "ENOBUFS", "ENODEV", "ENOENT", "ENOEXEC",
+  "ENOLCK", "ENOLINK", "ENOMEM", "ENOMSG", "ENOPROTOOPT",
+  "ENOSPC", "ENOSYS", "ENOTCONN", "ENOTDIR", "ENOTEMPTY",
+  "ENOTRECOVERABLE", "ENOTSOCK", "ENOTSUP", "ENOTTY", "ENXIO",
+  "EOVERFLOW", "EOWNERDEAD", "EPERM", "EPIPE", "EPROTO",
+  "EPROTONOSUPPORT", "EPROTOTYPE", "ERANGE", "EROFS", "ESPIPE",
+  "ESRCH", "ESTALE", "ETIMEDOUT", "ETXTBSY", "EXDEV",
+  "ENOTCAPABLE"
+]
+
+data err_iovecs:[]mut[]u8 = mut ["", "", "\n"]
+
+func die(msg:[]u8, code:i32) {
+  let nwritten = &0:u32
+  err_iovecs[0] = msg
+  err_iovecs[1] = errnos[code]
+  let res = wasi_fd_write(stderr, err_iovecs, nwritten)
+  wasi_proc_exit(code)
+}
+
 export "_start" func main() {
   let nread = &0:u32
   let nwritten = &0:u32
   let iovecs:[][]mut u8 = [mut [0:u8;1024]]
   loop {
-    // Set iovec buf_len to full buffer size for reading
     iovecs[0].len = 1024
     let res = wasi_fd_read(stdin, iovecs, nread)
-    break when res != 0
+    if res != 0 { die("Error reading from stdin: ", res) }
     break when nread.* == 0
 
-    // Update iovec buf_len to actual bytes read
     iovecs[0].len = nread.*
     res = wasi_fd_write(stdout, iovecs, nwritten)
-    break when res != 0
+    if res != 0 { die("Error writing to stdout: ", res) }
 
     res = wasi_fd_write(stderr, iovecs, nwritten)
-    break when res != 0
+    if res != 0 { wasi_proc_exit(res) }
   }
 }

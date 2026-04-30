@@ -393,7 +393,7 @@ function multiV128UnaryOp(n: number, wasmOp: string, operand: string, constant?:
   return parts.map(p => constant ? `(${wasmOp} ${constant} ${p})` : `(${wasmOp} ${p})`).join(' ')
 }
 
-function v128LoadSequence(type: ResolvedType, ptr: string): string {
+function loadFromMemory(type: ResolvedType, ptr: string): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
     return Array.from({ length: nw }, (_, i) =>
@@ -415,7 +415,7 @@ function v128LoadSequence(type: ResolvedType, ptr: string): string {
   return `(${wt}.load ${ptr})`
 }
 
-function v128StoreSequence(type: ResolvedType, ptr: string, value: string): string {
+function storeToMemory(type: ResolvedType, ptr: string, value: string): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
     const parts = splitV128Components(value, nw)
@@ -424,6 +424,10 @@ function v128StoreSequence(type: ResolvedType, ptr: string, value: string): stri
     ).join('\n')
   }
   const u = unwrap(type)
+  if (u.kind === 'slice') {
+    const parts = splitV128Components(value, 2)
+    return `(i32.store ${ptr} ${parts[0]})\n(i32.store offset=4 ${ptr} ${parts[1]})`
+  }
   if (u.kind === 'primitive') {
     if (u.name === 'u8' || u.name === 'i8') return `(i32.store8 ${ptr} ${value})`
     if (u.name === 'u16' || u.name === 'i16') return `(i32.store16 ${ptr} ${value})`
@@ -1038,7 +1042,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
           const fieldType = lookupExprType(expr, ctx)
           if (fieldType) {
             const fieldAddr = fieldOff === 0 ? addr : `(i32.add ${addr} (i32.const ${fieldOff}))`
-            return v128LoadSequence(fieldType, fieldAddr)
+            return loadFromMemory(fieldType, fieldAddr)
           }
         }
       }
@@ -1083,7 +1087,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     if (!type) {
       throw new Error(`Missing type for pointer dereference at offset ${expr.span.start}`)
     }
-    return v128LoadSequence(type, ptr)
+    return loadFromMemory(type, ptr)
   }
 
   if (member.kind === 'type') {
@@ -1176,7 +1180,7 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   }
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (type.kind === 'pointer') return offset
-  return v128LoadSequence(type, offset)
+  return loadFromMemory(type, offset)
 }
 
 function evalComptimeIndex(expr: AST.Expr): number | null {
@@ -1750,7 +1754,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
       if (!type) {
         throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
       }
-      return v128StoreSequence(type, ptr, value)
+      return storeToMemory(type, ptr, value)
     }
     // Field access on memory-backed value (e.g., iovecs[0].len = x)
     if (member.kind === 'field') {
@@ -1763,7 +1767,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
             const fieldType = lookupExprType(target, ctx)
             if (fieldType) {
               const addr = fieldOff === 0 ? ptr : `(i32.add ${ptr} (i32.const ${fieldOff}))`
-              return v128StoreSequence(fieldType, addr, value)
+              return storeToMemory(fieldType, addr, value)
             }
           }
         }
@@ -1810,7 +1814,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
       ptr = parts[0]
     }
     const { offset } = indexOffset(target.object, ptr, idx, ctx)
-    return v128StoreSequence(type, offset, value)
+    return storeToMemory(type, offset, value)
   }
 
   return ''
