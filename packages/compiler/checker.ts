@@ -833,34 +833,62 @@ class CheckContext {
   }
 
   // Check that an assignment target is mutable (for pointer writes)
+  // Mutability is fine-grained: writing through a const outer pointer is OK
+  // if the inner type at the write point is mutable.
   private checkMutability(target: AST.LValue, offset: number): void {
-    // IndexExpr: arr[i] = x — check if arr's pointer type is mutable
-    if (target.kind === 'IndexExpr') {
-      const objType = this.inferExpr(target.object)
-      const u = unwrap(objType)
+    // Find the deepest pointer/slice in the lvalue chain and check its mutability
+    const writeType = this.findWritePointerType(target)
+    if (writeType) {
+      const u = unwrap(writeType)
       if (u.kind === 'pointer' && !u.mutable) {
-        this.error(offset, `cannot write through const pointer — use *mut or []mut for mutable access`)
+        this.error(offset, `cannot write through const pointer — use *mut for mutable access`)
       }
       if (u.kind === 'slice' && !u.mutable) {
         this.error(offset, `cannot write through const slice — use []mut for mutable access`)
       }
     }
-    // MemberExpr with deref: p.* = x — check pointer mutability
+  }
+
+  // Walk an lvalue to find the pointer/slice type that gates the write.
+  // For `arr[i] = x`, it's arr's type.
+  // For `arr[i].field = x`, it's the element type of arr (the inner pointer/slice).
+  // For `p.* = x`, it's p's type.
+  private findWritePointerType(target: AST.LValue): ResolvedType | null {
+    // Direct index: arr[i] = x — the write goes through arr's pointer
+    if (target.kind === 'IndexExpr') {
+      return this.inferExpr(target.object)
+    }
+    // Deref: p.* = x — the write goes through p
     if (target.kind === 'MemberExpr' && target.member.kind === 'deref') {
-      const objType = this.inferExpr(target.object)
-      const u = unwrap(objType)
-      if (u.kind === 'pointer' && !u.mutable) {
-        this.error(offset, `cannot write through const pointer — use *mut for mutable access`)
-      }
+      return this.inferExpr(target.object)
     }
-    // MemberExpr with type pun: p.u32 = x — check pointer mutability
+    // Type pun: p.u32 = x — the write goes through p
     if (target.kind === 'MemberExpr' && target.member.kind === 'type') {
-      const objType = this.inferExpr(target.object)
-      const u = unwrap(objType)
-      if (u.kind === 'pointer' && !u.mutable) {
-        this.error(offset, `cannot write through const pointer — use *mut for mutable access`)
+      return this.inferExpr(target.object)
+    }
+    // Field access: obj.field = x — the write goes through whatever pointer/slice
+    // holds obj in memory. Walk inward to find it.
+    if (target.kind === 'MemberExpr' && target.member.kind === 'field') {
+      if (target.object.kind === 'IndexExpr') {
+        // arr[i].field = x — the element type determines mutability
+        const arrType = this.inferExpr(target.object.object)
+        const u = unwrap(arrType)
+        if (u.kind === 'pointer' && u.pointee.kind === 'array') return this.elementPointerType(u.pointee.element)
+        if (u.kind === 'slice') return this.elementPointerType(u.element)
+      }
+      if (target.object.kind === 'MemberExpr' && target.object.member.kind === 'deref') {
+        return this.inferExpr(target.object.object)
       }
     }
+    return null
+  }
+
+  // If a type is a pointer or slice, return it as-is (it has its own mutability).
+  // Otherwise return null (value types don't have pointer-level mutability).
+  private elementPointerType(type: ResolvedType): ResolvedType | null {
+    const u = unwrap(type)
+    if (u.kind === 'pointer' || u.kind === 'slice') return u
+    return null
   }
 
   // Check if an expression (or its inner literal) has the mut flag
@@ -1657,10 +1685,9 @@ class CheckContext {
       return resolvedExpected
     }
 
-    // Handle mut literal against pointer/slice target: allocate in data section
+    // Array/string literals against pointer/slice target: allocate in data section
     if (
       this.isDataLiteralExpr(expr) &&
-      this.exprHasMut(expr) &&
       (expected.kind === 'pointer' && expected.pointee.kind === 'array' ||
        expected.kind === 'slice')
     ) {

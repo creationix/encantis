@@ -549,6 +549,23 @@ class MetaBuilder {
     this.addSymbol(decl.ident, 'data', sym.type, offset, valueStr)
   }
 
+  private findDataInfoForExpr(expr: AST.Expr, type: ResolvedType): string | undefined {
+    // Try the expression itself
+    const tryId = (e: AST.Expr): string | undefined => {
+      const id = (e as { dataId?: number }).dataId ?? e.span.start
+      const entry = this.literalMap.get(id)
+      if (entry) return this.formatDataRef(entry, type)
+      return undefined
+    }
+    const direct = tryId(expr)
+    if (direct) return direct
+    // Unwrap UnaryExpr (& or mut)
+    if (expr.kind === 'UnaryExpr') return this.findDataInfoForExpr(expr.operand, type)
+    // Unwrap AnnotationExpr
+    if (expr.kind === 'AnnotationExpr') return this.findDataInfoForExpr(expr.expr, type)
+    return undefined
+  }
+
   private formatDataRef(ref: DataRef, type: ResolvedType): string {
     const u = unwrap(type)
     if (u.kind === 'slice') {
@@ -730,7 +747,7 @@ class MetaBuilder {
   private generateHintsForStmt(stmt: AST.Statement): void {
     switch (stmt.kind) {
       case 'LetStmt':
-        this.generateHintsForPattern(stmt.pattern)
+        this.generateHintsForLetPattern(stmt.pattern, stmt.value ?? null)
         if (stmt.type) this.generateHintsForTypeExpr(stmt.type)
         if (stmt.value) this.generateHintsForExpr(stmt.value)
         break
@@ -781,6 +798,23 @@ class MetaBuilder {
       case 'ContinueStmt':
         if (stmt.when) this.generateHintsForExpr(stmt.when)
         break
+    }
+  }
+
+  private generateHintsForLetPattern(pattern: AST.Pattern, value: AST.Expr | null): void {
+    if (pattern.kind === 'IdentPattern') {
+      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      if (type) {
+        const typeIndex = this.typeRegistry.register(type)
+        const symbolIndex = this.symbolIndexByName.get(pattern.name)
+        let dataInfo: string | undefined
+        if (value) {
+          dataInfo = this.findDataInfoForExpr(value, type)
+        }
+        this.addHint(pattern.span.start, pattern.name.length, typeIndex, symbolIndex, dataInfo)
+      }
+    } else {
+      this.generateHintsForPattern(pattern)
     }
   }
 
@@ -1132,8 +1166,9 @@ class MetaBuilder {
   private generateHintsForDef(decl: AST.DefDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
+      const symbol = this.symbols[symbolIndex]
       const offset = this.findDefIdentOffset(decl)
-      this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
+      this.addHint(offset, decl.ident.length, symbol.type, symbolIndex, symbol.value)
     }
     this.generateHintsForExpr(decl.value)
   }
@@ -1141,8 +1176,9 @@ class MetaBuilder {
   private generateHintsForData(decl: AST.DataDecl): void {
     const symbolIndex = this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
+      const symbol = this.symbols[symbolIndex]
       const offset = this.findDataIdentOffset(decl)
-      this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
+      this.addHint(offset, decl.ident.length, symbol.type, symbolIndex, symbol.value)
     }
     this.generateHintsForExpr(decl.value)
   }
