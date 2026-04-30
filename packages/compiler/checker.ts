@@ -1966,6 +1966,17 @@ class CheckContext {
             )
           }
         }
+        if (annotationType.kind === 'pointer' && annotationType.pointee.kind === 'array' &&
+            annotationType.pointee.sizes?.includes('_')) {
+          const literalSize = this.getLiteralSize(expr.expr)
+          if (typeof literalSize === 'number') {
+            annotationType = pointer(
+              array(annotationType.pointee.element, annotationType.pointee.sizes.map(s => s === '_' ? literalSize : s)),
+              annotationType.boundary,
+              annotationType.mutable,
+            )
+          }
+        }
         return annotationType
       }
     }

@@ -2402,7 +2402,7 @@ function collectLocals(
   function visitExpr(expr: AST.Expr) {
     if (expr.kind === 'IfExpr') {
       // Collect if-let binding locals
-      if (expr.pattern && expr.pattern.kind === 'binding' && expr.condition.kind === 'IndexExpr') {
+      if (expr.pattern && expr.pattern.kind === 'binding') {
         const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
         if (elemType) {
           const name = expr.pattern.name
@@ -2419,12 +2419,15 @@ function collectLocals(
             })
             ctx.locals.set(name, names)
           }
-          // Temporary locals for bounds checking
           const uid = expr.span.start
-          locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
+          if (expr.condition.kind === 'IndexExpr') {
+            // Temporary locals for bounds checking
+            locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
+            ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
+          }
+          // Temporary locals for null check
           locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
           locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
-          ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
           ctx.locals.set(`__iflet_ptr_${uid}`, [`__iflet_ptr_${uid}`])
           ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
         }

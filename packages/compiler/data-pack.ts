@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import type { ArrayRT, ArraySize, ResolvedType } from './types'
+import { isOptional, type ArrayRT, type ArraySize, type ResolvedType } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -113,7 +113,12 @@ export class DataSectionBuilder {
   // Intern arbitrary bytes, returning a DataRef
   // Used by type-aware serialization
   // If skipDedup is true, always allocate new space (for mutable data)
-  internBytes(bytes: Uint8Array, skipDedup = false): DataRef {
+  internBytes(bytes: Uint8Array, skipDedup = false, isOptional = false): DataRef {
+    // Avoid placing optional-typed data at offset 0 (null sentinel)
+    if (isOptional && this.currentOffset === 0) {
+      this.currentOffset = 4
+    }
+
     const key = bytesToKey(bytes)
 
     if (!skipDedup) {
@@ -418,7 +423,8 @@ function serializeMerged(
   skipDedup: boolean,
 ): DataRef {
   const bytes = buildMergedBytes(expr, targetType)
-  return builder.internBytes(bytes, skipDedup)
+  const optional = isOptional(targetType.element)
+  return builder.internBytes(bytes, skipDedup, optional)
 }
 
 // Build the complete byte sequence for merged brackets
@@ -601,7 +607,8 @@ function serializeSeparate(
   const isSlice = elemIsSlice || targetType.sizes === null || (targetType.sizes.length === 0)
   const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
 
-  const ref = builder.internBytes(pointerBytes, skipDedup)
+  const optional = isOptional(targetType.element)
+  const ref = builder.internBytes(pointerBytes, skipDedup, optional)
   return { ptr: ref.ptr, len: childRefs.length }
 }
 

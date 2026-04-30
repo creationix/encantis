@@ -1,0 +1,66 @@
+// Optional types: ?*T and ?[]T
+// Sentinel is ptr=0 (null), checked via i32.eqz
+
+export memory
+
+// --- Setup: data section arrays for indexing examples ---
+
+data names:[][]u8 = ["Alice", "Bob", "Charlie"]
+data scores = [95, 87, 42]:*[_]i32
+
+// --- 1. Optional pointer parameter: ?*T ---
+
+// Accept a nullable pointer; unwrap with if-let
+export func deref_or_zero(p: ?*u32) -> u32 {
+  if let val = p {
+    return val.*
+  }
+  return 0
+}
+
+// --- 2. Optional slice parameter: ?[]T ---
+
+// Accept a nullable slice; unwrap with ??
+export func slice_len(s: ?[]u8) -> u32 {
+  let resolved = s ?? "empty"
+  return resolved.len
+}
+
+// --- 3. Bounds-checked indexing on []T (pointer/slice elements) ---
+
+// Runtime index on [][]u8 returns ?[]u8
+export func get_name(i: u32) -> []u8 {
+  return names[i] ?? "Unknown"
+}
+
+// if-let with bounds-checked index
+export func name_len(i: u32) -> u32 {
+  if let name = names[i] {
+    return name.len
+  }
+  return 0
+}
+
+// --- 4. Bounds-checked indexing on *[N]T (primitive elements) ---
+
+// Primitive elements require immediate ?? or if-let (no ?i32 type)
+export func get_score(i: u32) -> i32 {
+  return scores[i] ?? -1
+}
+
+export func has_score(i: u32) -> bool {
+  if let score = scores[i] {
+    return score > 0
+  }
+  return false
+}
+
+// --- 5. Storing optional values for later resolution ---
+
+export func find_name(i: u32) -> u32 {
+  // ?[]u8 — deferred resolution
+  let maybe = names[i]
+  // Resolve later with ??
+  let resolved = maybe ?? "nobody"
+  return resolved.len
+}
