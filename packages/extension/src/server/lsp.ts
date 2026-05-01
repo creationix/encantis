@@ -8,6 +8,7 @@ import {
   TextDocuments,
   Diagnostic as LSPDiagnostic,
   DiagnosticSeverity,
+  DiagnosticTag,
   ProposedFeatures,
   type InitializeParams,
   type InitializeResult,
@@ -23,6 +24,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import { formatEncantis } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
@@ -205,6 +207,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       hoverProvider: true,
+      documentFormattingProvider: true,
       semanticTokensProvider: {
         legend: tokenLegend,
         full: true,
@@ -260,14 +263,23 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
   analysisCache.set(textDocument.uri, { text, meta });
 
   // Convert meta errors and warnings to diagnostics
+  const tokenLen = (line: number, col: number): number => {
+    const lines = text.split('\n');
+    if (line >= lines.length) return 1;
+    const rest = lines[line].slice(col);
+    const m = rest.match(/^[a-zA-Z_-][a-zA-Z0-9_-]*/);
+    return m ? m[0].length : Math.max(1, rest.match(/^\S+/)?.[0]?.length ?? 1);
+  };
+
   if (meta.errors) {
     for (const error of meta.errors) {
       const [line, col] = error.pos.split(':').map(Number);
+      const len = tokenLen(line, col);
       diagnostics.push({
         severity: DiagnosticSeverity.Error,
         range: {
           start: { line, character: col },
-          end: { line, character: col + 1 },
+          end: { line, character: col + len },
         },
         message: error.message,
         source: 'encantis',
@@ -277,14 +289,17 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
   if (meta.warnings) {
     for (const warning of meta.warnings) {
       const [line, col] = warning.pos.split(':').map(Number);
+      const len = tokenLen(line, col);
+      const isUnused = warning.message.includes('is never used');
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: {
           start: { line, character: col },
-          end: { line, character: col + 1 },
+          end: { line, character: col + len },
         },
         message: warning.message,
         source: 'encantis',
+        ...(isUnused ? { tags: [DiagnosticTag.Unnecessary] } : {}),
       });
     }
   }
@@ -643,6 +658,25 @@ function getWordAtOffset(text: string, offset: number): { word: string; start: n
 function isWordChar(ch: string): boolean {
   return /[a-zA-Z0-9_-]/.test(ch);
 }
+
+// -----------------------------------------------------------------------------
+// Formatting
+// -----------------------------------------------------------------------------
+
+connection.onDocumentFormatting((params) => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+  const text = doc.getText();
+  const formatted = formatEncantis(text);
+  if (formatted === text) return [];
+  return [{
+    range: {
+      start: { line: 0, character: 0 },
+      end: doc.positionAt(text.length),
+    },
+    newText: formatted,
+  }];
+});
 
 // -----------------------------------------------------------------------------
 // Document Events

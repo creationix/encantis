@@ -148,8 +148,8 @@ func blake2b-256(input:[]u8) -> (hash:u256) {
   }
 
   // Final block - pad with zeros
-  memset(pad.u8, 0, 128)
-  memcpy(pad.u8, ptr, remaining)
+  memset(pad, 0, 128)
+  memcpy(pad, ptr, remaining)
 
   t_lo += remaining
   if t_lo < remaining { t_hi += 1 }
@@ -179,8 +179,8 @@ func blake2b-512(input:[]u8) -> (hash:u512) {
   }
 
   // Final block - pad with zeros
-  memset(pad.u8, 0, 128)
-  memcpy(pad.u8, ptr, remaining)
+  memset(pad, 0, 128)
+  memcpy(pad, ptr, remaining)
 
   t_lo += remaining
   if t_lo < remaining { t_hi += 1 }

@@ -143,7 +143,7 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
 
   // Pad final block(s)
   // Copy remaining bytes
-  memset(pad_block as [*]u8, 0, 128)
+  memset(pad_block, 0, 128)
   let n: u32 = 0
   while n < remaining {
     pad_block.u8[n] = ptr[n]
@@ -156,7 +156,7 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   if remaining >= 112 {
     // Need two blocks: current + one more
     compress(pad_block)
-    memset(pad_block as [*]u8, 0, 128)
+    memset(pad_block, 0, 128)
   }
 
   // Append length in bits as big-endian u64 at end of block

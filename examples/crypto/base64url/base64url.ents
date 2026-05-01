@@ -14,7 +14,7 @@ func encoded_len(input_len: u32) -> u32 {
 }
 
 // Encode input bytes to base64url, writing to output buffer.
-// Returns number of bytes written.
+// Returns number of bytes written or 0xFFFFFFFF if output is too small
 export func encode(input: []u8, output: []mut u8) -> (written: u32) {
   return 0xFFFFFFFF when encoded_len(input.len) > output.len
   let i: u32 = 0

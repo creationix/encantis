@@ -18,7 +18,7 @@ data full_hash = mut [0:u8; 64]
 // Public API: SHA-512/256
 export func sha512-256(input: []u8, output: *[32]u8) {
   sha512-with-iv(iv256, input, full_hash)
-  memcpy(output as [*]u8, full_hash as [*]u8, 32)
+  memcpy(output, full_hash, 32)
 }
 
 test "sha512-256" {

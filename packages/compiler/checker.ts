@@ -172,6 +172,27 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     }
     sym.type = concretizeType(sym.type, opts) as typeof sym.type
   }
+  // Warn on unused symbols (dead code)
+  const exportedNames = new Set<string>()
+  for (const decl of module.decls) {
+    if (decl.kind === 'ExportDecl') {
+      const item = decl.item
+      if (item.kind === 'FuncDecl' && item.ident) exportedNames.add(item.ident)
+      if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') exportedNames.add(item.pattern.name)
+      if (item.kind === 'MemoryDecl') exportedNames.add('memory')
+    }
+  }
+  for (const [name, defOffset] of ctx.symbolDefOffsets) {
+    if (exportedNames.has(name)) continue
+    const refs = ctx.references.get(defOffset)
+    if (refs && refs.length === 0) {
+      const sym = ctx.moduleScope.symbols.get(name)
+      if (sym && (sym.kind === 'func' || sym.kind === 'def' || sym.kind === 'global')) {
+        ctx.warnings.push({ offset: defOffset, message: `'${name}' is never used` })
+      }
+    }
+  }
+
   return {
     types: ctx.types,
     symbols: ctx.moduleScope.symbols,
@@ -559,12 +580,18 @@ class CheckContext {
 
   // Resolve forward references in all collected types
   resolveForwardRefs(): void {
-    // Update all type symbols to resolve forward references
+    // First pass: resolve type aliases
     for (const [name, sym] of this.moduleScope.symbols) {
       if (sym.kind === 'type') {
         const resolved = this.resolveForwardRefsInType(sym.type)
         this.moduleScope.symbols.set(name, { ...sym, type: resolved })
         this.typeCache.set(name, resolved)
+      }
+    }
+    // Second pass: resolve forward refs in all other symbols (funcs, globals, etc.)
+    for (const [, sym] of this.moduleScope.symbols) {
+      if (sym.kind !== 'type') {
+        sym.type = this.resolveForwardRefsInType(sym.type) as typeof sym.type
       }
     }
   }
@@ -583,13 +610,13 @@ class CheckContext {
       }
 
       case 'pointer':
-        return pointer(this.resolveForwardRefsInType(t.pointee))
+        return pointer(this.resolveForwardRefsInType(t.pointee), t.boundary, t.mutable, t.optional)
 
       case 'array':
         return array(this.resolveForwardRefsInType(t.element), t.sizes)
 
       case 'slice':
-        return slice(this.resolveForwardRefsInType(t.element))
+        return slice(this.resolveForwardRefsInType(t.element), t.mutable, t.optional)
 
       case 'tuple':
         return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type))))
@@ -1046,6 +1073,26 @@ class CheckContext {
       }
     }
 
+    // Handle member access: .len and .wid on pointer-to-array types
+    if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
+      const objOffset = exprTypeOffset(expr.object)
+      const objType = this.types.get(typeKey(objOffset, expr.object.kind))
+        ?? (expr.object.kind === 'IdentExpr' ? this.lookup(expr.object.name)?.type : undefined)
+      if (objType) {
+        const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
+          : objType.kind === 'array' ? objType : null
+        if (arrType?.kind === 'array' && arrType.sizes) {
+          if (expr.member.name === 'len' && arrType.sizes.length === 1 && typeof arrType.sizes[0] === 'number') {
+            return { kind: 'int', value: BigInt(arrType.sizes[0]) }
+          }
+          if (expr.member.name === 'wid') {
+            const elemSize = byteSize(arrType.element)
+            if (elemSize !== null) return { kind: 'int', value: BigInt(elemSize) }
+          }
+        }
+      }
+    }
+
     // Handle sizeof expression
     if (expr.kind === 'SizeofExpr') {
       const resolvedType = this.resolveType(expr.type)
@@ -1130,6 +1177,49 @@ class CheckContext {
       }
     }
     this.currentScope = prevScope
+  }
+
+  private checkMemOpPtr(expr: AST.Expr, context: string): void {
+    const type = this.inferExpr(expr)
+    const u = unwrap(type)
+    if (u.kind === 'pointer' && u.pointee.kind === 'array') {
+      if (u.pointee.sizes === null) {
+        this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
+      }
+      return
+    }
+    this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
+  }
+
+  private checkMemOpBounds(ptrExpr: AST.Expr, lenExpr: AST.Expr, op: string): void {
+    // Find buffer size from the dest pointer type
+    let srcExpr = ptrExpr
+    if (srcExpr.kind === 'CastExpr') srcExpr = srcExpr.expr
+    if (srcExpr.kind === 'MemberExpr' && srcExpr.member.kind === 'type') srcExpr = srcExpr.object
+
+    const srcOffset = exprTypeOffset(srcExpr)
+    const srcType = this.types.get(typeKey(srcOffset, srcExpr.kind))
+    if (!srcType) return
+
+    const arrType = srcType.kind === 'pointer' && srcType.pointee.kind === 'array' ? srcType.pointee : null
+    if (!arrType?.sizes || !arrType.sizes.every(s => typeof s === 'number')) return
+
+    const totalCount = totalElements(arrType.sizes)
+    if (totalCount === null) return
+    const elemSize = byteSize(arrType.element)
+    if (elemSize === null) return
+    const bufferSize = totalCount * elemSize
+
+    // Length must be a comptime constant to verify bounds
+    const len = this.evalComptimeExpr(lenExpr)
+    if (!len || len.kind !== 'int') {
+      this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`)
+      return
+    }
+
+    if (Number(len.value) > bufferSize) {
+      this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`)
+    }
   }
 
   private isManyPointer(t: ResolvedType): boolean {
@@ -2157,44 +2247,46 @@ class CheckContext {
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
     switch (name) {
+      case 'memzero': {
+        // memzero(dest: *[N]T) -> ()
+        if (args.length !== 1) {
+          this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
+          return VOID
+        }
+        this.checkMemOpPtr(args[0].value, 'memzero dest')
+        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
+        return VOID
+      }
+
       case 'memset': {
-        // memset(dest: [*]u8, value: u8, len: u32) -> ()
-        // Low-level byte-based memory fill
+        // memset(dest: *[N]T, value: u8, len: u32) -> ()
         if (args.length !== 3) {
           this.error(expr.span.start, `memset expects 3 arguments (dest, value, len), got ${args.length}`)
           return VOID
         }
 
-        // Dest must be [*]u8 (many-pointer to bytes)
-        this.checkExpr(args[0].value, manyPointer(primitive('u8')), 'memset dest')
-
-        // Value should be u8 (byte value)
+        this.checkMemOpPtr(args[0].value, 'memset dest')
         this.checkExpr(args[1].value, primitive('u8'), 'memset value')
-
-        // Length in bytes (u32 for full memory range)
         this.checkExpr(args[2].value, primitive('u32'), 'memset len')
+        this.checkMemOpBounds(args[0].value, args[2].value, 'memset')
 
-        // Record as builtin call for codegen
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
       }
 
       case 'memcpy': {
-        // memcpy(dest: [*]u8, src: [*]u8, len: u32) -> ()
-        // Low-level byte-based memory copy
+        // memcpy(dest: *[_]u8, src: *[_]u8, len: u32) -> ()
         if (args.length !== 3) {
           this.error(expr.span.start, `memcpy expects 3 arguments (dest, src, len), got ${args.length}`)
           return VOID
         }
 
-        // Both must be [*]u8 (many-pointers to bytes)
-        this.checkExpr(args[0].value, manyPointer(primitive('u8')), 'memcpy dest')
-        this.checkExpr(args[1].value, manyPointer(primitive('u8')), 'memcpy src')
-
-        // Length in bytes (u32 for full memory range)
+        this.checkMemOpPtr(args[0].value, 'memcpy dest')
+        this.inferExpr(args[1].value)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
+        this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')
+        this.checkMemOpBounds(args[1].value, args[2].value, 'memcpy')
 
-        // Record as builtin call for codegen
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
       }
@@ -2357,8 +2449,18 @@ class CheckContext {
       return primitive('bool')
     }
 
-    // Arithmetic/bitwise: determine result type, then propagate to comptime operands
-    // Strip range from result — arithmetic on u32<8 produces u32, not u32<8>
+    // Arithmetic with a comptime constant propagates ranges:
+    //   u32<4 + 4 → u32<8    (max value: 3+4=7, so <8)
+    //   u32<6 * 20 → u32<120 (max value: 5*20=100, so <120... actually (6-1)*20+1 is wrong)
+    // For +: u32<N + K → u32<(N+K)      max val is (N-1)+K, so < N+K
+    // For *: u32<N * K → u32<((N-1)*K+1) max val is (N-1)*K, so < (N-1)*K+1
+    const computeRange = (base: ResolvedType, operand: bigint): ResolvedType => {
+      if (base.kind !== 'primitive' || base.max === undefined || operand < 0n) return stripMax(base)
+      if (expr.op === '+') return primitive(base.name, base.max + Number(operand))
+      if (expr.op === '*' && operand > 0n) return primitive(base.name, (base.max - 1) * Number(operand) + 1)
+      return stripMax(base)
+    }
+
     let resultType = stripMax(leftType)
     if (left.kind === 'primitive' && right.kind === 'primitive') {
       const leftSize = byteSize(left)
@@ -2366,6 +2468,10 @@ class CheckContext {
       if (leftSize !== null && rightSize !== null && rightSize > leftSize) {
         resultType = stripMax(rightType)
       }
+    } else if (right.kind === 'comptime_int' && left.kind === 'primitive') {
+      resultType = computeRange(leftType, right.value)
+    } else if (left.kind === 'comptime_int' && right.kind === 'primitive') {
+      resultType = computeRange(rightType, left.value)
     } else if (rightIsComptime && left.kind === 'primitive') {
       resultType = stripMax(leftType)
     } else if (leftIsComptime && right.kind === 'primitive') {
@@ -2616,13 +2722,22 @@ class CheckContext {
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
-              // Runtime index: return optional if element can be optional, error otherwise
-              const elem = arrayType.element
-              if (elem.kind === 'pointer' || elem.kind === 'slice') {
-                return optionalOf(elem)
-              }
-              if (!this.insideIfLetCondition) {
-                this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+              const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+              if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
+                const elem = arrayType.element
+                const canBeOptional = elem.kind === 'pointer' || elem.kind === 'slice'
+                const hint = canBeOptional
+                  ? ` — narrow the index range or use 'if let'/'??' for bounds checking`
+                  : ` — narrow the index range to fit`
+                this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed *[${n}]${typeToString(elem)} bounds (max index ${idxType.max - 1} >= ${n})${hint}`)
+              } else {
+                const elem = arrayType.element
+                if (elem.kind === 'pointer' || elem.kind === 'slice') {
+                  return optionalOf(elem)
+                }
+                if (!this.insideIfLetCondition) {
+                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+                }
               }
             }
           } else if (idx.value < 0n || idx.value >= BigInt(n)) {

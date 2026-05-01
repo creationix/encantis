@@ -6,6 +6,7 @@ import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
+import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { resolve } from 'node:path'
@@ -627,71 +628,6 @@ switch (command) {
     console.error(`Error: Unknown command: ${command}`)
     usage()
     process.exit(1)
-}
-
-function formatEncantis(source: string): string {
-  // Phase 1: compute bracket depth at each character, skipping strings/comments
-  const depths = new Int32Array(source.length)
-  let depth = 0
-  let i = 0
-  while (i < source.length) {
-    const ch = source[i]
-    // Skip line comments
-    if (ch === '/' && source[i + 1] === '/') {
-      while (i < source.length && source[i] !== '\n') { depths[i] = depth; i++ }
-      continue
-    }
-    // Skip string literals
-    if (ch === '"' || ch === "'") {
-      const quote = ch
-      depths[i] = depth; i++
-      while (i < source.length && source[i] !== quote) {
-        if (source[i] === '\\') { depths[i] = depth; i++ }
-        depths[i] = depth; i++
-      }
-      if (i < source.length) { depths[i] = depth; i++ }
-      continue
-    }
-    // Skip hex string literals x"..."
-    if (ch === 'x' && source[i + 1] === '"') {
-      depths[i] = depth; i++
-      depths[i] = depth; i++
-      while (i < source.length && source[i] !== '"') { depths[i] = depth; i++ }
-      if (i < source.length) { depths[i] = depth; i++ }
-      continue
-    }
-    if (ch === '{') { depths[i] = depth; depth++; i++; continue }
-    if (ch === '}') { depth = Math.max(0, depth - 1); depths[i] = depth; i++; continue }
-    depths[i] = depth; i++
-  }
-
-  // Phase 2: re-indent each line based on the depth at its first non-whitespace char
-  const lines = source.split('\n')
-  const out: string[] = []
-  let prevBlank = false
-  let offset = 0
-
-  for (const raw of lines) {
-    const trimmed = raw.trim()
-    if (trimmed === '') {
-      if (!prevBlank && out.length > 0) out.push('')
-      prevBlank = true
-      offset += raw.length + 1
-      continue
-    }
-    prevBlank = false
-
-    // Find the depth at the first non-whitespace character
-    const firstCharOffset = offset + raw.indexOf(trimmed)
-    const lineDepth = firstCharOffset < depths.length ? depths[firstCharOffset] : 0
-
-    out.push('  '.repeat(lineDepth) + trimmed)
-    offset += raw.length + 1
-  }
-
-  while (out.length > 0 && out[out.length - 1] === '') out.pop()
-  out.push('')
-  return out.join('\n')
 }
 
 // Convert byte offset to line:column

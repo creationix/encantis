@@ -738,6 +738,16 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
   }
 
   switch (name) {
+    case 'memzero': {
+      // memzero(dest) -> memory.fill with 0, size from type
+      if (args.length !== 1) return null
+      const dest = exprToWat(args[0].value, ctx)
+      const destType = resolveExprType(args[0].value, ctx)
+      const size = destType ? byteSize(destType.kind === 'pointer' ? destType.pointee : destType) : null
+      if (size === null) return null
+      return `(memory.fill ${dest} (i32.const 0) (i32.const ${size}))`
+    }
+
     case 'memset': {
       // memset(dest, value, len) -> memory.fill
       if (args.length !== 3) return null

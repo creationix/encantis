@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, primitive, VOID, unwrap } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
@@ -14,9 +14,13 @@ import { buildDataSection, type DataRef } from './data-pack'
 
 const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
   // Memory operations
+  memzero: func(
+    [{ name: 'dest', type: pointer(array(primitive('u8'), ['_'])) }],
+    [],
+  ),
   memset: func(
     [
-      { name: 'dest', type: manyPointer(primitive('u8')) },
+      { name: 'dest', type: pointer(array(primitive('u8'), ['_'])) },
       { name: 'value', type: primitive('u8') },
       { name: 'len', type: primitive('u32') },
     ],
@@ -24,8 +28,8 @@ const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
   ),
   memcpy: func(
     [
-      { name: 'dest', type: manyPointer(primitive('u8')) },
-      { name: 'src', type: manyPointer(primitive('u8')) },
+      { name: 'dest', type: pointer(array(primitive('u8'), ['_'])) },
+      { name: 'src', type: pointer(array(primitive('u8'), ['_'])) },
       { name: 'len', type: primitive('u32') },
     ],
     [],
