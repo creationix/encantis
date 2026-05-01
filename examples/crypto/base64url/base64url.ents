@@ -15,11 +15,12 @@ func encoded_len(input_len: u32) -> u32 {
 
 // Encode input bytes to base64url, writing to output buffer.
 // Returns number of bytes written.
-export func encode(input: []u8, output: [*]mut u8) -> (written: u32) {
+export func encode(input: []u8, output: []mut u8) -> (written: u32) {
   let i: u32 = 0
   let o: u32 = 0
   let len = input.len
   let inp = input.ptr
+  let out = output.ptr
 
   // Process full 3-byte groups
   while i + 3 <= len {
@@ -28,10 +29,10 @@ export func encode(input: []u8, output: [*]mut u8) -> (written: u32) {
     let c = inp[i + 2]:u32
     let triple = (a << 16) | (b << 8) | c
 
-    output[o]     = encode_table.u8[(triple >> 18) & 0x3F]
-    output[o + 1] = encode_table.u8[(triple >> 12) & 0x3F]
-    output[o + 2] = encode_table.u8[(triple >> 6) & 0x3F]
-    output[o + 3] = encode_table.u8[triple & 0x3F]
+    out[o]     = encode_table.u8[(triple >> 18) & 0x3F]
+    out[o + 1] = encode_table.u8[(triple >> 12) & 0x3F]
+    out[o + 2] = encode_table.u8[(triple >> 6) & 0x3F]
+    out[o + 3] = encode_table.u8[triple & 0x3F]
 
     i += 3
     o += 4
@@ -41,17 +42,17 @@ export func encode(input: []u8, output: [*]mut u8) -> (written: u32) {
   let remaining = len - i
   if remaining == 1 {
     let a2 = inp[i]:u32
-    output[o]     = encode_table.u8[(a2 >> 2) & 0x3F]
-    output[o + 1] = encode_table.u8[(a2 << 4) & 0x3F]
+    out[o]     = encode_table.u8[(a2 >> 2) & 0x3F]
+    out[o + 1] = encode_table.u8[(a2 << 4) & 0x3F]
     o += 2
   }
   if remaining == 2 {
     let a3 = inp[i]:u32
     let b3 = inp[i + 1]:u32
     let pair = (a3 << 8) | b3
-    output[o]     = encode_table.u8[(pair >> 10) & 0x3F]
-    output[o + 1] = encode_table.u8[(pair >> 4) & 0x3F]
-    output[o + 2] = encode_table.u8[(pair << 2) & 0x3F]
+    out[o]     = encode_table.u8[(pair >> 10) & 0x3F]
+    out[o + 1] = encode_table.u8[(pair >> 4) & 0x3F]
+    out[o + 2] = encode_table.u8[(pair << 2) & 0x3F]
     o += 3
   }
 
@@ -103,12 +104,13 @@ func decoded_len(encoded_len: u32) -> u32 {
 
 // Decode base64url input to bytes, writing to output buffer.
 // Returns number of bytes written, or 0xFFFFFFFF on invalid input.
-export func decode(input: []u8, output: [*]mut u8) -> (written: u32) {
+export func decode(input: []u8, output: []mut u8) -> (written: u32) {
   init_decode()
   let i: u32 = 0
   let o: u32 = 0
   let len = input.len
   let inp = input.ptr
+  let out = output.ptr
 
   // Process full 4-char groups
   while i + 4 <= len {
@@ -119,9 +121,9 @@ export func decode(input: []u8, output: [*]mut u8) -> (written: u32) {
     return 0xFFFFFFFF when (a | b | c | d) & 0x80 != 0
 
     let quad = (a << 18) | (b << 12) | (c << 6) | d
-    output[o]     = (quad >> 16) as u8
-    output[o + 1] = (quad >> 8) as u8
-    output[o + 2] = quad as u8
+    out[o]     = (quad >> 16) as u8
+    out[o + 1] = (quad >> 8) as u8
+    out[o + 2] = quad as u8
 
     i += 4
     o += 3
@@ -133,7 +135,7 @@ export func decode(input: []u8, output: [*]mut u8) -> (written: u32) {
     let a2 = decode_table.u8[inp[i]]:u32
     let b2 = decode_table.u8[inp[i + 1]]:u32
     return 0xFFFFFFFF when (a2 | b2) & 0x80 != 0
-    output[o] = ((a2 << 2) | (b2 >> 4)) as u8
+    out[o] = ((a2 << 2) | (b2 >> 4)) as u8
     o += 1
   }
   if remaining == 3 {
@@ -142,8 +144,8 @@ export func decode(input: []u8, output: [*]mut u8) -> (written: u32) {
     let c3 = decode_table.u8[inp[i + 2]]:u32
     return 0xFFFFFFFF when (a3 | b3 | c3) & 0x80 != 0
     let triple = (a3 << 10) | (b3 << 4) | (c3 >> 2)
-    output[o]     = (triple >> 8) as u8
-    output[o + 1] = triple as u8
+    out[o]     = (triple >> 8) as u8
+    out[o + 1] = triple as u8
     o += 2
   }
   return 0xFFFFFFFF when remaining == 1
