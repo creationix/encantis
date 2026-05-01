@@ -8,6 +8,7 @@ import {
   type ResolvedField,
   type ArrayRT,
   type ArraySize,
+  type PointerRT,
   primitive,
   pointer,
   slice,
@@ -101,6 +102,8 @@ export interface TypeCheckResult {
   symbols: Map<string, Symbol>
   // Type errors
   errors: TypeError[]
+  // Warnings (non-blocking)
+  warnings: TypeError[]
   // Reference tracking: definition offset → array of reference offsets
   references: Map<number, number[]>
   // Reverse lookup: usage offset → definition offset
@@ -173,6 +176,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     types: ctx.types,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
+    warnings: ctx.warnings,
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
@@ -369,6 +373,7 @@ class CheckContext {
   source?: string
   types = new Map<string, ResolvedType>()
   errors: TypeError[] = []
+  warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
@@ -1085,6 +1090,7 @@ class CheckContext {
     switch (decl.kind) {
       case 'ExportDecl':
         if (decl.item.kind === 'FuncDecl') {
+          this.warnManyPointerParams(decl.item)
           this.checkFuncBody(decl.item)
         }
         break
@@ -1124,6 +1130,24 @@ class CheckContext {
       }
     }
     this.currentScope = prevScope
+  }
+
+  private isManyPointer(t: ResolvedType): boolean {
+    return t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null
+  }
+
+  private warnManyPointerParams(decl: AST.FuncDecl): void {
+    if (decl.signature.input.kind !== 'CompositeType') return
+    for (const field of decl.signature.input.fields) {
+      if (!field.ident) continue
+      const type = this.resolveType(field.type)
+      if (this.isManyPointer(type)) {
+        const inner = type as PointerRT
+        const mut = inner.mutable ? 'mut ' : ''
+        const elem = typeToString(inner.pointee.kind === 'array' ? inner.pointee.element : inner.pointee)
+        this.warn(field.span.start, `exported function parameter '${field.ident}' uses [*] many-pointer — consider []${mut}${elem} slice for a safe API`)
+      }
+    }
   }
 
   checkFuncBody(decl: AST.FuncDecl): void {
@@ -2850,9 +2874,14 @@ class CheckContext {
   }
 
   error(offset: number, message: string): void {
-    // Avoid duplicate errors at the same offset
     if (!this.errors.some((e) => e.offset === offset && e.message === message)) {
       this.errors.push({ offset, message })
+    }
+  }
+
+  warn(offset: number, message: string): void {
+    if (!this.warnings.some((w) => w.offset === offset && w.message === message)) {
+      this.warnings.push({ offset, message })
     }
   }
 

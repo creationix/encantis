@@ -92,6 +92,7 @@ export interface MetaOutput {
   symbols: MetaSymbol[]
   hints: Record<string, MetaHint>
   errors?: MetaError[]
+  warnings?: MetaError[]
 }
 
 export interface MetaType {
@@ -178,9 +179,14 @@ class MetaBuilder {
       hints: this.hints,
     }
 
-    // Add errors if any
     if (this.checkResult.errors.length > 0) {
       output.errors = this.checkResult.errors.map((e) => ({
+        pos: this.lineMap.positionKey(e.offset),
+        message: e.message,
+      }))
+    }
+    if (this.checkResult.warnings.length > 0) {
+      output.warnings = this.checkResult.warnings.map((e) => ({
         pos: this.lineMap.positionKey(e.offset),
         message: e.message,
       }))

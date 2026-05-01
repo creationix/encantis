@@ -259,7 +259,7 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 
   analysisCache.set(textDocument.uri, { text, meta });
 
-  // Convert meta errors to diagnostics
+  // Convert meta errors and warnings to diagnostics
   if (meta.errors) {
     for (const error of meta.errors) {
       const [line, col] = error.pos.split(':').map(Number);
@@ -270,6 +270,20 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
           end: { line, character: col + 1 },
         },
         message: error.message,
+        source: 'encantis',
+      });
+    }
+  }
+  if (meta.warnings) {
+    for (const warning of meta.warnings) {
+      const [line, col] = warning.pos.split(':').map(Number);
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: {
+          start: { line, character: col },
+          end: { line, character: col + 1 },
+        },
+        message: warning.message,
         source: 'encantis',
       });
     }
