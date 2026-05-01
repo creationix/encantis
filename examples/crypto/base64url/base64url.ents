@@ -16,6 +16,7 @@ func encoded_len(input_len: u32) -> u32 {
 // Encode input bytes to base64url, writing to output buffer.
 // Returns number of bytes written.
 export func encode(input: []u8, output: []mut u8) -> (written: u32) {
+  return 0xFFFFFFFF when encoded_len(input.len) > output.len
   let i: u32 = 0
   let o: u32 = 0
   let len = input.len
@@ -28,7 +29,7 @@ export func encode(input: []u8, output: []mut u8) -> (written: u32) {
     let b = inp[i + 1]:u32
     let c = inp[i + 2]:u32
     let triple = (a << 16) | (b << 8) | c
-
+    
     out[o]     = encode_table.u8[(triple >> 18) & 0x3F]
     out[o + 1] = encode_table.u8[(triple >> 12) & 0x3F]
     out[o + 2] = encode_table.u8[(triple >> 6) & 0x3F]
@@ -105,6 +106,7 @@ func decoded_len(encoded_len: u32) -> u32 {
 // Decode base64url input to bytes, writing to output buffer.
 // Returns number of bytes written, or 0xFFFFFFFF on invalid input.
 export func decode(input: []u8, output: []mut u8) -> (written: u32) {
+  return 0xFFFFFFFF when decoded_len(input.len) > output.len
   init_decode()
   let i: u32 = 0
   let o: u32 = 0
