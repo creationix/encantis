@@ -88,10 +88,10 @@ export interface TypeError {
 }
 
 // Pending literal for data section serialization (handled by codegen, not checker)
+// Serialization type is in the types map at typeKey(id, 'DataTarget')
 export interface PendingLiteral {
-  id: number          // AST offset
+  id: number          // AST offset (also the key for DataTarget type lookup)
   expr: AST.Expr      // The literal expression (check expr.mut for mutable flag)
-  type: ArrayRT       // Target type for serialization
 }
 
 export interface TypeCheckResult {
@@ -148,11 +148,20 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   ctx.moduleExports = opts.moduleExports
   ctx.checkModule(module)
 
-  // Concretize all comptime types to concrete types
+  // Concretize all comptime types to concrete types (single source of truth)
   for (const [key, type] of ctx.types) {
     ctx.types.set(key, concretizeType(type, opts))
   }
-
+  // Symbols derive their types from the concretized types map
+  for (const [name, sym] of ctx.moduleScope.symbols) {
+    const defOffset = ctx.symbolDefOffsets.get(name)
+    if (defOffset !== undefined) {
+      const fromMap = ctx.types.get(typeKey(defOffset, 'IdentPattern'))
+        ?? ctx.types.get(typeKey(defOffset, 'Field'))
+      if (fromMap) { sym.type = fromMap as typeof sym.type; continue }
+    }
+    sym.type = concretizeType(sym.type, opts) as typeof sym.type
+  }
   return {
     types: ctx.types,
     symbols: ctx.moduleScope.symbols,
@@ -375,6 +384,11 @@ class CheckContext {
 
   // Literals that need data section serialization (collected during checking)
   pendingLiterals: PendingLiteral[] = []
+
+  addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
+    this.types.set(typeKey(id, 'DataTarget'), serializationType)
+    this.pendingLiterals.push({ id, expr })
+  }
 
   checkModule(module: AST.Module): void {
     // Pre-pass: register all type names (to allow forward references)
@@ -650,11 +664,7 @@ class CheckContext {
             dataLiteral.expr.kind === 'LiteralExpr') {
           (dataLiteral.expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = dataId
         }
-        this.pendingLiterals.push({
-          id: dataId,
-          expr: dataLiteral.expr,
-          type: dataLiteral.indexedType,
-        })
+        this.addLiteral(dataId, dataLiteral.expr, dataLiteral.indexedType)
       }
       const dataId = dataLiteral.expr.span.start
       const sym = {
@@ -678,7 +688,7 @@ class CheckContext {
         (expr as AST.LiteralExpr).dataId = dataId
       }
       const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
-      this.pendingLiterals.push({ id: dataId, expr, type: arrType })
+      this.addLiteral(dataId, expr, arrType)
       const sym = {
         kind: 'def' as const,
         type: pointer(type, false, isMut),
@@ -1702,7 +1712,7 @@ class CheckContext {
       }
       // Collect literal for deferred serialization (concrete types only)
       if (!hasInferredMarker(resolvedExpected.sizes)) {
-        this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedExpected })
+        this.addLiteral(expr.span.start, expr, resolvedExpected)
       }
       return resolved
     }
@@ -1730,7 +1740,7 @@ class CheckContext {
       // Record the inferred comptime type
       this.types.set(typeKey(expr.span.start, expr.kind), inferred)
       // Collect literal for deferred serialization
-      this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedExpected })
+      this.addLiteral(expr.span.start, expr, resolvedExpected)
       // Return concretized type
       return this.concretizeToTarget(inferred, resolvedExpected)
     }
@@ -1756,7 +1766,7 @@ class CheckContext {
       }
       // Record and return
       this.types.set(typeKey(expr.span.start, expr.kind), inferred)
-      this.pendingLiterals.push({ id: expr.span.start, expr, type: resolvedPointee })
+      this.addLiteral(expr.span.start, expr, resolvedPointee)
       return resolvedExpected
     }
 
@@ -1776,18 +1786,18 @@ class CheckContext {
       if (targetMut || this.exprHasMut(expr)) {
         if ('mut' in expr) (expr as { mut?: boolean }).mut = true
       }
-      this.pendingLiterals.push({ id: expr.span.start, expr, type: arrType })
+      this.addLiteral(expr.span.start, expr, arrType)
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
       }
       // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
-        const elemType = expected.kind === 'slice' ? expected.element
-          : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? expected.pointee.element
+        const innerType = expected.kind === 'slice' ? expected.element
+          : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
           : null
-        if (elemType) {
+        if (innerType) {
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            this.checkExpr(elem, elemType)
+            this.checkExpr(elem, innerType)
           }
         }
       }
@@ -2332,7 +2342,7 @@ class CheckContext {
             (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
           }
           const arrType: ArrayRT = { kind: 'array', element: operandType, sizes: [1] }
-          this.pendingLiterals.push({ id: dataId, expr: litExpr, type: arrType })
+          this.addLiteral(dataId, litExpr, arrType)
           return pointer(operandType, false, true)
         }
         this.error(expr.span.start, `& requires a literal or a pointer/slice operand`)

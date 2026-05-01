@@ -2506,7 +2506,7 @@ function collectLocals(
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals)
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types)
   const dataSection = dataBuilder.result()
 
   const ctx = createContext(checkResult, literalRefs)
@@ -2865,12 +2865,14 @@ export function programToWat(
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
   const allLiterals: import('./checker').PendingLiteral[] = []
+  const allTypes = new Map<string, import('./types').ResolvedType>()
 
-  // Collect all literals for a unified data section
+  // Collect all literals and types for a unified data section
   for (const [path, result] of checkResults) {
     allLiterals.push(...result.literals)
+    for (const [k, v] of result.types) allTypes.set(k, v)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals)
+  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes)
   const dataSection = dataBuilder.result()
 
   // Build per-module name mappings

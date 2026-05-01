@@ -956,12 +956,8 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
 
 // === Data Section Building from Checker Literals ===
 
-// Pending literal from type checker
-export interface PendingLiteral {
-  id: number          // AST offset
-  expr: AST.Expr      // The literal expression
-  type: ArrayRT     // Target type for serialization
-}
+import type { PendingLiteral } from './checker'
+import { typeKey } from './checker'
 
 // Result of building the data section
 export interface DataSectionResult {
@@ -971,15 +967,21 @@ export interface DataSectionResult {
 
 /**
  * Build the data section from pending literals collected during type checking.
- * Sorts literals by priority for better deduplication, then serializes each.
+ * Serialization types are looked up from the types map at typeKey(id, 'DataTarget').
  */
-export function buildDataSection(literals: PendingLiteral[]): DataSectionResult {
+export function buildDataSection(literals: PendingLiteral[], types: Map<string, ResolvedType>): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
   const literalRefs = new Map<number, DataRef>()
 
+  // Resolve serialization types from the types map
+  const withTypes = literals.map(lit => ({
+    ...lit,
+    type: types.get(typeKey(lit.id, 'DataTarget')) as ArrayRT,
+  })).filter(lit => lit.type)
+
   // Sort by priority for better deduplication
   // Priority: more specifiers > fixed-size > slices
-  const sorted = [...literals].sort((a, b) =>
+  const sorted = [...withTypes].sort((a, b) =>
     literalSortScore(b.type) - literalSortScore(a.type)
   )
 

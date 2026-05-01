@@ -161,7 +161,7 @@ class MetaBuilder {
   build(srcPath: string): MetaOutput {
     // Build data section to get literal addresses for hover hints
     // Use the checker's pending literals which include all def data (arrays, strings, repeats)
-    const { literalRefs } = buildDataSection(this.checkResult.literals)
+    const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types)
     this.literalMap = literalRefs
 
     // Pass 1: Collect symbols (populates typeRegistry)
