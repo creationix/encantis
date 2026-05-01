@@ -2397,6 +2397,9 @@ function collectLocals(
     if (stmt.kind === 'LetStmt' && stmt.value) {
       visitExpr(stmt.value)
     }
+    if (stmt.kind === 'ReturnStmt' && stmt.value) {
+      visitExpr(stmt.value)
+    }
   }
 
   function visitExpr(expr: AST.Expr) {

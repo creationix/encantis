@@ -1790,14 +1790,17 @@ class CheckContext {
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
       }
-      // Propagate element type into array elements
+      // Propagate element type into array elements (skip children that are
+      // themselves data literals — they have their own serialization path)
       if (expr.kind === 'ArrayExpr') {
         const innerType = expected.kind === 'slice' ? expected.element
           : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
           : null
         if (innerType) {
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            this.checkExpr(elem, innerType)
+            if (!this.isDataLiteralExpr(elem)) {
+              this.checkExpr(elem, innerType)
+            }
           }
         }
       }

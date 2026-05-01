@@ -49,7 +49,7 @@ data pad = mut [0:u64; 16]
 
 // G mixing function - the core of BLAKE2
 // Mixes four state words with two message words
-func g(v:*mut [16]u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
+func g(v:[*]mut u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
   v[a] += v[b] + x
   v[d] = (v[d] ^ v[a]) <<< 32
   v[c] += v[d]
@@ -62,7 +62,7 @@ func g(v:*mut [16]u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
 
 // Compress one 128-byte block into the state
 // t_lo/t_hi = 128-bit byte counter, last = finalization flag
-func compress(hs:*mut [8]u64, block:*[16]u64, t_lo:u64, t_hi:u64, last:u32) {
+func compress(hs:*mut [8]u64, block:[*]u64, t_lo:u64, t_hi:u64, last:u32) {
   // Initialize working vector cv[0..15] from state and IV
   cv.u512[0] = hs.u512[0]  // cv[0..7] = hs[0..7]
   cv.u512[1] = iv.u512[0]  // cv[8..15] = iv[0..7]
@@ -104,7 +104,7 @@ test "blake2b" {
     let hash = blake2b-256(input)
     // Store u256 result to memory for byte access
     result_buf.u256[0] = hash
-    return result_buf[idx]
+    return result_buf[idx] ?? 0
   }
 
   test "256 empty first bytes" {
