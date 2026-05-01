@@ -568,6 +568,7 @@ export interface PrimitiveType extends BaseNode {
     | 'f32'
     | 'f64'
     | 'bool'
+  max?: number
 }
 
 // *type or *mut type

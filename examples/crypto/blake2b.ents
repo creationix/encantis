@@ -23,7 +23,7 @@ def param-256 = 0x0000000001010020:u64
 def param-512 = 0x0000000001010040:u64
 
 // Sigma permutation schedule (12 rounds × 16 indices, from RFC 7693)
-data sigma:*[12,16]u8 = [
+data sigma:*[12,16]u8<16 = [
   x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f",
   x"0e 0a 04 08 09 0f 0d 06 01 0c 00 02 0b 07 05 03",
   x"0b 08 0c 00 05 02 0f 0d 0a 0e 03 06 07 01 09 04",
@@ -62,7 +62,7 @@ func g(v:[*]mut u64, a:u32, b:u32, c:u32, d:u32, x:u64, y:u64) {
 
 // Compress one 128-byte block into the state
 // t_lo/t_hi = 128-bit byte counter, last = finalization flag
-func compress(hs:*mut [8]u64, block:[*]u64, t_lo:u64, t_hi:u64, last:u32) {
+func compress(hs:*mut [8]u64, block:*[16]u64, t_lo:u64, t_hi:u64, last:u32) {
   // Initialize working vector cv[0..15] from state and IV
   cv.u512[0] = hs.u512[0]  // cv[0..7] = hs[0..7]
   cv.u512[1] = iv.u512[0]  // cv[8..15] = iv[0..7]

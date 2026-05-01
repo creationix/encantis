@@ -145,6 +145,7 @@ Encantis {
            | "^" Type                          -- boundaryPointer
            | "(" FieldList? ")"                -- composite
            | ComptimeType                      -- comptimeScalar
+           | rangedUnsigned                    -- rangedPrimitive
            | PrimitiveType                     -- primitive
            | typeIdent                         -- named
 
@@ -159,8 +160,13 @@ Encantis {
                     | "!"         -- nullTerminated
                     | "?"         -- leb128Prefixed
 
+  UnsignedType = "u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8"
+
+  // Lexical rule: no whitespace between type name and "<" (u8<16 not u8 < 16)
+  rangedUnsigned = ("u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8") "<" digit+
+
   PrimitiveType = "i512" | "i256" | "i128" | "i64" | "i32" | "i16" | "i8"
-                | "u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8"
+                | UnsignedType
                 | "f32" | "f64"
                 | "bool"
 

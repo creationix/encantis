@@ -785,6 +785,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return comptime.toAST()
   },
 
+  BaseType_rangedPrimitive(ranged) {
+    return ranged.toAST()
+  },
+
+  rangedUnsigned(unsignedType, _lt, digits) {
+    return {
+      kind: 'PrimitiveType',
+      name: unsignedType.sourceString as AST.PrimitiveType['name'],
+      max: parseInt(digits.sourceString, 10),
+      span: span(this),
+    } as AST.PrimitiveType
+  },
+
   BaseType_primitive(prim) {
     return prim.toAST()
   },

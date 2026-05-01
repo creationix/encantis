@@ -924,6 +924,29 @@ class CheckContext {
     return false
   }
 
+  // Validate data literal byte values against a ranged element type
+  // For string/hex literals in data contexts where the element has a max bound
+  private validateDataLiteralRange(expr: AST.Expr, innerType: ResolvedType): void {
+    // Unwrap array to get the element type (e.g., [16]u8<16 → u8<16)
+    let elemType = innerType
+    while (elemType.kind === 'array') elemType = elemType.element
+    if (elemType.kind !== 'primitive' || elemType.max === undefined) return
+    const max = elemType.max
+    if (expr.kind === 'LiteralExpr' && expr.value.kind === 'string') {
+      for (let i = 0; i < expr.value.bytes.length; i++) {
+        if (expr.value.bytes[i] >= max) {
+          this.error(expr.span.start, `byte ${i} value 0x${expr.value.bytes[i].toString(16)} exceeds ${typeToString(elemType)} range`)
+          return
+        }
+      }
+    }
+    if (expr.kind === 'ArrayExpr') {
+      for (const elem of expr.elements) {
+        this.validateDataLiteralRange(elem, innerType)
+      }
+    }
+  }
+
   // Check if an expression is a data literal (array, repeat, string, tuple)
   private isDataLiteralExpr(expr: AST.Expr): boolean {
     return expr.kind === 'ArrayExpr' ||
@@ -1202,7 +1225,8 @@ class CheckContext {
         // Determine element type from iterable
         let elemType: ResolvedType = primitive('u32') // default: unsigned index
         if (iterableType.kind === 'comptime_int') {
-          elemType = primitive('u32')
+          const rangeMax = Number(iterableType.value)
+          elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
         } else if (iterableType.kind === 'array') {
           elemType = iterableType.element
         } else if (iterableType.kind === 'slice') {
@@ -1523,7 +1547,7 @@ class CheckContext {
   resolveType(type: AST.Type): ResolvedType {
     switch (type.kind) {
       case 'PrimitiveType':
-        return primitive(type.name)
+        return primitive(type.name, type.max)
 
       case 'PointerType':
         return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
@@ -1797,15 +1821,16 @@ class CheckContext {
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
       }
-      // Propagate element type into array elements (skip children that are
-      // themselves data literals — they have their own serialization path)
+      // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
         const innerType = expected.kind === 'slice' ? expected.element
           : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
           : null
         if (innerType) {
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            if (!this.isDataLiteralExpr(elem)) {
+            if (this.isDataLiteralExpr(elem)) {
+              this.validateDataLiteralRange(elem, innerType)
+            } else {
               this.checkExpr(elem, innerType)
             }
           }
@@ -2291,13 +2316,16 @@ class CheckContext {
     const right = unwrap(rightType)
     const leftIsComptime = left.kind === 'comptime_int' || left.kind === 'comptime_float'
     const rightIsComptime = right.kind === 'comptime_int' || right.kind === 'comptime_float'
+    const stripMax = (t: ResolvedType): ResolvedType =>
+      t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 
     // Comparison and logical operators: propagate concrete type to comptime operand
+    // Strip range — comparing u32<8 with a literal shouldn't constrain the literal to <8
     if (['==', '!=', '<', '>', '<=', '>='].includes(expr.op)) {
       if (leftIsComptime && right.kind === 'primitive') {
-        this.checkExpr(expr.left, rightType)
+        this.checkExpr(expr.left, stripMax(rightType))
       } else if (rightIsComptime && left.kind === 'primitive') {
-        this.checkExpr(expr.right, leftType)
+        this.checkExpr(expr.right, stripMax(leftType))
       }
       return primitive('bool')
     }
@@ -2306,17 +2334,18 @@ class CheckContext {
     }
 
     // Arithmetic/bitwise: determine result type, then propagate to comptime operands
-    let resultType = leftType
+    // Strip range from result — arithmetic on u32<8 produces u32, not u32<8>
+    let resultType = stripMax(leftType)
     if (left.kind === 'primitive' && right.kind === 'primitive') {
       const leftSize = byteSize(left)
       const rightSize = byteSize(right)
       if (leftSize !== null && rightSize !== null && rightSize > leftSize) {
-        resultType = rightType
+        resultType = stripMax(rightType)
       }
     } else if (rightIsComptime && left.kind === 'primitive') {
-      resultType = leftType
+      resultType = stripMax(leftType)
     } else if (leftIsComptime && right.kind === 'primitive') {
-      resultType = rightType
+      resultType = stripMax(rightType)
     }
 
     // Propagate concrete type to comptime operands (only for numeric types)
@@ -2499,6 +2528,12 @@ class CheckContext {
     }
   }
 
+  private indexInRange(expr: AST.IndexExpr, arraySize: number): boolean {
+    const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+    if (idxType?.kind === 'primitive' && idxType.max !== undefined && idxType.max <= arraySize) return true
+    return false
+  }
+
   inferIndex(expr: AST.IndexExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
     this.inferExpr(expr.index)
@@ -2555,13 +2590,16 @@ class CheckContext {
           const n = arrayType.sizes[0]
           const idx = this.evalComptimeExpr(expr.index)
           if (idx === null || idx.kind !== 'int') {
-            // Runtime index: return optional if element can be optional, error otherwise
-            const elem = arrayType.element
-            if (elem.kind === 'pointer' || elem.kind === 'slice') {
-              return optionalOf(elem)
-            }
-            if (!this.insideIfLetCondition) {
-              this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+            // Ranged index: statically safe if max <= array size
+            if (!this.indexInRange(expr, n)) {
+              // Runtime index: return optional if element can be optional, error otherwise
+              const elem = arrayType.element
+              if (elem.kind === 'pointer' || elem.kind === 'slice') {
+                return optionalOf(elem)
+              }
+              if (!this.insideIfLetCondition) {
+                this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+              }
             }
           } else if (idx.value < 0n || idx.value >= BigInt(n)) {
             this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${n}]${typeToString(arrayType.element)}`)

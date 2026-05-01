@@ -62,9 +62,11 @@ export type ResolvedType =
   | ForwardRefRT
 
 // Primitive types: i32, u8, f64, bool, etc.
+// For unsigned integers, max is an optional upper bound (exclusive): u8<16 means [0, 16)
 export interface PrimitiveRT {
   kind: 'primitive'
   name: PrimitiveName
+  max?: number
 }
 
 // Pointer type: *T or *mut T or ^T (boundary pointer)
@@ -190,8 +192,10 @@ export interface ResolvedField {
 */
 
 
-export function primitive(name: PrimitiveName): PrimitiveRT {
-  return { kind: 'primitive', name }
+export function primitive(name: PrimitiveName, max?: number): PrimitiveRT {
+  const result: PrimitiveRT = { kind: 'primitive', name }
+  if (max !== undefined) result.max = max
+  return result
 }
 
 export function pointer(pointee: ResolvedType, boundary?: boolean, mutable?: boolean, optional?: boolean): PointerRT {
@@ -442,7 +446,7 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
 
   switch (a.kind) {
     case 'primitive':
-      return a.name === (b as PrimitiveRT).name
+      return a.name === (b as PrimitiveRT).name && a.max === (b as PrimitiveRT).max
 
     case 'pointer': {
       const bPtr = b as PointerRT
@@ -545,6 +549,13 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Exact match (after unwrapping aliases)
   if (typeEquals(t, s)) return lossless(true)
+
+  // Ranged integer widening: u8<8 → u8<16 → u8 (narrower range fits wider)
+  if (t.kind === 'primitive' && s.kind === 'primitive' && t.name === s.name) {
+    if (s.max !== undefined && (t.max === undefined || s.max <= t.max)) {
+      return lossless(true)
+    }
+  }
 
   // Non-optional widens to optional: *T → ?*T, []T → ?[]T
   if (isOptional(t) && !isOptional(s)) {
@@ -877,7 +888,7 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
   switch (t.kind) {
     case 'primitive':
-      return t.name
+      return t.max !== undefined ? `${t.name}<${t.max}` : t.name
 
     case 'pointer': {
       const opt = t.optional ? '?' : ''
@@ -1119,7 +1130,9 @@ export function fieldByteOffset(t: ResolvedType, fieldName: string): number | nu
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
   const bounds = INT_BOUNDS[target.name]
   if (!bounds) return false
-  return value >= bounds[0] && value <= bounds[1]
+  if (value < bounds[0] || value > bounds[1]) return false
+  if (target.max !== undefined && value >= BigInt(target.max)) return false
+  return true
 }
 
 // Get byte size of any type (returns null for dynamically-sized types like slices)
