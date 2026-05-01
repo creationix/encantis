@@ -28,17 +28,17 @@ data buf_u32 = mut [0:u32; 4]
 data buf_u64 = mut [0:u64; 2]
 data buf_u128 = mut [0:u128; 1]
 
-func store_u8(i: u32, v: u8) { buf_u8[i] = v }
-func load_u8(i: u32) -> u8 => buf_u8[i]
+func store_u8(i: u32, v: u8) { buf_u8.u8[i] = v }
+func load_u8(i: u32) -> u8 => buf_u8.u8[i]
 
-func store_u16(i: u32, v: u16) { buf_u16[i] = v }
-func load_u16(i: u32) -> u16 => buf_u16[i]
+func store_u16(i: u32, v: u16) { buf_u16.u16[i] = v }
+func load_u16(i: u32) -> u16 => buf_u16.u16[i]
 
-func store_u32(i: u32, v: u32) { buf_u32[i] = v }
-func load_u32(i: u32) -> u32 => buf_u32[i]
+func store_u32(i: u32, v: u32) { buf_u32.u32[i] = v }
+func load_u32(i: u32) -> u32 => buf_u32.u32[i]
 
-func store_u64(i: u32, v: u64) { buf_u64[i] = v }
-func load_u64(i: u32) -> u64 => buf_u64[i]
+func store_u64(i: u32, v: u64) { buf_u64.u64[i] = v }
+func load_u64(i: u32) -> u64 => buf_u64.u64[i]
 
 // === Type punning ===
 

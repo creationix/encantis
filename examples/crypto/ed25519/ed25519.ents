@@ -11,10 +11,10 @@ import "../sha512/sha512" (
 )
 
 import "./point" (
-  "pt-set-base" func pt-set-base(buf: *[120]u64, i: u32)
-  "scalar-mult" func scalar-mult(buf: *[120]u64, out: u32, base: u32, scalar: *[32]u8)
-  "point-encode" func point-encode(out: *[32]u8, buf: *[120]u64, i: u32)
-  "point-eq" func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool
+  "pt-set-base" func pt-set-base(buf: [*]mut u64, i: u32)
+  "scalar-mult" func scalar-mult(buf: [*]mut u64, out: u32, base: u32, scalar: [*]u8)
+  "point-encode" func point-encode(out: [*]mut u8, buf: [*]u64, i: u32)
+  "point-eq" func point-eq(buf: [*]u64, p: u32, q: u32) -> bool
 )
 
 type Fe = (u64, u64, u64, u64, u64)
@@ -43,7 +43,7 @@ export func derive-pubkey(pubkey: *mut [32]u8, privkey: *[32]u8) {
   // Copy lower 32 bytes to scalar and clamp
   let i: u32 = 0
   loop {
-    scalar-buf[i] = hash-buf.u8[i]
+    scalar-buf.u8[i] = hash-buf.u8[i]
     i += 1
     break when i == 32
   }
@@ -78,7 +78,7 @@ test "ed25519 key derivation" {
 
     let i: u32 = 0
     loop {
-      assert pubkey[i] == tv1-expected[i]
+      assert pubkey.u8[i] == tv1-expected.u8[i]
       i += 1
       break when i == 32
     }

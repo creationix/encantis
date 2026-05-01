@@ -24,11 +24,11 @@ export func used() -> u32 => cursor
 
 // Write a byte into the buffer
 export func write(offset: u32, value: u8) {
-  buf[offset] = value
+  buf.u8[offset] = value
 }
 
 // Read a byte from the buffer
-export func read(offset: u32) -> u8 => buf[offset]
+export func read(offset: u32) -> u8 => buf.u8[offset]
 
 test "reserve and read write" {
   assert used() == 0

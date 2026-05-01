@@ -32,41 +32,41 @@ data pt-buf = mut [0:u64; 120]  // 6 point slots × 20 limbs
 
 func pt-ptr(i: u32) -> *[120]u64 => pt-buf
 
-func pt-x(p: *[120]u64, i: u32) -> Fe => (
+func pt-x(p: [*]u64, i: u32) -> Fe => (
   p[i * 20], p[i * 20 + 1], p[i * 20 + 2], p[i * 20 + 3], p[i * 20 + 4]
 )
-func pt-y(p: *[120]u64, i: u32) -> Fe => (
+func pt-y(p: [*]u64, i: u32) -> Fe => (
   p[i * 20 + 5], p[i * 20 + 6], p[i * 20 + 7], p[i * 20 + 8], p[i * 20 + 9]
 )
-func pt-z(p: *[120]u64, i: u32) -> Fe => (
+func pt-z(p: [*]u64, i: u32) -> Fe => (
   p[i * 20 + 10], p[i * 20 + 11], p[i * 20 + 12], p[i * 20 + 13], p[i * 20 + 14]
 )
-func pt-t(p: *[120]u64, i: u32) -> Fe => (
+func pt-t(p: [*]u64, i: u32) -> Fe => (
   p[i * 20 + 15], p[i * 20 + 16], p[i * 20 + 17], p[i * 20 + 18], p[i * 20 + 19]
 )
 
-func pt-set-x(p: *mut [120]u64, i: u32, v: Fe) {
+func pt-set-x(p: [*]mut u64, i: u32, v: Fe) {
   p[i * 20] = v.0
   p[i * 20 + 1] = v.1
   p[i * 20 + 2] = v.2
   p[i * 20 + 3] = v.3
   p[i * 20 + 4] = v.4
 }
-func pt-set-y(p: *mut [120]u64, i: u32, v: Fe) {
+func pt-set-y(p: [*]mut u64, i: u32, v: Fe) {
   p[i * 20 + 5] = v.0
   p[i * 20 + 6] = v.1
   p[i * 20 + 7] = v.2
   p[i * 20 + 8] = v.3
   p[i * 20 + 9] = v.4
 }
-func pt-set-z(p: *mut [120]u64, i: u32, v: Fe) {
+func pt-set-z(p: [*]mut u64, i: u32, v: Fe) {
   p[i * 20 + 10] = v.0
   p[i * 20 + 11] = v.1
   p[i * 20 + 12] = v.2
   p[i * 20 + 13] = v.3
   p[i * 20 + 14] = v.4
 }
-func pt-set-t(p: *mut [120]u64, i: u32, v: Fe) {
+func pt-set-t(p: [*]mut u64, i: u32, v: Fe) {
   p[i * 20 + 15] = v.0
   p[i * 20 + 16] = v.1
   p[i * 20 + 17] = v.2
@@ -76,7 +76,7 @@ func pt-set-t(p: *mut [120]u64, i: u32, v: Fe) {
 
 // === Set identity point ===
 
-func pt-set-identity(buf: *mut [120]u64, i: u32) {
+func pt-set-identity(buf: [*]mut u64, i: u32) {
   pt-set-x(buf, i, fe-zero())
   pt-set-y(buf, i, fe-one())
   pt-set-z(buf, i, fe-one())
@@ -85,7 +85,7 @@ func pt-set-identity(buf: *mut [120]u64, i: u32) {
 
 // === Point doubling ===
 
-export func point-double(buf: *mut [120]u64, out: u32, p: u32) {
+export func point-double(buf: [*]mut u64, out: u32, p: u32) {
   let a = fe-sq(pt-x(buf, p))
   let b = fe-sq(pt-y(buf, p))
   let c = fe-carry(fe-add(fe-sq(pt-z(buf, p)), fe-sq(pt-z(buf, p))))
@@ -105,7 +105,7 @@ export func point-double(buf: *mut [120]u64, out: u32, p: u32) {
 
 // === Point addition ===
 
-export func point-add(buf: *mut [120]u64, out: u32, p: u32, q: u32) {
+export func point-add(buf: [*]mut u64, out: u32, p: u32, q: u32) {
   let a = fe-mul(pt-x(buf, p), pt-x(buf, q))
   let b = fe-mul(pt-y(buf, p), pt-y(buf, q))
   let c = fe-mul(fe-mul(pt-t(buf, p), pt-t(buf, q)), fe-d())
@@ -130,7 +130,7 @@ export func point-add(buf: *mut [120]u64, out: u32, p: u32, q: u32) {
 
 // === Point negation ===
 
-export func point-neg(buf: *mut [120]u64, out: u32, p: u32) {
+export func point-neg(buf: [*]mut u64, out: u32, p: u32) {
   pt-set-x(buf, out, fe-sub(fe-zero(), pt-x(buf, p)))
   pt-set-y(buf, out, pt-y(buf, p))
   pt-set-z(buf, out, pt-z(buf, p))
@@ -139,7 +139,7 @@ export func point-neg(buf: *mut [120]u64, out: u32, p: u32) {
 
 // === Point equality ===
 
-export func point-eq(buf: *[120]u64, p: u32, q: u32) -> bool {
+export func point-eq(buf: [*]u64, p: u32, q: u32) -> bool {
   let xeq = fe-eq(
     fe-carry(fe-mul(pt-x(buf, p), pt-z(buf, q))),
     fe-carry(fe-mul(pt-x(buf, q), pt-z(buf, p)))
@@ -167,7 +167,7 @@ func base-y() -> Fe => (
   0x6666666666666:u64
 )
 
-export func pt-set-base(buf: *mut [120]u64, i: u32) {
+export func pt-set-base(buf: [*]mut u64, i: u32) {
   pt-set-x(buf, i, base-x())
   pt-set-y(buf, i, base-y())
   pt-set-z(buf, i, fe-one())
@@ -179,7 +179,7 @@ export func pt-set-base(buf: *mut [120]u64, i: u32) {
 // scalar is a 32-byte little-endian buffer (256 bits).
 // Result goes into buf[out].
 
-export func scalar-mult(buf: *mut [120]u64, out: u32, base: u32, scalar: *[32]u8) {
+export func scalar-mult(buf: [*]mut u64, out: u32, base: u32, scalar: [*]u8) {
   // slot 'out' = accumulator (starts as identity)
   // slot 'base' = the point to multiply
   // slot 'out+1' or 'base+1' used as temp — we use slot 4 and 5 as temps
@@ -220,7 +220,7 @@ export func scalar-mult(buf: *mut [120]u64, out: u32, base: u32, scalar: *[32]u8
 // === Field element serialization ===
 // Serialize fully-reduced Fe to 32 bytes little-endian
 
-export func fe-tobytes(out: *mut [32]u8, f: Fe) {
+export func fe-tobytes(out: [*]mut u8, f: Fe) {
   let r = fe-reduce(fe-carry(f))
   // 5 limbs × 51 bits = 255 bits → 32 bytes
   // Pack limbs into bytes, little-endian
@@ -273,7 +273,7 @@ export func fe-tobytes(out: *mut [32]u8, f: Fe) {
 // RFC 8032 §5.1.2: compress (X,Y,Z,T) → 32 bytes
 // Encode y as 255 bits LE, set high bit of byte 31 to sign of x
 
-export func point-encode(out: *mut [32]u8, buf: *[120]u64, i: u32) {
+export func point-encode(out: [*]mut u8, buf: [*]u64, i: u32) {
   let zinv = fe-inv(pt-z(buf, i))
   let x = fe-reduce(fe-carry(fe-mul(pt-x(buf, i), zinv)))
   let y = fe-reduce(fe-carry(fe-mul(pt-y(buf, i), zinv)))

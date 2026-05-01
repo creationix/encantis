@@ -77,14 +77,14 @@ func store-be64(ptr: *mut u8, offset: u32, value: u64) {
 func compress(block: *[128]u8) {
   // Load message schedule from block (big-endian)
   for i in 16 {
-    w[i] = load-be64(block as *u8, (i * 8) as u32)
+    w.u64[i] = load-be64(block as *u8, (i * 8) as u32)
   }
 
   // Extend message schedule
-  let i: u32 = 16
-  while i < 80 {
-    w[i] = small-sigma1(w[i - 2]) + w[i - 7] + small-sigma0(w[i - 15]) + w[i - 16]
-    i += 1
+  let j: u32 = 16
+  while j < 80 {
+    w.u64[j] = small-sigma1(w.u64[j - 2]) + w.u64[j - 7] + small-sigma0(w.u64[j - 15]) + w.u64[j - 16]
+    j += 1
   }
 
   // Working variables
@@ -99,7 +99,7 @@ func compress(block: *[128]u8) {
 
   // 80 rounds
   for round in 80 {
-    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[round] + w[round]
+    let t1 = h + big-sigma1(e) + ch(e, f, g) + k.u64[round] + w.u64[round]
     let t2 = big-sigma0(a) + maj(a, b, c)
     h = g
     g = f
@@ -125,7 +125,7 @@ func compress(block: *[128]u8) {
 // Core hash function: takes IV, input, writes full 64-byte state to output
 export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   for i in 8 {
-    state[i] = hash_iv[i]
+    state.u64[i] = hash_iv.u64[i]
   }
 
   let ptr = input.ptr
@@ -144,14 +144,14 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   // Pad final block(s)
   // Copy remaining bytes
   memset(pad_block as [*]u8, 0, 128)
-  let j: u32 = 0
-  while j < remaining {
-    pad_block[j] = ptr[j]
-    j += 1
+  let n: u32 = 0
+  while n < remaining {
+    pad_block.u8[n] = ptr[n]
+    n += 1
   }
 
   // Append 0x80 byte
-  pad_block[remaining] = 0x80 as u8
+  pad_block.u8[remaining] = 0x80 as u8
 
   if remaining >= 112 {
     // Need two blocks: current + one more
@@ -166,7 +166,7 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
 
   // Write hash output as big-endian
   for i in 8 {
-    store-be64(output as *mut u8, (i * 8) as u32, state[i])
+    store-be64(output as *mut u8, (i * 8) as u32, state.u64[i])
   }
 }
 
@@ -185,7 +185,7 @@ test "sha512" {
     sha512(input, hash_out)
     let i: u32 = 0
     while i < 64 {
-      return false when hash_out[i] != expected[i]
+      return false when hash_out.u8[i] != expected.u8[i]
       i += 1
     }
     return true

@@ -28,7 +28,7 @@ test "sha512-256" {
     sha512-256(input, hash_out)
     let i: u32 = 0
     while i < 32 {
-      return false when hash_out[i] != expected[i]
+      return false when hash_out.u8[i] != expected.u8[i]
       i += 1
     }
     return true

@@ -15,7 +15,7 @@ export func walk-trie(trie:[]u64, key:u64) -> i64 {
     bit_offset = (bit_offset + 6) % 64
 
     // Read the bitfield from the trie
-    let bitfield = trie[trie_offset]
+    let bitfield = trie.ptr[trie_offset]
     trie_offset += 1
 
     // If the index isn't in the bitfield, it's missing.
@@ -28,7 +28,7 @@ export func walk-trie(trie:[]u64, key:u64) -> i64 {
     return -2 when trie_offset >= trie.len
 
     // Read the tagged pointer
-    let pointer = trie[trie_offset]
+    let pointer = trie.ptr[trie_offset]
 
     // If low bit is zero, we're done!
     return pointer as i64 when (pointer & 1) == 0

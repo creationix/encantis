@@ -125,11 +125,11 @@ data lookup = mut [0:u8; 256]
 
 func init_lookup() {
   for i in 256 {
-    lookup[i] = (i * i) as u8
+    lookup.u8[i] = (i * i) as u8
   }
 }
 
-func lookup_square(x: u8) -> u8 => lookup[x]
+func lookup_square(x: u8) -> u8 => lookup.u8[x]
 
 // === Sizeof ===
 

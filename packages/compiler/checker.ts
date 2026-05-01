@@ -154,6 +154,13 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
+    // Function symbols already have correct FuncRT from resolveSignature;
+    // the types map at their definition offset may hold a non-func type
+    // (e.g. a return type or parameter type), so skip the map lookup.
+    if (sym.kind === 'func') {
+      sym.type = concretizeType(sym.type, opts) as typeof sym.type
+      continue
+    }
     const defOffset = ctx.symbolDefOffsets.get(name)
     if (defOffset !== undefined) {
       const fromMap = ctx.types.get(typeKey(defOffset, 'IdentPattern'))
