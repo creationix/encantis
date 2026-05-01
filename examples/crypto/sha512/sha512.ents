@@ -77,7 +77,7 @@ func store-be64(ptr: *mut u8, offset: u32, value: u64) {
 func compress(block: *[128]u8) {
   // Load message schedule from block (big-endian)
   for i in 16 {
-    w.u64[i] = load-be64(block as *u8, (i * 8) as u32)
+    w[i] = load-be64(block as *u8, (i * 8) as u32)
   }
 
   // Extend message schedule
@@ -99,7 +99,7 @@ func compress(block: *[128]u8) {
 
   // 80 rounds
   for round in 80 {
-    let t1 = h + big-sigma1(e) + ch(e, f, g) + k.u64[round] + w.u64[round]
+    let t1 = h + big-sigma1(e) + ch(e, f, g) + k[round] + w[round]
     let t2 = big-sigma0(a) + maj(a, b, c)
     h = g
     g = f
@@ -125,7 +125,7 @@ func compress(block: *[128]u8) {
 // Core hash function: takes IV, input, writes full 64-byte state to output
 export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   for i in 8 {
-    state.u64[i] = hash_iv.u64[i]
+    state[i] = hash_iv[i]
   }
 
   let ptr = input.ptr
@@ -166,7 +166,7 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
 
   // Write hash output as big-endian
   for i in 8 {
-    store-be64(output as *mut u8, (i * 8) as u32, state.u64[i])
+    store-be64(output as *mut u8, (i * 8) as u32, state[i])
   }
 }
 

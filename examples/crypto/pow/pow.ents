@@ -27,7 +27,7 @@ data hash_state = mut [0:u32; 12]
 func gimli_absorb_36(challenge: *[32]u8, nonce: u32) {
   // Zero state
   for i in 12 {
-    hash_state.u32[i] = 0:u32
+    hash_state[i] = 0:u32
   }
 
   // Absorb first 16 bytes (rate block 1)
@@ -111,7 +111,7 @@ test "pow" {
   func set_challenge() {
     // Fill with a simple pattern
     for i in 32 {
-      challenge.u8[i] = (i * 7 + 13) as u8
+      challenge[i] = (i * 7 + 13) as u8
     }
   }
 
