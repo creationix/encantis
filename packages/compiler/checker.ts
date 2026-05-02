@@ -959,7 +959,7 @@ class CheckContext {
   // Validate data literal byte values against a ranged element type
   // For string/hex literals in data contexts where the element has a max bound
   private validateDataLiteralRange(expr: AST.Expr, innerType: ResolvedType): void {
-    // Unwrap array to get the element type (e.g., [16]u8<16 → u8<16)
+    // Unwrap array to get the element type (e.g., [16]u8#16 → u8#16)
     let elemType = innerType
     while (elemType.kind === 'array') elemType = elemType.element
     if (elemType.kind !== 'primitive' || elemType.max === undefined) return
@@ -1944,6 +1944,7 @@ class CheckContext {
           for (const elem of (expr as AST.ArrayExpr).elements) {
             if (this.isDataLiteralExpr(elem)) {
               this.validateDataLiteralRange(elem, innerType)
+              this.types.set(typeKey(elem.span.start, elem.kind), innerType)
             } else {
               this.checkExpr(elem, innerType)
             }
@@ -2098,6 +2099,9 @@ class CheckContext {
 
       case 'SizeofExpr':
         return this.inferSizeof(expr)
+
+      case 'SizeofDataExpr':
+        return primitive('u32')
 
       case 'IfExpr':
         return this.inferIf(expr)
@@ -2436,7 +2440,7 @@ class CheckContext {
       t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 
     // Comparison and logical operators: propagate concrete type to comptime operand
-    // Strip range — comparing u32<8 with a literal shouldn't constrain the literal to <8
+    // Strip range — comparing u32#8 with a literal shouldn't constrain the literal to <8
     if (['==', '!=', '<', '>', '<=', '>='].includes(expr.op)) {
       if (leftIsComptime && right.kind === 'primitive') {
         this.checkExpr(expr.left, stripMax(rightType))
@@ -2450,10 +2454,10 @@ class CheckContext {
     }
 
     // Arithmetic with a comptime constant propagates ranges:
-    //   u32<4 + 4 → u32<8    (max value: 3+4=7, so <8)
-    //   u32<6 * 20 → u32<120 (max value: 5*20=100, so <120... actually (6-1)*20+1 is wrong)
-    // For +: u32<N + K → u32<(N+K)      max val is (N-1)+K, so < N+K
-    // For *: u32<N * K → u32<((N-1)*K+1) max val is (N-1)*K, so < (N-1)*K+1
+    //   u32#4 + 4 → u32#8    (max value: 3+4=7, so <8)
+    //   u32#6 * 20 → u32#120 (max value: 5*20=100, so <120... actually (6-1)*20+1 is wrong)
+    // For +: u32#N + K → u32#(N+K)      max val is (N-1)+K, so < N+K
+    // For *: u32#N * K → u32#((N-1)*K+1) max val is (N-1)*K, so < (N-1)*K+1
     const computeRange = (base: ResolvedType, operand: bigint): ResolvedType => {
       if (base.kind !== 'primitive' || base.max === undefined || operand < 0n) return stripMax(base)
       if (expr.op === '+') return primitive(base.name, base.max + Number(operand))
@@ -2567,14 +2571,19 @@ class CheckContext {
             return manyPointer(objType.element)
           }
           if (expr.member.name === 'len') {
-            // .len is only valid if length is determinable (fixed sizes or framing)
             if (objType.sizes === null) {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(objType)} - length is unknown`)
               return primitive('u32')
             }
+            const total = totalElements(objType.sizes)
+            if (total !== null) return comptimeInt(BigInt(total))
             return primitive('u32')
           }
-          if (expr.member.name === 'wid') return primitive('u32')
+          if (expr.member.name === 'wid') {
+            const ws = byteSize(objType.element)
+            if (ws !== null) return comptimeInt(BigInt(ws))
+            return primitive('u32')
+          }
         }
         // Pointer-to-array type built-in fields: .ptr, .len, .wid
         if (objType.kind === 'pointer' && objType.pointee.kind === 'array') {
@@ -2583,14 +2592,19 @@ class CheckContext {
             return manyPointer(arrayType.element)
           }
           if (expr.member.name === 'len') {
-            // Same length rules apply to pointer-to-array
             if (arrayType.sizes === null) {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(arrayType)} - length is unknown`)
               return primitive('u32')
             }
+            const total = totalElements(arrayType.sizes)
+            if (total !== null) return comptimeInt(BigInt(total))
             return primitive('u32')
           }
-          if (expr.member.name === 'wid') return primitive('u32')
+          if (expr.member.name === 'wid') {
+            const ws = byteSize(arrayType.element)
+            if (ws !== null) return comptimeInt(BigInt(ws))
+            return primitive('u32')
+          }
         }
         this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
         return primitive('i32')

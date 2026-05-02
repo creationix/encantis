@@ -84,9 +84,19 @@
           "match": "(?<=\\[)\\*"
         },
         {
+          "comment": "Bracket type: dimension size",
+          "name": "constant.numeric.decimal.encantis",
+          "match": "(?<=\\[|x)\\d+(?=[x!?\\]])"
+        },
+        {
+          "comment": "Bracket type: dimension separator",
+          "name": "keyword.operator.dimension.encantis",
+          "match": "(?<=\\d|!|\\?)x(?=\\d|!|\\?)"
+        },
+        {
           "comment": "Bracket type: framing markers",
           "name": "storage.modifier.framing.encantis",
-          "match": "(?<=\\[\\*?[0-9_]*)[!?]+"
+          "match": "(?<=\\[\\*?[0-9x_]*)[!?]+"
         },
         {
           "comment": "Bracket type: inferred length",
@@ -222,7 +232,7 @@
       "patterns": [
         {
           "name": "entity.name.type.encantis",
-          "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(?![a-zA-Z0-9_-])"
+          "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(#[0-9]+)?(?![a-zA-Z0-9_-])"
         },
         {
           "name": "support.type.builtin.encantis",

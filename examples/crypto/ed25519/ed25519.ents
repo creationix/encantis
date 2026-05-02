@@ -11,10 +11,10 @@ import "../sha512/sha512" (
 )
 
 import "./point" (
-  "pt-set-base" func pt-set-base(buf: *mut[120]u64, i: u32<6)
-  "scalar-mult" func scalar-mult(buf: *mut[120]u64, out: u32<6, base: u32<6, scalar: *[32]u8)
-  "point-encode" func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32<6)
-  "point-eq" func point-eq(buf: *mut[120]u64, p: u32<6, q: u32<6) -> bool
+  "pt-set-base" func pt-set-base(buf: *mut[120]u64, i: u32#6)
+  "scalar-mult" func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32]u8)
+  "point-encode" func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6)
+  "point-eq" func point-eq(buf: *mut[120]u64, p: u32#6, q: u32#6) -> bool
 )
 
 type Fe = (u64, u64, u64, u64, u64)

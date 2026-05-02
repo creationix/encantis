@@ -708,7 +708,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   // Comma-separated framings: dimensions and/or specifiers
   // [5] -> size=5, [5,16] -> size=[5,16], [!] -> specifier, [5,!] -> size=5 + specifier
-  arrayFramings(first, _commas, rest) {
+  arrayFramings(first, _xs, rest) {
     const all = [first.toAST(), ...rest.children.map((f: OhmNode) => f.toAST())]
 
     // Separate size items (numbers, 'inferred') from specifiers (objects)
@@ -789,7 +789,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return ranged.toAST()
   },
 
-  rangedUnsigned(unsignedType, _lt, digits) {
+  rangedUnsigned(unsignedType, _hash, digits) {
     return {
       kind: 'PrimitiveType',
       name: unsignedType.sourceString as AST.PrimitiveType['name'],
@@ -1376,6 +1376,13 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.TupleExpr
   },
 
+  PrimaryExpr_sizeofData(_sizeof, _data) {
+    return {
+      kind: 'SizeofDataExpr',
+      span: span(this),
+    } as AST.SizeofDataExpr
+  },
+
   PrimaryExpr_sizeof(_sizeof, _lp, typeNode, _rp) {
     return {
       kind: 'SizeofExpr',
@@ -1639,7 +1646,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.RepeatExpr
   },
 
-  ArrayLiteral_list(_lb, elements, _rb) {
+  ArrayLiteral_list(_lb, elements, _trailing, _rb) {
     return {
       kind: 'ArrayExpr',
       elements: elements.asIteration().children.map((e: ohm.Node) => e.toAST()),

@@ -7,7 +7,7 @@ memory 2
 
 // BLAKE2b IV - from SHA-512 fractional parts of square roots of first 8 primes
 data iv = [
-  0x6a09e667f3bcc908:u64,
+  0x6a09e667f3bcc908: u64,
   0xbb67ae8584caa73b,
   0x3c6ef372fe94f82b,
   0xa54ff53a5f1d36f1,
@@ -19,11 +19,11 @@ data iv = [
 
 // BLAKE2b-256 parameters packed into first IV word XOR
 // digest_length=32, key_length=0, fanout=1, depth=1, rest=0
-def param-256 = 0x0000000001010020:u64
-def param-512 = 0x0000000001010040:u64
+def param-256 = 0x0000000001010020: u64
+def param-512 = 0x0000000001010040: u64
 
 // Sigma permutation schedule (12 rounds × 16 indices, from RFC 7693)
-data sigma:*[12,16]u8<16 = [
+data sigma: *[12x16]u8#16 = [
   x"00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f",
   x"0e 0a 04 08 09 0f 0d 06 01 0c 00 02 0b 07 05 03",
   x"0b 08 0c 00 05 02 0f 0d 0a 0e 03 06 07 01 09 04",
@@ -39,17 +39,17 @@ data sigma:*[12,16]u8<16 = [
 ]
 
 // Global working state (8 x u64 = 64 bytes, first 32 bytes serve as u256 output)
-data h = mut [0:u64; 8]
+data h = mut [0: u64; 8]
 
 // Global working vector for compress (16 x u64 = 128 bytes)
-data cv = mut [0:u64; 16]
+data cv = mut [0: u64; 16]
 
 // Global padding buffer (16 x u64 = 128 bytes)
-data pad = mut [0:u64; 16]
+data pad = mut [0: u64; 16]
 
 // G mixing function - the core of BLAKE2
 // Mixes four state words with two message words
-func g(v:*mut[16]u64, a:u32<16, b:u32<16, c:u32<16, d:u32<16, x:u64, y:u64) {
+func g(v: *mut [16]u64, a: u32#16, b: u32#16, c: u32#16, d: u32#16, x: u64, y: u64) {
   v[a] += v[b] + x
   v[d] = (v[d] ^ v[a]) <<< 32
   v[c] += v[d]
@@ -62,14 +62,14 @@ func g(v:*mut[16]u64, a:u32<16, b:u32<16, c:u32<16, d:u32<16, x:u64, y:u64) {
 
 // Compress one 128-byte block into the state
 // t_lo/t_hi = 128-bit byte counter, last = finalization flag
-func compress(hs:*mut [8]u64, block:*[16]u64, t_lo:u64, t_hi:u64, last:u32) {
+func compress(hs: *mut [8]u64, block: *[16]u64, t_lo: u64, t_hi: u64, last: u32) {
   // Initialize working vector cv[0..15] from state and IV
-  cv.u512[0] = hs.u512[0]  // cv[0..7] = hs[0..7]
-  cv.u512[1] = iv.u512[0]  // cv[8..15] = iv[0..7]
-  cv[12] ^= t_lo    // XOR with lower 64 bits of counter
-  cv[13] ^= t_hi    // XOR with upper 64 bits of counter
+  cv.u512[0] = hs.u512[0] // cv[0..7] = hs[0..7]
+  cv.u512[1] = iv.u512[0] // cv[8..15] = iv[0..7]
+  cv[12] ^= t_lo // XOR with lower 64 bits of counter
+  cv[13] ^= t_hi // XOR with upper 64 bits of counter
   if last != 0 {
-    cv[14] ^= 0xffffffffffffffff:u64
+    cv[14] ^= 0xffffffffffffffff: u64
   }
 
   // 12 rounds of mixing
@@ -77,16 +77,16 @@ func compress(hs:*mut [8]u64, block:*[16]u64, t_lo:u64, t_hi:u64, last:u32) {
     let s = sigma[round]
 
     // Column step
-    g(cv, 0, 4,  8, 12, block[s[0]], block[s[1]])
-    g(cv, 1, 5,  9, 13, block[s[2]], block[s[3]])
+    g(cv, 0, 4, 8, 12, block[s[0]], block[s[1]])
+    g(cv, 1, 5, 9, 13, block[s[2]], block[s[3]])
     g(cv, 2, 6, 10, 14, block[s[4]], block[s[5]])
     g(cv, 3, 7, 11, 15, block[s[6]], block[s[7]])
 
     // Diagonal step
-    g(cv, 0, 5, 10, 15, block[s[8]],  block[s[9]])
+    g(cv, 0, 5, 10, 15, block[s[8]], block[s[9]])
     g(cv, 1, 6, 11, 12, block[s[10]], block[s[11]])
-    g(cv, 2, 7,  8, 13, block[s[12]], block[s[13]])
-    g(cv, 3, 4,  9, 14, block[s[14]], block[s[15]])
+    g(cv, 2, 7, 8, 13, block[s[12]], block[s[13]])
+    g(cv, 3, 4, 9, 14, block[s[14]], block[s[15]])
   }
 
   // XOR the two halves of cv into hs
@@ -98,7 +98,7 @@ test "blake2b" {
   data tv_empty = ""
   data tv_abc = "abc"
 
-  data result_buf = mut [0:u8; 32]
+  data result_buf = mut [0: u8; 32]
 
   func get_hash_byte(input: []u8, idx: u32) -> u8 {
     let hash = blake2b-256(input)
@@ -128,20 +128,20 @@ test "blake2b" {
   }
 }
 
-func blake2b-256(input:[]u8) -> (hash:u256) {
+func blake2b-256(input: []u8) -> (hash: u256) {
   // Initialize state with IV XOR parameters
-  h.u512[0] = iv.u512[0]  // h[0..7] = iv[0..7]
+  h.u512[0] = iv.u512[0] // h[0..7] = iv[0..7]
   h[0] ^= param-256
 
   let ptr = input.ptr
   let remaining = input.len
-  let t_lo:u64 = 0  // Byte counter (lower 64 bits)
-  let t_hi:u64 = 0  // Byte counter (upper 64 bits)
+  let t_lo: u64 = 0 // Byte counter (lower 64 bits)
+  let t_hi: u64 = 0 // Byte counter (upper 64 bits)
 
   // Process all complete 128-byte blocks (except last)
   while remaining > 128 {
     t_lo += 128
-    if t_lo < 128 { t_hi += 1 }  // Handle overflow
+    if t_lo < 128 { t_hi += 1 } // Handle overflow
     compress(h, ptr as *[16]u64, t_lo, t_hi, 0)
     ptr += 128
     remaining -= 128
@@ -160,15 +160,15 @@ func blake2b-256(input:[]u8) -> (hash:u256) {
 }
 
 // BLAKE2b-512: Full 512-bit output
-func blake2b-512(input:[]u8) -> (hash:u512) {
+func blake2b-512(input: []u8) -> (hash: u512) {
   // Initialize state with IV XOR parameters
-  h.u512[0] = iv.u512[0]  // h[0..7] = iv[0..7]
+  h.u512[0] = iv.u512[0] // h[0..7] = iv[0..7]
   h[0] ^= param-512
 
   let ptr = input.ptr
   let remaining = input.len
-  let t_lo:u64 = 0
-  let t_hi:u64 = 0
+  let t_lo: u64 = 0
+  let t_hi: u64 = 0
 
   while remaining > 128 {
     t_lo += 128

@@ -42,7 +42,7 @@ function getRepeatCount(expr: AST.RepeatExpr): number {
 /**
  * Check if array type uses merged brackets (single pass serialization)
  * vs separate brackets (depth-first with pointer arrays).
- * Merged: framings apply to contiguous data (e.g., [!,!]u8)
+ * Merged: framings apply to contiguous data (e.g., [!x!]u8)
  * Separate: nested array types requiring pointer indirection (e.g., [!][!]u8)
  */
 function isMergedBrackets(type: ArrayRT): boolean {
@@ -214,7 +214,10 @@ export function dataToWat(section: DataSection): string[] {
   const segments: string[] = []
 
   for (const entry of section.entries) {
-    // Null terminators already included in bytes for strings
+    if (entry.bytes.every(b => b === 0)) {
+      segments.push(`  ;; ${entry.bytes.length} zero bytes at 0x${entry.offset.toString(16)}`)
+      continue
+    }
     const escaped = escapeWatString(entry.bytes)
     segments.push(`(data (i32.const ${entry.offset}) "${escaped}")`)
   }
@@ -536,22 +539,24 @@ function buildElementBytes(
     return applyFramings(rawBytes, framings, getElementSize(actualType))
   }
 
-  if (expr.kind === 'ArrayExpr' && framings.length > 0) {
-    // Nested array with framings - recurse
+  if (expr.kind === 'ArrayExpr') {
     const parts: Uint8Array[] = []
-    // Leftmost is outermost, rightmost (slice(1)) are inner
-    const outerFraming = framings[0]
-    const innerFramings = framings.slice(1)
-
-    // If elementType is a slice, unwrap it for the inner elements
     const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
 
-    for (const elem of expr.elements) {
-      parts.push(buildElementBytes(elem, innerElementType, innerFramings))
+    if (framings.length > 0) {
+      const outerFraming = framings[0]
+      const innerFramings = framings.slice(1)
+      for (const elem of expr.elements) {
+        parts.push(buildElementBytes(elem, innerElementType, innerFramings))
+      }
+      const combined = concatBytes(parts)
+      return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
     }
 
-    const combined = concatBytes(parts)
-    return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
+    for (const elem of expr.elements) {
+      parts.push(buildElementBytes(elem, innerElementType, []))
+    }
+    return concatBytes(parts)
   }
 
   if (expr.kind === 'RepeatExpr') {

@@ -62,7 +62,7 @@ export type ResolvedType =
   | ForwardRefRT
 
 // Primitive types: i32, u8, f64, bool, etc.
-// For unsigned integers, max is an optional upper bound (exclusive): u8<16 means [0, 16)
+// For unsigned integers, max is an optional upper bound (exclusive): u8#16 means [0, 16)
 export interface PrimitiveRT {
   kind: 'primitive'
   name: PrimitiveName
@@ -550,7 +550,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   // Exact match (after unwrapping aliases)
   if (typeEquals(t, s)) return lossless(true)
 
-  // Ranged integer widening: u8<8 → u8<16 → u8 (narrower range fits wider)
+  // Ranged integer widening: u8#8 → u8#16 → u8 (narrower range fits wider)
   if (t.kind === 'primitive' && s.kind === 'primitive' && t.name === s.name) {
     if (s.max !== undefined && (t.max === undefined || s.max <= t.max)) {
       return lossless(true)
@@ -566,6 +566,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   // Not reinterpretable: comptime has no bytes, concrete type does
   if (s.kind === 'comptime_int' && t.kind === 'primitive') {
     return comptimeIntFits(s.value, t) ? lossless(false) : INCOMPATIBLE
+  }
+
+  // Comptime int can coerce to pointer types (raw address)
+  if (s.kind === 'comptime_int' && (t.kind === 'pointer' || t.kind === 'manyPointer' || t.kind === 'slice')) {
+    return lossless(false)
   }
 
   // Comptime float can coerce to f32 or f64
@@ -878,7 +883,7 @@ export function typeAssignable(target: ResolvedType, source: ResolvedType): bool
 // Format array sizes for display
 function sizesToString(sizes: ArraySize[] | null): string {
   if (sizes === null) return '*'  // unbounded [*]T
-  return sizes.map(s => typeof s === 'number' ? String(s) : s).join(',')
+  return sizes.map(s => typeof s === 'number' ? String(s) : s).join('x')
 }
 
 export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): string {
@@ -888,7 +893,7 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
   switch (t.kind) {
     case 'primitive':
-      return t.max !== undefined ? `${t.name}<${t.max}` : t.name
+      return t.max !== undefined ? `${t.name}#${t.max}` : t.name
 
     case 'pointer': {
       const opt = t.optional ? '?' : ''

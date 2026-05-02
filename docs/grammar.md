@@ -291,6 +291,13 @@ f32  f64               // floats
 bool                   // boolean
 ```
 
+Unsigned integers support an optional upper bound: `u32#N` means values in `[0, N)`.
+
+```encantis
+u8#16                  // u8 with values 0..15
+u32#6                  // u32 with values 0..5
+```
+
 ### Composite Types (Tuples/Structs)
 
 [Grammar: `BaseType` composite case](../packages/compiler/src/grammar/encantis.ohm#L113)
@@ -341,7 +348,7 @@ bool                   // boolean
 [_]u8                  // slice + inferred length
 [!]u8                  // slice + null-terminated
 [?]u8                  // slice + LEB128-prefixed
-[5,!]u8                // slice + known length + null-terminated
+[5x!]u8                // slice + known length + null-terminated
 ```
 
 **Pointer to array** (Zig-style):
@@ -349,14 +356,14 @@ bool                   // boolean
 ```encantis
 *[10]u8                // pointer to 10-element array
 *[!]u8                 // pointer to null-terminated array
-*[10,16]u8             // pointer to 10×16 packed array
+*[10x16]u8             // pointer to 10×16 packed array
 ```
 
 **Multi-dimensional packed arrays:**
 
 ```encantis
-[12,16]u8              // 12×16 packed (192 bytes total)
-[!,!]u8                // double null-terminated (2D)
+[12x16]u8              // 12×16 packed (192 bytes total)
+[!x!]u8                // double null-terminated (2D)
 ```
 
 **Multi-dimensional (pointer indirection):**

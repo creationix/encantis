@@ -149,10 +149,10 @@ Encantis {
            | PrimitiveType                     -- primitive
            | typeIdent                         -- named
 
-        // Lengths and Framing: single or comma-separated for multi-dimensional
-        // [_]T = inferred, [5]T = 5 elements, [12,16]T = 12×16 packed
-        // [!,!]T = double null-terminated (2D), [5,?]T = 5 elements, LEB128-prefixed
-        arrayFramings = arrayFraming ("," arrayFraming)*
+        // Lengths and Framing: single or x-separated for multi-dimensional
+        // [_]T = inferred, [5]T = 5 elements, [12x16]T = 12×16 packed
+        // [!x!]T = double null-terminated (2D), [5x?]T = 5 elements, LEB128-prefixed
+        arrayFramings = arrayFraming ("x" arrayFraming)*
 
         // Single length: _ (inferred) or decimal digits
         arrayFraming = "_"        -- inferred
@@ -162,8 +162,8 @@ Encantis {
 
   UnsignedType = "u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8"
 
-  // Lexical rule: no whitespace between type name and "<" (u8<16 not u8 < 16)
-  rangedUnsigned = ("u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8") "<" digit+
+  // Lexical rule: no whitespace between type name and "#" (u8#16 not u8 # 16)
+  rangedUnsigned = ("u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8") "#" digit+
 
   PrimitiveType = "i512" | "i256" | "i128" | "i64" | "i32" | "i16" | "i8"
                 | UnsignedType
@@ -330,6 +330,7 @@ Encantis {
               | MatchExpr
               | TemplateLiteral
               | ArrayLiteral
+              | sizeof data           -- sizeofData
               | sizeof "(" Type ")"  -- sizeof
               | "(" ArgList ")"      -- tupleOrStruct
               | "(" Expr ")"         -- group
@@ -355,8 +356,8 @@ Encantis {
                | ~("`" | "${" | "}" | "\\") any -- plain
 
   // Array literal: [expr, expr, ...] or [expr; count]
-  ArrayLiteral = "[" Expr ";" Expr "]"    -- repeat
-               | "[" ListOf<Expr, ","> "]"  -- list
+  ArrayLiteral = "[" Expr ";" Expr "]"          -- repeat
+               | "[" ListOf<Expr, ","> ","? "]" -- list
 
   // ============================================================================
   // If Expression / Branches

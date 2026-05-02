@@ -13,7 +13,7 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 
-// import { WAT_SCHEME, WatPreviewProvider } from './watPreviewProvider';
+import { WAT_SCHEME, WatPreviewProvider } from './watPreviewProvider';
 
 let client: LanguageClient;
 
@@ -50,75 +50,100 @@ export function activate(context: ExtensionContext): void {
 
   client.start();
 
-  // // -------------------------------------------------------------------------
-  // // WAT Preview Feature
-  // // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // WAT Preview Feature
+  // -------------------------------------------------------------------------
 
-  // const watProvider = new WatPreviewProvider();
+  const watProvider = new WatPreviewProvider();
 
-  // // Register content provider for 'encantis-wat' scheme
-  // const providerRegistration = vscode.workspace.registerTextDocumentContentProvider(
-  //   WAT_SCHEME,
-  //   watProvider
-  // );
+  const providerRegistration = vscode.workspace.registerTextDocumentContentProvider(
+    WAT_SCHEME,
+    watProvider
+  );
 
-  // // Command: Open WAT Preview (in new tab)
-  // const openPreviewCommand = vscode.commands.registerCommand(
-  //   'encantis.openWatPreview',
-  //   () => {
-  //     const editor = vscode.window.activeTextEditor;
-  //     if (!editor || editor.document.languageId !== 'encantis') {
-  //       vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-  //       return;
-  //     }
+  const openPreviewCommand = vscode.commands.registerCommand(
+    'encantis.openWatPreview',
+    () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'encantis') {
+        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
+        return;
+      }
 
-  //     const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-  //     vscode.workspace.openTextDocument(watUri).then(doc => {
-  //       vscode.window.showTextDocument(doc, { preview: false });
-  //     });
-  //   }
-  // );
+      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
+      watProvider.showStatusBar();
+      vscode.workspace.openTextDocument(watUri).then(doc => {
+        vscode.window.showTextDocument(doc, { preview: false });
+      });
+    }
+  );
 
-  // // Command: Open WAT Preview to Side (split view)
-  // const openPreviewSideCommand = vscode.commands.registerCommand(
-  //   'encantis.openWatPreviewSide',
-  //   () => {
-  //     const editor = vscode.window.activeTextEditor;
-  //     if (!editor || editor.document.languageId !== 'encantis') {
-  //       vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-  //       return;
-  //     }
+  const openPreviewSideCommand = vscode.commands.registerCommand(
+    'encantis.openWatPreviewSide',
+    () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'encantis') {
+        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
+        return;
+      }
 
-  //     const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-  //     vscode.workspace.openTextDocument(watUri).then(doc => {
-  //       vscode.window.showTextDocument(doc, {
-  //         viewColumn: vscode.ViewColumn.Beside,
-  //         preview: false,
-  //         preserveFocus: true,
-  //       });
-  //     });
-  //   }
-  // );
+      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
+      watProvider.showStatusBar();
+      vscode.workspace.openTextDocument(watUri).then(doc => {
+        vscode.window.showTextDocument(doc, {
+          viewColumn: vscode.ViewColumn.Beside,
+          preview: false,
+          preserveFocus: true,
+        });
+      });
+    }
+  );
 
-  // // Auto-refresh preview when source changes
-  // const changeSubscription = vscode.workspace.onDidChangeTextDocument(e => {
-  //   if (e.document.languageId === 'encantis') {
-  //     watProvider.refresh(e.document.uri);
-  //   }
-  // });
+  const cycleModeCommand = vscode.commands.registerCommand(
+    'encantis.cycleWatMode',
+    () => watProvider.cycleMode()
+  );
 
-  // context.subscriptions.push(
-  //   watProvider,
-  //   providerRegistration,
-  //   openPreviewCommand,
-  //   openPreviewSideCommand,
-  //   changeSubscription
-  // );
+  const cycleOptCommand = vscode.commands.registerCommand(
+    'encantis.cycleWatOpt',
+    () => watProvider.cycleOpt()
+  );
+
+  const toggleTestsCommand = vscode.commands.registerCommand(
+    'encantis.toggleWatTests',
+    () => watProvider.toggleTests()
+  );
+
+  const changeSubscription = vscode.workspace.onDidChangeTextDocument(e => {
+    if (e.document.languageId === 'encantis') {
+      watProvider.refresh(e.document.uri);
+    }
+  });
+
+  const closeSubscription = vscode.workspace.onDidCloseTextDocument(doc => {
+    if (doc.uri.scheme === WAT_SCHEME) {
+      const hasWatDocs = vscode.workspace.textDocuments.some(
+        d => d.uri.scheme === WAT_SCHEME && d !== doc
+      );
+      if (!hasWatDocs) watProvider.hideStatusBar();
+    }
+  });
+
+  context.subscriptions.push(
+    watProvider,
+    providerRegistration,
+    openPreviewCommand,
+    openPreviewSideCommand,
+    cycleModeCommand,
+    cycleOptCommand,
+    toggleTestsCommand,
+    changeSubscription,
+    closeSubscription
+  );
 }
 
 export function deactivate(): void {
-  // if (!client) {
-  //   return undefined;
-  // }
-  // return client.stop();
+  if (client) {
+    client.stop();
+  }
 }

@@ -248,6 +248,35 @@ set (x:, y:) = other_point    // updates existing x and y
 
 **Large integers:** `i128`/`u128` through `i512`/`u512` are lowered to multiple `i64` values. Bitwise operations (XOR, AND, OR) are efficient; arithmetic requires multi-instruction sequences.
 
+#### Ranged Integers
+
+Unsigned integer types can carry an upper bound using `#`: `u32#N` means values in the range `[0, N)` (0 through N-1). The bound is checked at compile time and erased at runtime — a `u32#6` is still a `u32` in WebAssembly.
+
+```ents
+func get(buf: *[120]u64, i: u32#6) -> u64 => buf[i * 20]
+//                            ^^^^ index is statically known to be < 6
+//                                 so buf[i * 20] needs no bounds check
+```
+
+**Range propagation:** Arithmetic on ranged types propagates the bound:
+
+```ents
+for i in 6 {           // i has type u32#6 (values 0..5)
+  let offset = i * 20  // offset has type u32#101 (max value: 5*20=100)
+}
+```
+
+**Safe indexing:** When the index type's bound is within the array size, the compiler skips the bounds check entirely:
+
+```ents
+data table = [10, 20, 30, 40]  // *[4]i32
+for i in 4 {                    // i: u32#4
+  table[i]                      // no bounds check needed: max index 3 < 4
+}
+```
+
+**Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
+
 ### 2.3 Value vs Reference Types
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
@@ -291,7 +320,7 @@ All pointers are `u32` (wasm 32-bit address space). Every pointer type starts wi
 | `*T`      | pointer to one T           | N/A             | `sizeof(T)`         | `.*` to dereference |
 | `*[N]T`   | pointer to N elements      | N (comptime)    | `sizeof(T)`         | `[i]`               |
 | `*[!]T`   | pointer to null-terminated | scans, O(n)     | `sizeof(T)`         | `[i]`               |
-| `*[N,M]T` | pointer to N×M packed 2D   | N, M (comptime) | `sizeof(T)`         | `[i,j]`             |
+| `*[NxM]T` | pointer to N×M packed 2D   | N, M (comptime) | `sizeof(T)`         | `[i]` → `*[M]T`     |
 | `[*]T`    | many-pointer (no bounds)   | N/A             | `sizeof(T)`         | `[i]` (unchecked)   |
 | `[]T`     | slice (fat pointer)        | runtime         | `sizeof(T)`         | `[i]`               |
 
@@ -377,7 +406,7 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 ```ents
 *[]T        // pointer to a slice (points to ptr+len pair)
 *[N][M]T    // pointer to N pointers to M-element arrays
-*[N,M]T     // pointer to N×M packed elements (contiguous 2D)
+*[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
 
 ### 2.6 Slices

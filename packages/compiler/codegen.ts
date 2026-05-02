@@ -40,9 +40,11 @@ export interface CodegenContext {
   needsMulHi?: boolean
   // Named return locals for early return statements
   namedReturnLocals: string[]
+  // Total data section size in bytes (for sizeof(data))
+  dataSectionSize?: number
 }
 
-function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>): CodegenContext {
+function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
   return {
     types: checkResult.types,
     symbols: checkResult.symbols,
@@ -52,6 +54,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     indent: 0,
     nameMap: nameMap ?? new Map(),
     namedReturnLocals: [],
+    dataSectionSize,
   }
 }
 
@@ -247,6 +250,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return matchToWat(expr, ctx)
     case 'SizeofExpr':
       return sizeofToWat(expr, ctx)
+    case 'SizeofDataExpr':
+      return `(i32.const ${ctx.dataSectionSize ?? 0})`
     default:
       throw new Error(`Unhandled expression kind: ${(expr as AST.Expr).kind}`)
   }
@@ -733,7 +738,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
   // Helper to get the wasm type for the first argument
   const getArgType = (): string => {
     if (args.length === 0) return 'i32'
-    const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+    const argType = ctx.types.get(typeKey(exprTypeOffset(args[0].value), args[0].value.kind))
     return argType ? typeToWasmSingle(argType) : 'i32'
   }
 
@@ -934,7 +939,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 
   if (member.kind === 'field') {
     // Get the type of the object to check for indexed/pointer-to-indexed
-    const objType = ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+    const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
 
     // Handle .ptr, .len on slice types
     if (objType?.kind === 'slice') {
@@ -1127,9 +1132,7 @@ function resolveFieldChain(expr: AST.Expr, field: string): { root: string; path:
 }
 
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
-  const arrayTypeKey = object.kind === 'MemberExpr'
-    ? typeKey(object.span.end, object.kind)
-    : typeKey(object.span.start, object.kind)
+  const arrayTypeKey = typeKey(exprTypeOffset(object), object.kind)
   const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(object.span.start, object.kind))
   let elemSize = 1
   if (arrayType) {
@@ -1157,9 +1160,7 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
 
 function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Value array [N]T: index with comptime constant → local.get
-  const objTypeKey = expr.object.kind === 'MemberExpr'
-    ? typeKey(expr.object.span.end, expr.object.kind)
-    : typeKey(expr.object.span.start, expr.object.kind)
+  const objTypeKey = typeKey(exprTypeOffset(expr.object), expr.object.kind)
   const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
   if (objType?.kind === 'array' && objType.sizes && objType.sizes.length === 1 && typeof objType.sizes[0] === 'number') {
     const idx = evalComptimeIndex(expr.index)
@@ -1241,9 +1242,7 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const ptrLocal = `__coal_ptr_${uid}`
   const lenLocal = `__coal_len_${uid}`
 
-  const objTypeKey = indexExpr.object.kind === 'MemberExpr'
-    ? typeKey(indexExpr.object.span.end, indexExpr.object.kind)
-    : typeKey(indexExpr.object.span.start, indexExpr.object.kind)
+  const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
   const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
 
   const parts: string[] = []
@@ -1309,9 +1308,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
 
-    const objTypeKey = indexExpr.object.kind === 'MemberExpr'
-      ? typeKey(indexExpr.object.span.end, indexExpr.object.kind)
-      : typeKey(indexExpr.object.span.start, indexExpr.object.kind)
+    const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
     const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
 
     const parts: string[] = []
@@ -2017,9 +2014,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
 
   if (target.kind === 'IndexExpr') {
     // Value array [N]T: assignment with comptime index → local.set
-    const objTypeKey2 = target.object.kind === 'MemberExpr'
-      ? typeKey(target.object.span.end, target.object.kind)
-      : typeKey(target.object.span.start, target.object.kind)
+    const objTypeKey2 = typeKey(exprTypeOffset(target.object), target.object.kind)
     const objType2 = ctx.types.get(objTypeKey2) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
     if (objType2?.kind === 'array' && objType2.sizes && objType2.sizes.length === 1 && typeof objType2.sizes[0] === 'number') {
       const idx = evalComptimeIndex(target.index)
@@ -2118,7 +2113,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const body = bodyToWat(stmt.body, ctx)
 
   // Check if iterable is a comptime integer (for i in N)
-  const iterType = ctx.types.get(typeKey(stmt.iterable.span.start, stmt.iterable.kind))
+  const iterType = ctx.types.get(typeKey(exprTypeOffset(stmt.iterable), stmt.iterable.kind))
   const iterWat = exprToWat(stmt.iterable, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
@@ -2178,8 +2173,9 @@ export function funcToWat(
   nameMap?: Map<string, string>,
   watName?: string,
   extraSymbols?: Map<string, CheckSymbol>,
+  dataSectionSize?: number,
 ): string {
-  const ctx = createContext(checkResult, literalRefs, nameMap)
+  const ctx = createContext(checkResult, literalRefs, nameMap, dataSectionSize)
   if (extraSymbols) {
     for (const [k, v] of extraSymbols) ctx.symbols.set(k, v)
   }
@@ -2522,7 +2518,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types)
   const dataSection = dataBuilder.result()
 
-  const ctx = createContext(checkResult, literalRefs)
+  const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
   const parts: string[] = ['(module']
   let hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module) || usesMemory(checkResult)
 
@@ -2552,10 +2548,10 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   // Collect function declarations
   for (const decl of module.decls) {
     if (decl.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl, checkResult, literalRefs))
+      parts.push(funcToWat(decl, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
     }
     if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl.item, checkResult, literalRefs))
+      parts.push(funcToWat(decl.item, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
     }
   }
 
@@ -2636,7 +2632,7 @@ function emitTestDecl(
       if (item.ident) {
         ctx.nameMap.set(item.ident, watName)
       }
-      parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols))
+      parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
     } else {
@@ -2663,7 +2659,8 @@ function emitTestDecl(
       return true
     })
     const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
-    parts.push(`(func $test_${safeName} ${localStr}\n  ${body}\n)`)
+    const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
+    parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
   }
 }
@@ -2949,7 +2946,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap)
+    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
@@ -2996,11 +2993,11 @@ export function programToWat(
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'FuncDecl' && decl.ident) {
         const watName = modNameMap.get(decl.ident) ?? decl.ident
-        parts.push(funcToWat(decl, result, globalLiteralRefs, modNameMap, watName))
+        parts.push(funcToWat(decl, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
       }
       if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && decl.item.ident) {
         const watName = modNameMap.get(decl.item.ident) ?? decl.item.ident
-        parts.push(funcToWat(decl.item, result, globalLiteralRefs, modNameMap, watName))
+        parts.push(funcToWat(decl.item, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
       }
     }
   }
@@ -3010,7 +3007,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap)
+    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'GlobalDecl') {
         parts.push(globalToWat(decl, ctx))
@@ -3026,7 +3023,7 @@ export function programToWat(
   if (entryModule) {
     const entryNameMap = buildFullNameMap(entryPath)
     const entryResult = checkResults.get(entryPath)!
-    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap)
+    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap, dataSection.totalSize)
     for (const decl of entryModule.module.decls) {
       if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl') {
         parts.push(exportToWat(decl, ctx))
@@ -3042,7 +3039,7 @@ export function programToWat(
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
       const testNameMap = buildFullNameMap(testFilePath)
-      const ctx = createContext(testResult, globalLiteralRefs, testNameMap)
+      const ctx = createContext(testResult, globalLiteralRefs, testNameMap, dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
         emitTestDecl(decl, '', ctx, testResult, globalLiteralRefs, testNameMap, parts)

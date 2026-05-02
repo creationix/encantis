@@ -315,6 +315,7 @@ export type Expr =
   | TupleExpr
   | GroupExpr
   | SizeofExpr
+  | SizeofDataExpr
 
 // left op right
 export interface BinaryExpr extends BaseNode {
@@ -510,6 +511,11 @@ export interface GroupExpr extends BaseNode {
 export interface SizeofExpr extends BaseNode {
   kind: 'SizeofExpr'
   type: Type
+}
+
+// sizeof(data) — total data section size in bytes
+export interface SizeofDataExpr extends BaseNode {
+  kind: 'SizeofDataExpr'
 }
 
 // ============================================================================

@@ -4,7 +4,7 @@
 
 // Gimli permutation: state is permuted in place
 // `state` is a pointer to 12 u32 words (48 bytes)
-export func gimli(state:*mut[12]u32) {
+export "gimli" func gimli(state:*mut[12]u32) {
   let round:u32 = 24
 
   loop {

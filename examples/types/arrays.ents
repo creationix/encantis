@@ -1,0 +1,133 @@
+#!/usr/bin/env encantis run
+// Array types and data section permutations
+// Demonstrates fixed arrays, slices, pointers, null-terminated,
+// LEB128-prefixed, multi-dimensional, repeat literals, and mutability.
+
+export memory
+
+// ============================================================================
+// Fixed arrays — [N]T is a value type, flattened to N wasm locals
+// ============================================================================
+
+// Inferred type: *[4]i32 (pointer to 4-element i32 array in data section)
+data plain = [10, 20, 30, 40]
+
+// Explicit type annotation
+data typed:*[4]i32 = [100, 200, 300, 400]
+
+// Repeat literal: N copies of a value
+data zeros = [0:u8; 16]
+data pattern = [0xAB:u8; 8]
+
+// Mutable data (writable memory)
+data mutable-buf = mut [0:u8; 64]
+
+// ============================================================================
+// String / byte data — various framing strategies
+// ============================================================================
+
+// Default: fat slice (pointer + length pair)
+data as-slice:[]u8 = "hello, world"
+
+// Null-terminated: appends \0, .len scans for null at runtime
+data as-cstr:*[!]u8 = "hello, world"
+
+// Null-terminated slice: fat pointer + null byte appended
+data as-cstr-slice:[!]u8 = "hello, world"
+
+// LEB128-prefixed: length encoded as LEB128 before the data
+data as-prefixed:*[?]u8 = "hello, world"
+
+// LEB128-prefixed slice
+data as-prefixed-slice:[?]u8 = "hello, world"
+
+// Many-pointer: raw pointer, no length info
+data as-many-ptr:[*]u8 = "hello, world"
+
+// Explicit fixed-size pointer
+data as-fixed:*[12]u8 = "hello, world"
+
+// ============================================================================
+// Multi-dimensional packed arrays — [NxM]T
+// ============================================================================
+
+// 3x3 matrix: 9 contiguous i32 values
+// Indexing peels one dimension: matrix[row] -> *[3]i32
+data matrix:*[3x3]i32 = [
+  [1, 2, 3],
+  [4, 5, 6],
+  [7, 8, 9],
+]
+
+// 4x4 byte grid with ranged elements
+data grid:*[4x4]u8#16 = [
+  x"00 01 02 03",
+  x"04 05 06 07",
+  x"08 09 0a 0b",
+  x"0c 0d 0e 0f",
+]
+
+// ============================================================================
+// Nested pointer arrays — [][]T, [][!]T
+// ============================================================================
+
+// Slice of slices: each inner string is a fat pointer (ptr + len)
+data names:[][]u8 = ["alice", "bob", "charlie"]
+
+// Slice of null-terminated strings
+data c-names:[][!]u8 = ["alice", "bob", "charlie"]
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "sizeof data" {
+  assert sizeof data > 0
+}
+
+test "fixed arrays" {
+  assert plain[0] == 10
+  assert plain[3] == 40
+  assert typed[1] == 200
+  assert typed[3] == 400
+}
+
+test "repeat literals" {
+  assert zeros[0] == 0:u8
+  assert zeros[15] == 0:u8
+  assert pattern[0] == 0xAB:u8
+  assert pattern[7] == 0xAB:u8
+}
+
+test "mutable data" {
+  mutable-buf[0] = 42:u8
+  mutable-buf[1] = 99:u8
+  assert mutable-buf[0] == 42:u8
+  assert mutable-buf[1] == 99:u8
+}
+
+test "slices" {
+  assert as-slice.len == 12
+}
+
+test "null-terminated" {
+  assert as-cstr[0] == 104:u8  // 'h'
+  assert as-cstr[12] == 0:u8   // null terminator
+}
+
+test "multi-dimensional" {
+  // matrix[1] gives pointer to second row: *[3]i32
+  assert matrix[0][0] == 1
+  assert matrix[1][2] == 6
+  assert matrix[2][2] == 9
+}
+
+test "ranged grid" {
+  assert grid[0][0] == 0:u8
+  assert grid[3][3] == 15:u8
+  assert grid[2][1] == 9:u8
+}
+
+test "nested string arrays" {
+  assert names.len == 3
+}

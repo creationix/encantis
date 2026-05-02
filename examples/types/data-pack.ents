@@ -1,0 +1,9 @@
+data greeting = "Hello World"
+
+test "measure data pack" {
+  assert sizeof data == 11
+  let mem:[*]u8 = 0x0
+  for i in greeting.len {
+    assert greeting[i] == mem[i]
+  }
+}

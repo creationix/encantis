@@ -694,6 +694,21 @@ class MetaBuilder {
   }
 
   private generateHintsForTestDecl(decl: AST.TestDecl): void {
+    // Collect locals from test body statements
+    for (const item of decl.children) {
+      if (item.kind === 'LetStmt') {
+        this.collectLocal(item.pattern)
+      }
+      if (item.kind === 'ForStmt') {
+        const valueType = this.checkResult.types.get(typeKey(item.binding.span.start, item.binding.kind))
+        if (valueType) {
+          this.addSymbol(item.binding.value, 'local', valueType, item.binding.span.start)
+        }
+      }
+      if ('body' in item && item.body.kind === 'Block') {
+        this.collectLocalsFromBlock(item.body)
+      }
+    }
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':

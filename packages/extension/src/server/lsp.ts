@@ -24,7 +24,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
-import { formatEncantis } from '@encantis/compiler/formatter';
+import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
@@ -409,7 +409,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       const range = makeHoverRange(wordStartPos, hint.len, hint.exprStart);
 
       if (symbol) {
-        const display = formatSymbolDisplay(symbol, typeStr);
+        const display = formatLine(formatSymbolDisplay(symbol, typeStr));
         let value = `\`\`\`encantis\n${display}\n\`\`\``;
         if (symbol.doc) {
           value += `\n\n${symbol.doc}`;
@@ -441,13 +441,13 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       }
       // Add parent kind prefix for member access (e.g., "input c.y" vs just "c.y")
       const kindPrefix = hint.parentKind ? kindToPrefix(hint.parentKind) + ' ' : '';
-      const display = hint.value
+      const raw = hint.value
         ? `${kindPrefix}${displayName}: ${typeStr} = ${hint.value}`
         : `${kindPrefix}${displayName}: ${typeStr}`;
       return {
         contents: {
           kind: MarkupKind.Markdown,
-          value: `\`\`\`encantis\n${display}\n\`\`\``,
+          value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\``,
         },
         range,
       };
@@ -457,7 +457,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     const symbol = meta.symbols.find(s => s.name === word);
     if (symbol) {
       const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
-      const display = formatSymbolDisplay(symbol, typeStr);
+      const display = formatLine(formatSymbolDisplay(symbol, typeStr));
       let value = `\`\`\`encantis\n${display}\n\`\`\``;
       if (symbol.doc) {
         value += `\n\n${symbol.doc}`;
