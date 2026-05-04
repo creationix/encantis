@@ -372,12 +372,6 @@ function truncateSubWord(wat: string, type: ResolvedType): string {
   return wat
 }
 
-function isWideInt(t: ResolvedType): boolean {
-  const u = unwrap(t)
-  if (u.kind !== 'primitive') return false
-  const size = primitiveByteSize(u)
-  return size !== null && size >= 16
-}
 
 function wideIntParts(t: ResolvedType): number {
   const u = unwrap(t)
@@ -387,18 +381,13 @@ function wideIntParts(t: ResolvedType): number {
   return 0
 }
 
-function multiV128BinaryOp(n: number, wasmOp: string, left: string, right: string): string {
+function multiValueBinaryOp(n: number, wasmOp: string, left: string, right: string): string {
   if (n === 1) return `(${wasmOp} ${left} ${right})`
-  const leftParts = splitV128Components(left, n)
-  const rightParts = splitV128Components(right, n)
+  const leftParts = splitMultiValue(left, n)
+  const rightParts = splitMultiValue(right, n)
   return leftParts.map((l, i) => `(${wasmOp} ${l} ${rightParts[i]})`).join(' ')
 }
 
-function multiV128UnaryOp(n: number, wasmOp: string, operand: string, constant?: string): string {
-  if (n === 1) return constant ? `(${wasmOp} ${constant} ${operand})` : `(${wasmOp} ${operand})`
-  const parts = splitV128Components(operand, n)
-  return parts.map(p => constant ? `(${wasmOp} ${constant} ${p})` : `(${wasmOp} ${p})`).join(' ')
-}
 
 function loadFromMemory(type: ResolvedType, ptr: string): string {
   const nw = wideIntParts(type)
@@ -425,14 +414,14 @@ function loadFromMemory(type: ResolvedType, ptr: string): string {
 function storeToMemory(type: ResolvedType, ptr: string, value: string): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
-    const parts = splitV128Components(value, nw)
+    const parts = splitMultiValue(value, nw)
     return parts.map((v, i) =>
       `(i64.store offset=${i * 8} ${ptr} ${v})`
     ).join('\n')
   }
   const u = unwrap(type)
   if (u.kind === 'slice') {
-    const parts = splitV128Components(value, 2)
+    const parts = splitMultiValue(value, 2)
     return `(i32.store ${ptr} ${parts[0]})\n(i32.store offset=4 ${ptr} ${parts[1]})`
   }
   if (u.kind === 'primitive') {
@@ -443,7 +432,7 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string): string {
   return `(${wt}.store ${ptr} ${value})`
 }
 
-function splitV128Components(wat: string, n: number): string[] {
+function splitMultiValue(wat: string, n: number): string[] {
   if (n === 1) return [wat]
   const parts: string[] = []
   let depth = 0
@@ -508,7 +497,7 @@ function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: n
     const zeros = Array(toParts - 1).fill('(i64.const 0)').join(' ')
     return `${first} ${zeros}`
   }
-  const parts = splitV128Components(wat, fromParts)
+  const parts = splitMultiValue(wat, fromParts)
   while (parts.length < toParts) parts.push('(i64.const 0)')
   return parts.join(' ')
 }
@@ -589,8 +578,8 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
     // Comparison
     case '==':
       if (nWide > 0) {
-        const lp = splitV128Components(left, nWide)
-        const rp = splitV128Components(right, nWide)
+        const lp = splitMultiValue(left, nWide)
+        const rp = splitMultiValue(right, nWide)
         let eq = `(i64.eq ${lp[0]} ${rp[0]})`
         for (let i = 1; i < nWide; i++) {
           eq = `(i32.and ${eq} (i64.eq ${lp[i]} ${rp[i]}))`
@@ -601,8 +590,8 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
       break
     case '!=':
       if (nWide > 0) {
-        const lp = splitV128Components(left, nWide)
-        const rp = splitV128Components(right, nWide)
+        const lp = splitMultiValue(left, nWide)
+        const rp = splitMultiValue(right, nWide)
         let neq = `(i64.eq ${lp[0]} ${rp[0]})`
         for (let i = 1; i < nWide; i++) {
           neq = `(i32.and ${neq} (i64.eq ${lp[i]} ${rp[i]}))`
@@ -666,7 +655,7 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   const rightSigned = rightType ? isSigned(rightType) : signed
   const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
 
-  if (nWide > 1) return multiV128BinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
+  if (nWide > 1) return multiValueBinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
   const raw = `(${wasmOp} ${coercedLeft} ${coercedRight})`
   return truncateSubWord(raw, operandType)
 }
@@ -689,7 +678,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       }
       const nw = wideIntParts(type)
       if (nw > 0) {
-        const parts = splitV128Components(operand, nw)
+        const parts = splitMultiValue(operand, nw)
         return parts.map(p => `(i64.sub (i64.const 0) ${p})`).join(' ')
       }
       return truncateSubWord(`(${wt}.sub (${wt}.const 0) ${operand})`, type)
@@ -699,7 +688,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       // Bitwise NOT
       const nw = wideIntParts(type)
       if (nw > 0) {
-        const parts = splitV128Components(operand, nw)
+        const parts = splitMultiValue(operand, nw)
         return parts.map(p => `(i64.xor ${p} (i64.const -1))`).join(' ')
       }
       return truncateSubWord(`(${wt}.xor ${operand} (${wt}.const -1))`, type)
@@ -915,7 +904,7 @@ function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
       const elemSize = byteSize(objType.element)
       if (elemSize === null) return null
       const base = exprToWat(expr.object, ctx)
-      const ptr = splitV128Components(base, 2)[0]
+      const ptr = splitMultiValue(base, 2)[0]
       const idx = exprToWat(expr.index, ctx)
       if (elemSize === 1) return `(i32.add ${ptr} ${idx})`
       return `(i32.add ${ptr} (i32.mul ${idx} (i32.const ${elemSize})))`
@@ -950,7 +939,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
           if (localNames && localNames.length >= 2) return `(local.get $${localNames[idx]})`
         }
         const full = exprToWat(expr.object, ctx)
-        const parts = splitV128Components(full, 2)
+        const parts = splitMultiValue(full, 2)
         return parts[idx]
       }
       if (member.name === 'wid') {
@@ -1181,7 +1170,7 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   const index = exprToWat(expr.index, ctx)
   // For slice objects, extract just the pointer (first component)
   if (objType?.kind === 'slice') {
-    const parts = splitV128Components(base, 2)
+    const parts = splitMultiValue(base, 2)
     base = parts[0]
   }
   const { offset } = indexOffset(expr.object, base, index, ctx)
@@ -1485,7 +1474,7 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     // Take the first i64 — but inner produces multiple values on stack
     // Use a block to extract just the first
     try {
-      const parts = splitV128Components(inner, fromWide)
+      const parts = splitMultiValue(inner, fromWide)
       return parts[0]
     } catch {
       return inner // single expression, just take first stack value
@@ -1493,7 +1482,7 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   }
   if (fromWide > 0 && toWasm === 'i32') {
     try {
-      const parts = splitV128Components(inner, fromWide)
+      const parts = splitMultiValue(inner, fromWide)
       return `(i32.wrap_i64 ${parts[0]})`
     } catch {
       return `(i32.wrap_i64 ${inner})`
@@ -1747,7 +1736,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     // emit the call then assign from the stack in reverse order
     // Try to split value into components (works for multi-expression values)
     try {
-      const topLevelParts = splitV128Components(value, names.length)
+      const topLevelParts = splitMultiValue(value, names.length)
       return names.map((n, i) => `(local.set $${n} ${topLevelParts[i]})`).join('\n')
     } catch {
       // Single expression producing multiple stack values (e.g. function call)
@@ -1901,7 +1890,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     const op = ops[stmt.op]
     if (op) {
       const raw = nv > 1
-        ? multiV128BinaryOp(nv, op, current, rhs)
+        ? multiValueBinaryOp(nv, op, current, rhs)
         : `(${op} ${current} ${rhs})`
       return assignLvalue(stmt.target, truncateSubWord(raw, type), ctx)
     }
@@ -1932,7 +1921,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     }
     if (localNames && localNames.length > 1) {
       try {
-        const parts = splitV128Components(value, localNames.length)
+        const parts = splitMultiValue(value, localNames.length)
         return localNames.map((n, i) => `(local.set $${n} ${parts[i]})`).join('\n')
       } catch {
         const assigns = [...localNames].reverse().map(n => `(local.set $${n})`).join('\n')
@@ -2010,7 +1999,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
           if (elemFlat.length === 1) {
             return `(local.set $${localNames[base]} ${value})`
           }
-          const parts = splitV128Components(value, elemFlat.length)
+          const parts = splitMultiValue(value, elemFlat.length)
           return elemFlat.map((_, j) => `(local.set $${localNames[base + j]} ${parts[j]})`).join('\n')
         }
       }
@@ -2029,7 +2018,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
       : typeKey(target.object.span.start, target.object.kind)
     const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
     if (objType?.kind === 'slice') {
-      const parts = splitV128Components(ptr, 2)
+      const parts = splitMultiValue(ptr, 2)
       ptr = parts[0]
     }
     const { offset } = indexOffset(target.object, ptr, idx, ctx)
