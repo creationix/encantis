@@ -1226,9 +1226,7 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   if (resultTypes.length === 2) {
     // Slice optional: (ptr, len) — check ptr component
     const lenLocal = `__coal_len_${uid}`
-    const components = splitV128Components(leftWat, 2)
-    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
-    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    parts.push(`${leftWat}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
     return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then (local.get $${ptrLocal}) (local.get $${lenLocal})) (else ${fallbackVal}))`
   }
 
@@ -1250,9 +1248,7 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
 
   if (objType?.kind === 'slice') {
     const obj = exprToWat(indexExpr.object, ctx)
-    const components = splitV128Components(obj, 2)
-    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
-    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
     parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
     const arrayType = objType.pointee
@@ -1296,8 +1292,8 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
     }
-    const wasmVals = splitV128Components(loadVal, bindingNames.length)
-    return bindingNames.map((n, i) => `(local.set $${n} ${wasmVals[i]})`).join('\n')
+    const sets = [...bindingNames].reverse().map(n => `(local.set $${n})`).join('\n')
+    return `${loadVal}\n${sets}`
   }
 
   // Index expression: bounds check
@@ -1316,9 +1312,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
 
     if (objType?.kind === 'slice') {
       const obj = exprToWat(indexExpr.object, ctx)
-      const components = splitV128Components(obj, 2)
-      parts.push(`(local.set $${ptrLocal} ${components[0]})`)
-      parts.push(`(local.set $${lenLocal} ${components[1]})`)
+      parts.push(`${obj}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       const arrayType = objType.pointee
@@ -1355,9 +1349,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   if (bindingNames.length >= 2) {
     // Slice optional: (ptr, len) — check ptr, bind both
     const lenLocal = `__iflet_len_${uid}`
-    const components = splitV128Components(condWat, 2)
-    parts.push(`(local.set $${ptrLocal} ${components[0]})`)
-    parts.push(`(local.set $${lenLocal} ${components[1]})`)
+    parts.push(`${condWat}\n(local.set $${lenLocal})\n(local.set $${ptrLocal})`)
     const bindWat = bindingNames.map((n, i) =>
       `(local.set $${n} (local.get $${i === 0 ? ptrLocal : lenLocal}))`
     ).join('\n')
@@ -1546,19 +1538,11 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
-        // For multi-statement expressions (coalesce, if-let), use temp locals
-        const isSimple = value.startsWith('(') && !value.includes('\n') && !value.startsWith('(call ')
-        if (isSimple) {
-          const valParts = splitV128Components(value, 2)
-          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
-          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
-        } else {
-          const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
-          const tmpLen = `__arr_tmp_len_${elem.span.start}`
-          parts.push(`${value}\n(local.set $${tmpLen})\n(local.set $${tmpPtr})`)
-          parts.push(`(i32.store (i32.const ${base}) (local.get $${tmpPtr}))`)
-          parts.push(`(i32.store (i32.const ${base + 4}) (local.get $${tmpLen}))`)
-        }
+        const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
+        const tmpLen = `__arr_tmp_len_${elem.span.start}`
+        parts.push(`${value}\n(local.set $${tmpLen})\n(local.set $${tmpPtr})`)
+        parts.push(`(i32.store (i32.const ${base}) (local.get $${tmpPtr}))`)
+        parts.push(`(i32.store (i32.const ${base + 4}) (local.get $${tmpLen}))`)
       } else {
         parts.push(storeToMemory(elemType, `(i32.const ${base})`, value))
       }
