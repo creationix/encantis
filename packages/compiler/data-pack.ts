@@ -512,7 +512,8 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     return concatBytes(parts)
   }
 
-  throw new Error(`Cannot serialize ${expr.kind} to merged array type`)
+  // Runtime expression — emit zero placeholder, filled at runtime
+  return new Uint8Array(getElementSize(elementType))
 }
 
 // Build bytes for a single element with inner framings
@@ -576,7 +577,11 @@ function buildElementBytes(
     return combined
   }
 
-  throw new Error(`Cannot build element bytes for ${expr.kind}`)
+  // Runtime expressions (calls, identifiers, etc.) — emit zero placeholder
+  // The actual value will be filled in at runtime via i32.store
+  const size = byteSize(elementType)
+  if (size !== null) return new Uint8Array(size)
+  return new Uint8Array(8) // default: ptr + len for slice
 }
 
 // Serialize separate brackets (e.g., [!][!]u8) - depth-first with pointer arrays

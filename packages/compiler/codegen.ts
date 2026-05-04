@@ -1547,7 +1547,7 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
         // For multi-statement expressions (coalesce, if-let), use temp locals
-        const isSimple = value.startsWith('(') && !value.includes('\n')
+        const isSimple = value.startsWith('(') && !value.includes('\n') && !value.startsWith('(call ')
         if (isSimple) {
           const valParts = splitV128Components(value, 2)
           parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
@@ -2272,6 +2272,23 @@ export function funcToWat(
     }
   }
 
+  // If the last statement is an expression and we have named returns,
+  // assign the expression result to the named return locals instead of dropping
+  if (namedReturns.length > 0 && decl.body.kind === 'Block' && decl.body.stmts.length > 0) {
+    const lastStmt = decl.body.stmts[decl.body.stmts.length - 1]
+    if (lastStmt.kind === 'ExpressionStmt') {
+      const lines = body.split('\n')
+      // Remove the trailing (drop) lines that stmtToWat added
+      while (lines.length > 0 && lines[lines.length - 1].trim() === '(drop)') lines.pop()
+      // Add local.set for each named return local (in reverse — stack is LIFO)
+      const allLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
+      for (let i = allLocals.length - 1; i >= 0; i--) {
+        lines.push(`(local.set $${allLocals[i]})`)
+      }
+      body = lines.join('\n')
+    }
+  }
+
   // Generate epilogue: push named returns onto stack
   let epilogue = ''
   if (namedReturns.length > 0) {
@@ -2466,7 +2483,7 @@ function collectLocals(
     }
     if (expr.kind === 'ArrayExpr') {
       for (const elem of expr.elements) {
-        if (elem.kind === 'CoalesceExpr' || elem.kind === 'IfExpr') {
+        if (elem.kind !== 'LiteralExpr') {
           const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
           const tmpLen = `__arr_tmp_len_${elem.span.start}`
           locals.push({ name: tmpPtr, type: 'i32' })
