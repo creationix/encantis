@@ -16,6 +16,8 @@ import "./field" (
   "fe-eq" func fe-eq(f: Fe, g: Fe) -> bool
   "fe-d" func fe-d() -> Fe
   "fe-2d" func fe-2d() -> Fe
+  "fe-pow252m2" func fe-pow252m2(z: Fe) -> Fe
+  "fe-sqrtm1" func fe-sqrtm1() -> Fe
 )
 
 type Fe = (u64, u64, u64, u64, u64)
@@ -278,8 +280,78 @@ export func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6) {
   let x = fe-reduce(fe-carry(fe-mul(pt-x(buf, i), zinv)))
   let y = fe-reduce(fe-carry(fe-mul(pt-y(buf, i), zinv)))
   fe-tobytes(out, y)
-  // Set high bit of last byte to x's parity (low bit of x.0)
   out[31] = out[31] | ((x.0 & 1:u64) << 7) as u8
+}
+
+// === Field element deserialization ===
+// Deserialize 32 LE bytes → Fe (5 × 51-bit limbs)
+// Inverse of fe-tobytes. The high bit (bit 255) is stripped by mask51.
+
+def mask51 = 0x7FFFFFFFFFFFF:u64
+
+func load-le64(ptr: *u8, offset: u32) -> u64 {
+  let p = ptr + offset
+  return p[0] as u64
+    | (p[1] as u64 << 8)
+    | (p[2] as u64 << 16)
+    | (p[3] as u64 << 24)
+    | (p[4] as u64 << 32)
+    | (p[5] as u64 << 40)
+    | (p[6] as u64 << 48)
+    | (p[7] as u64 << 56)
+}
+
+export func fe-frombytes(s: *[32]u8) -> Fe {
+  let h0 = load-le64(s as *u8, 0) & mask51
+  let h1 = (load-le64(s as *u8, 6) >> 3) & mask51
+  let h2 = (load-le64(s as *u8, 12) >> 6) & mask51
+  let h3 = (load-le64(s as *u8, 19) >> 1) & mask51
+  let h4 = (load-le64(s as *u8, 24) >> 12) & mask51
+  return (h0, h1, h2, h3, h4)
+}
+
+// === Point decoding ===
+// RFC 8032 §5.1.3: decompress 32-byte encoding → extended coordinates
+// Returns false if the encoding is not a valid curve point.
+
+export func point-decode(buf: *mut[120]u64, i: u32#6, encoded: *[32]u8) -> bool {
+  let x-sign = (encoded[31] >> 7) & 1:u8
+
+  // fe-frombytes strips bit 255 via mask51
+  let y = fe-frombytes(encoded)
+
+  // u = y^2 - 1, v = d*y^2 + 1
+  let y2 = fe-carry(fe-sq(y))
+  let u = fe-carry(fe-sub(y2, fe-one()))
+  let v = fe-carry(fe-add(fe-carry(fe-mul(fe-d(), y2)), fe-one()))
+
+  // x = sqrt(u/v) via candidate = (u/v)^((p+3)/8)
+  let v-inv = fe-inv(v)
+  let ratio = fe-carry(fe-mul(u, v-inv))
+  let x = fe-carry(fe-pow252m2(ratio))
+
+  // Check: x^2 should equal ratio (mod p)
+  let check = fe-carry(fe-sq(x))
+  if fe-eq(check, ratio) == false {
+    // β^2 = -ratio, so (β*sqrtm1)^2 = -β^2 = ratio
+    x = fe-carry(fe-mul(x, fe-sqrtm1()))
+    check = fe-carry(fe-sq(x))
+    if fe-eq(check, ratio) == false {
+      return false
+    }
+  }
+
+  // Adjust sign of x
+  let xr = fe-reduce(fe-carry(x))
+  if (xr.0 & 1:u64) as u8 != x-sign {
+    x = fe-sub(fe-zero(), x)
+  }
+
+  pt-set-x(buf, i, x)
+  pt-set-y(buf, i, y)
+  pt-set-z(buf, i, fe-one())
+  pt-set-t(buf, i, fe-carry(fe-mul(x, y)))
+  return true
 }
 
 // === Tests ===
@@ -500,5 +572,59 @@ test "point operations" {
     data elg = mut [0:u8; 32]
     point-encode(elg, blg, 1)
     assert elg[0] != 0x01:u8
+  }
+
+  test "fe-frombytes roundtrip" {
+    data brt = mut [0:u64; 120]
+    pt-set-base(brt, 0)
+    data enc-rt = mut [0:u8; 32]
+    data dec-rt = mut [0:u8; 32]
+    point-encode(enc-rt, brt, 0)
+    // Decode the y coordinate from the encoding
+    let y = fe-frombytes(enc-rt)
+    // Re-encode it
+    fe-tobytes(dec-rt, y)
+    // The low 31 bytes should match (byte 31 has the sign bit)
+    let j: u32 = 0
+    loop {
+      assert dec-rt.u8[j] == enc-rt.u8[j]
+      j += 1
+      break when j == 31
+    }
+    // Byte 31: compare with sign bit masked off
+    assert dec-rt.u8[31] == (enc-rt.u8[31] & 0x7F:u8)
+  }
+
+  test "point-decode roundtrip with base point" {
+    data bdc = mut [0:u64; 120]
+    pt-set-base(bdc, 0)
+    data enc-dc = mut [0:u8; 32]
+    point-encode(enc-dc, bdc, 0)
+    // Decode
+    assert point-decode(bdc, 1, enc-dc)
+    // The decoded point should equal the original
+    assert point-eq(bdc, 0, 1)
+  }
+
+  test "point-decode roundtrip with 2G" {
+    data bd2 = mut [0:u64; 120]
+    pt-set-base(bd2, 0)
+    point-double(bd2, 1, 0)
+    data enc-d2 = mut [0:u8; 32]
+    point-encode(enc-d2, bd2, 1)
+    assert point-decode(bd2, 2, enc-d2)
+    assert point-eq(bd2, 1, 2)
+  }
+
+  test "point-decode roundtrip with 3G" {
+    data bd3 = mut [0:u64; 120]
+    pt-set-base(bd3, 0)
+    data s3d = mut [0:u8; 32]
+    s3d[0] = 3:u8
+    scalar-mult(bd3, 1, 0, s3d)
+    data enc-d3 = mut [0:u8; 32]
+    point-encode(enc-d3, bd3, 1)
+    assert point-decode(bd3, 2, enc-d3)
+    assert point-eq(bd3, 1, 2)
   }
 }

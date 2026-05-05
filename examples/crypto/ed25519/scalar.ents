@@ -1,0 +1,195 @@
+// Scalar arithmetic mod L (Ed25519 group order)
+// L = 2^252 + 27742317777372353535851937790883648493
+// Uses TweetNaCl-style byte-level reduction with i64 intermediates.
+
+data l-bytes = [
+  0xed:u8, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+  0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+  0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0x10
+]
+
+data x-work = mut [0:i64; 64]
+
+func mod-L() {
+  let i: u32 = 63
+  loop {
+    let carry: i64 = 0
+    let j: u32 = i - 32
+    while j < i - 12 {
+      let idx = j - (i - 32)
+      x-work.i64[j] += carry - 16:i64 * x-work.i64[i] * (l-bytes.u8[idx] as i64)
+      carry = (x-work.i64[j] + 128:i64) >> 8
+      x-work.i64[j] -= carry << 8
+      j += 1
+    }
+    x-work.i64[i - 12] += carry
+    x-work.i64[i] = 0:i64
+    break when i == 32
+    i -= 1
+  }
+
+  let carry2: i64 = 0
+  let k: u32 = 0
+  while k < 32 {
+    x-work.i64[k] += carry2 - (x-work.i64[31] >> 4) * (l-bytes.u8[k] as i64)
+    carry2 = x-work.i64[k] >> 8
+    x-work.i64[k] &= 255:i64
+    k += 1
+  }
+
+  k = 0
+  while k < 32 {
+    x-work.i64[k] -= carry2 * (l-bytes.u8[k] as i64)
+    k += 1
+  }
+
+  k = 0
+  while k < 32 {
+    x-work.i64[k + 1] += x-work.i64[k] >> 8
+    x-work.i64[k] &= 255:i64
+    k += 1
+  }
+}
+
+// Reduce 64-byte LE integer mod L. Result stored in first 32 bytes.
+export func sc-reduce(s: *mut [64]u8) {
+  let i: u32 = 0
+  while i < 64 {
+    x-work.i64[i] = s.u8[i] as i64
+    i += 1
+  }
+  mod-L()
+  i = 0
+  while i < 32 {
+    s.u8[i] = x-work.i64[i] as u8
+    i += 1
+  }
+}
+
+// Compute s = a*b + c mod L. All inputs/output are 32-byte LE scalars.
+export func sc-muladd(out: *mut [32]u8, a: *[32]u8, b: *[32]u8, c: *[32]u8) {
+  let i: u32 = 0
+  while i < 64 {
+    x-work.i64[i] = 0:i64
+    i += 1
+  }
+
+  i = 0
+  while i < 32 {
+    let j: u32 = 0
+    while j < 32 {
+      x-work.i64[i + j] += (a.u8[i] as i64) * (b.u8[j] as i64)
+      j += 1
+    }
+    i += 1
+  }
+
+  i = 0
+  while i < 32 {
+    x-work.i64[i] += c.u8[i] as i64
+    i += 1
+  }
+
+  mod-L()
+
+  i = 0
+  while i < 32 {
+    out.u8[i] = x-work.i64[i] as u8
+    i += 1
+  }
+}
+
+// === Tests ===
+
+test "scalar mod L" {
+
+  test "reduce zero is zero" {
+    data z = mut [0:u8; 64]
+    sc-reduce(z)
+    let i: u32 = 0
+    while i < 32 {
+      assert z.u8[i] == 0:u8
+      i += 1
+    }
+  }
+
+  test "reduce 1 is 1" {
+    data one = mut [0:u8; 64]
+    one[0] = 1:u8
+    sc-reduce(one)
+    assert one[0] == 1:u8
+    let i: u32 = 1
+    while i < 32 {
+      assert one.u8[i] == 0:u8
+      i += 1
+    }
+  }
+
+  test "reduce L is zero" {
+    data l-val = mut [0:u8; 64]
+    l-val[0] = 0xed:u8
+    l-val[1] = 0xd3:u8
+    l-val[2] = 0xf5:u8
+    l-val[3] = 0x5c:u8
+    l-val[4] = 0x1a:u8
+    l-val[5] = 0x63:u8
+    l-val[6] = 0x12:u8
+    l-val[7] = 0x58:u8
+    l-val[8] = 0xd6:u8
+    l-val[9] = 0x9c:u8
+    l-val[10] = 0xf7:u8
+    l-val[11] = 0xa2:u8
+    l-val[12] = 0xde:u8
+    l-val[13] = 0xf9:u8
+    l-val[14] = 0xde:u8
+    l-val[15] = 0x14:u8
+    l-val[31] = 0x10:u8
+    sc-reduce(l-val)
+    let i: u32 = 0
+    while i < 32 {
+      assert l-val.u8[i] == 0:u8
+      i += 1
+    }
+  }
+
+  test "muladd 1*1+0 = 1" {
+    data ma-a = mut [0:u8; 32]
+    data ma-b = mut [0:u8; 32]
+    data ma-c = mut [0:u8; 32]
+    data ma-out = mut [0:u8; 32]
+    ma-a[0] = 1:u8
+    ma-b[0] = 1:u8
+    sc-muladd(ma-out, ma-a, ma-b, ma-c)
+    assert ma-out[0] == 1:u8
+    assert ma-out[1] == 0:u8
+    assert ma-out[31] == 0:u8
+  }
+
+  test "muladd with ed25519 scalars" {
+    data mk = x"86eabc8e4c96193d 290504e7c600df6c f8d8256131ec2c13 8a3e7e162e525404"
+    data ma2 = x"307c83864f2833cb 427a2ef1c00a013c fdff2768d980c0a3 a520f006904de94f"
+    data mr2 = x"f38907308c893dea f244787db4af5368 2249107418afc2ed c58f75ac58a07404"
+    data ms-out = mut [0:u8; 32]
+    sc-muladd(ms-out, mk, ma2, mr2)
+    data expected-s = x"5fb8821590a33bac c61e39701cf9b46b d25bf5f0595bbe24 655141438e7a100b"
+    let j: u32 = 0
+    while j < 32 {
+      assert ms-out.u8[j] == expected-s.u8[j]
+      j += 1
+    }
+  }
+
+  test "muladd 0*a+c = c" {
+    data mc-a = mut [0:u8; 32]
+    data mc-b = mut [0:u8; 32]
+    data mc-c = mut [0:u8; 32]
+    data mc-out = mut [0:u8; 32]
+    mc-b[0] = 42:u8
+    mc-c[0] = 7:u8
+    mc-c[1] = 3:u8
+    sc-muladd(mc-out, mc-a, mc-b, mc-c)
+    assert mc-out[0] == 7:u8
+    assert mc-out[1] == 3:u8
+  }
+}

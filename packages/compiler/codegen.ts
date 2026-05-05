@@ -1377,27 +1377,29 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   const cond = exprToWat(expr.condition, ctx)
-  const thenBody = bodyToWat(expr.thenBranch, ctx)
 
   // Get result type
   const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
+  const hasResult = resultTypes.length > 0
+
+  const thenBody = bodyToWat(expr.thenBranch, ctx, hasResult)
 
   // Handle elif chains
   let elseBody = ''
   if (expr.elifs.length > 0) {
     // Build nested if/else for elifs
-    let current = expr.else_ ? bodyToWat(expr.else_, ctx) : ''
+    let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
     for (let i = expr.elifs.length - 1; i >= 0; i--) {
       const elif = expr.elifs[i]
       const elifCond = exprToWat(elif.condition, ctx)
-      const elifThen = bodyToWat(elif.thenBranch, ctx)
+      const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
       current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
     }
     elseBody = current
   } else if (expr.else_) {
-    elseBody = bodyToWat(expr.else_, ctx)
+    elseBody = bodyToWat(expr.else_, ctx, hasResult)
   }
 
   if (elseBody) {
@@ -2141,11 +2143,21 @@ function continueToWat(stmt: AST.ContinueStmt, ctx: CodegenContext): string {
 
 // === Body/Block Codegen ===
 
-function bodyToWat(body: AST.FuncBody, ctx: CodegenContext): string {
+function bodyToWat(body: AST.FuncBody, ctx: CodegenContext, valueContext = false): string {
   if (body.kind === 'ArrowBody') {
     return exprToWat(body.expr, ctx)
   }
-  return body.stmts.map((s) => stmtToWat(s, ctx)).join('\n')
+  if (!valueContext || body.stmts.length === 0) {
+    return body.stmts.map((s) => stmtToWat(s, ctx)).join('\n')
+  }
+  const init = body.stmts.slice(0, -1).map((s) => stmtToWat(s, ctx))
+  const last = body.stmts[body.stmts.length - 1]
+  if (last.kind === 'ExpressionStmt') {
+    init.push(exprToWat(last.expr, ctx))
+  } else {
+    init.push(stmtToWat(last, ctx))
+  }
+  return init.join('\n')
 }
 
 // === Function Codegen ===

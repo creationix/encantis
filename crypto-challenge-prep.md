@@ -306,7 +306,7 @@ Once 1–7 are green and the docs in 8 exist, the seed repo is a packaging exerc
 
 ---
 
-## Status & Context (updated 2026-04-29)
+## Status & Context (updated 2026-05-04)
 
 **All 10 sections above are complete.** The checklist items are done. The work has shifted to stress-testing the compiler by writing real crypto code and fixing every bug that surfaces.
 
@@ -320,16 +320,23 @@ Ed25519 is being implemented step-by-step in `examples/crypto/ed25519/`:
 
 | Step | Status | Files |
 |------|--------|-------|
-| 1. Field arithmetic (mod p = 2^255-19) | **Done** | `field.ents` — 12 tests |
-| 2. Point operations (extended coordinates) | **Done** | `point.ents` — 19 tests |
+| 1. Field arithmetic (mod p = 2^255-19) | **Done** | `field.ents` — 14 tests |
+| 2. Point operations (extended coordinates) | **Done** | `point.ents` — 23 tests |
 | 3. Scalar multiplication (double-and-add) | **Done** | `point.ents` — tested through 256*G |
 | 4. Key derivation (SHA-512 → clamp → scalar*G) | **Done** | `ed25519.ents` — RFC 8032 test vector passes |
-| 5. Signing | **Not started** | |
-| 6. Verification | **Not started** | |
+| 5. Signing | **Done** | `ed25519.ents` — RFC 8032 TV1 (empty) and TV2 (0x72) pass |
+| 6. Verification | **Done** | `ed25519.ents` — both test vectors verify |
+
+New modules added:
+- `scalar.ents` — Scalar arithmetic mod L (group order). `sc-reduce` and `sc-muladd`. 6 tests.
+- `field.ents` — Added `fe-pow252m2` (exponentiation for sqrt) and `fe-sqrtm1` constant.
+- `point.ents` — Added `fe-frombytes` (deserialize 32 bytes → Fe) and `point-decode` (decompress encoded point).
 
 Other crypto modules used: `sha512/sha512.ents` (3 NIST vectors), `base64url/`, `blake2b.ents`, `gimli/`, `xxh64/`.
 
-**Total test count:** 375 unit tests + 121 example tests, all passing.
+Infrastructure: Added `examples/examples.test.ts` so `bun test` now runs all `.ents` inline tests alongside TypeScript tests.
+
+**Total test count:** 375 compiler unit tests + 157 example tests = 532, all passing.
 
 ### Bugs Found & Fixed During Crypto Work
 
@@ -348,17 +355,13 @@ These were all found by writing Ed25519 and other crypto code:
 11. **For-loop index type** — `for i in N` typed `i` as `i32` instead of `u32`. Fixed.
 12. **Bidirectional type inference** — arrow body expressions didn't check against return type. Fixed.
 13. **Single-element tuple grouping** — `(expr)` created a 1-element tuple instead of being treated as grouping. Fixed.
+14. **If-expression as value codegen** — `let x: u8 = if cond { a } else { b }` emitted `(drop)` in both branches, producing invalid WAT. Fixed by passing value context flag to `bodyToWat` in `ifExprToWat`.
 
-### Type System Redesign
+### Language Issues Noted (not yet fixed)
 
-A major type system redesign was documented in `docs/encantis.md` but **not yet implemented**. See `type-system-migration.md` for the full plan. Key changes:
-
-- **`[N]T` becomes a value type** (like tuples, in registers). Currently it's memory-backed.
-- **New `data` keyword** for data section allocation. `def` becomes pure constant substitution.
-- **Const-by-default pointers** — `*T` is read-only, `*mut T` is writable.
-- **`mut` keyword on literals** — forces heap allocation + writability.
-
-Implementation is in `type-system-migration.md` with 5 phases.
+- **`data` only at module level** — `data` declarations are not allowed inside regular functions, only at module level and in test blocks. Crypto code requires many scratch buffers, leading to verbose module-level declarations. This is a design question: should `data` be allowed in function scope (with the understanding it's statically allocated, not stack-allocated)?
+- **No `?i64` / `?u8` optional types** — Runtime indexing on `*[N]T` requires optional unwrapping, but optional types only exist for pointer types (`?*T`, `?[]T`). Workaround: use type-pun `.u8[i]` / `.i64[i]` access which goes through the many-pointer path (unchecked). This is confusing for users.
+- **Slice construction from buffer** — Constructing a `[]u8` with a runtime length from a `*mut [N]u8` requires the tuple coercion pattern: `(buf as [*]u8, len)`. This works but is not discoverable from the docs alone.
 
 ### Architecture Notes
 
@@ -367,15 +370,5 @@ Implementation is in `type-system-migration.md` with 5 phases.
 - **Cross-module linking**: All modules compile to a single wasm binary. Only the entry module's `export` declarations reach the wasm wall. Memory is auto-created — library modules should NOT declare memory.
 - **Scalar multiplication**: MSB-to-LSB double-and-add. Uses slot 4 as temp in the point buffer. Tested against known n*G encodings for n=1,2,3,4,8,255,256.
 - **SHA-512**: Imports work cross-module. The ed25519 module imports from both `./point` and `../sha512/sha512`.
-
-### Resuming Ed25519
-
-To continue with signing (step 5):
-
-1. Need `fe-frombytes` (deserialize 32 LE bytes → Fe). The reverse of `fe-tobytes` in `point.ents`.
-2. Need `point-decode` (decompress 32-byte encoded point → extended coordinates). Requires square root mod p.
-3. Signing (RFC 8032 §5.1.6): hash private key, compute nonce `r = SHA-512(prefix || msg)`, compute `R = r*G`, compute `S = r + SHA-512(R || A || msg) * a mod L`.
-4. Need scalar arithmetic mod L (the group order). L is ~253 bits.
-5. Verification (RFC 8032 §5.1.7): check `S*G == R + SHA-512(R || A || msg) * A`.
-
-**Remember:** The point of implementing these is to stress-test the compiler. When you hit a bug, fix the compiler first.
+- **Scalar mod L**: TweetNaCl-style byte-level reduction with i64 intermediates. `scalar.ents` exports `sc-reduce` (512→256-bit reduction) and `sc-muladd` (s=a*b+c mod L).
+- **Signing**: Uses concat buffer + tuple-to-slice coercion for multi-part SHA-512 inputs. Module-level scratch buffers for all intermediates.

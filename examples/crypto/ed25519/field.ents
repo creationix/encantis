@@ -430,6 +430,50 @@ export func fe-d() -> Fe => (
 // 2*d
 export func fe-2d() -> Fe => fe-carry(fe-add(fe-d(), fe-d()))
 
+// sqrt(-1) mod p = 2^((p-1)/4) mod p
+export func fe-sqrtm1() -> Fe => (
+  0x61B274A0EA0B0:u64, 0xD5A5FC8F189D:u64,
+  0x7EF5E9CBD0C60:u64, 0x78595A6804C9E:u64,
+  0x2B8324804FC1D:u64
+)
+
+// === Exponentiation: z^(2^252 - 2) ===
+// Used for square root: sqrt(a) = a^((p+3)/8) where (p+3)/8 = 2^252 - 2
+// Same addition chain as fe-inv up to z^(2^250-1), then different final steps
+
+export func fe-pow252m2(z: Fe) -> Fe {
+  let z2 = fe-sq(z)
+  let z9 = fe-sq(fe-sq(z2))
+  z9 = fe-mul(z9, z)
+  let z11 = fe-mul(z9, z2)
+  let z-5-0 = fe-sq(z11)
+  z-5-0 = fe-mul(z-5-0, z9)
+
+  let z-10-0 = fe-sq-n(z-5-0, 5)
+  z-10-0 = fe-mul(z-10-0, z-5-0)
+
+  let z-20-0 = fe-sq-n(z-10-0, 10)
+  z-20-0 = fe-mul(z-20-0, z-10-0)
+
+  let z-40-0 = fe-sq-n(z-20-0, 20)
+  z-40-0 = fe-mul(z-40-0, z-20-0)
+
+  let z-50-0 = fe-sq-n(z-40-0, 10)
+  z-50-0 = fe-mul(z-50-0, z-10-0)
+
+  let z-100-0 = fe-sq-n(z-50-0, 50)
+  z-100-0 = fe-mul(z-100-0, z-50-0)
+
+  let z-200-0 = fe-sq-n(z-100-0, 100)
+  z-200-0 = fe-mul(z-200-0, z-100-0)
+
+  let z-250-0 = fe-sq-n(z-200-0, 50)
+  z-250-0 = fe-mul(z-250-0, z-50-0)
+
+  let t = fe-mul(fe-sq(z-250-0), z)  // z^(2^251 - 1)
+  return fe-sq(t)                     // z^(2^252 - 2)
+}
+
 // === Tests ===
 
 test "field arithmetic" {
@@ -513,5 +557,34 @@ test "field arithmetic" {
 
   test "d constant nonzero" {
     assert fe-eq(fe-d(), fe-zero()) == false
+  }
+
+  test "sqrtm1 squared is -1" {
+    let s = fe-sqrtm1()
+    let s2 = fe-carry(fe-sq(s))
+    let neg1 = fe-carry(fe-sub(fe-zero(), fe-one()))
+    assert fe-eq(s2, neg1)
+  }
+
+  test "pow252m2 recovers sqrt of 49" {
+    let seven = (7:u64, 0:u64, 0:u64, 0:u64, 0:u64)
+    let a = fe-carry(fe-sq(seven))
+    let beta = fe-carry(fe-pow252m2(a))
+    let beta2 = fe-carry(fe-sq(beta))
+    let neg-a = fe-carry(fe-sub(fe-zero(), a))
+    // beta^2 == a or beta^2 == -a (both valid for p ≡ 5 mod 8)
+    let root = beta
+    if fe-eq(beta2, a) == false {
+      assert fe-eq(beta2, neg-a)
+      root = fe-carry(fe-mul(beta, fe-sqrtm1()))
+    }
+    // root^2 must equal a
+    assert fe-eq(fe-carry(fe-sq(root)), a)
+    // root must be ±7
+    let neg-seven = fe-carry(fe-sub(fe-zero(), seven))
+    let r = fe-reduce(fe-carry(root))
+    if fe-eq(r, fe-reduce(seven)) == false {
+      assert fe-eq(r, fe-reduce(neg-seven))
+    }
   }
 }

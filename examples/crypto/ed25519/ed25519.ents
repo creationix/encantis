@@ -1,4 +1,4 @@
-// Ed25519 key derivation (RFC 8032 §5.1.5)
+// Ed25519 (RFC 8032 §5.1)
 //
 // Private key: 32 random bytes
 // Key expansion: SHA-512(privkey) → 64 bytes
@@ -7,7 +7,7 @@
 // Public key: a * G, compressed to 32 bytes
 
 import "../sha512/sha512" (
-  "sha512" func sha512(input: []u8, output: *[64]u8)
+  "sha512" func sha512(input: []u8, output: *mut [64]u8)
 )
 
 import "./point" (
@@ -15,6 +15,13 @@ import "./point" (
   "scalar-mult" func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32]u8)
   "point-encode" func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6)
   "point-eq" func point-eq(buf: *mut[120]u64, p: u32#6, q: u32#6) -> bool
+  "point-decode" func point-decode(buf: *mut[120]u64, i: u32#6, encoded: *[32]u8) -> bool
+  "point-add" func point-add(buf: *mut[120]u64, out: u32#6, p: u32#6, q: u32#6)
+)
+
+import "./scalar" (
+  "sc-reduce" func sc-reduce(s: *mut [64]u8)
+  "sc-muladd" func sc-muladd(out: *mut [32]u8, a: *[32]u8, b: *[32]u8, c: *[32]u8)
 )
 
 type Fe = (u64, u64, u64, u64, u64)
@@ -22,11 +29,23 @@ type Fe = (u64, u64, u64, u64, u64)
 // Scratch buffers
 data hash-buf = mut [0:u8; 64]
 data scalar-buf = mut [0:u8; 32]
-data pt-work = mut [0:u64; 120]  // 6 point slots
+data pt-work = mut [0:u64; 120]
+data concat-buf = mut [0:u8; 512]
+data sign-hash = mut [0:u8; 64]
+data sign-a = mut [0:u8; 32]
+data sign-r-hash = mut [0:u8; 64]
+data sign-r-enc = mut [0:u8; 32]
+data sign-k-hash = mut [0:u8; 64]
+data sign-s = mut [0:u8; 32]
+data sign-r-scalar = mut [0:u8; 32]
+data sign-k-scalar = mut [0:u8; 32]
+data sign-pt = mut [0:u64; 120]
+data vf-k-hash = mut [0:u8; 64]
+data vf-s-bytes = mut [0:u8; 32]
+data vf-r-bytes = mut [0:u8; 32]
+data vf-pt = mut [0:u64; 120]
 
 // === Scalar clamping ===
-// RFC 8032 §5.1.5: clamp the lower 32 bytes of SHA-512(privkey)
-// Clear bits 0,1,2 of first byte, clear bit 7 and set bit 6 of last byte
 
 func clamp-scalar(s: *mut [32]u8) {
   s[0] = s[0] & 248:u8
@@ -34,34 +53,168 @@ func clamp-scalar(s: *mut [32]u8) {
 }
 
 // === Key derivation ===
-// Compute public key from 32-byte private key
 
 export func derive-pubkey(pubkey: *mut [32]u8, privkey: *[32]u8) {
-  // Hash private key with SHA-512
   sha512(privkey, hash-buf)
 
-  // Copy lower 32 bytes to scalar and clamp
   let i: u32 = 0
-  loop {
+  while i < 32 {
     scalar-buf.u8[i] = hash-buf.u8[i]
     i += 1
-    break when i == 32
   }
   clamp-scalar(scalar-buf)
 
-  // Compute A = scalar * G
-  let buf = pt-work
-  pt-set-base(buf, 0)
-  scalar-mult(buf, 1, 0, scalar-buf)
+  pt-set-base(pt-work, 0)
+  scalar-mult(pt-work, 1, 0, scalar-buf)
+  point-encode(pubkey, pt-work, 1)
+}
 
-  // Encode point to 32 bytes
-  point-encode(pubkey, buf, 1)
+// === Signing ===
+// RFC 8032 §5.1.6
+
+export func sign(sig: *mut [64]u8, msg: []u8, privkey: *[32]u8, pubkey: *[32]u8) {
+  // 1. h = SHA-512(privkey)
+  sha512(privkey, sign-hash)
+
+  // Extract and clamp scalar 'a' (lower 32 bytes)
+  let i: u32 = 0
+  while i < 32 {
+    sign-a.u8[i] = sign-hash.u8[i]
+    i += 1
+  }
+  clamp-scalar(sign-a)
+
+  // 2. r = SHA-512(prefix || msg) mod L
+  //    prefix = h[32..64]
+  i = 0
+  while i < 32 {
+    concat-buf.u8[i] = sign-hash.u8[i + 32]
+    i += 1
+  }
+  i = 0
+  while i < msg.len {
+    concat-buf.u8[32 + i] = msg.ptr[i]
+    i += 1
+  }
+  let pm-slice: []u8 = (concat-buf as [*]u8, 32 + msg.len)
+  sha512(pm-slice, sign-r-hash)
+  sc-reduce(sign-r-hash)
+
+  // Copy reduced r scalar to 32-byte buffer
+  i = 0
+  while i < 32 {
+    sign-r-scalar.u8[i] = sign-r-hash.u8[i]
+    i += 1
+  }
+
+  // 3. R = r * G, encoded
+  pt-set-base(sign-pt, 0)
+  scalar-mult(sign-pt, 1, 0, sign-r-scalar)
+  point-encode(sign-r-enc, sign-pt, 1)
+
+  // Copy R to sig[0..32]
+  i = 0
+  while i < 32 {
+    sig.u8[i] = sign-r-enc.u8[i]
+    i += 1
+  }
+
+  // 4. k = SHA-512(R || A || msg) mod L
+  i = 0
+  while i < 32 {
+    concat-buf.u8[i] = sign-r-enc.u8[i]
+    i += 1
+  }
+  i = 0
+  while i < 32 {
+    concat-buf.u8[32 + i] = pubkey.u8[i]
+    i += 1
+  }
+  i = 0
+  while i < msg.len {
+    concat-buf.u8[64 + i] = msg.ptr[i]
+    i += 1
+  }
+  let ram-slice: []u8 = (concat-buf as [*]u8, 64 + msg.len)
+  sha512(ram-slice, sign-k-hash)
+  sc-reduce(sign-k-hash)
+
+  // Copy reduced k scalar to 32-byte buffer
+  i = 0
+  while i < 32 {
+    sign-k-scalar.u8[i] = sign-k-hash.u8[i]
+    i += 1
+  }
+
+  // 5. S = (r + k * a) mod L
+  sc-muladd(sign-s, sign-k-scalar, sign-a, sign-r-scalar)
+
+  // Copy S to sig[32..64]
+  i = 0
+  while i < 32 {
+    sig.u8[32 + i] = sign-s.u8[i]
+    i += 1
+  }
+}
+
+// === Verification ===
+// RFC 8032 §5.1.7
+
+export func verify(sig: *[64]u8, msg: []u8, pubkey: *[32]u8) -> bool {
+  // Decode public key A
+  if point-decode(vf-pt, 0, pubkey) == false {
+    return false
+  }
+
+  // Copy R from sig[0..32]
+  let i: u32 = 0
+  while i < 32 {
+    vf-r-bytes.u8[i] = sig.u8[i]
+    i += 1
+  }
+  if point-decode(vf-pt, 1, vf-r-bytes) == false {
+    return false
+  }
+
+  // k = SHA-512(R || A || msg) mod L
+  i = 0
+  while i < 32 {
+    concat-buf.u8[i] = sig.u8[i]
+    i += 1
+  }
+  i = 0
+  while i < 32 {
+    concat-buf.u8[32 + i] = pubkey.u8[i]
+    i += 1
+  }
+  i = 0
+  while i < msg.len {
+    concat-buf.u8[64 + i] = msg.ptr[i]
+    i += 1
+  }
+  let vf-ram-slice: []u8 = (concat-buf as [*]u8, 64 + msg.len)
+  sha512(vf-ram-slice, vf-k-hash)
+  sc-reduce(vf-k-hash)
+
+  // S from sig[32..64]
+  i = 0
+  while i < 32 {
+    vf-s-bytes.u8[i] = sig.u8[32 + i]
+    i += 1
+  }
+
+  // Check: S * G == R + k * A
+  pt-set-base(vf-pt, 2)
+  scalar-mult(vf-pt, 3, 2, vf-s-bytes)
+  scalar-mult(vf-pt, 4, 0, vf-k-hash as *[32]u8)
+  point-add(vf-pt, 5, 1, 4)
+
+  return point-eq(vf-pt, 3, 5)
 }
 
 // === Tests ===
 
 test "ed25519 key derivation" {
-  // RFC 8032 test vector 1
   data tv1-privkey = x"9d61b19deffd5a60 ba844af492ec2cc4 4449c5697b326919 703bac031cae7f60"
   data tv1-expected = x"d75a980182b10ab7 d54bfed3c964073a 0ee172f3daa62325 af021a68f707511a"
 
@@ -75,12 +228,52 @@ test "ed25519 key derivation" {
   test "RFC 8032 test vector 1" {
     data pubkey = mut [0:u8; 32]
     derive-pubkey(pubkey, tv1-privkey)
-
     let i: u32 = 0
-    loop {
+    while i < 32 {
       assert pubkey.u8[i] == tv1-expected.u8[i]
       i += 1
-      break when i == 32
     }
+  }
+}
+
+test "ed25519 signing" {
+  data tv1-privkey = x"9d61b19deffd5a60 ba844af492ec2cc4 4449c5697b326919 703bac031cae7f60"
+  data tv1-pubkey = x"d75a980182b10ab7 d54bfed3c964073a 0ee172f3daa62325 af021a68f707511a"
+  data tv1-msg = ""
+  data tv1-expected-sig = x"e5564300c360ac72 9086e2cc806e828a 84877f1eb8e5d974 d873e06522490155 5fb8821590a33bac c61e39701cf9b46b d25bf5f0595bbe24 655141438e7a100b"
+
+  test "sign empty message" {
+    data sig = mut [0:u8; 64]
+    sign(sig, tv1-msg, tv1-privkey, tv1-pubkey)
+    let i: u32 = 0
+    while i < 64 {
+      assert sig.u8[i] == tv1-expected-sig.u8[i]
+      i += 1
+    }
+  }
+
+  test "verify empty message" {
+    assert verify(tv1-expected-sig, tv1-msg, tv1-pubkey)
+  }
+}
+
+test "ed25519 test vector 2" {
+  data tv2-privkey = x"4ccd089b28ff96da 9db6c346ec114e0f 5b8a319f35aba624 da8cf6ed4fb8a6fb"
+  data tv2-pubkey = x"3d4017c3e843895a 92b70aa74d1b7ebc 9c982ccf2ec4968c c0cd55f12af4660c"
+  data tv2-msg = x"72"
+  data tv2-expected-sig = x"92a009a9f0d4cab8 720e820b5f642540 a2b27b5416503f8f b3762223ebdb69da 085ac1e43e15996e 458f3613d0f11d8c 387b2eaeb4302aee b00d291612bb0c00"
+
+  test "sign 0x72" {
+    data sig2 = mut [0:u8; 64]
+    sign(sig2, tv2-msg, tv2-privkey, tv2-pubkey)
+    let i: u32 = 0
+    while i < 64 {
+      assert sig2.u8[i] == tv2-expected-sig.u8[i]
+      i += 1
+    }
+  }
+
+  test "verify 0x72" {
+    assert verify(tv2-expected-sig, tv2-msg, tv2-pubkey)
   }
 }
