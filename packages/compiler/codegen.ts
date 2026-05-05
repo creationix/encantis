@@ -42,6 +42,8 @@ export interface CodegenContext {
   namedReturnLocals: string[]
   // Total data section size in bytes (for sizeof(data))
   dataSectionSize?: number
+  // When true, asserts call $__assert_fail with source offset
+  testMode?: boolean
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -860,6 +862,18 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   const builtin = builtinToWat(funcName, expr, ctx)
   if (builtin !== null) return builtin
 
+  // Primitive type cast: u64(x), f32(x), etc.
+  if (RT.PRIMITIVE_NAMES.has(funcName)) {
+    const arg = expr.args.find((a) => a.value)
+    if (arg?.value) {
+      const inner = exprToWat(arg.value, ctx)
+      const fromType = lookupExprType(arg.value, ctx)
+      const toType = lookupExprType(expr, ctx)
+      if (!fromType || !toType) return inner
+      return emitConversion(inner, fromType, toType)
+    }
+  }
+
   // Get callee type for param coercions
   const calleeSym = ctx.symbols.get(funcName)
   const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null
@@ -1407,18 +1421,11 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   return parts.filter(Boolean).join(' ')
 }
 
-function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
-  const inner = exprToWat(expr.expr, ctx)
-  const fromType = lookupExprType(expr.expr, ctx)
-  const toType = lookupExprType(expr, ctx)
-
-  if (!fromType || !toType) return inner
-
+function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
 
   if (fromWasm === toWasm) {
-    // Same wasm type but different source types — may need masking for sub-word narrowing
     const toU = unwrap(toType)
     if (toU.kind === 'primitive') {
       if (toU.name === 'u8') return `(i32.and ${inner} (i32.const 255))`
@@ -1429,22 +1436,18 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     return inner
   }
 
-  // Generate appropriate conversion instruction
   const fromIsFloat = isFloat(fromType)
   const toIsFloat = isFloat(toType)
   const fromSigned = isSigned(fromType)
   const toSigned = isSigned(toType)
 
   if (fromIsFloat && !toIsFloat) {
-    // Float to int
     return `(${toWasm}.trunc_${fromWasm}_${toSigned ? 's' : 'u'} ${inner})`
   }
   if (!fromIsFloat && toIsFloat) {
-    // Int to float
     return `(${toWasm}.convert_${fromWasm}_${fromSigned ? 's' : 'u'} ${inner})`
   }
   if (fromIsFloat && toIsFloat) {
-    // Float to float
     if (fromWasm === 'f32' && toWasm === 'f64') {
       return `(f64.promote_f32 ${inner})`
     }
@@ -1452,7 +1455,6 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
       return `(f32.demote_f64 ${inner})`
     }
   }
-  // Int to int
   if (fromWasm === 'i32' && toWasm === 'i64') {
     return `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})`
   }
@@ -1460,7 +1462,6 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     return `(i32.wrap_i64 ${inner})`
   }
 
-  // Widening to multi-i64 (u32/i32/u64/i64 → u128+)
   const toWide = wideIntParts(toType)
   if (toWide > 0 && (fromWasm === 'i32' || fromWasm === 'i64')) {
     const ext = fromWasm === 'i32' ? `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})` : inner
@@ -1468,16 +1469,13 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
     return `${ext} ${zeros}`
   }
 
-  // Narrowing from multi-i64 (u128+ → u64/i64 or u32/i32)
   const fromWide = wideIntParts(fromType)
   if (fromWide > 0 && toWasm === 'i64') {
-    // Take the first i64 — but inner produces multiple values on stack
-    // Use a block to extract just the first
     try {
       const parts = splitMultiValue(inner, fromWide)
       return parts[0]
     } catch {
-      return inner // single expression, just take first stack value
+      return inner
     }
   }
   if (fromWide > 0 && toWasm === 'i32') {
@@ -1490,6 +1488,14 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   }
 
   return inner
+}
+
+function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
+  const inner = exprToWat(expr.expr, ctx)
+  const fromType = lookupExprType(expr.expr, ctx)
+  const toType = lookupExprType(expr, ctx)
+  if (!fromType || !toType) return inner
+  return emitConversion(inner, fromType, toType)
 }
 
 function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
@@ -1527,11 +1533,13 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
-        const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
-        const tmpLen = `__arr_tmp_len_${elem.span.start}`
-        parts.push(`${value}\n(local.set $${tmpLen})\n(local.set $${tmpPtr})`)
-        parts.push(`(i32.store (i32.const ${base}) (local.get $${tmpPtr}))`)
-        parts.push(`(i32.store (i32.const ${base + 4}) (local.get $${tmpLen}))`)
+        try {
+          const valParts = splitMultiValue(value, 2)
+          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
+          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+        } catch {
+          parts.push(`(i32.const ${base})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${base + 4}) (local.get $__slot_len))`)
+        }
       } else {
         parts.push(storeToMemory(elemType, `(i32.const ${base})`, value))
       }
@@ -1703,6 +1711,9 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
     case 'ContinueStmt':
       return continueToWat(stmt, ctx)
     case 'AssertStmt':
+      if (ctx.testMode) {
+        return `(if (i32.eqz ${exprToWat(stmt.expr, ctx)}) (then (call $__assert_fail (i32.const ${stmt.span.start})) (unreachable)))`
+      }
       return `(if (i32.eqz ${exprToWat(stmt.expr, ctx)}) (then (unreachable)))`
     default:
       throw new Error(`Unhandled statement kind: ${(stmt as AST.Statement).kind}`)
@@ -2455,16 +2466,14 @@ function collectLocals(
       visitExpr(expr.fallback)
     }
     if (expr.kind === 'ArrayExpr') {
+      let needsSlotLocal = false
       for (const elem of expr.elements) {
-        if (elem.kind !== 'LiteralExpr') {
-          const tmpPtr = `__arr_tmp_ptr_${elem.span.start}`
-          const tmpLen = `__arr_tmp_len_${elem.span.start}`
-          locals.push({ name: tmpPtr, type: 'i32' })
-          locals.push({ name: tmpLen, type: 'i32' })
-          ctx.locals.set(tmpPtr, [tmpPtr])
-          ctx.locals.set(tmpLen, [tmpLen])
-        }
+        if (isRuntimeExpr(elem) && elem.kind === 'CallExpr') needsSlotLocal = true
         visitExpr(elem)
+      }
+      if (needsSlotLocal) {
+        locals.push({ name: '__slot_len', type: 'i32' })
+        ctx.locals.set('__slot_len', ['__slot_len'])
       }
     }
     if (expr.kind === 'MatchExpr') {
@@ -2503,9 +2512,29 @@ function collectLocals(
 
 // === Module Codegen ===
 
+function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, dataBuilder: DataSectionBuilder, literalRefs: Map<number, { ptr: number; len: number }>) {
+  for (const decl of module.decls) {
+    if (decl.kind === 'DataDecl') {
+      const sym = checkResult.symbols.get(decl.ident)
+      if (!sym) continue
+      const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
+      const ref = literalRefs.get(expr.span.start)
+      if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
+    }
+    if (decl.kind === 'DefDecl') {
+      const sym = checkResult.symbols.get(decl.ident)
+      if (sym?.kind === 'def' && sym.value?.kind === 'data_ptr') {
+        const ref = literalRefs.get(sym.value.id)
+        if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
+      }
+    }
+  }
+}
+
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
   const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types)
+  labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
 
   const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
@@ -2576,7 +2605,22 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   }
 
   parts.push(')')
-  return parts.join('\n')
+  return tidyRawWat(parts.join('\n'))
+}
+
+function tidyRawWat(wat: string): string {
+  const lines = wat.split('\n')
+  const out: string[] = []
+  let inFunc = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    if (trimmed.startsWith('(func ')) { inFunc = true; out.push('  ' + trimmed); continue }
+    if (inFunc && trimmed === ')') { out.push('  )'); inFunc = false; continue }
+    if (trimmed.startsWith('(module') || trimmed === ')') { out.push(trimmed); continue }
+    out.push((inFunc ? '    ' : '  ') + trimmed)
+  }
+  return out.join('\n') + '\n'
 }
 
 function usesMemory(checkResult: TypeCheckResult): boolean {
@@ -2616,6 +2660,8 @@ function emitTestDecl(
   for (const item of decl.children) {
     if (item.kind === 'TestDecl') {
       hasNestedTests = true
+    } else if (item.kind === 'ImportDecl') {
+      // Handled at module level — skip here
     } else if (item.kind === 'FuncDecl') {
       // Emit shared helper function
       const watName = item.ident ? `__test_${myPrefix}_${item.ident}` : `__test_${myPrefix}_anon`
@@ -2639,8 +2685,10 @@ function emitTestDecl(
     }
   } else if (stmts.length > 0 && decl.name) {
     // Leaf test: emit as a function
+    ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
     const body = stmts.map(s => stmtToWat(s, ctx)).join('\n')
+    ctx.testMode = false
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const seen = new Set<string>()
     const locals = rawLocals.filter(l => {
@@ -2873,6 +2921,10 @@ export function programToWat(
     for (const [k, v] of result.types) allTypes.set(k, v)
   }
   const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes)
+  for (const [, loaded] of modules) {
+    const result = checkResults.get(loaded.path)
+    if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)
+  }
   const dataSection = dataBuilder.result()
 
   // Build per-module name mappings
@@ -2901,6 +2953,15 @@ export function programToWat(
     perModuleNameMap.set(path, modNameMap)
   }
 
+  function collectAllImports(decls: readonly { kind: string }[]): AST.ImportDecl[] {
+    const imports: AST.ImportDecl[] = []
+    for (const d of decls) {
+      if (d.kind === 'ImportDecl') imports.push(d as AST.ImportDecl)
+      else if (d.kind === 'TestDecl') imports.push(...collectAllImports((d as AST.TestDecl).children))
+    }
+    return imports
+  }
+
   // Build the full name map for each module: includes own mangled names + imported names resolved to their source's mangled names
   function buildFullNameMap(path: string): Map<string, string> {
     const full = new Map<string, string>()
@@ -2909,8 +2970,8 @@ export function programToWat(
 
     const loaded = modules.get(path)
     if (!loaded) return full
-    for (const decl of loaded.module.decls) {
-      if (decl.kind !== 'ImportDecl' || !isSourceImport(decl.module)) continue
+    for (const decl of collectAllImports(loaded.module.decls)) {
+      if (!isSourceImport(decl.module)) continue
       const depPath = resolveModulePath(decl.module, path)
       const depNames = perModuleNameMap.get(depPath)
       if (!depNames) continue
@@ -2931,7 +2992,7 @@ export function programToWat(
 
   const parts: string[] = ['(module']
 
-  // Emit host imports (only from entry module for now, but could be from any)
+  // Emit host imports — top-level always, test-scoped only when includeTests
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -2944,6 +3005,23 @@ export function programToWat(
         }
       }
     }
+    if (options?.includeTests) {
+      for (const decl of loaded.module.decls) {
+        if (decl.kind === 'TestDecl') {
+          for (const imp of collectAllImports(decl.children)) {
+            if (!isSourceImport(imp.module)) {
+              for (const item of imp.items) {
+                parts.push(importItemToWat(imp.module, item, ctx))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (options?.includeTests) {
+    parts.push('  (import "test" "__assert_fail" (func $__assert_fail (param i32)))')
   }
 
   // Memory — at most one declaration program-wide
@@ -3049,7 +3127,7 @@ export function programToWat(
   }
 
   parts.push(')')
-  const wat = parts.join('\n')
+  const wat = tidyRawWat(parts.join('\n'))
   if (options?.includeTests) {
     return wat // caller uses testNames from the return
   }

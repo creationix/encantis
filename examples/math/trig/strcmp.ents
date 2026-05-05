@@ -1,0 +1,36 @@
+// Compare two slices, return 0 if equal, or positive or negative if different (to enable sorting)
+export func strcmp(a:[]u8, b:[]u8) -> i32 {
+  for i in min(a.len, b.len) {
+    let diff = i32(a.ptr[i]) - i32(b.ptr[i])
+    return diff when diff != 0
+  }
+  return i32(a.len) - i32(b.len)
+}
+
+test "strcmp" {
+  test "equal strings" {
+    assert(strcmp("hello", "hello") == 0)
+    assert(strcmp("", "") == 0)
+    assert(strcmp("a", "a") == 0)
+  }
+
+  test "ordering" {
+    assert(strcmp("a", "b") < 0)
+    assert(strcmp("b", "a") > 0)
+    assert(strcmp("abc", "abd") < 0)
+    assert(strcmp("abd", "abc") > 0)
+  }
+
+  test "length differences" {
+    assert(strcmp("abc", "ab") > 0)
+    assert(strcmp("ab", "abc") < 0)
+    assert(strcmp("", "a") < 0)
+    assert(strcmp("a", "") > 0)
+  }
+
+  test "common prefix" {
+    assert(strcmp("hello", "help") < 0)
+    assert(strcmp("help", "hello") > 0)
+    assert(strcmp("abc", "abcd") < 0)
+  }
+}

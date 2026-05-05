@@ -680,22 +680,27 @@ bool + i32  // ERROR: cast bool first
 Two syntaxes:
 
 ```ents
-// Function-style (binds tightly)
+// Function-style (binds tightly, primitive types only)
 i32(x)
 f64(value)
-(*u8)(ptr)
 
-// as-style (lower precedence)
+// as-style (also binds tightly — at the postfix level)
 x as i32
 ptr as *u8
 ```
 
-Function-style binds like a call; `as` requires parens in expressions:
+Both forms bind tighter than arithmetic, so no parens are needed:
 
 ```ents
-i32(x) + 1      // cast then add
-x as i32 + 1    // ERROR: parses as x as (i32 + 1)
-(x as i32) + 1  // OK: cast then add
+x as i32 + 1     // OK: parses as (x as i32) + 1
+i32(x) + 1       // OK: same result
+```
+
+For type-punned memory access, use the member syntax instead of casts:
+
+```ents
+ptr.u8              // read memory as u8
+ptr.u32             // read memory as u32
 ```
 
 Casts are required for:
@@ -1716,20 +1721,21 @@ process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
 | `*[N]T`, `*[!]T` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
 
-### 8.4 Slice Constructors
+### 8.4 Slice Construction
 
-Slices can be constructed explicitly from pointer and length components:
+Slices are multi-value pairs (pointer + length). When you have separate components, construct a slice by assigning a tuple to a slice-typed binding:
 
 ```ents
-[]u8(ptr, len)           // construct []u8 from components
-[][]u8(iovec_ptr, count) // construct slice of slices
+data buffer = mut [0:u8; 1024]
+let ptr = buffer as [*]u8
+let slice:[]u8 = (ptr, 512:u32)     // tuple coerces to slice
 ```
 
-This is useful when you have separate pointer and length values:
+Fixed-size pointer types coerce to slices implicitly (the compiler knows the length):
 
 ```ents
-def buffer = [0:u8; 1024]
-let slice = []u8(buffer, 1024)      // construct slice from pointer + length
+data buffer = mut [0:u8; 1024]
+let slice:[]u8 = buffer              // *[1024]u8 → []u8 implicit
 ```
 
 ### 8.5 Array Type Conversions

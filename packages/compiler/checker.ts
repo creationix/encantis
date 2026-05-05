@@ -40,6 +40,8 @@ import {
   optionalOf,
   isOptional,
   unwrapOptional,
+  PRIMITIVE_NAMES,
+  type PrimitiveName,
 } from './types'
 
 // === Symbol Table ===
@@ -127,6 +129,8 @@ export interface TypecheckOptions {
   moduleExports?: Map<string, Map<string, Symbol>>
   // Source text (enables identifier offset resolution for hover)
   source?: string
+  // Whether to typecheck test block contents (default: true)
+  includeTests?: boolean
 }
 
 const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultFloat'> = {
@@ -146,6 +150,7 @@ const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultF
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
   const opts = { ...DEFAULT_OPTIONS, ...options }
   const ctx = new CheckContext()
+  ctx.options = opts
   ctx.source = opts.source
   ctx.filePath = opts.filePath
   ctx.moduleExports = opts.moduleExports
@@ -245,12 +250,17 @@ export function typecheckProgram(
     const loaded = modules.get(path)
     if (!loaded) return
 
-    for (const decl of loaded.module.decls) {
-      if (decl.kind === 'ImportDecl' && isSourceImport(decl.module)) {
-        const depPath = resolveModulePath(decl.module, path)
-        visit(depPath)
+    function visitImports(items: readonly { kind: string }[]) {
+      for (const decl of items) {
+        if (decl.kind === 'ImportDecl' && isSourceImport((decl as AST.ImportDecl).module)) {
+          const depPath = resolveModulePath((decl as AST.ImportDecl).module, path)
+          visit(depPath)
+        } else if (options?.includeTests !== false && decl.kind === 'TestDecl') {
+          visitImports((decl as AST.TestDecl).children)
+        }
       }
     }
+    visitImports(loaded.module.decls)
 
     const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
     results.set(path, result)
@@ -414,6 +424,7 @@ class CheckContext {
   // Multi-module support
   filePath?: string
   moduleExports?: Map<string, Map<string, Symbol>>
+  options: TypecheckOptions = DEFAULT_OPTIONS
 
   // Literals that need data section serialization (collected during checking)
   pendingLiterals: PendingLiteral[] = []
@@ -1145,7 +1156,7 @@ class CheckContext {
         this.checkFuncBody(decl)
         break
       case 'TestDecl':
-        this.checkTestDecl(decl)
+        if (this.options.includeTests !== false) this.checkTestDecl(decl)
         break
       default:
         break
@@ -1160,6 +1171,9 @@ class CheckContext {
       switch (item.kind) {
         case 'TestDecl':
           this.checkTestDecl(item)
+          break
+        case 'ImportDecl':
+          this.collectImport(item)
           break
         case 'FuncDecl':
           this.collectFunc(item)
@@ -1915,15 +1929,19 @@ class CheckContext {
       return resolvedExpected
     }
 
-    // Array/string literals against pointer/slice target: allocate in data section
+    // Array/string literals against pointer/slice/framed-array target: allocate in data section
+    const isFramedArray = expected.kind === 'array' && expected.sizes?.some(s => s === '!' || s === '?')
     if (
       this.isDataLiteralExpr(expr) &&
       (expected.kind === 'pointer' && expected.pointee.kind === 'array' ||
-       expected.kind === 'slice')
+       expected.kind === 'slice' ||
+       isFramedArray)
     ) {
       const litSize = this.getLiteralSize(expr)
       const arrType: ArrayRT = expected.kind === 'slice'
         ? array(expected.element, [typeof litSize === 'number' ? litSize : 0])
+        : expected.kind === 'array'
+        ? expected
         : (expected.pointee as ArrayRT)
       // Infer mut from target type — no need for explicit mut on the literal
       const targetMut = (expected.kind === 'pointer' && expected.mutable) ||
@@ -2199,6 +2217,17 @@ class CheckContext {
     if (expr.callee.kind === 'IdentExpr') {
       const builtinResult = this.inferBuiltin(expr, expr.callee.name)
       if (builtinResult !== null) return builtinResult
+
+      // Primitive type cast: u64(x), f32(x), etc.
+      if (PRIMITIVE_NAMES.has(expr.callee.name)) {
+        const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+        if (args.length !== 1) {
+          this.error(expr.span.start, `type cast '${expr.callee.name}' expects 1 argument, got ${args.length}`)
+        } else {
+          this.inferExpr(args[0].value)
+        }
+        return primitive(expr.callee.name as PrimitiveName)
+      }
     }
 
     const calleeType = this.inferExpr(expr.callee)

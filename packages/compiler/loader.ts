@@ -1,5 +1,5 @@
 import { parse } from './parser'
-import type { Module, ImportDecl } from './ast'
+import type { Module, ImportDecl, TestDecl } from './ast'
 import { resolve, dirname } from 'path'
 
 export interface LoadedModule {
@@ -31,13 +31,26 @@ function resolveModulePath(importPath: string, fromFile: string): string {
   return resolved
 }
 
-function getSourceImports(mod: Module): ImportDecl[] {
-  return mod.decls.filter(
-    (d): d is ImportDecl => d.kind === 'ImportDecl' && isSourceImport(d.module)
-  )
+function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
+  const imports: ImportDecl[] = []
+  function collect(decls: readonly { kind: string }[]) {
+    for (const d of decls) {
+      if (d.kind === 'ImportDecl' && isSourceImport((d as ImportDecl).module)) {
+        imports.push(d as ImportDecl)
+      } else if (includeTests && d.kind === 'TestDecl') {
+        collect((d as TestDecl).children)
+      }
+    }
+  }
+  collect(mod.decls)
+  return imports
 }
 
-export async function loadModule(entryPath: string): Promise<LoadResult> {
+export interface LoadOptions {
+  includeTests?: boolean
+}
+
+export async function loadModule(entryPath: string, options?: LoadOptions): Promise<LoadResult> {
   const absEntry = resolve(entryPath)
   const modules = new Map<string, LoadedModule>()
   const errors: LoadError[] = []
@@ -85,7 +98,7 @@ export async function loadModule(entryPath: string): Promise<LoadResult> {
     const nextChain = new Set(chain)
     nextChain.add(filePath)
 
-    for (const imp of getSourceImports(result.module)) {
+    for (const imp of getSourceImports(result.module, options?.includeTests)) {
       const depPath = resolveModulePath(imp.module, filePath)
       await load(depPath, filePath, nextChain)
     }

@@ -8,8 +8,12 @@ import "math" (
 )
 
 // Import a way to print things
-import "sys" "print-f64-pair"
-func print([]u8, f64, []u8, f64, []u8)
+import "sys" "print"
+func print([][]u8)
+
+// Import write-float utility
+import "./write-float" "write-float"
+func write-float(buf:[]mut u8, val:f64) -> []u8
 
 // A point in polar coordinates (distance, angle)
 type PolarPoint = (d:f64, a:f64)
@@ -37,11 +41,13 @@ export func main() {
   let (d:, a:) = to_polar((x:, y:))
 
   // Print the result
-  print("Polar coordinates: (", d, ", ", a, ")")
+  let dTxt = write-float([0:u8; 10], d)
+  let aTxt = write-float([0:u8; 10], a)
+  print(`Polar coordinates: (${dTxt}, ${aTxt})`)
 
   // Convert from polar to cartesian coordinates
   set (x:, y:) = from_polar((d:, a:))
 
   // Print the result
-  print("Cartesian coordinates: (", x, ", ", y, ")")
+  print(`Cartesian coordinates: (${write-float([0:u8;10],x)}, ${write-float([0:u8;10],y)})`)
 }

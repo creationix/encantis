@@ -160,7 +160,7 @@ switch (command) {
 
   case 'check': {
     const entryPath = resolve(inputFile)
-    const load = await loadModule(entryPath)
+    const load = await loadModule(entryPath, { includeTests: true })
 
     if (load.errors.length > 0) {
       if (jsonOutput) {
@@ -173,7 +173,7 @@ switch (command) {
       process.exit(1)
     }
 
-    const check = typecheckProgram(load.modules, entryPath)
+    const check = typecheckProgram(load.modules, entryPath, { includeTests: true })
 
     if (check.errors.length > 0) {
       const diagnostics: { file: string; line: number; col: number; message: string }[] = []
@@ -243,7 +243,7 @@ switch (command) {
       process.exit(1)
     }
 
-    const check = typecheckProgram(load.modules, entryPath)
+    const check = typecheckProgram(load.modules, entryPath, { includeTests: false })
 
     if (check.errors.length > 0) {
       for (const [path, result] of check.results) {
@@ -442,7 +442,7 @@ switch (command) {
         for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
         process.exit(1)
       }
-      const check = typecheckProgram(load.modules, entryPath)
+      const check = typecheckProgram(load.modules, entryPath, { includeTests: false })
       if (check.errors.length > 0) {
         for (const [path, result] of check.results) {
           const modSource = load.modules.get(path)?.source ?? ''
@@ -520,14 +520,14 @@ switch (command) {
 
     for (const testFile of testFileArgs) {
       const entryPath = resolve(testFile)
-      const load = await loadModule(entryPath)
+      const load = await loadModule(entryPath, { includeTests: true })
       if (load.errors.length > 0) {
         for (const error of load.errors) console.error(`${error.filePath}: ${error.message}`)
         totalFailed++
         continue
       }
 
-      const check = typecheckProgram(load.modules, entryPath)
+      const check = typecheckProgram(load.modules, entryPath, { includeTests: true })
       if (check.errors.length > 0) {
         for (const [path, result] of check.results) {
           const modSource = load.modules.get(path)?.source ?? ''
@@ -562,19 +562,32 @@ switch (command) {
       wasmModule.destroy()
 
       const mod = await WebAssembly.compile(buffer)
-      const instance = await WebAssembly.instantiate(mod)
+      const source = entryMod?.source ?? ''
+      let failedOffset = -1
+      const instance = await WebAssembly.instantiate(mod, {
+        test: {
+          __assert_fail: (offset: number) => { failedOffset = offset },
+        },
+      })
 
       for (const name of testNames) {
         const fn = instance.exports[`test_${name}`] as Function
         try {
+          failedOffset = -1
           fn()
           totalPassed++
           allResults.push({ file: testFile, name, pass: true })
           console.log(`  pass: ${name.replace(/_/g, ' ')}`)
         } catch (e: any) {
           totalFailed++
+          let detail = ''
+          if (failedOffset >= 0) {
+            const loc = offsetToLineCol(source, failedOffset)
+            const line = source.split('\n')[loc.line - 1]?.trim() ?? ''
+            detail = `\n         ${testFile}:${loc.line}: ${line}`
+          }
           allResults.push({ file: testFile, name, pass: false, error: e.message })
-          console.log(`  FAIL: ${name.replace(/_/g, ' ')}`)
+          console.log(`  FAIL: ${name.replace(/_/g, ' ')}${detail}`)
         }
       }
     }

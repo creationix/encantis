@@ -171,6 +171,7 @@ export interface TestDecl extends BaseNode {
 
 export type TestItem =
   | TestDecl
+  | ImportDecl
   | DataDecl
   | DefDecl
   | FuncDecl

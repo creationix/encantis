@@ -1,0 +1,151 @@
+// Given a floating point number, fill in the buffer.
+// Use a trivial implementation and be aware of the bytes avaialble to write to
+// the returning slice is the sub-slice of the written to buf that was used.
+export "write-float" func write-float(buf:[]mut u8, val:f64) -> []u8 {
+  let i:u32 = 0
+  let ptr = buf.ptr
+
+  if val < 0.0 {
+    return (ptr, 0) when buf.len == 0
+    ptr[i] = 45:u8
+    i += 1
+    val = -val
+  }
+
+  let whole = u64(floor(val))
+  let frac = val - f64(whole)
+
+  // Integer part
+  if whole == 0:u64 {
+    return (ptr, i) when i >= buf.len
+    ptr[i] = 48:u8
+    i += 1
+  } else {
+    // Find highest power of 10 to write digits forward
+    let pow:u64 = 1
+    let tmp = whole
+    while tmp >= 10:u64 {
+      pow *= 10
+      tmp /= 10
+    }
+    while pow > 0:u64 {
+      return (ptr, i) when i >= buf.len
+      ptr[i] = u8(whole / pow) + 48:u8
+      i += 1
+      whole %= pow
+      pow /= 10
+    }
+  }
+
+  // Fractional part (skip entirely for whole numbers)
+  if frac > 0.0 {
+    return (ptr, i) when i >= buf.len
+    // Precision threshold: 10^-(available fractional digits)
+    let precision = 1.0
+    for j in buf.len - i - 1 { precision *= 0.1 }
+    if frac >= precision {
+      ptr[i] = 46:u8
+      i += 1
+      while i < buf.len {
+        break when frac < precision
+        frac *= 10.0
+        let d = u8(floor(frac))
+        ptr[i] = d + 48:u8
+        i += 1
+        frac -= f64(d)
+      }
+    }
+  }
+
+  return (ptr, i)
+}
+
+test "write-float" {
+  import "./strcmp" "strcmp"
+  func strcmp(a:[]u8, b:[]u8) -> i32
+
+  test "exact binary fractions" {
+    let buf:[]mut u8 = [0:u8; 20]
+    assert(strcmp(write-float(buf, 0.5), "0.5") == 0)
+    assert(strcmp(write-float(buf, 0.25), "0.25") == 0)
+    assert(strcmp(write-float(buf, 0.125), "0.125") == 0)
+    assert(strcmp(write-float(buf, 1.5), "1.5") == 0)
+    assert(strcmp(write-float(buf, 1.5625), "1.5625") == 0)
+    assert(strcmp(write-float(buf, 3.375), "3.375") == 0)
+  }
+
+  test "whole numbers" {
+    let buf:[]mut u8 = [0:u8; 20]
+    assert(strcmp(write-float(buf, 0.0), "0") == 0)
+    assert(strcmp(write-float(buf, 1.0), "1") == 0)
+    assert(strcmp(write-float(buf, 5.0), "5") == 0)
+    assert(strcmp(write-float(buf, 42.0), "42") == 0)
+    assert(strcmp(write-float(buf, 1000.0), "1000") == 0)
+  }
+
+  test "negative values" {
+    let buf:[]mut u8 = [0:u8; 20]
+    assert(strcmp(write-float(buf, -1.0), "-1") == 0)
+    assert(strcmp(write-float(buf, -0.5), "-0.5") == 0)
+    assert(strcmp(write-float(buf, -3.375), "-3.375") == 0)
+  }
+
+  test "large integers" {
+    let buf:[]mut u8 = [0:u8; 20]
+    assert(strcmp(write-float(buf, 99999.0), "99999") == 0)
+    assert(strcmp(write-float(buf, 1000000.0), "1000000") == 0)
+    assert(strcmp(write-float(buf, -99999.5), "-99999.5") == 0)
+  }
+
+  test "negative zero" {
+    let buf:[]mut u8 = [0:u8; 20]
+    assert(strcmp(write-float(buf, -0.0), "0") == 0)
+  }
+
+  test "buffer sizes" {
+    // tiny buffers
+    let b1:[]mut u8 = [0:u8; 1]
+    assert(strcmp(write-float(b1, 5.0), "5") == 0)
+    assert(strcmp(write-float(b1, 99.0), "9") == 0)
+    assert(strcmp(write-float(b1, -3.0), "-") == 0)
+    let b2:[]mut u8 = [0:u8; 2]
+    assert(strcmp(write-float(b2, 3.1), "3") == 0)
+    assert(strcmp(write-float(b2, 3.5), "3") == 0)
+    assert(strcmp(write-float(b2, -5.0), "-5") == 0)
+    assert(strcmp(write-float(b2, -123.0), "-1") == 0)
+    assert(strcmp(write-float(b2, 999.0), "99") == 0)
+
+    // 3-byte buffer: integer + dot fills it, no room for fraction
+    let b3:[]mut u8 = [0:u8; 3]
+    assert(strcmp(write-float(b3, 3.14), "3.1") == 0)
+    assert(strcmp(write-float(b3, 42.5), "42") == 0)
+    assert(strcmp(write-float(b3, 123.0), "123") == 0)
+
+    // 4-byte buffer
+    let b4:[]mut u8 = [0:u8; 4]
+    assert(strcmp(write-float(b4, 3.14), "3.14") == 0)
+    assert(strcmp(write-float(b4, 12.34), "12.3") == 0)
+    assert(strcmp(write-float(b4, -1.5), "-1.5") == 0)
+    assert(strcmp(write-float(b4, -42.0), "-42") == 0)
+
+    // 6-byte buffer
+    let b6:[]mut u8 = [0:u8; 6]
+    assert(strcmp(write-float(b6, 3.14), "3.14") == 0)
+    assert(strcmp(write-float(b6, 0.1), "0.1") == 0)
+    assert(strcmp(write-float(b6, 0.025), "0.025") == 0)
+    assert(strcmp(write-float(b6, 0.01), "0.01") == 0)
+    assert(strcmp(write-float(b6, -3.14), "-3.14") == 0)
+
+    // 8-byte buffer
+    let b8:[]mut u8 = [0:u8; 8]
+    assert(strcmp(write-float(b8, 123.456), "123.456") == 0)
+    assert(strcmp(write-float(b8, -3.14), "-3.14") == 0)
+    assert(strcmp(write-float(b8, 0.03125), "0.03125") == 0)
+
+    // 10-byte buffer (original trig example size)
+    let b10:[]mut u8 = [0:u8; 10]
+    assert(strcmp(write-float(b10, 3.14), "3.14") == 0)
+    assert(strcmp(write-float(b10, -123.456), "-123.456") == 0)
+    assert(strcmp(write-float(b10, 0.00390625), "0.00390625") == 0)
+  }
+}

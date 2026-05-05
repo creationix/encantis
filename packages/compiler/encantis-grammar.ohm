@@ -114,6 +114,7 @@ Encantis {
   TestBlock = "{" TestItem* "}"
 
   TestItem = TestDecl
+           | ImportDecl
            | DataDecl
            | DefDecl
            | FuncDecl
