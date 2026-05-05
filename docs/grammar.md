@@ -627,6 +627,8 @@ a >>> b                       // Rotate right
 3.14:f64
 value as u32                  // Runtime cast
 ptr as *u8                    // Pointer cast
+u32(value)                    // Function-style cast (primitive types)
+f64(x)
 ```
 
 ### Member Access

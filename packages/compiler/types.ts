@@ -27,6 +27,8 @@ const UNSIGNED: readonly PrimitiveName[] = ['u8', 'u16', 'u32', 'u64', 'u128', '
 const INTEGER: readonly PrimitiveName[] = [...SIGNED, ...UNSIGNED]
 const FLOAT: readonly PrimitiveName[] = ['f32', 'f64']
 
+export const PRIMITIVE_NAMES: ReadonlySet<string> = new Set<PrimitiveName>([...INTEGER, ...FLOAT, 'bool'])
+
 // Integer bounds for comptime int checking
 const INT_BOUNDS: Record<string, [bigint, bigint]> = {
   i8: [-128n, 127n],
@@ -786,6 +788,15 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability)
   if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array') {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
+    const elemResult = typeAssignResult(t.element, s.pointee.element)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+      return lossless(elemResult.reinterpret)
+    }
+  }
+
+  // Pointer-to-array can coerce to framed array: *[N]T -> [!]T, [?]T
+  if (t.kind === 'array' && t.sizes?.some(s => s === '!' || s === '?') &&
+      s.kind === 'pointer' && s.pointee.kind === 'array') {
     const elemResult = typeAssignResult(t.element, s.pointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') {
       return lossless(elemResult.reinterpret)

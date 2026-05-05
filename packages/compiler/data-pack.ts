@@ -57,6 +57,7 @@ export interface DataEntry {
   offset: number // Offset in the data section
   length: number // Length in bytes (includes null terminator for strings)
   explicit: boolean // True for user-specified memory data, false for auto-interned literals
+  labels: string[] // Names/descriptions of declarations using this entry
 }
 
 // Result of building the data section
@@ -95,6 +96,21 @@ export class DataSectionBuilder {
   // Set where auto data starts (for layoutLiterals with explicit addresses)
   setAutoDataStart(offset: number): void {
     this.currentOffset = offset
+  }
+
+  addLabel(offset: number, label: string): void {
+    for (const entry of this.internedMap.values()) {
+      if (offset >= entry.offset && offset < entry.offset + entry.length) {
+        if (!entry.labels.includes(label)) entry.labels.push(label)
+        return
+      }
+    }
+    for (const entry of this.mutEntries) {
+      if (offset >= entry.offset && offset < entry.offset + entry.length) {
+        if (!entry.labels.includes(label)) entry.labels.push(label)
+        return
+      }
+    }
   }
 
   result(): DataSection {
@@ -137,11 +153,12 @@ export class DataSectionBuilder {
     }
 
     // 3. Not found (or skipDedup) - write new bytes
-    const entry = {
+    const entry: DataEntry = {
       bytes,
       offset: this.currentOffset,
       length: bytes.length,
       explicit: false,
+      labels: [],
     }
     if (skipDedup) {
       // Mutable data: track separately, don't share with future lookups
@@ -210,16 +227,36 @@ export function serializeDataSection(section: DataSection): Uint8Array {
  * @param section The data section to format
  * @returns Array of WAT data segment strings
  */
+function describeBytes(bytes: Uint8Array): string {
+  const isPrintable = bytes.every(b => (b >= 0x20 && b <= 0x7e) || b === 0x0a || b === 0x0d || b === 0x09 || b === 0x00)
+  if (isPrintable && bytes.length > 0) {
+    let s = new TextDecoder().decode(bytes).replace(/\0/g, '\\0').replace(/\n/g, '\\n')
+    if (s.length > 40) s = s.slice(0, 37) + '...'
+    return `"${s}"`
+  }
+  if (bytes.length % 4 === 0 && bytes.length <= 32) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    const vals: number[] = []
+    for (let i = 0; i < bytes.length; i += 4) vals.push(view.getInt32(i, true))
+    return `[${vals.join(', ')}]`
+  }
+  return `${bytes.length} bytes`
+}
+
 export function dataToWat(section: DataSection): string[] {
   const segments: string[] = []
 
   for (const entry of section.entries) {
+    const label = entry.labels.length > 0 ? entry.labels.join(', ') : null
+    const auto = !label ? describeBytes(entry.bytes) : null
     if (entry.bytes.every(b => b === 0)) {
-      segments.push(`  ;; ${entry.bytes.length} zero bytes at 0x${entry.offset.toString(16)}`)
+      const desc = label ?? `${entry.bytes.length} zero bytes`
+      segments.push(`  ;; ${entry.bytes.length} zero bytes at 0x${entry.offset.toString(16)} — ${desc}`)
       continue
     }
     const escaped = escapeWatString(entry.bytes)
-    segments.push(`(data (i32.const ${entry.offset}) "${escaped}")`)
+    const comment = label ?? (auto && !auto.startsWith('"') ? auto : null)
+    segments.push(`(data (i32.const ${entry.offset}) "${escaped}")${comment ? '  ;; ' + comment : ''}`)
   }
 
   return segments

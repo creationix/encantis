@@ -226,8 +226,19 @@ export function formatEncantis(source: string): string {
         tokens.push({ kind: 'str', text: line.slice(start, j) }); continue
       }
 
-      if (line[j] === '(' || line[j] === '[') {
-        tokens.push({ kind: 'open', text: line[j] }); j++; continue
+      if (line[j] === '(') {
+        tokens.push({ kind: 'open', text: '(' }); j++; continue
+      }
+      if (line[j] === '[') {
+        const rest = line.slice(j + 1)
+        const m = rest.match(/^([0-9?!_]+(?:x[0-9?!_]+)*|\*)\]/)
+        if (m) {
+          tokens.push({ kind: 'open', text: '[' })
+          tokens.push({ kind: 'num', text: m[1] })
+          tokens.push({ kind: 'close', text: ']' })
+          j += 1 + m[0].length; continue
+        }
+        tokens.push({ kind: 'open', text: '[' }); j++; continue
       }
       if (line[j] === '{') {
         tokens.push({ kind: 'open', text: '{' }); j++; continue

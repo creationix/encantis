@@ -1,0 +1,31 @@
+export func return-slice() -> []u8 {
+  return "Test"
+}
+
+export func return-ptr() -> *[_]u8 {
+  return "simple"
+}
+
+export func return-cstr() -> [!]u8 {
+  return "c style string"
+}
+
+export func return-lstr() -> [?]u8 {
+  return "length-prefixed string"
+}
+
+export func return-slice-of-slices() -> [][]u8 {
+  return ["Hello", "World"]
+}
+
+export func return-nested-cstr() -> [!x!]u8 {
+  return ["Hello", "World"]
+}
+
+export func template-literal(name:[]u8, color:[]u8) -> [][]u8 {
+  return `Welcome ${name} who likes ${color}.`
+}
+
+export func template-null-literal(name:[!]u8, color:[!]u8) -> [][!]u8 {
+  return `Welcome ${name} who likes ${color}.`
+}
