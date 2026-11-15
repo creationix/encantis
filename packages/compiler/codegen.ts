@@ -2104,13 +2104,17 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
+    // The body sits in its own $continue block so that continue still reaches
+    // the increment.
     return `(local.set $${valueName} (i32.const 0))
 (block $break
-    (loop $continue
+    (loop $next
       (br_if $break (i32.ge_u (local.get $${valueName}) ${iterWat}))
-      ${body}
+      (block $continue
+        ${body}
+      )
       (local.set $${valueName} (i32.add (local.get $${valueName}) (i32.const 1)))
-      (br $continue)
+      (br $next)
     )
   )`
   }
