@@ -927,6 +927,14 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.ReturnStmt
   },
 
+  DeferStmt(_defer, expr) {
+    return {
+      kind: 'DeferStmt',
+      expr: expr.toAST(),
+      span: span(this),
+    } as AST.DeferStmt
+  },
+
   BreakStmt(_break, whenOpt) {
     return {
       kind: 'BreakStmt',

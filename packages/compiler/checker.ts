@@ -1308,6 +1308,7 @@ class CheckContext {
         this.checkSetStmt(stmt)
         break
       case 'ExpressionStmt':
+      case 'DeferStmt':
         this.inferExpr(stmt.expr)
         break
       case 'ReturnStmt':

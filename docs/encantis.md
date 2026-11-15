@@ -48,7 +48,7 @@ let point = Point(1.0, 2.0)              // point is a variable, Point is a cons
 
 The following identifiers are reserved keywords in Encantis (aligns with `encantis.ohm`):
 
-**Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`
+**Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`, `defer`
 
 **Declarations:** `func`, `let`, `set`, `global`, `def`, `data`, `type`, `import`, `export`, `memory`, `inline`
 
@@ -1322,6 +1322,40 @@ return value when cond   // return if condition is true
 
 The `when` form is equivalent to wrapping in `if cond { ... }`.
 
+#### Defer
+
+`defer expr` runs `expr` when the enclosing block exits, by any path: falling off
+its end, `break` or `continue` (which run the blocks they leave, up to the loop
+body), or `return` (which runs every open block). Deferred expressions run
+newest first, and only those reached before the exit run.
+
+```ents
+data space = mut [0:u8; 65536]
+global top: u32 = 0
+
+func mark() -> u32 => top
+func reset(m: u32) { top = m }
+
+export func work(n: u32) -> u32 {
+  let m = mark()
+  defer reset(m)            // every allocation below is freed on return
+  return 0 when n == 0      // runs reset(m) first
+  for i in n {
+    let inner = mark()
+    defer reset(inner)      // freed at the end of each iteration
+    // ...
+  }
+  return n
+}
+```
+
+- The deferred expression is evaluated when the block exits, not when `defer`
+  runs: `defer log(i)` logs `i` as it is at exit.
+- A `return` computes its value first; deferred expressions run after, and the
+  value is returned unchanged.
+- Deferred code is emitted inline at each exit. There is no runtime cost and no
+  extra wasm features.
+
 ### 5.4 Match Expressions
 
 Match expressions provide multi-way branching on values:
@@ -2000,28 +2034,6 @@ use math.vector as vec
 ```
 
 **Why:** Larger projects need to split code across files. Currently the only modularity is WASM-level imports from the host environment. A proper module system enables code organization and selective visibility.
-
-### Defer
-
-Guaranteed cleanup at scope exit:
-
-```ents
-func process_file(path:[*:0]u8) -> Result {
-  let handle = open(path)
-  defer close(handle)
-
-  let buffer = allocate(1024)
-  defer free(buffer)
-
-  // Multiple return paths - cleanup always runs
-  return when check_header(handle) == false { Err(BadHeader) }
-
-  process(handle, buffer)
-  return Ok(())
-}
-```
-
-**Why:** Ensures resources are released regardless of how a function exits. Reduces bugs from forgotten cleanup, especially with multiple return paths or error conditions.
 
 ### Operator Overloading via UFCS
 

@@ -1,0 +1,98 @@
+// A bump stack freed by scope with defer: allocation is a pointer bump, and a
+// scope frees everything it allocated by resetting to a mark on every exit.
+
+data space = mut [0:u8; 65536]
+global top: u32 = 0
+data trace = mut [0:u8; 256]
+global traced: u32 = 0
+
+export func mark() -> u32 => top
+
+export func reset(m: u32) {
+  top = m
+}
+
+// n bytes, 8-byte aligned.
+export func alloc(n: u32) -> (p: u32) {
+  p = (space as u32) + top
+  top += (n + 7) & 0xFFFFFFF8
+}
+
+func note(n: u32) {
+  trace.u32[traced] = n
+  traced += 1
+}
+
+// Sums 0..n through a scratch array; nothing outlives the call.
+export func sum_scratch(n: u32) -> u32 {
+  let m = mark()
+  defer reset(m)
+  return 0 when n == 0
+  let a = alloc(n * 4) as [*]mut u32
+  for i in n {
+    a[i] = i
+  }
+  let s: u32 = 0
+  for j in n {
+    s += a[j]
+  }
+  return s
+}
+
+// Records the order deferred expressions run in.
+export func order(x: u32) -> u32 {
+  note(1)
+  defer note(100)
+  return 7 when x == 0
+  defer note(200)
+  let i: u32 = 0
+  while i < 3 {
+    defer note(10 + i)
+    i += 1
+    continue when i == 1
+    break when i == 3
+    note(20 + i)
+  }
+  loop {
+    defer note(300)
+    return 9 when x == 9
+    break
+  }
+  return x * 2
+}
+
+func traced_equals(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, count: u32) -> bool {
+  return false when traced != count
+  return false when count > 0 && trace.u32[0] != a
+  return false when count > 1 && trace.u32[1] != b
+  return false when count > 2 && trace.u32[2] != c
+  return false when count > 3 && trace.u32[3] != d
+  return false when count > 4 && trace.u32[4] != e
+  return false when count > 5 && trace.u32[5] != f
+  return false when count > 6 && trace.u32[6] != g
+  return false when count > 7 && trace.u32[7] != h
+  return true
+}
+
+test "a scope frees what it allocated on every return" {
+  let before = mark()
+  assert sum_scratch(10) == 45
+  assert mark() == before
+  assert sum_scratch(0) == 0
+  assert mark() == before
+}
+
+test "an early return runs only the defers reached" {
+  traced = 0
+  assert order(0) == 7
+  assert traced_equals(1, 100, 0, 0, 0, 0, 0, 0, 2)
+}
+
+test "break, continue and return run the blocks they leave, newest first" {
+  traced = 0
+  assert order(5) == 10
+  assert traced_equals(1, 11, 22, 12, 13, 300, 200, 100, 8)
+  traced = 0
+  assert order(9) == 9
+  assert traced_equals(1, 11, 22, 12, 13, 300, 200, 100, 8)
+}

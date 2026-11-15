@@ -44,6 +44,9 @@ export interface CodegenContext {
   dataSectionSize?: number
   // When true, asserts call $__assert_fail with source offset
   testMode?: boolean
+  // Deferred expressions per open block, innermost last; loop bodies are marked
+  // so break and continue run exactly the blocks they leave.
+  deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -1692,16 +1695,12 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
       return assignToWat(stmt, ctx)
     case 'ReturnStmt':
       return returnToWat(stmt, ctx)
-    case 'ExpressionStmt': {
-      const exprWat = exprToWat(stmt.expr, ctx)
-      const exprType = ctx.types.get(typeKey(stmt.expr.span.start, stmt.expr.kind))
-        ?? ctx.types.get(typeKey(stmt.expr.span.end, stmt.expr.kind))
-      if (exprType && exprType.kind !== 'void') {
-        const slots = typeToWasm(exprType).length
-        if (slots > 0) return exprWat + '\n' + Array(slots).fill('(drop)').join('\n')
-      }
-      return exprWat
-    }
+    case 'ExpressionStmt':
+      return discardedExprToWat(stmt.expr, ctx)
+    case 'DeferStmt':
+      // Emitted where control leaves the block; see deferredToWat.
+      ctx.deferFrames?.at(-1)?.defers.push(stmt.expr)
+      return ''
     case 'WhileStmt':
       return whileToWat(stmt, ctx)
     case 'LoopStmt':
@@ -1720,6 +1719,35 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
     default:
       throw new Error(`Unhandled statement kind: ${(stmt as AST.Statement).kind}`)
   }
+}
+
+// An expression evaluated for its effect, dropping any result.
+function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  const exprWat = exprToWat(expr, ctx)
+  const exprType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  if (exprType && exprType.kind !== 'void') {
+    const slots = typeToWasm(exprType).length
+    if (slots > 0) return exprWat + '\n' + Array(slots).fill('(drop)').join('\n')
+  }
+  return exprWat
+}
+
+// The deferred expressions of the innermost `count` open blocks, newest first.
+function deferredToWat(ctx: CodegenContext, count: number): string {
+  const frames = ctx.deferFrames ?? []
+  const out: string[] = []
+  for (let f = frames.length - 1; f >= Math.max(0, frames.length - count); f--) {
+    for (let d = frames[f].defers.length - 1; d >= 0; d--) out.push(discardedExprToWat(frames[f].defers[d], ctx))
+  }
+  return out.join('\n')
+}
+
+// How many open blocks a break or continue leaves: up to the nearest loop body.
+function framesToLoop(ctx: CodegenContext): number {
+  const frames = ctx.deferFrames ?? []
+  for (let f = frames.length - 1; f >= 0; f--) if (frames[f].loop) return frames.length - f
+  return frames.length
 }
 
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
@@ -2045,27 +2073,31 @@ function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
   const namedPush = ctx.namedReturnLocals?.length > 0
     ? ctx.namedReturnLocals.join(' ') + ' '
     : ''
+  // The value is computed first and stays on the stack while every open block's
+  // deferred expressions run (they leave the stack as they found it).
+  const deferred = deferredToWat(ctx, ctx.deferFrames?.length ?? 0)
+  const run = deferred ? `${deferred} ` : ''
 
   if (stmt.when) {
     const cond = exprToWat(stmt.when, ctx)
     if (stmt.value) {
       const value = exprToWat(stmt.value, ctx)
-      return `(if ${cond} (then ${value} (return)))`
+      return `(if ${cond} (then ${value} ${run}(return)))`
     }
-    return `(if ${cond} (then ${namedPush}(return)))`
+    return `(if ${cond} (then ${namedPush}${run}(return)))`
   }
 
   if (stmt.value) {
     const value = exprToWat(stmt.value, ctx)
-    return `${value} (return)`
+    return `${value} ${run}(return)`
   }
 
-  return `${namedPush}(return)`
+  return `${namedPush}${run}(return)`
 }
 
 function whileToWat(stmt: AST.WhileStmt, ctx: CodegenContext): string {
   const cond = exprToWat(stmt.condition, ctx)
-  const body = bodyToWat(stmt.body, ctx)
+  const body = bodyToWat(stmt.body, ctx, false, true)
 
   return `(block $break
     (loop $continue
@@ -2077,7 +2109,7 @@ function whileToWat(stmt: AST.WhileStmt, ctx: CodegenContext): string {
 }
 
 function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
-  const body = bodyToWat(stmt.body, ctx)
+  const body = bodyToWat(stmt.body, ctx, false, true)
 
   return `(block $break
     (loop $continue
@@ -2096,7 +2128,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     ctx.locals.set(indexName, [indexName])
   }
 
-  const body = bodyToWat(stmt.body, ctx)
+  const body = bodyToWat(stmt.body, ctx, false, true)
 
   // Check if iterable is a comptime integer (for i in N)
   const iterType = ctx.types.get(typeKey(exprTypeOffset(stmt.iterable), stmt.iterable.kind))
@@ -2130,38 +2162,55 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
 }
 
 function breakToWat(stmt: AST.BreakStmt, ctx: CodegenContext): string {
+  const deferred = deferredToWat(ctx, framesToLoop(ctx))
   if (stmt.when) {
     const cond = exprToWat(stmt.when, ctx)
-    return `(br_if $break ${cond})`
+    return deferred ? `(if ${cond} (then ${deferred} (br $break)))` : `(br_if $break ${cond})`
   }
-  return '(br $break)'
+  return deferred ? `${deferred} (br $break)` : '(br $break)'
 }
 
 function continueToWat(stmt: AST.ContinueStmt, ctx: CodegenContext): string {
+  const deferred = deferredToWat(ctx, framesToLoop(ctx))
   if (stmt.when) {
     const cond = exprToWat(stmt.when, ctx)
-    return `(br_if $continue ${cond})`
+    return deferred ? `(if ${cond} (then ${deferred} (br $continue)))` : `(br_if $continue ${cond})`
   }
-  return '(br $continue)'
+  return deferred ? `${deferred} (br $continue)` : '(br $continue)'
 }
 
 // === Body/Block Codegen ===
 
-function bodyToWat(body: AST.FuncBody, ctx: CodegenContext, valueContext = false): string {
+function bodyToWat(body: AST.FuncBody, ctx: CodegenContext, valueContext = false, loop = false): string {
   if (body.kind === 'ArrowBody') {
     return exprToWat(body.expr, ctx)
   }
-  if (!valueContext || body.stmts.length === 0) {
-    return body.stmts.map((s) => stmtToWat(s, ctx)).join('\n')
+  // Each block collects its own deferred expressions and runs them, newest
+  // first, when control falls off its end (after a value, which stays on the stack).
+  if (!ctx.deferFrames) ctx.deferFrames = []
+  const frames = ctx.deferFrames
+  frames.push({ loop, defers: [] })
+  try {
+    if (!valueContext || body.stmts.length === 0) {
+      const out = body.stmts.map((s) => stmtToWat(s, ctx))
+      // A block that ends in an unconditional exit already ran its defers there.
+      const last = body.stmts.at(-1)
+      const exits = (last?.kind === 'ReturnStmt' || last?.kind === 'BreakStmt' || last?.kind === 'ContinueStmt') && !last.when
+      if (!exits) out.push(deferredToWat(ctx, 1))
+      return out.filter(Boolean).join('\n')
+    }
+    const init = body.stmts.slice(0, -1).map((s) => stmtToWat(s, ctx))
+    const last = body.stmts[body.stmts.length - 1]
+    if (last.kind === 'ExpressionStmt') {
+      init.push(exprToWat(last.expr, ctx))
+    } else {
+      init.push(stmtToWat(last, ctx))
+    }
+    init.push(deferredToWat(ctx, 1))
+    return init.filter(Boolean).join('\n')
+  } finally {
+    frames.pop()
   }
-  const init = body.stmts.slice(0, -1).map((s) => stmtToWat(s, ctx))
-  const last = body.stmts[body.stmts.length - 1]
-  if (last.kind === 'ExpressionStmt') {
-    init.push(exprToWat(last.expr, ctx))
-  } else {
-    init.push(stmtToWat(last, ctx))
-  }
-  return init.join('\n')
 }
 
 // === Function Codegen ===

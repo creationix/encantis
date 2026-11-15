@@ -186,6 +186,7 @@ Encantis {
             | ReturnStmt
             | BreakStmt
             | ContinueStmt
+            | DeferStmt
             | AssertStmt
             | AssignmentStmt
             | ExpressionStmt
@@ -212,6 +213,10 @@ Encantis {
   BreakStmt = break WhenClause?
 
   ContinueStmt = continue WhenClause?
+
+  // defer expr: runs expr when the enclosing block exits, newest first, on every
+  // path out (falling off the end, break, continue, return).
+  DeferStmt = defer Expr
 
   WhenClause = when Expr
 
@@ -497,7 +502,7 @@ Encantis {
 
   // Keywords
   keyword = (if | elif | else | while | for | in | loop | match
-           | break | continue | return | when
+           | break | continue | return | when | defer
            | func | let | set | global | data | def | type | enum
            | import | export | memory | inline | mut
            | as | true | false | int | float | sizeof) ~identChar
@@ -514,6 +519,7 @@ Encantis {
   continue = "continue" ~identChar
   return = "return" ~identChar
   when = "when" ~identChar
+  defer = "defer" ~identChar
   func = "func" ~identChar
   let = "let" ~identChar
   set = "set" ~identChar
