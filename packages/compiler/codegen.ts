@@ -2276,7 +2276,13 @@ export function funcToWat(
   // assign the expression result to the named return locals instead of dropping
   if (namedReturns.length > 0 && decl.body.kind === 'Block' && decl.body.stmts.length > 0) {
     const lastStmt = decl.body.stmts[decl.body.stmts.length - 1]
-    if (lastStmt.kind === 'ExpressionStmt') {
+    // Only an expression with a value supplies the results: a trailing if, loop
+    // or void call is a statement, and the named locals are returned as set.
+    const lastType = lastStmt.kind === 'ExpressionStmt'
+      ? (ctx.types.get(typeKey(lastStmt.expr.span.start, lastStmt.expr.kind))
+        ?? ctx.types.get(typeKey(lastStmt.expr.span.end, lastStmt.expr.kind)))
+      : undefined
+    if (lastStmt.kind === 'ExpressionStmt' && lastType && lastType.kind !== 'void' && typeToWasm(lastType).length > 0) {
       const lines = body.split('\n')
       // Remove the trailing (drop) lines that stmtToWat added
       while (lines.length > 0 && lines[lines.length - 1].trim() === '(drop)') lines.pop()

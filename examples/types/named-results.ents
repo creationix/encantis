@@ -1,0 +1,40 @@
+// Named results are returned as set, whatever statement ends the function.
+
+// Ends in an if statement (no else): the results are the named locals.
+export func clamp_count(n: u32, max: u32) -> (count: u32, clipped: bool) {
+  count = n
+  clipped = false
+  if n > max {
+    count = max
+    clipped = true
+  }
+}
+
+// Ends in a loop.
+export func sum_to(n: u32) -> (total: u32) {
+  total = 0
+  for i in n {
+    total += i
+  }
+}
+
+export func clamped(n: u32, max: u32) -> u32 {
+  let (count:, clipped:) = clamp_count(n, max)
+  return count
+}
+
+export func was_clipped(n: u32, max: u32) -> bool {
+  let (count:, clipped:) = clamp_count(n, max)
+  return clipped
+}
+
+test "a trailing if leaves the named results as set" {
+  assert clamped(3, 5) == 3
+  assert !was_clipped(3, 5)
+  assert clamped(9, 5) == 5
+  assert was_clipped(9, 5)
+}
+
+test "a trailing loop leaves the named result as set" {
+  assert sum_to(5) == 10
+}
