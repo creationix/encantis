@@ -113,6 +113,16 @@ describe('types', () => {
       expect(typeAssignable(primitive('i32'), primitive('i32'))).toBe(true)
     })
 
+    test('pointers to the same named type are assignable', () => {
+      const slot = () => named('Slot', tuple([field('a', primitive('u32')), field('b', primitive('u32'))]))
+      // [*]mut Slot, *Slot, and a pointer to the alias's underlying tuple.
+      expect(typeAssignable(pointer(array(slot(), null), false, true), pointer(array(slot(), null), false, true))).toBe(true)
+      expect(typeAssignable(pointer(slot()), pointer(slot()))).toBe(true)
+      expect(typeAssignable(pointer(slot()), pointer(slot().type))).toBe(true)
+      expect(typeAssignable(pointer(slot().type), pointer(slot()))).toBe(true)
+      expect(typeAssignable(pointer(slot()), pointer(primitive('u32')))).toBe(false)
+    })
+
   })
 
   describe('type predicates', () => {

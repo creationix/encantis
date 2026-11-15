@@ -444,6 +444,10 @@ function sizesCompatible(target: ArraySize[] | null, source: ArraySize[] | null)
 }
 
 export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
+  // Aliases are transparent on either side, at any depth (e.g. the pointee of
+  // [*]mut Slot): compare the underlying types.
+  if (a.kind === 'named') return typeEquals(a.type, b)
+  if (b.kind === 'named') return typeEquals(a, b.type)
   if (a.kind !== b.kind) return false
 
   switch (a.kind) {
