@@ -508,6 +508,14 @@ break when done
 continue when skip
 ```
 
+### Defer
+
+[Grammar: `DeferStmt`](../packages/compiler/encantis-grammar.ohm)
+
+```encantis
+defer reset(m)                // runs when the enclosing block exits, newest first
+```
+
 ---
 
 ## Patterns (Destructuring)

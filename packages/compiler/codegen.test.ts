@@ -424,6 +424,77 @@ describe('function codegen', () => {
   })
 })
 
+// === Defer Codegen Tests ===
+
+describe('defer codegen', () => {
+  // Offsets of each needle in order; -1 where one is missing or out of order.
+  const order = (wat: string, needles: string[]) => {
+    let at = 0
+    return needles.map(n => { const i = wat.indexOf(n, at); if (i >= 0) at = i + n.length; return i })
+  }
+
+  test('runs at the end of the block, newest first', () => {
+    const wat = funcWat(`
+      func f() {
+        defer one()
+        defer two()
+        three()
+      }
+    `)
+    expect(order(wat, ['call $three', 'call $two', 'call $one']).every((i) => i >= 0)).toBe(true)
+  })
+
+  test('runs before return, after the value is computed', () => {
+    const wat = funcWat(`
+      func f(x: i32) -> i32 {
+        defer done()
+        return x + 1
+      }
+    `)
+    expect(order(wat, ['i32.add', 'call $done', 'return']).every((i) => i >= 0)).toBe(true)
+  })
+
+  test('conditional exits run their defers only when taken', () => {
+    const wat = funcWat(`
+      func f(x: i32) -> i32 {
+        defer done()
+        return 0 when x == 0
+        return 1
+      }
+    `)
+    // Inside the if, and again before the final return.
+    expect(wat.match(/call \$done/g)?.length).toBe(2)
+    expect(wat).toMatch(/\(if[\s\S]*call \$done[\s\S]*\(return\)/)
+  })
+
+  test("break and continue run the loop body defers, not the function's", () => {
+    const wat = funcWat(`
+      func f() {
+        defer outer()
+        loop {
+          defer inner()
+          break
+        }
+      }
+    `)
+    // inner: once, before the break that ends the body; outer: once, at the end.
+    expect(wat.match(/call \$inner/g)?.length).toBe(1)
+    expect(wat.match(/call \$outer/g)?.length).toBe(1)
+    expect(order(wat, ['call $inner', 'br $break']).every((i) => i >= 0)).toBe(true)
+  })
+
+  test('only defers already reached run at an early exit', () => {
+    const wat = funcWat(`
+      func f(x: i32) {
+        return when x == 0
+        defer later()
+      }
+    `)
+    const early = wat.slice(0, wat.indexOf('(return)'))
+    expect(early).not.toContain('call $later')
+  })
+})
+
 // === Module Codegen Tests ===
 
 describe('module codegen', () => {

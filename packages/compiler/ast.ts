@@ -189,6 +189,7 @@ export type Statement =
   | LoopStmt
   | ReturnStmt
   | BreakStmt
+  | DeferStmt
   | ContinueStmt
   | AssertStmt
   | AssignmentStmt
@@ -254,6 +255,12 @@ export interface ReturnStmt extends BaseNode {
 export interface BreakStmt extends BaseNode {
   kind: 'BreakStmt'
   when: Expr | null
+}
+
+// defer expr: runs when the enclosing block exits
+export interface DeferStmt extends BaseNode {
+  kind: 'DeferStmt'
+  expr: Expr
 }
 
 // continue [when expr]
