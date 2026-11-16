@@ -1108,3 +1108,57 @@ describe('struct constructors', () => {
     expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
   })
 })
+
+describe('operands of operators', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+
+  test('a struct has no comparison and no arithmetic', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(p: Pt, q: Pt) -> bool => p > q
+      func b(p: Pt, q: Pt) -> bool => p == q
+      func c(p: Pt, q: Pt) -> Pt => p + q
+    `)).toEqual([
+      'operator > is not defined for Pt',
+      'operator == is not defined for Pt',
+      'operator + is not defined for Pt',
+    ])
+  })
+
+  test('a slice, a tuple and an array have none either', () => {
+    expect(errs(`
+      func a(x: []u8, y: []u8) -> bool => x == y
+      func b(x: (i32, i32), y: (i32, i32)) -> bool => x != y
+      func c(x: [4]u8, y: [4]u8) -> bool => x < y
+      func d(x: []u8) -> bool => x == 0
+    `)).toEqual([
+      'operator == is not defined for []u8',
+      'operator != is not defined for (i32, i32)',
+      'operator < is not defined for [4]u8',
+      'operator == is not defined for []u8',
+    ])
+  })
+
+  test('the error is the only one: a comparison is still a bool', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func f(p: Pt, q: Pt) -> u32 {
+        if p > q { return 1 }
+        let same: bool = p == q
+        return 0
+      }
+    `)).toEqual(['operator > is not defined for Pt', 'operator == is not defined for Pt'])
+  })
+
+  test('numbers, bools and pointers keep their operators', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(x: u32, y: u8) -> bool => x > y
+      func b(x: bool, y: bool) -> bool => x == y
+      func c(p: *Pt, q: *Pt) -> bool => p == q
+      func d(p: ?*Pt) -> bool => p != 0
+      func e(p: Pt, q: Pt) -> bool => p.q == q.q && p.r < q.r
+      func f(xs: []u8, ys: []u8) -> bool => xs.len == ys.len || xs.ptr == ys.ptr
+    `)).toEqual([])
+  })
+})

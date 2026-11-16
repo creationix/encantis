@@ -375,6 +375,18 @@ export func f(x: u32) -> u32 => noret(x)`
     ])
   })
 
+  test('an operator the type argument does not have is an error in the instance', () => {
+    const source = `type Pt = (q: i32, r: i32)
+${MAX}export func f(a: Pt, b: Pt) -> Pt => max(a, b)
+export func g(a: u32, b: u32) -> u32 => max(a, b)`
+    expect(check(source).errors).toEqual([
+      { offset: source.indexOf('a > b'), message: 'operator > is not defined for Pt, in max(T = Pt)' },
+    ])
+    const eq = `func same(comptime T: type, a: T, b: T) -> bool => a == b
+export func f(a: []u8, b: []u8) -> bool => same(a, b)`
+    expect(errorsOf(eq)).toEqual(['operator == is not defined for []u8, in same(T = []u8)'])
+  })
+
   test('a type parameter cannot construct yet', () => {
     const source = `func make(comptime T: type, x: i32) -> T => T(x, x)
 export func f() -> (i32, i32) => make((i32, i32), 1)`

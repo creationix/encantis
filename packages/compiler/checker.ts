@@ -2711,6 +2711,19 @@ class CheckContext {
     const stripMax = (t: ResolvedType): ResolvedType =>
       t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 
+    // Operators exist for single values: numbers, bools and pointers. A struct,
+    // a slice or an array has none, and codegen would emit an instruction that
+    // takes one value for an operand that is several.
+    if (expr.op !== '&&' && expr.op !== '||') {
+      const sides: [ResolvedType, ResolvedType][] = [[leftType, left], [rightType, right]]
+      for (const [written, t] of sides) {
+        if (t.kind === 'tuple' || t.kind === 'slice' || t.kind === 'array' || t.kind === 'func' || t.kind === 'void') {
+          this.error(expr.span.start, `operator ${expr.op} is not defined for ${typeToString(written)}`)
+          return ['==', '!=', '<', '>', '<=', '>='].includes(expr.op) ? primitive('bool') : RECOVERY
+        }
+      }
+    }
+
     // Comparison and logical operators: propagate concrete type to comptime operand
     // Strip range — comparing u32#8 with a literal shouldn't constrain the literal to <8
     if (['==', '!=', '<', '>', '<=', '>='].includes(expr.op)) {
