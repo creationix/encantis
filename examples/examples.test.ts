@@ -20,23 +20,41 @@ async function findEntsFiles(dir: string): Promise<string[]> {
 
 const entsFiles = await findEntsFiles(examplesDir)
 
+// An example with inline tests that fails to load, check, compile or validate
+// registers a failing test instead of being skipped.
+function buildFailed(rel: string, stage: string, err: unknown) {
+  const message = err instanceof Error ? err.message : String(err)
+  describe(rel, () => {
+    test('builds', () => {
+      throw new Error(`${stage} failed: ${message}`)
+    })
+  })
+}
+
 for (const file of entsFiles) {
   const rel = file.slice(examplesDir.length + 1)
 
   const load = await loadModule(file, { includeTests: true })
-  if (load.errors.length > 0) continue
-
   const entryMod = load.modules.get(file)
-  const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
+  const hasTests = /^\s*test\s+"/m.test(entryMod?.source ?? (await Bun.file(file).text()))
   if (!hasTests) continue
 
+  if (load.errors.length > 0) {
+    buildFailed(rel, 'load', load.errors.map(e => e.message ?? String(e)).join('\n'))
+    continue
+  }
+
   const check = typecheckProgram(load.modules, file, { includeTests: true })
-  if (check.errors.length > 0) continue
+  if (check.errors.length > 0) {
+    buildFailed(rel, 'check', check.errors.map(e => e.message ?? String(e)).join('\n'))
+    continue
+  }
 
   let result: ReturnType<typeof programToWatWithTests>
   try {
     result = programToWatWithTests(load.modules, check.results, file)
-  } catch {
+  } catch (err) {
+    buildFailed(rel, 'codegen', err)
     continue
   }
 
@@ -50,7 +68,8 @@ for (const file of entsFiles) {
     wasmModule.validate()
     buffer = wasmModule.toBinary({}).buffer
     wasmModule.destroy()
-  } catch {
+  } catch (err) {
+    buildFailed(rel, 'wat validation', err)
     continue
   }
 
