@@ -1,0 +1,115 @@
+// Globals that are slices, structs or wide integers. Each is as many wasm
+// globals as it has wasm values (a slice is its pointer and its length), so a
+// module can keep a list or a record in a global instead of a pointer and a
+// count kept in step by hand.
+
+import "./board" (
+  "order" global order: []mut i32
+  "size" global size: (w: i32, h: i32)
+  "ticks" global ticks: u128
+  "setup" func setup()
+)
+
+data buf = mut [0:u8; 64]
+
+type Spot = (c: i32, di: i32, room: i32)
+type Lane = (cells: []i32, free: i32)
+type Rect = (origin: (x: i32, y: i32), size: (w: i32, h: i32))
+
+global list: []i32 = (0, 0)
+global here: Spot = Spot(1, 2, 3)
+global there: Spot
+global lane: Lane
+global rect: Rect = Rect((x: 1, y: 2), (w: 3, h: 4))
+global message: []u8 = "hello"
+global wide: u128 = 5
+export global seen: []i32 = (0, 0)
+
+func count() -> u32 => list.len
+
+func words() -> []i32 => ((buf as [*]i32), 3:u32)
+
+test "a slice global" {
+  assert count() == 0
+  list = ((buf as [*]i32), 2:u32)
+  assert count() == 2
+  assert list.len == 2
+  list = words()
+  assert list.len == 3
+  list.len -= 1
+  assert count() == 2
+}
+
+test "a slice global starts as its initializer" {
+  assert message.len == 5
+  assert message.ptr[1] == 101
+  let total: u32 = 0
+  for c in message { total += c as u32 }
+  assert total == 532
+}
+
+test "a struct global starts as its initializer" {
+  assert here.c + here.di * 10 + here.room * 100 == 321
+  assert there.room == 0
+  assert rect.origin.x + rect.origin.y * 10 + rect.size.w * 100 + rect.size.h * 1000 == 4321
+}
+
+test "a struct global" {
+  here = Spot(1, 2, 3)
+  assert there.room == 0
+  there = here
+  there.di += 5
+  here.c = 10
+  assert here.c == 10
+  assert there.c == 1
+  assert there.di == 7
+  let copy = there
+  assert copy.room == 3
+}
+
+test "a struct global rebuilt from its own fields" {
+  here = Spot(1, 2, 3)
+  here = Spot(here.room, here.c, here.di)
+  assert here.c == 3
+  assert here.di == 1
+  assert here.room == 2
+}
+
+test "nested fields of struct globals" {
+  let w = buf as [*]mut i32
+  w[0] = 5
+  lane = Lane((w, 1:u32), 2)
+  lane.free += 1
+  assert lane.free == 3
+  assert lane.cells.len == 1
+  let t = 0
+  for x in lane.cells { t += x }
+  assert t == 5
+  rect.size.w = 9
+  rect.origin = (x: 7, y: 8)
+  assert rect.origin.y == 8
+  assert rect.size.w == 9
+  assert rect.size.h == 4
+}
+
+test "a wide integer global" {
+  wide = 5
+  wide += 1
+  assert wide == 6
+  wide = wide << 64
+  assert wide >> 64 == 6
+}
+
+test "globals shared with another module" {
+  setup()
+  seen = order
+  assert seen.len == 4
+  assert seen.ptr[2] == 9
+  size.w = 10
+  assert size.w + size.h == 15
+  ticks += 1
+  assert ticks == 8
+  let t = 0
+  for x in order { t += x }
+  assert t == 9
+}

@@ -910,6 +910,99 @@ describe('struct values in registers and on the stack', () => {
   })
 })
 
+// === Globals of Several Values ===
+
+describe('globals of several wasm values', () => {
+  const GLOBALS = `
+    type Spot = (c: i32, di: i32, room: i32)
+    type Lane = (cells: []i32, free: i32)
+    global order: []i32 = (0, 0)
+    global here: Spot = Spot(1, 2, 3)
+    global lane: Lane
+    global wide: u128 = 5
+    global count: u32 = 7
+  `
+
+  test('each value is its own wasm global, with its part of the initializer', () => {
+    const wat = modWat(GLOBALS)
+    expect(wat).toContain('(global $order_ptr (mut i32) (i32.const 0))\n  (global $order_len (mut i32) (i32.const 0))')
+    expect(wat).toContain('(global $here_c (mut i32) (i32.const 1))\n  (global $here_di (mut i32) (i32.const 2))\n  (global $here_room (mut i32) (i32.const 3))')
+    expect(wat).toContain('(global $lane_cells_ptr (mut i32) (i32.const 0))\n  (global $lane_cells_len (mut i32) (i32.const 0))\n  (global $lane_free (mut i32) (i32.const 0))')
+    expect(wat).toContain('(global $wide_0 (mut i64) (i64.const 5))\n  (global $wide_1 (mut i64) (i64.const 0))')
+    // A global of one value is declared as before.
+    expect(wat).toContain('(global $count (mut i32) (i32.const 7))')
+  })
+
+  test('a slice global starts as a string or a data array', () => {
+    const wat = modWat(`
+      data buf = mut [0:u8; 16]
+      global message: []u8 = "hello"
+      global room: []mut u8 = buf
+    `)
+    expect(wat).toMatch(/\(global \$message_ptr \(mut i32\) \(i32\.const \d+\)\)\n {2}\(global \$message_len \(mut i32\) \(i32\.const 5\)\)/)
+    expect(wat).toMatch(/\(global \$room_ptr \(mut i32\) \(i32\.const \d+\)\)\n {2}\(global \$room_len \(mut i32\) \(i32\.const 16\)\)/)
+  })
+
+  test('reads, writes and fields use the parts', () => {
+    const body = (stmts: string) => bodyOf(`${GLOBALS}
+      func f(s: []i32, p: Spot) -> i32 {
+        ${stmts}
+        return 0
+      }
+    `, 'f').slice(0, -2)
+    expect(body('order = s')).toEqual(['(global.set $order_ptr (local.get $s_ptr))', '(global.set $order_len (local.get $s_len))'])
+    expect(body('let t = order')).toEqual(['(local.set $t_ptr (global.get $order_ptr))', '(local.set $t_len (global.get $order_len))'])
+    expect(body('let n = order.len')).toEqual(['(local.set $n (global.get $order_len))'])
+    expect(body('here.di += 1')).toEqual(['(global.set $here_di (i32.add (global.get $here_di) (i32.const 1)))'])
+    expect(body('lane.cells = s')).toEqual(['(global.set $lane_cells_ptr (local.get $s_ptr))', '(global.set $lane_cells_len (local.get $s_len))'])
+    expect(body('let n = lane.cells.len')).toEqual(['(local.set $n (global.get $lane_cells_len))'])
+    expect(body('count += 1')).toEqual(['(global.set $count (i32.add (global.get $count) (i32.const 1)))'])
+    // A struct rebuilt from its own fields is read before any part is set.
+    expect(body('here = Spot(here.room, here.c, here.di)')).toEqual([
+      '(global.get $here_room) (global.get $here_c) (global.get $here_di)',
+      '(global.set $here_room)',
+      '(global.set $here_di)',
+      '(global.set $here_c)',
+    ])
+  })
+
+  test('exports and host imports name each part', () => {
+    const wat = modWat(`
+      import "env" "limit" global limit: (lo: i32, hi: i32)
+      import "env" "base" global base: u32
+      export global seen: []i32 = (0, 0)
+      export "n" global count: u32 = 0
+      func f() -> i32 => limit.hi
+    `)
+    expect(wat).toContain('(import "env" "limit_lo" (global $limit_lo i32))\n  (import "env" "limit_hi" (global $limit_hi i32))')
+    expect(wat).toContain('(import "env" "base" (global $base i32))')
+    expect(wat).toContain('(export "seen_ptr" (global $seen_ptr))\n  (export "seen_len" (global $seen_len))')
+    expect(wat).toContain('(export "n" (global $count))')
+    expect(wat).toContain('(global.get $limit_hi)')
+  })
+
+  test('slice and struct globals run', async () => {
+    const { f } = await run(`${GLOBALS}
+      data buf = mut [0:u8; 64]
+      func words() -> []i32 => ((buf as [*]i32), 3:u32)
+      export func f() -> i32 {
+        order = words()
+        order.len -= 1
+        let w = buf as [*]mut i32
+        w[1] = 40
+        lane = Lane(order, 2)
+        lane.free += 1
+        here = Spot(here.room, here.c, here.di)
+        wide += 1
+        let t = (order.len as i32) + lane.free + here.c * 10 + here.di * 100 + (wide as i32) * 1000
+        for x in lane.cells { t += x }
+        return t
+      }
+    `)
+    expect(f()).toBe(2 + 3 + 30 + 100 + 6000 + 40)
+  })
+})
+
 // === Module Codegen Tests ===
 
 describe('module codegen', () => {

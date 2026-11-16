@@ -808,9 +808,28 @@ data buffer = mut [0:u8; 1024]      // unique, never deduplicated
 let count:i32 = 0
 let ptr:*u8       // uninitialized
 
-// Global variable (stored in linear memory)
+// Global variable (a wasm global)
 global total:i32 = 0
 ```
+
+A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+
+```ents
+type Size = (w:i32, h:i32)
+
+global order:[]i32 = (0, 0)        // two wasm globals: the pointer and the length
+global size:Size = Size(3, 4)      // one per field
+global scratch:Size                // zero until it's set
+
+func keep(list:[]i32) -> u32 {
+  order = list
+  size.h += 1
+  scratch = size
+  return order.len
+}
+```
+
+A global's initializer has to be constant: literals, a constructor or tuple of them, or a string or `data` array for a slice.
 
 Type annotations are optional when the type can be inferred from the initializer:
 
@@ -1724,6 +1743,8 @@ export "mem" memory 8 256  // explicit name, 8 min, 256 max
 export global counter:i32 = 0
 ```
 
+A global of several wasm values is exported (and imported from the host) as one wasm global per value, each named for its part the way a local's registers are: `export global order:[]i32` exports `order_ptr` and `order_len`, and a struct global `size:(w:i32, h:i32)` exports `size_w` and `size_h`.
+
 ### 7.3 Memory Declarations
 
 ```ents
@@ -1753,6 +1774,7 @@ Encantis distinguishes between register storage (WASM locals/globals) and linear
 | `let p:Point` | Multiple WASM locals | Fields are separate registers |
 | `let ptr:*[64]u8` | Single WASM local (i32) | Holds a pointer, doesn't allocate |
 | `global g:i32` | WASM global | Module-scoped register |
+| `global s:[]u8` | Two WASM globals (ptr, len) | One per value, like a local |
 | `def buffer = [0:u8; 64]` | Linear memory | Allocates 64 bytes in data section |
 
 Primitives and structs are stored in WASM locals/globals—fast registers with no memory address. Pointer variables are single i32 values that reference memory allocated via `def`.

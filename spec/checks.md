@@ -121,6 +121,25 @@ cannot write through const pointer
 cannot write through const slice
 ```
 
+## Globals
+
+A global can be a slice, a struct or a wide integer.
+
+```ents
+type Size = (w: i32, h: i32)
+
+global order: []i32 = (0, 0)
+global size: Size = Size(3, 4)
+global total: u128 = 0
+
+func f(s: []i32) -> u32 {
+  order = s
+  size.h += 1
+  total += 1
+  return order.len
+}
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

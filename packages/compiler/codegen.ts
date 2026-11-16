@@ -338,8 +338,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       return `(ref.func $${watName})`
     }
     if (sym.kind === 'global') {
-      const watName = ctx.nameMap.get(name) ?? name
-      return `(global.get $${watName})`
+      return globalNames(name, sym.type, ctx).map((n) => `(global.get $${n})`).join(' ')
     }
     if (sym.kind === 'def') {
       // Compile-time constant - inline the value
@@ -1159,6 +1158,21 @@ interface Registers {
   global: boolean
 }
 
+// How the wasm values of a multi-value type are told apart in names: a
+// variable s of type []u8 is s_ptr and s_len.
+function flatSuffixes(type: ResolvedType): string[] {
+  const flat = flattenType(type)
+  if (flat.length === 1) return ['']
+  return flat.map((f, i) => `_${f.suffix || i}`)
+}
+
+// The wasm globals that hold a module global: one per wasm value, so a slice
+// or struct global is several, named like a local's parts.
+function globalNames(name: string, type: ResolvedType, ctx: CodegenContext): string[] {
+  const watName = ctx.nameMap.get(name) ?? name
+  return flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
+}
+
 // The registers that hold an expression's value, in order, when it names a
 // variable or a member of one: point.x is $point_x, rect.origin is
 // $rect_origin_x and $rect_origin_y.
@@ -1168,7 +1182,7 @@ function registersOf(expr: AST.Expr, ctx: CodegenContext): Registers | null {
     const names = ctx.locals.get(expr.name) ?? ctx.params.get(expr.name)
     if (names) return { names, global: false }
     const sym = ctx.symbols.get(expr.name)
-    if (sym?.kind === 'global') return { names: [ctx.nameMap.get(expr.name) ?? expr.name], global: true }
+    if (sym?.kind === 'global') return { names: globalNames(expr.name, sym.type, ctx), global: true }
     return null
   }
   const member = memberValues(expr, ctx)
@@ -3244,7 +3258,7 @@ function getMemoryDecl(module: AST.Module): { exportName: string | null; min: nu
   return null
 }
 
-function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: CodegenContext): string {
+function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenContext): string {
   const imp = item.item
 
   if (imp.kind === 'ImportFunc') {
@@ -3296,24 +3310,34 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, _ctx: Codegen
   }
 
   if (imp.kind === 'ImportGlobal') {
-    const wasmType = typeToWasmSingle(resolveAstType(imp.type))
-    return `  (import "${moduleName}" "${item.name}" (global $${imp.ident} ${wasmType}))`
+    // As exported: one wasm global per value, named with its part's suffix.
+    const sym = ctx.symbols.get(imp.ident)
+    const type = sym?.kind === 'global' ? sym.type : resolveAstType(imp.type)
+    const wasmTypes = typeToWasm(type)
+    return flatSuffixes(type)
+      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${imp.ident}${suffix} ${wasmTypes[i]}))`)
+      .join('\n')
   }
 
   return ''
 }
 
+// A global is one wasm global per wasm value of its type: a slice, struct or
+// wide integer global is several, each with its part of the initializer.
 function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   const name = patternIdent(decl.pattern)
-  const watName = ctx.nameMap.get(name) ?? name
   const type = ctx.types.get(typeKey(decl.pattern.span.start, decl.pattern.kind))
   if (!type) {
     throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
   }
-  const wasmType = typeToWasmSingle(type)
-  const init = decl.value ? exprToWat(decl.value, ctx) : `(${wasmType}.const 0)`
+  const wasmTypes = typeToWasm(type)
+  const init = decl.value
+    ? withSliceLength(exprToWat(decl.value, ctx), decl.value, type, ctx)
+    : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
+  const inits = trySplitMultiValue(init, wasmTypes.length)
+  if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
 
-  return `  (global $${watName} (mut ${wasmType}) ${init})`
+  return globalNames(name, type, ctx).map((n, i) => `  (global $${n} (mut ${wasmTypes[i]}) ${inits[i]})`).join('\n')
 }
 
 function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
@@ -3327,9 +3351,13 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
   }
 
   if (item.kind === 'GlobalDecl') {
+    // Each wasm global of a multi-value global is exported under the name
+    // with its part's suffix: order_ptr, order_len.
     const globalName = patternIdent(item.pattern)
+    const type = ctx.types.get(typeKey(item.pattern.span.start, item.pattern.kind))
+    const suffixes = type ? flatSuffixes(type) : ['']
     const watName = ctx.nameMap.get(globalName) ?? globalName
-    return `  (export "${name}" (global $${watName}))`
+    return suffixes.map((suffix) => `  (export "${name}${suffix}" (global $${watName}${suffix}))`).join('\n')
   }
 
   if (item.kind === 'MemoryDecl') {

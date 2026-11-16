@@ -1,0 +1,23 @@
+// The state another module shares: globals of more than one wasm value.
+
+data cells = mut [0:i32; 16]
+
+type Size = (w: i32, h: i32)
+
+export global order: []mut i32 = (0, 0)
+export global size: Size = Size(3, 4)
+export global ticks: u128 = 7
+
+export func setup() {
+  order = cells[0..4]
+  order.ptr[2] = 9
+  size.h += 1
+}
+
+test "the module's own view of its globals" {
+  setup()
+  assert order.len == 4
+  assert size.w == 3
+  assert size.h == 5
+  assert ticks == 7
+}
