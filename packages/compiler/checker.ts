@@ -79,6 +79,7 @@ export interface Instance {
   label: string         // for messages: max(T = u32)
   of: AST.FuncDecl      // the generic's declaration
   decl: AST.FuncDecl    // the substituted copy, its spans shifted by index * INSTANCE_STRIDE
+  index: number         // from 1, in the order the module's instances were asked for
   args: ComptimeValue[] // in comptime-parameter order
   depth: number         // instantiation nesting, to stop a generic that never stops instantiating
   chain: InstanceChain
@@ -3678,8 +3679,7 @@ class CheckContext {
     if (!inst) return fail()
 
     // Every other argument is an ordinary argument of the instance.
-    const target = sym.owner.moduleScope.symbols.get(inst.name) as Symbol & { kind: 'func' }
-    const sig = target.type
+    const sig = sym.owner.signatureAs(inst, args)
     const runtimeArgs: AST.Arg[] = []
     for (const { param, arg, index } of pairs) {
       if (isTypeParam(param)) continue
@@ -3693,7 +3693,8 @@ class CheckContext {
       args: runtimeArgs,
       span: expr.span,
     })
-    // What the editor shows at the call: the signature of the instance
+    // What the editor shows at the call: the signature of the instance, as
+    // this call wrote its types
     this.types.set(typeKey(expr.callee.span.start, 'IdentExpr'), sig)
     if (sig.returns.length === 0) return VOID
     return sig.returns.length === 1 ? sig.returns[0].type : tuple(sig.returns)
@@ -3809,7 +3810,10 @@ class CheckContext {
   private instantiate(sym: Symbol & { kind: 'generic' }, args: ComptimeValue[], at: number): Instance | null {
     const of = sym.decl
     const comptimeParams = genericParams(of).filter((p) => p.comptime)
-    const types = args.map((a) => (a as ComptimeValue & { kind: 'type' }).type)
+    // The instance holds its type arguments without the aliases that only
+    // rename a type: calls that wrote Meters, Feet and u32 share it, and its
+    // own messages should not read as if one of them had been singled out.
+    const types = args.map((a) => plain((a as ComptimeValue & { kind: 'type' }).type))
     const key = types.map((t) => watSafe(canonicalKey(t))).join('|')
     const existing = sym.instances.get(key)
     if (existing) return existing
@@ -3841,20 +3845,16 @@ class CheckContext {
       this.error(at, `cannot instantiate '${of.ident}': the source is too large or has too many instances`)
       return null
     }
-    const bound = new Map(comptimeParams.map((p, i) => [p.ident as string, types[i]]))
-    const decl = cloneAst(of, index * INSTANCE_STRIDE, (name) => {
-      const type = bound.get(name)
-      return type && { kind: 'BoundType', name, type, span: { start: 0, end: 0 } }
-    }) as AST.FuncDecl
-    const input = decl.signature.input as AST.CompositeType
-    input.fields = input.fields.filter((f) => !f.comptime)
+    const decl = bindTypes(of, comptimeParams, types, index * INSTANCE_STRIDE)
     decl.ident = instanceName(of.ident as string, key, (name) => owner.moduleScope.symbols.has(name))
 
     const shown = comptimeParams.map((p, i) => {
       const text = typeToString(types[i])
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
-    const inst: Instance = { name: decl.ident, label: `${of.ident}(${shown.join(', ')})`, of, decl, args, depth, chain }
+    const label = `${of.ident}(${shown.join(', ')})`
+    const held: ComptimeValue[] = types.map((type) => ({ kind: 'type', type }))
+    const inst: Instance = { name: decl.ident, label, of, decl, index, args: held, depth, chain }
     sym.instances.set(key, inst)
     owner.instances.push(inst)
     owner.instanceQueue.push(inst)
@@ -3862,6 +3862,24 @@ class CheckContext {
     // waits for drainInstances.
     owner.collectFunc(decl)
     return inst
+  }
+
+  // The signature of an instance as one call sees it: the generic's, with that
+  // call's own type arguments. Calls that write one type in different ways (an
+  // alias, the struct it names, a second alias) share the instance, and each
+  // is checked, and reads in its messages and in the editor, as it was
+  // written. Checking against the first caller's spelling instead would make
+  // what a call is told, and for the types the checker cannot see through
+  // whether it is accepted at all, depend on which call came first.
+  signatureAs(inst: Instance, args: ComptimeValue[]): ResolvedType & { kind: 'func' } {
+    const types = args.map((a) => (a as ComptimeValue & { kind: 'type' }).type)
+    if (inst.args.every((held, i) => held.kind === 'type' && held.type === types[i])) {
+      return (this.moduleScope.symbols.get(inst.name) as Symbol & { kind: 'func' }).type
+    }
+    // At the instance's offsets, so that an error in the signature is the one
+    // the instance already has.
+    const comptimeParams = genericParams(inst.of).filter((p) => p.comptime)
+    return this.resolveSignature(bindTypes(inst.of, comptimeParams, types, inst.index * INSTANCE_STRIDE, 'signature').signature)
   }
 
   // Instance bodies are checked when the checker is at rest, each as a function
@@ -3899,7 +3917,7 @@ class CheckContext {
     const own = this.pendingLiterals.filter((lit) => lit.id < INSTANCE_STRIDE)
     if (own.length === this.pendingLiterals.length) return
     const ofInstance = (inst: Instance) => {
-      const base = (this.instances.indexOf(inst) + 1) * INSTANCE_STRIDE
+      const base = inst.index * INSTANCE_STRIDE
       return this.pendingLiterals.filter((lit) => lit.id >= base && lit.id < base + INSTANCE_STRIDE)
     }
     const placed: { at: number; literals: PendingLiteral[] }[] = []
@@ -4185,6 +4203,51 @@ function isUnit(type: ResolvedType): boolean {
   return t.kind === 'void' || (t.kind === 'tuple' && t.fields.length === 0)
 }
 
+// A type without the aliases that only rename it: an alias of a number, a
+// pointer, a slice or another alias is replaced by what it names, at any
+// depth. The alias of a struct or tuple stays, since its name is how the type
+// is known.
+function plain(type: ResolvedType): ResolvedType {
+  switch (type.kind) {
+    case 'named': {
+      if (type.type.kind === 'tuple') return type
+      return plain(type.type)
+    }
+    case 'pointer': {
+      const pointee = plain(type.pointee)
+      return pointee === type.pointee ? type : { ...type, pointee }
+    }
+    case 'slice':
+    case 'array': {
+      const element = plain(type.element)
+      return element === type.element ? type : { ...type, element }
+    }
+    case 'tuple': {
+      const fields = type.fields.map((f) => field(f.name, plain(f.type)))
+      return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
+    }
+    case 'func': {
+      const [params, returns] = [type.params, type.returns].map((fs) => fs.map((f) => field(f.name, plain(f.type))))
+      const same = [...params, ...returns].every((f, i) => f.type === [...type.params, ...type.returns][i].type)
+      return same ? type : func(params, returns)
+    }
+    default:
+      return type
+  }
+}
+
+// What a value's type is as a type argument: without a range the value was
+// only known to lie in. A loop counter that is a u32#12 here decides u32, also
+// as part of a tuple. A range someone wrote stays where a value cannot have
+// picked it up: behind a pointer, in a slice, under a struct's name.
+function withoutRanges(type: ResolvedType): ResolvedType {
+  const u = unwrap(type)
+  if (u.kind === 'primitive') return u.max !== undefined ? primitive(u.name) : type
+  if (type.kind !== 'tuple') return type
+  const fields = type.fields.map((f) => field(f.name, withoutRanges(f.type)))
+  return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
+}
+
 // The name of a type that is referred to but not resolved yet, if there is
 // one. A type that refers to itself keeps a forward reference inside its own
 // alias; that one is resolved.
@@ -4243,39 +4306,58 @@ function matchType(
   actual: ResolvedType,
   typeParams: readonly string[],
   bound: Map<string, ResolvedType>,
-  depth = 0,
+  value = true,
 ): void {
-  const next = (p: AST.Type, a: ResolvedType) => matchType(p, a, typeParams, bound, depth + 1)
   const u = unwrap(actual)
   switch (pattern.kind) {
     case 'TypeRef':
       // A later argument never re-decides, and () decides nothing.
       if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual)) return
-      // The argument's own type loses a range it was only known to lie in:
-      // a loop counter that is a u32#12 here decides u32.
-      bound.set(pattern.name, depth === 0 && u.kind === 'primitive' && u.max !== undefined ? primitive(u.name) : actual)
+      // `value`: nothing but tuples lies between the argument and this part
+      // of it, so it is a value the argument holds, not memory it points to.
+      bound.set(pattern.name, value ? withoutRanges(actual) : actual)
       return
     case 'PointerType':
-      if (u.kind === 'pointer') next(pattern.pointee, u.pointee)
+      // A many-pointer is not a pointer to something T could be: what it
+      // points to is an array of unknown length, which is no type by itself.
+      // Only [*]T matches it.
+      if (u.kind === 'pointer' && !(u.pointee.kind === 'array' && u.pointee.sizes === null)) {
+        matchType(pattern.pointee, u.pointee, typeParams, bound, false)
+      }
       return
     case 'IndexedType': {
       const element =
         u.kind === 'slice' || u.kind === 'array' ? u.element
         : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
         : null
-      if (element) next(pattern.element, element)
+      if (element) matchType(pattern.element, element, typeParams, bound, false)
       return
     }
     case 'CompositeType':
       if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
         pattern.fields.forEach((f, i) => {
-          next(f.type, u.fields[i].type)
+          matchType(f.type, u.fields[i].type, typeParams, bound, value)
         })
       }
       return
     default:
       return
   }
+}
+
+// A copy of a generic's declaration, or of its signature alone, with the type
+// parameters replaced by these types and the comptime parameters gone: an
+// ordinary function's. Its offsets are the declaration's plus `delta`.
+function bindTypes(of: AST.FuncDecl, params: AST.Field[], types: ResolvedType[], delta: number, part?: 'signature'): AST.FuncDecl {
+  const bound = new Map(params.map((p, i) => [p.ident as string, types[i]]))
+  const subst = (name: string): AST.BoundType | undefined => {
+    const type = bound.get(name)
+    return type && { kind: 'BoundType', name, type, span: { start: 0, end: 0 } }
+  }
+  const decl = (part ? { ...of, signature: cloneAst(of.signature, delta, subst) } : cloneAst(of, delta, subst)) as AST.FuncDecl
+  const input = decl.signature.input as AST.CompositeType
+  input.fields = input.fields.filter((f) => !f.comptime)
+  return decl
 }
 
 // The marks the checker leaves on the literals of an expression (that it is

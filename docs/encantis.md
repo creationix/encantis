@@ -1789,7 +1789,8 @@ export func f(p: *mut i64, q: *mut i64) { swap(p, q) }      // T = i64, from *mu
    | `[]T` | `[]mut X` | `T = X` |
    | `[]T`, `[*]T` | `*[N]X` (a `data` array, a string) | `T = X` |
    | `?*T` | `*X` | `T = X` |
-   | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped) |
+   | `*T` | `[*]X` | no match: what a many-pointer points to is not a type by itself. `[*]T` matches it |
+   | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped, also from the values a tuple argument is made of) |
    | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
 
    Type aliases are transparent, as everywhere.
@@ -1840,13 +1841,13 @@ export func f(a: Pt, b: Pt) -> Pt => max(a, b)
 operator > is not defined for Pt, in max(T = Pt)
 ```
 
-The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.
+The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.
 
 ### 8.4 Instances
 
 An *instance* is one generic function with all its comptime arguments fixed.
 
-- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument. Explicit and inferred calls that arrive at the same arguments share the instance.
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
 - **Once.** An instance is one function in the output however many calls use it.
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter or for a generic that is not used. No function tables and no indirect calls are involved.

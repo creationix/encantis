@@ -165,6 +165,21 @@ export func f() -> u16 => first(primes)`
     expect(instancesOf(source)).toEqual(['first<u16>'])
   })
 
+  test('*T does not take a many-pointer: what that points to is no type by itself', () => {
+    const addr = 'func addr(comptime T: type, p: *T) -> u32 => p as u32\n'
+    // Bound to the array of unknown length behind [*]u8, T had the key of
+    // [*]u8 itself, and whichever call came second was checked against the
+    // other's instance.
+    const source = `${addr}export func one(mp: [*]u8) -> u32 => addr(mp)
+export func two(pp: *[*]u8) -> u32 => addr(pp)`
+    expect(errorsOf(source)).toEqual(["cannot infer T for 'addr': write the type argument, as in addr(u32, ...)"])
+    expect(instancesOf(`${addr}export func two(pp: *[*]u8) -> u32 => addr(pp)\nexport func three(pp: *[*]u8) -> u32 => addr([*]u8, pp)`)).toEqual([
+      "addr<'*'u8>",
+    ])
+    const first = 'func first(comptime T: type, xs: [*]T) -> T => xs[0]\n'
+    expect(instancesOf(`${first}export func f(mp: [*]u8) -> u8 => first(mp)`)).toEqual(['first<u8>'])
+  })
+
   test('?*T takes a *X', () => {
     const source = `func or_zero(comptime T: type, p: ?*T) -> u32 => 0
 export func f(p: *i64) -> u32 => or_zero(p)`
@@ -182,8 +197,32 @@ export func f(p: *i64) -> u32 => or_zero(p)`
     expect(instancesOf(source)).toEqual(['max<u32>'])
   })
 
+  test('also from the values a tuple argument is made of', () => {
+    const source = `func fst(comptime T: type, p: (T, T)) -> T => p.0
+func keep(comptime T: type, p: (T, u8)) -> T => p.0
+func id(comptime T: type, x: T) -> T => x
+export func f(x: u32) -> u32 {
+  let total: u32 = fst((x, x))
+  for i in 12 { total += fst((i, i)) + keep((i, 1:u8)) + id((i, i)).0 }
+  for j in 100 { total += fst((j, j)) + keep((j, 2:u8)) }
+  if x < 10 { total += fst((x, x)) }
+  return total
+}`
+    expect(instancesOf(source)).toEqual(['fst<u32>', 'id<<u32|u32>>', 'keep<u32>'])
+    // What an error suggests writing is that type too.
+    expect(errorsOf(`func keep(comptime T: type, p: (T, u8)) -> T => p.0
+export func f() -> u32 {
+  let total: u32 = 0
+  for i in 3 { total += keep((i, 1)) }
+  return total
+}`)).toEqual(["cannot infer T for 'keep' from untyped literals: write keep(u32, ...) or give a literal its type"])
+  })
+
   test('a range written in a type is part of the type', () => {
     expect(instancesOf(`${HEAD}export func f(xs: []u8#16) -> u8 => head(xs)`)).toEqual(["head<u8#16>"])
+    expect(instancesOf('func get(comptime T: type, p: *T) -> T => p.*\nexport func f(p: *u8#16) -> u8 => get(p)')).toEqual([
+      'get<u8#16>',
+    ])
   })
 
   test('aliases are transparent', () => {
@@ -322,6 +361,61 @@ export func c(x: u32) -> u32 => max(x, 1) + max(u32, 2, x)`
     expect(instancesOf(source)).toEqual(['max<u32>'])
   })
 
+  test('a call is checked against its own spelling of the type, whichever call made the instance', () => {
+    const source = `type Meters = u32
+type Feet = u32
+func id(comptime T: type, a: T) -> T => a
+export func m(x: Meters) -> Meters => id(Meters, x)
+export func f(y: f64) -> Feet => id(Feet, y)
+export func g(y: f64) -> u32 => id(u32, y)`
+    expect(errorsOf(source)).toEqual(['argument 2: cannot assign f64 to Feet', 'argument 2: cannot assign f64 to u32'])
+  })
+
+  test('a type that recurses through an alias of itself is one type argument', async () => {
+    const source = `type Node = (next: ?*Link, v: i32)
+type Link = Node
+func val(comptime T: type, p: *T) -> u32 => sizeof(T)
+export func a(p: *Node) -> u32 => val(p)
+export func b(p: *Link) -> u32 => val(p)
+export func c(p: *Node) -> u32 => val(Link, p)
+export func d(p: *Link) -> u32 => val(Node, p)`
+    expect(instancesOf(source)).toEqual(['val<<next:?*@0|v:i32>>'])
+
+    // A mutable literal is one buffer per instance, so the count shows at run time.
+    const counting = `type Node = (next: ?*Link, v: i32)
+type Link = Node
+func cell(comptime T: type) -> *mut [1]u32 => mut [0:u32; 1]
+func bump(comptime T: type) -> u32 {
+  let c = cell(T) as *mut u32
+  c.* += 1
+  return c.*
+}
+export func f() -> u32 => bump(Node) * 10 + bump(Link)`
+    expect((await run(counting)).f()).toBe(12)
+  })
+
+  test('the same recursive struct written twice is accepted in either order', () => {
+    // The checker does not see that these two are one type (0.2.1 does not
+    // either), so neither call may be checked against the other's spelling.
+    const calls = ['export func a(t: *Twice) -> u32 => tail(t)', 'export func b(o: *(v: i32, next: ?*Node)) -> u32 => tail(o)']
+    for (const order of [calls, [...calls].reverse()]) {
+      const source = `type Node = (v: i32, next: ?*Node)
+type Twice = (v: i32, next: ?*Node)
+func tail(comptime T: type, p: *T) -> u32 => p as u32
+${order.join('\n')}`
+      expect(instancesOf(source)).toHaveLength(1)
+    }
+  })
+
+  test('function types that differ in the names of their parameters are one type argument', () => {
+    const source = `func inc(x: i32) -> i32 => x + 1
+func dec(y: i32) -> i32 => y - 1
+func hold(comptime F: type, f: F, v: i32) -> i32 => v
+export func a(v: i32) -> i32 => hold(inc, v) + hold(dec, v)
+export func b(v: i32, g: (i32) -> i32) -> i32 => hold(g, v) + hold((i32) -> i32, inc, v)`
+    expect(instancesOf(source)).toEqual(['hold<<i32>=><i32>>'])
+  })
+
   test('a generic nobody calls has none, and its body is not checked', () => {
     const source = `func unused(comptime T: type, x: T) -> T => nothing(x) + Missing(1)
 export func f() -> u32 => 1`
@@ -457,10 +551,27 @@ export func b(x: f64) -> bool => positive(f64, x) && positive(x + 1.0)`
     ])
   })
 
-  test('name an alias as the call did', () => {
-    const source = `type Meters = f64
-${POSITIVE}export func f(x: Meters) -> bool => positive(x)`
-    expect(errorsOf(source)).toEqual(['cannot assign int(0) to Meters, in positive(T = Meters)'])
+  test('read the same whichever alias a call wrote: an alias that only renames a type is not named', () => {
+    // One instance for Meters, Feet and f64. Named after the first call, its
+    // error would read differently when the calls change places.
+    const calls = ['positive(m)', 'positive(Feet, f)', 'positive(x)']
+    for (const order of [calls, [...calls].reverse()]) {
+      const source = `type Meters = f64
+type Feet = f64
+${POSITIVE}export func f(m: Meters, f: Feet, x: f64) -> bool => ${order.join(' && ')}`
+      expect(errorsOf(source)).toEqual(['cannot assign int(0) to f64, in positive(T = f64)'])
+    }
+  })
+
+  test('name a struct by its alias, and an alias of the alias by the struct\'s', () => {
+    const source = `type Pt = (q: i32, r: i32)
+type Hex = Pt
+func bad(comptime T: type, x: T) -> bool => 1
+export func f(a: Hex, b: *Hex) -> bool => bad(a) && bad(b)`
+    expect(errorsOf(source)).toEqual([
+      'cannot assign int(1) to bool, in bad(T = Pt)',
+      'cannot assign int(1) to bool, in bad(T = *Pt)',
+    ])
   })
 
   test('come after the errors of the module itself', () => {

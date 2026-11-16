@@ -192,10 +192,14 @@ describe('types', () => {
       func([field('f', func(anon(u32), anon(u32)))], anon(u32)),
       func(anon(u32), anon(func(anon(u32), anon(u32)))),
       Node,
+      // What a many-pointer points to, by itself: not a many-pointer
+      array(u32, null),
+      // The same fields as Node, written out once more around it
+      tuple([field('next', pointer(Node, false, false, true)), field('value', u32)]),
     ]
 
     test('different types have different keys, also once they are names', () => {
-      expect(distinct).toHaveLength(37)
+      expect(distinct).toHaveLength(39)
       expect(new Set(distinct.map(t => canonicalKey(t))).size).toBe(distinct.length)
       expect(new Set(distinct.map(t => watSafe(canonicalKey(t)))).size).toBe(distinct.length)
     })
@@ -222,7 +226,34 @@ describe('types', () => {
       expect(canonicalKey(manyPointer(u8, true))).toBe('[*]mut u8')
       expect(canonicalKey(pointer(array(u8, [4]), false, false, true))).toBe('?*[4]u8')
       expect(canonicalKey(func(anon(u32, u32), anon(bool)))).toBe('(u32,u32)->(bool)')
-      expect(canonicalKey(Node)).toBe('(next:?*@Node,value:u32)')
+      expect(canonicalKey(Node)).toBe('(next:?*@0,value:u32)')
+      expect(canonicalKey(slice(Node))).toBe('[](next:?*@1,value:u32)')
+    })
+
+    test('a type that recurses through an alias of itself has one key, whichever name it is reached by', () => {
+      // type Node = (next: ?*Link, v: i32) and type Link = Node, as the checker
+      // leaves them: each alias wraps what the other was when it was resolved.
+      const body = (link: ResolvedType) => tuple([field('next', pointer(link, false, false, true)), field('v', primitive('i32'))])
+      const node0 = body(forwardRef('Link'))
+      const link = named('Link', named('Node', node0))
+      const node = named('Node', body(link))
+      expect(canonicalKey(node)).toBe('(next:?*@0,v:i32)')
+      expect(canonicalKey(link)).toBe(canonicalKey(node))
+      expect(canonicalKey(pointer(link))).toBe(canonicalKey(pointer(node)))
+      // Two types that refer to each other are told apart by where they start.
+      const a = named('A', tuple([field('b', pointer(named('B', tuple([field('a', pointer(forwardRef('A')))]))))]))
+      const b = named('B', tuple([field('a', pointer(named('A', tuple([field('b', pointer(forwardRef('B')))]))))]))
+      expect(canonicalKey(a)).toBe('(b:*(a:*@0))')
+      expect(canonicalKey(b)).toBe('(a:*(b:*@0))')
+    })
+
+    test('the names of a function type\'s parameters and results are not part of it', () => {
+      const i32 = primitive('i32')
+      const key = canonicalKey(func(anon(i32), anon(i32)))
+      expect(canonicalKey(func([field('x', i32)], anon(i32)))).toBe(key)
+      expect(canonicalKey(func([field('y', i32)], [field('r', i32)]))).toBe(key)
+      // A struct's field names are.
+      expect(canonicalKey(tuple([field('x', i32)]))).not.toBe(canonicalKey(tuple(anon(i32))))
     })
 
     test('a type that is not concrete has no key', () => {
