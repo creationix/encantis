@@ -22,17 +22,17 @@ describe('isSourceImport', () => {
 describe('resolveModulePath', () => {
   test('appends .ents extension', () => {
     const result = resolveModulePath('./util', '/project/main.ents')
-    expect(result).toBe('/project/util.ents')
+    expect(result).toBe(resolve('/project/util.ents'))
   })
 
   test('does not double-append .ents', () => {
     const result = resolveModulePath('./util.ents', '/project/main.ents')
-    expect(result).toBe('/project/util.ents')
+    expect(result).toBe(resolve('/project/util.ents'))
   })
 
   test('resolves relative to importing file directory', () => {
     const result = resolveModulePath('../lib/hash', '/project/src/main.ents')
-    expect(result).toBe('/project/lib/hash.ents')
+    expect(result).toBe(resolve('/project/lib/hash.ents'))
   })
 })
 
