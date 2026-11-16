@@ -175,3 +175,33 @@ test "array literal elements widen to the element type" {
   assert in_data() == 6.5
   assert wide_sum() == 4999999999
 }
+
+// A trailing expression that supplies a named result widens to it.
+func named_result(c: bool, n: i32) -> (r: i64) {
+  if c { n } else { 5000000000 }
+}
+
+// A match compares its literal patterns in the subject's type.
+func bucket(x: i64) -> i32 => match x {
+  0 => 1
+  5000000000 => 2
+  _ => 3
+}
+
+func is_half(x: f64) -> bool => match x {
+  0.5 => true
+  _ => false
+}
+
+test "a trailing expression widens to the named result" {
+  assert named_result(true, -3) == -3
+  assert named_result(false, -3) == 5000000000
+}
+
+test "match patterns are compared in the subject's type" {
+  assert bucket(0) == 1
+  assert bucket(5000000000) == 2
+  assert bucket(4294967296) == 3          // not 0 cut to 32 bits
+  assert is_half(0.5)
+  assert !is_half(0.25)
+}

@@ -1321,6 +1321,20 @@ describe('values meeting an expected type', () => {
     `)).toEqual([])
   })
 
+  test('a trailing expression is checked against the named result it supplies', () => {
+    expect(errs(`func f(n: i32) -> (r: i64) { n }`)).toEqual([])
+    expect(errs(`func f(n: i64) -> (r: i32) { n }`)).toEqual(['cannot assign i64 to i32'])
+    expect(errs(`func g() {}\nfunc f(n: i64) -> (r: i32) { r = 1\n g() }`)).toEqual([])
+  })
+
+  test('a match pattern has to be a value of the subject\'s type', () => {
+    expect(errs(`func f(x: i64) -> i32 => match x { 5000000000 => 1\n _ => 0 }`)).toEqual([])
+    expect(errs(`func f(x: f64) -> i32 => match x { 1 => 1\n 2.5 => 2\n _ => 0 }`)).toEqual([])
+    expect(errs(`func f(x: u8) -> i32 => match x { 300 => 1\n _ => 0 }`)).toEqual(['cannot match u8 against int(300)'])
+    expect(errs(`func f(x: i32) -> i32 => match x { true => 1\n _ => 0 }`)).toEqual(['cannot match i32 against bool'])
+    expect(errs(`func f(x: i32) -> i32 => match x { 1.5 => 1\n _ => 0 }`)).toEqual(['cannot match i32 against float(1.5)'])
+  })
+
   test('a struct value is not widened field by field', () => {
     expect(errs(`
       type Small = (a: i32, b: i32)

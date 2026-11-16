@@ -880,7 +880,7 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value.
 
 #### Calling Conventions
 
@@ -1498,7 +1498,7 @@ match value {
 }
 ```
 
-Match arms are tested in order. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+Match arms are tested in order. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
 
 ```ents
 let result = match code {

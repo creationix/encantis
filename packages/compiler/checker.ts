@@ -1297,8 +1297,15 @@ class CheckContext {
     if (decl.body.kind === 'Block') {
       const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
-      // With named results, a trailing expression supplies them.
+      // With named results, a trailing expression with a value supplies them.
       this.checkBody(decl.body, named)
+      const tail = named ? decl.body.stmts.at(-1) : undefined
+      const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
+      if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
+        const results = this.currentReturnType
+        const single = results.kind === 'tuple' && results.fields.length === 1
+        this.coerce(tail.expr, tailType, single ? results.fields[0].type : results)
+      }
       // A block body with unnamed results has to return on every path: there
       // are no named locals to return when it falls off the end.
       const resultType = this.currentReturnType
@@ -1994,7 +2001,7 @@ class CheckContext {
 
     // Bidirectional: propagate expected type into match-expression arms
     if (expr.kind === 'MatchExpr') {
-      this.inferExpr(expr.subject)
+      this.checkMatchSubject(expr)
       for (const arm of expr.arms) {
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
           this.checkBodyAgainst(arm.body, expected)
@@ -3585,6 +3592,12 @@ class CheckContext {
     }
     // One branch's range says nothing about the others'.
     type = stripMax(type)
+    // A constant too big for that type widens it, if its own default type
+    // holds the rest: if c { n } else { 5000000000 } is an i64.
+    for (const b of valued) {
+      const own = this.concretize(b.type)
+      if (isComptimeNumber(b.type) && !typeAssignable(type, b.type) && typeAssignable(own, type)) type = own
+    }
     const odd = valued.find(b => !typeAssignable(type, b.type))
     if (odd) {
       if (!valueUsed) return VOID
@@ -3684,9 +3697,31 @@ class CheckContext {
     return this.inferExpr(expr)
   }
 
+  // A literal pattern is compared with the subject, so it has to be a value
+  // of the subject's type.
+  private checkMatchSubject(expr: AST.MatchExpr): void {
+    const subjectType = this.inferExpr(expr.subject)
+    const subject = unwrap(stripMax(subjectType))
+    for (const arm of expr.arms) {
+      for (const pattern of arm.patterns) {
+        if (pattern.kind !== 'literal') continue
+        const value = pattern.value
+        const type = value.kind === 'int' ? comptimeInt(value.value)
+          : value.kind === 'float' ? comptimeFloat(value.value)
+          : value.kind === 'bool' ? primitive('bool')
+          : null
+        const comparable = subject.kind === 'primitive' && (byteSize(subject) ?? 16) <= 8
+        if (!type || !comparable || !typeAssignable(subject, type)) {
+          const shown = type ? typeToString(type) : 'a string'
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}`)
+        }
+      }
+    }
+  }
+
   inferMatch(expr: AST.MatchExpr): ResolvedType {
     const valueUsed = !this.statementExprs.has(expr)
-    this.inferExpr(expr.subject)
+    this.checkMatchSubject(expr)
     const branches: Branch[] = expr.arms.map(arm => ({ body: arm.body, type: this.inferBody(arm.body, valueUsed) }))
     return this.unifyBranches(branches, valueUsed)
   }

@@ -536,6 +536,19 @@ describe('expression codegen', () => {
       expect(wat).toContain('(call $__w1_sext_2 (i64.extend_i32_s (local.get $n)))')
     })
 
+    test('a match compares its patterns in the subject\'s type', () => {
+      const wat = funcWat(`func f(x: i64) -> i32 => match x {
+        5000000000 => 1
+        _ => 0
+      }`)
+      expect(wat).toContain('(i64.eq (local.get $x) (i64.const 5000000000))')
+    })
+
+    test('a trailing expression widens to the named result', () => {
+      const wat = funcWat('func f(n: i32) -> (r: i64) { n }')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $n))\n(local.set $r)')
+    })
+
     test('a match arm block gives its value', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         0 => { let x = k + 1\n x * 2 }

@@ -210,6 +210,24 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
+A `match` compares its literal patterns in the subject's type, so each has to be a value of that type.
+
+```ents
+func a(x: i64) -> i32 => match x {
+  5000000000 => 1
+  _ => 0
+}
+
+func b(x: u8) -> i32 => match x {
+  300 => 1
+  _ => 0
+}
+```
+
+```errors
+cannot match u8 against int(300)
+```
+
 An `if` used as a statement has no value, so its branches can end in anything.
 
 ```ents

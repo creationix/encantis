@@ -1696,6 +1696,9 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   const subject = exprToWat(expr.subject, ctx)
+  // Patterns are compared in the subject's type.
+  const subjectType = lookupExprType(expr.subject, ctx)
+  const wt = subjectType ? typeToWasmSingle(subjectType) : 'i32'
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
@@ -1722,12 +1725,12 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
       const conditions = arm.patterns.map((p) => {
         if (p.kind === 'literal') {
           const litValue =
-            p.value.kind === 'int'
-              ? `(i32.const ${p.value.value})`
+            p.value.kind === 'int' || p.value.kind === 'float'
+              ? `(${wt}.const ${p.value.value})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
-          return `(i32.eq ${subject} ${litValue})`
+          return `(${wt}.eq ${subject} ${litValue})`
         }
         return '(i32.const 0)'
       })
