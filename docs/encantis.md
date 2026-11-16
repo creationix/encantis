@@ -880,7 +880,19 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results it fills them in order, whatever its own fields are called. An expression body gives the results the same way.
+
+```ents
+func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
+
+func halves(n: u16) -> (hi: u64, lo: f64) {
+  (n >> 8, n & 0xff)                     // each element widens to its result
+}
+
+func swapped(n: u32) -> (lo: u32, hi: u32) {
+  split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
+}
+```
 
 #### Calling Conventions
 

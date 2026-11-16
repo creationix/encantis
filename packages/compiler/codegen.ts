@@ -2421,9 +2421,10 @@ export function funcToWat(
   const tailLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
   const body = bodyToWat(decl.body, ctx, false, false, tailLocals)
 
-  // Generate epilogue: push named returns onto stack
+  // Generate epilogue: push named returns onto stack. An expression body's
+  // value is the result already.
   let epilogue = ''
-  if (namedReturns.length > 0) {
+  if (namedReturns.length > 0 && decl.body.kind !== 'ArrowBody') {
     const returnGets = namedReturns.flatMap((r) => {
       const localNames = ctx.locals.get(r.name)
       if (localNames) {

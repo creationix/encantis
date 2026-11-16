@@ -1310,9 +1310,7 @@ class CheckContext {
       const tail = named ? decl.body.stmts.at(-1) : undefined
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
       if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
-        const results = this.currentReturnType
-        const single = results.kind === 'tuple' && results.fields.length === 1
-        this.coerce(tail.expr, tailType, single ? results.fields[0].type : results)
+        this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
       }
       // A block body with unnamed results has to return on every path: there
       // are no named locals to return when it falls off the end.
@@ -1322,10 +1320,27 @@ class CheckContext {
         this.error(decl.span.start, `function '${decl.ident ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
-      this.checkExpr(decl.body.expr, this.currentReturnType)
+      this.checkExpr(decl.body.expr, this.returnValueType())
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
+  }
+
+  // The type a returned value is checked against: for a single named result
+  // like (ptr: u32), the type inside.
+  private returnValueType(): ResolvedType {
+    const type = this.currentReturnType ?? VOID
+    return type.kind === 'tuple' && type.fields.length === 1 ? type.fields[0].type : type
+  }
+
+  // The type a trailing value has to have to supply the named results. It
+  // fills them in order, as `let a, b = f()` binds by position, so the names
+  // of its own fields don't matter: the expected type takes them over.
+  private resultsFilledBy(valueType: ResolvedType): ResolvedType {
+    const results = this.returnValueType()
+    const value = unwrap(valueType)
+    if (results.kind !== 'tuple' || value.kind !== 'tuple' || value.fields.length !== results.fields.length) return results
+    return tuple(results.fields.map((f, i) => field(value.fields[i].name, f.type)))
   }
 
   private bindFields(type: AST.Type, scope: Scope, kind: 'param' | 'return'): void {
@@ -1379,11 +1394,7 @@ class CheckContext {
           this.error(stmt.span.start, `cannot return from inside a deferred expression`)
         }
         if (stmt.value) {
-          // For single-field named returns like (ptr: u32), check against the inner type
-          let checkType = this.currentReturnType
-          if (checkType?.kind === 'tuple' && checkType.fields.length === 1) {
-            checkType = checkType.fields[0].type
-          }
+          const checkType = this.currentReturnType ? this.returnValueType() : undefined
           if (checkType && checkType.kind !== 'void') {
             this.checkExpr(stmt.value, checkType)
           } else {

@@ -1362,6 +1362,24 @@ describe('values meeting an expected type', () => {
     expect(errs(`func g() {}\nfunc f(n: i64) -> (r: i32) { r = 1\n g() }`)).toEqual([])
   })
 
+  test('a trailing value fills several named results in order', () => {
+    const pair = 'func pair(n: u32) -> (u32, u32) => (n, n)\n'
+    const named = 'func pair(n: u32) -> (x: u32, y: u32) => (n, n)\n'
+    expect(errs(`func f(n: i32) -> (r: i32, s: i32) { (n, n) }`)).toEqual([])
+    expect(errs(`func f(n: i32) -> (r: i64, s: f64) { (n, n) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) { pair(n) }`)).toEqual([])
+    expect(errs(`${named}func f(n: u32) -> (q: u32, r: u32) { pair(n) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u64, r: u64) { pair(n) }`)).toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: bool) { pair(n) }`)).toEqual(['cannot assign (u32, u32) to (u32, bool)'])
+    expect(errs(`func f(n: u32) -> (q: u32, r: u32) { n }`)).toEqual(['cannot assign u32 to (q: u32, r: u32)'])
+  })
+
+  test('an expression body supplies named results', () => {
+    expect(errs(`func f(n: i32) -> (r: i64) => n`)).toEqual([])
+    expect(errs(`func f(n: i32) -> (r: i64, s: f64) => (n, n)`)).toEqual([])
+    expect(errs(`func f(x: f64) -> (r: i64) => x`)).toEqual(['cannot assign f64 to i64'])
+  })
+
   test('a match pattern has to be a value of the subject\'s type', () => {
     expect(errs(`func f(x: i64) -> i32 => match x { 5000000000 => 1\n _ => 0 }`)).toEqual([])
     expect(errs(`func f(x: f64) -> i32 => match x { 1 => 1\n 2.5 => 2\n _ => 0 }`)).toEqual([])

@@ -68,6 +68,31 @@ func log(x: i32) {
 }
 ```
 
+A trailing value supplies the named results in order, whatever its own fields are called, and so does an expression body. Each has to fit the result it fills: a literal's elements widen, but the fields of a value that already exists do not.
+
+```ents
+func pair(n: u32) -> (u32, u32) => (n, n + 1)
+
+func a(n: u32) -> (lo: u32, hi: u32) { pair(n) }
+func b(n: u16) -> (lo: u64, hi: f64) { (n, n) }
+func c(n: u16) -> (lo: u64, hi: f64) => (n, n)
+func d(n: i32) -> (r: i64) => n
+```
+
+```ents
+func pair(n: u32) -> (u32, u32) => (n, n + 1)
+
+func a(n: u32) -> (lo: u64, hi: u64) { pair(n) }
+func b(n: u32) -> (lo: u32, hi: u32) { n }
+func c(x: f64) -> (r: i64) => x
+```
+
+```errors
+cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields
+cannot assign u32 to (lo: u32, hi: u32)
+cannot assign f64 to i64
+```
+
 ## Operands
 
 The two operands of an arithmetic, bitwise or comparison operator end up in one type: the narrower one widens to the other's. An integer widens to a wider integer that holds all its values, `f32` to `f64`, and an integer to a float whose mantissa holds it.

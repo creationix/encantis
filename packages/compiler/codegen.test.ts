@@ -554,6 +554,17 @@ describe('expression codegen', () => {
       expect(wat).toContain('(i64.extend_i32_s (local.get $n))\n(local.set $r)')
     })
 
+    test('a trailing tuple literal fills the named results, each element widened', () => {
+      const wat = funcWat('func f(n: i32) -> (r: i64, s: f64) { (n, n) }')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $n)) (f64.convert_i32_s (local.get $n))\n(local.set $s)\n(local.set $r)')
+    })
+
+    test('an expression body is the named results: nothing is returned after it', () => {
+      const wat = funcWat('func f(n: i32) -> (r: i64, s: f64) => (n, n)')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $n)) (f64.convert_i32_s (local.get $n))')
+      expect(wat).not.toContain('local.get $r')
+    })
+
     test('a match arm block gives its value', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         0 => { let x = k + 1\n x * 2 }
