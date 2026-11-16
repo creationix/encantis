@@ -184,6 +184,23 @@ operand of '!' must be bool, not i32
 condition must be bool, not i32
 ```
 
+A bool casts to a number (0 or 1), but a number doesn't cast to a bool: say which test is meant.
+
+```ents
+func a(flag: bool) -> i32 => flag as i32
+func b(n: i32) -> bool => n != 0
+```
+
+```ents
+func a(n: i32) -> bool => n as bool
+func b(x: f64) -> bool => bool(x)
+```
+
+```errors
+cannot cast i32 to bool: compare it instead
+cannot cast f64 to bool: compare it instead
+```
+
 A shift's count is any integer type; the result has the value's type and sign.
 
 ```ents

@@ -779,7 +779,7 @@ Casts are required for:
 - Mixed signedness operations
 - Bool→integer
 
-A cast converts between numbers, bools and pointers. A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
+A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
 
 ---
 

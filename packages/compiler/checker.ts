@@ -4065,6 +4065,9 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const wide = (x: ResolvedType) => x.kind === 'primitive' && (byteSize(x) ?? 0) >= 16
   const float = (x: ResolvedType) => isFloat(x) || x.kind === 'comptime_float'
   if ((wide(f) && float(t)) || (float(f) && wide(t))) return `${cannot}: not supported yet`
+  // A bool is 0 or 1. Cutting a number down to its low bits doesn't make one
+  // (256 isn't false), and which test is meant is for the program to say.
+  if (isBool(t) && !isBool(f)) return `${cannot}: compare it instead (x != 0)`
   return null
 }
 

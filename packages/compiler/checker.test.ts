@@ -1318,6 +1318,13 @@ describe('operand types', () => {
     expect(errs(`func f(a: []u8) -> u32 => u32(a)`)).toEqual(['cannot cast []u8 to u32'])
     expect(errs(`func f(a: u128) -> f64 => a as f64`)).toEqual(['cannot cast u128 to f64: not supported yet'])
   })
+
+  test('a number is not cast to a bool', () => {
+    expect(errs(`func f(a: i32) -> bool => a as bool`)).toEqual(['cannot cast i32 to bool: compare it instead (x != 0)'])
+    expect(errs(`func f(a: f64) -> bool => bool(a)`)).toEqual(['cannot cast f64 to bool: compare it instead (x != 0)'])
+    expect(errs(`func f(p: *u8) -> bool => p as bool`)).toEqual(['cannot cast *u8 to bool: compare it instead (x != 0)'])
+    expect(errs(`func f(a: bool) -> bool => (a as bool) == (a as u8 != 0)`)).toEqual([])
+  })
 })
 
 describe('values meeting an expected type', () => {
