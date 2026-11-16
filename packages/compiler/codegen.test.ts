@@ -659,6 +659,11 @@ describe('builtin codegen', () => {
       expect(wat).not.toContain('select')
     })
 
+    test('mul_hi computes in u64: a literal is one, a narrower operand is widened', () => {
+      expect(body('func f(a: u64) -> u64 => mul_hi(a, 3)')).toBe('(call $__mul_hi (local.get $a) (i64.const 3))')
+      expect(body('func f(a: u8, b: u32) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (i64.extend_i32_u (local.get $b)))')
+    })
+
     test('a string literal operand of memcpy is placed in the data section', () => {
       const wat = modWat(`
         data buf = mut [0:u8; 16]

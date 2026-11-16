@@ -1219,6 +1219,17 @@ describe('builtins', () => {
     }`)).toEqual([])
   })
 
+  test('mul_hi takes operands that widen to u64', () => {
+    expect(types('a: u64, b: u64', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])
+    expect(types('a: u32, b: u8', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])
+    expect(types('a: u32', 'mul_hi(a, 3)')).toEqual(['u64', 'u64'])
+    expect(types('', 'mul_hi(0x8000000000000000, 4)')).toEqual(['u64', 'u64'])
+    expect(errs(`func f(a: i64, b: u64) -> u64 => mul_hi(a, b)`)).toEqual(['mul_hi: cannot assign i64 to u64'])
+    expect(errs(`func f(a: u64, b: u128) -> u64 => mul_hi(a, b)`)).toEqual(['mul_hi: cannot assign u128 to u64'])
+    expect(errs(`func f(a: u64) -> u64 => mul_hi(-1, a)`)).toEqual(['mul_hi: cannot assign int(-1) to u64'])
+    expect(errs(`func f(a: u64, x: f64) -> u64 => mul_hi(a, x)`)).toEqual(['mul_hi requires an integer type, got f64'])
+  })
+
   test('memzero needs a destination whose size is known', () => {
     expect(errs(`func f(p: *mut [4]u32) { memzero(p) }`)).toEqual([])
     expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])

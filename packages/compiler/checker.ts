@@ -2544,8 +2544,8 @@ class CheckContext {
           this.error(expr.span.start, `mul_hi expects 2 arguments, got ${args.length}`)
           return primitive('u64')
         }
-        this.checkExpr(args[0].value, primitive('u64'), 'mul_hi a')
-        this.checkExpr(args[1].value, primitive('u64'), 'mul_hi b')
+        // The product is of two u64s, so that is the type the operands meet at.
+        this.builtinOperandType(expr, name, args, 'integer', primitive('u64'))
         return primitive('u64')
       }
 
@@ -2557,14 +2557,16 @@ class CheckContext {
   // Types the operands of a numeric builtin together, the way a binary operator
   // types its own: typed operands meet at the wider type, and a literal takes
   // that type wherever it stands, so max(1.0, x) is max(x, 1.0). With only
-  // literals it's their default type. Records the type the builtin computes in
-  // for codegen and returns the type of its result, for a builtin that returns
-  // one of its operands.
+  // literals it's their default type. A builtin that computes in one type
+  // only (mul_hi) gives it as `fixed`: every operand has to widen to it.
+  // Records the type the builtin computes in for codegen and returns the type
+  // of its result, for a builtin that returns one of its operands.
   private builtinOperandType(
     expr: AST.CallExpr,
     name: string,
     args: { value: AST.Expr }[],
     kind: 'float' | 'integer' | 'numeric',
+    fixed: ResolvedType | null = null,
   ): ResolvedType {
     const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
     const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
@@ -2572,7 +2574,7 @@ class CheckContext {
     const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
     const types = args.map((arg) => this.inferExpr(arg.value))
 
-    let common: ResolvedType | null = null
+    let common = fixed
     for (const [i, type] of types.entries()) {
       if (isComptime(type)) continue
       if (!accepts(type)) {
@@ -2580,7 +2582,7 @@ class CheckContext {
         return fallback
       }
       const plain = withoutRange(type)
-      if (common === null || (!typeAssignable(common, plain) && typeAssignable(plain, common))) {
+      if (common === null || (!fixed && !typeAssignable(common, plain) && typeAssignable(plain, common))) {
         common = plain
       } else if (!typeAssignable(common, plain)) {
         this.error(args[i].value.span.start, `${name}: cannot assign ${typeToString(type)} to ${typeToString(common)}`)

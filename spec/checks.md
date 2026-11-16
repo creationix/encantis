@@ -353,6 +353,23 @@ runtime index on *[4]u8 requires 'if let' or '??'
 runtime index on *[4]u8 requires 'if let' or '??'
 ```
 
+`mul_hi` multiplies two `u64`s: a narrower unsigned operand widens, a signed one doesn't.
+
+```ents
+func high(a: u32, b: u64) -> u64 => mul_hi(a, b)
+func scaled(a: u64) -> u64 => mul_hi(a, 0x8000000000000000)
+```
+
+```ents
+func f(a: i64, b: u64) -> u64 => mul_hi(a, b)
+func g(a: u64) -> u64 => mul_hi(a, -1)
+```
+
+```errors
+mul_hi: cannot assign i64 to u64
+mul_hi: cannot assign int(-1) to u64
+```
+
 `memcpy` reads from a pointer to an array; `memzero` needs a destination whose size is known.
 
 ```ents

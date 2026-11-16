@@ -925,9 +925,9 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 
     case 'mul_hi': {
       if (args.length !== 2) return null
-      const u64 = RT.primitive('u64')
-      const a = builtinOperandToWat(args[0].value, u64, ctx)
-      const b = builtinOperandToWat(args[1].value, u64, ctx)
+      const type = builtinOperandType(expr, ctx)
+      const a = builtinOperandToWat(args[0].value, type, ctx)
+      const b = builtinOperandToWat(args[1].value, type, ctx)
       ctx.needsMulHi = true
       return `(call $__mul_hi ${a} ${b})`
     }
