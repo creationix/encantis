@@ -1961,15 +1961,17 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
     // Generate local.set for each field in REVERSE order (WASM stack is LIFO)
     // The tuple fields are pushed in order, so we pop in reverse
+    // A multi-value field (a slice) sets each of its locals, last part first.
     const sets: string[] = []
     for (let i = tupleType.fields.length - 1; i >= 0; i--) {
       const field = tupleType.fields[i]
-      const varName = field.name !== null ? fieldToVar.get(field.name) : undefined
-      if (varName) {
-        sets.push(`(local.set $${varName})`)
-      } else {
-        // Field not captured by pattern - need to drop it
-        sets.push('(drop)')
+      const key = field.name ?? `_${i}`
+      const varName = fieldToVar.get(key)
+      const parts = typeToWasm(field.type).length
+      const localNames = varName ? (ctx.locals.get(varName) ?? [varName]) : null
+      for (let j = parts - 1; j >= 0; j--) {
+        // A field not captured by the pattern is dropped.
+        sets.push(localNames ? `(local.set $${localNames[j] ?? localNames[0]})` : '(drop)')
       }
     }
 
@@ -2617,14 +2619,15 @@ function collectLocals(
           const field = tupleType.fields.find((f) => f.name === fieldName)
           if (!field) continue
 
-          const wasmTypes = typeToWasm(field.type)
-          if (wasmTypes.length === 1) {
-            locals.push({ name, type: wasmTypes[0] })
+          // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
+          const flat = flattenType(field.type)
+          if (flat.length === 1 && flat[0].suffix === '') {
+            locals.push({ name, type: flat[0].wasmType })
             ctx.locals.set(name, [name])
           } else {
-            const names = wasmTypes.map((wt, i) => {
-              const localName = `${name}_${i}`
-              locals.push({ name: localName, type: wt })
+            const names = flat.map((f, i) => {
+              const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
+              locals.push({ name: localName, type: f.wasmType })
               return localName
             })
             ctx.locals.set(name, names)

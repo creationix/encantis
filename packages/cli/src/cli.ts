@@ -9,6 +9,7 @@ import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
+import { createTestHost } from '@encantis/compiler/test-host'
 import { resolve } from 'node:path'
 import wabt from 'wabt'
 
@@ -576,11 +577,9 @@ switch (command) {
       const mod = await WebAssembly.compile(buffer)
       const source = entryMod?.source ?? ''
       let failedOffset = -1
-      const instance = await WebAssembly.instantiate(mod, {
-        test: {
-          __assert_fail: (offset: number) => { failedOffset = offset },
-        },
-      })
+      const host = createTestHost(mod, (offset) => { failedOffset = offset })
+      const instance = await WebAssembly.instantiate(mod, host.imports)
+      host.attach(instance)
 
       for (const [t, name] of testNames.entries()) {
         const title = testTitles[t]
