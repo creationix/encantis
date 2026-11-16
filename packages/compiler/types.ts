@@ -1120,18 +1120,19 @@ export function isFloatIntConversion(from: PrimitiveName, to: PrimitiveName): bo
   return (fromIsFloat && toIsInt) || (fromIsInt && toIsFloat)
 }
 
-// Get byte offset of a field within a compound type stored in memory
-export function fieldByteOffset(t: ResolvedType, fieldName: string): number | null {
+// Get byte offset of a field within a compound type stored in memory. A field
+// is found by name, or by position for a number (t.0, t.1).
+export function fieldByteOffset(t: ResolvedType, field: string | number): number | null {
   const u = unwrap(t)
   if (u.kind === 'slice') {
-    if (fieldName === 'ptr') return 0
-    if (fieldName === 'len') return 4
+    if (field === 'ptr') return 0
+    if (field === 'len') return 4
     return null
   }
   if (u.kind === 'tuple') {
     let offset = 0
-    for (const f of u.fields) {
-      if (f.name === fieldName) return offset
+    for (const [i, f] of u.fields.entries()) {
+      if (typeof field === 'number' ? i === field : f.name === field) return offset
       const size = byteSize(f.type)
       if (size === null) return null
       offset += size
@@ -1139,6 +1140,61 @@ export function fieldByteOffset(t: ResolvedType, fieldName: string): number | nu
     return null
   }
   return null
+}
+
+// One wasm value of a type as it lies in linear memory: where it starts, and
+// the scalar it is read and written as.
+export interface MemoryPart {
+  offset: number
+  type: PrimitiveRT | PointerRT
+}
+
+// A value type in memory, as the scalars it flattens to, in the order of its
+// wasm values (typeToWasm). Fields are packed with no padding, so the offsets
+// agree with byteSize and fieldByteOffset. Null for a type with no fixed size.
+export function memoryParts(t: ResolvedType): MemoryPart[] | null {
+  const u = unwrap(t)
+  switch (u.kind) {
+    case 'primitive': {
+      const size = primitiveByteSize(u)
+      if (size === null) return null
+      // Wide integers are 64-bit limbs, least significant first.
+      if (size > 8) return Array.from({ length: size / 8 }, (_, i) => ({ offset: i * 8, type: primitive('u64') }))
+      return [{ offset: 0, type: u }]
+    }
+    case 'pointer':
+      return [{ offset: 0, type: u }]
+    case 'slice':
+      return [
+        { offset: 0, type: manyPointer(u.element, u.mutable) },
+        { offset: 4, type: primitive('u32') },
+      ]
+    case 'tuple': {
+      const parts: MemoryPart[] = []
+      let offset = 0
+      for (const f of u.fields) {
+        const fieldParts = memoryParts(f.type)
+        const size = byteSize(f.type)
+        if (fieldParts === null || size === null) return null
+        for (const p of fieldParts) parts.push({ offset: offset + p.offset, type: p.type })
+        offset += size
+      }
+      return parts
+    }
+    case 'array': {
+      if (!isValueArray(u)) return null
+      const elemParts = memoryParts(u.element)
+      const stride = byteSize(u.element)
+      if (elemParts === null || stride === null) return null
+      return Array.from({ length: u.sizes?.[0] as number }, (_, i) =>
+        elemParts.map((p) => ({ offset: i * stride + p.offset, type: p.type })),
+      ).flat()
+    }
+    case 'void':
+      return []
+    default:
+      return null
+  }
 }
 
 // Check if comptime int value fits in a given integer type
