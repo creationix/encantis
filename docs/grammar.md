@@ -412,6 +412,7 @@ let x = 42                    // Type inferred
 let y: i32 = 100              // Explicit type
 let point = (x: 1.0, y: 2.0)  // Struct binding
 let (a, b) = (10, 20)         // Destructuring
+let q, r = divmod(17, 5)      // Multiple values by position, no parentheses
 ```
 
 ### Set (Assignment with Declaration)

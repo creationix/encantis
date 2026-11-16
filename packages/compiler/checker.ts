@@ -1506,6 +1506,9 @@ class CheckContext {
           this.error(pattern.span.start, `cannot destructure non-tuple type: ${typeToString(type)}`)
           break
         }
+        // Codegen reads the whole tuple's type here, for positional and named
+        // elements alike.
+        this.types.set(typeKey(pattern.span.start, pattern.kind), unwrappedType)
 
         for (const element of pattern.elements) {
           if (element.kind === 'named') {
@@ -1518,7 +1521,6 @@ class CheckContext {
             // binding is null for shorthand (x:) - use field name as variable name
             const varName = element.binding ?? element.field
             this.currentScope.symbols.set(varName, { kind: 'local', type: tupleField.type })
-            this.types.set(typeKey(pattern.span.start, pattern.kind), type)
             this.recordDefinition(varName, pattern.span.start)
           } else {
             // Positional pattern: (a, b) - match by index

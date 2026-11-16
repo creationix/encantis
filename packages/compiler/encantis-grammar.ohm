@@ -195,9 +195,14 @@ Encantis {
 
   assert = "assert" ~identChar
 
-  LetStmt = let PatternWithType Assign?
+  // let a, b = f() binds multiple values by position: the same as let (a, b) = f().
+  LetStmt = let MultiPattern Assign       -- multi
+          | let PatternWithType Assign?   -- single
 
-  SetStmt = set PatternWithType Assign
+  SetStmt = set MultiPattern Assign       -- multi
+          | set PatternWithType Assign    -- single
+
+  MultiPattern = ident "," NonemptyListOf<ident, ",">
 
   WhileStmt = while Expr Body
 
