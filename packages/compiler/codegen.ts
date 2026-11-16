@@ -1400,14 +1400,12 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
   if (!elemType) throw new Error('Missing element type for if-let')
 
-  const thenBody = bodyToWat(expr.thenBranch, ctx)
+  // As a value, each branch leaves its last expression on the stack.
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
-  let elseBody = ''
-  if (expr.else_) {
-    elseBody = bodyToWat(expr.else_, ctx)
-  }
+  const thenBody = bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0)
+  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
 
   // Bind helper
   const found = ctx.locals.get(pattern.name)
@@ -1506,27 +1504,25 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const hasResult = resultTypes.length > 0
 
   const thenBody = bodyToWat(expr.thenBranch, ctx, hasResult)
-
-  // Handle elif chains
-  let elseBody = ''
-  if (expr.elifs.length > 0) {
-    // Build nested if/else for elifs
-    let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
-    for (let i = expr.elifs.length - 1; i >= 0; i--) {
-      const elif = expr.elifs[i]
-      const elifCond = exprToWat(elif.condition, ctx)
-      const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
-      current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
-    }
-    elseBody = current
-  } else if (expr.else_) {
-    elseBody = bodyToWat(expr.else_, ctx, hasResult)
-  }
+  const elseBody = elseToWat(expr, ctx, hasResult, resultStr)
 
   if (elseBody) {
     return `(if ${resultStr} ${cond} (then ${thenBody}) (else ${elseBody}))`
   }
   return `(if ${resultStr} ${cond} (then ${thenBody}))`
+}
+
+// What an if or if-let does when its first test fails: the elif branches,
+// as nested ifs, then the else branch. Empty when it has neither.
+function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, resultStr: string): string {
+  let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
+  for (let i = expr.elifs.length - 1; i >= 0; i--) {
+    const elif = expr.elifs[i]
+    const elifCond = exprToWat(elif.condition, ctx)
+    const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
+    current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
+  }
+  return current
 }
 
 function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {

@@ -258,6 +258,19 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
+An `if let` is a value too, and goes on to `elif` and `else` branches like any `if`.
+
+```ents
+data scores = [95, 87, 42]:*[_]i32
+
+func a(i: u32) -> i32 {
+  let s = if let score = scores[i] { score } else { -1 }
+  return s
+}
+
+func b(s: []u8, i: u32, wide: i64) -> i64 => if let x = s[i] { x } elif i == 0 { 0 } else { wide }
+```
+
 The elements of an array literal settle on a type the same way: each widens to the declared element type, or, without one, to the widest of them.
 
 ```ents

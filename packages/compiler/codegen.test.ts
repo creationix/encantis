@@ -620,6 +620,19 @@ describe('expression codegen', () => {
       expect(wat).toContain('then')
       expect(wat).toContain('else')
     })
+
+    test('an if let used as a value leaves the value of each branch', () => {
+      const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
+      expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)
+      expect(wat).not.toContain('(drop)')
+    })
+
+    test('an if let keeps its elif branches', () => {
+      const wat = funcWat(`func f(s: []u8, i: u32, c: bool) -> i32 {
+        if let b = s[i] { return 1 } elif c { return 2 } else { return 3 }
+      }`)
+      expect(wat).toContain('(else (if  (local.get $c) (then (i32.const 2) (return)) (else (i32.const 3) (return))))')
+    })
   })
 })
 
