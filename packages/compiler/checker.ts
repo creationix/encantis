@@ -2309,7 +2309,7 @@ class CheckContext {
     // its field, by position or by name (Point(x: 1, y: 2)), so literals and
     // expressions inside it get concrete types.
     if (calleeType.kind === 'tuple') {
-      const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+      const args = expr.args
       if (args.length !== calleeType.fields.length) {
         this.error(
           expr.span.start,
@@ -2317,12 +2317,15 @@ class CheckContext {
         )
       }
       args.forEach((arg, i) => {
+        // `x:` is shorthand for `x: x`: check the variable it names.
+        const value: AST.Expr | null = arg.value ?? (arg.name ? { kind: 'IdentExpr', name: arg.name, span: arg.span } : null)
+        if (!value) return
         const field = arg.name ? calleeType.fields.find((f) => f.name === arg.name) : calleeType.fields[i]
         if (field) {
-          this.checkExpr(arg.value, field.type, `field ${field.name ?? i}`)
+          this.checkExpr(value, field.type, `field ${field.name ?? i}`)
         } else {
           if (arg.name) this.error(arg.span.start, `field '${arg.name}' not found in ${typeToString(calleeType)}`)
-          this.inferExpr(arg.value)
+          this.inferExpr(value)
         }
       })
       return calleeType

@@ -43,3 +43,15 @@ test "a three-field constructor with a negative literal" {
   assert m.to == -1
   assert m.order == 6
 }
+
+func shorthand(x: i32, y: i32) -> Point => Point(x:, y:)
+func mixed(x: i32) -> Point => Point(y: 5, x:)
+
+test "shorthand fields" {
+  let p = shorthand(3, 4)
+  assert p.x == 3
+  assert p.y == 4
+  let q = mixed(7)
+  assert q.x == 7
+  assert q.y == 5
+}
