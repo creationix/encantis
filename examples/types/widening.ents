@@ -150,3 +150,28 @@ test "a shift takes a count of any integer type" {
   assert arithmetic(-16, 2) == -4
   assert counted(1, 40) == 1099511627776
 }
+
+// The elements of an array literal widen to the element type, in registers
+// and in the data section.
+data weights = [1:f64, 2, 3.5]
+data wide: []i64 = [1, -2, 5000000000]
+
+func in_registers(n: i32) -> f64 {
+  let a: [3]f64 = [n, 2, 0.5]
+  return a[0] + a[1] + a[2]
+}
+
+func repeated() -> i64 {
+  let a: [2]i64 = [7; 2]
+  return a[0] + a[1]
+}
+
+func in_data() -> f64 => weights[0] + weights[1] + weights[2]
+func wide_sum() -> i64 => wide.ptr[0] + wide.ptr[1] + wide.ptr[2]
+
+test "array literal elements widen to the element type" {
+  assert in_registers(4) == 6.5
+  assert repeated() == 14
+  assert in_data() == 6.5
+  assert wide_sum() == 4999999999
+}

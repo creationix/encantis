@@ -2880,6 +2880,14 @@ class CheckContext {
         const value = argValue(element)
         if (value) this.coerce(value, from.fields[i].type, to.fields[i].type, prefix)
       }
+    } else if ((expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') && from.kind === 'comptime_array' && to.kind === 'array') {
+      // So is an array literal held in registers. (One that goes to the data
+      // section has had its elements checked against the element type.)
+      const elementType = this.peelArraySize(to)
+      for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        const type = this.exprTypes.get(element)
+        if (type) this.coerce(element, type, elementType, prefix)
+      }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
       // the stack: its fields can't be widened in place.

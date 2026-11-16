@@ -492,6 +492,27 @@ describe('expression codegen', () => {
       expect(funcWat('func f(x: f64) -> bool => x > 0')).toContain('(f64.gt (local.get $x) (f64.const 0))')
     })
 
+    test('the elements of an array literal', () => {
+      const wat = funcWat(`func f(n: i32) -> f64 {
+        let a: [2]f64 = [n, 2]
+        let b: [2]i64 = [0; 2]
+        return a[0]
+      }`)
+      expect(wat).toContain('(local.set $a_0 (f64.convert_i32_s (local.get $n)))')
+      expect(wat).toContain('(local.set $a_1 (f64.const 2))')
+      expect(wat).toContain('(local.set $b_1 (i64.const 0))')
+    })
+
+    test('an integer literal is float data in a float array', () => {
+      const wat = modWat(`
+        export memory 1
+        data halves = [1:f32, 2, 3]
+        export func f() -> f32 => halves[1]
+      `)
+      // 1.0, 2.0, 3.0 as little-endian f32: 0000803f 00000040 00004040
+      expect(wat).toContain('"\\00\\00\\80?\\00\\00\\00@\\00\\00@@"')
+    })
+
     test('a constant with a fixed form is converted like a value', () => {
       const wat = funcWat('func f(p: *[4]i32) -> i64 { let n: i64 = p.len\n return n }')
       expect(wat).toContain('(local.set $n (i64.extend_i32_s (i32.const 4)))')

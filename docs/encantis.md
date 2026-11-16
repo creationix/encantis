@@ -673,7 +673,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 
 - **Operators.** The narrower operand of an arithmetic, bitwise or comparison operator widens to the other's type. That is the type of the result (`bool` for a comparison).
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
-- **Calls and results.** Arguments, struct constructor fields, tuple elements, `return` values and expression bodies.
+- **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
 
 ```ents

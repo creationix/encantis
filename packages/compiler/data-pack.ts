@@ -703,7 +703,8 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
 
   if (lit.kind === 'int') {
     if (elementType.kind === 'primitive') {
-      const bytes = serializeInt(lit.value, elementType.name)
+      // An integer literal can be a float element: [1:f64, 2, 3].
+      const bytes = serializeInt(lit.value, elementType.name) ?? serializeFloat(Number(lit.value), elementType.name)
       if (bytes) return bytes
     }
     // Default comptime_int to i32
