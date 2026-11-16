@@ -251,6 +251,38 @@ export func c(x: u64, c: bool) -> u64 => pick(c, x, if c { 1 } else { 2 })`
     expect(result.literals).toHaveLength(2)
   })
 
+  test('() decides nothing: an argument without a value is an error at the argument', () => {
+    const source = `type Unit = ()
+func nothing() { }
+func id(comptime T: type, a: T) -> T => a
+func at(comptime T: type, p: *T) -> u32 => p as u32
+export func a() { id(nothing()) }
+export func b() { id(()) }
+export func c(u: Unit) { id(Unit, u) }
+export func d(p: *Unit) -> u32 => at(p)`
+    expect(errorsOf(source)).toEqual([
+      "argument 1 of 'id' has no value",
+      "argument 1 of 'id' has no value",
+      "type argument T of 'id' cannot be (): it has no values",
+      "cannot infer T for 'at': write the type argument, as in at(u32, ...)",
+    ])
+    expect(check(source).instances).toEqual([])
+  })
+
+  describe('an if expression ending in an operator, as the argument that decides', () => {
+    // 0.2.1 gives such an if the type () when nothing says what it should be:
+    // let m = if c { x + 1 } else { y } is "cannot assign () to u32" there too.
+    const source = `${MAX}export func f(c: bool, x: u32, y: u32) -> u32 => max(if c { x + 1 } else { y }, y)`
+
+    test('is one error, at the argument', () => {
+      expect(errorsOf(source)).toEqual(["argument 1 of 'max' has no value"])
+    })
+
+    test.todo('decides T (needs claude/operand-types)', () => {
+      expect(instancesOf(source)).toEqual(['max<u32>'])
+    })
+  })
+
   test('a let inside the argument that decides is declared once', () => {
     const source = `${MAX}export func a(c: bool, x: u32, y: u32) -> u32 => max(if c {
   let t: u32 = x * 2

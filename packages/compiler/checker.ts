@@ -3648,15 +3648,19 @@ class CheckContext {
   private inferTypeArgs(
     expr: AST.CallExpr,
     name: string,
-    pairs: { param: AST.Field; arg: AST.Expr }[],
+    pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
     typeParams: string[],
   ): Map<string, ResolvedType> | null {
     const bound = new Map<string, ResolvedType>()
     const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
-    for (const { param, arg } of pairs) {
+    for (const { param, arg, index } of pairs) {
       if (!mentionsUnbound(param.type, typeParams, bound)) continue
       const type = this.peek(arg)
       if (type === RECOVERY) return null
+      if (isUnit(type)) {
+        this.error(arg.span.start, `argument ${index + 1} of '${name}' has no value`)
+        return null
+      }
       if (hasOwnType(type)) matchType(param.type, type, typeParams, bound)
       else untyped.push({ param, arg, type })
     }
@@ -3730,6 +3734,10 @@ class CheckContext {
     if (this.errorsReported > before) return null
     if (!hasOwnType(type)) {
       this.error(arg.span.start, `type argument ${param.ident} of '${callee}' must be a concrete type`)
+      return null
+    }
+    if (isUnit(type)) {
+      this.error(arg.span.start, `type argument ${param.ident} of '${callee}' cannot be (): it has no values`)
       return null
     }
     return { kind: 'type', type }
@@ -4094,6 +4102,14 @@ function hasOwnType(type: ResolvedType): boolean {
   }
 }
 
+// Whether a type has no values: (), which is also what a call of a function
+// without a result has. Nothing can be passed for a parameter of this type, so
+// a type parameter is never bound to it.
+function isUnit(type: ResolvedType): boolean {
+  const t = unwrap(type)
+  return t.kind === 'void' || (t.kind === 'tuple' && t.fields.length === 0)
+}
+
 // The name of a type that is referred to but not resolved yet, if there is
 // one. A type that refers to itself keeps a forward reference inside its own
 // alias; that one is resolved.
@@ -4158,8 +4174,8 @@ function matchType(
   const u = unwrap(actual)
   switch (pattern.kind) {
     case 'TypeRef':
-      // A later argument never re-decides.
-      if (!typeParams.includes(pattern.name) || bound.has(pattern.name)) return
+      // A later argument never re-decides, and () decides nothing.
+      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual)) return
       // The argument's own type loses a range it was only known to lie in:
       // a loop counter that is a u32#12 here decides u32.
       bound.set(pattern.name, depth === 0 && u.kind === 'primitive' && u.max !== undefined ? primitive(u.name) : actual)
