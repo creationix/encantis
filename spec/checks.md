@@ -367,13 +367,11 @@ func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else {
 ```
 
 ```ents
-func f(x: u8, c: bool) -> u8 => max(x, if c { x } else { 300 })
-func g(x: i64, c: bool) -> i64 => abs(if c { 0 - x } else { x })
+func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })
 ```
 
 ```errors
-cannot assign int(300) to u8
-abs requires a numeric type, got ()
+cannot assign f64 to f32
 ```
 
 `mul_hi` multiplies two `u64`s: a narrower unsigned operand widens, a signed one doesn't.

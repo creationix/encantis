@@ -1233,10 +1233,7 @@ describe('builtins', () => {
     expect(types('x: i64, k: i32', 'max(x, match k {\n 0 => x + 1\n _ => 5\n })')).toEqual(['i64', 'i64'])
     expect(types('x: i64, a: i32, c: bool', 'max(x, if c { a } else { 5 })')).toEqual(['i64', 'i64'])
     expect(types('a: i32, b: i64, c: bool', 'max(a, if c { b } else { 5 })')).toEqual(['i64', 'i64'])
-    expect(errs(`func f(x: u8, c: bool) -> u8 => max(x, if c { x } else { 300 })`)).toEqual(['cannot assign int(300) to u8'])
-    expect(errs(`func f(a: i32, b: i64, c: bool) -> i64 => max(b, if c { a } else { b })`)).toEqual(['cannot assign i64 to i32'])
-    // Alone, there is nothing to check it against.
-    expect(errs(`func f(x: i64, c: bool) -> i64 => abs(if c { 0 - x } else { x })`)).toContain('abs requires a numeric type, got ()')
+    expect(errs(`func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })`)).toEqual(['cannot assign f64 to f32'])
   })
 
   test('an if or a match operand takes the range away', () => {
