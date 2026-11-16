@@ -570,7 +570,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   }
 
   // Comptime int can coerce to pointer types (raw address)
-  if (s.kind === 'comptime_int' && (t.kind === 'pointer' || t.kind === 'manyPointer' || t.kind === 'slice')) {
+  if (s.kind === 'comptime_int' && (t.kind === 'pointer' || t.kind === 'slice')) {
     return lossless(false)
   }
 

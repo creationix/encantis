@@ -2,7 +2,7 @@
 // Used by both the LSP server and the CLI.
 
 import type * as AST from './ast'
-import type { TypeCheckResult, Symbol } from './checker'
+import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
 import { typeKey, typecheck } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
@@ -365,7 +365,7 @@ function typeCostAnnotation(type: ResolvedType): string {
   return ''
 }
 
-function symbolTypeString(sym: Symbol): string {
+function symbolTypeString(sym: CheckSymbol): string {
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
   if (sym.kind === 'type') return base

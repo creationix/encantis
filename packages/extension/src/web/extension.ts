@@ -4,11 +4,7 @@
 // =============================================================================
 
 import * as vscode from 'vscode';
-import {
-  LanguageClient,
-  type LanguageClientOptions,
-  ServerOptions,
-} from 'vscode-languageclient/browser';
+import { LanguageClient, type LanguageClientOptions } from 'vscode-languageclient/browser';
 
 import { WAT_SCHEME, WatPreviewProvider } from './watPreviewProvider';
 
@@ -22,7 +18,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const serverMain = vscode.Uri.joinPath(context.extensionUri, 'dist/web/server.js');
   
   const worker = new Worker(serverMain.toString());
-  const serverOptions: ServerOptions = () => Promise.resolve(worker);
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: 'file', language: 'encantis' }],
@@ -33,8 +28,8 @@ export function activate(context: vscode.ExtensionContext): void {
   client = new LanguageClient(
     'encantisLanguageServer',
     'Encantis Language Server',
-    serverOptions,
-    clientOptions
+    clientOptions,
+    worker
   );
 
   client.start();
