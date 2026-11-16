@@ -633,6 +633,24 @@ export func f(a: []u8, b: []u8) -> bool => same(a, b)`
     expect(errorsOf(eq)).toEqual(['operator == is not defined for []u8, in same(T = []u8)'])
   })
 
+  // Checked for the two operands of an operator only. claude/operand-types
+  // checks unary operators and compound assignment, for hand-written code as
+  // for instances; until it lands these pass the checker and compile to an
+  // instruction that takes one value for an operand that is two.
+  test.todo('a unary operator or compound assignment the type argument does not have is an error (needs claude/operand-types)', () => {
+    const source = `type Pt = (q: i32, r: i32)
+func neg(comptime T: type, a: T) -> T => -a
+func twice(comptime T: type, a: T) -> T {
+  let b = a
+  b += a
+  return b
+}
+func not(comptime T: type, a: T) -> bool => !a
+export func f(p: Pt) -> Pt => twice(neg(p))
+export func g(p: Pt) -> bool => not(p)`
+    expect(errorsOf(source)).toHaveLength(3)
+  })
+
   test('a type parameter cannot construct yet', () => {
     const source = `func make(comptime T: type, x: i32) -> T => T(x, x)
 export func f() -> (i32, i32) => make((i32, i32), 1)`

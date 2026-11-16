@@ -1150,6 +1150,17 @@ describe('operands of operators', () => {
     `)).toEqual(['operator > is not defined for Pt', 'operator == is not defined for Pt'])
   })
 
+  test('function values can be told apart, and have no order or arithmetic', () => {
+    // f == g compiled to one i32.eq on 0.2.1, and still does.
+    expect(errs(`
+      func same(f: (i32) -> i32, g: (i32) -> i32) -> bool => f == g
+      func differ(f: (i32) -> i32, g: (i32) -> i32) -> bool => f != g
+    `)).toEqual([])
+    expect(errs(`
+      func a(f: (i32) -> i32, g: (i32) -> i32) -> bool => f < g
+    `)).toEqual(['operator < is not defined for func(i32) -> i32'])
+  })
+
   test('numbers, bools and pointers keep their operators', () => {
     expect(errs(`
       type Pt = (q: i32, r: i32)

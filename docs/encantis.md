@@ -1828,7 +1828,7 @@ cannot infer T for 'zero': write the type argument, as in zero(u32)
 
 A generic states no requirements. It uses its type parameter, and each use is checked for the concrete type when the generic is instantiated. There are no traits or interfaces: what a type must provide is whatever the generic's body does with it.
 
-Operators are requirements. `<`, `>`, `<=`, `>=` and arithmetic exist for numbers; `==` and `!=` for numbers, `bool` and pointers. None is defined for structs, tuples, slices or arrays:
+Operators are requirements. The two operands of an operator are single values: numbers, `bool`s and pointers, and for `==` and `!=` also function values. No operator is defined for structs, tuples, slices or arrays:
 
 ```ents
 type Pt = (q: i32, r: i32)

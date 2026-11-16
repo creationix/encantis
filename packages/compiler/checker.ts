@@ -2808,11 +2808,13 @@ class CheckContext {
 
     // Operators exist for single values: numbers, bools and pointers. A struct,
     // a slice or an array has none, and codegen would emit an instruction that
-    // takes one value for an operand that is several.
+    // takes one value for an operand that is several. A function value is one
+    // value, and whether two are the same function is a question to ask.
     if (expr.op !== '&&' && expr.op !== '||') {
+      const identity = expr.op === '==' || expr.op === '!='
       const sides: [ResolvedType, ResolvedType][] = [[leftType, left], [rightType, right]]
       for (const [written, t] of sides) {
-        if (t.kind === 'tuple' || t.kind === 'slice' || t.kind === 'array' || t.kind === 'func' || t.kind === 'void') {
+        if (t.kind === 'tuple' || t.kind === 'slice' || t.kind === 'array' || t.kind === 'void' || (t.kind === 'func' && !identity)) {
           this.error(expr.span.start, `operator ${expr.op} is not defined for ${typeToString(written)}`)
           return ['==', '!=', '<', '>', '<=', '>='].includes(expr.op) ? primitive('bool') : RECOVERY
         }
