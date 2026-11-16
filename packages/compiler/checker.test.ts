@@ -975,6 +975,26 @@ describe('typecheck', () => {
   })
 })
 
+describe('globals', () => {
+  test('a global keeps its pointer annotation over a literal initializer', () => {
+    const result = checkModule(`
+      type Slot = (key: u32, value: u32)
+      global words: [*]mut u32 = 0
+      global slots: [*]mut Slot = 0
+      func f(p: u32) -> u32 {
+        words = p as [*]mut u32
+        slots = p as [*]mut Slot
+        words[1] = 5
+        slots[0].value = words[1]
+        return slots[0].value
+      }
+    `)
+    expect(result.errors).toHaveLength(0)
+    const words = result.symbols.get('words')
+    expect(words?.kind === 'global' && typeToString(words.type)).toBe('[*]mut u32')
+  })
+})
+
 describe('defer', () => {
   test('a deferred expression cannot return', () => {
     const result = checkModule(`func f(n: u32) { defer if n > 0 { return } }`)

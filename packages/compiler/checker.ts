@@ -1132,8 +1132,14 @@ class CheckContext {
     if (decl.type) {
       type = this.resolveType(decl.type)
       if (decl.value) {
-        // Use bidirectional type checking to fill in inferred sizes
-        type = this.checkExpr(decl.value, type)
+        // As in checkLetStmt: check the value against the annotation, and take
+        // the checked type only when it fills in an inferred size. Otherwise the
+        // annotation stands, so `global p: [*]mut i32 = 0` is a pointer, not
+        // the literal's i32.
+        const resolved = this.checkExpr(decl.value, type)
+        if (this.hasInferredSize(type) && this.hasConcreteSize(resolved)) {
+          type = resolved
+        }
       }
     } else if (decl.value) {
       type = this.inferExpr(decl.value)
