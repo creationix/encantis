@@ -42,6 +42,7 @@ function exprWat(code: string): string {
 
   const ctx = {
     types: checkResult.types,
+    exprTypes: checkResult.exprTypes,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -77,6 +78,7 @@ function stmtWat(code: string): string {
 
   const ctx = {
     types: checkResult.types,
+    exprTypes: checkResult.exprTypes,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -344,6 +346,55 @@ describe('expression codegen', () => {
     test('64-bit signed division uses i64.div_s', () => {
       const wat = funcWat('func div(a: i64, b: i64) -> i64 => a / b')
       expect(wat).toContain('i64.div_s')
+    })
+  })
+
+  // An operand is typed by its own node: a nested expression that starts or
+  // ends where its parent does must not take the parent's type.
+  describe('nested operands keep their own types', () => {
+    test('signed division on the right of a comparison', () => {
+      const wat = funcWat('func f(a: i32, b: i32, c: i32) -> bool => a < b / c')
+      expect(wat).toContain('(i32.lt_s (local.get $a) (i32.div_s (local.get $b) (local.get $c)))')
+    })
+
+    test('64-bit addition on the right of a comparison', () => {
+      const wat = funcWat('func f(a: i64, b: i64, c: i64) -> bool => a < b + c')
+      expect(wat).toContain('(i64.lt_s (local.get $a) (i64.add (local.get $b) (local.get $c)))')
+    })
+
+    test('float multiplication on the right of a comparison', () => {
+      const wat = funcWat('func f(a: f64, b: f64) -> bool => a >= 0.72 * b')
+      expect(wat).toContain('(f64.ge (local.get $a) (f64.mul (f64.const 0.72) (local.get $b)))')
+    })
+
+    test('a narrower product is computed in its own type, then widened', () => {
+      const wat = funcWat('func f(a: i64, b: i32, c: i32) -> i64 => a + b * c')
+      expect(wat).toContain('(i64.add (local.get $a) (i64.extend_i32_s (i32.mul (local.get $b) (local.get $c))))')
+    })
+
+    test('a narrower sum on the right of a comparison widens with its sign', () => {
+      const wat = funcWat('func f(a: i64, b: i32, c: i32) -> bool => a < b + c')
+      expect(wat).toContain('(i64.lt_s (local.get $a) (i64.extend_i32_s (i32.add (local.get $b) (local.get $c))))')
+    })
+
+    test('comparisons on both sides of a logical operator', () => {
+      const wat = funcWat('func f(a: i64, b: i64) -> bool => a == b && a < b - 1')
+      expect(wat).toContain('(i64.eq (local.get $a) (local.get $b))')
+      expect(wat).toContain('(i64.lt_s (local.get $a) (i64.sub (local.get $b) (i64.const 1)))')
+    })
+
+    test('a member expression argument is found by a builtin', () => {
+      const wat = funcWat('func f(a: []u8, b: []u8) -> u32 => min(a.len, b.len)')
+      expect(wat).toContain('i32.lt_u')
+    })
+
+    test('a compound assignment reads the type of an operator value', () => {
+      const wat = funcWat(`func f(a: i32, b: i32) -> i64 {
+        let x: i64 = 1
+        x += a * b
+        return x
+      }`)
+      expect(wat).toContain('(i64.add (local.get $x) (i64.extend_i32_s (i32.mul (local.get $a) (local.get $b))))')
     })
   })
 

@@ -70,17 +70,14 @@ export interface Scope {
 // === Type Key Helper ===
 
 /**
- * Create a unique key for the types Map.
- * Uses "offset:kind" format to avoid collisions when nested expressions
- * share the same start offset (e.g., `a > b` where both the binary expr
- * and identifier `a` start at the same position).
+ * The key of a binding or declaration (a pattern, a field, a loop variable)
+ * in the types Map: "offset:kind". Each of those has a source offset of its
+ * own. Expressions don't (`a < b / c` and its `b / c` end together, `x as T`
+ * starts where `x` does, and a def's value is pasted at each use with its
+ * offsets unchanged), so their types are keyed by node, in exprTypes.
  */
 export function typeKey(offset: number, kind: string): string {
   return `${offset}:${kind}`
-}
-
-export function exprTypeOffset(expr: { kind: string; span: { start: number; end: number } }): number {
-  return (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr' || expr.kind === 'IndexExpr') ? expr.span.end : expr.span.start
 }
 
 // === Type Check Result ===
@@ -98,8 +95,10 @@ export interface PendingLiteral {
 }
 
 export interface TypeCheckResult {
-  // Type map: "offset:kind" → resolved type
+  // Types of bindings and declarations: "offset:kind" → resolved type
   types: Map<string, ResolvedType>
+  // The type of every expression, by AST node
+  exprTypes: Map<AST.Expr, ResolvedType>
   // Symbol table (module scope)
   symbols: Map<string, Symbol>
   // Type errors
@@ -160,6 +159,9 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   for (const [key, type] of ctx.types) {
     ctx.types.set(key, concretizeType(type, opts))
   }
+  for (const [expr, type] of ctx.exprTypes) {
+    ctx.exprTypes.set(expr, concretizeType(type, opts))
+  }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
     // Function symbols already have correct FuncRT from resolveSignature;
@@ -200,6 +202,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 
   return {
     types: ctx.types,
+    exprTypes: ctx.exprTypes,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
     warnings: ctx.warnings,
@@ -403,6 +406,7 @@ export function isConcreteType(t: ResolvedType): boolean {
 class CheckContext {
   source?: string
   types = new Map<string, ResolvedType>()
+  exprTypes = new Map<AST.Expr, ResolvedType>()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -1091,8 +1095,7 @@ class CheckContext {
 
     // Handle member access: .len and .wid on pointer-to-array types
     if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
-      const objOffset = exprTypeOffset(expr.object)
-      const objType = this.types.get(typeKey(objOffset, expr.object.kind))
+      const objType = this.exprTypes.get(expr.object)
         ?? (expr.object.kind === 'IdentExpr' ? this.lookup(expr.object.name)?.type : undefined)
       if (objType) {
         const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
@@ -1222,8 +1225,7 @@ class CheckContext {
     if (srcExpr.kind === 'CastExpr') srcExpr = srcExpr.expr
     if (srcExpr.kind === 'MemberExpr' && srcExpr.member.kind === 'type') srcExpr = srcExpr.object
 
-    const srcOffset = exprTypeOffset(srcExpr)
-    const srcType = this.types.get(typeKey(srcOffset, srcExpr.kind))
+    const srcType = this.exprTypes.get(srcExpr)
     if (!srcType) return
 
     const arrType = srcType.kind === 'pointer' && srcType.pointee.kind === 'array' ? srcType.pointee : null
@@ -1867,10 +1869,7 @@ class CheckContext {
     const type = this.inferExprInner(expr)
     // Record type for ALL expressions - codegen needs this
     // Note: comptime types are stored as-is; concretization happens in a later pass
-    // For MemberExpr, use span.end so chained accesses like a.b.c each get unique keys
-    // This allows hover to show: a -> type1, a.b -> type2, a.b.c -> type3
-    const offset = exprTypeOffset(expr)
-    this.types.set(typeKey(offset, expr.kind), type)
+    this.exprTypes.set(expr, type)
     return type
   }
 
@@ -1893,7 +1892,7 @@ class CheckContext {
         this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
       }
       const result = pointer(expected.pointee, false, expected.mutable)
-      this.types.set(typeKey(expr.span.start, expr.kind), result)
+      this.exprTypes.set(expr, result)
       return result
     }
 
@@ -1911,7 +1910,7 @@ class CheckContext {
       }
       const else_ = expr.else_
       this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -1925,7 +1924,7 @@ class CheckContext {
           this.checkExpr(arm.body, expected)
         }
       }
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -1960,7 +1959,7 @@ class CheckContext {
       const resolved = this.resolveListToArray(inferred, resolvedExpected)
       // For LSP, record the comptime_list type (not resolved) so user sees the literal type
       if (expr.kind === 'ArrayExpr') {
-        this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+        this.exprTypes.set(expr, inferred)
       }
       // Collect literal for deferred serialization (concrete types only)
       if (!hasInferredMarker(resolvedExpected.sizes)) {
@@ -1990,7 +1989,7 @@ class CheckContext {
         }
       }
       // Record the inferred comptime type
-      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+      this.exprTypes.set(expr, inferred)
       // Collect literal for deferred serialization
       this.addLiteral(expr.span.start, expr, resolvedExpected)
       // Return concretized type
@@ -2017,7 +2016,7 @@ class CheckContext {
         this.checkExpr(elem, innerType)
       }
       // Record and return
-      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+      this.exprTypes.set(expr, inferred)
       this.addLiteral(expr.span.start, expr, resolvedPointee)
       return resolvedExpected
     }
@@ -2055,7 +2054,7 @@ class CheckContext {
           for (const elem of (expr as AST.ArrayExpr).elements) {
             if (this.isDataLiteralExpr(elem)) {
               this.validateDataLiteralRange(elem, innerType)
-              this.types.set(typeKey(elem.span.start, elem.kind), innerType)
+              this.exprTypes.set(elem, innerType)
             } else {
               this.checkExpr(elem, innerType)
             }
@@ -2063,7 +2062,7 @@ class CheckContext {
         }
       }
       // Record the expected type so codegen knows to emit ptr+len for slices
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -2079,7 +2078,7 @@ class CheckContext {
       const inferredTotal = totalElements(inferred.sizes)
       if (inferredTotal !== null) {
         const resolved = array(expected.element, fillInferredSize(expected.sizes, inferredTotal))
-        this.types.set(typeKey(expr.span.start, expr.kind), resolved)
+        this.exprTypes.set(expr, resolved)
         return resolved
       }
     }
@@ -2095,7 +2094,7 @@ class CheckContext {
           this.checkExpr(elemExpr.value, unwrappedExpected.fields[i].type)
         }
       }
-      this.types.set(typeKey(exprTypeOffset(expr), expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -2117,9 +2116,7 @@ class CheckContext {
     const compatible = typeAssignable(expected, inferred)
     const recordType = expected.kind === 'named' ? expected
       : (isComptimeLiteral && !expectedHasInferredSize && compatible ? expected : inferred)
-    // Use span.end for MemberExpr to match inferExpr behavior (allows distinguishing a.b from a.b.c)
-    const typeOffset = exprTypeOffset(expr)
-    this.types.set(typeKey(typeOffset, expr.kind), recordType)
+    this.exprTypes.set(expr, recordType)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
@@ -2907,7 +2904,7 @@ class CheckContext {
 
   // The number of elements in a range, when it's known at compile time.
   rangeLength(expr: AST.SliceExpr): bigint | null {
-    const objType = unwrap(this.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind)) ?? this.inferExpr(expr.object))
+    const objType = unwrap(this.exprTypes.get(expr.object) ?? this.inferExpr(expr.object))
     const pointee = objType.kind === 'pointer' ? unwrap(objType.pointee) : null
     const size = pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number'
       ? BigInt(pointee.sizes[0]) : null
@@ -2931,7 +2928,7 @@ class CheckContext {
       return
     }
     const dst = this.inferSlice(target)
-    this.types.set(typeKey(exprTypeOffset(target), target.kind), dst)
+    this.exprTypes.set(target, dst)
     if (dst.kind !== 'slice') return
     if (dst.optional) {
       this.error(target.span.start, `writing to a range needs bounds known to fit: use constant or ranged bounds (on a slice, only s[..])`)
@@ -3001,7 +2998,7 @@ class CheckContext {
     }
     const idxType = unwrap(this.inferExpr(expr.index))
     if (idxType.kind === 'comptime_int') this.checkExpr(expr.index, primitive('u32'))
-    this.types.set(typeKey(exprTypeOffset(expr), expr.kind), elem)
+    this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
     let proven = false
     if (size !== null) {
@@ -3018,7 +3015,7 @@ class CheckContext {
   }
 
   private indexInRange(expr: AST.IndexExpr, arraySize: number): boolean {
-    const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+    const idxType = this.exprTypes.get(expr.index)
     if (idxType?.kind !== 'primitive') return false
     if (idxType.max !== undefined) return idxType.max <= arraySize
     // A u8 or u16 can't exceed its width: a u8 always indexes a *[256]T.
@@ -3084,7 +3081,7 @@ class CheckContext {
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
-              const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+              const idxType = this.exprTypes.get(expr.index)
               if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
                 const elem = arrayType.element
                 const canBeOptional = elem.kind === 'pointer' || elem.kind === 'slice'
@@ -3290,7 +3287,7 @@ class CheckContext {
       // Block's type is the last expression statement, if any
       const last = body.stmts[body.stmts.length - 1]
       if (last?.kind === 'ExpressionStmt') {
-        return this.types.get(typeKey(last.expr.span.start, last.expr.kind)) ?? VOID
+        return this.exprTypes.get(last.expr) ?? VOID
       }
       return VOID
     }

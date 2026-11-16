@@ -953,7 +953,8 @@ describe('typecheck', () => {
     const checkResult = typecheck(parseResult.module!)
 
     // All types should be concrete after typecheck
-    for (const [, type] of checkResult.types) {
+    expect(checkResult.exprTypes.size).toBeGreaterThan(0)
+    for (const type of [...checkResult.types.values(), ...checkResult.exprTypes.values()]) {
       expect(isConcreteType(type)).toBe(true)
     }
   })
@@ -965,7 +966,7 @@ describe('typecheck', () => {
 
     // Check that the integer literal was concretized to i64
     let foundI64 = false
-    for (const [, type] of checkResult.types) {
+    for (const [, type] of checkResult.exprTypes) {
       if (type.kind === 'primitive' && type.name === 'i64') {
         foundI64 = true
         break
@@ -1079,6 +1080,26 @@ describe('missing return', () => {
   test('named results and void functions need no return', () => {
     expect(errs(`func f(x: i32) -> (r: i32) { r = x }`)).toEqual([])
     expect(errs(`func f(x: i32) { let y = x }`)).toEqual([])
+  })
+})
+
+describe('if expressions as values', () => {
+  // The value is the last expression of each branch, whatever kind it is.
+  test('an operator, an index or a field in the first branch gives the value its type', () => {
+    const source = `
+      type Pair = (x: i32, y: i32)
+      func f(c: bool, p: i32, l: i32, xs: [*]i32, pair: Pair) -> i32 {
+        let a = if c { p - l } else { -1 }
+        let b = if c { xs[2] } else { -1 }
+        let d = if c { pair.x } else { -1 }
+        return a + b + d
+      }
+    `
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    for (const name of ['a', 'b', 'd']) {
+      expect(typeAt(result, source.indexOf(`let ${name} =`) + 4)).toBe('i32')
+    }
   })
 })
 

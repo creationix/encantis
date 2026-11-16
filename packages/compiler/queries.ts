@@ -86,6 +86,14 @@ export function gotoDefinition(
   }
 }
 
+// The type of the identifier used (not declared) at an offset.
+function identExprType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  for (const [expr, type] of checkResult.exprTypes) {
+    if (expr.kind === 'IdentExpr' && expr.span.start === offset) return type
+  }
+  return undefined
+}
+
 export function hover(
   source: string,
   module: AST.Module,
@@ -113,7 +121,7 @@ export function hover(
 
   // Check type map for the identifier at this offset (params, locals, let bindings)
   const type = checkResult.types.get(typeKey(offset, 'IdentPattern'))
-    ?? checkResult.types.get(typeKey(offset, 'IdentExpr'))
+    ?? identExprType(checkResult, offset)
     ?? checkResult.types.get(typeKey(offset, 'Field'))
   if (type) {
     return {

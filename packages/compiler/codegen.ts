@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, exprTypeOffset, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -23,8 +23,10 @@ import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './w
 // === Context ===
 
 export interface CodegenContext {
-  // Type map from checker (keyed by "offset:kind" composite key)
+  // Types of bindings and declarations from the checker ("offset:kind" keys)
   types: Map<string, ResolvedType>
+  // Types of expressions from the checker, by AST node
+  exprTypes: Map<AST.Expr, ResolvedType>
   // Symbol table from checker
   symbols: Map<string, CheckSymbol>
   // Local variable names → WASM local names (handles flattening)
@@ -53,6 +55,7 @@ export interface CodegenContext {
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
   return {
     types: checkResult.types,
+    exprTypes: checkResult.exprTypes,
     symbols: checkResult.symbols,
     locals: new Map(),
     params: new Map(),
@@ -241,7 +244,7 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
     case 'CastExpr':
       return castToWat(expr, ctx)
     case 'AnnotationExpr': {
-      const annType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const annType = lookupExprType(expr, ctx)
       if (annType?.kind === 'slice') {
         const inner = expr.expr
         const id = (inner as any).dataId ?? inner.span.start
@@ -271,7 +274,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
   switch (lit.kind) {
     case 'int': {
       // Type must be concretized before codegen
-      const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const type = lookupExprType(expr, ctx)
       if (!type) {
         throw new Error(`Missing type for integer literal at offset ${expr.span.start}`)
       }
@@ -289,7 +292,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
     }
 
     case 'float': {
-      const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const type = lookupExprType(expr, ctx)
       if (!type) {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
@@ -304,7 +307,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       const id = (expr as any).dataId ?? expr.span.start
       const ref = ctx.literalRefs.get(id)
       if (ref) {
-        const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+        const type = lookupExprType(expr, ctx)
         if (type?.kind === 'slice') {
           return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
         }
@@ -495,39 +498,9 @@ function splitMultiValue(wat: string, n: number): string[] {
   throw new Error(`Expected ${n} v128 components, got ${parts.length}: ${wat.slice(0, 80)}...`)
 }
 
-function lookupExprType(expr: { kind: string; span: { start: number; end: number } }, ctx: CodegenContext): ResolvedType | undefined {
-  return ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
-}
-
-function resolveExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
-  // Try direct lookup — MemberExpr and BinaryExpr use span.end to avoid collisions
-  const key = (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr')
-    ? typeKey(expr.span.end, expr.kind)
-    : typeKey(expr.span.start, expr.kind)
-  const direct = ctx.types.get(key)
-  if (direct) return direct
-
-  // For expressions that may collide with parent (same start offset),
-  // try looking up based on span end
-  const byEnd = ctx.types.get(typeKey(expr.span.end, expr.kind))
-  if (byEnd) return byEnd
-
-  if (expr.kind === 'IdentExpr') {
-    const sym = ctx.symbols.get(expr.name)
-    if (sym && sym.kind !== 'func' && sym.kind !== 'type') return sym.type
-  }
-
-  // For binary expressions whose type collided with parent, infer from children
-  if (expr.kind === 'BinaryExpr') {
-    const lt = resolveExprType(expr.left, ctx)
-    if (lt && !['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op)) {
-      return lt
-    }
-  }
-
-  return undefined
+// The type the checker recorded for an expression.
+function lookupExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
+  return ctx.exprTypes.get(expr)
 }
 
 function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: number): string {
@@ -715,7 +688,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   const operand = exprToWat(expr.operand, ctx)
 
   // Get type from checker - must be recorded
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (!type) {
     throw new Error(`Missing type for unary expression at offset ${expr.span.start}`)
   }
@@ -779,7 +752,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
   // Helper to get the wasm type for the first argument
   const getArgType = (): string => {
     if (args.length === 0) return 'i32'
-    const argType = ctx.types.get(typeKey(exprTypeOffset(args[0].value), args[0].value.kind))
+    const argType = lookupExprType(args[0].value, ctx)
     return argType ? typeToWasmSingle(argType) : 'i32'
   }
 
@@ -788,7 +761,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       // memzero(dest) -> memory.fill with 0, size from type
       if (args.length !== 1) return null
       const dest = exprToWat(args[0].value, ctx)
-      const destType = resolveExprType(args[0].value, ctx)
+      const destType = lookupExprType(args[0].value, ctx)
       const size = destType ? byteSize(destType.kind === 'pointer' ? destType.pointee : destType) : null
       if (size === null) return null
       return `(memory.fill ${dest} (i32.const 0) (i32.const ${size}))`
@@ -839,7 +812,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       if (args.length !== 2) return null
       const a = exprToWat(args[0].value, ctx)
       const b = exprToWat(args[1].value, ctx)
-      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+      const argType = lookupExprType(args[0].value, ctx)
       const wt = argType ? typeToWasmSingle(argType) : 'i32'
 
       if (argType && isFloat(argType)) {
@@ -859,7 +832,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'abs': {
       if (args.length !== 1) return null
       const arg = exprToWat(args[0].value, ctx)
-      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
+      const argType = lookupExprType(args[0].value, ctx)
       const wt = argType ? typeToWasmSingle(argType) : 'i32'
 
       if (argType && isFloat(argType)) {
@@ -962,7 +935,7 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     if (paramTypes && i < paramTypes.length) {
       const paramType = paramTypes[i].type
       const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
-      const argType = ctx.types.get(typeKey(argExpr.span.start, argExpr.kind))
+      const argType = lookupExprType(argExpr, ctx)
       const innerArray = argType?.kind === 'array' ? argType
         : (argType?.kind === 'pointer' && argType.pointee.kind === 'array') ? argType.pointee
         : null
@@ -1012,7 +985,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 
   if (member.kind === 'field') {
     // Get the type of the object to check for indexed/pointer-to-indexed
-    const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
+    const objType = lookupExprType(expr.object, ctx)
 
     // Handle .ptr, .len on slice types
     if (objType?.kind === 'slice') {
@@ -1178,7 +1151,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   if (member.kind === 'deref') {
     // Pointer dereference: .* - load from memory
     const ptr = exprToWat(expr.object, ctx)
-    const type = ctx.types.get(typeKey(expr.span.end, expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     if (!type) {
       throw new Error(`Missing type for pointer dereference at offset ${expr.span.start}`)
     }
@@ -1210,8 +1183,7 @@ function resolveFieldChain(expr: AST.Expr, field: string): { root: string; path:
 }
 
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
-  const arrayTypeKey = typeKey(exprTypeOffset(object), object.kind)
-  const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(object.span.start, object.kind))
+  const arrayType = lookupExprType(object, ctx)
   let elemSize = 1
   if (arrayType) {
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
@@ -1238,8 +1210,7 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
 
 function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Value array [N]T: index with comptime constant → local.get
-  const objTypeKey = typeKey(exprTypeOffset(expr.object), expr.object.kind)
-  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  const objType = lookupExprType(expr.object, ctx)
   if (objType?.kind === 'array' && objType.sizes && objType.sizes.length === 1 && typeof objType.sizes[0] === 'number') {
     const idx = evalComptimeIndex(expr.index)
     if (idx !== null && expr.object.kind === 'IdentExpr') {
@@ -1279,9 +1250,8 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
 // values; anything else goes through a scratch local, evaluated once. An
 // optional result (?[]T) is (0, 0) unless start <= end <= length.
 function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
-  const resultType = ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
-  const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
-    ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  const resultType = lookupExprType(expr, ctx)
+  const objType = lookupExprType(expr.object, ctx)
   if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
   const u = unwrap(objType)
   const stride = byteSize(resultType.element) ?? 1
@@ -1337,7 +1307,7 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
 // dst[a..b] = v (fill) or dst[a..b] = src (copy), as memory.fill/memory.copy.
 // The checker has proven the range in bounds and, for a copy, the lengths equal.
 function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenContext): string {
-  const dstType = ctx.types.get(typeKey(exprTypeOffset(target), target.kind))
+  const dstType = lookupExprType(target, ctx)
   if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
   const elem = dstType.element
   const stride = byteSize(elem) ?? 1
@@ -1385,9 +1355,8 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
 // &items[i]: the element's address. For an optional result (?*T, when the
 // index isn't known to be in range) it's 0 when i is out of range.
 function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: CodegenContext): string | null {
-  const resultType = ctx.types.get(typeKey(expr.span.start, expr.kind))
-  const objType = ctx.types.get(typeKey(exprTypeOffset(target.object), target.object.kind))
-    ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+  const resultType = lookupExprType(expr, ctx)
+  const objType = lookupExprType(target.object, ctx)
   if (resultType?.kind !== 'pointer' || !objType) return null
   const u = unwrap(objType)
   let base = exprToWat(target.object, ctx)
@@ -1451,8 +1420,7 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const ptrLocal = `__coal_ptr_${uid}`
   const lenLocal = `__coal_len_${uid}`
 
-  const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
-  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+  const objType = lookupExprType(indexExpr.object, ctx)
 
   const parts: string[] = []
   parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
@@ -1488,7 +1456,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   if (!elemType) throw new Error('Missing element type for if-let')
 
   const thenBody = bodyToWat(expr.thenBranch, ctx)
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
   let elseBody = ''
@@ -1516,8 +1484,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
 
-    const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
-    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+    const objType = lookupExprType(indexExpr.object, ctx)
 
     const parts: string[] = []
     parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
@@ -1588,7 +1555,7 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const cond = exprToWat(expr.condition, ctx)
 
   // Get result type
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
   const hasResult = resultTypes.length > 0
@@ -1711,7 +1678,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
-    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     // Emit runtime stores for mixed arrays (elements that aren't compile-time literals)
     const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
@@ -1724,7 +1691,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
 }
 
 function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (!type) return ''
   // Get the element type to determine stride
   const elemType = type.kind === 'slice' ? type.element
@@ -1769,7 +1736,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
-    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     if (type?.kind === 'slice') {
       return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
     }
@@ -1786,7 +1753,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   const subject = exprToWat(expr.subject, ctx)
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
 
@@ -1837,7 +1804,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
 
 function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
   // Get the resolved type from the checker
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (type && type.kind === 'comptime_int') {
     // The checker already computed the size and stored it as comptime_int
     return `(i32.const ${type.value})`
@@ -1927,16 +1894,14 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
 
 // Whether an expression leaves at least one value on the stack.
 function exprHasValue(expr: AST.Expr, ctx: CodegenContext): boolean {
-  const t = ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  const t = lookupExprType(expr, ctx)
   return !!t && t.kind !== 'void' && typeToWasm(t).length > 0
 }
 
 // An expression evaluated for its effect, dropping any result.
 function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const exprWat = exprToWat(expr, ctx)
-  const exprType = ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  const exprType = lookupExprType(expr, ctx)
   if (exprType && exprType.kind !== 'void') {
     const slots = typeToWasm(exprType).length
     if (slots > 0) return exprWat + '\n' + Array(slots).fill('(drop)').join('\n')
@@ -2002,7 +1967,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     }
     // *[N]T into a slice: add the compile-time length, as call arguments do.
     if (unwrap(type).kind === 'slice') {
-      const valueType = ctx.types.get(typeKey(exprTypeOffset(stmt.value), stmt.value.kind))
+      const valueType = lookupExprType(stmt.value, ctx)
       const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
       const len = array ? totalElements(array.sizes) : null
       if (len !== null) value = `${value} (i32.const ${len})`
@@ -2060,7 +2025,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
 
   if (stmt.pattern.kind === 'TuplePattern') {
     // Get tuple type from the value expression
-    const tupleType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    const tupleType = lookupExprType(stmt.value, ctx)
     if (!tupleType || tupleType.kind !== 'tuple') {
       throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
     }
@@ -2086,11 +2051,10 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   if (stmt.op !== '=') {
     const current = lvalueToWat(stmt.target, ctx)
     // Use target type for the operation, not value type
-    const targetKey = (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr')
-      ? typeKey(stmt.target.span.end, stmt.target.kind)
-      : typeKey(stmt.target.span.start, stmt.target.kind)
-    const targetType = ctx.types.get(targetKey)
-    const valueType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    const targetType = stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr'
+      ? lookupExprType(stmt.target, ctx)
+      : undefined
+    const valueType = lookupExprType(stmt.value, ctx)
     const type = targetType ?? valueType
     if (!type) {
       throw new Error(`Missing type for assignment at offset ${stmt.target.span.start}`)
@@ -2200,7 +2164,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
     }
     if (member.kind === 'deref') {
       const ptr = exprToWat(target.object, ctx)
-      const type = ctx.types.get(typeKey(target.span.end, target.kind)) ?? ctx.types.get(typeKey(target.span.start, target.kind))
+      const type = lookupExprType(target, ctx)
       if (!type) {
         throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
       }
@@ -2227,8 +2191,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
 
   if (target.kind === 'IndexExpr') {
     // Value array [N]T: assignment with comptime index → local.set
-    const objTypeKey2 = typeKey(exprTypeOffset(target.object), target.object.kind)
-    const objType2 = ctx.types.get(objTypeKey2) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+    const objType2 = lookupExprType(target.object, ctx)
     if (objType2?.kind === 'array' && objType2.sizes && objType2.sizes.length === 1 && typeof objType2.sizes[0] === 'number') {
       const idx = evalComptimeIndex(target.index)
       if (idx !== null && target.object.kind === 'IdentExpr') {
@@ -2247,16 +2210,12 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): s
 
     let ptr = exprToWat(target.object, ctx)
     const idx = exprToWat(target.index, ctx)
-    const type = ctx.types.get(typeKey(target.span.end, target.kind))
-      ?? ctx.types.get(typeKey(target.span.start, target.kind))
+    const type = lookupExprType(target, ctx)
     if (!type) {
       throw new Error(`Missing type for index store at offset ${target.span.start}`)
     }
     // For slice objects, extract just the pointer
-    const objTypeKey = target.object.kind === 'MemberExpr'
-      ? typeKey(target.object.span.end, target.object.kind)
-      : typeKey(target.object.span.start, target.object.kind)
-    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+    const objType = lookupExprType(target.object, ctx)
     if (objType?.kind === 'slice') {
       const parts = splitMultiValue(ptr, 2)
       ptr = parts[0]
@@ -2326,7 +2285,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const body = bodyToWat(stmt.body, ctx, false, true)
 
   // Check if iterable is a comptime integer (for i in N)
-  const iterType = ctx.types.get(typeKey(exprTypeOffset(stmt.iterable), stmt.iterable.kind))
+  const iterType = lookupExprType(stmt.iterable, ctx)
   const iterWat = exprToWat(stmt.iterable, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
@@ -2552,7 +2511,7 @@ export function funcToWat(
   if (decl.body.kind === 'ArrowBody' && funcType.type.returns.length === 1 && namedReturns.length === 0) {
     const retType = funcType.type.returns[0].type
     const retWt = typeToWasmSingle(retType)
-    const bodyType = ctx.types.get(typeKey(decl.body.expr.span.start, decl.body.expr.kind))
+    const bodyType = lookupExprType(decl.body.expr, ctx)
     if (bodyType) {
       const bodyWt = typeToWasmSingle(bodyType)
       const bodySigned = isSigned(bodyType)
@@ -2719,7 +2678,7 @@ function collectLocals(
         // Range assignment: the range's own scratch locals, plus the
         // destination and (for wide fills) the value.
         const uid = stmt.target.span.start
-        const elem = (checkResult.types.get(typeKey(exprTypeOffset(stmt.target), stmt.target.kind)) as { element?: ResolvedType } | undefined)?.element
+        const elem = (checkResult.exprTypes.get(stmt.target) as { element?: ResolvedType } | undefined)?.element
         locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
         if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
         visitExpr(stmt.target)
@@ -2850,7 +2809,7 @@ function collectLocals(
     if (expr.kind === 'UnaryExpr') {
       // &items[i] with a runtime check keeps the index in a scratch local.
       if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
-        const t = checkResult.types.get(typeKey(expr.span.start, expr.kind))
+        const t = checkResult.exprTypes.get(expr)
         if (t?.kind === 'pointer' && t.optional) {
           locals.push({ name: `__addr_idx_${expr.span.start}`, type: 'i32' })
         }
