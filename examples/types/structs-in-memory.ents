@@ -231,6 +231,35 @@ test "a tuple with a wide integer" {
   assert list[1].1 == 4
 }
 
+// --- bools ---
+
+type Cell = (open: bool, seen: bool, id: u16)
+
+test "a bool takes one byte" {
+  let flags = spots() as [*]mut bool
+  flags[0] = false
+  flags[1] = true
+  flags[2] = true
+  flags[3] = false
+  // Writing one flag leaves its neighbours alone, and reading one doesn't see them.
+  flags[1] = false
+  assert !flags[0]
+  assert !flags[1]
+  assert flags[2]
+  flags[0] = true
+  assert flags[2]
+  assert !flags[1]
+  let cells = options() as [*]mut Cell
+  cells[0] = Cell(false, true, 513)
+  cells[0].open = true
+  cells[0].seen = false
+  let cell = cells[0]
+  assert cell.open
+  assert !cell.seen
+  assert cell.id == 513
+  assert sizeof(Cell) == 4
+}
+
 // --- element loops ---
 
 test "a loop over the structs of a slice" {

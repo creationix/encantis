@@ -910,6 +910,50 @@ describe('struct values in registers and on the stack', () => {
   })
 })
 
+describe('bools in memory', () => {
+  const FLAGS = `
+    data space = mut [0:u8; 16]
+    type Cell = (open: bool, seen: bool, id: u16)
+  `
+
+  test('a bool is loaded and stored as the one byte it takes', () => {
+    const wat = modWat(`${FLAGS}
+      func get(flags: [*]bool, i: u32) -> bool => flags[i]
+      func put(flags: [*]mut bool, i: u32) { flags[i] = true }
+      func cell(p: *Cell) -> Cell => p.*
+      func mark(p: *mut Cell) { p.seen = true }
+    `)
+    expect(wat).toContain('(i32.load8_u (i32.add (local.get $flags) (local.get $i)))')
+    expect(wat).toContain('(i32.store8 (i32.add (local.get $flags) (local.get $i)) (i32.const 1))')
+    expect(wat).toContain('(i32.load8_u (local.get $p)) (i32.load8_u offset=1 (local.get $p)) (i32.load16_u offset=2 (local.get $p))')
+    expect(wat).toContain('(i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 1))')
+  })
+
+  test('neighbouring bools keep their values', async () => {
+    const { f } = await run(`${FLAGS}
+      export func f() -> i32 {
+        let flags = space as [*]mut bool
+        flags[1] = true
+        flags[2] = true
+        flags[0] = true
+        flags[1] = false
+        let cells = ((space as u32) + 8) as [*]mut Cell
+        cells[0] = Cell(false, true, 513)
+        cells[0].open = true
+        cells[0].seen = false
+        let r = 0
+        if flags[0] { r += 1 }
+        if flags[1] { r += 10 }
+        if flags[2] { r += 100 }
+        if cells[0].open { r += 1000 }
+        if cells[0].seen { r += 10000 }
+        return r + (cells[0].id as i32) * 100000
+      }
+    `)
+    expect(f()).toBe(51301101)
+  })
+})
+
 // === Globals of Several Values ===
 
 describe('globals of several wasm values', () => {

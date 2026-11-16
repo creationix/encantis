@@ -457,11 +457,12 @@ const readsMemory = (wat: string) => /\((?:call|call_indirect|[if](?:32|64)\.loa
 const readsState = (wat: string) => /\((?:global\.get|[if](?:32|64)\.load)/.test(wat)
 
 // The load and store instructions for one scalar. Integers narrower than a
-// word take their own width in memory and an i32 on the stack.
+// word, and bool (one byte), take their own width in memory and an i32 on the
+// stack.
 function loadOp(type: ResolvedType): string {
   const u = unwrap(type)
   if (u.kind === 'primitive') {
-    if (u.name === 'u8') return 'i32.load8_u'
+    if (u.name === 'u8' || u.name === 'bool') return 'i32.load8_u'
     if (u.name === 'i8') return 'i32.load8_s'
     if (u.name === 'u16') return 'i32.load16_u'
     if (u.name === 'i16') return 'i32.load16_s'
@@ -472,7 +473,7 @@ function loadOp(type: ResolvedType): string {
 function storeOp(type: ResolvedType): string {
   const u = unwrap(type)
   if (u.kind === 'primitive') {
-    if (u.name === 'u8' || u.name === 'i8') return 'i32.store8'
+    if (u.name === 'u8' || u.name === 'i8' || u.name === 'bool') return 'i32.store8'
     if (u.name === 'u16' || u.name === 'i16') return 'i32.store16'
   }
   return `${typeToWasmSingle(type)}.store`
