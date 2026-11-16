@@ -370,6 +370,25 @@ mul_hi: cannot assign i64 to u64
 mul_hi: cannot assign int(-1) to u64
 ```
 
+A function the program declares takes the builtin's name. A variable in scope hides that function, and the name is the builtin's again.
+
+```ents
+func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+
+func all() -> i32 => max(1, 2, 3)
+func either(max: i32, other: i32) -> i32 => max(max, other)
+```
+
+```ents
+func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+
+func f() -> i32 => max(1, 2)
+```
+
+```errors
+'max' expected 3 arguments, got 2
+```
+
 `memcpy` reads from a pointer to an array; `memzero` needs a destination whose size is known.
 
 ```ents

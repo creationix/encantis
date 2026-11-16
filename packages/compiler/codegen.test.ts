@@ -659,6 +659,21 @@ describe('builtin codegen', () => {
       expect(wat).not.toContain('select')
     })
 
+    test('where a variable hides that function, the builtin is compiled, as the checker typed it', () => {
+      const wat = modWat(`
+        func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+        func f(max: i32) -> i32 => max(max, 2)
+        func g(n: i32) -> i32 {
+          for max in 4 { n = max(n, max as i32) }
+          return n
+        }
+        export func h() -> i32 => max(1, 2, 3) + f(4) + g(0)
+      `)
+      expect(wat).toContain('(select (local.get $max) (i32.const 2) (i32.gt_s (local.get $max) (i32.const 2)))')
+      expect(wat).toContain('(select (local.get $n) (local.get $max) (i32.gt_s (local.get $n) (local.get $max)))')
+      expect(wat).toContain('(call $max (i32.const 1) (i32.const 2) (i32.const 3))')
+    })
+
     test('mul_hi computes in u64: a literal is one, a narrower operand is widened', () => {
       expect(body('func f(a: u64) -> u64 => mul_hi(a, 3)')).toBe('(call $__mul_hi (local.get $a) (i64.const 3))')
       expect(body('func f(a: u8, b: u32) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (i64.extend_i32_u (local.get $b)))')

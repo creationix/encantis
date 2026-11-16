@@ -947,9 +947,11 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     return `(call_indirect ${exprToWat(expr.callee, ctx)})`
   }
 
-  // Handle builtin functions, unless the program declares one of that name
-  const declared = ctx.symbols.get(funcName)?.kind === 'func'
-  const builtin = declared ? null : builtinToWat(funcName, expr, ctx)
+  // Handle builtin functions. The checker decides which calls are to one (a
+  // function the program declares takes the builtin's name, unless a variable
+  // in scope hides that function), and marks them.
+  const isBuiltin = ctx.types.has(typeKey(expr.span.start, 'BuiltinCall'))
+  const builtin = isBuiltin ? builtinToWat(funcName, expr, ctx) : null
   if (builtin !== null) return builtin
 
   // Primitive type cast: u64(x), f32(x), etc.

@@ -1219,6 +1219,19 @@ describe('builtins', () => {
     }`)).toEqual([])
   })
 
+  test('a variable in scope hides the declared function, and the builtin is meant again', () => {
+    const src = `
+      func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+      func f(max: i32) -> i32 => max(max, 2)
+      export func g() -> i32 => max(1, 2, 3) + f(4)
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    // Only the call the checker typed as the builtin is marked for codegen.
+    expect(typeAt(result, src.indexOf('max(max, 2)'), 'BuiltinCall')).toBe('i32')
+    expect(typeAt(result, src.indexOf('max(1, 2, 3)'), 'BuiltinCall')).toBeUndefined()
+  })
+
   test('mul_hi takes operands that widen to u64', () => {
     expect(types('a: u64, b: u64', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])
     expect(types('a: u32, b: u8', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])

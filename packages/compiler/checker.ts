@@ -2402,7 +2402,9 @@ class CheckContext {
   }
 
   // Handle builtin functions: memset, memcpy, zero
-  // Returns null if not a builtin, otherwise returns the result type
+  // Returns null if not a builtin, otherwise returns the result type.
+  // The BuiltinCall entry each one records is what tells codegen that the call
+  // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 

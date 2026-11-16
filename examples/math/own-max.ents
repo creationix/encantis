@@ -25,3 +25,13 @@ test "a variable with a builtin's name does not" {
   assert min == 5
   assert min(min, 3) == 3
 }
+
+// A parameter named max hides the function declared above, and where it does
+// the name is the builtin's again.
+func largest(max: i32, other: i32) -> i32 => max(max, other)
+
+test "nor does one that hides the declared function" {
+  assert largest(2, 9) == 9
+  assert largest(9, 2) == 9
+  assert max(2, 9, 1) == 9
+}
