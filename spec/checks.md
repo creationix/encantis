@@ -332,6 +332,27 @@ func f(i: u32#4) -> u8 => table[max(i, 9)]
 runtime index on *[4]u8 requires 'if let' or '??'
 ```
 
+A constant operand counts by its value. An `if` of two literals is not one: it can be either of them.
+
+```ents
+data table = [10:u8, 20, 30, 40]
+def last = 3
+
+func capped(i: u32#4) -> u8 => table[min(i, last)]
+```
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func f(i: u32#4, far: bool) -> u8 => table[max(i, if far { 100 } else { 1 })]
+func g(i: u32#4, far: bool) -> u8 => table[max(if far { 1 } else { 100 }, i)]
+```
+
+```errors
+runtime index on *[4]u8 requires 'if let' or '??'
+runtime index on *[4]u8 requires 'if let' or '??'
+```
+
 `memcpy` reads from a pointer to an array; `memzero` needs a destination whose size is known.
 
 ```ents

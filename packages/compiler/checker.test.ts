@@ -1191,6 +1191,20 @@ describe('builtins', () => {
     expect(types('i: u32#4, b: u8', 'max(i, b)')).toEqual(['u32', 'u32'])
   })
 
+  test('a range is kept through a constant operand only', () => {
+    // A def is a constant like a literal.
+    const withDef = 'def two = 2\nfunc f(i: u32#8) { let r = max(i, two) }'
+    expect(typeAt(checkModule(withDef), withDef.indexOf('r ='))).toBe('u32#8')
+    // An if or a match of literals has a literal's type, and any of their values.
+    expect(types('i: u32#8, c: bool', 'max(i, if c { 1 } else { 100 })')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8, c: bool', 'max(if c { 1 } else { 100 }, i)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8, k: i32', 'max(i, match k {\n 0 => 1\n _ => 100\n })')).toEqual(['u32', 'u32'])
+    expect(errs(`
+      data table = [10:u8, 20, 30, 40]
+      func f(i: u32#4, c: bool) -> u8 => table[max(i, if c { 1 } else { 100 })]
+    `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
   test('a declared function takes the place of the builtin of the same name', () => {
     const result = checkModule(`
       func max(a: i32, b: i32, c: i32) -> i32 => a + b + c

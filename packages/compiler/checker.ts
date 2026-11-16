@@ -2602,12 +2602,17 @@ class CheckContext {
 
     // A result that is one of the operands is in a range when they all are: the
     // widest of their ranges. A literal only has to fit the type to be an
-    // operand, but has to be inside that range for the result to be.
+    // operand, but has to be inside that range for the result to be. Only a
+    // constant counts as one: an `if` of two literals has a literal's type and
+    // either of their values.
     const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
     if (common.kind !== 'primitive' || ranges.length === 0) return common
     const widest = Math.max(...ranges)
-    const inRange = types.every((t) =>
-      t.kind === 'comptime_int' ? t.value >= 0n && t.value < BigInt(widest) : t.kind === 'primitive' && t.max !== undefined)
+    const inRange = types.every((t, i) => {
+      if (t.kind === 'primitive') return t.max !== undefined
+      const constant = isComptime(t) ? this.evalComptimeExpr(args[i].value) : null
+      return constant?.kind === 'int' && constant.value >= 0n && constant.value < BigInt(widest)
+    })
     return inRange ? primitive(common.name, widest) : common
   }
 
