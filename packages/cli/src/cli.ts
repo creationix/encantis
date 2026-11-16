@@ -16,6 +16,10 @@ type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
 
 const args = process.argv.slice(2)
 
+// Release builds replace ENCANTIS_VERSION at compile time (bun build --define).
+declare const ENCANTIS_VERSION: string | undefined
+const version = typeof ENCANTIS_VERSION === 'string' ? ENCANTIS_VERSION : 'dev'
+
 function usage() {
   console.log(`Encantis Compiler
 
@@ -43,7 +47,13 @@ Options:
   --json          Output as JSON (for query commands)
   -s, --start <rule>  Start rule for parsing (default: Module)
   --help          Show this help
+  --version       Show the compiler version
 `)
+}
+
+if (args[0] === '--version' || args[0] === 'version') {
+  console.log(`encantis ${version}`)
+  process.exit(0)
 }
 
 if (args.length === 0 || args.includes('--help')) {

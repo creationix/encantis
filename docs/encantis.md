@@ -2,7 +2,7 @@
 
 Encantis is a systems programming language that compiles to WebAssembly. It provides direct memory control, explicit types, and zero-cost abstractions while generating compact, efficient WASM modules.
 
-**Grammar source of truth:** [`packages/compiler/src/grammar/encantis.ohm`](../packages/compiler/src/grammar/encantis.ohm) (authoritative). This document is an explanatory guide with examples; consult the Ohm grammar for exact syntax.
+**Grammar source of truth:** [`packages/compiler/encantis-grammar.ohm`](../packages/compiler/encantis-grammar.ohm) (authoritative). This document is an explanatory guide with examples; consult the Ohm grammar for exact syntax.
 
 ---
 
