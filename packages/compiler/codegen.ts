@@ -2809,9 +2809,12 @@ function emitTestDecl(
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
+    // Collect locals before generating the body, as funcToWat does: destructuring
+    // lets register their names only here, and reads of a name not yet known
+    // would compile to the wrong thing.
+    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
-    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const seen = new Set<string>()
     const locals = rawLocals.filter(l => {
       if (seen.has(l.name)) return false
