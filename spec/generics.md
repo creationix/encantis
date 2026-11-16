@@ -935,7 +935,27 @@ export func f() -> (i32, i32) => make((i32, i32), 1)
 T(...) on a type parameter is not supported yet, in make(T = (i32, i32))
 ```
 
-A generic that instantiates itself with a larger type each time.
+A generic that instantiates itself with a larger type each time. It is stopped once, with one error, by whichever comes first: the nesting, the number of instances one call has led to, or the size of the type.
+
+```ents
+func deep(comptime T: type, n: u32) -> u32 => if n == 0 { sizeof(T) } else { deep(*T, n - 1) }
+
+export func f() -> u32 => deep(u8, 3)
+```
+
+```errors
+too many nested instantiations (64) while instantiating 'deep'
+```
+
+```ents
+func grow(comptime T: type, n: u32) -> u32 => if n == 0 { sizeof(T) } else { grow(*T, n - 1) + grow([]T, n - 1) }
+
+export func f() -> u32 => grow(u8, 3)
+```
+
+```errors
+too many instantiations (1000) from one call while instantiating 'grow'
+```
 
 ```ents
 func deep(comptime T: type, x: T) -> u32 => deep((T, T), (x, x))
@@ -944,5 +964,5 @@ export func f() -> u32 => deep(u8, 1)
 ```
 
 ```errors
-too many nested instantiations (64) while instantiating 'deep'
+type arguments grow without end while instantiating 'deep'
 ```

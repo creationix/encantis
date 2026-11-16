@@ -352,18 +352,61 @@ export func c(x: i32) -> i32 => clamp(x, 0, 10)`
     expect(instancesOf(source)).toEqual(['clamp<i32>', 'even<u32>', 'fact<u64>', 'max<i32>', 'min<i32>', 'odd<u32>'])
   })
 
-  test('a generic that never stops instantiating itself is one error', () => {
-    const doubling = `func deep(comptime T: type, x: T) -> u32 => deep((T, T), (x, x))
-export func f() -> u32 => deep(u8, 1)`
-    const errors = errorsOf(doubling)
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toStartWith("too many nested instantiations (64) while instantiating 'deep', in deep(T = ")
-    // The type that grew is cut, not printed in full.
-    expect(errors[0].length).toBeLessThan(160)
+  describe('a generic that never stops instantiating itself is one error', () => {
+    test('when each instance asks for one more', () => {
+      const source = `func deep(comptime T: type, n: u32) -> u32 => if n == 0 { sizeof(T) } else { deep(*T, n - 1) }
+export func f() -> u32 => deep(u8, 3)`
+      const errors = errorsOf(source)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toStartWith("too many nested instantiations (64) while instantiating 'deep', in deep(T = ***")
+      // The type that grew is cut, not printed in full.
+      expect(errors[0].length).toBeLessThan(160)
+    })
 
-    const pointing = `func deep(comptime T: type, x: T) -> u32 => deep(*T, &x)
+    test('when each instance asks for two more, long before 64 levels of them exist', () => {
+      const source = `func grow(comptime T: type, n: u32) -> u32 {
+  return 0 when n == 0
+  return grow(*T, n - 1) + grow([]T, n - 1)
+}
+export func f() -> u32 => grow(u8, 2)`
+      const start = performance.now()
+      const errors = errorsOf(source)
+      expect(performance.now() - start).toBeLessThan(5000)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toStartWith("too many instantiations (1000) from one call while instantiating 'grow', in grow(T = ")
+    })
+
+    test('when the type argument doubles, long before it is written out 64 times over', () => {
+      const source = `func deep(comptime T: type, x: T) -> u32 => deep((T, T), (x, x))
 export func f() -> u32 => deep(u8, 1)`
-    expect(errorsOf(pointing).filter(e => e.includes('too many nested instantiations'))).toHaveLength(1)
+      const errors = errorsOf(source)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toStartWith("type arguments grow without end while instantiating 'deep', in deep(T = ((((")
+      expect(errors[0].length).toBeLessThan(160)
+    })
+  })
+
+  test('a type argument may be as large as the program makes it', () => {
+    // Written out with its aliases expanded, World is some 5000 characters.
+    // That is the size of a type, not a sign of endless instantiation.
+    const source = `type Vec3 = (x: f64, y: f64, z: f64)
+type Body = (position: Vec3, velocity: Vec3, acceleration: Vec3, mass: f64, radius: f64)
+type Four = (first: Body, second: Body, third: Body, fourth: Body)
+type Sixteen = (north: Four, south: Four, east: Four, west: Four)
+type World = (inner: Sixteen, middle: Sixteen, outer: Sixteen, age: u64)
+type Worlds = (here: World, there: World)
+func size(comptime T: type) -> u32 => sizeof(T)
+func addr(comptime T: type, p: *T) -> u32 => p as u32
+func both(comptime T: type, p: *T) -> u32 => addr(p) + size(T) + size((T, T))
+export func a() -> u32 => size(World)
+export func b(w: *World) -> u32 => both(w)
+export func c(w: *Worlds) -> u32 => addr(w)`
+    const names = instancesOf(source)
+    expect(names).toHaveLength(5)
+    // The name of an instance stays short, and still tells World from Worlds.
+    for (const name of names) expect(name.length).toBeLessThan(100)
+    expect(new Set(names).size).toBe(5)
+    expect(names.filter(n => n.startsWith('addr<'))).toHaveLength(2)
   })
 
   test('a generic sees its own module, not the locals of its caller', () => {

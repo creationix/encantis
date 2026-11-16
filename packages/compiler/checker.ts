@@ -81,6 +81,16 @@ export interface Instance {
   decl: AST.FuncDecl    // the substituted copy, its spans shifted by index * INSTANCE_STRIDE
   args: ComptimeValue[] // in comptime-parameter order
   depth: number         // instantiation nesting, to stop a generic that never stops instantiating
+  chain: InstanceChain
+}
+
+// Everything one call in ordinary code brought into being: the instance it
+// asked for, the instances that one's body asks for, and so on. A generic that
+// never stops instantiating itself is stopped by what its chain has used.
+interface InstanceChain {
+  size: number      // instances asked for so far
+  keySize: number   // size of the type arguments the chain started with
+  stopped: boolean  // already reported as never ending
 }
 
 // The copy of a declaration that instance i (from 1) of a module is made from
@@ -90,8 +100,19 @@ export interface Instance {
 // reported.
 export const INSTANCE_STRIDE = 2 ** 28
 const MAX_INSTANCES = 2 ** 24
+// What one chain of instantiations may use before it is taken to be endless.
+// Depth stops a generic that asks for one new instance per instance. One that
+// asks for two would reach depth 64 after 2^64 instances, so their number is
+// bounded too; and one that doubles its type argument would run out of memory
+// writing the type down long before either, so a type argument may only be so
+// much larger than what the chain started with. A call in ordinary code is
+// held to none of this: its type argument is as large as the program made it.
 const MAX_INSTANCE_DEPTH = 64
-const MAX_INSTANCE_KEY = 4096
+const MAX_CHAIN_INSTANCES = 1000
+const MAX_CHAIN_KEY = 4096
+const MAX_CHAIN_KEY_GROWTH = 16
+// A longer key is cut and closed with a hash where it names the instance.
+const MAX_NAME_KEY = 120
 
 // The type of an expression whose error is already reported. Compared by
 // identity, so that what the expression is used for stays silent about it.
@@ -3793,20 +3814,32 @@ class CheckContext {
     const existing = sym.instances.get(key)
     if (existing) return existing
 
-    // A generic that instantiates itself with a larger type each time never
-    // finishes; the size of the key stops one that doubles its type long
-    // before the depth does.
-    const depth = (this.currentInstance?.depth ?? 0) + 1
-    if (depth > MAX_INSTANCE_DEPTH || key.length > MAX_INSTANCE_KEY) {
-      this.error(at, `too many nested instantiations (${MAX_INSTANCE_DEPTH}) while instantiating '${of.ident}'`)
-      return null
+    // An instance asked for from an instance's body draws on that one's chain.
+    const requester = this.currentInstance
+    const depth = (requester?.depth ?? 0) + 1
+    let chain: InstanceChain = { size: 1, keySize: key.length, stopped: false }
+    if (requester) {
+      chain = requester.chain
+      if (chain.stopped) return null
+      const endless =
+        depth > MAX_INSTANCE_DEPTH ? `too many nested instantiations (${MAX_INSTANCE_DEPTH})`
+        : chain.size >= MAX_CHAIN_INSTANCES ? `too many instantiations (${MAX_CHAIN_INSTANCES}) from one call`
+        : key.length > Math.max(MAX_CHAIN_KEY, chain.keySize * MAX_CHAIN_KEY_GROWTH) ? `type arguments grow without end`
+        : null
+      if (endless) {
+        chain.stopped = true
+        this.error(at, `${endless} while instantiating '${of.ident}'`)
+        return null
+      }
+      chain.size++
     }
 
     const owner = sym.owner
     const index = owner.instances.length + 1
     // Offsets have to stay exact integers, and below the next instance's.
     if (of.span.end >= INSTANCE_STRIDE || index >= MAX_INSTANCES) {
-      throw new Error(`cannot instantiate '${of.ident}': the source is too large or has too many instances`)
+      this.error(at, `cannot instantiate '${of.ident}': the source is too large or has too many instances`)
+      return null
     }
     const bound = new Map(comptimeParams.map((p, i) => [p.ident as string, types[i]]))
     const decl = cloneAst(of, index * INSTANCE_STRIDE, (name) => {
@@ -3815,13 +3848,13 @@ class CheckContext {
     }) as AST.FuncDecl
     const input = decl.signature.input as AST.CompositeType
     input.fields = input.fields.filter((f) => !f.comptime)
-    decl.ident = `${of.ident}<${key}>`
+    decl.ident = instanceName(of.ident as string, key, (name) => owner.moduleScope.symbols.has(name))
 
     const shown = comptimeParams.map((p, i) => {
       const text = typeToString(types[i])
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
-    const inst: Instance = { name: decl.ident, label: `${of.ident}(${shown.join(', ')})`, of, decl, args, depth }
+    const inst: Instance = { name: decl.ident, label: `${of.ident}(${shown.join(', ')})`, of, decl, args, depth, chain }
     sym.instances.set(key, inst)
     owner.instances.push(inst)
     owner.instanceQueue.push(inst)
@@ -3838,6 +3871,8 @@ class CheckContext {
   // an instance is known before its body is checked.
   private drainInstances(): void {
     for (let inst = this.instanceQueue.shift(); inst; inst = this.instanceQueue.shift()) {
+      // Of a chain that never ends, the one error is all there is to say.
+      if (inst.chain.stopped) continue
       const saved = { scope: this.currentScope, instance: this.currentInstance }
       this.currentScope = this.moduleScope
       this.currentInstance = inst
@@ -4260,6 +4295,25 @@ function literalMarks(node: unknown, found: { node: LiteralMarks; marks: Literal
     for (const [key, value] of Object.entries(n)) if (key !== 'span') literalMarks(value, found)
   }
   return found
+}
+
+// The name of an instance, as a symbol and in WAT: the generic's name and the
+// key of its arguments. The key of a large struct type runs to kilobytes, so a
+// long one is cut and told apart by a hash of the whole.
+function instanceName(generic: string, key: string, taken: (name: string) => boolean): string {
+  if (key.length <= MAX_NAME_KEY) return `${generic}<${key}>`
+  // FNV-1a, 32 bits from each end of the key
+  const hash = (text: string) => {
+    let h = 0x811c9dc5
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
+    return (h >>> 0).toString(16).padStart(8, '0')
+  }
+  const short = `${generic}<${key.slice(0, MAX_NAME_KEY / 2)}~${hash(key)}${hash([...key].reverse().join(''))}`
+  // Two keys with one hash would be one name: number them apart.
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? `${short}>` : `${short}~${n}>`
+    if (!taken(name)) return name
+  }
 }
 
 // A number literal as it would be written, for a message
