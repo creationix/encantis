@@ -15,6 +15,7 @@ type AccessSuffix =
   | { kind: 'deref' }
   | { kind: 'typePun'; type: AST.Type }
   | { kind: 'index'; expr: AST.Expr }
+  | { kind: 'slice'; start: AST.Expr | null; end: AST.Expr | null }
 
 // Types for postfix operations (AccessSuffix + call)
 type PostfixOp = AccessSuffix | { kind: 'call'; args: AST.Arg[] }
@@ -68,6 +69,14 @@ function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
         ...expr,
         object: cloneExprWithSpan(expr.object, expr.object.span),
         index: cloneExprWithSpan(expr.index, expr.index.span),
+        span: newSpan,
+      }
+    case 'SliceExpr':
+      return {
+        ...expr,
+        object: cloneExprWithSpan(expr.object, expr.object.span),
+        start: expr.start && cloneExprWithSpan(expr.start, expr.start.span),
+        end: expr.end && cloneExprWithSpan(expr.end, expr.end.span),
         span: newSpan,
       }
     case 'IfExpr':
@@ -1016,6 +1025,14 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return { kind: 'index', expr: expr.toAST() }
   },
 
+  AccessSuffix_slice(_lb, start, _dots, end, _rb) {
+    return {
+      kind: 'slice',
+      start: start.children.length > 0 ? start.children[0].toAST() : null,
+      end: end.children.length > 0 ? end.children[0].toAST() : null,
+    }
+  },
+
   // ============================================================================
   // Patterns
   // ============================================================================
@@ -1896,6 +1913,15 @@ function applySuffix(base: AST.Expr, suffix: AccessSuffix, suffixSpan: Span): AS
         index: suffix.expr,
         span: { start: base.span.start, end: suffixSpan.end },
       } as AST.IndexExpr
+
+    case 'slice':
+      return {
+        kind: 'SliceExpr',
+        object: base,
+        start: suffix.start,
+        end: suffix.end,
+        span: { start: base.span.start, end: suffixSpan.end },
+      } as AST.SliceExpr
   }
 }
 

@@ -228,6 +228,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return memberToWat(expr, ctx)
     case 'IndexExpr':
       return indexToWat(expr, ctx)
+    case 'SliceExpr':
+      return sliceToWat(expr, ctx)
     case 'CoalesceExpr':
       return coalesceToWat(expr, ctx)
     case 'IfExpr':
@@ -1001,8 +1003,13 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
           if (localNames && localNames.length >= 2) return `(local.get $${localNames[idx]})`
         }
         const full = exprToWat(expr.object, ctx)
-        const parts = splitMultiValue(full, 2)
-        return parts[idx]
+        const parts = trySplitMultiValue(full, 2)
+        if (parts) return parts[idx]
+        // A slice that comes off the stack (a call, a ?? fallback): drop the
+        // part we don't want. For .len, ptr sits under it, so park len first.
+        if (idx === 0) return `(block (result i32) ${full} (drop))`
+        const tmp = `$__len_${expr.span.start}`
+        return `(block (result i32) ${full} (local.set ${tmp}) (drop) (local.get ${tmp}))`
       }
       if (member.name === 'wid') {
         // Element byte size is always compile-time known
@@ -1245,6 +1252,66 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (type.kind === 'pointer') return offset
   return loadFromMemory(type, offset)
+}
+
+// items[start..end]: (ptr + start * stride, end - start). Parts that are
+// locals or constants are used directly, so a proven range stays two plain
+// values; anything else goes through a scratch local, evaluated once. An
+// optional result (?[]T) is (0, 0) unless start <= end <= length.
+function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
+  const resultType = ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
+    ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
+  const u = unwrap(objType)
+  const stride = byteSize(resultType.element) ?? 1
+  const uid = expr.span.start
+  const setup: string[] = []
+  const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
+  // A part as a plain expression, through the named scratch local if needed.
+  const keep = (wat: string, name: string): string => {
+    if (simple(wat)) return wat
+    setup.push(`(local.set $__sl_${name}_${uid} ${wat})`)
+    return `(local.get $__sl_${name}_${uid})`
+  }
+
+  const obj = exprToWat(expr.object, ctx)
+  let ptr: string
+  let len: string | null
+  if (u.kind === 'slice') {
+    const parts = trySplitMultiValue(obj, 2)
+    if (parts) {
+      ptr = keep(parts[0], 'p')
+      len = keep(parts[1], 'n')
+    } else {
+      setup.push(obj, `(local.set $__sl_n_${uid})`, `(local.set $__sl_p_${uid})`)
+      ptr = `(local.get $__sl_p_${uid})`
+      len = `(local.get $__sl_n_${uid})`
+    }
+  } else {
+    ptr = keep(obj, 'p')
+    const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+    const size = pointee?.kind === 'array' && typeof pointee.sizes?.[0] === 'number' ? pointee.sizes[0] : null
+    len = size !== null ? `(i32.const ${size})` : null
+  }
+  const start = expr.start ? keep(exprToWat(expr.start, ctx), 'a') : '(i32.const 0)'
+  const endWat = expr.end ? exprToWat(expr.end, ctx) : len
+  if (!endWat) throw new Error('a range on a many-pointer needs an end')
+  const end = keep(endWat, 'b')
+
+  const first = start === '(i32.const 0)' ? ptr
+    : stride === 1 ? `(i32.add ${ptr} ${start})`
+    : `(i32.add ${ptr} (i32.mul ${start} (i32.const ${stride})))`
+  const count = start === '(i32.const 0)' ? end : `(i32.sub ${end} ${start})`
+  let value: string
+  if (!resultType.optional) {
+    value = `${first} ${count}`
+  } else {
+    const fits = `(i32.and (i32.le_u ${start} ${end}) (i32.le_u ${end} ${len}))`
+    value = `(if (result i32 i32) ${fits} (then ${first} ${count}) (else (i32.const 0) (i32.const 0)))`
+  }
+  if (setup.length === 0) return value
+  return `(block (result i32 i32)\n${setup.join('\n')}\n${value})`
 }
 
 // &items[i]: the element's address. For an optional result (?*T, when the
@@ -2433,8 +2500,6 @@ export function funcToWat(
     seen.add(l.name)
     return true
   })
-  const localStr = dedupedLocals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
-
   // Generate body, with implicit return coercion for arrow functions. With named
   // results, a trailing expression with a value supplies them; a trailing if,
   // loop or void call leaves the named locals as set.
@@ -2471,6 +2536,7 @@ export function funcToWat(
     epilogue = '(unreachable)'
   }
 
+  const localStr = declareUsedLocals(dedupedLocals, `${body}\n${epilogue}`, '\n  ')
   const paramsStr = params.join(' ')
   const emitName = watName ?? name
   return `(func $${emitName} ${paramsStr} ${resultStr}
@@ -2478,6 +2544,16 @@ export function funcToWat(
   ${body}
   ${epilogue}
 )`
+}
+
+// Local declarations, leaving out compiler scratch locals (named __...) that
+// the code never uses.
+function declareUsedLocals(locals: LocalDecl[], code: string, sep: string): string {
+  const used = new Set(code.match(/\$[\w.+-]+/g) ?? [])
+  return locals
+    .filter(l => !l.name.startsWith('__') || used.has(`$${l.name}`))
+    .map(l => `(local $${l.name} ${l.type})`)
+    .join(sep)
 }
 
 interface LocalDecl {
@@ -2558,12 +2634,14 @@ function collectLocals(
     }
     // Recurse into nested blocks
     if (stmt.kind === 'WhileStmt') {
+      visitExpr(stmt.condition)
       visitBody(stmt.body)
     }
     if (stmt.kind === 'LoopStmt') {
       visitBody(stmt.body)
     }
     if (stmt.kind === 'ForStmt') {
+      visitExpr(stmt.iterable)
       // Collect loop binding variable
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) {
@@ -2598,6 +2676,9 @@ function collectLocals(
     }
     if (stmt.kind === 'ReturnStmt' && stmt.value) {
       visitExpr(stmt.value)
+    }
+    if ((stmt.kind === 'ReturnStmt' || stmt.kind === 'BreakStmt' || stmt.kind === 'ContinueStmt') && stmt.when) {
+      visitExpr(stmt.when)
     }
   }
 
@@ -2648,11 +2729,20 @@ function collectLocals(
       visitExpr(expr.expr)
     }
     if (expr.kind === 'MemberExpr') {
+      if (expr.member.kind === 'field' && expr.member.name === 'len') {
+        locals.push({ name: `__len_${expr.span.start}`, type: 'i32' })
+      }
       visitExpr(expr.object)
     }
     if (expr.kind === 'IndexExpr') {
       visitExpr(expr.object)
       visitExpr(expr.index)
+    }
+    if (expr.kind === 'SliceExpr') {
+      for (const x of ['p', 'n', 'a', 'b']) locals.push({ name: `__sl_${x}_${expr.span.start}`, type: 'i32' })
+      visitExpr(expr.object)
+      if (expr.start) visitExpr(expr.start)
+      if (expr.end) visitExpr(expr.end)
     }
     if (expr.kind === 'CoalesceExpr') {
       const uid = expr.span.start
@@ -2723,6 +2813,8 @@ function collectLocals(
       for (const s of b.stmts) {
         visitStmt(s)
       }
+    } else {
+      visitExpr(b.expr)
     }
   }
 
@@ -2919,7 +3011,7 @@ function emitTestDecl(
       seen.add(l.name)
       return true
     })
-    const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
+    const localStr = declareUsedLocals(locals, body, ' ')
     const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
     parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
