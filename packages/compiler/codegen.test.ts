@@ -503,6 +503,16 @@ describe('expression codegen', () => {
       expect(wat).toContain('(local.set $b_1 (i64.const 0))')
     })
 
+    test('the elements of an untyped array literal, to the widest of them', () => {
+      const wat = funcWat(`func f(n: i32, big: i64) -> i64 {
+        let a = [n, big, 1]
+        return a[0]
+      }`)
+      expect(wat).toContain('(local.set $a_0 (i64.extend_i32_s (local.get $n)))')
+      expect(wat).toContain('(local.set $a_1 (local.get $big))')
+      expect(wat).toContain('(local.set $a_2 (i64.const 1))')
+    })
+
     test('an integer literal is float data in a float array', () => {
       const wat = modWat(`
         export memory 1

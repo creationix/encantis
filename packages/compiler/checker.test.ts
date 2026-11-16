@@ -1389,6 +1389,50 @@ describe('values meeting an expected type', () => {
     `)).toEqual([])
   })
 
+  test('the elements of an untyped array literal settle on one type', () => {
+    const source = `
+      func f(a: u8, b: i32, c: i64, x: f64, i: u32#4) {
+        let ints = [a, b, c]
+        let consts = [1, c, -2]
+        let floats = [b, x, 2]
+        let halves = [b, 0.5]
+        let wide = [a, 300]
+        let big = [1, 5000000000]
+        let mixed = [1, 2.5]
+        let ranged = [i, 9]
+      }
+    `
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    const type = (name: string) => typeAt(result, source.indexOf(`let ${name} =`) + 4)
+    expect(type('ints')).toBe('[3]i64')
+    expect(type('consts')).toBe('[3]i64')
+    expect(type('floats')).toBe('[3]f64')
+    expect(type('halves')).toBe('[2]f64')
+    expect(type('wide')).toBe('[2]i32')
+    expect(type('big')).toBe('[2]i64')
+    expect(type('mixed')).toBe('[2]f64')
+    // One element's range says nothing about the others.
+    expect(type('ranged')).toBe('[2]u32')
+  })
+
+  test('elements that cannot agree are an error', () => {
+    expect(errs(`func f(a: i32, b: u32) { let r = [a, b] }`)).toEqual(['elements have different types: u32 and i32 (cast one explicitly)'])
+    expect(errs(`func f(a: i32, b: bool) { let r = [a, b] }`)).toEqual(['elements have different types: bool and i32 (cast one explicitly)'])
+    expect(errs(`func f(a: i64, x: f64) { let r = [x, a] }`)).toEqual(['elements have different types: i64 and f64 (cast one explicitly)'])
+  })
+
+  test('a declared element type is what each element has to fit', () => {
+    expect(errs(`func f(m: u8, x: f32, n: i32) {
+      let a: [2]i16 = [300, m]
+      let b: [2]f32 = [0.5, x]
+      let c: [2]i64 = [5000000000, n]
+      let d: [2]i64 = [m, n]
+    }`)).toEqual([])
+    expect(errs(`func f(n: i32) { let a: [2]i16 = [300, n] }`)).toEqual(['cannot assign i32 to i16'])
+    expect(errs(`func f(m: u8) { let a: [3]i16 = [300, m] }`)).toEqual(['cannot assign [2]i32 to [3]i16'])
+  })
+
   test('a trailing expression is checked against the named result it supplies', () => {
     expect(errs(`func f(n: i32) -> (r: i64) { n }`)).toEqual([])
     expect(errs(`func f(n: i64) -> (r: i32) { n }`)).toEqual(['cannot assign i64 to i32'])

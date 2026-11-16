@@ -258,6 +258,35 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
+The elements of an array literal settle on a type the same way: each widens to the declared element type, or, without one, to the widest of them.
+
+```ents
+func a(m: u8, n: i32, big: i64, x: f32) -> i64 {
+  let ints = [m, n, big]
+  let halves = [n, 0.5]
+  let small: [2]i16 = [300, m]
+  let floats: [2]f32 = [0.5, x]
+  return ints[0]
+}
+```
+
+```ents
+func a(n: i32, u: u32) -> i32 {
+  let r = [n, u]
+  return r[0]
+}
+
+func b(n: i32) -> i16 {
+  let r: [2]i16 = [300, n]
+  return r[0]
+}
+```
+
+```errors
+elements have different types: u32 and i32
+cannot assign i32 to i16
+```
+
 A `match` compares its literal patterns in the subject's type, so each has to be a value of that type.
 
 ```ents

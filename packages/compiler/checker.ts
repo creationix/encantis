@@ -2060,7 +2060,7 @@ class CheckContext {
       return expected
     }
 
-    const inferred = this.inferExprInner(expr)
+    const inferred = this.inferExprInner(expr, true)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
     // Helper to check if sizes include inferred marker
@@ -2295,7 +2295,8 @@ class CheckContext {
     return this.concretize(type)
   }
 
-  inferExprInner(expr: AST.Expr): ResolvedType {
+  // typedByContext: the expression is about to meet an expected type.
+  inferExprInner(expr: AST.Expr, typedByContext = false): ResolvedType {
     // Inferring afresh: whatever context marked it for widening before is gone.
     this.coercions.delete(expr)
     switch (expr.kind) {
@@ -2330,7 +2331,7 @@ class CheckContext {
         return this.inferTuple(expr)
 
       case 'ArrayExpr':
-        return this.inferArray(expr)
+        return this.inferArray(expr, typedByContext)
 
       case 'RepeatExpr':
         return this.inferRepeat(expr)
@@ -2917,12 +2918,18 @@ class CheckContext {
   // narrower value keeps its type and is marked to be widened where it's
   // used. Anything else is an error.
   private coerce(expr: AST.Expr, actual: ResolvedType, expected: ResolvedType, prefix = ''): void {
-    if (!typeAssignable(expected, actual)) {
+    const from = unwrap(actual)
+    const to = unwrap(expected)
+    // An array literal's own type is a guess from its elements ([0.5, x] an
+    // f64 one). With the right number of them, what counts is that each fits
+    // its place, which is checked below.
+    const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr'
+    const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
+      && to.sizes?.length === 1 && to.sizes[0] === from.count
+    if (!elementwise && !typeAssignable(expected, actual)) {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
       return
     }
-    const from = unwrap(actual)
-    const to = unwrap(expected)
     if (to.kind === 'primitive' && isComptimeNumber(from)) {
       this.typeConstant(expr, expected, actual)
     } else if (to.kind === 'pointer' && from.kind === 'comptime_int') {
@@ -3552,7 +3559,9 @@ class CheckContext {
     return tuple(fields)
   }
 
-  inferArray(expr: AST.ArrayExpr): ResolvedType {
+  // typedByContext: the elements are about to be checked against a declared
+  // element type, one by one, so they aren't settled on a type here.
+  inferArray(expr: AST.ArrayExpr, typedByContext = false): ResolvedType {
     if (expr.elements.length === 0) {
       // Empty array - needs context to determine element type
       // For now, return comptime list with no elements
@@ -3561,10 +3570,33 @@ class CheckContext {
 
     // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
-    const elementType = this.unifyTypes(elemTypes)
+    const numbers = elemTypes.every(t => isScalar(unwrap(t)))
+    const elementType = numbers && !typedByContext
+      ? this.unifyElements(expr.elements, elemTypes)
+      : this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(elementType, expr.elements.length)
+  }
+
+  // The element type of an array literal of numbers with no declared type:
+  // the one type they all widen to, like the branches of an if. Each element
+  // is converted to it.
+  private unifyElements(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    if (types.every(isComptimeNumber)) {
+      // All constants: the default type that holds them all.
+      const type = types.some(t => t.kind === 'comptime_float') ? this.concretize(comptimeFloat(0)) : this.unifyTypes(types)
+      for (const [i, element] of elements.entries()) this.typeConstant(element, type, types[i])
+      return type
+    }
+    const { type, odd } = this.commonType(types)
+    if (odd) {
+      const at = elements[types.indexOf(odd)]
+      this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
+      return type
+    }
+    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    return type
   }
 
   inferRepeat(expr: AST.RepeatExpr): ResolvedType {
@@ -3640,19 +3672,9 @@ class CheckContext {
       }
       return type
     }
-    for (const b of valued) {
-      const constant = isComptimeNumber(unwrap(b.type))
-      if (isComptimeNumber(unwrap(type)) || (!constant && typeAssignable(b.type, type))) type = b.type
-    }
-    // One branch's range says nothing about the others'.
-    type = stripMax(type)
-    // A constant too big for that type widens it, if its own default type
-    // holds the rest: if c { n } else { 5000000000 } is an i64.
-    for (const b of valued) {
-      const own = this.concretize(b.type)
-      if (isComptimeNumber(b.type) && !typeAssignable(type, b.type) && typeAssignable(own, type)) type = own
-    }
-    const odd = valued.find(b => !typeAssignable(type, b.type))
+    const common = this.commonType(valued.map(b => b.type))
+    type = common.type
+    const odd = valued.find(b => b.type === common.odd)
     if (odd) {
       if (!valueUsed) return VOID
       const at = bodyValue(odd.body) ?? odd.body
@@ -3664,6 +3686,26 @@ class CheckContext {
       if (value) this.coerce(value, b.type, type)
     }
     return type
+  }
+
+  // The one type several values, not all of them constants, widen to: the
+  // widest of them. `odd` is one that doesn't widen to it, when they have no
+  // such type.
+  private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    let type = types[0]
+    for (const t of types) {
+      const constant = isComptimeNumber(unwrap(t))
+      if (isComptimeNumber(unwrap(type)) || (!constant && typeAssignable(t, type))) type = t
+    }
+    // One value's range says nothing about the others'.
+    type = stripMax(type)
+    // A constant too big for that type widens it, if its own default type
+    // holds the rest: n and 5000000000 are an i64.
+    for (const t of types) {
+      const own = this.concretize(t)
+      if (isComptimeNumber(t) && !typeAssignable(type, t) && typeAssignable(own, type)) type = own
+    }
+    return { type, odd: types.find(t => !typeAssignable(type, t)) }
   }
 
   inferIfLet(expr: AST.IfExpr): ResolvedType {
