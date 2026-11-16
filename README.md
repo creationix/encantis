@@ -90,7 +90,7 @@ After editing `packages/compiler/encantis-grammar.ohm`, regenerate the bundled g
 Releases are cut from `main` by pushing a version tag:
 
 1. Set `version` in the root `package.json` (for example `0.2.0`) and merge that to `main`.
-2. Tag the commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+2. Tag the commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. Or run the **Release** workflow by hand on `main` from the Actions tab (`gh workflow run release.yml`), which releases the `package.json` version and creates the tag.
 
 The [release workflow](.github/workflows/release.yml) checks that the tag matches `package.json`, builds the binaries and the `.vsix`, smoke-tests each binary on its own OS, and publishes a GitHub release with the checksums. To build the same artifacts locally, run `bun scripts/build-release.ts` (they go in `release/`).
 
