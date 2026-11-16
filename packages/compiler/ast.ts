@@ -313,6 +313,7 @@ export type Expr =
   | CallExpr
   | MemberExpr
   | IndexExpr
+  | SliceExpr
   | CoalesceExpr
   | IdentExpr
   | LiteralExpr
@@ -408,6 +409,14 @@ export type MemberAccess =
   | { kind: 'type'; type: Type }
 
 // expr[index]
+// items[start..end], with either bound left out
+export interface SliceExpr extends BaseNode {
+  kind: 'SliceExpr'
+  object: Expr
+  start: Expr | null
+  end: Expr | null
+}
+
 export interface IndexExpr extends BaseNode {
   kind: 'IndexExpr'
   object: Expr
@@ -530,7 +539,7 @@ export interface SizeofDataExpr extends BaseNode {
 // L-Values (assignable expressions)
 // ============================================================================
 
-export type LValue = IdentExpr | MemberExpr | IndexExpr | Pattern
+export type LValue = IdentExpr | MemberExpr | IndexExpr | SliceExpr | Pattern
 
 // ============================================================================
 // Patterns
@@ -691,6 +700,7 @@ export interface ASTVisitor {
   visitCallExpr?(node: CallExpr): void | false
   visitMemberExpr?(node: MemberExpr): void | false
   visitIndexExpr?(node: IndexExpr): void | false
+  visitSliceExpr?(node: SliceExpr): void | false
   visitCoalesceExpr?(node: CoalesceExpr): void | false
   visitIdentExpr?(node: IdentExpr): void | false
   visitLiteralExpr?(node: LiteralExpr): void | false
@@ -878,6 +888,13 @@ function walkExpr(expr: Expr, visitor: ASTVisitor): void {
       if (visitor.visitIndexExpr?.(expr) !== false) {
         walkExpr(expr.object, visitor)
         walkExpr(expr.index, visitor)
+      }
+      break
+    case 'SliceExpr':
+      if (visitor.visitSliceExpr?.(expr) !== false) {
+        walkExpr(expr.object, visitor)
+        if (expr.start) walkExpr(expr.start, visitor)
+        if (expr.end) walkExpr(expr.end, visitor)
       }
       break
     case 'CoalesceExpr':
