@@ -1177,6 +1177,40 @@ describe('tuples in data arrays', () => {
   })
 })
 
+describe('a slice from a pointer and a length', () => {
+  test('nothing is laid out in the data section for it', () => {
+    const wat = modWat(`
+      data buf = mut [0:u8; 16]
+      func f(n: u32) -> u32 {
+        let s: []u8 = ((buf as [*]u8), n)
+        return s.len
+      }
+    `)
+    expect(wat.match(/zero bytes|\(data /g)?.length).toBe(1)
+  })
+
+  test('slices of structs and of slices', async () => {
+    const { f } = await run(`
+      data space = mut [0:u8; 64]
+      type Lane = (cells: []i32, free: i32)
+      type Option = (d: i32, lane: Lane)
+      global opts: []Option = (0, 0)
+      global rows: [][]i32 = (0, 0)
+      export func f() -> u32 {
+        let lists = space as [*]mut []i32
+        lists[1] = ((space as [*]i32), 5:u32)
+        let all: [][]i32 = (lists, 2:u32)
+        rows = all
+        opts = ((space as [*]Option), 3:u32)
+        let n: u32 = 0
+        for row in rows { n += row.len }
+        return n + opts.len * 10 + all.len * 100
+      }
+    `)
+    expect(f()).toBe(235)
+  })
+})
+
 // === Module Codegen Tests ===
 
 describe('module codegen', () => {

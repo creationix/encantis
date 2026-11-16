@@ -121,6 +121,25 @@ cannot write through const pointer
 cannot write through const slice
 ```
 
+## Slices from a pointer and a length
+
+A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
+
+```ents
+type Spot = (c: i32, di: i32)
+type Lane = (cells: []i32, at: Spot)
+
+global lanes: []Lane = (0, 0)
+global rows: [][]i32 = (0, 0)
+
+func f(p: [*]Lane, q: [*][]i32, n: u32) -> u32 {
+  lanes = (p, n)
+  let all: [][]i32 = (q, n)
+  rows = all
+  return lanes.len + rows.len
+}
+```
+
 ## Globals
 
 A global can be a slice, a struct or a wide integer.

@@ -1034,6 +1034,24 @@ describe('writes through pointers', () => {
   })
 })
 
+describe('a slice from a pointer and a length', () => {
+  test('is a value, not a literal for the data section', () => {
+    const result = checkModule(`
+      type Spot = (c: i32, di: i32)
+      type Lane = (cells: []i32, at: Spot)
+      global lanes: []Lane = (0, 0)
+      global rows: [][]i32 = (0, 0)
+      func f(p: [*]u8, q: [*][]i32, n: u32) -> u32 {
+        let s: []u8 = (p, n)
+        let all: [][]i32 = (q, n)
+        return s.len + all.len
+      }
+    `)
+    expect(result.errors).toEqual([])
+    expect(result.literals).toEqual([])
+  })
+})
+
 describe('defer', () => {
   test('a deferred expression cannot return', () => {
     const result = checkModule(`func f(n: u32) { defer if n > 0 { return } }`)

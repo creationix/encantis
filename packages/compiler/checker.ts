@@ -2031,6 +2031,13 @@ class CheckContext {
       return resolvedExpected
     }
 
+    // (ptr, len) against a slice is that slice, built from its two parts: a
+    // value like any other tuple, with nothing to lay out in the data section.
+    if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && expected.kind === 'slice') {
+      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      return expected
+    }
+
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
     const isFramedArray = expected.kind === 'array' && expected.sizes?.some(s => s === '!' || s === '?')
     if (

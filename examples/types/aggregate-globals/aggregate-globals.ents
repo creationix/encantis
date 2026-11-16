@@ -23,6 +23,8 @@ global lane: Lane
 global rect: Rect = Rect((x: 1, y: 2), (w: 3, h: 4))
 global message: []u8 = "hello"
 global wide: u128 = 5
+global lanes: []Lane = (0, 0)
+global rows: [][]i32 = (0, 0)
 export global seen: []i32 = (0, 0)
 
 func count() -> u32 => list.len
@@ -90,6 +92,25 @@ test "nested fields of struct globals" {
   assert rect.origin.y == 8
   assert rect.size.w == 9
   assert rect.size.h == 4
+}
+
+test "globals that are slices of structs and of slices" {
+  assert lanes.len == 0
+  assert rows.len == 0
+  let w = buf as [*]mut i32
+  w[0] = 5
+  let store = ((buf as u32) + 16) as [*]mut Lane
+  store[0] = Lane((w, 1:u32), 2)
+  store[1] = Lane((w, 3:u32), 4)
+  lanes = (store, 2:u32)
+  let t: u32 = 0
+  for l in lanes { t += l.cells.len * 10 + (l.free as u32) }
+  assert t == 46
+  let lists = ((buf as u32) + 40) as [*]mut []i32
+  lists[0] = lanes.ptr[1].cells
+  rows = (lists, 1:u32)
+  for row in rows { t += row.len }
+  assert t == 49
 }
 
 test "a wide integer global" {
