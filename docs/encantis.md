@@ -1291,11 +1291,11 @@ for i in num {           // iterate 0 to n-1
   process(i)
 }
 
-for elem in arr {        // iterate over array/slice elements (not yet implemented)
+for elem in items {      // iterate over the elements of a slice or *[N]T
   process(elem)
 }
 
-for i, elem in arr {     // iterate with index (not yet implemented)
+for i, elem in items {   // with the index (u32) first
   process(i, elem)
 }
 
@@ -1303,6 +1303,8 @@ loop {                   // infinite loop
   // body
 }
 ```
+
+An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 
 ### 5.3 Control Statements
 
