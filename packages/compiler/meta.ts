@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, type TypeCheckResult, type Symbol } from './checker'
+import { typecheck, typeKey, type TypeCheckResult } from './checker'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
@@ -722,6 +722,8 @@ class MetaBuilder {
           break
         case 'DefDecl':
           this.generateHintsForDef(item)
+          break
+        case 'ImportDecl':
           break
         default:
           this.generateHintsForStmt(item)

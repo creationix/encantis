@@ -10,5 +10,15 @@
       "quoteStyle": "single",
       "semicolons": "asNeeded"
     }
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/out",
+      "!**/node_modules",
+      "!**/*.bundle.ts",
+      "!**/*.vsix"
+    ]
   }
 }

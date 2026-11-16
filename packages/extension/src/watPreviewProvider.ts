@@ -136,7 +136,7 @@ async function renderWat(rawWat: string, mode: WatDisplayMode, optLevel: OptLeve
   const mod = w.readWasm(binary, { readDebugNames: true });
   mod.generateNames();
   mod.applyNames();
-  const text = mod.toText({ foldExprs: mode === 'folded', inlineExport: true, inlineImport: true });
+  const text = mod.toText({ foldExprs: mode === 'folded', inlineExport: true });
   return { text: tidyWat(text, rawWat), wasmSize };
 }
 

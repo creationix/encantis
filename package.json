@@ -24,7 +24,10 @@
     "examples:all": "bun scripts/examples.ts all",
     "examples:clean": "bun scripts/examples.ts clean",
     "test": "bun test",
-    "ci": "bun run examples:all && bun test"
+    "typecheck": "tsc --noEmit -p packages/compiler && tsc --noEmit -p packages/cli && tsc --noEmit -p packages/extension",
+    "lint": "biome lint --diagnostic-level=error .",
+    "build:binary": "bun scripts/build-binaries.ts",
+    "ci": "bun run lint && bun run typecheck && bun run examples:all && bun test"
   },
   "dependencies": {},
   "devDependencies": {

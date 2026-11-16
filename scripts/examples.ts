@@ -7,6 +7,8 @@ import { resolve, dirname, basename, relative } from 'path'
 import { readdir, unlink } from 'fs/promises'
 import wabt from 'wabt'
 
+type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
+
 const command = process.argv[2]
 if (!command || !['check', 'all', 'clean'].includes(command)) {
   console.log('Usage: bun scripts/examples.ts <check|all|clean>')
@@ -122,7 +124,7 @@ for (const entry of entries) {
   await Bun.write(watPath, wat)
 
   const w = await wabt()
-  let wasmModule
+  let wasmModule: WabtModule | undefined
   try {
     wasmModule = w.parseWat(rel, wat, { simd: true, multi_value: true, bulk_memory: true })
     wasmModule.validate()

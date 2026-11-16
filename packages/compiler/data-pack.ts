@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { isOptional, type ArrayRT, type ArraySize, type ResolvedType } from './types'
+import { byteSize, isOptional, type ArrayRT, type ArraySize, type ResolvedType } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -633,10 +633,10 @@ function serializeSeparate(
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
-  const elemIsSlice = targetType.element.kind === 'slice'
-  const innerType: ArrayRT = elemIsSlice
-    ? { kind: 'array', element: targetType.element.element, sizes: ['_'] }
-    : targetType.element as ArrayRT
+  const elem = targetType.element
+  const innerType: ArrayRT = elem.kind === 'slice'
+    ? { kind: 'array', element: elem.element, sizes: ['_'] }
+    : elem as ArrayRT
   const childRefs: DataRef[] = []
 
   for (const elem of expr.elements) {
@@ -651,7 +651,7 @@ function serializeSeparate(
     }
   }
 
-  const isSlice = elemIsSlice || targetType.sizes === null || (targetType.sizes.length === 0)
+  const isSlice = elem.kind === 'slice' || targetType.sizes === null || (targetType.sizes.length === 0)
   const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
 
   const optional = isOptional(targetType.element)
@@ -985,6 +985,7 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
     offset: e.offset,
     length: e.bytes.length,
     explicit: true,
+    labels: [],
   }))
   const allEntries = [...explicitDataEntries, ...section.entries].sort(
     (a, b) => a.offset - b.offset,

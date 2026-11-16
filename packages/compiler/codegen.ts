@@ -17,7 +17,7 @@ import {
   totalElements,
 } from './types'
 import * as RT from './types'
-import { dataToWat, buildDataSection } from './data-pack'
+import { dataToWat, buildDataSection, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
@@ -389,7 +389,7 @@ function wideIntParts(t: ResolvedType): number {
 
 const limbs = (op: string) => (l: string[], r: string[]) => l.map((x, i) => `(i64.${op} ${x} ${r[i]})`).join(' ')
 const limbsEqual = (l: string[], r: string[]) => l.map((x, i) => `(i64.eq ${x} ${r[i]})`).reduce((a, b) => `(i32.and ${a} ${b})`)
-const INLINE_WIDE_OPS: Record<string, (l: string[], r: string[]) => string> = {
+const INLINE_WIDE_OPS: Partial<Record<string, (l: string[], r: string[]) => string>> = {
   '&': limbs('and'),
   '|': limbs('or'),
   '^': limbs('xor'),
@@ -1333,8 +1333,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Bind helper
-  const bindingNames = ctx.locals.get(pattern.name)
-  if (!bindingNames) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
+  const found = ctx.locals.get(pattern.name)
+  if (!found) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
+  const bindingNames = found
   function makeBind(loadVal: string): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
@@ -2612,7 +2613,8 @@ function collectLocals(
     }
     if (expr.kind === 'MatchExpr') {
       for (const arm of expr.arms) {
-        visitBody(arm.body)
+        if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') visitBody(arm.body)
+        else visitExpr(arm.body)
       }
     }
     if (expr.kind === 'GroupExpr') {

@@ -8,7 +8,9 @@ const recipe = (grammar as any).toRecipe()
 
 const output = `// Auto-generated from encantis-grammar.ohm - do not edit
 import * as ohm from 'ohm-js'
-export const grammar = ohm.makeRecipe(${JSON.stringify(recipe)})
+// makeRecipe is part of ohm's runtime but missing from its type declarations.
+const { makeRecipe } = ohm as unknown as { makeRecipe(recipe: unknown): ohm.Grammar }
+export const grammar = makeRecipe(${JSON.stringify(recipe)})
 `
 
 writeFileSync(new URL('../encantis-grammar.bundle.ts', import.meta.url), output)

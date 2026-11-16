@@ -12,6 +12,8 @@ import { LineMap } from '@encantis/compiler/position'
 import { resolve } from 'node:path'
 import wabt from 'wabt'
 
+type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
+
 const args = process.argv.slice(2)
 
 function usage() {
@@ -260,7 +262,7 @@ switch (command) {
 
     if (command === 'wasm') {
       const w = await wabt()
-      let wasmModule
+      let wasmModule: WabtModule | undefined
       try {
         wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
         wasmModule.validate()
@@ -549,7 +551,7 @@ switch (command) {
       if (testNames.length === 0) continue
 
       const w = await wabt()
-      let wasmModule
+      let wasmModule: WabtModule | undefined
       try {
         wasmModule = w.parseWat(testFile, wat, { simd: true, multi_value: true, bulk_memory: true })
         wasmModule.validate()
