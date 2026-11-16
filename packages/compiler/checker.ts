@@ -1834,6 +1834,15 @@ class CheckContext {
         const returns = this.typeToFields(type.output)
         return func(params, returns)
       }
+
+      case 'BoundType':
+        // Not wrapped in named(): messages then print the argument (f64), not
+        // the parameter (T).
+        return type.type
+
+      case 'TypeType':
+        this.error(type.span.start, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
+        return primitive('i32')
     }
   }
 
@@ -2201,6 +2210,12 @@ class CheckContext {
 
       case 'TupleExpr':
         return this.inferTuple(expr)
+
+      case 'TypeExpr': {
+        const shown = expr.type.kind === 'TypeRef' ? expr.type.name : typeToString(this.resolveType(expr.type))
+        this.error(expr.span.start, `'${shown}' is a type; a type can only be passed for a comptime parameter`)
+        return primitive('i32')
+      }
 
       case 'ArrayExpr':
         return this.inferArray(expr)

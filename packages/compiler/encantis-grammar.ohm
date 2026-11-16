@@ -69,7 +69,21 @@ Encantis {
 
   // Function signature - return type is optional (defaults to void)
   // Uses BaseType for input to avoid ambiguity with function types
-  FuncSignature = BaseType ("->" Type)?
+  FuncSignature = ParamList ("->" Type)?  -- params
+                | BaseType ("->" Type)?   -- plain
+
+  // The parameters of a declaration or import item: fields, plus comptime
+  // parameters. Struct types, results, enum payloads and function types use
+  // FieldList, so `comptime` cannot be written in them at all.
+  ParamList = "(" ListOf<Param, ","> ")"
+
+  // comptimeTypeLower and typeNoComptime are near misses of comptimeType. They
+  // parse so that the checker can say what to write instead.
+  Param = comptime typeIdent ":" type    -- comptimeType
+        | comptime ident ":" type        -- comptimeTypeLower
+        | comptime ident TypeAnnotation  -- comptimeValue
+        | typeIdent ":" type             -- typeNoComptime
+        | Field                          -- plain
 
   FieldList = NonemptyListOf<Field, ",">
 
@@ -419,9 +433,21 @@ Encantis {
 
   ArgList = NonemptyListOf<Arg, ",">
 
-  Arg = ident ":" Expr  -- named
-      | ident ":"       -- shorthand
-      | Expr            -- positional
+  Arg = ident ":" Expr          -- named
+      | ident ":"               -- shorthand
+      | TypeLit &("," | ")")    -- type
+      | Expr                    -- positional
+
+  // A type written as an argument, for a comptime type parameter. Only the
+  // forms that cannot start an expression are parsed as types: u32, (u32, u32)
+  // and Point(1, 2) stay expressions, and the checker reads them as types
+  // where the parameter is one.
+  TypeLit = Type_func                 -- func
+          | &typeOnlyStart BaseType   -- base
+
+  typeOnlyStart = "?" | "*" | "[*]" | "[]" | arrayPrefix | rangedUnsigned | bareTypeIdent
+  arrayPrefix = "[" arrayFramings "]"
+  bareTypeIdent = typeIdent ~"("
 
   // ============================================================================
   // Literals
@@ -515,7 +541,7 @@ Encantis {
            | break | continue | return | when | defer
            | func | let | set | global | data | def | type | enum
            | import | export | memory | inline | mut
-           | as | true | false | int | float | sizeof) ~identChar
+           | as | true | false | int | float | sizeof | comptime) ~identChar
 
   if = "if" ~identChar
   elif = "elif" ~identChar
@@ -549,6 +575,7 @@ Encantis {
   int = "int" ~identChar
   float = "float" ~identChar
   sizeof = "sizeof" ~identChar
+  comptime = "comptime" ~identChar
 
   // Comments
   comment = lineComment | blockComment

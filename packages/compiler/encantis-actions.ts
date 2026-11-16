@@ -28,6 +28,29 @@ function span(node: ohm.Node): Span {
   }
 }
 
+function funcSignature(input: ohm.Node, outputOpt: ohm.IterationNode, at: Span): AST.FuncSignature {
+  const inputAST = input.toAST()
+  // If return is omitted, default to void (empty composite type)
+  const outputAST = first<AST.Type>(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: at } as AST.CompositeType)
+  return {
+    kind: 'FuncSignature',
+    input: inputAST,
+    output: outputAST,
+    span: at,
+  } as AST.FuncSignature
+}
+
+// comptime T: type
+function comptimeTypeParam(name: ohm.Node, typeKw: ohm.Node, at: Span): AST.Field {
+  return {
+    kind: 'Field',
+    comptime: true,
+    ident: name.sourceString,
+    type: { kind: 'TypeType', span: span(typeKw) },
+    span: at,
+  }
+}
+
 // Deep-clone an expression, overriding the top-level span
 function cloneExprWithSpan(expr: AST.Expr, newSpan: Span): AST.Expr {
   switch (expr.kind) {
@@ -327,19 +350,56 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.FuncDecl
   },
 
-  // FuncSignature = BaseType ("->" Type)?
+  // FuncSignature = ParamList ("->" Type)? | BaseType ("->" Type)?
   // Uses symmetric input/output design
-  // Ohm passes optional elements separately: BaseType, _arrow (optional iter), Type (optional iter)
-  FuncSignature(input, _arrowOpt, outputOpt): AST.FuncSignature {
-    const inputAST = input.toAST()
-    // If return is omitted, default to void (empty composite type)
-    const outputAST = first(outputOpt) ?? ({ kind: 'CompositeType', fields: [], span: span(this) } as AST.CompositeType)
+  // Ohm passes optional elements separately: input, _arrow (optional iter), Type (optional iter)
+  FuncSignature_params(input, _arrowOpt, outputOpt): AST.FuncSignature {
+    return funcSignature(input, outputOpt, span(this))
+  },
+
+  FuncSignature_plain(input, _arrowOpt, outputOpt): AST.FuncSignature {
+    return funcSignature(input, outputOpt, span(this))
+  },
+
+  // The node BaseType_composite produces for the same text, so a parameter
+  // list reads as the input type it always was.
+  ParamList(_lp, list, _rp) {
     return {
-      kind: 'FuncSignature',
-      input: inputAST,
-      output: outputAST,
+      kind: 'CompositeType',
+      fields: list.asIteration().children.map((p: ohm.Node) => p.toAST()),
       span: span(this),
-    } as AST.FuncSignature
+    } as AST.CompositeType
+  },
+
+  Param_comptimeType(_comptime, name, _colon, typeKw) {
+    return comptimeTypeParam(name, typeKw, span(this))
+  },
+
+  Param_comptimeTypeLower(_comptime, name, _colon, typeKw) {
+    return comptimeTypeParam(name, typeKw, span(this))
+  },
+
+  Param_comptimeValue(_comptime, ident, typeAnnotation) {
+    return {
+      kind: 'Field',
+      comptime: true,
+      ident: ident.toAST(),
+      type: typeAnnotation.toAST(),
+      span: span(this),
+    } as AST.Field
+  },
+
+  Param_typeNoComptime(name, _colon, typeKw) {
+    return {
+      kind: 'Field',
+      ident: name.sourceString,
+      type: { kind: 'TypeType', span: span(typeKw) },
+      span: span(this),
+    } as AST.Field
+  },
+
+  Param_plain(field) {
+    return field.toAST()
   },
 
   FieldList(list) {
@@ -1631,6 +1691,23 @@ export const semanticsActions: Record<string, SemanticAction> = {
       value: null,
       span: span(this),
     } as AST.Arg
+  },
+
+  Arg_type(type, _lookahead) {
+    return {
+      kind: 'Arg',
+      name: null,
+      value: { kind: 'TypeExpr', type: type.toAST(), span: span(type) } as AST.TypeExpr,
+      span: span(type),
+    } as AST.Arg
+  },
+
+  TypeLit_func(type) {
+    return type.toAST()
+  },
+
+  TypeLit_base(_lookahead, type) {
+    return type.toAST()
   },
 
   Arg_positional(expr) {

@@ -86,6 +86,10 @@ export function astToResolved(ast: AST.Type): ResolvedType {
 
     case 'FuncType':
       throw new Error(`FuncType cannot be resolved in this context`)
+
+    case 'TypeType':
+    case 'BoundType':
+      throw new Error(`${ast.kind} cannot be resolved without context`)
   }
 }
 
