@@ -444,9 +444,36 @@ export function isConcreteType(t: ResolvedType): boolean {
 
 // === Check Context ===
 
+// The types map, able to take back what was recorded while an expression was
+// only being looked at (see CheckContext.peek).
+class TypeTable extends Map<string, ResolvedType> {
+  private trials = 0
+  private replaced: { key: string; had: boolean; was: ResolvedType | undefined }[] = []
+
+  override set(key: string, type: ResolvedType): this {
+    if (this.trials > 0) this.replaced.push({ key, had: this.has(key), was: this.get(key) })
+    return super.set(key, type)
+  }
+
+  begin(): number {
+    this.trials++
+    return this.replaced.length
+  }
+
+  rollback(mark: number): void {
+    while (this.replaced.length > mark) {
+      const entry = this.replaced.pop()
+      if (!entry) break
+      if (entry.had && entry.was) super.set(entry.key, entry.was)
+      else this.delete(entry.key)
+    }
+    this.trials--
+  }
+}
+
 class CheckContext {
   source?: string
-  types = new Map<string, ResolvedType>()
+  types = new TypeTable()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -491,6 +518,10 @@ class CheckContext {
   // Counts every report, also one that repeats an error already listed: an
   // expression can be inferred twice, and fails the second time too.
   errorsReported = 0
+  // What an inferred call found for its type parameters, or null when it
+  // failed. A call nested in another's deciding argument is come to twice, and
+  // without this each level of nesting would double the work.
+  inferred = new Map<AST.CallExpr, Map<string, ResolvedType> | null>()
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
@@ -3564,46 +3595,14 @@ class CheckContext {
         bound.set(param.ident as string, value.type)
       }
     } else {
-      // The first argument that can decide a type parameter decides it. An
-      // untyped literal never does: it takes the type the parameter turns out
-      // to have. These arguments are checked again below, against the
-      // instance's parameter types, and that check is the one that registers
-      // their literals.
-      const registered = this.pendingLiterals.length
-      const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
-      for (const { param, arg } of pairs) {
-        if (!mentionsUnbound(param.type, typeParams, bound)) continue
-        const type = this.inferExpr(arg)
-        if (type === RECOVERY) return fail()
-        if (hasOwnType(type)) matchType(param.type, type, typeParams, bound)
-        else untyped.push({ param, arg, type })
+      // What the call found the first time it was come to is what it finds now.
+      let found = this.inferred.get(expr)
+      if (found === undefined) {
+        found = this.inferTypeArgs(expr, name, pairs, typeParams)
+        this.inferred.set(expr, found)
       }
-      this.pendingLiterals.length = registered
-      const missing = typeParams.find((p) => !bound.has(p))
-      if (missing) {
-        const rest = runtimeCount > 0 ? ', ...' : ''
-        const literals = untyped.filter((u) => mentionsUnbound(u.param.type, [missing], bound))
-        if (literals.length === 0) {
-          const plural = typeParams.length === 1 ? '' : 's'
-          return fail(
-            expr.span.start,
-            `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${name}(${typeParams.map(() => 'u32').join(', ')}${rest})`,
-          )
-        }
-        // What the literals would be on their own, to show what to write
-        const guess = new Map(bound)
-        for (const u of untyped) matchType(u.param.type, this.concretize(u.type), typeParams, guess)
-        const written = typeParams.map((p) => {
-          const type = guess.get(p)
-          return type ? typeToString(type) : p
-        })
-        const text = literalText(literals[0].arg)
-        const example = text ? ` (${text}:${typeToString(this.concretize(literals[0].type))})` : ''
-        return fail(
-          expr.span.start,
-          `cannot infer ${missing} for '${name}' from untyped literals: write ${name}(${written.join(', ')}${rest}) or give a literal its type${example}`,
-        )
-      }
+      if (!found) return fail()
+      for (const [param, type] of found) bound.set(param, type)
     }
 
     // A type declared further down is not known yet while declarations are
@@ -3640,6 +3639,81 @@ class CheckContext {
     this.types.set(typeKey(expr.callee.span.start, 'IdentExpr'), sig)
     if (sig.returns.length === 0) return VOID
     return sig.returns.length === 1 ? sig.returns[0].type : tuple(sig.returns)
+  }
+
+  // The type parameters of an inferred call, found from its arguments; null,
+  // with the error reported, when they cannot be. The first argument that can
+  // decide a type parameter decides it. An untyped literal never does: it takes
+  // the type the parameter turns out to have.
+  private inferTypeArgs(
+    expr: AST.CallExpr,
+    name: string,
+    pairs: { param: AST.Field; arg: AST.Expr }[],
+    typeParams: string[],
+  ): Map<string, ResolvedType> | null {
+    const bound = new Map<string, ResolvedType>()
+    const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
+    for (const { param, arg } of pairs) {
+      if (!mentionsUnbound(param.type, typeParams, bound)) continue
+      const type = this.peek(arg)
+      if (type === RECOVERY) return null
+      if (hasOwnType(type)) matchType(param.type, type, typeParams, bound)
+      else untyped.push({ param, arg, type })
+    }
+    const missing = typeParams.find((p) => !bound.has(p))
+    if (!missing) return bound
+
+    const rest = pairs.length > 0 ? ', ...' : ''
+    const literals = untyped.filter((u) => mentionsUnbound(u.param.type, [missing], bound))
+    if (literals.length === 0) {
+      const plural = typeParams.length === 1 ? '' : 's'
+      this.error(
+        expr.span.start,
+        `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${name}(${typeParams.map(() => 'u32').join(', ')}${rest})`,
+      )
+      return null
+    }
+    // What the literals would be on their own, to show what to write
+    const guess = new Map(bound)
+    for (const u of untyped) matchType(u.param.type, this.concretize(u.type), typeParams, guess)
+    const written = typeParams.map((p) => {
+      const type = guess.get(p)
+      return type ? typeToString(type) : p
+    })
+    const text = literalText(literals[0].arg)
+    const example = text ? ` (${text}:${typeToString(this.concretize(literals[0].type))})` : ''
+    this.error(
+      expr.span.start,
+      `cannot infer ${missing} for '${name}' from untyped literals: write ${name}(${written.join(', ')}${rest}) or give a literal its type${example}`,
+    )
+    return null
+  }
+
+  // The type an expression has by itself, found without leaving a trace. An
+  // argument that may decide a type parameter is looked at before the type it
+  // is checked against is known, and then checked as any argument is. Whatever
+  // the look recorded has to go: a `let` inside the argument would be declared
+  // twice, a literal it took the address of would stay marked as its own
+  // writable cell, and the call would no longer compile to what the same call
+  // of a hand-written function does. Errors stay: the check repeats them.
+  private peek(expr: AST.Expr): ResolvedType {
+    const literals = literalMarks(expr)
+    const types = this.types.begin()
+    const registered = this.pendingLiterals.length
+    const warned = this.warnings.length
+    const scope = this.currentScope
+    this.currentScope = { parent: scope, symbols: new Map() }
+    const type = this.inferExpr(expr)
+    this.currentScope = scope
+    this.warnings.length = warned
+    this.pendingLiterals.length = registered
+    this.types.rollback(types)
+    for (const { node, marks } of literals) {
+      delete node.mut
+      delete node.dataId
+      Object.assign(node, marks)
+    }
+    return type
   }
 
   // The one place a comptime argument is evaluated. A type argument is read as
@@ -4111,6 +4185,25 @@ function matchType(
     default:
       return
   }
+}
+
+// The marks the checker leaves on the literals of an expression (that it is
+// writable data, and which data entry it is), to put them back as they were.
+type LiteralMarks = { mut?: boolean; dataId?: number }
+function literalMarks(node: unknown, found: { node: LiteralMarks; marks: LiteralMarks }[] = []) {
+  if (Array.isArray(node)) {
+    for (const n of node) literalMarks(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as LiteralMarks & { kind?: string }
+    if (n.kind === 'LiteralExpr' || n.kind === 'ArrayExpr' || n.kind === 'RepeatExpr' || n.kind === 'TupleExpr') {
+      const marks: LiteralMarks = {}
+      if ('mut' in n) marks.mut = n.mut
+      if ('dataId' in n) marks.dataId = n.dataId
+      found.push({ node: n, marks })
+    }
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') literalMarks(value, found)
+  }
+  return found
 }
 
 // A number literal as it would be written, for a message

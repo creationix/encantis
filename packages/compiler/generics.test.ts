@@ -250,6 +250,36 @@ export func c(x: u64, c: bool) -> u64 => pick(c, x, if c { 1 } else { 2 })`
     // Each literal is registered once, although its argument is inferred and then checked.
     expect(result.literals).toHaveLength(2)
   })
+
+  test('a let inside the argument that decides is declared once', () => {
+    const source = `${MAX}export func a(c: bool, x: u32, y: u32) -> u32 => max(if c {
+  let t: u32 = x * 2
+  t
+} else { y }, y)
+export func b(k: u32, x: u64) -> u64 => max(match k {
+  0 => x
+  _ => {
+    let t = x + 1
+    t * 2
+  }
+}, 7)`
+    expect(errorsOf(source)).toEqual([])
+    expect(instancesOf(source)).toEqual(['max<u32>', 'max<u64>'])
+  })
+
+  test('nested inferred calls are not inferred again at each level', () => {
+    // Each call is the argument that decides the next one out. Looked at and
+    // then checked at every level, 40 levels would be 2^40 looks.
+    const nested = (depth: number, inner: string) => `${'id('.repeat(depth)}${inner}${')'.repeat(depth)}`
+    const fold = (depth: number) => `${'mix('.repeat(depth)}h${Array.from({ length: depth }, (_, i) => `, x + ${i})`).join('')}`
+    const source = `func id(comptime T: type, a: T) -> T => a
+func mix(comptime T: type, h: T, v: T) -> T => (h ^ v) * 31
+export func a(x: u32) -> u32 => ${nested(40, 'x')}
+export func b(h: u64, x: u64) -> u64 => ${fold(40)}`
+    const start = performance.now()
+    expect(instancesOf(source)).toEqual(['id<u32>', 'mix<u64>'])
+    expect(performance.now() - start).toBeLessThan(2000)
+  })
 })
 
 describe('instances', () => {
@@ -863,6 +893,21 @@ export func b() -> *mut u64 => cell_u64(2)
     await expectSameWasm(generic, byHand)
     const exports = await run(generic)
     expect(exports.a()).not.toBe(exports.b())
+  })
+
+  test('the address of a literal passed for a read-only *T is shared, as for a hand-written function', async () => {
+    // Inferring T looks at &7:u32 before it is known to be read-only. That
+    // look must not leave the literal marked as a cell of its own.
+    const generic = `func load(comptime T: type, p: *T) -> T => p.*
+export func a() -> u32 => load(&7:u32) + load(&7:u32)
+export func b() -> u64 => load(&9:u64) + load(u64, &9:u64)
+`
+    const byHand = `func load_u32(p: *u32) -> u32 => p.*
+func load_u64(p: *u64) -> u64 => p.*
+export func a() -> u32 => load_u32(&7:u32) + load_u32(&7:u32)
+export func b() -> u64 => load_u64(&9:u64) + load_u64(&9:u64)
+`
+    await expectSameWasm(generic, byHand)
   })
 
   // Z3
