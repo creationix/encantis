@@ -291,7 +291,13 @@ test "min of a ranged index needs no bounds check" {
 data bytes = mut [0:u8; 8]
 data quad = mut [1:u32, 2, 3, 4]
 
+func stamp(upper: bool) { memcpy(bytes, if upper { "ABCD" } else { "abcd" }, 4) }
+
 test "memcpy, memset and memzero" {
+  stamp(true)
+  assert bytes[3] == 68
+  stamp(false)
+  assert bytes[3] == 100
   memcpy(bytes, "abcdefgh", 8)
   assert bytes[0] == 97
   assert bytes[7] == 104

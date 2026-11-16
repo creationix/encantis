@@ -1215,8 +1215,9 @@ class CheckContext {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
       // A string literal gets its bytes in the data section when it's checked
-      // against the type it's used at, as the argument of a function is.
-      if (expr.kind === 'LiteralExpr') this.checkExpr(expr, type)
+      // against the type it's used at, as the argument of a function is. So
+      // does one in an arm of an `if` or a `match`.
+      if (expr.kind === 'LiteralExpr' || expr.kind === 'IfExpr' || expr.kind === 'MatchExpr') this.checkExpr(expr, type)
       return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
