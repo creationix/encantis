@@ -3911,6 +3911,15 @@ class CheckContext {
   // not where it is declared.
   private skipGenericBody(decl: AST.FuncDecl): void {
     this.literalSlots.set(decl, this.pendingLiterals.length)
+    // What the declaration names in its module is used by it, instantiated
+    // or not: a module that only exports its generics has no instance of them,
+    // and every helper of theirs would be reported as never used. Without
+    // types this is read off the syntax: a name the generic itself declares
+    // (a parameter, a let, a loop variable) is taken to be that one.
+    const { names, locals } = namesIn(decl)
+    for (const { name, offset } of names) {
+      if (!locals.has(name) && this.moduleScope.symbols.has(name)) this.recordReference(name, offset)
+    }
   }
 
   // The literals of an instance body are registered when the body is checked,
@@ -4423,6 +4432,47 @@ function literalText(expr: AST.Expr): string | null {
     return Number.isInteger(expr.value.value) ? expr.value.value.toFixed(1) : String(expr.value.value)
   }
   return null
+}
+
+// The names a declaration refers to, with where, and the names it declares.
+function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[]; locals: Set<string> } {
+  const names: { name: string; offset: number }[] = []
+  const locals = new Set<string>()
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(visit)
+      return
+    }
+    if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return
+    const n = node as Record<string, unknown> & { span?: AST.Span }
+    const declares = (name: unknown) => {
+      if (typeof name === 'string') locals.add(name)
+    }
+    switch (n.kind) {
+      case 'IdentExpr':
+      case 'TypeRef':
+        if (n.span) names.push({ name: n.name as string, offset: n.span.start })
+        break
+      case 'Field':
+        declares(n.ident)
+        break
+      case 'IdentPattern':
+      case 'binding':
+        declares(n.name)
+        break
+      case 'named':
+        declares(n.binding ?? n.field)
+        break
+      case 'ForBinding':
+        declares(n.value)
+        declares(n.index)
+        break
+    }
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') visit(value)
+  }
+  visit(decl.signature)
+  visit(decl.body)
+  return { names, locals }
 }
 
 // A deep copy of an AST subtree with every span moved by `delta` and every

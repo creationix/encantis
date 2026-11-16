@@ -913,6 +913,35 @@ export func g(x: f64) -> f64 => sum(x)`
     expect(result.references.get(twice)).toEqual([source.indexOf('twice(1)')])
   })
 
+  test('what a generic names is used by it, also when nothing in the module instantiates it', () => {
+    // A module that exports its generics has no instance of them.
+    const library = `type Pt = (q: i32, r: i32)
+global calls: u32 = 0
+func helper(a: u32) -> u32 => a + 1
+func inner(comptime T: type, a: T) -> T => a
+export func outer(comptime T: type, a: T) -> u32 {
+  calls += 1
+  let p: Pt = (q: 1, r: 2)
+  return helper(sizeof(T)) + (inner(a) as u32)
+}
+func shadows(comptime T: type, helper2: T) -> T {
+  let unused_plain = helper2
+  return unused_plain
+}
+func helper2(a: u32) -> u32 => a
+func unused_plain(a: u32) -> u32 => a`
+    const result = check(library)
+    expect(result.errors).toEqual([])
+    // A name the generic declares itself is not the module's.
+    expect(result.warnings.map(w => w.message)).toEqual([
+      "'shadows' is never used",
+      "'helper2' is never used",
+      "'unused_plain' is never used",
+    ])
+    const pt = result.symbolDefOffsets.get('Pt') as number
+    expect(result.references.get(pt)).toEqual([library.indexOf('Pt = (q: 1')])
+  })
+
   test('the callee of a call holds the signature of its instance', () => {
     const result = check(source)
     const at = source.indexOf('count(xs, 7)')
