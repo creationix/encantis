@@ -212,6 +212,20 @@ test "a narrower operand is widened, by its own signedness" {
   assert high(0x80000000, 0x400000000) == 2
 }
 
+// A length is a constant, but not a literal: it is an i32 that widens.
+func at_least_a_row(x: i64, row: *[4]u32) -> i64 => max(x, row.len)
+func rows_or_fewer(x: f64, row: *[4]u32) -> f64 => min(row.len, x)
+func bits_or(x: u64, n: u64) -> u64 => max(popcnt(x), n)
+
+test "a length or a bit count is widened as an operand" {
+  assert at_least_a_row(1, words) == 4
+  assert at_least_a_row(5000000000, words) == 5000000000
+  assert rows_or_fewer(2.5, words) == 2.5
+  assert rows_or_fewer(7.5, words) == 4.0
+  assert bits_or(0xFFFFFFFFFFFFFFFF, 3) == 64
+  assert bits_or(0xFF, 0x100000000) == 0x100000000
+}
+
 // === Small integers stay in their type ===
 
 func abs8(x: i8) -> i8 => abs(x)

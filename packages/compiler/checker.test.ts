@@ -1577,6 +1577,18 @@ describe('builtins', () => {
     expect(types('a: i128, b: i64', 'min(a, b)')).toEqual(['i128', 'i128'])
   })
 
+  test('a narrower operand is marked for widening, as the operand of an operator is', () => {
+    const widened = (src: string) => [...checkModule(src).coercions].map(([expr, type]) => [expr.kind === 'IdentExpr' ? expr.name : expr.kind, typeToString(type)])
+    expect(widened(`func f(a: i32, b: i64) -> i64 => max(a, b)`)).toEqual([['a', 'i64']])
+    expect(widened(`func f(a: f32, b: f64) -> f64 => copysign(a, b)`)).toEqual([['a', 'f64']])
+    expect(widened(`func f(a: u32, b: u8) -> u64 => mul_hi(a, b)`)).toEqual([['a', 'u64'], ['b', 'u64']])
+    expect(widened(`func f(a: i64, b: i64) -> i64 => max(a, b)`)).toEqual([])
+    // An if with a type of its own is widened as a whole.
+    expect(widened(`func f(x: i64, a: i32, c: bool) -> i64 => max(x, if c { a } else { 5 })`)).toEqual([['IfExpr', 'i64']])
+    // So is a constant that is not a literal: the length of an array is an i32.
+    expect(widened(`func f(x: i64, p: *[4]i32) -> i64 => max(x, p.len)`)).toEqual([['MemberExpr', 'i64']])
+  })
+
   test('operands that share no type are an error', () => {
     expect(errs(`func f(a: u32, b: i32) -> u32 => max(a, b)`)).toEqual(['max: cannot assign i32 to u32'])
     expect(errs(`func f(a: i32, b: u32) -> i32 => max(a, b)`)).toEqual(['max: cannot assign u32 to i32'])
@@ -1643,7 +1655,7 @@ describe('builtins', () => {
   })
 
   test('an if or a match operand is checked arm by arm', () => {
-    // With no type of its own (its first arm is an operation, or returns), against the other operand's.
+    // Its arms give it the type of the other operand, or widen to it as a whole.
     expect(types('x: i64, c: bool', 'max(x, if c { 0 - x } else { x })')).toEqual(['i64', 'i64'])
     expect(types('x: i64, c: bool', 'max(if c { 0 - x } else { x }, x)')).toEqual(['i64', 'i64'])
     expect(types('x: f32, c: bool', 'copysign(x, if c { x - 1.0 } else { 1.0 })')).toEqual(['f32', 'f32'])
@@ -1652,7 +1664,7 @@ describe('builtins', () => {
       let m = max(x, if c { return -1 } else { 1 })
       return m
     }`)).toEqual([])
-    // With one, against its own: every arm has to be of it, and the literals take it.
+    // Its literals take the type of its other arms.
     expect(types('x: i64, k: i32', 'max(x, match k {\n 0 => x + 1\n _ => 5\n })')).toEqual(['i64', 'i64'])
     expect(types('x: i64, a: i32, c: bool', 'max(x, if c { a } else { 5 })')).toEqual(['i64', 'i64'])
     expect(types('a: i32, b: i64, c: bool', 'max(a, if c { b } else { 5 })')).toEqual(['i64', 'i64'])
@@ -1660,7 +1672,7 @@ describe('builtins', () => {
   })
 
   test('an if or a match operand takes the range away', () => {
-    // Its type is its first arm's: the range of that arm is not the range of the others.
+    // The range of one arm is not the range of the others.
     expect(types('i: u32#4, j: u32#4, c: bool', 'max(i, if c { j } else { 9 })')).toEqual(['u32', 'u32'])
     expect(types('i: u32#4, j: u32#4, c: bool', 'max(if c { j } else { 9 }, i)')).toEqual(['u32', 'u32'])
     expect(errs(`

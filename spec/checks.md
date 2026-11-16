@@ -753,7 +753,7 @@ runtime index on *[4]u8 requires 'if let' or '??'
 runtime index on *[4]u8 requires 'if let' or '??'
 ```
 
-An `if` or a `match` operand is checked arm by arm: against its own type when its first arm gives it one, and against the other operand's when it doesn't.
+An `if` or a `match` operand has the type its arms widen to, like any `if`, and then widens to the other operand's as a whole. One of constants alone takes the other operand's type, arm by arm.
 
 ```ents
 func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })

@@ -937,6 +937,13 @@ describe('builtin codegen', () => {
       expect(body('func f(a: u32, b: u64) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (local.get $b))')
     })
 
+    test('a length, a constant with a form of its own, is widened once', () => {
+      expect(body('func f(x: i64, p: *[4]i32) -> i64 => max(x, p.len)'))
+        .toBe('(select (local.get $x) (i64.extend_i32_s (i32.const 4)) (i64.gt_s (local.get $x) (i64.extend_i32_s (i32.const 4))))')
+      expect(body('func f(x: f64, p: *[4]i32) -> f64 => min(p.len, x)')).toBe('(f64.min (f64.convert_i32_s (i32.const 4)) (local.get $x))')
+      expect(body('func f(p: *[4]i32) -> i64 => abs(p.len)')).toStartWith('(i64.extend_i32_s (select (i32.const 4) ')
+    })
+
     test('the literal arms of an if or a match operand take its type, and it is widened as a whole', () => {
       expect(body('func f(x: i64, k: i32) -> i64 => max(x, match k {\n 0 => x + 1\n _ => 5\n })')).toContain('(else (i64.const 5))')
       expect(body('func f(x: i64, a: i32, c: bool) -> i64 => max(x, if c { a } else { 5 })'))

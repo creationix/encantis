@@ -2714,6 +2714,7 @@ class CheckContext {
   // that type wherever it stands, so max(1.0, x) is max(x, 1.0). With only
   // literals it's their default type. A builtin that computes in one type
   // only (mul_hi) gives it as `fixed`: every operand has to widen to it.
+  // A narrower operand is marked to be widened like any other value (coerce).
   // Records the type the builtin computes in for codegen and returns the type
   // of its result, for a builtin that returns one of its operands.
   private builtinOperandType(
@@ -2728,11 +2729,11 @@ class CheckContext {
     // What checking goes on with after an operand of the wrong kind.
     const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
     const types = args.map((arg) => this.inferExpr(arg.value))
-    // Inference types an `if` or a `match` by its first arm alone, and not at
-    // all when that arm leaves no value (it returns, say). Checking it against
-    // a type is what types every arm.
+    // Inference types an `if` or a `match` from all of its arms, and leaves it
+    // without a type when one of them has no value. Checking it against the
+    // type of the other operands is what says which arm that is.
     const branching = args.map((arg) => arg.value.kind === 'IfExpr' || arg.value.kind === 'MatchExpr')
-    // An operand that takes its type from the others: a literal, and a
+    // An operand that takes its type from the others: a constant, and a
     // branching one that inference left without a type.
     const hasTyped = fixed !== null || types.some((t) => !isComptime(t) && accepts(t))
     const fromOthers = types.map((t, i) => isComptime(t) || (hasTyped && branching[i] && t.kind === 'void'))
@@ -2744,7 +2745,7 @@ class CheckContext {
         this.error(args[i].value.span.start, `${name} requires ${wanted}, got ${typeToString(type)}`)
         return fallback
       }
-      const plain = withoutRange(type)
+      const plain = stripMax(type)
       if (common === null || (!fixed && !typeAssignable(common, plain) && typeAssignable(plain, common))) {
         common = plain
       } else if (!typeAssignable(common, plain)) {
@@ -2762,17 +2763,15 @@ class CheckContext {
     }
     for (const [i, type] of types.entries()) {
       if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
-      // A branching operand with a type of its own keeps it, for codegen to
-      // widen the value as a whole.
-      else if (branching[i]) this.checkExpr(args[i].value, withoutRange(type), name)
+      else this.coerce(args[i].value, type, common, `${name}: `)
     }
     this.types.set(typeKey(expr.span.start, 'BuiltinCall'), common)
 
     // A result that is one of the operands is in a range when they all are: the
     // widest of their ranges. A literal only has to fit the type to be an
     // operand, but has to be inside that range for the result to be. Only a
-    // constant counts as one, and a branching operand never does: its type,
-    // a literal's or a range, is its first arm's, and says nothing of the rest.
+    // constant whose value is known counts as one, and a branching operand
+    // never does: no one arm's value or range speaks for the others.
     const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
     if (common.kind !== 'primitive' || ranges.length === 0) return common
     const widest = Math.max(...ranges)
@@ -4104,6 +4103,7 @@ function isScalar(t: ResolvedType): boolean {
   return t.kind === 'primitive' || isComptimeNumber(t)
 }
 
+// A ranged integer type (u32#8) as the plain type its values are held in (u32).
 function stripMax(t: ResolvedType): ResolvedType {
   return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 }
@@ -4176,11 +4176,6 @@ function sameRepresentation(from: ResolvedType, to: ResolvedType): boolean {
 
 function isUnsignedName(name: string): boolean {
   return name.startsWith('u')
-}
-
-// A ranged integer type (u32#8) as the plain type its values are held in (u32).
-function withoutRange(t: ResolvedType): ResolvedType {
-  return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 }
 
 // One past the largest value an unsigned primitive can hold (u8 → 256), or

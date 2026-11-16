@@ -221,15 +221,19 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 // === Expression Codegen ===
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
-  const wat = exprValueToWat(expr, ctx)
-  // Every implicit widening happens here: the checker says which expressions
-  // meet a wider type (as an operand, an argument, an initializer, a branch).
+  return wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
+}
+
+// Every implicit widening happens here: the checker says which expressions
+// meet a wider type (as an operand, an argument, an initializer, a branch).
+// Gives what takes an expression's value from its own type to that one.
+function wideningOf(expr: AST.Expr, ctx: CodegenContext): (wat: string) => string {
   const to = ctx.coercions.get(expr)
   const from = to && lookupExprType(expr, ctx)
   // An integer up to 32 bits already fills its i32: widening one within that
   // costs nothing.
-  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return wat
-  return emitConversion(wat, from, to)
+  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return (wat) => wat
+  return (wat) => emitConversion(wat, from, to)
 }
 
 function exprValueToWat(expr: AST.Expr, ctx: CodegenContext): string {
@@ -695,19 +699,6 @@ function builtinOperandType(expr: AST.CallExpr, ctx: CodegenContext): ResolvedTy
   return type
 }
 
-// How an operand of a builtin gets from its own type to the type the builtin
-// computes in: nothing to do for most, a widening for a narrower operand.
-function builtinOperandWidening(arg: AST.Expr, type: ResolvedType, ctx: CodegenContext): (wat: string) => string {
-  const argType = lookupExprType(arg, ctx)
-  if (!argType || typeToWasm(argType).join() === typeToWasm(type).join()) return (wat) => wat
-  return (wat) => emitConversion(wat, argType, type)
-}
-
-// An operand of a builtin, in the type the builtin computes in.
-function builtinOperandToWat(arg: AST.Expr, type: ResolvedType, ctx: CodegenContext): string {
-  return builtinOperandWidening(arg, type, ctx)(exprToWat(arg, ctx))
-}
-
 // The scratch local a builtin keeps operand `index` in when it needs the
 // value twice.
 function builtinScratchLocal(name: string, index: number, expr: AST.CallExpr): string {
@@ -776,15 +767,15 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'nearest': {
       if (args.length !== 1) return null
       const type = builtinOperandType(expr, ctx)
-      return `(${typeToWasmSingle(type)}.${name} ${builtinOperandToWat(args[0].value, type, ctx)})`
+      return `(${typeToWasmSingle(type)}.${name} ${exprToWat(args[0].value, ctx)})`
     }
 
     // Float-only binary: copysign
     case 'copysign': {
       if (args.length !== 2) return null
       const type = builtinOperandType(expr, ctx)
-      const a = builtinOperandToWat(args[0].value, type, ctx)
-      const b = builtinOperandToWat(args[1].value, type, ctx)
+      const a = exprToWat(args[0].value, ctx)
+      const b = exprToWat(args[1].value, ctx)
       return `(${typeToWasmSingle(type)}.copysign ${a} ${b})`
     }
 
@@ -794,8 +785,10 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       if (args.length !== 2) return null
       const type = builtinOperandType(expr, ctx)
       const wt = typeToWasmSingle(type)
-      const [a, b] = args.map((arg) => exprToWat(arg.value, ctx))
-      const [widenA, widenB] = args.map((arg) => builtinOperandWidening(arg.value, type, ctx))
+      // Each operand's own value, and the widening that takes a narrower one
+      // to the type computed in: a plain read is cheaper widened twice than kept.
+      const [a, b] = args.map((arg) => exprValueToWat(arg.value, ctx))
+      const [widenA, widenB] = args.map((arg) => wideningOf(arg.value, ctx))
       if (isFloat(type)) return `(${wt}.${name} ${widenA(a)} ${widenB(b)})`
 
       const sign = isSigned(type) ? 's' : 'u'
@@ -813,7 +806,7 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       if (args.length !== 1) return null
       const type = builtinOperandType(expr, ctx)
       const wt = typeToWasmSingle(type)
-      const arg = builtinOperandToWat(args[0].value, type, ctx)
+      const arg = exprToWat(args[0].value, ctx)
       if (isFloat(type)) return `(${wt}.abs ${arg})`
       // Unsigned integer: abs is identity
       if (!isSigned(type)) return arg
@@ -834,16 +827,15 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       if (args.length !== 1) return null
       const type = builtinOperandType(expr, ctx)
       const wt = typeToWasmSingle(type)
-      const count = `(${wt}.${name} ${builtinOperandToWat(args[0].value, type, ctx)})`
+      const count = `(${wt}.${name} ${exprToWat(args[0].value, ctx)})`
       // The result is a u8, an i32 on the stack, whatever the operand's width.
       return wt === 'i64' ? `(i32.wrap_i64 ${count})` : count
     }
 
     case 'mul_hi': {
       if (args.length !== 2) return null
-      const type = builtinOperandType(expr, ctx)
-      const a = builtinOperandToWat(args[0].value, type, ctx)
-      const b = builtinOperandToWat(args[1].value, type, ctx)
+      const a = exprToWat(args[0].value, ctx)
+      const b = exprToWat(args[1].value, ctx)
       ctx.needsMulHi = true
       return `(call $__mul_hi ${a} ${b})`
     }
