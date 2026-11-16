@@ -557,7 +557,7 @@ switch (command) {
       const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
       if (!hasTests) continue
 
-      const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
+      const { wat, testNames, testTitles } = programToWatWithTests(load.modules, check.results, entryPath)
       if (testNames.length === 0) continue
 
       const w = await wabt()
@@ -582,14 +582,15 @@ switch (command) {
         },
       })
 
-      for (const name of testNames) {
+      for (const [t, name] of testNames.entries()) {
+        const title = testTitles[t]
         const fn = instance.exports[`test_${name}`] as Function
         try {
           failedOffset = -1
           fn()
           totalPassed++
-          allResults.push({ file: testFile, name, pass: true })
-          console.log(`  pass: ${name.replace(/_/g, ' ')}`)
+          allResults.push({ file: testFile, name: title, pass: true })
+          console.log(`  pass: ${title}`)
         } catch (e: any) {
           totalFailed++
           let detail = ''
@@ -598,8 +599,8 @@ switch (command) {
             const line = source.split('\n')[loc.line - 1]?.trim() ?? ''
             detail = `\n         ${testFile}:${loc.line}: ${line}`
           }
-          allResults.push({ file: testFile, name, pass: false, error: e.message })
-          console.log(`  FAIL: ${name.replace(/_/g, ' ')}${detail}`)
+          allResults.push({ file: testFile, name: title, pass: false, error: e.message })
+          console.log(`  FAIL: ${title}${detail}`)
         }
       }
     }

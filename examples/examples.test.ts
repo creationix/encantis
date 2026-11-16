@@ -58,7 +58,7 @@ for (const file of entsFiles) {
     continue
   }
 
-  const { wat, testNames } = result
+  const { wat, testNames, testTitles } = result
   if (testNames.length === 0) continue
 
   const w = await wabt()
@@ -77,8 +77,8 @@ for (const file of entsFiles) {
   const source = entryMod?.source ?? ''
 
   describe(rel, () => {
-    for (const name of testNames) {
-      test(name.replace(/_/g, ' '), async () => {
+    for (const [t, name] of testNames.entries()) {
+      test(testTitles[t], async () => {
         let failedOffset = -1
         const instance = await WebAssembly.instantiate(mod, {
           test: {

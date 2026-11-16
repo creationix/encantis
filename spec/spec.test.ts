@@ -41,7 +41,15 @@ function readSpec(md: string): Section[] {
 }
 
 // The AST without source positions, so expectations survive edits elsewhere.
+// Byte strings show as text when they're valid UTF-8, and as hex otherwise.
 function stripSpans(node: unknown): unknown {
+  if (node instanceof Uint8Array) {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(node)
+    } catch {
+      return `x"${Buffer.from(node).toString('hex')}"`
+    }
+  }
   if (Array.isArray(node)) return node.map(stripSpans)
   if (node && typeof node === 'object') {
     const out: Record<string, unknown> = {}

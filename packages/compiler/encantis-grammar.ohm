@@ -455,16 +455,20 @@ Encantis {
                 | hexString
                 | base64String
 
-  utf8String = "\"" utf8Char* "\""
+  utf8String = "\"" dqChar* "\""
 
-  charString = "'" utf8Char* "'"
+  charString = "'" sqChar* "'"
 
   hexString = "x\"" (hexByte | space)* "\""
 
   base64String = "b\"" (base64Char | space)* "\""
 
-  utf8Char = escapeSeq
-           | ~("\"" | "'" | "\\") any
+  // Each kind of string only excludes its own quote: "don't" and 'say "hi"'.
+  dqChar = escapeSeq
+         | ~("\"" | "\\") any
+
+  sqChar = escapeSeq
+         | ~("'" | "\\") any
 
   escapeSeq = "\\" "x" hexDigit hexDigit  -- hex
             | "\\" escapeChar             -- simple
