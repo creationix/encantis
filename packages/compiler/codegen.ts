@@ -1721,6 +1721,13 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
   }
 }
 
+// Whether an expression leaves at least one value on the stack.
+function exprHasValue(expr: AST.Expr, ctx: CodegenContext): boolean {
+  const t = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  return !!t && t.kind !== 'void' && typeToWasm(t).length > 0
+}
+
 // An expression evaluated for its effect, dropping any result.
 function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const exprWat = exprToWat(expr, ctx)
@@ -2181,16 +2188,29 @@ function continueToWat(stmt: AST.ContinueStmt, ctx: CodegenContext): string {
 
 // === Body/Block Codegen ===
 
-function bodyToWat(body: AST.FuncBody, ctx: CodegenContext, valueContext = false, loop = false): string {
-  if (body.kind === 'ArrowBody') {
-    return exprToWat(body.expr, ctx)
-  }
+// tailLocals: for a function body with named results, a trailing expression
+// with a value is stored into these locals (before the defers run) instead of
+// being dropped.
+function bodyToWat(body: AST.FuncBody, ctx: CodegenContext, valueContext = false, loop = false, tailLocals?: string[]): string {
   // Each block collects its own deferred expressions and runs them, newest
   // first, when control falls off its end (after a value, which stays on the stack).
+  // An arrow body has no defers of its own but still marks a loop body, so
+  // break and continue inside it stop there.
   if (!ctx.deferFrames) ctx.deferFrames = []
   const frames = ctx.deferFrames
   frames.push({ loop, defers: [] })
   try {
+    if (body.kind === 'ArrowBody') {
+      return exprToWat(body.expr, ctx)
+    }
+    const tail = tailLocals?.length ? body.stmts.at(-1) : undefined
+    if (tailLocals && tail?.kind === 'ExpressionStmt' && exprHasValue(tail.expr, ctx)) {
+      const out = body.stmts.slice(0, -1).map((s) => stmtToWat(s, ctx))
+      out.push(exprToWat(tail.expr, ctx))
+      for (let i = tailLocals.length - 1; i >= 0; i--) out.push(`(local.set $${tailLocals[i]})`)
+      out.push(deferredToWat(ctx, 1))
+      return out.filter(Boolean).join('\n')
+    }
     if (!valueContext || body.stmts.length === 0) {
       const out = body.stmts.map((s) => stmtToWat(s, ctx))
       // A block that ends in an unconditional exit already ran its defers there.
@@ -2308,8 +2328,11 @@ export function funcToWat(
   })
   const localStr = dedupedLocals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
 
-  // Generate body, with implicit return coercion for arrow functions
-  let body = bodyToWat(decl.body, ctx)
+  // Generate body, with implicit return coercion for arrow functions. With named
+  // results, a trailing expression with a value supplies them; a trailing if,
+  // loop or void call leaves the named locals as set.
+  const tailLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
+  let body = bodyToWat(decl.body, ctx, false, false, tailLocals)
   if (decl.body.kind === 'ArrowBody' && funcType.type.returns.length === 1 && namedReturns.length === 0) {
     const retType = funcType.type.returns[0].type
     const retWt = typeToWasmSingle(retType)
@@ -2318,29 +2341,6 @@ export function funcToWat(
       const bodyWt = typeToWasmSingle(bodyType)
       const bodySigned = isSigned(bodyType)
       body = coerceWasmType(body, bodyWt, retWt, bodySigned)
-    }
-  }
-
-  // If the last statement is an expression and we have named returns,
-  // assign the expression result to the named return locals instead of dropping
-  if (namedReturns.length > 0 && decl.body.kind === 'Block' && decl.body.stmts.length > 0) {
-    const lastStmt = decl.body.stmts[decl.body.stmts.length - 1]
-    // Only an expression with a value supplies the results: a trailing if, loop
-    // or void call is a statement, and the named locals are returned as set.
-    const lastType = lastStmt.kind === 'ExpressionStmt'
-      ? (ctx.types.get(typeKey(lastStmt.expr.span.start, lastStmt.expr.kind))
-        ?? ctx.types.get(typeKey(lastStmt.expr.span.end, lastStmt.expr.kind)))
-      : undefined
-    if (lastStmt.kind === 'ExpressionStmt' && lastType && lastType.kind !== 'void' && typeToWasm(lastType).length > 0) {
-      const lines = body.split('\n')
-      // Remove the trailing (drop) lines that stmtToWat added
-      while (lines.length > 0 && lines[lines.length - 1].trim() === '(drop)') lines.pop()
-      // Add local.set for each named return local (in reverse — stack is LIFO)
-      const allLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
-      for (let i = allLocals.length - 1; i >= 0; i--) {
-        lines.push(`(local.set $${allLocals[i]})`)
-      }
-      body = lines.join('\n')
     }
   }
 
@@ -2464,7 +2464,7 @@ function collectLocals(
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions
-    if (stmt.kind === 'ExpressionStmt') {
+    if (stmt.kind === 'ExpressionStmt' || stmt.kind === 'DeferStmt') {
       visitExpr(stmt.expr)
     }
     // Handle assignment statements that may have if expressions on the right side
@@ -2758,7 +2758,8 @@ function emitTestDecl(
     // Leaf test: emit as a function
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
-    const body = stmts.map(s => stmtToWat(s, ctx)).join('\n')
+    const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
+    const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const seen = new Set<string>()

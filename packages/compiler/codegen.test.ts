@@ -483,6 +483,28 @@ describe('defer codegen', () => {
     expect(order(wat, ['call $inner', 'br $break']).every((i) => i >= 0)).toBe(true)
   })
 
+  test('runs at the end of a test block', async () => {
+    const { mkdtemp, writeFile } = await import('fs/promises')
+    const { tmpdir } = await import('os')
+    const { join } = await import('path')
+    const { loadModule } = await import('./loader')
+    const { typecheckProgram } = await import('./checker')
+    const { programToWatWithTests } = await import('./codegen')
+    const file = join(await mkdtemp(join(tmpdir(), 'ents-')), 'defer-test.ents')
+    await writeFile(file, `
+      func done() {}
+      test "cleanup" {
+        defer done()
+        assert true
+      }
+    `)
+    const load = await loadModule(file, { includeTests: true })
+    const check = typecheckProgram(load.modules, file, { includeTests: true })
+    const { wat } = programToWatWithTests(load.modules, check.results, file)
+    const testFunc = wat.slice(wat.indexOf('(func $test_cleanup'))
+    expect(testFunc).toContain('call $done')
+  })
+
   test('only defers already reached run at an early exit', () => {
     const wat = funcWat(`
       func f(x: i32) {
