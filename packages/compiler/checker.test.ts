@@ -995,6 +995,45 @@ describe('globals', () => {
   })
 })
 
+describe('writes through pointers', () => {
+  const errs = (body: string, params = 'p: *Spot, m: *mut Spot') =>
+    checkModule(`
+      type Spot = (c: i32, di: i32)
+      type Row = (tag: u8, v: [3]i32, at: Spot)
+      func f(${params}) {
+        ${body}
+      }
+    `).errors.map(e => e.message)
+  const constPointer = 'cannot write through const pointer — use *mut for mutable access'
+
+  test('a field of the struct a pointer points to needs a mutable pointer', () => {
+    expect(errs('p.c = 5')).toEqual([constPointer])
+    expect(errs('p.di += 1')).toEqual([constPointer])
+    expect(errs('m.c = 5\nm.di += 1')).toEqual([])
+  })
+
+  test('a field of a field goes through whatever holds the outermost struct', () => {
+    expect(errs('rows[1].at.c = 5', 'rows: [*]Row')).toEqual([constPointer])
+    expect(errs('rows[1].at.c = 5', 'rows: [*]mut Row')).toEqual([])
+    expect(errs('r.at.c = 5\nr.at = Spot(1, 2)', 'r: *Row')).toEqual([constPointer, constPointer])
+    expect(errs('r.at.c = 5\nr.at = Spot(1, 2)', 'r: *mut Row')).toEqual([])
+    expect(errs('rows[1].at.c = 5', 'rows: []Row')).toContain('cannot write through const slice — use []mut for mutable access')
+  })
+
+  test('an element of a fixed array in a struct goes through the struct', () => {
+    expect(errs('r.v[0] = 1', 'r: *Row')).toEqual([constPointer])
+    expect(errs('r.v[0] = 1', 'r: *mut Row')).toEqual([])
+    expect(errs('rows[0].v[2] += 1', 'rows: [*]Row')).toEqual([constPointer])
+  })
+
+  test('a struct in a variable is written without a pointer', () => {
+    expect(errs('r.at.c = 5\nr.v[0] = 1\nr.at = Spot(1, 2)', 'r: Row')).toEqual([])
+    // A pointer held in a field of a variable still gates writes through it.
+    expect(errs('h.p.c = 5', 'h: (p: *Spot)')).toEqual([constPointer])
+    expect(errs('h.p.c = 5', 'h: (p: *mut Spot)')).toEqual([])
+  })
+})
+
 describe('defer', () => {
   test('a deferred expression cannot return', () => {
     const result = checkModule(`func f(n: u32) { defer if n > 0 { return } }`)

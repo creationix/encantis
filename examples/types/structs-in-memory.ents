@@ -1,0 +1,297 @@
+// Structs, tuples and slices as values in linear memory. A value that takes
+// several wasm values in registers is laid out field after field in memory,
+// with no padding, and is read and written whole or field by field.
+
+data space = mut [0:u8; 1024]
+
+type Spot = (c: i32, di: i32, room: i32)
+type Lane = (cells: []i32, free: i32)
+type Option = (d: i32, lane: Lane)
+type Mixed = (a: u8, b: i16, c: u64, d: f32)
+type Row = (tag: u8, v: [3]i32)
+
+global calls: u32 = 0
+
+// An index with an effect: every use below must evaluate it exactly once.
+func next() -> u32 {
+  calls += 1
+  return calls
+}
+
+func spots() -> [*]mut Spot => space as [*]mut Spot
+func words() -> [*]mut i32 => ((space as u32) + 512) as [*]mut i32
+func options() -> [*]mut Option => ((space as u32) + 256) as [*]mut Option
+
+func sum(s: Spot) -> i32 => s.c + s.di * 10 + s.room * 100
+func make(n: i32) -> Spot => Spot(n, n + 1, n + 2)
+func pair() -> []i32 {
+  let w = words()
+  w[0] = 11
+  w[1] = 22
+  return w[0..2]
+}
+
+// --- whole structs through an index ---
+
+test "a struct stored in an array can be read back" {
+  let list = spots()
+  list[2] = Spot(20, 1, 2)
+  assert list[2].c == 20
+  assert list[2].di == 1
+  assert list[2].room == 2
+  // The neighbours are untouched.
+  assert list[1].room == 0
+  assert list[3].c == 0
+}
+
+test "a struct loaded from an array" {
+  let list = spots()
+  list[2].c = 7
+  list[2].di = 8
+  list[2].room = 9
+  let s = list[2]
+  assert s.c == 7
+  assert s.di == 8
+  assert s.room == 9
+}
+
+test "an element is passed by value and returned" {
+  let list = spots()
+  list[1] = Spot(1, 2, 3)
+  assert sum(list[1]) == 321
+  let fixed = space as *mut [4]Spot
+  assert sum(at(fixed, 1)) == 321
+}
+func at(list: *[4]Spot, i: u32#4) -> Spot => list[i]
+
+test "a call's result is stored directly" {
+  let list = spots()
+  list[3] = make(5)
+  assert sum(list[3]) == 765
+}
+
+test "elements of a pointer to a fixed array" {
+  let fixed = space as *mut [4]Spot
+  for i in 4 {
+    fixed[i] = Spot(i as i32, 0, 1)
+  }
+  let last = fixed[3]
+  assert last.c == 3
+  assert last.room == 1
+}
+
+test "elements of a slice are bounds-checked" {
+  let list: []mut Spot = (spots(), 2:u32)
+  list.ptr[1] = Spot(4, 5, 6)
+  let found = list[1] ?? Spot(0, 0, 0)
+  let missing = list[2] ?? Spot(-1, -1, -1)
+  assert sum(found) == 654
+  assert missing.c == -1
+  let seen = 0
+  if let s = list[1] { seen = s.room }
+  assert seen == 6
+}
+
+// --- through a pointer to one struct ---
+
+func turn(p: *mut Spot) -> i32 {
+  p.c = 5
+  p.di += 2
+  return p.di
+}
+
+test "fields through a pointer" {
+  let list = spots()
+  list[1] = Spot(1, 40, 3)
+  let p = ((space as u32) + sizeof(Spot)) as *mut Spot
+  assert turn(p) == 42
+  assert list[1].c == 5
+  assert list[1].di == 42
+  assert list[1].room == 3
+}
+
+test "a whole struct through a pointer" {
+  let list = spots()
+  let p = ((space as u32) + 4 * sizeof(Spot)) as *mut Spot
+  p.* = Spot(1, 2, 3)
+  assert sum(list[4]) == 321
+  let s = p.*
+  assert sum(s) == 321
+  assert sum(p.*) == 321
+}
+
+test "the whole value is read before any of it is written" {
+  let p = space as *mut (i32, i32)
+  p.* = (3, 4)
+  p.* = (p.1, p.0)
+  assert p.0 == 4
+  assert p.1 == 3
+  let list = spots()
+  list[0] = Spot(1, 2, 3)
+  list[0] = Spot(list[0].room, list[0].c, list[0].di)
+  assert sum(list[0]) == 213
+}
+
+test "copy and swap" {
+  let list = spots()
+  list[0] = Spot(1, 2, 3)
+  list[1] = Spot(4, 5, 6)
+  let t = list[0]
+  list[0] = list[1]
+  list[1] = t
+  assert sum(list[0]) == 654
+  assert sum(list[1]) == 321
+}
+
+// --- nested structs and slices ---
+
+test "a struct inside a struct" {
+  let opts = options()
+  let w = words()
+  w[0] = 3
+  w[1] = 4
+  opts[1] = Option(7, Lane(w[0..2], 9))
+  assert opts[1].d == 7
+  assert opts[1].lane.free == 9
+  assert opts[1].lane.cells.len == 2
+  opts[1].lane.free += 1
+  let lane = opts[1].lane
+  assert lane.free == 10
+  assert lane.cells.len == 2
+  opts[2].lane = lane
+  assert opts[2].lane.cells.ptr[1] == 4
+}
+
+test "a slice field of a nested struct" {
+  let opts = options()
+  let w = words()
+  w[0] = 3
+  w[1] = 4
+  opts[1].d = 3
+  opts[1].lane.cells = w[0..2]
+  let t = 0
+  for x in opts[1].lane.cells {
+    t += x
+  }
+  assert t == 7
+}
+
+test "a returned slice is stored directly" {
+  let lists = spots() as [*]mut []i32
+  lists[1] = pair()
+  assert lists[1].len == 2
+  assert lists[1].ptr[1] == 22
+  let opts = options()
+  opts[3].lane.cells = pair()
+  assert opts[3].lane.cells.len == 2
+}
+
+test "a slice rebuilt from its own fields" {
+  let lists = spots() as [*]mut []i32
+  let base = words()
+  lists[1] = (base + 8, 5:u32)
+  lists[1] = (base, (lists[1].ptr as u32) - (base as u32))
+  assert lists[1].len == 8
+}
+
+test "a fixed array inside a struct" {
+  let rows = spots() as [*]mut Row
+  rows[1] = Row(2, [10, 20, 30])
+  rows[1].v[1] += 1
+  assert rows[1].v[1] == 21
+  let v = rows[1].v
+  assert v[0] + v[2] == 40
+  let p = ((space as u32) + sizeof(Row)) as *mut Row
+  p.v[2] = 5
+  assert rows[1].v[2] == 5
+  assert rows[1].tag == 2
+  assert sizeof(Row) == 13
+}
+
+test "fields of different widths" {
+  let list = spots() as [*]mut Mixed
+  list[1] = Mixed(200, -3, 1000000000000, 1.5)
+  list[0] = Mixed(1, 1, 1, 1.0)
+  list[2] = Mixed(2, 2, 2, 2.0)
+  let m = list[1]
+  assert m.a == 200
+  assert m.b == -3
+  assert m.c == 1000000000000
+  assert m.d == 1.5
+  assert sizeof(Mixed) == 15
+}
+
+test "a tuple with a wide integer" {
+  let list = spots() as [*]mut (u128, u8)
+  list[1] = (5:u128, 4)
+  let (wide, small) = list[1]
+  assert wide == 5
+  assert small == 4
+  assert list[1].0 == 5
+  assert list[1].1 == 4
+}
+
+// --- element loops ---
+
+test "a loop over the structs of a slice" {
+  let list = spots()
+  list[0] = Spot(1, 0, 0)
+  list[1] = Spot(0, 2, 0)
+  list[2] = Spot(0, 0, 3)
+  let all: []Spot = (list, 3:u32)
+  let t = 0
+  for s in all {
+    t += s.c + s.di + s.room
+  }
+  assert t == 6
+  for i, s in all {
+    t += (i as i32) * s.room
+  }
+  assert t == 12
+}
+
+test "the loop variable is a copy" {
+  let fixed = space as *mut [2]Spot
+  fixed[0] = Spot(1, 1, 1)
+  fixed[1] = Spot(2, 2, 2)
+  let t = 0
+  for s in fixed {
+    s.c = 100
+    t += s.c + s.di
+  }
+  assert t == 203
+  assert fixed[0].c == 1
+}
+
+// --- addresses are evaluated once ---
+
+test "an index with effects is evaluated once" {
+  let list = spots()
+  calls = 0
+  list[next()] = Spot(1, 2, 3)
+  assert calls == 1
+  let s = list[next() - 1]
+  assert calls == 2
+  assert sum(s) == 321
+  list[next() - 2].c += 10
+  assert calls == 3
+  assert list[1].c == 11
+  let lists = options() as [*]mut []i32
+  lists[next()] = pair()
+  assert calls == 4
+  let stored = lists[next() - 1]
+  assert calls == 5
+  assert stored.len == 2
+}
+
+// --- pointers as elements ---
+
+test "an array of pointers" {
+  let list = spots()
+  list[5] = Spot(7, 8, 9)
+  let ptrs = options() as [*]mut *mut Spot
+  ptrs[1] = ((space as u32) + 5 * sizeof(Spot)) as *mut Spot
+  let p = ptrs[1]
+  assert p.room == 9
+  assert ptrs[1].c == 7
+}

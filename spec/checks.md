@@ -73,6 +73,54 @@ func f() {
 }
 ```
 
+## Structs in memory
+
+A struct, tuple or slice can be an element or a pointee, and is read and written whole or field by field. A field of the struct a pointer points to is written `p.x`.
+
+```ents
+type Spot = (c: i32, di: i32, room: i32)
+type Lane = (cells: []i32, free: i32)
+type Option = (d: i32, lane: Lane)
+
+func third(list: [*]mut Spot, opts: [*]mut Option, p: *mut Spot) -> i32 {
+  list[2] = Spot(20, 1, 2)
+  let s = list[2]
+  p.* = s
+  p.c += 1
+  opts[1].lane.free = p.c
+  opts[1].lane.cells = opts[0].lane.cells
+  let t = opts[1].lane.free
+  for x in opts[1].lane.cells { t += x }
+  let all: []Spot = (list, 3:u32)
+  for spot in all { t += spot.room }
+  return t
+}
+```
+
+A write to a field goes through whatever holds the outermost struct, so that has to be mutable: the pointer `p` in `p.x = v`, the array in `rows[i].at.x = v`. A struct in a variable is written without one.
+
+```ents
+type Spot = (c: i32, di: i32)
+type Row = (tag: u8, v: [3]i32, at: Spot)
+
+func a(p: *Spot) { p.c = 5 }
+func b(rows: [*]Row) { rows[1].at.c = 5 }
+func c(r: *Row) { r.v[0] = 1 }
+func d(rows: []Row) { rows[0] = Row(1, [1, 2, 3], Spot(4, 5)) }
+func e(r: Row, m: *mut Row) {
+  r.at.c = 5
+  m.at.c = 5
+  m.v[2] = r.v[0]
+}
+```
+
+```errors
+cannot write through const pointer
+cannot write through const pointer
+cannot write through const pointer
+cannot write through const slice
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

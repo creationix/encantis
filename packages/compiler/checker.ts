@@ -36,6 +36,7 @@ import {
   isNumeric,
   byteSize,
   isFixedSizes,
+  isValueArray,
   totalElements,
   optionalOf,
   isOptional,
@@ -932,10 +933,19 @@ class CheckContext {
   // For `arr[i] = x`, it's arr's type.
   // For `arr[i].field = x`, it's the element type of arr (the inner pointer/slice).
   // For `p.* = x`, it's p's type.
-  private findWritePointerType(target: AST.LValue): ResolvedType | null {
+  private findWritePointerType(target: AST.LValue | AST.Expr): ResolvedType | null {
+    // Parentheses: (p.*).x = v
+    if (target.kind === 'GroupExpr') return this.findWritePointerType(target.expr)
+    if (target.kind === 'TupleExpr' && target.elements.length === 1 && target.elements[0].value) {
+      return this.findWritePointerType(target.elements[0].value)
+    }
     // Direct index: arr[i] = x — the write goes through arr's pointer
     if (target.kind === 'IndexExpr') {
-      return this.inferExpr(target.object)
+      const objType = this.inferExpr(target.object)
+      // An element of a fixed array is part of whatever holds the array.
+      const u = unwrap(objType)
+      if (u.kind === 'array' && isValueArray(u)) return this.findWritePointerType(target.object)
+      return objType
     }
     // Deref: p.* = x — the write goes through p
     if (target.kind === 'MemberExpr' && target.member.kind === 'deref') {
@@ -949,14 +959,13 @@ class CheckContext {
     // requires the container holding that struct to be mutable.
     // arr[i].field = x → check arr's mutability (we're modifying arr's element)
     // BUT: arr[i].field[j] = x → check field's type mutability (writing through a pointer in the field)
-    if (target.kind === 'MemberExpr' && target.member.kind === 'field') {
-      if (target.object.kind === 'IndexExpr') {
-        // arr[i].field = x — modifying element struct, check outer container
-        return this.inferExpr(target.object.object)
-      }
-      if (target.object.kind === 'MemberExpr' && target.object.member.kind === 'deref') {
-        return this.inferExpr(target.object.object)
-      }
+    // p.field = x with p a pointer to a struct writes through p. A field of a
+    // struct that is itself a field (arr[i].b.c = x) goes through whatever
+    // holds the outermost struct; one in a variable needs no pointer at all.
+    if (target.kind === 'MemberExpr' && (target.member.kind === 'field' || target.member.kind === 'index')) {
+      const objType = this.inferExpr(target.object)
+      if (unwrap(objType).kind === 'pointer') return objType
+      return this.findWritePointerType(target.object)
     }
     return null
   }

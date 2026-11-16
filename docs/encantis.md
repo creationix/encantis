@@ -522,6 +522,26 @@ let x = p.x              // field read
 p.y = 5.0                // field write
 ```
 
+A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call. Fields of fields chain.
+
+```ents
+type Point = (x:f32, y:f32)
+type Rect = (origin:Point, size:(w:f32, h:f32))
+
+func bounds() -> Rect => Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
+
+func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
+  p.x = 0.0                    // a field of the Point that p points to
+  p.y += 1.0
+  list[i].origin.x = p.x       // a field of a field of an element
+  let r = bounds()
+  r.size.w = 2.0               // a field of a field of a variable
+  return bounds().size.h       // a field of a call's result
+}
+```
+
+`p.x` through a pointer reads or writes memory (§8.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
+
 ### 2.9 Enum Types (Algebraic Data Types)
 
 > **Status: Design only** — enums are parsed but not yet type-checked or compiled.
@@ -1013,6 +1033,20 @@ Assignment targets (lvalues) can be:
 | `(a, b, ...)` | Positional destructuring |
 | `(x:, y:, ...)` | Named destructuring (trailing colon) |
 
+An assignment reads its whole value before it writes any of it, so a value can be rebuilt from itself, in a variable or in memory:
+
+```ents
+type Point = (x:i32, y:i32)
+
+func flip(p:Point, q:*mut Point) -> Point {
+  p = Point(p.y, p.x)          // swaps the fields
+  q.* = Point(q.y, q.x)        // and so does this, in memory
+  return p
+}
+```
+
+The target's address is evaluated once, also for a compound assignment: `xs[next()] += 1` calls `next` one time.
+
 > **Status: Destructuring is not yet fully implemented in codegen.**
 
 Positional destructuring unpacks multiple values in a single assignment:
@@ -1344,6 +1378,20 @@ loop {                   // infinite loop
 ```
 
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
+
+The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func total(list:[]Spot) -> i32 {
+  let t = 0
+  for s in list {
+    t += s.c + s.di + s.room
+  }
+  return t
+}
+```
 
 ### 5.3 Control Statements
 
@@ -1751,7 +1799,7 @@ length(ptr.*)              // OK: dereference to get by-value Point
 For by-reference semantics, explicitly accept a pointer. The caller must ensure the data is serialized in linear memory:
 
 ```ents
-func modify(p:*Point) {
+func modify(p:*mut Point) {
   p.x = 0.0
   p.y = 0.0
 }
@@ -1759,7 +1807,7 @@ func modify(p:*Point) {
 let p = Point(3.0, 4.0)
 modify(&p)                 // ERROR: p has no address (stack-allocated)
 
-let mem_p:*Point = allocate_point()
+let mem_p:*mut Point = allocate_point()
 modify(mem_p)              // OK: mem_p points to linear memory
 ```
 
@@ -1846,6 +1894,53 @@ let slice:[]u8 = (ptr, 64)     // OK: provide length
 let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
+
+### 8.6 Structs and Slices in Memory
+
+Any value type can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+
+| Type | Bytes in memory |
+|------|-----------------|
+| `i8`, `u8`, `bool` | 1 |
+| `i16`, `u16` | 2 |
+| `i32`, `u32`, `f32` | 4 |
+| `i64`, `u64`, `f64` | 8 |
+| `i128` ... `u512` | 16 ... 64, as 64-bit limbs, least significant first |
+| `*T`, `[*]T`, `*[N]T` | 4 |
+| `[]T` | 8: the pointer, then the length |
+| `[N]T` | N × `sizeof(T)` |
+| `(a:T1, b:T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+
+`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset.
+
+```ents
+type Lane = (cells:[]i32, free:i32)       // 12 bytes: cells.ptr 0, cells.len 4, free 8
+type Option = (d:i32, lane:Lane)          // 16 bytes: d 0, lane 4
+type Mixed = (a:u8, b:i16, c:u64)         // 11 bytes: a 0, b 1, c 3
+```
+
+A value in memory is read and written whole or part by part. Each wasm value of it is one load or store at its offset, so there is nothing to pay for the struct: `list[k] = Spot(a, b, c)` is three stores, and `list[k].di` is one load.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func sum(s:Spot) -> i32 => s.c + s.di + s.room
+
+func demo(list:[*]mut Spot, k:u32, p:*mut Spot, all:[]Spot) -> i32 {
+  list[k] = Spot(20, 1, 2)       // store a whole struct
+  let s = list[k]                // load one: s is a copy, in registers
+  p.* = s                        // through a pointer to one struct
+  p.di += 1                      // one field through the pointer (p.* is implied)
+  list[k + 1] = list[k]          // copy from one place to another
+  let t = sum(p.*) + sum(list[k])   // pass by value
+  for spot in all {              // each element in turn
+    t += spot.room
+  }
+  return t
+}
+```
+
+The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opts[i].lane.cells.len`, `for x in opts[i].lane.cells { ... }`.
 
 ---
 

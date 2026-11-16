@@ -48,6 +48,8 @@ export interface CodegenContext {
   // Deferred expressions per open block, innermost last; loop bodies are marked
   // so break and continue run exactly the blocks they leave.
   deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
+  // Scratch locals the current function's code asked for (see scratchLocal).
+  scratch?: LocalDecl[]
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -430,48 +432,172 @@ function multiValueBinaryOp(n: number, wasmOp: string, left: string, right: stri
 }
 
 
-function loadFromMemory(type: ResolvedType, ptr: string): string {
-  const nw = wideIntParts(type)
-  if (nw > 0) {
-    return Array.from({ length: nw }, (_, i) =>
-      `(i64.load offset=${i * 8} ${ptr})`
-    ).join(' ')
-  }
-  const u = unwrap(type)
-  // Slice: load ptr + len (two i32s) — same layout as tuple (ptr, len)
-  if (u.kind === 'slice') {
-    return `(i32.load ${ptr}) (i32.load offset=4 ${ptr})`
-  }
-  if (u.kind === 'primitive') {
-    if (u.name === 'u8') return `(i32.load8_u ${ptr})`
-    if (u.name === 'i8') return `(i32.load8_s ${ptr})`
-    if (u.name === 'u16') return `(i32.load16_u ${ptr})`
-    if (u.name === 'i16') return `(i32.load16_s ${ptr})`
-  }
-  const wt = typeToWasmSingle(type)
-  return `(${wt}.load ${ptr})`
+// A fresh wasm local for a value that has to wait while other code runs: an
+// address that is used several times, or values that come off the stack in an
+// order they can't be used in. Each has its own name, so their uses can nest.
+function scratchLocal(ctx: CodegenContext, wasmType: string): string {
+  if (!ctx.scratch) ctx.scratch = []
+  const name = `__tmp_${ctx.scratch.length}`
+  ctx.scratch.push({ name, type: wasmType })
+  return `$${name}`
 }
 
-function storeToMemory(type: ResolvedType, ptr: string, value: string): string {
+// A local or a constant: free to repeat, and nothing that runs in between
+// changes it.
+const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
+
+// Whether an expression can be evaluated again for the same value and nothing
+// else: it makes no calls, sets and stores nothing, and has no control flow.
+const EFFECTS = /\((?:call|call_indirect|local\.set|local\.tee|global\.set|memory\.\w+|block|loop|if|br|br_if|br_table|return|unreachable|[if](?:32|64)\.store(?:8|16|32)?)\b/
+const isRepeatable = (wat: string) => !EFFECTS.test(wat)
+
+// Whether an expression reads memory, or could through a call.
+const readsMemory = (wat: string) => /\((?:call|call_indirect|[if](?:32|64)\.load)/.test(wat)
+
+// Whether an expression reads something that a call or a store could change.
+const readsState = (wat: string) => /\((?:global\.get|[if](?:32|64)\.load)/.test(wat)
+
+// The load and store instructions for one scalar. Integers narrower than a
+// word take their own width in memory and an i32 on the stack.
+function loadOp(type: ResolvedType): string {
+  const u = unwrap(type)
+  if (u.kind === 'primitive') {
+    if (u.name === 'u8') return 'i32.load8_u'
+    if (u.name === 'i8') return 'i32.load8_s'
+    if (u.name === 'u16') return 'i32.load16_u'
+    if (u.name === 'i16') return 'i32.load16_s'
+  }
+  return `${typeToWasmSingle(type)}.load`
+}
+
+function storeOp(type: ResolvedType): string {
+  const u = unwrap(type)
+  if (u.kind === 'primitive') {
+    if (u.name === 'u8' || u.name === 'i8') return 'i32.store8'
+    if (u.name === 'u16' || u.name === 'i16') return 'i32.store16'
+  }
+  return `${typeToWasmSingle(type)}.store`
+}
+
+const atOffset = (offset: number) => (offset === 0 ? '' : ` offset=${offset}`)
+
+// The scalars a struct, tuple or fixed array is made of in memory, or null for
+// a type that is one scalar (or a slice or wide integer, which keep their own
+// forms below).
+function aggregateParts(type: ResolvedType): RT.MemoryPart[] | null {
+  const u = unwrap(type)
+  if (u.kind !== 'tuple' && !(u.kind === 'array' && RT.isValueArray(u))) return null
+  const parts = RT.memoryParts(u)
+  if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
+  return parts
+}
+
+// Whether two types lie the same way in memory, scalar for scalar.
+function sameLayout(a: ResolvedType, b: ResolvedType): boolean {
+  const pa = RT.memoryParts(a)
+  const pb = RT.memoryParts(b)
+  if (!pa || !pb || pa.length !== pb.length) return false
+  return pa.every((p, i) => p.offset === pb[i].offset && loadOp(p.type) === loadOp(pb[i].type))
+}
+
+// Reads a value of any type from memory at `ptr`, leaving its wasm values on
+// the stack in order. A value of several parts (a slice, a wide integer, a
+// struct, tuple or fixed array, nested as deep as they go) is one load per
+// part, at the part's offset.
+//
+// The address is evaluated once. A slice or wide integer repeats an address
+// that has no effects, as their loads always have. A struct can have many
+// parts, so an address that is more than a local or a constant goes into a
+// scratch local with the first load.
+function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): string {
+  const nw = wideIntParts(type)
+  const u = unwrap(type)
+  if (nw > 0 || u.kind === 'slice') {
+    const loads = (p: string) => nw > 0
+      ? Array.from({ length: nw }, (_, i) => `(i64.load offset=${i * 8} ${p})`).join(' ')
+      // Slice: load ptr + len (two i32s) — same layout as tuple (ptr, len)
+      : `(i32.load ${p}) (i32.load offset=4 ${p})`
+    if (isRepeatable(ptr)) return loads(ptr)
+    const tmp = scratchLocal(ctx, 'i32')
+    return `(block (result ${typeToWasm(type).join(' ')}) (local.set ${tmp} ${ptr}) ${loads(`(local.get ${tmp})`)})`
+  }
+  const parts = aggregateParts(type)
+  if (!parts) return `(${loadOp(type)} ${ptr})`
+  let first = ptr
+  let rest = ptr
+  if (parts.length > 1 && !isSimple(ptr)) {
+    const tmp = scratchLocal(ctx, 'i32')
+    first = `(local.tee ${tmp} ${ptr})`
+    rest = `(local.get ${tmp})`
+  }
+  return parts.map((p, i) => `(${loadOp(p.type)}${atOffset(p.offset)} ${i === 0 ? first : rest})`).join(' ')
+}
+
+// Writes a value of any type to memory at `ptr`: one store per part, as
+// loadFromMemory reads them.
+//
+// An assignment reads its whole value before it writes any of it. When the
+// value is given part by part and a later part reads memory, storing the first
+// part could change what the later one reads (p.* = (p.b, p.a)), so all the
+// parts go on the stack, each above its address, before the stores run. A copy
+// from another place with the same layout (`copy`) is stored field by field:
+// two such places are the same place or don't overlap. A value that arrives on
+// the stack in one piece (a call's result) waits in scratch locals.
+//
+// The address is evaluated once, as for loads; a slice may repeat an address
+// that neither the stores nor the value's effects can change.
+function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext, copy = false): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
     const parts = trySplitMultiValue(value, nw)
     if (!parts) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
-    return parts.map((v, i) =>
-      `(i64.store offset=${i * 8} ${ptr} ${v})`
-    ).join('\n')
+    const setup: string[] = []
+    let addr = ptr
+    if (!isRepeatable(ptr)) {
+      const tmp = scratchLocal(ctx, 'i32')
+      setup.push(`(local.set ${tmp} ${ptr})`)
+      addr = `(local.get ${tmp})`
+    }
+    return [...setup, ...parts.map((v, i) => `(i64.store offset=${i * 8} ${addr} ${v})`)].join('\n')
   }
   const u = unwrap(type)
-  if (u.kind === 'slice') {
-    const parts = splitMultiValue(value, 2)
-    return `(i32.store ${ptr} ${parts[0]})\n(i32.store offset=4 ${ptr} ${parts[1]})`
+  const parts = u.kind === 'slice' ? RT.memoryParts(u) : aggregateParts(type)
+  if (!parts) return `(${storeOp(type)} ${ptr} ${value})`
+  if (parts.length === 0) return value
+  if (parts.length === 1) return `(${storeOp(parts[0].type)} ${ptr} ${value})`
+
+  const values = trySplitMultiValue(value, parts.length)
+  const repeat = isSimple(ptr) ||
+    (u.kind === 'slice' && isRepeatable(ptr) && !(readsState(ptr) && !isRepeatable(value)))
+  let first = ptr
+  let rest = ptr
+  if (!repeat) {
+    const tmp = scratchLocal(ctx, 'i32')
+    first = `(local.tee ${tmp} ${ptr})`
+    rest = `(local.get ${tmp})`
   }
-  if (u.kind === 'primitive') {
-    if (u.name === 'u8' || u.name === 'i8') return `(i32.store8 ${ptr} ${value})`
-    if (u.name === 'u16' || u.name === 'i16') return `(i32.store16 ${ptr} ${value})`
+  const at = (i: number) => (i === 0 ? first : rest)
+  const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${atOffset(parts[i].offset)}${operands})`
+
+  if (values) {
+    if (copy || values.slice(1).every((v) => !readsMemory(v))) {
+      return parts.map((_, i) => store(i, ` ${at(i)} ${values[i]}`)).join('\n')
+    }
+    return [
+      ...parts.map((_, i) => `${at(i)} ${values[i]}`),
+      ...parts.map((_, i) => store(i, '')).reverse(),
+    ].join('\n')
   }
-  const wt = typeToWasmSingle(type)
-  return `(${wt}.store ${ptr} ${value})`
+  // The first part can be stored straight off the stack once the others are
+  // out of its way.
+  const temps = parts.slice(1).map((p) => scratchLocal(ctx, typeToWasmSingle(p.type)))
+  return [
+    first,
+    value,
+    ...[...temps].reverse().map((t) => `(local.set ${t})`),
+    store(0, ''),
+    ...temps.map((t, i) => store(i + 1, ` ${rest} (local.get ${t})`)),
+  ].join('\n')
 }
 
 function splitMultiValue(wat: string, n: number): string[] {
@@ -491,9 +617,14 @@ function splitMultiValue(wat: string, n: number): string[] {
       }
     }
   }
-  if (parts.length === n) return parts
+  // The right count of parts is only the values if none is a statement: x ?? y
+  // sets its scratch locals first, then yields its whole value from an `if`.
+  if (parts.length === n && !parts.some((part) => STATEMENT.test(part))) return parts
   throw new Error(`Expected ${n} v128 components, got ${parts.length}: ${wat.slice(0, 80)}...`)
 }
+
+// An instruction that leaves nothing on the stack.
+const STATEMENT = /^\((?:local\.set|global\.set|drop|nop|br|br_if|return|unreachable|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?|(?:block|loop|if)(?!\s+\(result))\b/
 
 function lookupExprType(expr: { kind: string; span: { start: number; end: number } }, ctx: CodegenContext): ResolvedType | undefined {
   return ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind))
@@ -980,35 +1111,215 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   return `(call $${watName}${args ? ' ' + args : ''})`
 }
 
-function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
+// === Places ===
+//
+// An expression that names a variable, or part of one, is a place: it can be
+// read without evaluating anything else, and it can be assigned. A place is
+// either registers (wasm locals, or wasm globals for a module global) or an
+// address in linear memory. Any other expression is a value on the stack.
+
+// Parentheses around one expression parse as a group or a one-element tuple.
+function ungroup(expr: AST.Expr): AST.Expr {
+  if (expr.kind === 'GroupExpr') return ungroup(expr.expr)
+  if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name && expr.elements[0].value) {
+    return ungroup(expr.elements[0].value)
+  }
+  return expr
+}
+
+// Which of a value's wasm values one member of it covers: a field of a struct
+// or tuple (p.y, t.1), the ptr or len of a slice, or an element of a fixed
+// array at a constant index (v[2]). Null for anything else, such as a field
+// reached through a pointer.
+function memberValues(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; start: number; count: number } | null {
+  if (expr.kind !== 'MemberExpr' && expr.kind !== 'IndexExpr') return null
+  const object = ungroup(expr.object)
+  const objType = lookupExprType(object, ctx)
+  if (!objType) return null
+  const u = unwrap(objType)
+  const width = (t: ResolvedType) => typeToWasm(t).length
   if (expr.kind === 'IndexExpr') {
-    const objType = lookupExprType(expr.object, ctx)
-    if (!objType) return null
-    if (objType.kind === 'slice') {
-      const elemSize = byteSize(objType.element)
-      if (elemSize === null) return null
-      const base = exprToWat(expr.object, ctx)
-      const ptr = splitMultiValue(base, 2)[0]
-      const idx = exprToWat(expr.index, ctx)
-      if (elemSize === 1) return `(i32.add ${ptr} ${idx})`
-      return `(i32.add ${ptr} (i32.mul ${idx} (i32.const ${elemSize})))`
-    }
-    if (objType.kind === 'pointer' && objType.pointee.kind === 'array') {
-      const elemSize = byteSize(objType.pointee.element) ?? 1
-      const base = exprToWat(expr.object, ctx)
-      const idx = exprToWat(expr.index, ctx)
-      if (elemSize === 1) return `(i32.add ${base} ${idx})`
-      return `(i32.add ${base} (i32.mul ${idx} (i32.const ${elemSize})))`
-    }
+    const index = evalComptimeIndex(expr.index)
+    if (u.kind !== 'array' || !RT.isValueArray(u) || index === null) return null
+    return { object, start: index * width(u.element), count: width(u.element) }
   }
-  if (expr.kind === 'MemberExpr' && expr.member.kind === 'deref') {
-    return exprToWat(expr.object, ctx)
+  const member = expr.member
+  if (u.kind === 'slice' && member.kind === 'field' && (member.name === 'ptr' || member.name === 'len')) {
+    return { object, start: member.name === 'ptr' ? 0 : 1, count: 1 }
   }
-  return null
+  if (u.kind !== 'tuple' || (member.kind !== 'field' && member.kind !== 'index')) return null
+  const index = member.kind === 'index' ? member.value : u.fields.findIndex((f) => f.name === member.name)
+  if (index < 0 || index >= u.fields.length) return null
+  const start = u.fields.slice(0, index).reduce((n, f) => n + width(f.type), 0)
+  return { object, start, count: width(u.fields[index].type) }
+}
+
+interface Registers {
+  names: string[]
+  global: boolean
+}
+
+// The registers that hold an expression's value, in order, when it names a
+// variable or a member of one: point.x is $point_x, rect.origin is
+// $rect_origin_x and $rect_origin_y.
+function registersOf(expr: AST.Expr, ctx: CodegenContext): Registers | null {
+  expr = ungroup(expr)
+  if (expr.kind === 'IdentExpr') {
+    const names = ctx.locals.get(expr.name) ?? ctx.params.get(expr.name)
+    if (names) return { names, global: false }
+    const sym = ctx.symbols.get(expr.name)
+    if (sym?.kind === 'global') return { names: [ctx.nameMap.get(expr.name) ?? expr.name], global: true }
+    return null
+  }
+  const member = memberValues(expr, ctx)
+  const object = member && registersOf(member.object, ctx)
+  if (!member || !object || member.start + member.count > object.names.length) return null
+  return { names: object.names.slice(member.start, member.start + member.count), global: object.global }
+}
+
+function registersToWat(regs: Registers): string {
+  return regs.names.map((n) => `(${regs.global ? 'global' : 'local'}.get $${n})`).join(' ')
+}
+
+// Assigns a value to registers. A value of several parts is set part by part
+// when it is written out that way. If a later part reads a register that an
+// earlier part sets (p = Point(p.y, p.x)) it would see the new value, so then,
+// as for a value that arrives in one piece, the whole value goes on the stack
+// first.
+function setRegisters(regs: Registers, value: string): string {
+  const { names } = regs
+  const set = regs.global ? 'global.set' : 'local.set'
+  if (names.length === 1) return `(${set} $${names[0]} ${value})`
+  const parts = trySplitMultiValue(value, names.length)
+  const reads = (part: string, name: string) =>
+    part.split(`$${name}`).slice(1).some((after) => !/^[\w.+$-]/.test(after)) || (regs.global && /\((?:call|call_indirect)\b/.test(part))
+  if (parts && !parts.some((part, i) => names.slice(0, i).some((name) => reads(part, name)))) {
+    return names.map((n, i) => `(${set} $${n} ${parts[i]})`).join('\n')
+  }
+  return [value, ...[...names].reverse().map((n) => `(${set} $${n})`)].join('\n')
+}
+
+// A slice's pointer, from the (ptr, len) pair.
+function slicePointer(slice: string): string {
+  const parts = trySplitMultiValue(slice, 2)
+  return parts ? parts[0] : `(block (result i32) ${slice} (drop))`
+}
+
+// Indexing a packed *[N,M]T once gives the address of a row, a *[M]T, and
+// not a value.
+function isRowIndex(expr: AST.IndexExpr, ctx: CodegenContext): boolean {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const array = u?.kind === 'pointer' ? unwrap(u.pointee) : u
+  return array?.kind === 'array' && array.sizes !== null && array.sizes.length > 1
+}
+
+// The address of the element an index expression names: base + index * stride.
+function elementAddress(expr: AST.IndexExpr, ctx: CodegenContext): string {
+  const objType = lookupExprType(expr.object, ctx)
+  let base = exprToWat(expr.object, ctx)
+  const index = exprToWat(expr.index, ctx)
+  // For slice objects, extract just the pointer (first component)
+  if (objType?.kind === 'slice') base = slicePointer(base)
+  return indexOffset(expr.object, base, index, ctx).offset
+}
+
+// Where an expression's value lies in memory, when it names a place there: an
+// indexed element (xs[i]), a dereference (p.*), a field reached through a
+// pointer (p.x reads the struct p points to), or a member of any of those
+// (xs[i].b.c). The address is `base`, made when asked for, plus a constant.
+interface MemoryPlace {
+  base: () => string
+  offset: number
+}
+
+function memoryPlace(expr: AST.Expr, ctx: CodegenContext): MemoryPlace | null {
+  expr = ungroup(expr)
+  if (expr.kind !== 'MemberExpr' && expr.kind !== 'IndexExpr') return null
+  const object = ungroup(expr.object)
+  const objType = lookupExprType(object, ctx)
+  if (!objType) return null
+  const u = unwrap(objType)
+
+  if (expr.kind === 'IndexExpr') {
+    if (u.kind === 'array' && RT.isValueArray(u)) {
+      // An element of a fixed array is in memory when the array is.
+      const index = evalComptimeIndex(expr.index)
+      const stride = byteSize(u.element)
+      const array = memoryPlace(object, ctx)
+      if (index === null || stride === null || !array) return null
+      return { base: array.base, offset: array.offset + index * stride }
+    }
+    if (isRowIndex(expr, ctx)) return null
+    return { base: () => elementAddress(expr, ctx), offset: 0 }
+  }
+
+  const member = expr.member
+  if (member.kind === 'deref') return { base: () => exprToWat(object, ctx), offset: 0 }
+  if (member.kind !== 'field' && member.kind !== 'index') return null
+  const field = member.kind === 'field' ? member.name : member.value
+  if (u.kind === 'pointer') {
+    const offset = RT.fieldByteOffset(u.pointee, field)
+    return offset === null ? null : { base: () => exprToWat(object, ctx), offset }
+  }
+  const offset = RT.fieldByteOffset(u, field)
+  const struct = offset === null ? null : memoryPlace(object, ctx)
+  return struct && offset !== null ? { base: struct.base, offset: struct.offset + offset } : null
+}
+
+function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
+  const place = memoryPlace(expr, ctx)
+  if (!place) return null
+  return place.offset === 0 ? place.base() : `(i32.add ${place.base()} (i32.const ${place.offset}))`
+}
+
+// Keeps `count` of the values an expression leaves on the stack, from `start`.
+// When the expression is written out value by value and none has effects, the
+// others are just left out. Otherwise it is evaluated whole and the others are
+// dropped; the kept values wait in scratch locals while the ones under them go.
+function selectValues(wat: string, types: string[], start: number, count: number, ctx: CodegenContext): string {
+  const parts = trySplitMultiValue(wat, types.length)
+  if (parts?.every(isRepeatable)) return parts.slice(start, start + count).join(' ')
+  const kept = types.slice(start, start + count)
+  const code = [wat, ...Array(types.length - start - count).fill('(drop)')]
+  if (start > 0) {
+    const temps = kept.map((t) => scratchLocal(ctx, t))
+    code.push(...[...temps].reverse().map((t) => `(local.set ${t})`))
+    code.push(...Array(start).fill('(drop)'))
+    code.push(...temps.map((t) => `(local.get ${t})`))
+  }
+  return `(block${kept.length > 0 ? ` (result ${kept.join(' ')})` : ''} ${code.join(' ')})`
+}
+
+// A member of a struct that is neither in a variable nor in memory but on the
+// stack, such as a call's result: f().size.x. Follows the members down to that
+// value and keeps the wasm values the last one covers. Null when there is no
+// such struct; a slice on the stack (f().len) has its own form in memberToWat.
+function memberOfStackValue(expr: AST.Expr, ctx: CodegenContext): string | null {
+  let member = memberValues(ungroup(expr), ctx)
+  if (!member) return null
+  let { object, start } = member
+  const count = member.count
+  for (member = memberValues(object, ctx); member; member = memberValues(object, ctx)) {
+    object = member.object
+    start += member.start
+  }
+  const type = lookupExprType(object, ctx)
+  if (!type || unwrap(type).kind === 'slice' || registersOf(object, ctx) || memoryPlace(object, ctx)) return null
+  return selectValues(exprToWat(object, ctx), typeToWasm(type), start, count, ctx)
 }
 
 function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   const member = expr.member
+
+  if (member.kind === 'field' || member.kind === 'index') {
+    // Struct field access: flatten to local.get with field suffix
+    // Supports chained access: r.origin.x → local.get $r_origin_x
+    const regs = registersOf(expr, ctx)
+    if (regs) return registersToWat(regs)
+    const picked = memberOfStackValue(expr, ctx)
+    if (picked !== null) return picked
+  }
 
   if (member.kind === 'field') {
     // Get the type of the object to check for indexed/pointer-to-indexed
@@ -1018,10 +1329,9 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     if (objType?.kind === 'slice') {
       if (member.name === 'ptr' || member.name === 'len') {
         const idx = member.name === 'ptr' ? 0 : 1
-        if (expr.object.kind === 'IdentExpr') {
-          const localNames = ctx.locals.get(expr.object.name) ?? ctx.params.get(expr.object.name)
-          if (localNames && localNames.length >= 2) return `(local.get $${localNames[idx]})`
-        }
+        // A slice in memory: load the one part.
+        const addr = lvalueAddressOf(expr.object, ctx)
+        if (addr !== null) return `(i32.load${atOffset(idx * 4)} ${addr})`
         const full = exprToWat(expr.object, ctx)
         const parts = trySplitMultiValue(full, 2)
         if (parts) return parts[idx]
@@ -1107,71 +1417,14 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         return `(i32.const ${elemSize})`
       }
     }
-
-    // Struct field access: flatten to local.get with field suffix
-    // Supports chained access: r.origin.x → local.get $r_origin_x
-    const chain = resolveFieldChain(expr.object, member.name)
-    if (chain) {
-      const localNames = ctx.locals.get(chain.root) ?? ctx.params.get(chain.root)
-      if (localNames) {
-        const wasmName = `${chain.root}_${chain.path}`
-        if (localNames.includes(wasmName)) {
-          return `(local.get $${wasmName})`
-        }
-        // Field might expand to multiple locals (nested struct)
-        const prefix = `${wasmName}_`
-        const matching = localNames.filter(n => n === wasmName || n.startsWith(prefix))
-        if (matching.length > 0) {
-          return matching.map(n => `(local.get $${n})`).join(' ')
-        }
-      }
-    }
-
-    // Field access on memory-backed expression (e.g., iovecs[0].len)
-    const memObjType = lookupExprType(expr.object, ctx)
-    if (memObjType) {
-      const fieldOff = RT.fieldByteOffset(memObjType, member.name)
-      if (fieldOff !== null) {
-        const addr = lvalueAddressOf(expr.object, ctx)
-        if (addr !== null) {
-          const fieldType = lookupExprType(expr, ctx)
-          if (fieldType) {
-            const fieldAddr = fieldOff === 0 ? addr : `(i32.add ${addr} (i32.const ${fieldOff}))`
-            return loadFromMemory(fieldType, fieldAddr)
-          }
-        }
-      }
-    }
-
-    const base = exprToWat(expr.object, ctx)
-    return base
   }
 
-  if (member.kind === 'index') {
-    // Tuple positional access: .0, .1, etc.
-    const chain = resolveFieldChain(expr.object, String(member.value))
-    if (chain) {
-      const localNames = ctx.locals.get(chain.root) ?? ctx.params.get(chain.root)
-      if (localNames) {
-        const wasmName = `${chain.root}_${chain.path}`
-        if (localNames.includes(wasmName)) {
-          return `(local.get $${wasmName})`
-        }
-        const prefix = `${wasmName}_`
-        const matching = localNames.filter(n => n === wasmName || n.startsWith(prefix))
-        if (matching.length > 0) {
-          return matching.map(n => `(local.get $${n})`).join(' ')
-        }
-      }
-    }
-    if (expr.object.kind === 'IdentExpr') {
-      const baseName = expr.object.name
-      const idx = member.value
-      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
-      if (localNames && localNames[idx]) {
-        return `(local.get $${localNames[idx]})`
-      }
-    }
+  if (member.kind === 'field' || member.kind === 'index') {
+    // A member of a struct in memory (iovecs[0].len, p.x through a pointer,
+    // xs[i].b.c): load it from its offset.
+    const addr = lvalueAddressOf(expr, ctx)
+    const type = addr === null ? undefined : lookupExprType(expr, ctx)
+    if (addr !== null && type) return loadFromMemory(type, addr, ctx)
     return exprToWat(expr.object, ctx)
   }
 
@@ -1182,7 +1435,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
     if (!type) {
       throw new Error(`Missing type for pointer dereference at offset ${expr.span.start}`)
     }
-    return loadFromMemory(type, ptr)
+    return loadFromMemory(type, ptr, ctx)
   }
 
   if (member.kind === 'type') {
@@ -1192,21 +1445,6 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   }
 
   return exprToWat(expr.object, ctx)
-}
-
-function resolveFieldChain(expr: AST.Expr, field: string): { root: string; path: string } | null {
-  if (expr.kind === 'IdentExpr') {
-    return { root: expr.name, path: field }
-  }
-  if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
-    const inner = resolveFieldChain(expr.object, expr.member.name)
-    if (inner) return { root: inner.root, path: `${inner.path}_${field}` }
-  }
-  if (expr.kind === 'MemberExpr' && expr.member.kind === 'index') {
-    const inner = resolveFieldChain(expr.object, String(expr.member.value))
-    if (inner) return { root: inner.root, path: `${inner.path}_${field}` }
-  }
-  return null
 }
 
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
@@ -1238,31 +1476,10 @@ function indexOffset(object: AST.Expr, base: string, index: string, ctx: Codegen
 
 function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Value array [N]T: index with comptime constant → local.get
-  const objTypeKey = typeKey(exprTypeOffset(expr.object), expr.object.kind)
-  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
-  if (objType?.kind === 'array' && objType.sizes && objType.sizes.length === 1 && typeof objType.sizes[0] === 'number') {
-    const idx = evalComptimeIndex(expr.index)
-    if (idx !== null && expr.object.kind === 'IdentExpr') {
-      const localNames = ctx.locals.get(expr.object.name) ?? ctx.params.get(expr.object.name)
-      if (localNames) {
-        const elemFlat = flattenType(objType.element)
-        const base = idx * elemFlat.length
-        if (elemFlat.length === 1) {
-          return `(local.get $${localNames[base]})`
-        }
-        return elemFlat.map((_, j) => `(local.get $${localNames[base + j]})`).join(' ')
-      }
-    }
-  }
-
-  let base = exprToWat(expr.object, ctx)
-  const index = exprToWat(expr.index, ctx)
-  // For slice objects, extract just the pointer (first component)
-  if (objType?.kind === 'slice') {
-    const parts = splitMultiValue(base, 2)
-    base = parts[0]
-  }
-  const { offset } = indexOffset(expr.object, base, index, ctx)
+  const regs = registersOf(expr, ctx)
+  if (regs) return registersToWat(regs)
+  const picked = memberOfStackValue(expr, ctx)
+  if (picked !== null) return picked
 
   // Get result type
   const type = lookupExprType(expr, ctx)
@@ -1270,8 +1487,10 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
     throw new Error(`Missing type for index expression at offset ${expr.span.start}`)
   }
   // Multi-dim indexing returns a pointer — just compute address, don't load
-  if (type.kind === 'pointer') return offset
-  return loadFromMemory(type, offset)
+  if (isRowIndex(expr, ctx)) return elementAddress(expr, ctx)
+  const addr = lvalueAddressOf(expr, ctx)
+  if (addr === null) throw new Error(`Cannot index this expression at offset ${expr.span.start}`)
+  return loadFromMemory(type, addr, ctx)
 }
 
 // items[start..end]: (ptr + start * stride, end - start). Parts that are
@@ -1376,7 +1595,7 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
 (block $__fill_${uid}
   (loop $__fill_next_${uid}
     (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
-    ${storeToMemory(elem, `(local.get ${p})`, `(local.get ${t})`)}
+    ${storeToMemory(elem, `(local.get ${p})`, `(local.get ${t})`, ctx)}
     (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
     (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
     (br $__fill_next_${uid})))`
@@ -1473,7 +1692,7 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const offset = elemSize === 1
     ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
     : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-  const loadVal = loadFromMemory(elemType, offset)
+  const loadVal = loadFromMemory(elemType, offset, ctx)
 
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
@@ -1543,7 +1762,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const offset = elemSize === 1
       ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
       : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-    const loadVal = loadFromMemory(elemType, offset)
+    const loadVal = loadFromMemory(elemType, offset, ctx)
     const bindWat = makeBind(loadVal)
 
     if (elseBody) {
@@ -1750,7 +1969,7 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
           parts.push(`(i32.const ${base})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${base + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value))
+        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value, ctx))
       }
     }
   }
@@ -1988,6 +2207,16 @@ function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx:
   return sets.join('\n')
 }
 
+// *[N]T into a slice: add the compile-time length, as call arguments do.
+function withSliceLength(value: string, valueExpr: AST.Expr, target: ResolvedType, ctx: CodegenContext): string {
+  if (unwrap(target).kind !== 'slice') return value
+  valueExpr = ungroup(valueExpr)
+  const valueType = ctx.types.get(typeKey(exprTypeOffset(valueExpr), valueExpr.kind))
+  const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
+  const len = array ? totalElements(array.sizes) : null
+  return len === null ? value : `${value} (i32.const ${len})`
+}
+
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
   if (!stmt.value) return '' // Declaration only, no initialization
 
@@ -2000,13 +2229,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
     }
-    // *[N]T into a slice: add the compile-time length, as call arguments do.
-    if (unwrap(type).kind === 'slice') {
-      const valueType = ctx.types.get(typeKey(exprTypeOffset(stmt.value), stmt.value.kind))
-      const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
-      const len = array ? totalElements(array.sizes) : null
-      if (len !== null) value = `${value} (i32.const ${len})`
-    }
+    value = withSliceLength(value, stmt.value, type, ctx)
     const wasmTypes = typeToWasm(type)
 
     if (wasmTypes.length === 1) {
@@ -2081,10 +2304,21 @@ function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boole
 function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   if (stmt.target.kind === 'SliceExpr') return rangeAssignToWat(stmt.target, stmt.value, ctx)
   const value = exprToWat(stmt.value, ctx)
+  const isPlace = stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr'
+  const placeType = isPlace ? lookupExprType(stmt.target as AST.Expr, ctx) : undefined
 
   // Handle compound assignment operators
   if (stmt.op !== '=') {
-    const current = lvalueToWat(stmt.target, ctx)
+    let current = lvalueToWat(stmt.target, ctx)
+    let assign = (result: string) => assignLvalue(stmt.target, result, ctx)
+    // x op= v reads and writes one place, so its address is evaluated once:
+    // one with effects (xs[next()] += 1) goes into a scratch local.
+    const addr = isPlace ? lvalueAddressOf(stmt.target as AST.Expr, ctx) : null
+    if (addr !== null && placeType && !isRepeatable(addr)) {
+      const tmp = scratchLocal(ctx, 'i32')
+      current = loadFromMemory(placeType, `(local.get ${tmp})`, ctx)
+      assign = (result) => `(local.set ${tmp} ${addr})\n${storeToMemory(placeType, `(local.get ${tmp})`, result, ctx)}`
+    }
     // Use target type for the operation, not value type
     const targetKey = (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr')
       ? typeKey(stmt.target.span.end, stmt.target.kind)
@@ -2125,18 +2359,22 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     if (nv > 1 && stmt.op.length > 1 && stmt.op.endsWith('=')) {
       const helper = wideBinaryOp(stmt.op.slice(0, -1), signed, type)
       const wideRhs = valueType && wideIntParts(valueType) < nv ? widenToWide(value, valueType, nv) : value
-      return assignLvalue(stmt.target, wideCall(nv, helper, current, wideRhs), ctx)
+      return assign(wideCall(nv, helper, current, wideRhs))
     }
     const op = ops[stmt.op]
     if (op) {
       const raw = nv > 1
         ? multiValueBinaryOp(nv, op, current, rhs)
         : `(${op} ${current} ${rhs})`
-      return assignLvalue(stmt.target, truncateSubWord(raw, type), ctx)
+      return assign(truncateSubWord(raw, type))
     }
   }
 
-  return assignLvalue(stmt.target, value, ctx)
+  if (!placeType) return assignLvalue(stmt.target, value, ctx)
+  // A value copied from another place in memory that is laid out the same.
+  const valueType = lookupExprType(stmt.value, ctx)
+  const copy = !!valueType && sameLayout(valueType, placeType) && memoryPlace(stmt.value, ctx) !== null
+  return assignLvalue(stmt.target, withSliceLength(value, stmt.value, placeType, ctx), ctx, copy)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -2152,120 +2390,23 @@ function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
   return ''
 }
 
-function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): string {
-  if (target.kind === 'IdentExpr') {
-    const name = target.name
-    const localNames = ctx.locals.get(name)
-    if (localNames && localNames.length === 1) {
-      return `(local.set $${localNames[0]} ${value})`
-    }
-    if (localNames && localNames.length > 1) {
-      try {
-        const parts = splitMultiValue(value, localNames.length)
-        return localNames.map((n, i) => `(local.set $${n} ${parts[i]})`).join('\n')
-      } catch {
-        const assigns = [...localNames].reverse().map(n => `(local.set $${n})`).join('\n')
-        return `${value}\n${assigns}`
-      }
-    }
-    // Check globals
-    const sym = ctx.symbols.get(name)
-    if (sym?.kind === 'global') {
-      const watName = ctx.nameMap.get(name) ?? name
-      return `(global.set $${watName} ${value})`
-    }
-    return `(local.set $${name} ${value})`
-  }
-
-  if (target.kind === 'MemberExpr') {
-    const member = target.member
-    if (member.kind === 'field' && target.object.kind === 'IdentExpr') {
-      const baseName = target.object.name
-      const fieldName = member.name
-      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
-      if (localNames) {
-        const flatName = `${baseName}_${fieldName}`
-        if (localNames.includes(flatName)) {
-          return `(local.set $${flatName} ${value})`
-        }
-      }
-      return `(local.set $${baseName}_${fieldName} ${value})`
-    }
-    if (member.kind === 'index' && target.object.kind === 'IdentExpr') {
-      const baseName = target.object.name
-      const localNames = ctx.locals.get(baseName) ?? ctx.params.get(baseName)
-      if (localNames && localNames[member.value]) {
-        return `(local.set $${localNames[member.value]} ${value})`
-      }
-    }
-    if (member.kind === 'deref') {
-      const ptr = exprToWat(target.object, ctx)
-      const type = ctx.types.get(typeKey(target.span.end, target.kind)) ?? ctx.types.get(typeKey(target.span.start, target.kind))
-      if (!type) {
-        throw new Error(`Missing type for pointer store at offset ${target.span.start}`)
-      }
-      return storeToMemory(type, ptr, value)
-    }
-    // Field access on memory-backed value (e.g., iovecs[0].len = x)
-    if (member.kind === 'field') {
-      const objType = lookupExprType(target.object, ctx)
-      if (objType) {
-        const fieldOff = RT.fieldByteOffset(objType, member.name)
-        if (fieldOff !== null) {
-          const ptr = lvalueAddressOf(target.object, ctx)
-          if (ptr !== null) {
-            const fieldType = lookupExprType(target, ctx)
-            if (fieldType) {
-              const addr = fieldOff === 0 ? ptr : `(i32.add ${ptr} (i32.const ${fieldOff}))`
-              return storeToMemory(fieldType, addr, value)
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (target.kind === 'IndexExpr') {
-    // Value array [N]T: assignment with comptime index → local.set
-    const objTypeKey2 = typeKey(exprTypeOffset(target.object), target.object.kind)
-    const objType2 = ctx.types.get(objTypeKey2) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
-    if (objType2?.kind === 'array' && objType2.sizes && objType2.sizes.length === 1 && typeof objType2.sizes[0] === 'number') {
-      const idx = evalComptimeIndex(target.index)
-      if (idx !== null && target.object.kind === 'IdentExpr') {
-        const localNames = ctx.locals.get(target.object.name) ?? ctx.params.get(target.object.name)
-        if (localNames) {
-          const elemFlat = flattenType(objType2.element)
-          const base = idx * elemFlat.length
-          if (elemFlat.length === 1) {
-            return `(local.set $${localNames[base]} ${value})`
-          }
-          const parts = splitMultiValue(value, elemFlat.length)
-          return elemFlat.map((_, j) => `(local.set $${localNames[base + j]} ${parts[j]})`).join('\n')
-        }
-      }
-    }
-
-    let ptr = exprToWat(target.object, ctx)
-    const idx = exprToWat(target.index, ctx)
-    const type = ctx.types.get(typeKey(target.span.end, target.kind))
-      ?? ctx.types.get(typeKey(target.span.start, target.kind))
+// Assigns a value to a place: the registers of a variable or of a member of
+// one, or memory. `copy`: the value was read from another place in memory with
+// the same layout (see storeToMemory).
+function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext, copy = false): string {
+  if (target.kind !== 'IdentExpr' && target.kind !== 'MemberExpr' && target.kind !== 'IndexExpr') return ''
+  const regs = registersOf(target, ctx)
+  if (regs) return setRegisters(regs, value)
+  const addr = lvalueAddressOf(target, ctx)
+  if (addr !== null) {
+    const type = lookupExprType(target, ctx)
     if (!type) {
-      throw new Error(`Missing type for index store at offset ${target.span.start}`)
+      throw new Error(`Missing type for store at offset ${target.span.start}`)
     }
-    // For slice objects, extract just the pointer
-    const objTypeKey = target.object.kind === 'MemberExpr'
-      ? typeKey(target.object.span.end, target.object.kind)
-      : typeKey(target.object.span.start, target.object.kind)
-    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
-    if (objType?.kind === 'slice') {
-      const parts = splitMultiValue(ptr, 2)
-      ptr = parts[0]
-    }
-    const { offset } = indexOffset(target.object, ptr, idx, ctx)
-    return storeToMemory(type, offset, value)
+    return storeToMemory(type, addr, value, ctx, copy)
   }
-
-  return ''
+  if (target.kind === 'IdentExpr') return `(local.set $${target.name} ${value})`
+  throw new Error(`Cannot assign to this expression at offset ${target.span.start}`)
 }
 
 function returnToWat(stmt: AST.ReturnStmt, ctx: CodegenContext): string {
@@ -2371,7 +2512,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     setup = `(local.set ${ptr} ${iterWat})
 (local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))`
   }
-  const load = loadFromMemory(elemType, `(local.get ${ptr})`)
+  const load = loadFromMemory(elemType, `(local.get ${ptr})`, ctx)
   const bind = valueLocals.length === 1
     ? `(local.set $${valueLocals[0]} ${load})`
     : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
@@ -2580,7 +2721,7 @@ export function funcToWat(
     epilogue = '(unreachable)'
   }
 
-  const localStr = declareUsedLocals(dedupedLocals, `${body}\n${epilogue}`, '\n  ')
+  const localStr = declareUsedLocals([...dedupedLocals, ...(ctx.scratch ?? [])], `${body}\n${epilogue}`, '\n  ')
   const paramsStr = params.join(' ')
   const emitName = watName ?? name
   return `(func $${emitName} ${paramsStr} ${resultStr}
@@ -3058,10 +3199,11 @@ function emitTestDecl(
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
+    ctx.scratch = []
     const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
     const seen = new Set<string>()
-    const locals = rawLocals.filter(l => {
+    const locals = [...rawLocals, ...ctx.scratch].filter(l => {
       if (seen.has(l.name)) return false
       seen.add(l.name)
       return true
