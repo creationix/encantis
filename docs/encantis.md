@@ -660,12 +660,47 @@ u8 → u16 → u32 → u64
 f32 → f64
 ```
 
+An unsigned integer also widens to a wider signed one, which holds all its values: `u8` → `i16`, `u32` → `i64`.
+
 Integer to float is implicit only when the float's mantissa can hold all values:
 
 | Float | Safe integer types | Mantissa bits |
 |-------|-------------------|---------------|
 | f32 | i8, u8, i16, u16 | 24 |
 | f64 | i8, u8, i16, u16, i32, u32 | 53 |
+
+A value widens wherever two operand types meet or a value meets a declared type:
+
+- **Operators.** The narrower operand of an arithmetic, bitwise or comparison operator widens to the other's type. That is the type of the result (`bool` for a comparison).
+- **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
+- **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
+- **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`.
+
+```ents
+type Sample = (count: i64, mean: f64)
+
+func scale(r: f64, n: i32) -> f64 => r * n        // n widens to f64
+
+func total(a: u8, b: i32, c: i64) -> i64 {
+  let sum: i64 = a                                 // u8 to i64
+  sum += b                                         // i32 to i64
+  return sum + c
+}
+
+func sample(n: i32, sum: f32) -> Sample => Sample(n, sum)
+
+func pick(c: bool, n: i32, x: f64) -> f64 {
+  let v = if c { n } else { x }                    // an f64: n widens
+  return v
+}
+```
+
+The conversion is an instruction only when the WebAssembly type changes ([10.1](#101-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
+
+A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [8.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
+
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([8.2](#structural-coercion)).
 
 #### Comptime Literal Promotion
 
@@ -675,6 +710,22 @@ Unsuffixed literals check actual value, not type:
 let x:f32 = 1.0 + 42        // OK: 42 fits in f32 mantissa
 let y:f32 = 1.0 + 16777216  // OK: 2^24 is max exact integer
 let z:f32 = 1.0 + 16777217  // ERROR: exceeds f32 precision
+```
+
+A constant expression takes the type it's used as, all the way down to its literals. A float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`:
+
+```ents
+func third() -> f32 {
+  let x: f32 = 1.0 / 3       // an f32 division of two f32 constants
+  return x
+}
+
+func big() -> i64 {
+  let x = 5000000000 + 1     // an i64 addition: the 1 isn't an i32
+  return x
+}
+
+func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
 ```
 
 Once a value has a concrete type, normal promotion rules apply:
@@ -689,8 +740,10 @@ let a:f32 = z          // ERROR: f64 → f32 needs explicit cast
 ```ents
 i32 + f32   // ERROR: i32 exceeds f32's mantissa
 i32 + u32   // ERROR: mixed signedness, cast explicitly
+i32 < u32   // ERROR: the same goes for comparisons
 i64 → i32   // ERROR: narrowing needs explicit cast
 bool + i32  // ERROR: cast bool first
+f64 % 2.0   // ERROR: % and the bitwise operators need integers
 ```
 
 #### Explicit Casts
@@ -727,6 +780,8 @@ Casts are required for:
 - Lossy integer→float
 - Mixed signedness operations
 - Bool→integer
+
+A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
 
 ---
 
@@ -800,6 +855,18 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, or the address of a `data` block. The compiler works out its value, so it can be written as it's meant:
+
+```ents
+def page = 64 * 1024
+
+global limit: u32 = 4 * page     // 262144
+global ratio: f64 = 2 / 3.0
+global mask: u32 = ~0 << 12
+```
+
+A value that needs a call or another global isn't one: assign it in a function.
+
 ### 3.4 Functions
 
 ```ents
@@ -828,7 +895,19 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results it fills them in order, whatever its own fields are called. An expression body gives the results the same way.
+
+```ents
+func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
+
+func halves(n: u16) -> (hi: u64, lo: f64) {
+  (n >> 8, n & 0xff)                     // each element widens to its result
+}
+
+func swapped(n: u32) -> (lo: u32, hi: u32) {
+  split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
+}
+```
 
 #### Calling Conventions
 
@@ -944,6 +1023,8 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
 | `-\|` | saturating subtract (not yet implemented) | integers |
 | `*\|` | saturating multiply (not yet implemented) | integers |
 
+The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result. Types neither of which holds the other, such as `i32` and `u32`, need a cast.
+
 Saturating operators clamp at type boundaries instead of wrapping:
 
 ```ents
@@ -968,6 +1049,24 @@ let z = x -| 200     // -128 (min i8)
 | `<<<` | rotate left | integers |
 | `>>>` | rotate right | integers |
 
+`&`, `|` and `^` also take two bools. `>>` keeps the sign of a signed value.
+
+`~` of a constant is a bit pattern in the type it's used as, so it fits an unsigned type that holds its operand: `~7` is `0xfffffff8` as a `u32`. A negative constant doesn't: `x & -8` needs a signed `x`.
+
+```ents
+func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
+func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
+```
+
+The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
+
+A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
+
+```ents
+func rotr(x: u32, n: u32) -> u32 => x >>> n
+func swap_nibbles(b: u8) -> u8 => b <<< 4
+```
+
 ### 4.3 Comparison Operators
 
 | Operator | Description |
@@ -979,15 +1078,17 @@ let z = x -| 200     // -128 (min i8)
 | `==` | equal |
 | `!=` | not equal |
 
-All comparisons return `bool`.
+All comparisons return `bool`. The operands widen to one type, as for arithmetic. `==` and `!=` also compare bools and pointers; the ordering operators also compare pointers.
+
+`&&` and `||` take bools and evaluate the right side only when it's needed.
 
 ### 4.4 Unary Operators
 
 | Operator | Description |
 |----------|-------------|
-| `-x` | negation |
+| `-x` | negation (numbers) |
 | `!x` | logical NOT (bool only) |
-| `~x` | bitwise NOT |
+| `~x` | bitwise NOT (integers) |
 | `x.*` | dereference |
 
 For slice/array length and pointer extraction, use property access: `slice.len`, `slice.ptr`.
@@ -1070,6 +1171,8 @@ count += 1               // increment variable
 arr[i] += delta          // modify array element
 ptr.* ^= mask            // XOR through pointer
 ```
+
+The result goes back into `x`, so `n` widens to the type of `x`, never the other way: `total += small` is fine, `small += total` needs `small += total as i32`. A shift count (`x <<= n`) can be any integer type.
 
 ### 4.6 Pointer Operations
 
@@ -1197,6 +1300,14 @@ if let data = entry.dynamic {
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
 
+It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
+
+```ents
+data scores = [95, 87, 42]:*[_]i32
+
+func score(i: u32, lenient: bool) -> i64 => if let s = scores[i] { s } elif lenient { 50 } else { -1 }
+```
+
 #### Element Addresses and Writes
 
 Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
@@ -1319,6 +1430,21 @@ if x != 0 { ... } // OK: explicit comparison
 if flag { ... }   // OK: flag is bool
 ```
 
+The same goes for `while`, `when`, `assert`, and the operands of `&&`, `||` and `!`.
+
+An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)).
+
+```ents
+func sign(x: i32) -> i32 => if x < 0 { -1 } elif x > 0 { 1 } else { 0 }
+
+func gap(found: bool, p: i32, l: i32) -> i32 {
+  let v = if found { p - l } else { -1 }
+  return v
+}
+```
+
+Used as a statement, an `if` has no value to agree on: its branches can end in anything.
+
 ### 5.2 Loops
 
 ```ents
@@ -1362,6 +1488,8 @@ return value when cond   // return if condition is true
 ```
 
 The `when` form is equivalent to wrapping in `if cond { ... }`.
+
+A bare `return` is for a function with no result, or with named results, which it returns as they are set. In a function with an unnamed result, `return` needs a value.
 
 #### Defer
 
@@ -1412,7 +1540,7 @@ match value {
 }
 ```
 
-Match arms are tested in order. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
 
 ```ents
 let result = match code {
@@ -1426,7 +1554,7 @@ let result = match code {
 }
 ```
 
-Match is an expression and returns a value. All arms must have compatible types:
+Match is an expression and returns a value. All arms must have compatible types: they widen to one type, like the branches of an `if`.
 
 ```ents
 let msg:[]u8 = match status & 3 {
@@ -1779,6 +1907,8 @@ let small = (x: 10:i8, y: 20:i8)
 scale(small, 2)
 ```
 
+> **Status:** only fields that are held the same way coerce (`i8` → `i32`, both a wasm `i32`). A field that needs a conversion (`i32` → `i64`, integer → float) is a checker error for a value that already exists; a literal's elements are converted one by one ([2.10](#implicit-widening)).
+
 This coercion only applies to by-value passing. For pointers, exact memory layout is required:
 
 ```ents
@@ -1949,17 +2079,20 @@ if old == -1 {
 | Conversion | Instruction |
 |------------|-------------|
 | i32 → i64 | i64.extend_i32_s / _u |
-| i32 → f32 | f32.convert_i32_s / _u |
+| i8, u8, i16, u16 → f32 | f32.convert_i32_s / _u |
 | i32 → f64 | f64.convert_i32_s / _u |
-| i64 → f32 | f32.convert_i64_s / _u |
-| i64 → f64 | f64.convert_i64_s / _u |
 | f32 → f64 | f64.promote_f32 |
+
+Here `i32` stands for every integer type up to 32 bits: they all live in a wasm `i32`, so widening among them emits nothing. `_s` or `_u` follows the signedness of the type widened.
 
 ### 10.2 Narrowing Instructions (explicit cast)
 
 | Conversion | Instruction |
 |------------|-------------|
 | i64 → i32 | i32.wrap_i64 |
+| i32, u32 → f32 | f32.convert_i32_s / _u |
+| i64 → f32 | f32.convert_i64_s / _u |
+| i64 → f64 | f64.convert_i64_s / _u |
 | f64 → f32 | f32.demote_f64 |
 | f32 → i32 | i32.trunc_f32_s / _u |
 | f64 → i32 | i32.trunc_f64_s / _u |

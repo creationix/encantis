@@ -1,0 +1,207 @@
+// Implicit widening: a narrower number is converted wherever it meets a wider
+// type that holds all its values. Integers widen to wider integers of the same
+// signedness (and unsigned ones to wider signed ones), f32 to f64, and
+// integers to a float whose mantissa holds them: up to 16 bits for f32, up to
+// 32 bits for f64.
+
+type Sample = (count: i64, mean: f64)
+
+// Operands of arithmetic and comparisons.
+func scale(r: f64, n: i32) -> f64 => r * n
+func ratio(n: i32, d: u32) -> f64 => 1.0 * n / d
+func total(a: u8, b: i16, c: i32, d: i64) -> i64 => a + b + c + d
+func above(covered: i32, goal: f64) -> bool => covered >= goal
+func below(goal: f64, covered: i32) -> bool => goal < covered
+func halves(n: i32) -> f64 => n * 0.5
+func promoted(x: f32, y: f64) -> f64 => x + y
+func small(x: f32, n: i16) -> f32 => x * n
+
+test "an integer operand widens to the float beside it" {
+  assert scale(1.5, 4) == 6.0
+  assert scale(0.5, -3) == -1.5
+  assert ratio(1, 4) == 0.25
+  assert halves(5) == 2.5
+  assert small(1.5, -2) == -3.0
+}
+
+test "integer operands widen to the widest, keeping their sign" {
+  assert total(200, -300, -70000, 5000000000) == 4999929900
+}
+
+test "comparisons widen their operands the same way" {
+  assert above(72, 71.5)
+  assert !above(71, 71.5)
+  assert below(71.5, 72)
+  assert promoted(0.5, 0.25) == 0.75
+}
+
+// A value meeting a declared type: let, assignment, compound assignment,
+// arguments, results, constructor fields and tuple elements.
+func halve(x: f64) -> f64 => x / 2.0
+func widen(n: i32) -> i64 => n
+func widen_unsigned(n: u32) -> i64 => n
+func to_float(n: u32) -> f64 { return n }
+
+func declared(n: i32) -> f64 {
+  let x: f64 = n
+  return x
+}
+
+func assigned(n: i16) -> i64 {
+  let x: i64 = 0
+  x = n
+  return x
+}
+
+func accumulated(n: i32, f: f32) -> f64 {
+  let x: f64 = 1.0
+  x += n
+  x *= f
+  x -= 2
+  x /= n
+  return x
+}
+
+func argument(n: i32) -> f64 => halve(n)
+func sample(n: i32, sum: i32) -> Sample => Sample(n, sum)
+func named(count: i32, mean: f32) -> Sample => Sample(count:, mean:)
+func pair(n: i32) -> (i64, f64) => (n, n)
+
+test "a value widens to the type it's declared, assigned or returned as" {
+  assert widen(-7) == -7
+  assert widen_unsigned(4000000000) == 4000000000
+  assert to_float(4000000000) == 4000000000.0
+  assert declared(-3) == -3.0
+  assert assigned(-300) == -300
+  assert accumulated(4, 0.5) == 0.125        // ((1 + 4) * 0.5 - 2) / 4
+}
+
+test "arguments, constructor fields and tuple elements widen" {
+  assert argument(5) == 2.5
+  let s = sample(-2, 9)
+  assert s.count == -2
+  assert s.mean == 9.0
+  let t = named(3, 0.5)
+  assert t.count == 3
+  assert t.mean == 0.5
+  let a, b = pair(-4)
+  assert a == -4
+  assert b == -4.0
+}
+
+// The branches of an if or match widen to one type, with or without a
+// declared one.
+func chosen(c: bool, n: i32, x: f64) -> f64 => if c { n } else { x }
+
+func inferred(c: bool, n: i32, big: i64) -> i64 {
+  let v = if c { n } else { big }
+  return v
+}
+
+func with_literal(c: bool, big: i64) -> i64 {
+  let v = if c { 5 } else { big }
+  return v
+}
+
+func matched(k: i32, n: i8, big: i64) -> i64 => match k {
+  0 => n
+  1 => big
+  _ => -1
+}
+
+test "the branches of an if or match widen to one type" {
+  assert chosen(true, -2, 0.5) == -2.0
+  assert chosen(false, -2, 0.5) == 0.5
+  assert inferred(true, -9, 5000000000) == -9
+  assert inferred(false, -9, 5000000000) == 5000000000
+  assert with_literal(true, 5000000000) == 5
+  assert with_literal(false, 5000000000) == 5000000000
+  assert matched(0, -5, 7000000000) == -5
+  assert matched(1, -5, 7000000000) == 7000000000
+  assert matched(2, -5, 7000000000) == -1
+}
+
+// A constant takes the type it's used as, all the way down.
+func third() -> f32 {
+  let x: f32 = 1.0 / 3
+  return x
+}
+
+func big() -> i64 {
+  let x = 5000000000 + 1
+  return x
+}
+
+func plus_half(n: i64) -> i64 => n + (3 - 1) * 2
+
+test "a constant expression is computed in the type it's used as" {
+  assert third() == 1.0:f32 / 3.0:f32
+  assert big() == 5000000001
+  assert plus_half(10) == 14
+}
+
+// A shift's count is any integer type; the result is the value's.
+func shifted(x: i64, n: u8) -> i64 => x << n
+func arithmetic(x: i32, n: u32) -> i32 => x >> n
+func counted(x: u32, n: u64) -> u64 => x << n
+
+test "a shift takes a count of any integer type" {
+  assert shifted(-1, 40) == -1099511627776
+  assert arithmetic(-16, 2) == -4
+  assert counted(1, 40) == 1099511627776
+}
+
+// The elements of an array literal widen to the element type, in registers
+// and in the data section.
+data weights = [1:f64, 2, 3.5]
+data wide: []i64 = [1, -2, 5000000000]
+
+func in_registers(n: i32) -> f64 {
+  let a: [3]f64 = [n, 2, 0.5]
+  return a[0] + a[1] + a[2]
+}
+
+func repeated() -> i64 {
+  let a: [2]i64 = [7; 2]
+  return a[0] + a[1]
+}
+
+func in_data() -> f64 => weights[0] + weights[1] + weights[2]
+func wide_sum() -> i64 => wide.ptr[0] + wide.ptr[1] + wide.ptr[2]
+
+test "array literal elements widen to the element type" {
+  assert in_registers(4) == 6.5
+  assert repeated() == 14
+  assert in_data() == 6.5
+  assert wide_sum() == 4999999999
+}
+
+// A trailing expression that supplies a named result widens to it.
+func named_result(c: bool, n: i32) -> (r: i64) {
+  if c { n } else { 5000000000 }
+}
+
+// A match compares its literal patterns in the subject's type.
+func bucket(x: i64) -> i32 => match x {
+  0 => 1
+  5000000000 => 2
+  _ => 3
+}
+
+func is_half(x: f64) -> bool => match x {
+  0.5 => true
+  _ => false
+}
+
+test "a trailing expression widens to the named result" {
+  assert named_result(true, -3) == -3
+  assert named_result(false, -3) == 5000000000
+}
+
+test "match patterns are compared in the subject's type" {
+  assert bucket(0) == 1
+  assert bucket(5000000000) == 2
+  assert bucket(4294967296) == 3          // not 0 cut to 32 bits
+  assert is_half(0.5)
+  assert !is_half(0.25)
+}

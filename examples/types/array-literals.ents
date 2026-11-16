@@ -1,0 +1,73 @@
+// The elements of an array literal settle on one type. With a declared type
+// each element widens to it; without one, to the widest of them, like the
+// branches of an if.
+
+func widest(a: u8, b: i32, c: i64) -> i64 {
+  let r = [a, b, c]                      // [3]i64
+  return r[0] + r[1] + r[2]
+}
+
+func with_constant(a: i64) -> i64 {
+  let r = [1, a, -2]                     // the constants are i64 too
+  return r[0] + r[1] + r[2]
+}
+
+func with_float(n: i32, x: f64) -> f64 {
+  let r = [n, x, 2]                      // n and 2 are f64
+  return r[0] + r[1] + r[2]
+}
+
+func half(n: i32) -> f64 {
+  let r = [n, 0.5]                       // a float constant makes them f64
+  return r[0] * r[1]
+}
+
+func big_constant(a: u8) -> i32 {
+  let r = [a, 300]                       // 300 isn't a u8: both are i32
+  return r[0] + r[1]
+}
+
+test "untyped elements widen to the widest of them" {
+  assert widest(200, -300, 5000000000) == 4999999900
+  assert with_constant(5000000000) == 4999999999
+  assert with_float(-3, 0.5) == -0.5
+  assert half(5) == 2.5
+  assert big_constant(200) == 500
+}
+
+// All constants: the default type that holds them all.
+func constants() -> i64 {
+  let r = [1, 5000000000]                // [2]i64
+  return r[0] + r[1]
+}
+
+func float_constants() -> f64 {
+  let r = [1, 2.5]                       // [2]f64
+  return r[0] + r[1]
+}
+
+data mixed = [1, 2.5, 4]                 // *[3]f64
+
+func mixed_sum() -> f64 => mixed[0] + mixed[1] + mixed[2]
+
+test "constant elements take one default type" {
+  assert constants() == 5000000001
+  assert float_constants() == 3.5
+  assert mixed_sum() == 7.5
+}
+
+// A declared element type is what each element has to fit, whichever comes
+// first in the literal.
+func declared(m: u8, x: f32) -> f32 {
+  let a: [2]i16 = [300, m]
+  let b: [2]f32 = [0.5, x]
+  return a[0] + a[1] + b[0] + b[1]
+}
+
+func first(a: [2]f32) -> f32 => a[0]
+func as_argument(x: f32) -> f32 => first([0.25, x])
+
+test "declared elements each widen to the element type" {
+  assert declared(200, 1.5) == 502.0
+  assert as_argument(8.0) == 0.25
+}

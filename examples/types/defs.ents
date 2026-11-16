@@ -1,0 +1,34 @@
+// A def is a compile-time value pasted at each use, in the type that use
+// wants. One use doesn't affect another: negating it here leaves it as it
+// was there.
+
+def step = 5
+def half = 0.5
+def floor = -1
+
+func forward(x: i32) -> i32 => x + step
+func back(x: i32) -> i32 => x + -step
+func scaled(x: f64) -> f64 => x * half
+func mirrored(x: f64) -> f64 => x * -half
+func lowest() -> i64 => floor
+func raised() -> i64 => -floor
+
+test "negating a def leaves its other uses alone" {
+  assert back(0) == -5
+  assert forward(0) == 5
+  assert mirrored(4.0) == -2.0
+  assert scaled(4.0) == 2.0
+  assert raised() == 1
+  assert lowest() == -1
+}
+
+// Each use takes the type it meets.
+func as_byte() -> u8 => step
+func as_wide(x: i64) -> i64 => x * step
+func as_float(x: f32) -> f32 => x / step
+
+test "a def takes the type of each use" {
+  assert as_byte() == 5
+  assert as_wide(5000000000) == 25000000000
+  assert as_float(2.5) == 0.5
+}

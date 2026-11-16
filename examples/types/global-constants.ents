@@ -1,0 +1,48 @@
+// A global starts as a compile-time constant. The compiler works the value
+// out, so the initializer can be an expression of literals and defs, and a
+// constant of one type can start a global of a wider one.
+
+def page = 64 * 1024
+
+data table = [3:u8, 5, 8]
+
+global limit: u32 = 4 * page
+global ratio: f64 = 3 / 2.0
+global third: f32 = 1.0 / 3
+global count: i64 = table.len
+global whole: f64 = 7
+global low: i8 = -(100 + 28)
+global mask: u8 = ~0 << 4
+global ones: u64 = ~0
+global first: [*]u8 = table
+
+func limit_now() -> u32 => limit
+func ratio_now() -> f64 => ratio
+func third_now() -> f32 => third
+func count_now() -> i64 => count
+func whole_now() -> f64 => whole
+func low_now() -> i8 => low
+func mask_now() -> u8 => mask
+func ones_now() -> u64 => ones
+func first_byte() -> u8 => first[0]
+
+test "a constant expression starts a global with its value" {
+  assert limit_now() == 262144
+  assert ratio_now() == 1.5
+  assert third_now() == 1.0:f32 / 3.0:f32
+  assert low_now() == -128
+}
+
+test "a constant widens to the global's type" {
+  assert count_now() == 3
+  assert whole_now() == 7.0
+}
+
+test "a complement is the global's bits" {
+  assert mask_now() == 0xf0
+  assert ones_now() == 18446744073709551615
+}
+
+test "the address of data starts a pointer" {
+  assert first_byte() == 3
+}

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { parse } from './parser'
-import type { EnumDecl } from './ast'
+import type { ArrowBody, EnumDecl, FuncDecl } from './ast'
 
 describe('parser', () => {
   describe('parse function', () => {
@@ -53,18 +53,23 @@ describe('parser', () => {
     })
   })
 
-  describe('def inlining', () => {
-    test('negating a def leaves the def and its other uses alone', () => {
+  describe('defs', () => {
+    // A def's value is pasted at each use, and -5 is folded into one literal.
+    test('negating one use of a def leaves the others alone', () => {
       const result = parse(`
-        def n = 5
-        def half: f64 = 0.5
-        func f() -> i32 => -n + n
-        func g() -> f64 => -half + half
+        def k = 5
+        def h = 0.5
+        func a() -> i32 => -k
+        func b() -> i32 => k
+        func c() -> f64 => -h
+        func d() -> f64 => h
       `)
       expect(result.errors).toHaveLength(0)
-      const literals = (JSON.stringify(result.module, (_, v) => (typeof v === 'bigint' ? Number(v) : v)).match(/"value":(-?[\d.]+)/g) ?? [])
-      // The two defs, then each one's negation and its plain use.
-      expect(literals).toEqual(['"value":5', '"value":0.5', '"value":-5', '"value":5', '"value":-0.5', '"value":0.5'])
+      const body = (i: number) => ((result.module?.decls[i] as FuncDecl).body as ArrowBody).expr
+      expect(body(2)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'int', value: -5n } })
+      expect(body(3)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'int', value: 5n } })
+      expect(body(4)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'float', value: -0.5 } })
+      expect(body(5)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'float', value: 0.5 } })
     })
   })
 

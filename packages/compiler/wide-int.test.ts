@@ -9,7 +9,7 @@ const OPS = ['+', '-', '*', '&', '|', '^', '<<', '>>', '>>>', '<<<'] as const
 const CMPS = ['==', '!=', '<', '>', '<=', '>='] as const
 const NAMES: Record<string, string> = {
   '+': 'add', '-': 'sub', '*': 'mul', '&': 'and', '|': 'or', '^': 'xor',
-  '<<': 'shl', '>>': 'shr', '>>>': 'shru', '<<<': 'rotl',
+  '<<': 'shl', '>>': 'shr', '>>>': 'rotr', '<<<': 'rotl',
   '==': 'eq', '!=': 'ne', '<': 'lt', '>': 'gt', '<=': 'le', '>=': 'ge',
 }
 
@@ -80,7 +80,7 @@ for (const [type, bits, signed] of [['u128', 128, false], ['i128', 128, true], [
         case '^': return wrap(a ^ b)
         case '<<': return wrap(a << BigInt(k))
         case '>>': return wrap(signed ? a >> BigInt(k) : (a & mask) >> BigInt(k))
-        case '>>>': return wrap((a & mask) >> BigInt(k))
+        case '>>>': return wrap(((a & mask) >> BigInt(k)) | ((a & mask) << BigInt((bits - k) % bits)))
         case '<<<': return wrap(((a & mask) << BigInt(k)) | ((a & mask) >> BigInt((bits - k) % bits)))
       }
       throw new Error(op)
