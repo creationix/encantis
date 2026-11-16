@@ -1,0 +1,46 @@
+// Globals can hold pointers: a kernel can keep its arrays in globals and index
+// them directly, instead of storing addresses and casting in every function.
+
+data space = mut [0:u8; 4096]
+
+type Slot = (key: u32, value: u32)
+
+global words: [*]mut u32 = 0
+global slots: [*]mut Slot = 0
+global count: u32 = 0
+
+func setup(n: u32) {
+  words = space as [*]mut u32
+  slots = ((space as u32) + n * 4) as [*]mut Slot
+  count = n
+}
+
+func fill() {
+  for i in count {
+    words[i] = i * 3
+    slots[i].key = i
+    slots[i].value = i * i
+  }
+}
+
+export func total(n: u32) -> u32 {
+  setup(n)
+  fill()
+  let s: u32 = 0
+  for i in count {
+    s += words[i] + slots[i].value
+  }
+  return s
+}
+
+test "a global pointer is set in one function and indexed in others" {
+  // 3 * (0 + 1 + 2 + 3) + (0 + 1 + 4 + 9)
+  assert total(4) == 32
+}
+
+test "a global pointer to structs reads and writes fields" {
+  setup(3)
+  fill()
+  assert slots[2].key == 2
+  assert slots[2].value == 4
+}
