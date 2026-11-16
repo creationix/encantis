@@ -697,11 +697,18 @@ describe('typeAssignResult', () => {
     // TODO: pointer-wrapped indexed coercion needs full implementation
     // These tests document expected behavior once implemented
 
-    test('slice with widening elements', () => {
-      // []u8 -> []u16 - checker currently allows this
-      const r = check('[]u16', '[]u8')
-      // TODO: should check element compatibility and reinterpretability
-      expect(r.compatible).toBe(true)
+    test('a slice is a view: its elements have to be laid out the same', () => {
+      // A u8 widens to a u16, but a []u8 read as []u16 would take two bytes
+      // for each element, and run past the end.
+      expect(check('[]u16', '[]u8').compatible).toBe(false)
+      expect(check('[]u16', '*[10]u8').compatible).toBe(false)
+      expect(check('[*]u16', '*[10]u8').compatible).toBe(false)
+      expect(check('[]i64', '[]i32').compatible).toBe(false)
+      // The same elements, a narrower range, or less mutability are all fine.
+      expect(check('[]u8', '[]u8')).toMatchObject({ compatible: true, reinterpret: true })
+      expect(check('[]u8', '[]mut u8').compatible).toBe(true)
+      expect(check('[][]u8', '[][]mut u8').compatible).toBe(true)
+      expect(check('[*]u8', '*[10]u8').compatible).toBe(true)
     })
 
     test('array with same elements is reinterpretable', () => {

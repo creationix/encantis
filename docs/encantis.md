@@ -702,6 +702,8 @@ The conversion is an instruction only when the WebAssembly type changes ([10.1](
 
 A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [8.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
 
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([8.2](#structural-coercion)).
+
 #### Comptime Literal Promotion
 
 Unsuffixed literals check actual value, not type:

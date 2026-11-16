@@ -605,6 +605,30 @@ argument 1: cannot assign [*]u8 to []u8
 cannot assign [*]u8 to []u8
 ```
 
+A slice or a pointer is a view of memory, so widening doesn't reach through it: a `u8` is a `u16`, but three bytes aren't three `u16`s. The elements have to be laid out the same; a narrower range or less mutability is fine.
+
+```ents
+func total(s: []u16) -> u32 => s.len
+func bytes(s: []u8) -> u32 => s.len
+
+func a(s: []mut u8) -> u32 => bytes(s)
+func b(n: u8) -> u32 => total([n, 2, 3])
+```
+
+```ents
+data raw = [1:u8, 2, 3]
+
+func total(s: []u16) -> u32 => s.len
+
+func a(s: []u8) -> u32 => total(s)
+func b() -> u32 => total(raw)
+```
+
+```errors
+argument 1: cannot assign []u8 to []u16
+argument 1: cannot assign *[3]u8 to []u16
+```
+
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
 
 ```ents

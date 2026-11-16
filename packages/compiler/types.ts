@@ -767,9 +767,12 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     // Optional slice cannot implicitly narrow to non-optional
     if (s.optional && !t.optional) return INCOMPATIBLE
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
+    // A slice is a view of memory: its elements are read as they lie, so they
+    // have to be laid out as the target's are. A []u8 isn't a []u16, though a
+    // u8 is a u16.
     const elemResult = typeAssignResult(t.element, s.element)
-    if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
-    return lossless(elemResult.reinterpret)
+    if (!elemResult.compatible || elemResult.lossiness !== 'lossless' || !elemResult.reinterpret) return INCOMPATIBLE
+    return lossless(true)
   }
 
   // Optional pointer cannot implicitly narrow to non-optional
@@ -797,8 +800,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array' && isFixedSizes(s.pointee.sizes)) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
-      return lossless(elemResult.reinterpret)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
+      return lossless(true)
     }
   }
 
@@ -806,8 +809,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   if (t.kind === 'array' && t.sizes?.some(s => s === '!' || s === '?') &&
       s.kind === 'pointer' && s.pointee.kind === 'array') {
     const elemResult = typeAssignResult(t.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
-      return lossless(elemResult.reinterpret)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
+      return lossless(true)
     }
   }
 
@@ -816,7 +819,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
   }
