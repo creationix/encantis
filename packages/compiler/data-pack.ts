@@ -172,27 +172,20 @@ export class DataSectionBuilder {
     return { ptr: entry.offset, len: entry.length }
   }
 
-  // Get all written bytes as a contiguous buffer (for substring search)
-  private getWrittenBytes(): Uint8Array {
-    if (this.currentOffset === 0) return new Uint8Array(0)
-
-    // Build buffer from all interned entries
-    const result = new Uint8Array(this.currentOffset)
-    for (const entry of this.internedMap.values()) {
-      result.set(entry.bytes, entry.offset)
-    }
-
-    return result
-  }
-
-  // Search for needle in existing data section
-  // Returns offset if found, -1 if not found
+  // Search the immutable data written so far for needle, returning its offset
+  // or -1. Matches must lie entirely inside immutable entries: mutable data
+  // can change at runtime, and the gaps it leaves would otherwise read as zeros
+  // and match any run of zero bytes.
   private findSubstring(needle: Uint8Array): number {
-    const haystack = this.getWrittenBytes()
-    if (haystack.length < needle.length) return -1
-
+    if (this.currentOffset < needle.length) return -1
+    const haystack = new Uint8Array(this.currentOffset)
+    const immutable = new Uint8Array(this.currentOffset)
+    for (const entry of this.internedMap.values()) {
+      haystack.set(entry.bytes, entry.offset)
+      immutable.fill(1, entry.offset, entry.offset + entry.bytes.length)
+    }
     for (let i = 0; i <= haystack.length - needle.length; i++) {
-      if (needle.every((byte, j) => haystack[i + j] === byte)) {
+      if (needle.every((byte, j) => immutable[i + j] === 1 && haystack[i + j] === byte)) {
         return i
       }
     }

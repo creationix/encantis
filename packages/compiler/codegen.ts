@@ -2510,7 +2510,7 @@ function collectLocals(
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions
-    if (stmt.kind === 'ExpressionStmt' || stmt.kind === 'DeferStmt') {
+    if (stmt.kind === 'ExpressionStmt' || stmt.kind === 'DeferStmt' || stmt.kind === 'AssertStmt') {
       visitExpr(stmt.expr)
     }
     // Handle assignment statements that may have if expressions on the right side
@@ -2603,6 +2603,12 @@ function collectLocals(
     }
     if (expr.kind === 'GroupExpr') {
       visitExpr(expr.expr)
+    }
+    // Parentheses parse as a one-element tuple.
+    if (expr.kind === 'TupleExpr') {
+      for (const el of expr.elements) {
+        if (el.value) visitExpr(el.value)
+      }
     }
     if (expr.kind === 'CallExpr') {
       for (const arg of expr.args) {

@@ -1843,7 +1843,18 @@ class CheckContext {
   checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
     // Bidirectional: propagate expected type through & (ref) expressions
     if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
+      const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
+      const isLiteral = operand.kind === 'LiteralExpr' || operand.kind === 'ArrayExpr' ||
+        operand.kind === 'RepeatExpr' || operand.kind === 'TupleExpr'
+      if (isLiteral && expected.mutable) markMut(operand)
       this.checkExpr(expr.operand, expected.pointee)
+      if (isLiteral) {
+        // Give the literal its own cell in the data section, as inferExpr does.
+        if (operand.kind !== 'TupleExpr') {
+          (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
+        }
+        this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
+      }
       const result = pointer(expected.pointee, false, expected.mutable)
       this.types.set(typeKey(expr.span.start, expr.kind), result)
       return result
@@ -2584,6 +2595,8 @@ class CheckContext {
             (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
           }
           const arrType: ArrayRT = { kind: 'array', element: operandType, sizes: [1] }
+          // &literal is a writable cell of its own: never share its bytes.
+          markMut(litExpr)
           this.addLiteral(dataId, litExpr, arrType)
           return pointer(operandType, false, true)
         }
@@ -3124,6 +3137,13 @@ function editDistance(a: string, b: string): number {
     }
   }
   return dp[a.length][b.length]
+}
+
+// Flag a literal as mutable data, so the data section gives it its own bytes.
+function markMut(expr: AST.Expr): void {
+  if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+    ;(expr as { mut?: boolean }).mut = true
+  }
 }
 
 // === Control-flow termination ===
