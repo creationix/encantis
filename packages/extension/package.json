@@ -2,7 +2,7 @@
   "name": "encantis-vscode-ext",
   "displayName": "Encantis Language",
   "description": "Language support for Encantis (.ents files) - syntax highlighting, diagnostics, and hover",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT OR Apache-2.0",
   "repository": "https://github.com/creationix/encantis-ext",
   "publisher": "creationix",
