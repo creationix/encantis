@@ -1,6 +1,7 @@
 {
   "name": "@encantis/cli",
   "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "description": "Encantis language compiler command-line interface",
   "bin": {

@@ -1,0 +1,101 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the root package.json version) to publish a
+# GitHub release with CLI binaries for each platform and the VS Code extension.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Check the tag matches package.json
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected=$(bun -p 'require("./package.json").version')
+          if [ "$version" != "$expected" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match package.json version $expected"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: bun run ci
+      - run: bun scripts/build-release.ts "${{ steps.version.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/*
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke test (${{ matrix.platform }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x64, os: ubuntu-latest }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: darwin-arm64, os: macos-latest }
+          - { platform: darwin-x64, os: macos-15-intel }
+          - { platform: windows-x64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: examples
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Unpack
+        shell: bash
+        run: |
+          cd release
+          name="encantis-${{ needs.build.outputs.version }}-${{ matrix.platform }}"
+          if [ -f "$name.zip" ]; then unzip -q "$name.zip"; else tar -xzf "$name.tar.gz"; fi
+          exe=encantis; [ -f "$name.zip" ] && exe=encantis.exe
+          echo "BIN=$PWD/$name/$exe" >> "$GITHUB_ENV"
+      - name: Run
+        shell: bash
+        run: |
+          "$BIN" --version | grep -F "${{ needs.build.outputs.version }}"
+          "$BIN" test examples/data/crit-bit/crit-bit.ents
+          "$BIN" wasm -O examples/alloc/stack.ents -o stack.wasm
+          test -s stack.wasm
+
+  publish:
+    name: Publish
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Encantis ${TAG#v}" \
+            --generate-notes \
+            --verify-tag $prerelease

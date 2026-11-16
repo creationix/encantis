@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run examples:all
+      - run: bun test
+
+  package:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Build (version from package.json, plus the commit)
+        run: bun scripts/build-release.ts "$(bun -p 'require("./package.json").version')-dev.${GITHUB_SHA::7}"
+      - name: Smoke-test the Linux binary
+        run: |
+          tar -xzf release/encantis-*-linux-x64.tar.gz -C release
+          bin=$(echo release/encantis-*-linux-x64/encantis)
+          "$bin" --version
+          "$bin" test examples/data/crit-bit/crit-bit.ents
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            release/*.tar.gz
+            release/*.zip
+            release/*.vsix
+            release/SHA256SUMS
+          retention-days: 7
