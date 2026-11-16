@@ -1376,23 +1376,29 @@ class CheckContext {
         this.checkLoopBody(stmt.body)
         break
       case 'ForStmt': {
-        const iterableType = this.inferExpr(stmt.iterable)
+        const iterableType = unwrap(this.inferExpr(stmt.iterable))
         // Determine element type from iterable
         let elemType: ResolvedType = primitive('u32') // default: unsigned index
+        const pointee = iterableType.kind === 'pointer' ? unwrap(iterableType.pointee) : null
         if (iterableType.kind === 'comptime_int') {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
-        } else if (iterableType.kind === 'array') {
-          elemType = iterableType.element
         } else if (iterableType.kind === 'slice') {
           elemType = iterableType.element
-        } else if (iterableType.kind === 'pointer' && iterableType.pointee.kind === 'array') {
-          elemType = iterableType.pointee.element
+        } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
+          elemType = pointee.element
+        } else if (iterableType.kind !== 'primitive') {
+          this.error(stmt.iterable.span.start,
+            `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
         }
-        // Record the binding type and add to scope
+        // Record the binding types and add them to scope
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
         this.currentScope.symbols.set(stmt.binding.value, { kind: 'local', type: elemType })
         this.recordDefinition(stmt.binding.value, stmt.binding.span.start)
+        if (stmt.binding.index) {
+          this.currentScope.symbols.set(stmt.binding.index, { kind: 'local', type: primitive('u32') })
+          this.recordDefinition(stmt.binding.index, stmt.binding.span.start)
+        }
         this.checkLoopBody(stmt.body)
         break
       }

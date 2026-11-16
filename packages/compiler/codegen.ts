@@ -2174,11 +2174,7 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const valueName = stmt.binding.value
   const indexName = stmt.binding.index
-
-  ctx.locals.set(valueName, [valueName])
-  if (indexName) {
-    ctx.locals.set(indexName, [indexName])
-  }
+  const valueLocals = ctx.locals.get(valueName) ?? [valueName]
 
   const body = bodyToWat(stmt.body, ctx, false, true)
 
@@ -2203,12 +2199,48 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   )`
   }
 
-  // Array/slice loop: for value in arr → iterate elements
-  // TODO: implement array iteration
-  return `(block $break
-    (loop $continue
-      ${body}
-      (br $continue)
+  // Element loop over a slice or *[N]T: walk a pointer from the first
+  // element to the end, loading each element into the binding. No bounds
+  // checks are needed: the pointer never leaves the range.
+  const u = iterType ? unwrap(iterType) : undefined
+  const elemType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
+  if (!u || !elemType) throw new Error('for loop over an untyped iterable')
+  const stride = byteSize(elemType)
+  if (!stride) throw new Error(`for loop over elements of unknown size: ${RT.typeToString(elemType)}`)
+  const uid = stmt.span.start
+  const ptr = `$__for_ptr_${uid}`
+  const end = `$__for_end_${uid}`
+  let setup: string
+  if (u.kind === 'slice') {
+    // The iterable leaves (ptr, len) on the stack.
+    setup = `${iterWat}
+(local.set ${end})
+(local.set ${ptr})
+(local.set ${end} (i32.add (local.get ${ptr}) (i32.mul (local.get ${end}) (i32.const ${stride}))))`
+  } else {
+    const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+    const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
+    if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
+    setup = `(local.set ${ptr} ${iterWat})
+(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))`
+  }
+  const load = loadFromMemory(elemType, `(local.get ${ptr})`)
+  const bind = valueLocals.length === 1
+    ? `(local.set $${valueLocals[0]} ${load})`
+    : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
+  const index = indexName ? `$${indexName}` : null
+  return `${setup}
+${index ? `(local.set ${index} (i32.const 0))` : ''}
+(block $break
+    (loop $next
+      (br_if $break (i32.ge_u (local.get ${ptr}) (local.get ${end})))
+      ${bind}
+      (block $continue
+        ${body}
+      )
+      (local.set ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride})))
+      ${index ? `(local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''}
+      (br $next)
     )
   )`
 }
@@ -2499,14 +2531,21 @@ function collectLocals(
       // Collect loop binding variable
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) {
-        const wt = typeToWasmSingle(bindingType)
-        locals.push({ name: stmt.binding.value, type: wt })
-        ctx.locals.set(stmt.binding.value, [stmt.binding.value])
+        // Multi-value elements (slices, tuples) flatten like lets.
+        const flat = flattenType(bindingType)
+        const names = flat.length === 1 && flat[0].suffix === ''
+          ? [stmt.binding.value]
+          : flat.map((f, i) => (f.suffix ? `${stmt.binding.value}_${f.suffix}` : `${stmt.binding.value}_${i}`))
+        for (const [i, f] of flat.entries()) locals.push({ name: names[i], type: f.wasmType })
+        ctx.locals.set(stmt.binding.value, names)
       }
       if (stmt.binding.index) {
         locals.push({ name: stmt.binding.index, type: 'i32' })
         ctx.locals.set(stmt.binding.index, [stmt.binding.index])
       }
+      // Element loops walk a pointer up to an end address.
+      const uid = stmt.span.start
+      locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions
@@ -2814,10 +2853,11 @@ function emitTestDecl(
     // Leaf test: emit as a function
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
+    // Collect locals first: codegen looks up how multi-value locals flatten.
+    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
     const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
-    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const seen = new Set<string>()
     const locals = rawLocals.filter(l => {
       if (seen.has(l.name)) return false

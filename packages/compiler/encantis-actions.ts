@@ -892,7 +892,8 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.ForStmt
   },
 
-  ForBinding_withIndex(value, _comma, index) {
+  // for i, value in items: the index comes first.
+  ForBinding_withIndex(index, _comma, value) {
     return {
       kind: 'ForBinding',
       value: value.toAST(),

@@ -1,0 +1,54 @@
+// for over the elements of a slice or a pointer to a fixed-size array. The
+// loop walks a pointer to the end, so there are no bounds checks.
+
+data nums = [3:u32, 1, 4, 1, 5]
+data words = ["ab", "cde", ""]
+data wide = [1:u64, 0xFFFFFFFFFFFFFFFF]
+
+func sum(s: []u8) -> u32 {
+  let t: u32 = 0
+  for c in s {
+    t += c as u32
+  }
+  return t
+}
+func weighted(s: []u8) -> u32 {
+  let t: u32 = 0
+  for i, c in s {
+    t += (c as u32) * i
+  }
+  return t
+}
+func skip_and_stop(s: []u8) -> u32 {
+  let t: u32 = 0
+  for c in s {
+    continue when c == 98
+    break when c == 100
+    t += c as u32
+  }
+  return t
+}
+test "bytes of a slice" { assert sum("abc") == 294 }
+test "index comes first" { assert weighted("abc") == 98 + 99 * 2 }
+test "continue and break" { assert skip_and_stop("abcdef") == 97 + 99 }
+test "empty slice" { assert sum("") == 0 }
+test "pointer to a fixed array" {
+  let t: u32 = 0
+  for n in nums { t += n }
+  assert t == 14
+}
+test "slices of slices" {
+  let total: u32 = 0
+  let count: u32 = 0
+  for w in words {
+    total += w.len
+    count += 1
+  }
+  assert total == 5
+  assert count == 3
+}
+test "64-bit elements" {
+  let hi: u64 = 0
+  for x in wide { hi = x }
+  assert hi == 0xFFFFFFFFFFFFFFFF
+}
