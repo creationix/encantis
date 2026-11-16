@@ -632,11 +632,14 @@ func f(comptime T: type, comptime T: type, a: T) -> u32 => 0
 type parameter 'T' is declared twice
 ```
 
-A generic function declared inside a test.
+A generic function declared inside a test. Its calls say nothing more.
 
 ```ents
 test "local generic" {
   func id(comptime T: type, a: T) -> T => a
+  let x: u8 = 1
+  assert id(x) == 1
+  assert id(u8, 2) == 2
 }
 ```
 
@@ -654,6 +657,20 @@ func max(comptime T: type, a: T, b: T) -> T => a
 
 ```errors
 'max' is already declared: a generic function's name is unique in its module
+```
+
+A name that a global, a def, a data declaration or an import takes after a generic function has it.
+
+```ents
+func count(comptime T: type, a: T) -> T => a
+
+global count: u32 = 0
+
+export func f() -> u32 => count + count(u32, 1)
+```
+
+```errors
+'count' is already declared: a generic function's name is unique in its module
 ```
 
 A generic function imported from another source module.
@@ -754,6 +771,44 @@ func f() -> f64 => takes(Pt)
 'Pt' is a type; a type can only be passed for a comptime parameter
 ```
 
+The same for a primitive type. This call is one argument short of the form that writes the type, so it is the form that leaves it out, and `u32` stands where `a` goes.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+func f(x: u32) -> u32 => max(u32, x)
+```
+
+```errors
+'u32' is a type; a type can only be passed for a comptime parameter
+```
+
+An argument that has no value.
+
+```ents
+func nothing() { }
+func id(comptime T: type, a: T) -> T => a
+
+export func f() { id(nothing()) }
+```
+
+```errors
+argument 1 of 'id' has no value
+```
+
+`()` as a type argument.
+
+```ents
+type Unit = ()
+func id(comptime T: type, a: T) -> T => a
+
+export func f(u: Unit) { id(Unit, u) }
+```
+
+```errors
+type argument T of 'id' cannot be (): it has no values
+```
+
 A type argument that is not a concrete type.
 
 ```ents
@@ -792,17 +847,35 @@ func f() -> f64 => takes(max)
 generic function 'max' must be called
 ```
 
-A failed call says nothing about what its result is used for.
+A failed call says nothing about what its result is used for, nor about its fields.
 
 ```ents
+type Pt = (q: i32, r: i32)
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func takes(x: f64) -> f64 => x
 
 func f() -> f64 => takes(max(1, 2))
+func g(a: Pt) -> i32 {
+  let p = max(a)
+  return p.q + p.r
+}
 ```
 
 ```errors
 cannot infer T for 'max' from untyped literals: write max(i32, ...) or give a literal its type (1:i32)
+'max' expects 2 arguments, or 3 with its type argument written; got 1
+```
+
+An argument with an error of its own decides nothing: the call adds no error about the type it would have guessed.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+func f(x: u32) -> u32 => max(nope, x)
+```
+
+```errors
+unknown identifier 'nope'
 ```
 
 ## Rejected in an instance

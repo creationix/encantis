@@ -472,6 +472,41 @@ func c() -> f64 => takes(max(3, 4)) + 1.0`
     ])
   })
 
+  test('nor about its fields, its elements, or the operators and calls it is given to', () => {
+    const source = `type Pt = (q: i32, r: i32)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+func id(comptime T: type, a: T) -> T => a
+export func a(c: bool) -> i32 {
+  let p = pick(c, Pt(1, 2))
+  return p.q + p.r
+}
+export func b() -> i32 {
+  let p = id((1, 2))
+  return p.0
+}
+export func c(c: bool) -> i32 => pick(c)[0] * 2 + pick(c)(1)`
+    expect(errorsOf(source)).toEqual([
+      "'pick' expects 3 arguments, or 4 with its type argument written; got 2",
+      "cannot infer T for 'id' from untyped literals: write id((i32, i32), ...) or give a literal its type",
+      "'pick' expects 3 arguments, or 4 with its type argument written; got 1",
+      "'pick' expects 3 arguments, or 4 with its type argument written; got 1",
+    ])
+  })
+
+  test('an argument with an error of its own decides nothing', () => {
+    // The unknown name would otherwise decide T = i32, and x would not fit it.
+    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => max(nope, x)`)).toEqual(["unknown identifier 'nope'"])
+    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => max(x.nope, x)`)).toEqual(["no field 'nope' on type u32"])
+  })
+
+  test('a failed call nested in failed calls is reported once, and in no more time', () => {
+    const source = `func id(comptime T: type, a: T) -> T => a
+export func f(x: u32) -> u32 => ${'id('.repeat(40)}nope${')'.repeat(40)}`
+    const start = performance.now()
+    expect(errorsOf(source)).toEqual(["unknown identifier 'nope'"])
+    expect(performance.now() - start).toBeLessThan(2000)
+  })
+
   test('a failed call still reports what is wrong with its arguments', () => {
     expect(errorsOf(`${MAX}func f() -> u32 => max(nope)`)).toEqual([
       "'max' expects 2 arguments, or 3 with its type argument written; got 1",
@@ -494,6 +529,40 @@ func b() -> f64 => takes([]u8)`
     expect(errorsOf(source)).toEqual([
       "'Pt' is a type; a type can only be passed for a comptime parameter",
       "'[]u8' is a type; a type can only be passed for a comptime parameter",
+    ])
+  })
+
+  test('the name of a primitive type is a type wherever it stands', () => {
+    // One argument short, so this is the inferred form and u32 stands for a value.
+    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => max(u32, x)`)).toEqual([
+      "'u32' is a type; a type can only be passed for a comptime parameter",
+    ])
+    expect(errorsOf('export func f() -> u32 { let x = u32\n  return x }')).toEqual([
+      "'u32' is a type; a type can only be passed for a comptime parameter",
+    ])
+  })
+
+  test('a value written for a type parameter is that error only', () => {
+    const source = `type Pt = (q: i32, r: i32)
+func size(comptime T: type) -> u32 => sizeof(T)
+export func a() -> u32 => size(pt)`
+    expect(errorsOf(source)).toEqual(["argument 1 of 'size' must be a type: T is a type parameter"])
+  })
+
+  test('calls of a generic declared in a test add nothing to its error', () => {
+    const source = `test "local generic" {
+  func inner(comptime T: type, a: T) -> T => a
+  let x: u8 = 1
+  assert inner(x) == 1
+  assert inner(u8, 2) == 2
+}
+test "another" {
+  func inner(comptime T: type, a: T) -> T => a
+  assert inner(u8, 2) == 2
+}`
+    expect(errorsOf(source)).toEqual([
+      'a generic function is declared at module level, not inside a test',
+      'a generic function is declared at module level, not inside a test',
     ])
   })
 
@@ -559,6 +628,29 @@ describe('declaring a generic function', () => {
       'the name of another generic',
       'func max(comptime T: type, a: T) -> T => a\nfunc max(comptime T: type, a: T, b: T) -> T => a',
       "'max' is already declared: a generic function's name is unique in its module",
+    ],
+    // Whatever is declared after a generic cannot take its name. The uses of
+    // the name are then the generic's, called or not, and say nothing more.
+    // (The parser has already put 4 wherever the def's name is used.)
+    [
+      'a name a def takes later',
+      'func size(comptime T: type, a: T) -> T => a\ndef size = 4\nexport func f() -> u32 => size',
+      "'size' is already declared: a generic function's name is unique in its module",
+    ],
+    [
+      'a name a global takes later',
+      'func count(comptime T: type, a: T) -> T => a\nglobal count: u32 = 0\nexport func f() -> u32 => count + count(u32, 1)',
+      "'count' is already declared: a generic function's name is unique in its module",
+    ],
+    [
+      'a name a data declaration takes later',
+      'func table(comptime T: type, a: T) -> T => a\ndata table = [1:u8, 2, 3]\nexport func f() -> u32 => table(u32, 1)',
+      "'table' is already declared: a generic function's name is unique in its module",
+    ],
+    [
+      'a name an import takes later',
+      'func log(comptime T: type, a: T) -> T => a\nimport "env" "log" func log(x: u32)\nexport func f() -> u32 => log(u32, 1)',
+      "'log' is already declared: a generic function's name is unique in its module",
     ],
     [
       'a declaration inside a test',

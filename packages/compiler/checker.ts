@@ -518,6 +518,8 @@ class CheckContext {
   // Counts every report, also one that repeats an error already listed: an
   // expression can be inferred twice, and fails the second time too.
   errorsReported = 0
+  // Names of generics that a later declaration tried to take
+  contested = new Set<string>()
   // What an inferred call found for its type parameters, or null when it
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
@@ -607,6 +609,7 @@ class CheckContext {
       switch (item.item.kind) {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
+          if (this.takenByGeneric(name, item.span.start)) break
           if (isGenericSignature(item.item.signature)) {
             this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
             break
@@ -634,6 +637,7 @@ class CheckContext {
           break
         }
         case 'ImportGlobal': {
+          if (this.takenByGeneric(item.item.ident, item.span.start)) break
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -670,16 +674,23 @@ class CheckContext {
     }
   }
 
+  // A generic function's name is unique in its module: a declaration that
+  // would take the name over is an error and is left out. (Other declarations
+  // of one name replace each other silently, as they always have.)
+  private takenByGeneric(name: string, offset: number): boolean {
+    if (this.moduleScope.symbols.get(name)?.kind !== 'generic') return false
+    this.error(offset, `'${name}' is already declared: a generic function's name is unique in its module`)
+    this.contested.add(name)
+    return true
+  }
+
   collectFunc(decl: AST.FuncDecl): void {
     if (isGenericDecl(decl)) {
       this.collectGeneric(decl)
       return
     }
     if (!decl.ident) return // Anonymous function
-    if (this.moduleScope.symbols.get(decl.ident)?.kind === 'generic') {
-      this.error(decl.span.start, `'${decl.ident}' is already declared: a generic function's name is unique in its module`)
-      return
-    }
+    if (this.takenByGeneric(decl.ident, decl.span.start)) return
     const sig = this.resolveSignature(decl.signature)
     this.moduleScope.symbols.set(decl.ident, {
       kind: 'func',
@@ -762,6 +773,7 @@ class CheckContext {
   }
 
   collectDef(decl: AST.DefDecl): void {
+    if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     // Defs are comptime - infer type from literal value or use LHS type annotation
     const inferredType = this.inferExpr(decl.value)
 
@@ -795,6 +807,7 @@ class CheckContext {
   }
 
   collectData(decl: AST.DataDecl): void {
+    if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     const inferredType = this.inferExpr(decl.value)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
@@ -1236,6 +1249,7 @@ class CheckContext {
       this.error(decl.pattern.span.start, 'global destructuring is not supported yet')
       return
     }
+    if (this.takenByGeneric(name, decl.span.start)) return
 
     let type: ResolvedType
     if (decl.type) {
@@ -1305,6 +1319,10 @@ class CheckContext {
           // two tests declaring one generic would be two functions of one name.
           if (isGenericDecl(item)) {
             this.error(item.span.start, `a generic function is declared at module level, not inside a test`)
+            // Known by name all the same, so that its calls say nothing more.
+            if (item.ident && !this.moduleScope.symbols.has(item.ident)) {
+              this.moduleScope.symbols.set(item.ident, { kind: 'generic', decl: item, owner: this, instances: new Map(), valid: false })
+            }
             break
           }
           this.collectFunc(item)
@@ -2420,6 +2438,10 @@ class CheckContext {
   inferIdent(expr: AST.IdentExpr): ResolvedType {
     const sym = this.lookup(expr.name)
     if (!sym) {
+      if (PRIMITIVE_NAMES.has(expr.name)) {
+        this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
+        return RECOVERY
+      }
       const similar = this.findSimilar(expr.name)
       const hint = similar ? ` — did you mean '${similar}'?` : ''
       this.error(expr.span.start, `unknown identifier '${expr.name}'${hint}`)
@@ -2446,7 +2468,11 @@ class CheckContext {
         return sym.type
 
       case 'generic':
-        this.error(expr.span.start, `generic function '${expr.name}' must be called`)
+        // Where another declaration wanted the name, its uses are not the
+        // generic's: the declaration already has the error.
+        if (!this.contested.has(expr.name)) {
+          this.error(expr.span.start, `generic function '${expr.name}' must be called`)
+        }
         return RECOVERY
     }
   }
@@ -2544,6 +2570,7 @@ class CheckContext {
       return calleeType
     }
 
+    if (calleeType === RECOVERY) return RECOVERY
     this.error(expr.span.start, `cannot call non-function type: ${typeToString(calleeType)}`)
     return primitive('i32')
   }
@@ -2734,6 +2761,9 @@ class CheckContext {
   inferBinary(expr: AST.BinaryExpr): ResolvedType {
     const leftType = this.inferExpr(expr.left)
     const rightType = this.inferExpr(expr.right)
+    if (leftType === RECOVERY || rightType === RECOVERY) {
+      return ['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op) ? primitive('bool') : RECOVERY
+    }
 
     const left = unwrap(leftType)
     const right = unwrap(rightType)
@@ -2871,6 +2901,7 @@ class CheckContext {
 
   inferMember(expr: AST.MemberExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
+    if (objType === RECOVERY) return RECOVERY
 
     // Unwrap named types to access underlying structure
     const unwrappedType = unwrap(objType)
@@ -3198,6 +3229,7 @@ class CheckContext {
   inferIndex(expr: AST.IndexExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
     this.inferExpr(expr.index)
+    if (objType === RECOVERY) return RECOVERY
 
     if (objType.kind === 'slice') {
       const idx = this.evalComptimeExpr(expr.index)
@@ -3556,10 +3588,12 @@ class CheckContext {
   // the plain call it compiles to.
   inferGenericCall(expr: AST.CallExpr, sym: Symbol & { kind: 'generic' }, name: string): ResolvedType {
     // However the call fails, the values among its arguments are still
-    // inferred, so that their own errors appear.
+    // inferred, so that their own errors appear. Until the form of the call is
+    // known, those are the arguments that cannot be read as types.
+    let values = expr.args.flatMap((a) => (a.value && !typeOfArg(a.value) ? [a.value] : []))
     const fail = (offset?: number, message?: string): ResolvedType => {
       if (offset !== undefined && message) this.error(offset, message)
-      for (const arg of expr.args) if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+      for (const value of values) this.inferExpr(value)
       return RECOVERY
     }
     this.recordReference(name, expr.callee.span.start)
@@ -3585,6 +3619,9 @@ class CheckContext {
       if (isTypeParam(param) && !explicit) continue
       pairs.push({ param, arg: expr.args[pairs.length].value as AST.Expr, index: pairs.length })
     }
+    // An argument that stands for a type parameter is not a value, whatever
+    // was written there: its error says so and nothing more is said of it.
+    values = pairs.flatMap((p) => (isTypeParam(p.param) ? [] : [p.arg]))
 
     const bound = new Map<string, ResolvedType>()
     if (explicit) {
@@ -3655,8 +3692,11 @@ class CheckContext {
     const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
     for (const { param, arg, index } of pairs) {
       if (!mentionsUnbound(param.type, typeParams, bound)) continue
+      // An argument with an error of its own decides nothing: the type it
+      // was given is a guess, and the call would add errors about the guess.
+      const reported = this.errorsReported
       const type = this.peek(arg)
-      if (type === RECOVERY) return null
+      if (type === RECOVERY || this.errorsReported > reported) return null
       if (isUnit(type)) {
         this.error(arg.span.start, `argument ${index + 1} of '${name}' has no value`)
         return null

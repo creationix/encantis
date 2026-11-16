@@ -1795,7 +1795,8 @@ export func f(p: *mut i64, q: *mut i64) { swap(p, q) }      // T = i64, from *mu
    Type aliases are transparent, as everywhere.
 3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide.
 4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
-5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used.
+5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
+6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
 
 ```ents
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
@@ -1881,7 +1882,7 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime value parameter, `comptime n: u32`, and with it `[n]T` | `comptime value parameters are not supported yet: 'n' must be 'type' or a function type` |
 | Constructing with a type parameter, `T(a, b)` | `T(...) on a type parameter is not supported yet` |
 | A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
-| A generic function that shares its name with another function | `'max' is already declared: a generic function's name is unique in its module` |
+| A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
 | Importing a generic function from another source module | `generic functions cannot be imported yet` |
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
