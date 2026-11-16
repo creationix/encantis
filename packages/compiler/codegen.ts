@@ -1691,7 +1691,15 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
-  const subject = exprToWat(expr.subject, ctx)
+  let subject = exprToWat(expr.subject, ctx)
+  // Each arm's test reads the subject again. Anything but a plain read (a
+  // call, arithmetic) is evaluated once, into a scratch local.
+  let setup = ''
+  if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
+    const local = `$__match_${expr.span.start}`
+    setup = `(local.set ${local} ${subject})\n`
+    subject = `(local.get ${local})`
+  }
   // Patterns are compared in the subject's type.
   const subjectType = lookupExprType(expr.subject, ctx)
   const wt = subjectType ? typeToWasmSingle(subjectType) : 'i32'
@@ -1741,7 +1749,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
     }
   }
 
-  return result
+  return setup + result
 }
 
 function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
@@ -2686,6 +2694,12 @@ function collectLocals(
       }
     }
     if (expr.kind === 'MatchExpr') {
+      // Where the subject is kept when it's more than a plain read.
+      const subjectType = checkResult.exprTypes.get(expr.subject)
+      if (subjectType && typeToWasm(subjectType).length === 1) {
+        locals.push({ name: `__match_${expr.span.start}`, type: typeToWasm(subjectType)[0] })
+      }
+      visitExpr(expr.subject)
       for (const arm of expr.arms) {
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') visitBody(arm.body)
         else visitExpr(arm.body)

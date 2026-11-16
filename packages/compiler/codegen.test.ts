@@ -575,6 +575,26 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('local.get $r')
     })
 
+    test('a match evaluates a computed subject once, into a scratch local', () => {
+      const wat = funcWat(`func f(a: i64, b: i64) -> i32 => match a * b {
+        6 => 1
+        8 => 2
+        _ => 0
+      }`)
+      expect(wat).toContain('(local.set $__match_')
+      expect(wat.match(/i64\.mul/g)).toHaveLength(1)
+      expect(wat).toMatch(/\(i64\.eq \(local\.get \$__match_\d+\) \(i64\.const 8\)\)/)
+    })
+
+    test('a match reads a plain subject directly', () => {
+      const wat = funcWat(`func f(k: i32) -> i32 => match k {
+        6 => 1
+        _ => 0
+      }`)
+      expect(wat).toContain('(i32.eq (local.get $k) (i32.const 6))')
+      expect(wat).not.toContain('__match_')
+    })
+
     test('a match arm block gives its value', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         0 => { let x = k + 1\n x * 2 }
