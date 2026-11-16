@@ -121,6 +121,58 @@ describe('hover', () => {
   })
 })
 
+describe('generic functions', () => {
+  const code = `func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    return i when v == x
+  }
+  return xs.len
+}
+func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
+export func has_byte(xs: []u8, x: u8) -> bool => contains(xs, x)
+export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
+
+  test('hover on the name of a generic says that it is one', () => {
+    const { source, module, check } = setup(code)
+    const result = hover(source, module, check, code.indexOf('find'))
+    expect(result).toEqual({ name: 'find', type: 'generic func', kind: 'generic' })
+  })
+
+  test('hover on a call shows the signature of the instance that call uses', () => {
+    const { source, module, check } = setup(code)
+    const inferred = hover(source, module, check, code.indexOf('contains(xs, x)'))
+    expect(inferred).toEqual({ name: 'contains', type: 'func(xs: []u8, x: u8) -> bool', kind: 'generic' })
+    // Anywhere on the name, also when the type argument is written.
+    const explicit = hover(source, module, check, code.indexOf('find(u32') + 2)
+    expect(explicit).toEqual({ name: 'find', type: 'func(xs: []u32, x: u32) -> u32', kind: 'generic' })
+  })
+
+  test('a generic is listed once, and its instances are not', () => {
+    const { source, module, check } = setup(code)
+    const symbols = documentSymbols(source, module, check)
+    expect(symbols.map(s => [s.name, s.type])).toEqual([
+      ['find', 'generic func'],
+      ['contains', 'generic func'],
+      ['has_byte', 'func(xs: []u8, x: u8) -> bool'],
+      ['index_of', 'func(xs: []u32, x: u32) -> u32'],
+    ])
+  })
+
+  test('references to a generic include the calls in generic bodies, at their place in the source', () => {
+    const { source, module, check } = setup(code)
+    const result = findReferences(source, module, check, code.indexOf('find'))
+    expect(result!.references.map(r => r.offset).sort((a, b) => a - b)).toEqual([
+      code.indexOf('find(xs, x) <'),
+      code.indexOf('find(u32'),
+    ])
+  })
+
+  test('a generic has no one signature to offer', () => {
+    const { source, module, check } = setup(code)
+    expect(signatureHelp(source, module, check, code.indexOf('find(u32'))).toBeNull()
+  })
+})
+
 describe('findReferences', () => {
   test('finds all references to a function', () => {
     const code = `func add(a: i32, b: i32) -> i32 => a + b\nfunc test() -> i32 => add(1, 2)\nfunc test2() -> i32 => add(3, 4)`

@@ -60,6 +60,56 @@ test "add" {
   })
 })
 
+describe('generic functions', () => {
+  const source = `data nums = [3:u32, 5, 8, 13]
+func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    return i when v == x
+  }
+  return xs.len
+}
+func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
+export func has_byte(xs: []u8, x: u8) -> bool => contains(xs, x)
+test "find" {
+  assert find(nums, 8) == 2
+}`
+
+  function meta(): MetaOutput {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return buildMeta(result.module!, source)
+  }
+
+  test('instances are not symbols', () => {
+    expect(meta().symbols.map(s => s.name).filter(name => name.includes('<'))).toEqual([])
+  })
+
+  test('every hint is at a place in the source', () => {
+    const lines = source.split('\n')
+    const hints = Object.keys(meta().hints)
+    expect(hints.length).toBeGreaterThan(0)
+    for (const key of hints) {
+      const [line, column] = key.split(':').map(Number)
+      expect(line).toBeLessThan(lines.length)
+      expect(column).toBeLessThan(lines[line].length)
+    }
+  })
+
+  test('a call of a generic shows the signature of its instance', () => {
+    const hints = metaHints(source)
+    expect(hints['8:49'].type).toBe('(xs:[]u8,x:u8)->bool')
+    expect(hints['10:9'].type).toBe('(xs:[]u32,x:u32)->u32')
+  })
+
+  test('a generic body has no hints: it has no types until it is instantiated', () => {
+    const inBody = Object.keys(meta().hints).filter(key => {
+      const line = Number(key.split(':')[0])
+      return line >= 1 && line <= 7
+    })
+    expect(inBody).toEqual([])
+  })
+})
+
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')
   const fixturesDir = new URL('./__fixtures__/analyser-vectors', import.meta.url)

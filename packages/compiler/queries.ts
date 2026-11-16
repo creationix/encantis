@@ -98,6 +98,14 @@ export function hover(
   // Check module-scope symbols first
   const sym = checkResult.symbols.get(name)
   if (sym) {
+    // A generic has a signature per instance. At a call the checker recorded
+    // the one that call uses, at the start of the callee's name.
+    if (sym.kind === 'generic') {
+      let start = offset
+      while (start > 0 && /[a-zA-Z0-9_-]/.test(source[start - 1])) start--
+      const instance = checkResult.types.get(typeKey(start, 'IdentExpr'))
+      if (instance) return { name, type: typeToString(instance), kind: sym.kind }
+    }
     const result: HoverResult = {
       name,
       type: symbolTypeString(sym),
