@@ -1040,6 +1040,14 @@ describe('globals', () => {
     expect(errs(`global g: u8 = 200 + 100`)).toEqual(['cannot assign int(300) to u8'])
   })
 
+  test('a tuple or struct of constants is a constant too', () => {
+    const size = 'type Size = (w: i32, h: i32)\n'
+    const message = 'global initializer must be a compile-time constant'
+    expect(errs(`${size}global size: Size = Size(3, 4)\nglobal span: (i32, i32) = (1 + 2, 4)\nglobal view: []u8 = (0, 0)`)).toEqual([])
+    expect(errs(`${size}func one() -> i32 => 1\nglobal size: Size = Size(one(), 4)`)).toEqual([message])
+    expect(errs(`global a: i32 = 1\nglobal pair: (i32, i32) = (a, 2)`)).toEqual([message])
+  })
+
   test('a global keeps its pointer annotation over a literal initializer', () => {
     const result = checkModule(`
       type Slot = (key: u32, value: u32)

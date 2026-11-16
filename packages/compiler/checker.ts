@@ -1192,18 +1192,36 @@ class CheckContext {
   }
 
   // A wasm global starts as a constant, so its initializer has to be one: a
-  // number or bool the compiler can work out, or the address of data or of a
-  // function. The value goes to codegen, which emits it when the expression
-  // as written would need an instruction (1 + 1, a literal that widens).
+  // number or bool the compiler can work out, the address of data or of a
+  // function, or a tuple or struct of those. A number's value goes to
+  // codegen, which emits it when the expression as written would need an
+  // instruction (1 + 1, a literal that widens).
   private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
     const value = this.evalComptimeExpr(expr)
-    if (value) return value
-    const inner = expr.kind === 'AnnotationExpr' ? expr.expr : expr
-    const func = inner.kind === 'IdentExpr' && this.lookup(inner.name)?.kind === 'func'
-    if (!this.isDataLiteralExpr(inner) && !func) {
+    if (!value && !this.isConstantInitializer(expr)) {
       this.error(expr.span.start, 'global initializer must be a compile-time constant')
     }
-    return undefined
+    return value ?? undefined
+  }
+
+  private isConstantInitializer(expr: AST.Expr): boolean {
+    if (this.evalComptimeExpr(expr)) return true
+    switch (expr.kind) {
+      case 'AnnotationExpr':
+      case 'GroupExpr':
+        return this.isConstantInitializer(expr.expr)
+      case 'TupleExpr':
+        return expr.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
+      case 'CallExpr':
+        // A struct constructor of constants.
+        return expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
+          && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
+      case 'IdentExpr':
+        return this.lookup(expr.name)?.kind === 'func'
+      default:
+        // A string or an array literal lives in the data section.
+        return this.isDataLiteralExpr(expr)
+    }
   }
 
   // === Second Pass: Check Declarations ===
