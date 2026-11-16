@@ -1314,6 +1314,54 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
   return `(block (result i32 i32)\n${setup.join('\n')}\n${value})`
 }
 
+// dst[a..b] = v (fill) or dst[a..b] = src (copy), as memory.fill/memory.copy.
+// The checker has proven the range in bounds and, for a copy, the lengths equal.
+function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenContext): string {
+  const dstType = ctx.types.get(typeKey(exprTypeOffset(target), target.kind))
+  if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
+  const elem = dstType.element
+  const stride = byteSize(elem) ?? 1
+  const uid = target.span.start
+  const p = `$__bulk_p_${uid}`
+  const n = `$__bulk_n_${uid}`
+  const setDst = `${sliceToWat(target, ctx)}\n(local.set ${n})\n(local.set ${p})`
+  const bytes = stride === 1 ? `(local.get ${n})` : `(i32.mul (local.get ${n}) (i32.const ${stride}))`
+  const valueType = lookupExprType(value, ctx)
+  const vu = valueType ? unwrap(valueType) : null
+  const isScalar = vu?.kind === 'primitive' || vu?.kind === 'comptime_int' || vu?.kind === 'comptime_float'
+
+  if (!isScalar) {
+    // Copy: the source pointer is the first part of a slice, or the pointer itself.
+    const src = exprToWat(value, ctx)
+    let srcPtr: string
+    if (vu?.kind === 'slice') {
+      const parts = trySplitMultiValue(src, 2)
+      srcPtr = parts ? parts[0] : `(block (result i32) ${src} (drop))`
+    } else {
+      srcPtr = src
+    }
+    return `${setDst}\n(memory.copy (local.get ${p}) ${srcPtr} ${bytes})`
+  }
+
+  const v = exprToWat(value, ctx)
+  const isZero = /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(v)
+  if (stride === 1 || isZero) {
+    // Bytes, or zeros of any width: one memory.fill.
+    return `${setDst}\n(memory.fill (local.get ${p}) ${isZero ? '(i32.const 0)' : v} ${bytes})`
+  }
+  // Wider elements: store each one.
+  const t = `$__bulk_v_${uid}`
+  return `${setDst}
+(local.set ${t} ${v})
+(block $__fill_${uid}
+  (loop $__fill_next_${uid}
+    (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
+    ${storeToMemory(elem, `(local.get ${p})`, `(local.get ${t})`)}
+    (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
+    (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
+    (br $__fill_next_${uid})))`
+}
+
 // &items[i]: the element's address. For an optional result (?*T, when the
 // index isn't known to be in range) it's 0 when i is out of range.
 function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: CodegenContext): string | null {
@@ -2038,6 +2086,7 @@ function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boole
 }
 
 function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
+  if (stmt.target.kind === 'SliceExpr') return rangeAssignToWat(stmt.target, stmt.value, ctx)
   const value = exprToWat(stmt.value, ctx)
 
   // Handle compound assignment operators
@@ -2672,6 +2721,15 @@ function collectLocals(
     // Handle assignment statements that may have if expressions on the right side
     if (stmt.kind === 'AssignmentStmt') {
       visitExpr(stmt.value)
+      if (stmt.target.kind === 'SliceExpr') {
+        // Range assignment: the range's own scratch locals, plus the
+        // destination and (for wide fills) the value.
+        const uid = stmt.target.span.start
+        const elem = (checkResult.types.get(typeKey(exprTypeOffset(stmt.target), stmt.target.kind)) as { element?: ResolvedType } | undefined)?.element
+        locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
+        if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
+        visitExpr(stmt.target)
+      }
     }
     // Handle let statements that may have coalesce/if expressions in value
     if (stmt.kind === 'LetStmt' && stmt.value) {

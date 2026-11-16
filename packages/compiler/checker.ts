@@ -1352,7 +1352,7 @@ class CheckContext {
         break
       case 'AssignmentStmt': {
         if (stmt.target.kind === 'SliceExpr') {
-          this.error(stmt.target.span.start, `assigning to a range (bulk copy or fill) is not supported yet`)
+          this.checkRangeAssignment(stmt.target, stmt.op, stmt.value)
           break
         }
         let targetType: ResolvedType | undefined
@@ -2861,18 +2861,93 @@ class CheckContext {
       const n = BigInt(pointee.sizes[0])
       const s = expr.start ? start : { value: 0n, max: 1n }
       const e = expr.end ? end : { value: n, max: n + 1n }
-      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
-        this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
-      }
       // Proven when the end can't pass n and the start can't pass the end.
       const endFits = e.max !== null && e.max <= n + 1n
       const startFits = s.value === 0n || (e.value !== null && s.max !== null && s.max <= e.value + 1n)
       proven = endFits && startFits
+      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
+        this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
+        proven = true // already reported; don't add a second error
+      }
     } else {
       this.error(expr.span.start, `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
       return slice(primitive('u8'))
     }
     return slice(elem, mutable, !proven)
+  }
+
+  // The number of elements in a range, when it's known at compile time.
+  rangeLength(expr: AST.SliceExpr): bigint | null {
+    const objType = unwrap(this.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind)) ?? this.inferExpr(expr.object))
+    const pointee = objType.kind === 'pointer' ? unwrap(objType.pointee) : null
+    const size = pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number'
+      ? BigInt(pointee.sizes[0]) : null
+    const value = (e: AST.Expr | null, fallback: bigint | null): bigint | null => {
+      if (!e) return fallback
+      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      return c && c.kind === 'int' && typeof c.value === 'bigint' ? c.value : null
+    }
+    const start = value(expr.start, 0n)
+    const end = value(expr.end, size)
+    return start !== null && end !== null && end >= start ? end - start : null
+  }
+
+  // dst[a..b] = v fills the range with v; dst[a..b] = src copies src into it.
+  // The range is written, so it must be in bounds without a runtime check, like
+  // an indexed write. A copy also needs both lengths known at compile time and
+  // equal; memcpy is the explicit form for a runtime length.
+  checkRangeAssignment(target: AST.SliceExpr, op: string, value: AST.Expr): void {
+    if (op !== '=') {
+      this.error(target.span.start, `a range can only be assigned with =`)
+      return
+    }
+    const dst = this.inferSlice(target)
+    this.types.set(typeKey(exprTypeOffset(target), target.kind), dst)
+    if (dst.kind !== 'slice') return
+    if (dst.optional) {
+      this.error(target.span.start, `writing to a range needs bounds known to fit: use constant or ranged bounds (on a slice, only s[..])`)
+    }
+    if (!dst.mutable) {
+      this.error(target.span.start, `cannot write through a const range — use *mut or []mut for mutable access`)
+    }
+    const elem = dst.element
+    const valueType = unwrap(this.inferExpr(value))
+    const isScalar = valueType.kind === 'primitive' || valueType.kind === 'comptime_int' || valueType.kind === 'comptime_float'
+    if (isScalar) {
+      const e = unwrap(elem)
+      const oneValue = (e.kind === 'primitive' && !/^[iu](128|256|512)$/.test(e.name)) || e.kind === 'pointer'
+      if (!oneValue) {
+        this.error(value.span.start, `filling a range needs an element of one value, not ${typeToString(elem)}`)
+        return
+      }
+      this.checkExpr(value, elem, 'fill value: ')
+      return
+    }
+    // A copy: the source is a slice or pointer to an array of the same elements.
+    const srcElem = valueType.kind === 'slice' ? valueType.element
+      : valueType.kind === 'pointer' && unwrap(valueType.pointee).kind === 'array' ? (unwrap(valueType.pointee) as ArrayRT).element
+      : valueType.kind === 'array' ? valueType.element
+      : null
+    if (!srcElem || !typeEquals(unwrap(srcElem), unwrap(elem))) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(elem)}`)
+      return
+    }
+    if (valueType.kind === 'slice' && valueType.optional) {
+      this.error(value.span.start, `the source range may be out of bounds: resolve it with ?? or if let first`)
+      return
+    }
+    const dstLen = this.rangeLength(target)
+    let srcLen: bigint | null = null
+    if (value.kind === 'SliceExpr') srcLen = this.rangeLength(value)
+    else {
+      const arr = valueType.kind === 'pointer' ? unwrap(valueType.pointee) : valueType
+      if (arr.kind === 'array' && arr.sizes?.length === 1 && typeof arr.sizes[0] === 'number') srcLen = BigInt(arr.sizes[0])
+    }
+    if (dstLen === null || srcLen === null) {
+      this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
+    } else if (dstLen !== srcLen) {
+      this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
+    }
   }
 
   // The type of &items[i] for a slice or *[N]T: *T when the index is known to

@@ -210,16 +210,31 @@ func tail(p: [*]u8) -> u32 {
 a range on a many-pointer needs an end
 ```
 
-Copying or filling through a range isn't implemented yet:
+Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
 
 ```ents
 data buf = mut [0:u8; 16]
+data src = [1:u8, 2, 3, 4]
 
-func clear() {
-  buf[0..8] = 0
+func f(n: u32#17) {
+  buf[..] = 0
+  buf[..n] = 1
+  buf[4..8] = src
+  buf[0..2] = src[2..4]
 }
 ```
 
+```ents
+data buf = mut [0:u8; 16]
+data src = [1:u8, 2, 3, 4]
+
+func a(i: u32) { buf[i..] = 0 }
+func b() { buf[0..8] = src }
+func c(s: []u8) { buf[0..4] = s }
+```
+
 ```errors
-assigning to a range (bulk copy or fill) is not supported yet
+writing to a range needs bounds known to fit
+cannot copy 4 elements into a range of 8
+copying into a range needs both lengths known at compile time; use memcpy
 ```

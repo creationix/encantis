@@ -1233,20 +1233,17 @@ Ranges follow the same bounds rules as indexing:
 
 A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
 
-> **Status: Not yet implemented** — bulk copy and fill through ranges, below.
+#### Filling and Copying
 
-Bulk copy via slice assignment (uses `memory.copy`):
+Assigning to a range fills it or copies into it, as `memory.fill` and `memory.copy`:
 
 ```ents
+buffer[0..1024] = 0       // fill: every element gets the value
 cv[0..8] = hs[0..8]       // copy 8 elements
-cv[8..16] = iv[0..8]      // copy to different offset
+cv[8..16] = iv            // a *[8]T copies all of its elements
 ```
 
-Bulk fill (uses `memory.fill`):
-
-```ents
-buffer[0..1024] = 0       // zero 1024 bytes
-```
+The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§9.3), where the length is written out.
 
 ### 4.8 UFCS (Uniform Function Call Syntax)
 
@@ -1906,8 +1903,12 @@ let offset:u64 = clz(n) * 8  // u8 → u64 implicit
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
+| `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
+| `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
+
+`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. Range assignment (§4.8) is the checked form for compile-time sizes.
 
 ```ents
 let pages = memory-size()    // current page count
