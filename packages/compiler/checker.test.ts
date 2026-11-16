@@ -995,6 +995,39 @@ describe('typecheck', () => {
 })
 
 describe('globals', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('an initializer is a constant the compiler can work out', () => {
+    const result = checkModule(`
+      def page = 64 * 1024
+      data table = [1:u8, 2, 3]
+      global size: u32 = 4 * page
+      global ratio: f64 = 3 / 2.0
+      global count: i64 = table.len
+      global wide: f64 = 5:i32
+      global mask: u8 = ~0 << 4
+      global base: [*]u8 = table
+      global name: [*]u8 = "name"
+    `)
+    expect(result.errors).toEqual([])
+    const init = (name: string) => {
+      const sym = result.symbols.get(name)
+      return sym?.kind === 'global' ? sym.init : undefined
+    }
+    expect(init('size')).toEqual({ kind: 'int', value: 262144n })
+    expect(init('ratio')).toEqual({ kind: 'float', value: 1.5 })
+    expect(init('count')).toEqual({ kind: 'int', value: 3n })
+    expect(init('mask')).toEqual({ kind: 'int', value: -16n })
+  })
+
+  test('an initializer that has to be computed at run time is an error', () => {
+    const message = 'global initializer must be a compile-time constant'
+    expect(errs(`func one() -> i32 => 1\nglobal g: i32 = one()`)).toEqual([message])
+    expect(errs(`global a: i32 = 1\nglobal b: i32 = a`)).toEqual([message])
+    expect(errs(`global g: i64 = 5 as i64`)).toEqual([message])
+    expect(errs(`global g: u8 = 200 + 100`)).toEqual(['cannot assign int(300) to u8'])
+  })
+
   test('a global keeps its pointer annotation over a literal initializer', () => {
     const result = checkModule(`
       type Slot = (key: u32, value: u32)

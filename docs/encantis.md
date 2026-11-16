@@ -852,6 +852,18 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, or the address of a `data` block. The compiler works out its value, so it can be written as it's meant:
+
+```ents
+def page = 64 * 1024
+
+global limit: u32 = 4 * page     // 262144
+global ratio: f64 = 2 / 3.0
+global mask: u32 = ~0 << 12
+```
+
+A value that needs a call or another global isn't one: assign it in a function.
+
 ### 3.4 Functions
 
 ```ents

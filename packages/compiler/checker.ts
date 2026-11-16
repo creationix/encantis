@@ -59,7 +59,8 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean }
-  | { kind: 'global'; type: ResolvedType }
+  // init: the value of the initializer, when it's a constant expression
+  | { kind: 'global'; type: ResolvedType; init?: ComptimeValue }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
@@ -1105,6 +1106,17 @@ class CheckContext {
           case '>>': return r >= 0n && r <= 512n ? { kind: 'int', value: l >> r } : null
         }
       }
+      const number = (v: ComptimeValue | null) => (v?.kind === 'int' || v?.kind === 'float' ? Number(v.value) : null)
+      const l = number(left)
+      const r = number(right)
+      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float')) {
+        switch (expr.op) {
+          case '+': return { kind: 'float', value: l + r }
+          case '-': return { kind: 'float', value: l - r }
+          case '*': return { kind: 'float', value: l * r }
+          case '/': return { kind: 'float', value: l / r }
+        }
+      }
     }
 
     // Handle identifier references to other defs
@@ -1173,9 +1185,25 @@ class CheckContext {
       type = primitive('i32')
     }
 
-    this.moduleScope.symbols.set(name, { kind: 'global', type })
+    const init = decl.value ? this.globalInitializer(decl.value) : undefined
+    this.moduleScope.symbols.set(name, init ? { kind: 'global', type, init } : { kind: 'global', type })
     this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
     this.recordDefinition(name, decl.pattern.span.start)
+  }
+
+  // A wasm global starts as a constant, so its initializer has to be one: a
+  // number or bool the compiler can work out, or the address of data or of a
+  // function. The value goes to codegen, which emits it when the expression
+  // as written would need an instruction (1 + 1, a literal that widens).
+  private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
+    const value = this.evalComptimeExpr(expr)
+    if (value) return value
+    const inner = expr.kind === 'AnnotationExpr' ? expr.expr : expr
+    const func = inner.kind === 'IdentExpr' && this.lookup(inner.name)?.kind === 'func'
+    if (!this.isDataLiteralExpr(inner) && !func) {
+      this.error(expr.span.start, 'global initializer must be a compile-time constant')
+    }
+    return undefined
   }
 
   // === Second Pass: Check Declarations ===

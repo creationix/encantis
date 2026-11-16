@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue } from './ast'
-import { typeKey, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -3031,9 +3031,32 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
     throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
   }
   const wasmType = typeToWasmSingle(type)
-  const init = decl.value ? exprToWat(decl.value, ctx) : `(${wasmType}.const 0)`
+  let init = decl.value ? exprToWat(decl.value, ctx) : `(${wasmType}.const 0)`
+  // A global's initializer is one constant instruction. Where the expression
+  // isn't one as written (1 + 1, an integer widened to a float), the checker
+  // has worked out its value.
+  const sym = ctx.symbols.get(name)
+  if (sym?.kind === 'global' && sym.init && !/^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/.test(init)) {
+    init = constantToWat(sym.init, type) ?? init
+  }
 
   return `  (global $${watName} (mut ${wasmType}) ${init})`
+}
+
+// A constant's value as an instruction of a type held in one wasm value.
+function constantToWat(value: ComptimeValue, type: ResolvedType): string | null {
+  if (typeToWasm(type).length !== 1) return null
+  const wt = typeToWasmSingle(type)
+  if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
+  if (value.kind === 'data_ptr') return null
+  if (wt === 'f32' || wt === 'f64') {
+    const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
+    return `(${wt}.const ${Number.isNaN(v) ? 'nan' : Number.isFinite(v) ? v : v > 0 ? 'inf' : '-inf'})`
+  }
+  if (value.kind === 'float') return null
+  // A complement or a sub-word value: the bits it has in this type.
+  const bits = (primitiveByteSize(type) ?? 4) * 8
+  return `(${wt}.const ${isSigned(type) ? BigInt.asIntN(bits, value.value) : BigInt.asUintN(bits, value.value)})`
 }
 
 function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {

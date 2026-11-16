@@ -288,6 +288,37 @@ func f(c: bool, n: i32) {
 }
 ```
 
+## Globals
+
+A global starts as a constant: a literal, a constant expression, or the address of data. An integer constant can start a float or a wider global.
+
+```ents
+def page = 64 * 1024
+data table = [1:u8, 2, 3]
+
+global size: u32 = 4 * page
+global ratio: f64 = 3 / 2.0
+global count: i64 = table.len
+global mask: u8 = ~0 << 4
+global base: [*]u8 = table
+```
+
+A value that only exists at run time can't start one: assign it in a function.
+
+```ents
+func one() -> i32 => 1
+
+global a: i32 = one()
+global b: i32 = a
+global c: u8 = 200 + 100
+```
+
+```errors
+global initializer must be a compile-time constant
+global initializer must be a compile-time constant
+cannot assign int(300) to u8
+```
+
 ## Defer
 
 A deferred expression runs when its block exits, so it can't leave the block itself.

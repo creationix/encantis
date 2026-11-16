@@ -792,6 +792,27 @@ describe('module codegen', () => {
     expect(wat).toContain('(export "sub"')
   })
 
+  test('a global starts as one constant, whatever expression gives it', () => {
+    const wat = modWat(`
+      def page = 64 * 1024
+      data table = [1:u8, 2, 3]
+      global zero: i32 = 0
+      global size: u32 = 4 * page
+      global ratio: f32 = 1.0 / 3
+      global count: i64 = table.len
+      global wide: f64 = 5:i32
+      global mask: u8 = ~0 << 4
+      global ones: u64 = ~0
+    `)
+    expect(wat).toContain('(global $zero (mut i32) (i32.const 0))')
+    expect(wat).toContain('(global $size (mut i32) (i32.const 262144))')
+    expect(wat).toContain('(global $ratio (mut f32) (f32.const 0.3333333432674408))')
+    expect(wat).toContain('(global $count (mut i64) (i64.const 3))')
+    expect(wat).toContain('(global $wide (mut f64) (f64.const 5))')
+    expect(wat).toContain('(global $mask (mut i32) (i32.const 240))')
+    expect(wat).toContain('(global $ones (mut i64) (i64.const 18446744073709551615))')
+  })
+
   test('export without explicit name uses function name', () => {
     const wat = modWat(`
       export func multiply(a: i32, b: i32) -> i32 => a * b
