@@ -1236,6 +1236,42 @@ describe('structs in data arrays', () => {
   })
 })
 
+describe('a slice from an array literal', () => {
+  test('has the length of the literal in elements, not bytes', async () => {
+    const code = `
+      type Pair = (a: i32, b: i32)
+      export func f(n: i32) -> u32 {
+        let s: []i32 = [1, 2, 3]
+        let r: []i32 = [1, n]
+        let p: []Pair = [(1, 2), (n, 4)]
+        let z: []u16 = [0:u16; 7]
+        let b: []u8 = "abcd"
+        return s.len + r.len * 10 + p.len * 100 + z.len * 1000 + b.len * 10000
+      }
+    `
+    expect(modWat(code)).toMatch(/\(local\.set \$s_len \(i32\.const 3\)\)/)
+    const { f } = await run(code)
+    expect(f(5)).toBe(47223)
+  })
+
+  test('data, arguments and nested slices count elements too', async () => {
+    const { f } = await run(`
+      data lists: [][]i32 = [[1, 2], [3]]
+      data table: []u64 = [1, 2, 3]
+      func take(s: []i32) -> u32 => s.len
+      export func f() -> i32 {
+        let t = 0
+        for l in lists {
+          for x in l { t += x }
+          t += (l.len as i32) * 100
+        }
+        return t + (lists.len as i32) * 1000 + (table.len as i32) * 10000 + (take([4, 5, 6, 7]) as i32) * 100000
+      }
+    `)
+    expect(f()).toBe(6 + 300 + 2000 + 30000 + 400000)
+  })
+})
+
 describe('a slice from a pointer and a length', () => {
   test('nothing is laid out in the data section for it', () => {
     const wat = modWat(`

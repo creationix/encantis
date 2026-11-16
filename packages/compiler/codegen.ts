@@ -17,7 +17,7 @@ import {
   totalElements,
 } from './types'
 import * as RT from './types'
-import { dataToWat, buildDataSection, type DataSectionBuilder } from './data-pack'
+import { dataToWat, buildDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
@@ -248,7 +248,7 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
         const inner = expr.expr
         const id = (inner as any).dataId ?? inner.span.start
         const ref = ctx.literalRefs.get(id)
-        if (ref) return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+        if (ref) return literalSliceToWat(ref, annType)
       }
       return exprToWat(expr.expr, ctx)
     }
@@ -308,13 +308,18 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       if (ref) {
         const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
         if (type?.kind === 'slice') {
-          return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+          return literalSliceToWat(ref, type)
         }
         return `(i32.const ${ref.ptr})`
       }
       return `(i32.const 0)`
     }
   }
+}
+
+// A literal that lies in the data section, as the slice over all of it.
+function literalSliceToWat(ref: DataRef, type: RT.SliceRT): string {
+  return `(i32.const ${ref.ptr}) (i32.const ${literalLength(ref, type.element)})`
 }
 
 function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
@@ -358,7 +363,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
         const ref = ctx.literalRefs.get(val.id)
         if (ref) {
           if (sym.type.kind === 'slice') {
-            return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+            return literalSliceToWat(ref, sym.type)
           }
           return `(i32.const ${ref.ptr})`
         }
@@ -1938,7 +1943,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
     // Emit runtime stores for mixed arrays (elements that aren't compile-time literals)
     const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
-      return `${stores}(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+      return `${stores}${literalSliceToWat(ref, type)}`
     }
     return `${stores}(i32.const ${ref.ptr})`
   }
@@ -2008,7 +2013,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
   if (ref) {
     const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
     if (type?.kind === 'slice') {
-      return `(i32.const ${ref.ptr}) (i32.const ${ref.len})`
+      return literalSliceToWat(ref, type)
     }
     return `(i32.const ${ref.ptr})`
   }

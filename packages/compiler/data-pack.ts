@@ -676,6 +676,15 @@ function arrayElementType(type: ResolvedType): ResolvedType {
   return type
 }
 
+// How many elements a literal has, from the reference to it. A reference
+// counts bytes, except for a literal that is an array of pointers to its own
+// literals (separate brackets), where it already counts elements.
+export function literalLength(ref: DataRef, element: ResolvedType): number {
+  if (element.kind === 'array' || element.kind === 'slice') return ref.len
+  const size = byteSize(element)
+  return size ? ref.len / size : ref.len
+}
+
 // Serialize separate brackets (e.g., [!][!]u8) - depth-first with pointer arrays
 function serializeSeparate(
   expr: AST.Expr,
@@ -707,7 +716,9 @@ function serializeSeparate(
   }
 
   const isSlice = elem.kind === 'slice' || targetType.sizes === null || (targetType.sizes.length === 0)
-  const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
+  // A (ptr, len) element holds its child's length in elements, not bytes.
+  const elementRefs = isSlice ? childRefs.map((ref) => ({ ptr: ref.ptr, len: literalLength(ref, innerType.element) })) : childRefs
+  const pointerBytes = encodePointerArray(elementRefs, getFramings(targetType.sizes), isSlice)
 
   const optional = isOptional(targetType.element)
   const ref = builder.internBytes(pointerBytes, skipDedup, optional)
