@@ -293,6 +293,26 @@ max requires a numeric type, got bool
 cannot assign i32 to bool
 ```
 
+`clz`, `ctz` and `popcnt` take an `i32`, `u32`, `i64` or `u64` and return a `u8`, which widens to any integer type.
+
+```ents
+func leading(x: u32) -> u8 => clz(x)
+func ones(x: u64) -> u32 => popcnt(x)
+func strip(x: u64) -> u64 => x >> ctz(x)
+```
+
+```ents
+func f(x: u8) -> u8 => clz(x)
+func g(x: u128) -> u8 => popcnt(x)
+func h(x: f64) -> u8 => ctz(x)
+```
+
+```errors
+clz requires i32, u32, i64 or u64, got u8
+popcnt requires i32, u32, i64 or u64, got u128
+ctz requires an integer type, got f64
+```
+
 `min` and `max` return one of their operands, so the result is in a range when every operand is.
 
 ```ents

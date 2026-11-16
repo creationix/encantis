@@ -918,7 +918,9 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
       if (args.length !== 1) return null
       const type = builtinOperandType(expr, ctx)
       const wt = typeToWasmSingle(type)
-      return `(${wt}.${name} ${builtinOperandToWat(args[0].value, type, ctx)})`
+      const count = `(${wt}.${name} ${builtinOperandToWat(args[0].value, type, ctx)})`
+      // The result is a u8, an i32 on the stack, whatever the operand's width.
+      return wt === 'i64' ? `(i32.wrap_i64 ${count})` : count
     }
 
     case 'mul_hi': {
@@ -1669,6 +1671,25 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   return parts.filter(Boolean).join(' ')
 }
 
+// Whether `wat` is one parenthesized expression, not several side by side.
+function isSingleExpr(wat: string): boolean {
+  let depth = 0
+  for (let i = 0; i < wat.length; i++) {
+    if (wat[i] === '(') depth++
+    else if (wat[i] === ')' && --depth === 0) return i === wat.length - 1
+  }
+  return false
+}
+
+// An i32 widened to i64. The bit count of an i64 (clz, ctz, popcnt) is computed
+// in 64 bits and wrapped to its u8 result: widening it again is the count
+// itself, so `x >> ctz(x)` on a u64 stays two instructions.
+function extendToI64(wat: string, signed: boolean): string {
+  const count = /^\(i32\.wrap_i64 (\(i64\.(?:clz|ctz|popcnt) [\s\S]*\))\)$/.exec(wat)
+  if (count && isSingleExpr(count[1])) return count[1]
+  return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+}
+
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
@@ -1681,7 +1702,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   if ((fromWide > 0 || toWide > 0) && !isFloat(fromType) && !isFloat(toType)) {
     const fromParts = Math.max(fromWide, 1)
     const toParts = Math.max(toWide, 1)
-    let wat = fromWasm === 'i32' ? `(i64.extend_i32_${isSigned(fromType) ? 's' : 'u'} ${inner})` : inner
+    let wat = fromWasm === 'i32' ? extendToI64(inner, isSigned(fromType)) : inner
     if (toParts < fromParts) {
       // Narrowing keeps the low parts: drop the high ones off the top of the stack.
       wat += ' ' + Array(fromParts - toParts).fill('(drop)').join(' ')
@@ -1727,7 +1748,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
     }
   }
   if (fromWasm === 'i32' && toWasm === 'i64') {
-    return `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})`
+    return extendToI64(inner, fromSigned)
   }
   if (fromWasm === 'i64' && toWasm === 'i32') {
     return `(i32.wrap_i64 ${inner})`
@@ -2110,7 +2131,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
 
 function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boolean): string {
   if (fromWt === toWt) return wat
-  if (fromWt === 'i32' && toWt === 'i64') return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+  if (fromWt === 'i32' && toWt === 'i64') return extendToI64(wat, signed)
   if (fromWt === 'i64' && toWt === 'i32') return `(i32.wrap_i64 ${wat})`
   return wat
 }

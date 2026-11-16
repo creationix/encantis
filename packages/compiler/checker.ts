@@ -35,6 +35,7 @@ import {
   isInteger,
   isNumeric,
   isComptime,
+  intBitWidth,
   byteSize,
   isFixedSizes,
   totalElements,
@@ -2477,21 +2478,21 @@ class CheckContext {
         return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Integer-only unary: clz, ctz, popcnt
+      // Integer-only unary: clz, ctz, popcnt. The count fits a u8 whatever the
+      // operand's width, so it widens to any integer type.
       case 'clz':
       case 'ctz':
       case 'popcnt': {
         if (args.length !== 1) {
           this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('i32')
+          return primitive('u8')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isInteger(argType)) {
-          this.error(args[0].value.span.start, `${name} requires an integer type, got ${typeToString(argType)}`)
-          return primitive('i32')
+        const operandType = this.builtinOperandType(expr, name, args, 'integer')
+        // The count is of the operand's own bits, and wasm counts in 32 or 64.
+        if (intBitWidth(operandType) !== 32 && intBitWidth(operandType) !== 64) {
+          this.error(args[0].value.span.start, `${name} requires i32, u32, i64 or u64, got ${typeToString(operandType)}`)
         }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return primitive('u8')
       }
 
       // sizeof(T) - returns byte size of a type as comptime u32
@@ -2552,10 +2553,10 @@ class CheckContext {
     expr: AST.CallExpr,
     name: string,
     args: { value: AST.Expr }[],
-    kind: 'float' | 'numeric',
+    kind: 'float' | 'integer' | 'numeric',
   ): ResolvedType {
-    const accepts = kind === 'float' ? isFloat : isNumeric
-    const wanted = kind === 'float' ? 'a float type' : 'a numeric type'
+    const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
+    const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
     // What checking goes on with after an operand of the wrong kind.
     const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
     const types = args.map((arg) => this.inferExpr(arg.value))
@@ -2576,8 +2577,12 @@ class CheckContext {
       }
     }
     if (common === null) {
-      const float = kind === 'float' || types.some((t) => t.kind === 'comptime_float')
-      common = float ? primitive('f64') : this.unifyTypes(types)
+      const floatLiteral = types.find((t) => t.kind === 'comptime_float')
+      if (floatLiteral && kind === 'integer') {
+        this.error(args[0].value.span.start, `${name} requires ${wanted}, got ${typeToString(floatLiteral)}`)
+        return fallback
+      }
+      common = floatLiteral || kind === 'float' ? primitive('f64') : this.unifyTypes(types)
     }
     for (const [i, type] of types.entries()) {
       if (isComptime(type)) this.checkExpr(args[i].value, common, name)

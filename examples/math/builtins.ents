@@ -191,6 +191,27 @@ test "abs, min and max on small integers" {
   assert min_u8(200, 100) == 100
 }
 
+// === Bit counts are u8, whatever the operand's width ===
+
+func leading(x: u32) -> u8 => clz(x)
+func trailing(x: u64) -> u8 => ctz(x)
+func ones(x: u64) -> u32 => popcnt(x)
+func strip(x: u64) -> u64 => x >> ctz(x)
+func log2(x: u64) -> u8 => 63 - clz(x)
+
+test "clz, ctz and popcnt" {
+  assert leading(0b00001000) == 28
+  assert leading(0) == 32
+  assert trailing(0b00001000) == 3
+  assert trailing(0x100000000) == 32
+  assert trailing(0) == 64
+  assert ones(0xFFFFFFFFFFFFFFFF) == 64
+  assert ones(0x8000000000000001) == 2
+  assert strip(0x500000000) == 5
+  assert log2(0x100000000) == 32
+  assert clz(1) == 31
+}
+
 // === Wide integers ===
 
 func pow2(n: u64) -> i128 => (1 as i128) << (n as i128)

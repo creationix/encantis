@@ -1898,8 +1898,9 @@ On integers, `min` and `max` compare signed or unsigned as the operands' type sa
 | `clz(x)` | i32/i64/u32/u64 | u8 | Count leading zeros (0 to bit width) |
 | `ctz(x)` | i32/i64/u32/u64 | u8 | Count trailing zeros (0 to bit width) |
 | `popcnt(x)` | i32/i64/u32/u64 | u8 | Population count (0 to bit width) |
+| `mul_hi(a, b)` | u64, u64 | u64 | High 64 bits of the 128-bit product |
 
-These functions return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type.
+The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error: convert it first (`clz(b as u32) - 24` for a `u8`).
 
 ```ents
 let n:u32 = 0b00001000
@@ -1909,7 +1910,12 @@ popcnt(n)              // 1:u8 (number of 1 bits)
 
 // Result implicitly widens to target type
 let count:u32 = popcnt(n)    // u8 → u32 implicit
-let offset:u64 = clz(n) * 8  // u8 → u64 implicit
+let big:u64 = 0x500000000
+let odd = big >> ctz(big)    // the count widens to the u64 it shifts: 5
+
+// Arithmetic on the count alone is u8 arithmetic: widen it first if the
+// result can pass 255
+let offset = u64(clz(n)) * 8
 ```
 
 ### 9.3 Memory Builtins

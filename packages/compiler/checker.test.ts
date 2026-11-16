@@ -1167,6 +1167,21 @@ describe('builtins', () => {
     expect(errs(`func f(p: *u8) -> *u8 => abs(p)`)).toContain('abs requires a numeric type, got *u8')
   })
 
+  test('clz, ctz and popcnt return u8', () => {
+    expect(types('x: u32', 'clz(x)')).toEqual(['u32', 'u8'])
+    expect(types('x: i64', 'ctz(x)')).toEqual(['i64', 'u8'])
+    expect(types('x: u64', 'popcnt(x)')).toEqual(['u64', 'u8'])
+    expect(types('', 'clz(1)')).toEqual(['i32', 'u8'])
+  })
+
+  test('clz, ctz and popcnt take 32- and 64-bit integers only', () => {
+    expect(errs(`func f(x: u8) -> u8 => clz(x)`)).toEqual(['clz requires i32, u32, i64 or u64, got u8'])
+    expect(errs(`func f(x: i16) -> u8 => ctz(x)`)).toEqual(['ctz requires i32, u32, i64 or u64, got i16'])
+    expect(errs(`func f(x: u128) -> u8 => popcnt(x)`)).toEqual(['popcnt requires i32, u32, i64 or u64, got u128'])
+    expect(errs(`func f(x: f64) -> u8 => clz(x)`)).toEqual(['clz requires an integer type, got f64'])
+    expect(errs(`func f() -> u8 => popcnt(1.5)`)).toEqual(['popcnt requires an integer type, got float(1.5)'])
+  })
+
   test('min and max keep a range only when every operand is inside it', () => {
     expect(types('i: u32#8, j: u32#4', 'max(i, j)')).toEqual(['u32', 'u32#8'])
     expect(types('i: u32#8, j: u32', 'min(i, j)')).toEqual(['u32', 'u32'])
