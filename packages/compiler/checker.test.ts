@@ -1033,6 +1033,21 @@ describe('missing return', () => {
     }`)).toEqual([])
   })
 
+  test('a match with a catch-all arm, where every arm returns, is accepted', () => {
+    expect(errs(`func f(x: i32) -> i32 {
+      match x {
+        0 => { return 1 }
+        _ => { return 2 }
+      }
+    }`)).toEqual([])
+    expect(errs(`func f(x: i32) -> i32 {
+      match x {
+        0 => { return 1 }
+        1 => { return 2 }
+      }
+    }`)).toContain("function 'f' can reach its end without returning a value")
+  })
+
   test('a loop that can break can reach the end', () => {
     expect(errs(`func f(x: i32) -> i32 {
       loop {

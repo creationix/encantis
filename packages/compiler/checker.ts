@@ -3157,6 +3157,12 @@ function exprTerminates(expr: AST.Expr): boolean {
     return !!expr.else_ && bodyTerminates(expr.thenBranch) &&
       expr.elifs.every(e => bodyTerminates(e.thenBranch)) && bodyTerminates(expr.else_)
   }
+  if (expr.kind === 'MatchExpr') {
+    // Every arm returns, and some arm catches everything (a wildcard or a bare
+    // binding), so no value falls through.
+    const catchAll = expr.arms.some(arm => arm.patterns.some(p => p.kind === 'wildcard' || p.kind === 'binding'))
+    return catchAll && expr.arms.every(arm => bodyTerminates(arm.body))
+  }
   return false
 }
 
