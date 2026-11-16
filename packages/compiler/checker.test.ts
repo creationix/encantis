@@ -1477,6 +1477,19 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(x: i32) -> i32 => match x { 1.5 => 1\n _ => 0 }`)).toEqual(['cannot match i32 against float(1.5)'])
   })
 
+  test('a tuple literal names its fields in order or not at all', () => {
+    const point = 'type P = (x: i32, y: i32)\n'
+    const swapped = ["field 'y' is in the place of 'x': the elements of a tuple literal go in order", "field 'x' is in the place of 'y': the elements of a tuple literal go in order"]
+    expect(errs(`${point}func f() { let p: P = (x: 2, y: 1)\n let q: P = (2, 1) }`)).toEqual([])
+    expect(errs(`${point}func f() -> P => P(y: 1, x: 2)`)).toEqual([])
+    expect(errs(`${point}func f() { let p: P = (y: 1, x: 2) }`)).toEqual(swapped)
+    expect(errs(`${point}func f() -> P => (y: 1, x: 2)`)).toEqual(swapped)
+    expect(errs(`${point}func f(x: i32, y: i32) -> (x: i32, y: i32) { (y:, x:) }`)).toEqual(swapped)
+    expect(errs(`${point}func g(p: P) {}\nfunc f() { g((y: 1, x: 2)) }`)).toEqual(swapped.map(m => `argument 1: ${m}`))
+    // Names for a tuple that has none are just labels.
+    expect(errs(`func f(n: i32) { let t: (i64, f64) = (count: n, mean: n) }`)).toEqual([])
+  })
+
   test('a struct value is not widened field by field', () => {
     expect(errs(`
       type Small = (a: i32, b: i32)

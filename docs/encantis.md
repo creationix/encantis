@@ -514,6 +514,8 @@ let y = 4.0
 let p = (x:, y:)             // equivalent to (x: x, y: y)
 ```
 
+A constructor's named arguments go in any order. The elements of a plain tuple literal go in the order of the fields: its names label them, and a name in another field's place (`let p: Point = (y: 4.0, x: 3.0)`) is an error.
+
 #### Struct Field Access
 
 ```ents

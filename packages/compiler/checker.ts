@@ -1338,7 +1338,7 @@ class CheckContext {
       const tail = named ? decl.body.stmts.at(-1) : undefined
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
       if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
-        this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
+        this.coerce(tail.expr, tailType, this.resultsFilledBy(tail.expr, tailType))
       }
       // A block body with unnamed results has to return on every path: there
       // are no named locals to return when it falls off the end.
@@ -1364,10 +1364,12 @@ class CheckContext {
   // The type a trailing value has to have to supply the named results. It
   // fills them in order, as `let a, b = f()` binds by position, so the names
   // of its own fields don't matter: the expected type takes them over.
-  private resultsFilledBy(valueType: ResolvedType): ResolvedType {
+  private resultsFilledBy(expr: AST.Expr, valueType: ResolvedType): ResolvedType {
     const results = this.returnValueType()
     const value = unwrap(valueType)
     if (results.kind !== 'tuple' || value.kind !== 'tuple' || value.fields.length !== results.fields.length) return results
+    // Names written out in a literal are meant, though: they have to agree.
+    if (expr.kind === 'TupleExpr') this.checkFieldOrder(expr, results.fields)
     return tuple(results.fields.map((f, i) => field(value.fields[i].name, f.type)))
   }
 
@@ -2220,6 +2222,7 @@ class CheckContext {
     if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
+      this.checkFieldOrder(expr, unwrappedExpected.fields, prefix)
       for (let i = 0; i < unwrappedExpected.fields.length; i++) {
         const value = argValue((expr as AST.TupleExpr).elements[i])
         if (value) {
@@ -2248,6 +2251,18 @@ class CheckContext {
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
+  }
+
+  // The elements of a tuple literal fill the fields in order. A name that
+  // belongs to another place would be quietly ignored: (y: 1, x: 2) isn't
+  // x = 2, so it's an error.
+  private checkFieldOrder(expr: AST.TupleExpr, fields: ResolvedField[], prefix = ''): void {
+    for (const [i, element] of expr.elements.entries()) {
+      const name = fields[i]?.name
+      if (element.name && name && element.name !== name) {
+        this.error(element.span.start, `${prefix}field '${element.name}' is in the place of '${name}': the elements of a tuple literal go in order`)
+      }
+    }
   }
 
   // Peel off one size level from an array type to get the inner element type
