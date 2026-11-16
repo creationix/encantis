@@ -3363,20 +3363,25 @@ export function programToWatWithTests(
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
   testFiles?: string[],
-): { wat: string; testNames: string[] } {
+): { wat: string; testNames: string[]; testTitles: string[] } {
+  // testNames are the exported function suffixes (test_<name>); testTitles are
+  // the names as written, nested ones joined with ' > ', for display.
   const testNames: string[] = []
+  const testTitles: string[] = []
 
-  function collectTestNames(decl: AST.TestDecl, prefix: string) {
+  function collectTestNames(decl: AST.TestDecl, prefix: string, titlePrefix: string) {
     const myPrefix = decl.name
       ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
       : prefix
+    const myTitle = decl.name ? (titlePrefix ? `${titlePrefix} > ${decl.name}` : decl.name) : titlePrefix
     const hasNested = decl.children.some(c => c.kind === 'TestDecl')
     if (hasNested) {
       for (const child of decl.children) {
-        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix)
+        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix, myTitle)
       }
     } else if (decl.name) {
       testNames.push(myPrefix)
+      testTitles.push(myTitle)
     }
   }
 
@@ -3385,9 +3390,9 @@ export function programToWatWithTests(
     const mod = modules.get(filePath)
     if (!mod) continue
     for (const decl of mod.module.decls) {
-      if (decl.kind === 'TestDecl') collectTestNames(decl, '')
+      if (decl.kind === 'TestDecl') collectTestNames(decl, '', '')
     }
   }
   const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest })
-  return { wat, testNames }
+  return { wat, testNames, testTitles }
 }

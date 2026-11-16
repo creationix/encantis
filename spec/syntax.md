@@ -139,22 +139,46 @@ A simple string literal:
   "kind": "LiteralExpr",
   "value": {
     "kind": "string",
-    "bytes": {
-      "0": 72,
-      "1": 101,
-      "2": 108,
-      "3": 108,
-      "4": 111,
-      "5": 44,
-      "6": 32,
-      "7": 119,
-      "8": 111,
-      "9": 114,
-      "10": 108,
-      "11": 100,
-      "12": 33
-    }
+    "bytes": "Hello, world!"
   }
+}
+```
+
+Each kind of quote can hold the other one, with no escape:
+
+```ents Expr
+"don't"
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "string",
+    "bytes": "don't"
+  }
+}
+```
+
+```ents Expr
+'say "hi"'
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "string",
+    "bytes": "say \"hi\""
+  }
+}
+```
+
+So can test names:
+
+```ents
+test "it doesn't choke on quotes" {
+  assert true
 }
 ```
 

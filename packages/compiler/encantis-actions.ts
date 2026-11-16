@@ -1785,7 +1785,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.LiteralExpr
   },
 
-  utf8Char(char) {
+  dqChar(char) {
+    return char.toAST()
+  },
+
+  sqChar(char) {
     return char.toAST()
   },
 
