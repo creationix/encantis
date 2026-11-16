@@ -277,6 +277,24 @@ for i in 4 {                    // i: u32#4
 
 **Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
 
+**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
+
+**Narrowing:** Comparing an unsigned variable with a constant narrows its range wherever the comparison is known to hold:
+
+```ents
+data buf = mut [0:u8; 12]
+
+func f(x: u32) -> u8 {
+  if x < 12 {
+    buf[x] = 1               // x: u32#12 here
+  }
+  return 0 when x >= 12
+  return buf[x]              // and here: the return above guards it
+}
+```
+
+It applies inside an `if` branch, to later `elif` and `else` branches (where earlier conditions are false), and to the rest of a block after `return`, `break` or `continue when c`, or after `if c { ... }` whose branch always exits. `&&` combines bounds; `||` only narrows when it's false. A variable assigned anywhere in the narrowed region isn't narrowed. The comparison you write is the bounds check, so nothing extra runs.
+
 ### 2.3 Value vs Reference Types
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
@@ -1178,6 +1196,22 @@ if let data = entry.dynamic {
 ```
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
+
+#### Element Addresses and Writes
+
+Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
+
+```ents
+func put(s: []mut u8, i: u32, v: u8) -> bool {
+  if let p = &s[i] {
+    p.* = v
+    return true
+  }
+  return false
+}
+```
+
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out.
 
 ### 4.8 Slice/Range Syntax
 

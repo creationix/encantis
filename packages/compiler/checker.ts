@@ -1305,9 +1305,7 @@ class CheckContext {
 
   checkBody(body: AST.FuncBody): void {
     if (body.kind === 'Block') {
-      for (const stmt of body.stmts) {
-        this.checkStmt(stmt)
-      }
+      this.checkStmts(body.stmts)
     } else {
       this.inferExpr(body.expr)
     }
@@ -1413,6 +1411,27 @@ class CheckContext {
         }
         if (stmt.when) this.inferExpr(stmt.when)
         break
+    }
+  }
+
+  // Check statements in order. After `return/break/continue when c`, or an
+  // `if c { ... }` whose branch always exits, c is false for the rest.
+  private checkStmts(stmts: AST.Statement[]): void {
+    for (let i = 0; i < stmts.length; i++) {
+      const stmt = stmts[i]
+      this.checkStmt(stmt)
+      let exitCond: AST.Expr | null = null
+      if ((stmt.kind === 'ReturnStmt' || stmt.kind === 'BreakStmt' || stmt.kind === 'ContinueStmt') && stmt.when) {
+        exitCond = stmt.when
+      } else if (stmt.kind === 'ExpressionStmt' && stmt.expr.kind === 'IfExpr' && !stmt.expr.pattern &&
+        stmt.expr.elifs.length === 0 && !stmt.expr.else_ && alwaysExits(stmt.expr.thenBranch)) {
+        exitCond = stmt.expr.condition
+      }
+      if (exitCond) {
+        const rest = stmts.slice(i + 1)
+        this.withNarrowing(this.boundsFrom(exitCond, false), rest, () => this.checkStmts(rest))
+        return
+      }
     }
   }
 
@@ -1869,12 +1888,17 @@ class CheckContext {
     // Bidirectional: propagate expected type into if-expression branches
     if (expr.kind === 'IfExpr' && !expr.pattern && expr.else_) {
       this.inferExpr(expr.condition)
-      this.checkBodyAgainst(expr.thenBranch, expected)
+      this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.checkBodyAgainst(expr.thenBranch, expected))
+      const seen = [expr.condition]
       for (const elif of expr.elifs) {
-        this.inferExpr(elif.condition)
-        this.checkBodyAgainst(elif.thenBranch, expected)
+        this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
+          this.inferExpr(elif.condition)
+          this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.checkBodyAgainst(elif.thenBranch, expected))
+        })
+        seen.push(elif.condition)
       }
-      this.checkBodyAgainst(expr.else_, expected)
+      const else_ = expr.else_
+      this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
       this.types.set(typeKey(expr.span.start, expr.kind), expected)
       return expected
     }
@@ -2256,6 +2280,7 @@ class CheckContext {
       case 'local':
       case 'param':
       case 'return':
+        return this.narrowedType(expr.name) ?? sym.type
       case 'global':
       case 'def':
         return sym.type
@@ -2544,8 +2569,25 @@ class CheckContext {
     //   u32#6 * 20 → u32#120 (max value: 5*20=100, so <120... actually (6-1)*20+1 is wrong)
     // For +: u32#N + K → u32#(N+K)      max val is (N-1)+K, so < N+K
     // For *: u32#N * K → u32#((N-1)*K+1) max val is (N-1)*K, so < (N-1)*K+1
-    const computeRange = (base: ResolvedType, operand: bigint): ResolvedType => {
-      if (base.kind !== 'primitive' || base.max === undefined || operand < 0n) return stripMax(base)
+    // For an unsigned value and a constant K >= 0:
+    //   x & K  → max value K          x % K → max value K-1 (K > 0)
+    //   x >> K → max value (max >> K), where max is the range or the type's width
+    const computeRange = (base: ResolvedType, operand: bigint, constantOnRight: boolean): ResolvedType => {
+      if (base.kind !== 'primitive' || operand < 0n) return stripMax(base)
+      const limit = (bound: bigint): ResolvedType => {
+        const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
+        const next = current !== null && current < bound ? current : bound
+        return next <= BigInt(Number.MAX_SAFE_INTEGER) ? primitive(base.name, Number(next)) : stripMax(base)
+      }
+      if (isUnsignedName(base.name)) {
+        if (expr.op === '&') return limit(operand + 1n)
+        if (expr.op === '%' && constantOnRight && operand > 0n) return limit(operand)
+        if (expr.op === '>>' && constantOnRight) {
+          const max = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
+          if (max !== null) return limit(((max - 1n) >> operand) + 1n)
+        }
+      }
+      if (base.max === undefined) return stripMax(base)
       if (expr.op === '+') return primitive(base.name, base.max + Number(operand))
       if (expr.op === '*' && operand > 0n) return primitive(base.name, (base.max - 1) * Number(operand) + 1)
       return stripMax(base)
@@ -2559,26 +2601,32 @@ class CheckContext {
         resultType = stripMax(rightType)
       }
     } else if (right.kind === 'comptime_int' && left.kind === 'primitive') {
-      resultType = computeRange(leftType, right.value)
+      resultType = computeRange(leftType, right.value, true)
     } else if (left.kind === 'comptime_int' && right.kind === 'primitive') {
-      resultType = computeRange(rightType, left.value)
+      resultType = computeRange(rightType, left.value, false)
     } else if (rightIsComptime && left.kind === 'primitive') {
       resultType = stripMax(leftType)
     } else if (leftIsComptime && right.kind === 'primitive') {
       resultType = stripMax(rightType)
     }
 
-    // Propagate concrete type to comptime operands (only for numeric types)
+    // Propagate concrete type to comptime operands (only for numeric types).
+    // The operand gets the plain type: in x % 12 the 12 needn't fit u32#12.
     if (leftIsComptime && right.kind === 'primitive') {
-      this.checkExpr(expr.left, resultType)
+      this.checkExpr(expr.left, stripMax(resultType))
     } else if (rightIsComptime && left.kind === 'primitive') {
-      this.checkExpr(expr.right, resultType)
+      this.checkExpr(expr.right, stripMax(resultType))
     }
 
     return resultType
   }
 
   inferUnary(expr: AST.UnaryExpr): ResolvedType {
+    // &items[i] is checked as an address, without the bounds rules for reading.
+    if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
+      const addr = this.addressOfIndex(expr.operand)
+      if (addr) return addr
+    }
     const operandType = this.inferExpr(expr.operand)
 
     switch (expr.op) {
@@ -2588,6 +2636,10 @@ class CheckContext {
       case '~':
         return operandType
       case '&': {
+        if (expr.operand.kind === 'IndexExpr') {
+          const addr = this.addressOfIndex(expr.operand)
+          if (addr) return addr
+        }
         if (operandType.kind === 'pointer' || operandType.kind === 'slice') {
           return operandType
         }
@@ -2760,10 +2812,51 @@ class CheckContext {
     }
   }
 
+  // The type of &items[i] for a slice or *[N]T: *T when the index is known to
+  // be in range, otherwise ?*T (none when out of range, checked at runtime).
+  // Returns null for other containers, which keep the usual rules.
+  private addressOfIndex(expr: AST.IndexExpr): ResolvedType | null {
+    const objType = unwrap(this.inferExpr(expr.object))
+    let elem: ResolvedType
+    let mutable: boolean
+    let size: number | null
+    if (objType.kind === 'slice') {
+      elem = objType.element
+      mutable = !!objType.mutable
+      size = null
+    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' &&
+      objType.pointee.sizes?.length === 1 && typeof objType.pointee.sizes[0] === 'number') {
+      elem = objType.pointee.element
+      mutable = !!objType.mutable
+      size = objType.pointee.sizes[0]
+    } else {
+      return null
+    }
+    const idxType = unwrap(this.inferExpr(expr.index))
+    if (idxType.kind === 'comptime_int') this.checkExpr(expr.index, primitive('u32'))
+    this.types.set(typeKey(exprTypeOffset(expr), expr.kind), elem)
+    const idx = this.evalComptimeExpr(expr.index)
+    let proven = false
+    if (size !== null) {
+      if (idx && idx.kind === 'int') {
+        if (idx.value < 0n || idx.value >= BigInt(size)) {
+          this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${size}]${typeToString(elem)}`)
+        }
+        proven = true
+      } else {
+        proven = this.indexInRange(expr, size)
+      }
+    }
+    return pointer(elem, false, mutable, !proven)
+  }
+
   private indexInRange(expr: AST.IndexExpr, arraySize: number): boolean {
     const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
-    if (idxType?.kind === 'primitive' && idxType.max !== undefined && idxType.max <= arraySize) return true
-    return false
+    if (idxType?.kind !== 'primitive') return false
+    if (idxType.max !== undefined) return idxType.max <= arraySize
+    // A u8 or u16 can't exceed its width: a u8 always indexes a *[256]T.
+    const limit = unsignedLimit(idxType)
+    return limit !== null && limit <= 65536n && limit <= BigInt(arraySize)
   }
 
   inferIndex(expr: AST.IndexExpr): ResolvedType {
@@ -2944,13 +3037,18 @@ class CheckContext {
       return this.inferIfLet(expr)
     }
     this.inferExpr(expr.condition)
-    const thenType = this.inferBody(expr.thenBranch)
+    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.inferBody(expr.thenBranch))
+    const seen = [expr.condition]
     for (const elif of expr.elifs) {
-      this.inferExpr(elif.condition)
-      this.inferBody(elif.thenBranch)
+      this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
+        this.inferExpr(elif.condition)
+        this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.inferBody(elif.thenBranch))
+      })
+      seen.push(elif.condition)
     }
     if (expr.else_) {
-      this.inferBody(expr.else_)
+      const else_ = expr.else_
+      this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.inferBody(else_))
     }
     // Without an else branch, the expression can't produce a value
     if (!expr.else_) return VOID
@@ -3058,6 +3156,98 @@ class CheckContext {
 
   // === Scope Lookup ===
 
+  // === Range narrowing ===
+  //
+  // A comparison with a constant narrows an unsigned variable's range where it
+  // is known to hold: `if i < 12 { ... }` makes i a u32#12 inside the branch,
+  // and `return when i >= 12` makes it one for the rest of the block. That is
+  // what lets `buf[i]` on a *[12]T skip the bounds check. A variable assigned
+  // anywhere in the region isn't narrowed.
+
+  private narrowings: Map<string, ResolvedType>[] = []
+
+  private narrowedType(name: string): ResolvedType | undefined {
+    for (let i = this.narrowings.length - 1; i >= 0; i--) {
+      const t = this.narrowings[i].get(name)
+      if (t) return t
+    }
+    return undefined
+  }
+
+  // Run check with the given bounds in effect, for variables region doesn't assign.
+  private withNarrowing<T>(bounds: Map<string, bigint>, region: unknown, check: () => T): T {
+    const types = new Map<string, ResolvedType>()
+    for (const [name, bound] of bounds) {
+      const sym = this.lookup(name)
+      if (!sym || (sym.kind !== 'local' && sym.kind !== 'param' && sym.kind !== 'return')) continue
+      const base = unwrap(this.narrowedType(name) ?? sym.type)
+      if (base.kind !== 'primitive' || !isUnsignedName(base.name)) continue
+      if (assignsVariable(region, name)) continue
+      const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
+      if (current !== null && current <= bound) continue
+      if (bound > BigInt(Number.MAX_SAFE_INTEGER)) continue
+      types.set(name, primitive(base.name, Number(bound)))
+    }
+    if (types.size === 0) return check()
+    this.narrowings.push(types)
+    try {
+      return check()
+    } finally {
+      this.narrowings.pop()
+    }
+  }
+
+  // Upper bounds (exclusive) that hold for variables when cond is true (or false).
+  private boundsFrom(cond: AST.Expr, truth: boolean): Map<string, bigint> {
+    const out = new Map<string, bigint>()
+    const add = (name: string, bound: bigint) => {
+      const prev = out.get(name)
+      if (prev === undefined || bound < prev) out.set(name, bound)
+    }
+    const merge = (m: Map<string, bigint>) => { for (const [k, v] of m) add(k, v) }
+    let e = cond
+    while (e.kind === 'TupleExpr' && e.elements.length === 1 && e.elements[0].value && !e.elements[0].name) e = e.elements[0].value
+    if (e.kind === 'UnaryExpr' && e.op === '!') return this.boundsFrom(e.operand, !truth)
+    if (e.kind !== 'BinaryExpr') return out
+    if ((e.op === '&&' && truth) || (e.op === '||' && !truth)) {
+      merge(this.boundsFrom(e.left, truth))
+      merge(this.boundsFrom(e.right, truth))
+      return out
+    }
+    // Normalize to `name OP constant`, then to an exclusive bound when it holds.
+    const flip: Record<string, string> = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
+    let op: string = e.op
+    let name: string | null = null
+    let constant: AST.Expr | null = null
+    if (e.left.kind === 'IdentExpr') {
+      name = e.left.name
+      constant = e.right
+    } else if (e.right.kind === 'IdentExpr' && flip[op]) {
+      name = e.right.name
+      constant = e.left
+      op = flip[op]
+    }
+    if (!name || !constant) return out
+    const k = this.evalComptimeExpr(constant) as unknown as { kind: string; value?: bigint } | null
+    if (!k || k.kind !== 'int' || typeof k.value !== 'bigint' || k.value < 0n) return out
+    const holds = truth ? op : ({ '<': '>=', '<=': '>', '>': '<=', '>=': '<', '==': '!=', '!=': '==' } as Record<string, string>)[op]
+    if (holds === '<' && k.value > 0n) add(name, k.value)
+    else if (holds === '<=' || holds === '==') add(name, k.value + 1n)
+    return out
+  }
+
+  // Bounds that hold after each of these conditions was false.
+  private boundsAfterAllFalse(conds: AST.Expr[]): Map<string, bigint> {
+    const out = new Map<string, bigint>()
+    for (const c of conds) {
+      for (const [k, v] of this.boundsFrom(c, false)) {
+        const prev = out.get(k)
+        if (prev === undefined || v < prev) out.set(k, v)
+      }
+    }
+    return out
+  }
+
   lookup(name: string): Symbol | undefined {
     let scope: Scope | null = this.currentScope
     while (scope) {
@@ -3143,6 +3333,38 @@ function editDistance(a: string, b: string): number {
     }
   }
   return dp[a.length][b.length]
+}
+
+function isUnsignedName(name: string): boolean {
+  return name.startsWith('u')
+}
+
+// One past the largest value an unsigned primitive can hold (u8 → 256), or
+// null for types that aren't unsigned integers.
+function unsignedLimit(t: ResolvedType): bigint | null {
+  if (t.kind !== 'primitive' || !isUnsignedName(t.name)) return null
+  const bits = Number(t.name.slice(1))
+  return Number.isFinite(bits) && bits > 0 ? 1n << BigInt(bits) : null
+}
+
+// Whether a body ends in an unconditional return, break or continue.
+function alwaysExits(body: AST.FuncBody): boolean {
+  if (body.kind !== 'Block') return false
+  const last = body.stmts.at(-1)
+  return !!last && (last.kind === 'ReturnStmt' || last.kind === 'BreakStmt' || last.kind === 'ContinueStmt') && !last.when
+}
+
+// Whether anything in an AST subtree assigns to the variable `name`.
+function assignsVariable(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) return node.some(n => assignsVariable(n, name))
+  if (!node || typeof node !== 'object') return false
+  const n = node as { kind?: string; target?: { kind?: string; name?: string }; pattern?: { kind?: string; name?: string } }
+  if (n.kind === 'AssignmentStmt' && n.target?.kind === 'IdentExpr' && n.target.name === name) return true
+  if (n.kind === 'SetStmt' && n.pattern?.kind === 'IdentPattern' && n.pattern.name === name) return true
+  for (const [k, v] of Object.entries(node)) {
+    if (k !== 'span' && typeof v === 'object' && assignsVariable(v, name)) return true
+  }
+  return false
 }
 
 // Flag a literal as mutable data, so the data section gives it its own bytes.
