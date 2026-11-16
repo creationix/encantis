@@ -80,6 +80,7 @@ export interface Instance {
   of: AST.FuncDecl      // the generic's declaration
   decl: AST.FuncDecl    // the substituted copy, its spans shifted by index * INSTANCE_STRIDE
   index: number         // from 1, in the order the module's instances were asked for
+  first: boolean        // the generic's first instance: the one the editor's tables are filled from
   args: ComptimeValue[] // in comptime-parameter order
   depth: number         // instantiation nesting, to stop a generic that never stops instantiating
   chain: InstanceChain
@@ -540,6 +541,10 @@ class CheckContext {
   // Counts every report, also one that repeats an error already listed: an
   // expression can be inferred twice, and fails the second time too.
   errorsReported = 0
+  // Where the parameters and locals of the instance being checked are defined
+  // in the generic's source, by name. Kept apart from symbolDefOffsets, which
+  // holds one definition per name for the whole module.
+  instanceDefs = new Map<string, number>()
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
@@ -3861,7 +3866,7 @@ class CheckContext {
     })
     const label = `${of.ident}(${shown.join(', ')})`
     const held: ComptimeValue[] = types.map((type) => ({ kind: 'type', type }))
-    const inst: Instance = { name: decl.ident, label, of, decl, index, args: held, depth, chain }
+    const inst: Instance = { name: decl.ident, label, of, decl, index, first: sym.instances.size === 0, args: held, depth, chain }
     sym.instances.set(key, inst)
     owner.instances.push(inst)
     owner.instanceQueue.push(inst)
@@ -3901,6 +3906,7 @@ class CheckContext {
       const saved = { scope: this.currentScope, instance: this.currentInstance }
       this.currentScope = this.moduleScope
       this.currentInstance = inst
+      this.instanceDefs.clear()
       this.checkFuncBody(inst.decl)
       this.currentScope = saved.scope
       this.currentInstance = saved.instance
@@ -4116,22 +4122,38 @@ class CheckContext {
   }
 
   recordDefinition(name: string, offset: number): void {
-    // An instance's parameters and locals are copies: they must not re-point
-    // the names of the declaration they were copied from.
-    if (offset >= INSTANCE_STRIDE) return
+    if (offset >= INSTANCE_STRIDE) {
+      // An instance's parameters and locals are copies of the generic's. The
+      // first instance stands for the generic where the editor asks what a
+      // name in its body is: its definitions are recorded at their place in
+      // the generic's source. The copies in other instances would only repeat
+      // them, and none of them is one of the module's names.
+      const inst = this.currentInstance
+      if (inst?.first && Math.floor(offset / INSTANCE_STRIDE) === inst.index) {
+        this.instanceDefs.set(name, offset % INSTANCE_STRIDE)
+        this.references.set(offset % INSTANCE_STRIDE, [])
+      }
+      return
+    }
     this.symbolDefOffsets.set(name, offset)
     this.references.set(offset, [])
   }
 
   // Record a reference to a symbol (looks up def offset by name)
   recordReference(name: string, refOffset: number): void {
+    let local: number | undefined
     if (refOffset >= INSTANCE_STRIDE) {
-      // From an instance, only uses of module-level names count, at their place
-      // in the generic's source: a helper that only generic bodies call is used.
-      if (this.lookup(name) !== this.moduleScope.symbols.get(name)) return
+      // From an instance, a use is recorded at its place in the generic's
+      // source: of a module-level name always (a helper that only generic
+      // bodies call is used), of the instance's own names for the first
+      // instance only.
+      if (this.lookup(name) !== this.moduleScope.symbols.get(name)) {
+        local = this.currentInstance?.first ? this.instanceDefs.get(name) : undefined
+        if (local === undefined) return
+      }
       refOffset %= INSTANCE_STRIDE
     }
-    const defOffset = this.symbolDefOffsets.get(name)
+    const defOffset = local ?? this.symbolDefOffsets.get(name)
     if (defOffset !== undefined) {
       const refs = this.references.get(defOffset)
       if (refs && !refs.includes(refOffset)) {
@@ -4432,6 +4454,11 @@ function literalText(expr: AST.Expr): string | null {
     return Number.isInteger(expr.value.value) ? expr.value.value.toFixed(1) : String(expr.value.value)
   }
   return null
+}
+
+// The names a function declares for itself: parameters, results and locals.
+export function localNames(decl: AST.FuncDecl): Set<string> {
+  return namesIn(decl).locals
 }
 
 // The names a declaration refers to, with where, and the names it declares.

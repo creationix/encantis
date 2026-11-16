@@ -132,10 +132,10 @@ func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
 export func has_byte(xs: []u8, x: u8) -> bool => contains(xs, x)
 export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
 
-  test('hover on the name of a generic says that it is one', () => {
+  test('hover on the name of a generic shows the signature it was written with', () => {
     const { source, module, check } = setup(code)
     const result = hover(source, module, check, code.indexOf('find'))
-    expect(result).toEqual({ name: 'find', type: 'generic func', kind: 'generic' })
+    expect(result).toEqual({ name: 'find', type: 'generic func(comptime T: type, xs: []T, x: T) -> u32', kind: 'generic' })
   })
 
   test('hover on a call shows the signature of the instance that call uses', () => {
@@ -151,8 +151,8 @@ export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
     const { source, module, check } = setup(code)
     const symbols = documentSymbols(source, module, check)
     expect(symbols.map(s => [s.name, s.type])).toEqual([
-      ['find', 'generic func'],
-      ['contains', 'generic func'],
+      ['find', 'generic func(comptime T: type, xs: []T, x: T) -> u32'],
+      ['contains', 'generic func(comptime T: type, xs: []T, x: T) -> bool'],
       ['has_byte', 'func(xs: []u8, x: u8) -> bool'],
       ['index_of', 'func(xs: []u32, x: u32) -> u32'],
     ])
@@ -167,9 +167,66 @@ export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
     ])
   })
 
-  test('a generic has no one signature to offer', () => {
+  test('the signature offered at a call is that of the instance the call uses', () => {
     const { source, module, check } = setup(code)
-    expect(signatureHelp(source, module, check, code.indexOf('find(u32'))).toBeNull()
+    expect(signatureHelp(source, module, check, code.indexOf('find(u32') + 1)).toEqual({
+      name: 'find',
+      params: [{ name: 'xs', type: '[]u32' }, { name: 'x', type: 'u32' }],
+      returnType: 'u32',
+    })
+    // At its declaration a generic has no one signature to offer.
+    expect(signatureHelp(source, module, check, code.indexOf('find'))).toBeNull()
+  })
+
+  // Two functions with a parameter of one name, the generic one second and
+  // first: by name alone, a use in the generic's body would be the other
+  // function's parameter, and a rename from it would edit that function.
+  const helper = 'func helper(x: []u8) -> u32 => x.len\n'
+  const id = 'func id(comptime T: type, x: T) -> T => x\n'
+  const user = 'export func f(a: f64, s: []u8) -> f64 => id(a) + (helper(s) as f64)\n'
+  for (const shared of [helper + id + user, id + helper + user]) {
+    test(`a name in a generic's body is the generic's own (${shared.startsWith(id) ? 'generic first' : 'generic last'})`, () => {
+      const { source, module, check } = setup(shared)
+      const param = shared.indexOf('x: T')
+      const use = shared.indexOf('=> x\n') + 3
+      for (const at of [param, use]) {
+        expect(gotoDefinition(source, module, check, at)?.location.offset).toBe(param)
+        expect(findReferences(source, module, check, at)).toEqual({
+          definition: { offset: param, length: 1 },
+          references: [{ offset: use, length: 1 }],
+        })
+        expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual([param, use])
+      }
+      // The other function's parameter is still its own.
+      const other = shared.indexOf('x: []u8')
+      expect(rename(source, module, check, shared.indexOf('x.len'))?.locations.map(l => l.offset)).toEqual([other, shared.indexOf('x.len')])
+    })
+  }
+
+  test('with no instance to go by, a name in a generic\'s body is not guessed', () => {
+    const { source, module, check } = setup(helper + id)
+    for (const at of [(helper + id).indexOf('x: T'), (helper + id).indexOf('=> x\n') + 3]) {
+      expect(gotoDefinition(source, module, check, at)).toBeNull()
+      expect(findReferences(source, module, check, at)).toBeNull()
+      expect(rename(source, module, check, at)).toBeNull()
+    }
+    // What the body names in the module is still found.
+    const calls = 'func twice(a: u32) -> u32 => a * 2\nfunc g(comptime T: type, n: u32) -> u32 => twice(n)\n'
+    const unused = setup(calls)
+    expect(gotoDefinition(unused.source, unused.module, unused.check, calls.indexOf('twice(n)'))?.location.offset).toBe(0)
+  })
+
+  test('examples/generics/minmax.ents: renaming a parameter of swap stays inside swap', async () => {
+    const example = await Bun.file(new URL('../../examples/generics/minmax.ents', import.meta.url)).text()
+    const { source, module, check } = setup(example)
+    const swap = example.indexOf('func swap(')
+    const end = example.indexOf('}', swap)
+    const result = rename(source, module, check, example.indexOf('a.*', swap))
+    expect(result?.locations.length).toBe(3)
+    for (const location of result?.locations ?? []) {
+      expect(location.offset).toBeGreaterThan(swap)
+      expect(location.offset).toBeLessThan(end)
+    }
   })
 })
 

@@ -116,12 +116,43 @@ test "find" {
     }
   })
 
-  test('a generic body has no hints: it has no types until it is instantiated', () => {
-    const inBody = Object.keys(meta().hints).filter(key => {
+  test('a generic is a symbol, with the signature it was written with', () => {
+    const built = meta()
+    const find = built.symbols.find(s => s.name === 'find')
+    expect(find?.kind).toBe('func')
+    expect(find?.def).toBe('1:5')
+    expect(built.types[find?.type ?? -1].type).toBe('(comptime T: type, xs: []T, x: T)->u32')
+    // The hint at a call names that symbol, so the editor shows the generic
+    // there and not a builtin of the same name.
+    const call = built.hints['8:49']
+    expect(built.symbols[call.symbol ?? -1].name).toBe('contains')
+  })
+
+  test('examples/generics/minmax.ents: max is the generic, at its declaration and at its calls', async () => {
+    const example = await Bun.file(new URL('../../examples/generics/minmax.ents', import.meta.url)).text()
+    const result = parse(example)
+    expect(result.errors).toEqual([])
+    const built = buildMeta(result.module!, example)
+    const lines = example.split('\n')
+    const max = built.symbols.findIndex(s => s.name === 'max')
+    expect(built.types[built.symbols[max].type].type).toBe('(comptime T: type, a: T, b: T)->T')
+    const line = lines.findIndex(l => l.startsWith('export func max_u32'))
+    const call = built.hints[`${line}:${lines[line].indexOf('max(a, b)')}`]
+    expect(call.symbol).toBe(max)
+    expect(built.types[call.type].type).toBe('(a:u32,b:u32)->u32')
+    // No parameter or local of a generic is a symbol: found by name, it would
+    // be shown for the same name in another function.
+    const swap = lines.findIndex(l => l.startsWith('func swap('))
+    const inSwap = built.symbols.filter(s => Number(s.def.split(':')[0]) >= swap && Number(s.def.split(':')[0]) <= swap + 4)
+    expect(inSwap.map(s => s.name)).toEqual(['swap'])
+  })
+
+  test('of a generic only the name has a hint: its body has no types until it is instantiated', () => {
+    const inDeclaration = Object.keys(meta().hints).filter(key => {
       const line = Number(key.split(':')[0])
       return line >= 1 && line <= 7
     })
-    expect(inBody).toEqual([])
+    expect(inDeclaration).toEqual(['1:5', '7:5'])
   })
 })
 

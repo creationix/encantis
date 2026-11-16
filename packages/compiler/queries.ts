@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck } from './checker'
+import { typeKey, typecheck, isGenericDecl, localNames } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -61,6 +61,44 @@ function identAtOffset(source: string, offset: number): string | null {
   return source.slice(start, end)
 }
 
+// The offset at which the identifier around `offset` begins
+function wordStart(source: string, offset: number): number {
+  let start = offset
+  while (start > 0 && /[a-zA-Z0-9_-]/.test(source[start - 1])) start--
+  return start
+}
+
+// The generic function whose declaration contains `offset`, if one does
+function genericAt(module: AST.Module, offset: number): AST.FuncDecl | null {
+  for (const decl of module.decls) {
+    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
+    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return fn
+  }
+  return null
+}
+
+// Where the name at `offset` is defined: exactly, when the checker recorded
+// this position as a use or as a definition; by name otherwise, which finds
+// the names of the module. A generic's own parameters and locals are never
+// looked up by name: they are in no table of names, so the name would be some
+// other function's, and a rename from it would edit that function.
+function definitionOf(
+  source: string,
+  module: AST.Module,
+  checkResult: TypeCheckResult,
+  offset: number,
+  name: string,
+): number | undefined {
+  const start = wordStart(source, offset)
+  const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
+  if (exact !== undefined) return exact
+  const generic = genericAt(module, start)
+  if (generic && localNames(generic).has(name)) {
+    return checkResult.references.has(start) ? start : undefined
+  }
+  return checkResult.symbolDefOffsets.get(name)
+}
+
 export function gotoDefinition(
   source: string,
   module: AST.Module,
@@ -70,14 +108,7 @@ export function gotoDefinition(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
-  // Try exact offset via symbolRefs (works for all scopes)
-  const refTarget = checkResult.symbolRefs.get(offset)
-  if (refTarget !== undefined) {
-    return { name, location: { offset: refTarget, length: name.length } }
-  }
-
-  // Fall back to name lookup (module scope)
-  const defOffset = checkResult.symbolDefOffsets.get(name)
+  const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) return null
 
   return {
@@ -101,14 +132,12 @@ export function hover(
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, at the start of the callee's name.
     if (sym.kind === 'generic') {
-      let start = offset
-      while (start > 0 && /[a-zA-Z0-9_-]/.test(source[start - 1])) start--
-      const instance = checkResult.types.get(typeKey(start, 'IdentExpr'))
+      const instance = checkResult.types.get(typeKey(wordStart(source, offset), 'IdentExpr'))
       if (instance) return { name, type: typeToString(instance), kind: sym.kind }
     }
     const result: HoverResult = {
       name,
-      type: symbolTypeString(sym),
+      type: symbolTypeString(sym, source),
       kind: sym.kind,
     }
     if (sym.kind === 'def') {
@@ -140,7 +169,7 @@ export function hover(
         if (refSym) {
           return {
             name: symName,
-            type: symbolTypeString(refSym),
+            type: symbolTypeString(refSym, source),
             kind: refSym.kind,
           }
         }
@@ -160,7 +189,7 @@ export function findReferences(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
-  const defOffset = checkResult.symbolDefOffsets.get(name)
+  const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) return null
 
   const refs = checkResult.references.get(defOffset) ?? []
@@ -184,17 +213,7 @@ export function rename(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
-  // Find the definition for this symbol
-  let defOffset: number | undefined
-
-  // Try symbolRefs first (exact offset match, works for all scopes)
-  defOffset = checkResult.symbolRefs.get(offset)
-
-  // If the cursor is on the definition itself, check symbolDefOffsets
-  if (defOffset === undefined) {
-    defOffset = checkResult.symbolDefOffsets.get(name)
-  }
-
+  const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) return null
 
   const refs = checkResult.references.get(defOffset) ?? []
@@ -221,7 +240,7 @@ export function documentSymbols(
           symbols.push({
             name: decl.ident,
             kind: 'func',
-            type: sym ? symbolTypeString(sym) : '',
+            type: sym ? symbolTypeString(sym, source) : '',
             offset: decl.span.start,
             length: decl.ident.length,
             exported: false,
@@ -244,7 +263,7 @@ export function documentSymbols(
         symbols.push({
           name: decl.ident,
           kind: decl.kind === 'DataDecl' ? 'data' : 'def',
-          type: sym ? symbolTypeString(sym) : '',
+          type: sym ? symbolTypeString(sym, source) : '',
           offset: decl.span.start,
           length: decl.ident.length,
           exported: false,
@@ -257,7 +276,7 @@ export function documentSymbols(
           symbols.push({
             name: decl.pattern.name,
             kind: 'global',
-            type: sym ? symbolTypeString(sym) : '',
+            type: sym ? symbolTypeString(sym, source) : '',
             offset: decl.span.start,
             length: decl.pattern.name.length,
             exported: false,
@@ -271,7 +290,7 @@ export function documentSymbols(
           symbols.push({
             name: item.ident,
             kind: 'func',
-            type: sym ? symbolTypeString(sym) : '',
+            type: sym ? symbolTypeString(sym, source) : '',
             offset: item.span.start,
             length: item.ident.length,
             exported: true,
@@ -281,7 +300,7 @@ export function documentSymbols(
           symbols.push({
             name: item.pattern.name,
             kind: 'global',
-            type: sym ? symbolTypeString(sym) : '',
+            type: sym ? symbolTypeString(sym, source) : '',
             offset: item.span.start,
             length: item.pattern.name.length,
             exported: true,
@@ -305,9 +324,11 @@ export function signatureHelp(
   if (!name) return null
 
   const sym = checkResult.symbols.get(name)
-  if (!sym || sym.kind !== 'func') return null
+  // A generic has the signature of the instance this call uses, which the
+  // checker recorded at the callee's name.
+  const ft = sym?.kind === 'generic' ? checkResult.types.get(typeKey(wordStart(source, offset), 'IdentExpr')) : sym?.kind === 'func' ? sym.type : null
+  if (ft?.kind !== 'func') return null
 
-  const ft = sym.type
   return {
     name,
     params: ft.params.map(p => ({
@@ -373,9 +394,13 @@ function typeCostAnnotation(type: ResolvedType): string {
   return ''
 }
 
-function symbolTypeString(sym: CheckSymbol): string {
-  // A generic has a signature per instance, not one of its own.
-  if (sym.kind === 'generic') return 'generic func'
+function symbolTypeString(sym: CheckSymbol, source?: string): string {
+  // A generic has a signature per instance, not one of its own: what there is
+  // to show is the one it was written with.
+  if (sym.kind === 'generic') {
+    const { start, end } = sym.decl.signature.span
+    return source ? `generic func${source.slice(start, end)}` : 'generic func'
+  }
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
   if (sym.kind === 'type') return base

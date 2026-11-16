@@ -453,8 +453,11 @@ export function startServer(connection: Connection): void {
         };
       }
 
-      // Fallback: look up by name in symbols
-      const symbol = meta.symbols.find(s => s.name === word);
+      // Fallback: look up by name in symbols. Only a name of the module is
+      // found that way: a parameter or local is what the hint at its own
+      // position says, and where there is none (in the body of a generic
+      // function) a name alone would find some other function's.
+      const symbol = meta.symbols.find(s => s.name === word && s.kind !== 'param' && s.kind !== 'local' && s.kind !== 'return');
       if (symbol) {
         const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
         const display = formatLine(formatSymbolDisplay(symbol, typeStr));
