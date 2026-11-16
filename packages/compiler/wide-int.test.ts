@@ -22,6 +22,9 @@ function source(type: string): string {
   for (const op of CMPS) lines.push(`export func ${NAMES[op]}(a: ${type}, b: ${type}) -> bool => a ${op} b`)
   lines.push(`export func neg(a: ${type}) -> ${type} => -a`)
   lines.push(`export func not(a: ${type}) -> ${type} => ~a`)
+  lines.push(`export func min_of(a: ${type}, b: ${type}) -> ${type} => min(a, b)`)
+  lines.push(`export func max_of(a: ${type}, b: ${type}) -> ${type} => max(a, b)`)
+  lines.push(`export func abs_of(a: ${type}) -> ${type} => abs(a)`)
   lines.push(`func load(o: u32) -> ${type} {
   let p = o as *${type}
   return p.*
@@ -116,6 +119,14 @@ for (const [type, bits, signed] of [['u128', 128, false], ['i128', 128, true], [
       for (const [a] of pairs) {
         expect(join64(call('neg', a))).toBe(wrap(-a))
         expect(join64(call('not', a))).toBe(wrap(~a))
+      }
+    })
+
+    test('min, max and abs match BigInt', () => {
+      for (const [a, b] of pairs) {
+        expect(['min', a, b, join64(call('min_of', a, b))]).toEqual(['min', a, b, a < b ? a : b])
+        expect(['max', a, b, join64(call('max_of', a, b))]).toEqual(['max', a, b, a > b ? a : b])
+        expect(['abs', a, join64(call('abs_of', a))]).toEqual(['abs', a, wrap(a < 0n ? -a : a)])
       }
     })
 

@@ -12,8 +12,9 @@ export type WideBinaryOp =
   | 'shl' | 'shr_u' | 'shr_s' | 'rotl'
   | 'eq' | 'ne'
   | 'lt_u' | 'lt_s' | 'gt_u' | 'gt_s' | 'le_u' | 'le_s' | 'ge_u' | 'ge_s'
+  | 'min_u' | 'min_s' | 'max_u' | 'max_s'
 
-export type WideUnaryOp = 'not' | 'neg'
+export type WideUnaryOp = 'not' | 'neg' | 'abs'
 
 // Stores a wide value (on the stack after the address) to memory.
 export type WideStoreOp = 'store'
@@ -137,6 +138,16 @@ function binaryHelper(n: number, op: WideBinaryOp): string {
       return `${head('(result i32)')}\n  ${op === 'eq' ? eq : `(i32.eqz ${eq})`}\n)`
     }
 
+    case 'min_u':
+    case 'min_s':
+    case 'max_u':
+    case 'max_s': {
+      // a when it's the lesser (min) or the greater (max), else b.
+      const [which, sign] = op.split('_') as ['min' | 'max', 'u' | 's']
+      const picksA = wideCall(n, `${which === 'min' ? 'lt' : 'gt'}_${sign}`, gets('a', n), gets('b', n))
+      return `${head(results(n))}\n  (if ${results(n)} ${picksA} (then ${gets('a', n)}) (else ${gets('b', n)}))\n)`
+    }
+
     default: {
       // Ordered comparisons: the first differing limb from the top decides.
       // The top limb compares signed for _s; the rest are always unsigned.
@@ -156,6 +167,11 @@ function unaryHelper(n: number, op: WideUnaryOp): string {
   const head = `(func ${wideHelperName(n, op)} ${params('a', n)} ${results(n)}`
   if (op === 'not') {
     return `${head}\n  ${range(n).map(i => `(i64.xor ${get('a', i)} (i64.const -1))`).join(' ')}\n)`
+  }
+  if (op === 'abs') {
+    // The sign is the top limb's.
+    const negative = `(i64.lt_s ${get('a', n - 1)} (i64.const 0))`
+    return `${head}\n  (if ${results(n)} ${negative} (then ${wideCall(n, 'neg', gets('a', n))}) (else ${gets('a', n)}))\n)`
   }
   // neg: 0 - a
   const zeros = range(n).map(() => '(i64.const 0)').join(' ')
@@ -193,7 +209,7 @@ export function wideHelpersFor(wat: string): string[] {
       const op = m[2]
       const def = op === 'store' ? storeHelper(n)
         : op.startsWith('sext_') ? sextHelper(n, Number(op.slice(5)))
-        : op === 'not' || op === 'neg' ? unaryHelper(n, op)
+        : op === 'not' || op === 'neg' || op === 'abs' ? unaryHelper(n, op)
         : binaryHelper(n, op as WideBinaryOp)
       out.push(def)
       pending.push(def)

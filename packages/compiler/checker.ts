@@ -34,6 +34,7 @@ import {
   isFloat,
   isInteger,
   isNumeric,
+  isComptime,
   byteSize,
   isFixedSizes,
   totalElements,
@@ -2442,39 +2443,19 @@ class CheckContext {
         return VOID
       }
 
-      // Float-only unary operations: sqrt, ceil, floor, trunc, nearest
+      // Float-only: sqrt, ceil, floor, trunc, nearest, copysign
       case 'sqrt':
       case 'ceil':
       case 'floor':
       case 'trunc':
-      case 'nearest': {
-        if (args.length !== 1) {
-          this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('f64')
-        }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a float type, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
-      }
-
-      // Float-only binary: copysign
+      case 'nearest':
       case 'copysign': {
-        if (args.length !== 2) {
-          this.error(expr.span.start, `copysign expects 2 arguments, got ${args.length}`)
+        const arity = name === 'copysign' ? 2 : 1
+        if (args.length !== arity) {
+          this.error(expr.span.start, `${name} expects ${arity} argument${arity === 1 ? '' : 's'}, got ${args.length}`)
           return primitive('f64')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `copysign requires float types, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.checkExpr(args[1].value, argType, 'copysign')
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'float')
       }
 
       // Numeric binary: min, max (works for all numeric types)
@@ -2484,30 +2465,16 @@ class CheckContext {
           this.error(expr.span.start, `${name} expects 2 arguments, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        this.checkExpr(args[1].value, argType, name)
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Numeric unary: abs (works for floats and signed integers)
+      // Numeric unary: abs (works for floats and integers; an unsigned value is its own abs)
       case 'abs': {
         if (args.length !== 1) {
           this.error(expr.span.start, `abs expects 1 argument, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `abs requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        // For unsigned types, abs is a no-op but we still allow it
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
       // Integer-only unary: clz, ctz, popcnt
@@ -2573,6 +2540,59 @@ class CheckContext {
       default:
         return null // Not a builtin
     }
+  }
+
+  // Types the operands of a numeric builtin together, the way a binary operator
+  // types its own: typed operands meet at the wider type, and a literal takes
+  // that type wherever it stands, so max(1.0, x) is max(x, 1.0). With only
+  // literals it's their default type. Records the type the builtin computes in
+  // for codegen and returns the type of its result, for a builtin that returns
+  // one of its operands.
+  private builtinOperandType(
+    expr: AST.CallExpr,
+    name: string,
+    args: { value: AST.Expr }[],
+    kind: 'float' | 'numeric',
+  ): ResolvedType {
+    const accepts = kind === 'float' ? isFloat : isNumeric
+    const wanted = kind === 'float' ? 'a float type' : 'a numeric type'
+    // What checking goes on with after an operand of the wrong kind.
+    const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
+    const types = args.map((arg) => this.inferExpr(arg.value))
+
+    let common: ResolvedType | null = null
+    for (const [i, type] of types.entries()) {
+      if (isComptime(type)) continue
+      if (!accepts(type)) {
+        this.error(args[i].value.span.start, `${name} requires ${wanted}, got ${typeToString(type)}`)
+        return fallback
+      }
+      const plain = withoutRange(type)
+      if (common === null || (!typeAssignable(common, plain) && typeAssignable(plain, common))) {
+        common = plain
+      } else if (!typeAssignable(common, plain)) {
+        this.error(args[i].value.span.start, `${name}: cannot assign ${typeToString(type)} to ${typeToString(common)}`)
+        return common
+      }
+    }
+    if (common === null) {
+      const float = kind === 'float' || types.some((t) => t.kind === 'comptime_float')
+      common = float ? primitive('f64') : this.unifyTypes(types)
+    }
+    for (const [i, type] of types.entries()) {
+      if (isComptime(type)) this.checkExpr(args[i].value, common, name)
+    }
+    this.types.set(typeKey(expr.span.start, 'BuiltinCall'), common)
+
+    // A result that is one of the operands is in a range when they all are: the
+    // widest of their ranges. A literal only has to fit the type to be an
+    // operand, but has to be inside that range for the result to be.
+    const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
+    if (common.kind !== 'primitive' || ranges.length === 0) return common
+    const widest = Math.max(...ranges)
+    const inRange = types.every((t) =>
+      t.kind === 'comptime_int' ? t.value >= 0n && t.value < BigInt(widest) : t.kind === 'primitive' && t.max !== undefined)
+    return inRange ? primitive(common.name, widest) : common
   }
 
   inferBinary(expr: AST.BinaryExpr): ResolvedType {
@@ -3504,6 +3524,11 @@ function editDistance(a: string, b: string): number {
 
 function isUnsignedName(name: string): boolean {
   return name.startsWith('u')
+}
+
+// A ranged integer type (u32#8) as the plain type its values are held in (u32).
+function withoutRange(t: ResolvedType): ResolvedType {
+  return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 }
 
 // One past the largest value an unsigned primitive can hold (u8 → 256), or

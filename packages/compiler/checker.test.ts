@@ -1108,3 +1108,71 @@ describe('struct constructors', () => {
     expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
   })
 })
+
+describe('builtins', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  // The type the builtin call `call` computes in, and the type it returns.
+  const types = (params: string, call: string) => {
+    const src = `func f(${params}) { let r = ${call} }`
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    return [typeAt(result, src.indexOf(call), 'BuiltinCall'), typeAt(result, src.indexOf('r ='))]
+  }
+
+  test('a literal takes the type of the other operand, in either position', () => {
+    expect(types('x: f64', 'max(1.0, x)')).toEqual(['f64', 'f64'])
+    expect(types('x: f64', 'max(x, 1.0)')).toEqual(['f64', 'f64'])
+    expect(types('x: f32', 'min(0.5, x)')).toEqual(['f32', 'f32'])
+    expect(types('x: i64', 'max(0, x)')).toEqual(['i64', 'i64'])
+    expect(types('x: u8', 'min(200, x)')).toEqual(['u8', 'u8'])
+    expect(types('x: f32', 'copysign(1.0, x)')).toEqual(['f32', 'f32'])
+  })
+
+  test('a literal that does not fit the other operand is an error in either position', () => {
+    expect(errs(`func f(x: u8) -> u8 => max(x, 300)`)).toEqual(['max: cannot assign int(300) to u8'])
+    expect(errs(`func f(x: u8) -> u8 => max(300, x)`)).toEqual(['max: cannot assign int(300) to u8'])
+    expect(errs(`func f(x: i32) -> i32 => min(1.5, x)`)).toEqual(['min: cannot assign float(1.5) to i32'])
+  })
+
+  test('with only literals the operands take their default type', () => {
+    expect(types('', 'sqrt(2.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'nearest(2.5)')).toEqual(['f64', 'f64'])
+    expect(types('', 'min(3.0, 5.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'copysign(5.0, -1.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'abs(-5.5)')).toEqual(['f64', 'f64'])
+    expect(types('', 'abs(-5)')).toEqual(['i32', 'i32'])
+    expect(types('', 'max(1, 2)')).toEqual(['i32', 'i32'])
+    expect(types('', 'max(1, 5000000000)')).toEqual(['i64', 'i64'])
+  })
+
+  test('typed operands meet at the wider type', () => {
+    expect(types('a: i32, b: i64', 'max(a, b)')).toEqual(['i64', 'i64'])
+    expect(types('a: i64, b: i32', 'max(a, b)')).toEqual(['i64', 'i64'])
+    expect(types('a: u8, b: u16', 'min(a, b)')).toEqual(['u16', 'u16'])
+    expect(types('a: f32, b: f64', 'min(a, b)')).toEqual(['f64', 'f64'])
+    expect(types('a: f32, b: f64', 'copysign(a, b)')).toEqual(['f64', 'f64'])
+    expect(types('a: i128, b: i64', 'min(a, b)')).toEqual(['i128', 'i128'])
+  })
+
+  test('operands that share no type are an error', () => {
+    expect(errs(`func f(a: u32, b: i32) -> u32 => max(a, b)`)).toEqual(['max: cannot assign i32 to u32'])
+    expect(errs(`func f(a: i32, b: u32) -> i32 => max(a, b)`)).toEqual(['max: cannot assign u32 to i32'])
+    expect(errs(`func f(a: f32, b: i64) -> f32 => min(a, b)`)).toEqual(['min: cannot assign i64 to f32'])
+  })
+
+  test('each builtin takes only its own kind of operand', () => {
+    expect(errs(`func f(x: i32) -> f64 => sqrt(x)`)).toContain('sqrt requires a float type, got i32')
+    expect(errs(`func f(x: f64, n: i32) -> f64 => copysign(x, n)`)).toContain('copysign requires a float type, got i32')
+    expect(errs(`func f(x: bool) -> bool => max(x, x)`)).toContain('max requires a numeric type, got bool')
+    expect(errs(`func f(p: *u8) -> *u8 => abs(p)`)).toContain('abs requires a numeric type, got *u8')
+  })
+
+  test('min and max keep a range only when every operand is inside it', () => {
+    expect(types('i: u32#8, j: u32#4', 'max(i, j)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8, j: u32', 'min(i, j)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8', 'min(3, i)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8', 'max(i, 3)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8', 'max(i, 100)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#4, b: u8', 'max(i, b)')).toEqual(['u32', 'u32'])
+  })
+})

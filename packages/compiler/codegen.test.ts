@@ -517,6 +517,147 @@ describe('defer codegen', () => {
   })
 })
 
+// === Builtin Codegen Tests ===
+
+describe('builtin codegen', () => {
+  // WAT of the first function of a module, which must check without errors.
+  const funcWat = (code: string) => {
+    const module = parse(code).module as AST.Module
+    const checkResult = typecheck(module)
+    expect(checkResult.errors.map(e => e.message)).toEqual([])
+    return funcToWat(module.decls[0] as AST.FuncDecl, checkResult)
+  }
+  // Its body alone: no header, no local declarations.
+  const body = (code: string) => funcWat(code).split('\n').slice(1, -1).map(l => l.trim()).filter(l => l && !l.startsWith('(local ')).join(' ')
+  const count = (wat: string, needle: string) => wat.split(needle).length - 1
+  const calls = `
+    func g(x: i32) -> i32 => x
+    func h(x: i32) -> i32 => x
+  `
+
+  describe('the operand type comes from the checker, whatever the operand is', () => {
+    test('abs of a difference', () => {
+      expect(body('func f(a: f64, b: f64) -> f64 => abs(a - b)')).toBe('(f64.abs (f64.sub (local.get $a) (local.get $b)))')
+      expect(body('func f(a: i64, b: i64) -> i64 => abs(a - b)')).toContain('i64.ge_s')
+    })
+
+    test('abs of a field, an element and a dereference', () => {
+      expect(body('func f(p: (x: f32, y: f32)) -> f32 => abs(p.x)')).toBe('(f32.abs (local.get $p_x))')
+      expect(body('func f(p: *[4]f64) -> f64 => abs(p[1])')).toStartWith('(f64.abs (f64.load')
+      expect(body('func f(p: *f64) -> f64 => abs(p.*)')).toBe('(f64.abs (f64.load (local.get $p)))')
+    })
+
+    test('min and max compare unsigned operands unsigned', () => {
+      expect(body('func f(a: []u8, b: []u8) -> u32 => min(a.len, b.len)'))
+        .toBe('(select (local.get $a_len) (local.get $b_len) (i32.lt_u (local.get $a_len) (local.get $b_len)))')
+      expect(body('func f(a: u32, b: u32) -> u32 => max(a + 1, b)')).toContain('i32.gt_u')
+      expect(body('func f(p: *[4]u32, b: u32) -> u32 => min(p[1], b)')).toContain('i32.lt_u')
+    })
+
+    test('min and max of wider and float operands', () => {
+      expect(body('func f(a: i64, b: i64) -> i64 => max(a + 1, b)')).toContain('i64.gt_s')
+      expect(body('func f(a: f64, b: f64) -> f64 => max(a - b, b)')).toBe('(f64.max (f64.sub (local.get $a) (local.get $b)) (local.get $b))')
+    })
+  })
+
+  describe('operands used twice', () => {
+    test('locals and constants are repeated, as before', () => {
+      expect(body('func f(a: i32, b: i32) -> i32 => min(a, b)')).toBe('(select (local.get $a) (local.get $b) (i32.lt_s (local.get $a) (local.get $b)))')
+      expect(body('func f(a: u64) -> u64 => max(a, 10)')).toBe('(select (local.get $a) (i64.const 10) (i64.gt_u (local.get $a) (i64.const 10)))')
+      expect(body('func f(a: i32) -> i32 => abs(a)')).toBe('(select (local.get $a) (i32.sub (i32.const 0) (local.get $a)) (i32.ge_s (local.get $a) (i32.const 0)))')
+      expect(funcWat('func f(a: i32, b: i32) -> i32 => min(a, b)')).not.toContain('(local $')
+    })
+
+    test('anything else is evaluated once, into a scratch local', () => {
+      const wat = funcWat(`func f(a: i32) -> i32 => max(g(a), h(a))${calls}`)
+      expect(count(wat, 'call $g')).toBe(1)
+      expect(count(wat, 'call $h')).toBe(1)
+      expect(wat.indexOf('call $g')).toBeLessThan(wat.indexOf('call $h'))
+      expect(wat).toMatch(/\(select \(local\.tee (\$__max_0_\d+) \(call \$g \(local\.get \$a\)\)\) \(local\.tee (\$__max_1_\d+) \(call \$h \(local\.get \$a\)\)\) \(i32\.gt_s \(local\.get \1\) \(local\.get \2\)\)\)/)
+      expect(wat).toMatch(/\(local \$__max_0_\d+ i32\)/)
+      expect(wat).toMatch(/\(local \$__max_1_\d+ i32\)/)
+    })
+
+    test('only the operand that needs it gets a scratch local', () => {
+      const wat = funcWat('func f(a: i64, b: i64) -> i64 => min(a, b * 2)')
+      expect(wat).toMatch(/\(select \(local\.get \$a\) \(local\.tee (\$__min_1_\d+) \(i64\.mul \(local\.get \$b\) \(i64\.const 2\)\)\) \(i64\.lt_s \(local\.get \$a\) \(local\.get \1\)\)\)/)
+      expect(wat).toMatch(/\(local \$__min_1_\d+ i64\)/)
+      expect(wat).not.toContain('$__min_0_')
+    })
+
+    test('integer abs evaluates its operand once', () => {
+      const wat = funcWat(`func f(a: i32) -> i32 => abs(g(a))${calls}`)
+      expect(count(wat, 'call $g')).toBe(1)
+      expect(wat).toMatch(/\(local \$__abs_0_\d+ i32\)/)
+    })
+
+    test('a local the other operand assigns is read once', () => {
+      const src = (assigned: string) => `
+        func f(x: i32, x2: i32) -> i32 => max(x, if x > 0 {
+          ${assigned} = 7
+          ${assigned}
+        } else { 0 })
+      `
+      expect(funcWat(src('x'))).toMatch(/\(select \(local\.tee \$__max_0_\d+ \(local\.get \$x\)\)/)
+      expect(funcWat(src('x2'))).toMatch(/\(select \(local\.get \$x\) \(local\.tee \$__max_1_\d+ /)
+    })
+
+    test('a global is read once when the other operand may change it', () => {
+      const src = (second: string) => `
+        global g: i32 = 0
+        global h: i32 = 0
+        func bump() -> i32 { g += 1
+          return g }
+        func set_g(a: i32) -> i32 { g = a
+          return a }
+        func f(a: i32) -> i32 => max(g, ${second})
+      `
+      const repeated = /\(select \(global\.get \$g\) .*\(i32\.gt_s \(global\.get \$g\) /
+      const once = /\(select \(local\.tee \$__max_0_\d+ \(global\.get \$g\)\)/
+      expect(modWat(src('a'))).toMatch(repeated)
+      expect(modWat(src('a + h'))).toMatch(repeated)
+      expect(modWat(src('bump()'))).toMatch(once)
+      expect(modWat(src('set_g(a) + 1'))).toMatch(once)
+      expect(modWat(src('if a > 0 {\n g = 7\n g } else { 0 }'))).toMatch(once)
+    })
+
+    test('scratch locals are declared wherever the call stands', () => {
+      const declared = (code: string) => expect(funcWat(code + calls)).toMatch(/\(local \$__max_0_\d+ i32\)/)
+      declared('func f(p: *mut [8]i32, a: i32) { p[max(g(a), 0) as u32 & 7] = 1 }')
+      declared('func f(a: i32) -> (x: i32, y: i32) { set (x, y) = (max(g(a), 0), 1) }')
+      declared(`func f(a: i32) -> i32 {
+        match max(g(a), 0) {
+          0 => { return 1 }
+          _ => { return 2 }
+        }
+      }`)
+    })
+  })
+
+  describe('operand and result types', () => {
+    test('a literal is typed by the other operand, in either position', () => {
+      expect(body('func f(x: f64) -> f64 => max(1.0, x)')).toBe('(f64.max (f64.const 1) (local.get $x))')
+      expect(body('func f(x: f32) -> f32 => copysign(1.0, x)')).toBe('(f32.copysign (f32.const 1) (local.get $x))')
+      expect(body('func f(x: i64) -> i64 => max(0, x)')).toBe('(select (i64.const 0) (local.get $x) (i64.gt_s (i64.const 0) (local.get $x)))')
+      expect(body('func f() -> f64 => sqrt(2.0)')).toBe('(f64.sqrt (f64.const 2))')
+    })
+
+    test('a narrower operand is widened to the type of the operation', () => {
+      expect(body('func f(a: i64, b: i32) -> i64 => max(a, b)')).toContain('(i64.gt_s (local.get $a) (i64.extend_i32_s (local.get $b)))')
+      expect(body('func f(a: u32, b: u64) -> u64 => min(a, b)')).toContain('(i64.lt_u (i64.extend_i32_u (local.get $a)) (local.get $b))')
+      expect(body('func f(a: f64, b: f32) -> f64 => min(a, b)')).toBe('(f64.min (local.get $a) (f64.promote_f32 (local.get $b)))')
+      expect(body('func f(a: f32, b: f64) -> f64 => copysign(a, b)')).toBe('(f64.copysign (f64.promote_f32 (local.get $a)) (local.get $b))')
+      expect(body('func f(a: u32, b: u64) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (local.get $b))')
+    })
+
+    test('abs of a small integer stays in its type', () => {
+      expect(body('func f(a: i8) -> i8 => abs(a)'))
+        .toBe('(select (local.get $a) (i32.shr_s (i32.shl (i32.sub (i32.const 0) (local.get $a)) (i32.const 24)) (i32.const 24)) (i32.ge_s (local.get $a) (i32.const 0)))')
+      expect(body('func f(a: u16) -> u16 => abs(a + 1)')).toBe('(i32.and (i32.add (local.get $a) (i32.const 1)) (i32.const 65535))')
+    })
+  })
+})
+
 // === Module Codegen Tests ===
 
 describe('module codegen', () => {

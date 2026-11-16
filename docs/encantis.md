@@ -1851,21 +1851,21 @@ let (ptr:, len:) = slice         // by name
 
 ## 9. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order.
 
-### 9.1 Float Builtins
+### 9.1 Numeric Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
 | `sqrt(x)` | f32/f64 | same | Square root |
-| `abs(x)` | f32/f64 | same | Absolute value |
 | `ceil(x)` | f32/f64 | same | Ceiling (round up) |
 | `floor(x)` | f32/f64 | same | Floor (round down) |
 | `trunc(x)` | f32/f64 | same | Truncate toward zero |
 | `nearest(x)` | f32/f64 | same | Round to nearest even (banker's rounding) |
-| `min(a, b)` | f32/f64 | same | Minimum of two values |
-| `max(a, b)` | f32/f64 | same | Maximum of two values |
 | `copysign(x, y)` | f32/f64 | same | Copy sign of y to x |
+| `abs(x)` | any numeric | same | Absolute value |
+| `min(a, b)` | any numeric | same | Minimum of two values |
+| `max(a, b)` | any numeric | same | Maximum of two values |
 
 ```ents
 let x:f64 = -3.7
@@ -1877,6 +1877,19 @@ nearest(2.5)           // 2.0
 min(3.0, 5.0)          // 3.0
 copysign(5.0, -1.0)    // -5.0
 ```
+
+The operands of a builtin are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type (§2.10). With only literals, the operands take their default type (`i32`, `f64`).
+
+```ents
+let x:f32 = 0.25
+let n:i32 = -7
+let big:i64 = 5000000000
+max(1.0, x)            // f32, the same as max(x, 1.0)
+max(n, big)            // i64: n widens
+abs(n - 10)            // 17
+```
+
+On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min` and `max` return one of their operands, so when every operand is in a range (§2.2), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`.
 
 ### 9.2 Integer Builtins
 

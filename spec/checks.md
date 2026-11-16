@@ -238,3 +238,76 @@ writing to a range needs bounds known to fit
 cannot copy 4 elements into a range of 8
 copying into a range needs both lengths known at compile time; use memcpy
 ```
+
+## Builtins
+
+The operands of a numeric builtin are typed together, as the operands of a binary operator are. A literal takes the type of the other operand, whichever of them comes first; with only literals, they take their default type.
+
+```ents
+func at_least_one(x: f64) -> f64 => max(1.0, x)
+func at_most_one(x: f32) -> f32 => min(x, 1.0)
+func not_negative(n: i64) -> i64 => max(0, n)
+func sign_of(x: f32) -> f32 => copysign(1.0, x)
+func constants() -> f64 => sqrt(2.0) + nearest(2.5) + min(3.0, 5.0) + copysign(5.0, -1.0)
+func whole() -> i32 => abs(-5) + max(1, 2)
+```
+
+```ents
+func f(x: u8) -> u8 => max(300, x)
+func g(x: i32) -> i32 => min(x, 1.5)
+```
+
+```errors
+max: cannot assign int(300) to u8
+min: cannot assign float(1.5) to i32
+```
+
+Typed operands meet at the wider of their types. Types that neither widen to the other don't mix.
+
+```ents
+func widest(a: i32, b: i64) -> i64 => max(a, b)
+func least(a: u64, b: u8) -> u64 => min(a, b)
+func with_sign(x: f32, y: f64) -> f64 => copysign(x, y)
+```
+
+```ents
+func f(a: u32, b: i32) -> u32 => max(a, b)
+func g(a: f32, b: i64) -> f32 => min(a, b)
+```
+
+```errors
+max: cannot assign i32 to u32
+min: cannot assign i64 to f32
+```
+
+`sqrt`, `ceil`, `floor`, `trunc`, `nearest` and `copysign` take floats; `min`, `max` and `abs` take any numeric type.
+
+```ents
+func f(n: i32) -> f64 => sqrt(n)
+func g(b: bool) -> bool => max(b, b)
+```
+
+```errors
+sqrt requires a float type, got i32
+max requires a numeric type, got bool
+cannot assign i32 to bool
+```
+
+`min` and `max` return one of their operands, so the result is in a range when every operand is.
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func clamped(i: u32#4) -> u8 => table[min(i, 2)]
+func either(i: u32#4, j: u32#2) -> u8 => table[max(i, j)]
+```
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func f(i: u32#4) -> u8 => table[max(i, 9)]
+```
+
+```errors
+runtime index on *[4]u8 requires 'if let' or '??'
+```
