@@ -1,0 +1,69 @@
+// Generic functions over slices and pointers. T is found inside a type: []T,
+// [*]T, *mut T, and through the usual coercion of a `data` array to a slice.
+
+data nums = [3:u32, 5, 8, 13]
+data text = "hello"
+data room = mut [0:u8; 64]
+
+// The index of the first x in xs, or xs.len when there is none.
+func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    return i when v == x
+  }
+  return xs.len
+}
+
+func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
+
+func sum(comptime T: type, xs: []T) -> (total: T) {
+  total = 0
+  for v in xs {
+    total += v
+  }
+}
+
+func fill(comptime T: type, xs: []mut T, x: T) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = x
+  }
+}
+
+// Bytes taken by n values of T.
+func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
+
+func fact(comptime T: type, n: T) -> T => if n <= 1 { 1 } else { n * fact(T, n - 1) }
+
+export func find_u32(xs: []u32, x: u32) -> u32 => find(xs, x)
+export func has_byte(xs: []u8, x: u8) -> bool => contains(xs, x)
+export func sum_u64(xs: []u64) -> u64 => sum(xs)
+
+test "find gives the first index, or len" {
+  assert find(nums, 8) == 2
+  assert find(u32, nums, 4) == 4
+  assert contains(nums, 13)
+  assert !contains(nums, 0)
+}
+
+test "the same functions on bytes" {
+  assert find(text, 108) == 2
+  assert !contains(text[0..2], 108)
+  assert sum(nums) == 29
+}
+
+test "sum and fill for two element types" {
+  let a = (room as [*]mut u64)[0..4]
+  fill(a, 5)
+  assert sum(a) == 20
+  let b = (room as [*]mut u16)[0..3]
+  fill(u16, b, 7)
+  assert sum(b) == 21
+}
+
+test "sizeof and recursion follow the type argument" {
+  assert bytes(u8, 3) == 3
+  assert bytes(u64, 3) == 24
+  assert bytes((u32, u16), 2) == 12
+  assert fact(u64, 20) == 2432902008176640000
+  assert fact(u32, 5) == 120
+}

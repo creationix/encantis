@@ -101,6 +101,21 @@ test "find" {
     expect(hints['10:9'].type).toBe('(xs:[]u32,x:u32)->u32')
   })
 
+  test('examples/generics/slices.ents: no instance among the symbols, no hint outside the source', async () => {
+    const example = await Bun.file(new URL('../../examples/generics/slices.ents', import.meta.url)).text()
+    const result = parse(example)
+    expect(result.errors).toEqual([])
+    const built = buildMeta(result.module!, example)
+    expect(built.symbols.map(s => s.name).filter(name => name.includes('<'))).toEqual([])
+    const lines = example.split('\n')
+    expect(Object.keys(built.hints).length).toBeGreaterThan(20)
+    for (const key of Object.keys(built.hints)) {
+      const [line, column] = key.split(':').map(Number)
+      expect(line).toBeLessThan(lines.length)
+      expect(column).toBeLessThan(lines[line].length)
+    }
+  })
+
   test('a generic body has no hints: it has no types until it is instantiated', () => {
     const inBody = Object.keys(meta().hints).filter(key => {
       const line = Number(key.split(':')[0])

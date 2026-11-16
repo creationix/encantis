@@ -1094,3 +1094,75 @@ export func widen(a: u64, b: u32) -> u64 => max(a, b)
     })
   })
 })
+
+// === The example programs ===
+//
+// examples/generics/*.ents run their own inline tests (examples/examples.test.ts).
+// These pin what `encantis compile` makes of them.
+
+describe('examples/generics', () => {
+  const dir = join(import.meta.dir, '../../examples/generics')
+
+  async function compileExample(name: string): Promise<string> {
+    const path = join(dir, name)
+    const load = await loadModule(path)
+    expect(load.errors).toEqual([])
+    const check = typecheckProgram(load.modules, path, { includeTests: false })
+    expect(check.errors).toEqual([])
+    const wat = programToWat(load.modules, check.results, path)
+    expectPlainWasm(wat)
+    await wasmOfWat(wat)
+    return wat
+  }
+
+  test('pick.ents: one function per type argument, nothing for pick itself', async () => {
+    const wat = await compileExample('pick.ents')
+    // pick<i64> is absent: only a test asks for it.
+    expect(funcs(wat)).toEqual(['pick<<q:i32|r:i32>>', 'pick<f64>', 'pick<u32>', 'pick_u32', 'pick_f64', 'pick_pt'])
+    // The bool and two flattened Pts.
+    expect(funcWat(wat, 'pick<<q:i32|r:i32>>')).toStartWith(
+      '(func $pick<<q:i32|r:i32>> (param $first i32) (param $a_q i32) (param $a_r i32) (param $b_q i32) (param $b_r i32) (result i32 i32)',
+    )
+  })
+
+  test('minmax.ents: operators of each type, a generic calling generics, a generic named like a builtin', async () => {
+    const wat = await compileExample('minmax.ents')
+    expect(funcs(wat)).toEqual([
+      'max<f64>', 'max<i32>', 'max<u32>', 'max<u64>', 'min<i32>', 'clamp<i32>', 'swap<u32>',
+      'max_u32', 'max_i32', 'max_f64', 'clamp_i32', 'swap_u32', 'widen',
+    ])
+    expect(funcWat(wat, 'max<u32>')).toContain('i32.gt_u')
+    expect(funcWat(wat, 'max<i32>')).toContain('i32.gt_s')
+    expect(funcWat(wat, 'max<f64>')).toContain('f64.gt')
+    expect(funcWat(wat, 'clamp<i32>')).toContain('(call $min<i32> (call $max<i32> (local.get $x) (local.get $lo)) (local.get $hi))')
+    expect(funcWat(wat, 'max_u32')).toContain('(call $max<u32> (local.get $a) (local.get $b))')
+    expect(wat).not.toContain('select')
+    // The example writes `b as u64`; without the cast this needs claude/operand-types (see the todo above).
+    expect(funcWat(wat, 'widen')).toContain('(call $max<u64> (local.get $a) (i64.extend_i32_u (local.get $b)))')
+  })
+
+  test('slices.ents: T found inside []T, one instance however it is reached', async () => {
+    const wat = await compileExample('slices.ents')
+    // find<u8> exists once, although has_byte reaches it through contains.
+    expect(funcs(wat)).toEqual(['find<u32>', 'find<u8>', 'contains<u8>', 'sum<u64>', 'find_u32', 'has_byte', 'sum_u64'])
+  })
+
+  test('no offset of an instance reaches the tables the editor reads', async () => {
+    for (const name of ['pick.ents', 'minmax.ents', 'slices.ents']) {
+      const source = await Bun.file(join(dir, name)).text()
+      const result = check(source)
+      const inside = (offset: number) => offset >= 0 && offset < source.length
+      expect(result.errors).toEqual([])
+      expect((result.instances ?? []).length).toBeGreaterThan(3)
+      for (const w of result.warnings) expect(inside(w.offset)).toBe(true)
+      for (const [def, refs] of result.references) {
+        expect(inside(def)).toBe(true)
+        for (const ref of refs) expect(inside(ref)).toBe(true)
+      }
+      for (const [use, def] of result.symbolRefs) {
+        expect(inside(use)).toBe(true)
+        expect(inside(def)).toBe(true)
+      }
+    }
+  })
+})

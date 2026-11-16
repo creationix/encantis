@@ -1,0 +1,34 @@
+// The smallest generic: one comptime type parameter, used in parameter and
+// result types, called with the type named and with it inferred. One wasm
+// function per distinct T; nothing is emitted for `pick` itself.
+
+type Pt = (q: i32, r: i32)
+
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+
+// Exported wrappers, so `encantis compile` shows the instances.
+export func pick_u32(c: bool, a: u32, b: u32) -> u32 => pick(u32, c, a, b)   // T named
+export func pick_f64(c: bool, a: f64, b: f64) -> f64 => pick(c, a, b)        // T inferred from a
+export func pick_pt(c: bool, a: Pt, b: Pt) -> Pt => pick(c, a, b)            // a struct T: register-flattened
+
+test "the type argument can be named" {
+  assert pick(u32, true, 1, 2) == 1
+  assert pick(u32, false, 1, 2) == 2
+  assert pick(i64, true, -1, 5) == -1
+}
+
+test "the type argument can be inferred from the other arguments" {
+  let x: f64 = 1.5
+  let y: f64 = 2.5
+  assert pick(false, x, y) == 2.5
+  let n: u32 = 7
+  assert pick(true, n, 9) == 7       // 9 takes T = u32 from n
+}
+
+test "a struct type argument is passed in registers" {
+  let p = pick(Pt, false, Pt(1, 2), Pt(3, 4))
+  assert p.q == 3
+  assert p.r == 4
+  let s = pick(true, p, Pt(0, 0))
+  assert s.r == 4
+}
