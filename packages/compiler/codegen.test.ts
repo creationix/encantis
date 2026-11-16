@@ -650,6 +650,15 @@ describe('builtin codegen', () => {
       expect(body('func f(a: u32, b: u64) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (local.get $b))')
     })
 
+    test('a string literal operand of memcpy is placed in the data section', () => {
+      const wat = modWat(`
+        data buf = mut [0:u8; 16]
+        func f() { memcpy(buf, "abcd", 4) }
+      `)
+      expect(wat).toContain('(data (i32.const 24) "abcd")')
+      expect(wat).toContain('(memory.copy (i32.const 8) (i32.const 24) (i32.const 4))')
+    })
+
     test('abs of a small integer stays in its type', () => {
       expect(body('func f(a: i8) -> i8 => abs(a)'))
         .toBe('(select (local.get $a) (i32.shr_s (i32.shl (i32.sub (i32.const 0) (local.get $a)) (i32.const 24)) (i32.const 24)) (i32.ge_s (local.get $a) (i32.const 0)))')

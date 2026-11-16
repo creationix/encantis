@@ -248,3 +248,20 @@ test "min of a ranged index needs no bounds check" {
   assert clamped(1) == 20
   assert clamped(3) == 30
 }
+
+// === Memory builtins ===
+
+data bytes = mut [0:u8; 8]
+data quad = mut [1:u32, 2, 3, 4]
+
+test "memcpy, memset and memzero" {
+  memcpy(bytes, "abcdefgh", 8)
+  assert bytes[0] == 97
+  assert bytes[7] == 104
+  memset(bytes, 7, 2)
+  assert bytes[1] == 7
+  assert bytes[2] == 99
+  memzero(quad)
+  assert quad[0] == 0
+  assert quad[3] == 0
+}

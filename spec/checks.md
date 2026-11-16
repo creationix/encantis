@@ -331,3 +331,17 @@ func f(i: u32#4) -> u8 => table[max(i, 9)]
 ```errors
 runtime index on *[4]u8 requires 'if let' or '??'
 ```
+
+`memcpy` reads from a pointer to an array; `memzero` needs a destination whose size is known.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func from_slice(s: []u8) { memcpy(buf, s, 8) }
+func zero(p: *mut [!]u8) { memzero(p) }
+```
+
+```errors
+memcpy src: expected *[N]T, got []u8
+memzero dest: *mut [!]u8 has no size known at compile time
+```

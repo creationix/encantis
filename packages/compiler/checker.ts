@@ -1206,16 +1206,21 @@ class CheckContext {
     this.currentScope = prevScope
   }
 
-  private checkMemOpPtr(expr: AST.Expr, context: string): void {
+  // A many-pointer is refused where it's written through; memcpy may read from one.
+  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      if (u.pointee.sizes === null) {
+      if (u.pointee.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
-      return
+      // A string literal gets its bytes in the data section when it's checked
+      // against the type it's used at, as the argument of a function is.
+      if (expr.kind === 'LiteralExpr') this.checkExpr(expr, type)
+      return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
+    return type
   }
 
   private checkMemOpBounds(ptrExpr: AST.Expr, lenExpr: AST.Expr, op: string): void {
@@ -2406,7 +2411,11 @@ class CheckContext {
           this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
           return VOID
         }
-        this.checkMemOpPtr(args[0].value, 'memzero dest')
+        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
+        // memzero has no length operand: the destination's type gives it.
+        if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
+          this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
+        }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
       }
@@ -2435,7 +2444,7 @@ class CheckContext {
         }
 
         this.checkMemOpPtr(args[0].value, 'memcpy dest')
-        this.inferExpr(args[1].value)
+        this.checkMemOpPtr(args[1].value, 'memcpy src', true)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')
         this.checkMemOpBounds(args[1].value, args[2].value, 'memcpy')

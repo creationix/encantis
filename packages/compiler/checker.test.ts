@@ -1190,4 +1190,20 @@ describe('builtins', () => {
     expect(types('i: u32#8', 'max(i, 100)')).toEqual(['u32', 'u32'])
     expect(types('i: u32#4, b: u8', 'max(i, b)')).toEqual(['u32', 'u32'])
   })
+
+  test('memzero needs a destination whose size is known', () => {
+    expect(errs(`func f(p: *mut [4]u32) { memzero(p) }`)).toEqual([])
+    expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])
+  })
+
+  test('memcpy checks its source like its destination', () => {
+    const src = (param: string) => `
+      data buf = mut [0:u8; 16]
+      func f(${param}) { memcpy(buf, s, 8) }
+    `
+    expect(errs(src('s: *[8]u8'))).toEqual([])
+    expect(errs(src('s: [*]u8'))).toEqual([])
+    expect(errs(src('s: []u8'))).toEqual(['memcpy src: expected *[N]T, got []u8'])
+    expect(errs(src('s: i32'))).toEqual(['memcpy src: expected *[N]T, got i32'])
+  })
 })
