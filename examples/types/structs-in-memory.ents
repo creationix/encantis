@@ -132,6 +132,27 @@ test "the whole value is read before any of it is written" {
   assert sum(list[0]) == 213
 }
 
+test "a copy over a place that overlaps its source arrives whole" {
+  let list = spots()
+  list[0] = Spot(1, 2, 3)
+  list[1] = Spot(4, 5, 6)
+  // q starts one field into list[0], so it shares two fields with it.
+  let q = ((space as u32) + 4) as *mut Spot
+  q.* = list[0]
+  assert list[0].c == 1
+  assert sum(q.*) == 321
+  assert list[1].di == 5
+  let w = words()
+  w[0] = 10
+  w[1] = 20
+  w[2] = 30
+  let a = ((space as u32) + 512) as *mut []u8
+  let b = ((space as u32) + 516) as *mut []u8
+  b.* = a.*
+  assert w[1] == 10
+  assert w[2] == 20
+}
+
 test "copy and swap" {
   let list = spots()
   list[0] = Spot(1, 2, 3)
@@ -141,6 +162,19 @@ test "copy and swap" {
   list[1] = t
   assert sum(list[0]) == 654
   assert sum(list[1]) == 321
+}
+
+test "an element is destructured" {
+  let list = spots()
+  list[1] = Spot(1, 2, 3)
+  list[2] = Spot(4, 5, 6)
+  let (c, di, room) = list[1]
+  assert c + di * 10 + room * 100 == 321
+  set (c, di, room) = list[2]
+  assert c + di * 10 + room * 100 == 654
+  let p = ((space as u32) + sizeof(Spot)) as *Spot
+  set (room:, c:) = p.*
+  assert c + di * 10 + room * 100 == 351
 }
 
 // --- nested structs and slices ---
@@ -311,6 +345,19 @@ test "an index with effects is evaluated once" {
   let stored = lists[next() - 1]
   assert calls == 5
   assert stored.len == 2
+}
+
+test "an address that reads memory is evaluated before its own stores" {
+  let lists = options() as [*]mut []i32
+  let w = options() as [*]mut u32
+  w[0] = 0
+  w[1] = 0
+  w[2] = 0
+  // lists[0].ptr is 0, so the target is lists[0]: storing its pointer must
+  // not move where its length goes.
+  lists[(lists[0].ptr as u32)] = (words(), 9:u32)
+  assert w[1] == 9
+  assert w[2] == 0
 }
 
 // --- pointers as elements ---

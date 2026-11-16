@@ -1065,6 +1065,8 @@ func flip(p:Point, q:*mut Point) -> Point {
 }
 ```
 
+The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
+
 The target's address is evaluated once, also for a compound assignment: `xs[next()] += 1` calls `next` one time.
 
 > **Status: Destructuring is not yet fully implemented in codegen.**

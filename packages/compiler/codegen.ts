@@ -450,11 +450,12 @@ const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/
 const EFFECTS = /\((?:call|call_indirect|local\.set|local\.tee|global\.set|memory\.\w+|block|loop|if|br|br_if|br_table|return|unreachable|[if](?:32|64)\.store(?:8|16|32)?)\b/
 const isRepeatable = (wat: string) => !EFFECTS.test(wat)
 
-// Whether an expression reads memory, or could through a call.
-const readsMemory = (wat: string) => /\((?:call|call_indirect|[if](?:32|64)\.load)/.test(wat)
+// Whether an expression reads linear memory, or a global.
+const loadsMemory = (wat: string) => /\([if](?:32|64)\.load/.test(wat)
+const readsGlobal = (wat: string) => /\(global\.get\b/.test(wat)
 
-// Whether an expression reads something that a call or a store could change.
-const readsState = (wat: string) => /\((?:global\.get|[if](?:32|64)\.load)/.test(wat)
+// Whether an expression reads memory, or could through a call.
+const readsMemory = (wat: string) => loadsMemory(wat) || /\((?:call|call_indirect)\b/.test(wat)
 
 // The load and store instructions for one scalar. Integers narrower than a
 // word, and bool (one byte), take their own width in memory and an i32 on the
@@ -490,14 +491,6 @@ function aggregateParts(type: ResolvedType): RT.MemoryPart[] | null {
   const parts = RT.memoryParts(u)
   if (!parts) throw new Error(`${RT.typeToString(type)} has no fixed size in memory`)
   return parts
-}
-
-// Whether two types lie the same way in memory, scalar for scalar.
-function sameLayout(a: ResolvedType, b: ResolvedType): boolean {
-  const pa = RT.memoryParts(a)
-  const pb = RT.memoryParts(b)
-  if (!pa || !pb || pa.length !== pb.length) return false
-  return pa.every((p, i) => p.offset === pb[i].offset && loadOp(p.type) === loadOp(pb[i].type))
 }
 
 // Reads a value of any type from memory at `ptr`, leaving its wasm values on
@@ -537,38 +530,31 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // loadFromMemory reads them.
 //
 // An assignment reads its whole value before it writes any of it. When the
-// value is given part by part and a later part reads memory, storing the first
-// part could change what the later one reads (p.* = (p.b, p.a)), so all the
-// parts go on the stack, each above its address, before the stores run. A copy
-// from another place with the same layout (`copy`) is stored field by field:
-// two such places are the same place or don't overlap. A value that arrives on
-// the stack in one piece (a call's result) waits in scratch locals.
+// value is given part by part and a part after the first reads memory, an
+// earlier store could change what it reads: the same place rebuilt from its
+// own fields (p.* = (p.b, p.a)), or a copy from a place that overlaps this one.
+// So then all the parts go on the stack, each above its address, before the
+// stores run. A value that arrives on the stack in one piece (a call's result)
+// waits in scratch locals; a wide integer has a helper for that. A wide
+// integer is also the exception to the rule: it is one scalar, stored limb by
+// limb in order, so a copy over a place that partly overlaps it is not whole.
 //
-// The address is evaluated once, as for loads; a slice may repeat an address
-// that neither the stores nor the value's effects can change.
-function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext, copy = false): string {
+// The address is evaluated once, as for loads. A slice or wide integer repeats
+// an address that nothing between its uses can change: one that reads no
+// memory, has no effects, and reads no global while the value has effects.
+function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext): string {
   const nw = wideIntParts(type)
-  if (nw > 0) {
-    const parts = trySplitMultiValue(value, nw)
-    if (!parts) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
-    const setup: string[] = []
-    let addr = ptr
-    if (!isRepeatable(ptr)) {
-      const tmp = scratchLocal(ctx, 'i32')
-      setup.push(`(local.set ${tmp} ${ptr})`)
-      addr = `(local.get ${tmp})`
-    }
-    return [...setup, ...parts.map((v, i) => `(i64.store offset=${i * 8} ${addr} ${v})`)].join('\n')
-  }
   const u = unwrap(type)
-  const parts = u.kind === 'slice' ? RT.memoryParts(u) : aggregateParts(type)
+  const parts = nw > 0 || u.kind === 'slice' ? RT.memoryParts(u) : aggregateParts(type)
   if (!parts) return `(${storeOp(type)} ${ptr} ${value})`
   if (parts.length === 0) return value
   if (parts.length === 1) return `(${storeOp(parts[0].type)} ${ptr} ${value})`
 
   const values = trySplitMultiValue(value, parts.length)
+  if (nw > 0 && !values) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
+
   const repeat = isSimple(ptr) ||
-    (u.kind === 'slice' && isRepeatable(ptr) && !(readsState(ptr) && !isRepeatable(value)))
+    ((nw > 0 || u.kind === 'slice') && isRepeatable(ptr) && !loadsMemory(ptr) && !(readsGlobal(ptr) && !isRepeatable(value)))
   let first = ptr
   let rest = ptr
   if (!repeat) {
@@ -577,10 +563,12 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
     rest = `(local.get ${tmp})`
   }
   const at = (i: number) => (i === 0 ? first : rest)
-  const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${atOffset(parts[i].offset)}${operands})`
+  // Wide integers have always spelled out the first limb's offset.
+  const offset = (i: number) => (nw > 0 ? ` offset=${parts[i].offset}` : atOffset(parts[i].offset))
+  const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${offset(i)}${operands})`
 
   if (values) {
-    if (copy || values.slice(1).every((v) => !readsMemory(v))) {
+    if (nw > 0 || !values.slice(1).some(readsMemory)) {
       return parts.map((_, i) => store(i, ` ${at(i)} ${values[i]}`)).join('\n')
     }
     return [
@@ -623,8 +611,9 @@ function splitMultiValue(wat: string, n: number): string[] {
   throw new Error(`Expected ${n} v128 components, got ${parts.length}: ${wat.slice(0, 80)}...`)
 }
 
-// An instruction that leaves nothing on the stack.
-const STATEMENT = /^\((?:local\.set|global\.set|drop|nop|br|br_if|return|unreachable|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?|(?:block|loop|if)(?!\s+\(result))\b/
+// An instruction that leaves nothing on the stack. The one call among them is
+// the wide-integer store helper, which an array literal uses for its slots.
+const STATEMENT = /^\((?:local\.set|global\.set|drop|nop|br|br_if|return|unreachable|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?|call \$__w\d+_store|(?:block|loop|if)(?!\s+\(result))\b/
 
 function lookupExprType(expr: { kind: string; span: { start: number; end: number } }, ctx: CodegenContext): ResolvedType | undefined {
   return ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind))
@@ -2300,7 +2289,8 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
 
   if (stmt.pattern.kind === 'TuplePattern') {
     // Get tuple type from the value expression
-    const tupleType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
+    const valueType = lookupExprType(stmt.value, ctx)
+    const tupleType = valueType && unwrap(valueType)
     if (!tupleType || tupleType.kind !== 'tuple') {
       throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
     }
@@ -2388,10 +2378,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   }
 
   if (!placeType) return assignLvalue(stmt.target, value, ctx)
-  // A value copied from another place in memory that is laid out the same.
-  const valueType = lookupExprType(stmt.value, ctx)
-  const copy = !!valueType && sameLayout(valueType, placeType) && memoryPlace(stmt.value, ctx) !== null
-  return assignLvalue(stmt.target, withSliceLength(value, stmt.value, placeType, ctx), ctx, copy)
+  return assignLvalue(stmt.target, withSliceLength(value, stmt.value, placeType, ctx), ctx)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -2408,9 +2395,8 @@ function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
 }
 
 // Assigns a value to a place: the registers of a variable or of a member of
-// one, or memory. `copy`: the value was read from another place in memory with
-// the same layout (see storeToMemory).
-function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext, copy = false): string {
+// one, or memory.
+function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext): string {
   if (target.kind !== 'IdentExpr' && target.kind !== 'MemberExpr' && target.kind !== 'IndexExpr') return ''
   const regs = registersOf(target, ctx)
   if (regs) return setRegisters(regs, value)
@@ -2420,7 +2406,7 @@ function assignLvalue(target: AST.LValue, value: string, ctx: CodegenContext, co
     if (!type) {
       throw new Error(`Missing type for store at offset ${target.span.start}`)
     }
-    return storeToMemory(type, addr, value, ctx, copy)
+    return storeToMemory(type, addr, value, ctx)
   }
   if (target.kind === 'IdentExpr') return `(local.set $${target.name} ${value})`
   throw new Error(`Cannot assign to this expression at offset ${target.span.start}`)

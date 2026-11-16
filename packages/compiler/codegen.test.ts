@@ -587,8 +587,7 @@ describe('structs in memory', () => {
     const wat = modWat(`${SPOT}
       func copy(p: *mut Spot, q: *Spot) { p.* = q.* }
     `)
-    expect(wat).toContain('(i32.store (local.get $p) (i32.load (local.get $q)))')
-    expect(wat).toContain('(i32.store offset=8 (local.get $p) (i32.load offset=8 (local.get $q)))')
+    expect(wat).toContain('(local.get $p) (i32.load (local.get $q))\n    (local.get $p) (i32.load offset=4 (local.get $q))\n    (local.get $p) (i32.load offset=8 (local.get $q))')
     expect(wat).not.toContain('$__tmp')
   })
 
@@ -666,15 +665,44 @@ describe('structs in memory', () => {
     ])
   })
 
-  test('a copy between two places goes field by field', () => {
+  test('a copy reads every field before it stores any', () => {
     const body = bodyOf(`${SPOT}
       func copy(a: [*]mut Spot, i: u32, j: u32) { a[i] = a[j] }
     `, 'copy')
     expect(body).toEqual([
-      '(i32.store (local.tee $__tmp_1 (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 12)))) (i32.load (local.tee $__tmp_0 (i32.add (local.get $a) (i32.mul (local.get $j) (i32.const 12))))))',
-      '(i32.store offset=4 (local.get $__tmp_1) (i32.load offset=4 (local.get $__tmp_0)))',
-      '(i32.store offset=8 (local.get $__tmp_1) (i32.load offset=8 (local.get $__tmp_0)))',
+      '(local.tee $__tmp_1 (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 12)))) (i32.load (local.tee $__tmp_0 (i32.add (local.get $a) (i32.mul (local.get $j) (i32.const 12)))))',
+      '(local.get $__tmp_1) (i32.load offset=4 (local.get $__tmp_0))',
+      '(local.get $__tmp_1) (i32.load offset=8 (local.get $__tmp_0))',
+      '(i32.store offset=8)',
+      '(i32.store offset=4)',
+      '(i32.store)',
     ])
+  })
+
+  test('a copy over a place that overlaps its source arrives whole', async () => {
+    const { spots, slices } = await run(`${SPOT}
+      export func spots() -> i32 {
+        let list = space as [*]mut Spot
+        list[0] = Spot(1, 2, 3)
+        list[1] = Spot(4, 5, 6)
+        // q starts one field into list[0]: the copy must not read what it wrote.
+        let q = ((space as u32) + 4) as *mut Spot
+        q.* = list[0]
+        return list[0].c + list[0].di * 10 + list[0].room * 100 + list[1].c * 1000 + list[1].di * 10000
+      }
+      export func slices() -> u32 {
+        let w = ((space as u32) + 64) as [*]mut u32
+        w[0] = 1
+        w[1] = 2
+        w[2] = 3
+        let a = ((space as u32) + 64) as *mut []u8
+        let b = ((space as u32) + 68) as *mut []u8
+        b.* = a.*
+        return w[0] + w[1] * 10 + w[2] * 100
+      }
+    `)
+    expect(spots()).toBe(1 + 10 + 200 + 3000 + 50000)
+    expect(slices()).toBe(1 + 10 + 200)
   })
 
   test('an address with effects is evaluated once', () => {
@@ -700,27 +728,70 @@ describe('structs in memory', () => {
     }
   })
 
-  test('scalar and slice accesses keep their form', () => {
+  test('an address that reads memory is evaluated once, before its own stores', async () => {
+    const code = `${SPOT}
+      export func slot() -> u32 {
+        let m = space as [*]mut []u8
+        let w = space as [*]mut u32
+        // m[0].ptr is 0, so the target is m[0]: storing its pointer must not
+        // move where its length goes.
+        m[(m[0].ptr as u32)] = ((space as [*]u8), 9:u32)
+        return w[1]
+      }
+      export func limb() -> u64 {
+        let ws = ((space as u32) + 64) as [*]mut u128
+        let w = ((space as u32) + 64) as [*]mut u64
+        let v: u128 = 3
+        ws[(w[0] as u32)] = (v << 64) | v
+        return w[0] + w[1] * 10
+      }
+    `
+    const wat = modWat(code)
+    expect(wat).toContain('(i32.store (local.tee $__tmp_0 (i32.add (local.get $m) (i32.mul (i32.load (i32.add (local.get $m) (i32.mul (i32.const 0) (i32.const 8)))) (i32.const 8)))) (i32.const 8))\n    (i32.store offset=4 (local.get $__tmp_0) (i32.const 9))')
+    const { slot, limb } = await run(code)
+    expect(slot()).toBe(9)
+    expect(limb()).toBe(33n)
+  })
+
+  test('scalar, slice and wide accesses keep their form', () => {
     const wat = modWat(`${SPOT}
-      func f(xs: [*]mut i32, lists: [*]mut []i32, i: u32, s: []i32) -> u32 {
+      func f(xs: [*]mut i32, lists: [*]mut []i32, ws: [*]mut u128, i: u32, s: []i32, w: u128) -> u32 {
         xs[i] = 5
         xs[i] += 1
         lists[i] = s
         let t = lists[i]
-        lists[i + 1] = lists[i]
+        ws[i] = w
+        ws[i + 1] = ws[i]
         return lists[i].len + t.len
       }
     `)
     const lists = '(i32.add (local.get $lists) (i32.mul (local.get $i) (i32.const 8)))'
-    const after = '(i32.add (local.get $lists) (i32.mul (i32.add (local.get $i) (i32.const 1)) (i32.const 8)))'
     const xs = '(i32.add (local.get $xs) (i32.mul (local.get $i) (i32.const 4)))'
+    const ws = '(i32.add (local.get $ws) (i32.mul (local.get $i) (i32.const 16)))'
+    const after = '(i32.add (local.get $ws) (i32.mul (i32.add (local.get $i) (i32.const 1)) (i32.const 16)))'
     expect(wat).toContain(`(i32.store ${xs} (i32.const 5))`)
     expect(wat).toContain(`(i32.store ${xs} (i32.add (i32.load ${xs}) (i32.const 1)))`)
     expect(wat).toContain(`(i32.store ${lists} (local.get $s_ptr))\n    (i32.store offset=4 ${lists} (local.get $s_len))`)
     expect(wat).toContain(`(local.set $t_ptr (i32.load ${lists}))\n    (local.set $t_len (i32.load offset=4 ${lists}))`)
-    expect(wat).toContain(`(i32.store ${after} (i32.load ${lists}))\n    (i32.store offset=4 ${after} (i32.load offset=4 ${lists}))`)
     expect(wat).toContain(`(i32.add (i32.load offset=4 ${lists}) (local.get $t_len))`)
+    // A wide integer is one scalar: limb by limb, in order, also for a copy.
+    expect(wat).toContain(`(i64.store offset=0 ${ws} (local.get $w_0))\n    (i64.store offset=8 ${ws} (local.get $w_1))`)
+    expect(wat).toContain(`(i64.store offset=0 ${after} (i64.load offset=0 ${ws}))\n    (i64.store offset=8 ${after} (i64.load offset=8 ${ws}))`)
     expect(wat).not.toContain('$__tmp')
+  })
+
+  test('a slice copied from memory is read whole before it is stored', () => {
+    const body = bodyOf(`${SPOT}
+      func f(lists: [*]mut []i32, i: u32) { lists[i + 1] = lists[i] }
+    `, 'f')
+    const lists = '(i32.add (local.get $lists) (i32.mul (local.get $i) (i32.const 8)))'
+    const after = '(i32.add (local.get $lists) (i32.mul (i32.add (local.get $i) (i32.const 1)) (i32.const 8)))'
+    expect(body).toEqual([
+      `${after} (i32.load ${lists})`,
+      `${after} (i32.load offset=4 ${lists})`,
+      '(i32.store offset=4)',
+      '(i32.store)',
+    ])
   })
 
   test('an element loop loads each struct into its binding', () => {
@@ -794,6 +865,38 @@ describe('structs in memory', () => {
     expect(turned()).toBe(5 + 420 + 300)
     expect(nested()).toBe(7 + 10 + 2 + 3 + 4)
     expect(once()).toBe(34)
+  })
+
+  test('an element is destructured into existing variables', async () => {
+    const { f } = await run(`${SPOT}
+      export func f() -> i32 {
+        let list = space as [*]mut Spot
+        list[1] = Spot(1, 2, 3)
+        let (c, di, room) = list[1]
+        list[2] = Spot(4, 5, 6)
+        set (c, di, room) = list[2]
+        let p = ((space as u32) + 12) as *Spot
+        set (room:, c:) = p.*
+        return c + di * 10 + room * 100
+      }
+    `)
+    expect(f()).toBe(351)
+  })
+
+  test("a wide array literal's slots are not taken for values", async () => {
+    // The literal stores its runtime element through a helper call and then
+    // gives its address: with the slice after it, as many parts as T has values.
+    const { f } = await run(`${SPOT}
+      type T = (p: *[1]u128, s: []i32)
+      func wide() -> u128 => 5
+      export func f() -> u32 {
+        let t: T = T([wide()], pair())
+        let ts = ((space as u32) + 64) as [*]mut T
+        ts[1] = T([wide()], pair())
+        return t.s.len + (t.p[0] as u32) * 10 + ts[1].s.len * 100 + (ts[1].p[0] as u32) * 1000
+      }
+    `)
+    expect(f()).toBe(5252)
   })
 
   test('a bounds-checked struct element is one value, however many parts it has', async () => {
