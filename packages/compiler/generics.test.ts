@@ -512,6 +512,36 @@ export func f() -> u32 {
     expect(errorsOf(source)).toEqual(["unknown identifier 'hidden', in leak(T = u32)"])
   })
 
+  test('an instance does not see what a test declares', () => {
+    // A function declared in a test is registered in module scope, and
+    // instance bodies are checked after the tests. The call would check, and
+    // then name a function the instance's code does not have.
+    const source = `func apply(comptime T: type, a: T) -> T => twice(a as u32) as T
+test "group" {
+  import "env" "probe" func probe(x: u32)
+  func twice(a: u32) -> u32 => a * 2
+  test "inner" {
+    assert apply(u8, 21) == 42
+  }
+}`
+    expect(errorsOf(source)).toEqual([
+      "unknown identifier 'twice', in apply(T = u8)",
+      'cannot call non-function type: i32, in apply(T = u8)',
+    ])
+    expect(errorsOf(source.replace('twice(a as u32) as T', 'a\nfunc g(comptime T: type, a: T) { probe(1) }\nexport func h() { g(u8, 1) }'))).toEqual([
+      "unknown identifier 'probe', in g(T = u8)",
+      'cannot call non-function type: i32, in g(T = u8)',
+    ])
+    // A function of the module that a test declares again is still the module's.
+    const shadowed = `func twice(a: u32) -> u32 => a + a
+func apply(comptime T: type, a: T) -> T => twice(a as u32) as T
+test "group" {
+  func twice(a: u32) -> u32 => a * 2
+  assert apply(u8, 21) == 42
+}`
+    expect(errorsOf(shadowed)).toEqual([])
+  })
+
   test('a call in a global initializer instantiates like any other', () => {
     const source = `${MAX}global limit: u32 = max(u32, 3, 4)
 export func f() -> u32 => limit`

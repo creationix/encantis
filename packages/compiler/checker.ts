@@ -540,6 +540,9 @@ class CheckContext {
   // Counts every report, also one that repeats an error already listed: an
   // expression can be inferred twice, and fails the second time too.
   errorsReported = 0
+  // Functions and imports declared inside test blocks. They are registered in
+  // module scope, and exist in test builds only.
+  testOnly = new Set<string>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
   // What an inferred call found for its type parameters, or null when it
@@ -1333,9 +1336,12 @@ class CheckContext {
         case 'TestDecl':
           this.checkTestDecl(item)
           break
-        case 'ImportDecl':
+        case 'ImportDecl': {
+          const known = new Set(this.moduleScope.symbols.keys())
           this.collectImport(item)
+          for (const name of this.moduleScope.symbols.keys()) if (!known.has(name)) this.testOnly.add(name)
           break
+        }
         case 'FuncDecl':
           // A function declared in a test is registered in module scope, so
           // two tests declaring one generic would be two functions of one name.
@@ -1347,6 +1353,7 @@ class CheckContext {
             }
             break
           }
+          if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
           this.collectFunc(item)
           this.checkFuncBody(item)
           break
@@ -4037,7 +4044,14 @@ class CheckContext {
     let scope: Scope | null = this.currentScope
     while (scope) {
       const sym = scope.symbols.get(name)
-      if (sym) return sym
+      if (sym) {
+        // An instance is a function of the module, and its body is checked
+        // after the tests. What a test declared is not there for it: the
+        // function would not exist in a build without tests, and in one with
+        // them it is not a name the instance's code can call.
+        const hidden = this.currentInstance && scope === this.moduleScope && this.testOnly.has(name)
+        return hidden ? undefined : sym
+      }
       scope = scope.parent
     }
     return undefined
@@ -4056,6 +4070,9 @@ class CheckContext {
       }
     }
     for (const [candidate] of this.moduleScope.symbols) {
+      // Not a name that could have been meant: an instance's, or one the
+      // code being checked cannot see.
+      if (candidate.includes('<') || !this.lookup(candidate)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
