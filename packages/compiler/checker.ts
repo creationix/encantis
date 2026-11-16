@@ -1374,6 +1374,15 @@ class CheckContext {
           } else {
             this.inferExpr(stmt.value)
           }
+        } else {
+          // A bare return hands back the named results as they are set. With
+          // an unnamed result there is nothing for it to return.
+          const type = this.currentReturnType
+          const named = type?.kind === 'tuple' && type.fields.some(f => f.name)
+          const hasResult = type && type.kind !== 'void' && !(type.kind === 'tuple' && type.fields.length === 0)
+          if (type && hasResult && !named) {
+            this.error(stmt.span.start, `return needs a value: the function returns ${typeToString(type)}`)
+          }
         }
         if (stmt.when) this.checkCondition(stmt.when)
         break

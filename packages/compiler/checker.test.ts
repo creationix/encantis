@@ -1060,6 +1060,31 @@ describe('missing return', () => {
     }`)).toContain("function 'f' can reach its end without returning a value")
   })
 
+  test('a bare return needs a value when the result is unnamed', () => {
+    expect(errs(`func sign(x: i32) -> i32 {
+      if x < 0 { return }
+      return 1
+    }`)).toEqual(['return needs a value: the function returns i32'])
+    expect(errs(`func f(x: i32) -> (i32, f64) {
+      return when x < 0
+      return (x, 1.0)
+    }`)).toEqual(['return needs a value: the function returns (i32, f64)'])
+  })
+
+  test('a bare return is fine with no result or named results', () => {
+    expect(errs(`func f(x: i32) { return when x < 0 }`)).toEqual([])
+    expect(errs(`func f(x: i32) -> (r: i32) {
+      r = 1
+      if x < 0 { return }
+      r = 2
+    }`)).toEqual([])
+    expect(errs(`func divmod(a: u32, b: u32) -> (q: u32, r: u32) {
+      return when b == 0
+      q = a / b
+      r = a % b
+    }`)).toEqual([])
+  })
+
   test('returns on every path are accepted', () => {
     expect(errs(`func f(x: i32) -> i32 { return x }`)).toEqual([])
     expect(errs(`func f(x: i32) -> i32 {

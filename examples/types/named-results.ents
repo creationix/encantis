@@ -38,3 +38,26 @@ test "a trailing if leaves the named results as set" {
 test "a trailing loop leaves the named result as set" {
   assert sum_to(5) == 10
 }
+
+// A bare return hands the named results back as they are set so far. (With an
+// unnamed result it is an error: there is nothing for it to return.)
+export func first_factor(n: u32) -> (factor: u32, found: bool) {
+  factor = 2
+  found = true
+  loop {
+    return when n % factor == 0
+    factor += 1
+    if factor * factor > n {
+      found = false
+      return
+    }
+  }
+}
+
+test "a bare return gives back the named results as set" {
+  let a = first_factor(91)
+  assert a.factor == 7
+  assert a.found
+  let b = first_factor(97)
+  assert !b.found
+}

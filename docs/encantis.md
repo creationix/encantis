@@ -1440,6 +1440,8 @@ return value when cond   // return if condition is true
 
 The `when` form is equivalent to wrapping in `if cond { ... }`.
 
+A bare `return` is for a function with no result, or with named results, which it returns as they are set. In a function with an unnamed result, `return` needs a value.
+
 #### Defer
 
 `defer expr` runs `expr` when the enclosing block exits, by any path: falling off

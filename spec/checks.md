@@ -41,6 +41,33 @@ func divmod(a: u32, b: u32) -> (q: u32, r: u32) {
 }
 ```
 
+A bare `return` hands back named results as they are set. With an unnamed result it has nothing to return.
+
+```ents
+func sign(x: i32) -> i32 {
+  if x < 0 {
+    return
+  }
+  return 1
+}
+```
+
+```errors
+return needs a value: the function returns i32
+```
+
+```ents
+func clamp(x: i32) -> (r: i32) {
+  r = x
+  return when x >= 0
+  r = 0
+}
+
+func log(x: i32) {
+  return when x < 0
+}
+```
+
 ## Operands
 
 The two operands of an arithmetic, bitwise or comparison operator end up in one type: the narrower one widens to the other's. An integer widens to a wider integer that holds all its values, `f32` to `f64`, and an integer to a float whose mantissa holds it.
