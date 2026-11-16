@@ -1274,6 +1274,15 @@ class CheckContext {
     this.currentReturnType = this.resolveType(decl.signature.output)
     if (decl.body.kind === 'Block') {
       this.checkBody(decl.body)
+      // A block body with unnamed results has to return on every path: there
+      // are no named locals to return when it falls off the end.
+      const output = decl.signature.output
+      const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
+      const resultType = this.currentReturnType
+      const hasResult = resultType.kind !== 'void' && !(resultType.kind === 'tuple' && resultType.fields.length === 0)
+      if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
+        this.error(decl.span.start, `function '${decl.ident ?? 'anonymous'}' can reach its end without returning a value`)
+      }
     } else {
       this.checkExpr(decl.body.expr, this.currentReturnType)
     }
@@ -3115,4 +3124,85 @@ function editDistance(a: string, b: string): number {
     }
   }
   return dp[a.length][b.length]
+}
+
+// === Control-flow termination ===
+
+// Whether control can never fall off the end of these statements: they end in
+// an unconditional return, a loop with no break out of it, or an if/else whose
+// every branch terminates.
+export function blockTerminates(stmts: AST.Statement[]): boolean {
+  const last = stmts.at(-1)
+  if (!last) return false
+  switch (last.kind) {
+    case 'ReturnStmt':
+      return !last.when
+    case 'LoopStmt':
+      return !breaksOut(last.body)
+    case 'ExpressionStmt':
+      return exprTerminates(last.expr)
+    default:
+      return false
+  }
+}
+
+function bodyTerminates(body: AST.FuncBody | AST.Expr): boolean {
+  if (body.kind === 'Block') return blockTerminates(body.stmts)
+  if (body.kind === 'ArrowBody') return exprTerminates(body.expr)
+  return exprTerminates(body)
+}
+
+function exprTerminates(expr: AST.Expr): boolean {
+  if (expr.kind === 'IfExpr') {
+    return !!expr.else_ && bodyTerminates(expr.thenBranch) &&
+      expr.elifs.every(e => bodyTerminates(e.thenBranch)) && bodyTerminates(expr.else_)
+  }
+  return false
+}
+
+// Whether a loop body contains a break for that loop (not for a nested loop).
+function breaksOut(body: AST.FuncBody): boolean {
+  let found = false
+  const visitBody = (b: AST.FuncBody | AST.Expr) => {
+    if (b.kind === 'Block') b.stmts.forEach(visitStmt)
+    else if (b.kind === 'ArrowBody') visitExpr(b.expr)
+    else visitExpr(b)
+  }
+  const visitStmt = (st: AST.Statement) => {
+    if (found) return
+    switch (st.kind) {
+      case 'BreakStmt':
+        found = true
+        return
+      case 'WhileStmt':
+      case 'LoopStmt':
+      case 'ForStmt':
+        return // a break in there leaves the inner loop
+      case 'ExpressionStmt':
+      case 'DeferStmt':
+        visitExpr(st.expr)
+        return
+      case 'LetStmt':
+        if (st.value) visitExpr(st.value)
+        return
+      case 'AssignmentStmt':
+        visitExpr(st.value)
+        return
+      case 'ReturnStmt':
+        if (st.value) visitExpr(st.value)
+        return
+    }
+  }
+  const visitExpr = (e: AST.Expr) => {
+    if (found) return
+    if (e.kind === 'IfExpr') {
+      visitBody(e.thenBranch)
+      for (const elif of e.elifs) visitBody(elif.thenBranch)
+      if (e.else_) visitBody(e.else_)
+    } else if (e.kind === 'MatchExpr') {
+      for (const arm of e.arms) visitBody(arm.body)
+    }
+  }
+  visitBody(body)
+  return found
 }

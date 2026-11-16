@@ -18,6 +18,7 @@ import {
 } from './types'
 import * as RT from './types'
 import { dataToWat, buildDataSection } from './data-pack'
+import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
 
@@ -386,6 +387,39 @@ function wideIntParts(t: ResolvedType): number {
   return 0
 }
 
+const limbs = (op: string) => (l: string[], r: string[]) => l.map((x, i) => `(i64.${op} ${x} ${r[i]})`).join(' ')
+const limbsEqual = (l: string[], r: string[]) => l.map((x, i) => `(i64.eq ${x} ${r[i]})`).reduce((a, b) => `(i32.and ${a} ${b})`)
+const INLINE_WIDE_OPS: Record<string, (l: string[], r: string[]) => string> = {
+  '&': limbs('and'),
+  '|': limbs('or'),
+  '^': limbs('xor'),
+  '==': limbsEqual,
+  '!=': (l, r) => `(i32.eqz ${limbsEqual(l, r)})`,
+}
+
+function trySplitMultiValue(wat: string, n: number): string[] | null {
+  try {
+    return splitMultiValue(wat, n)
+  } catch {
+    return null
+  }
+}
+
+// The wide-integer helper for a binary operator.
+function wideBinaryOp(op: string, signed: boolean, type: ResolvedType): WideBinaryOp {
+  const s = signed ? 's' : 'u'
+  const ops: Record<string, WideBinaryOp> = {
+    '+': 'add', '-': 'sub', '*': 'mul',
+    '&': 'and', '|': 'or', '^': 'xor',
+    '<<': 'shl', '>>': signed ? 'shr_s' : 'shr_u', '>>>': 'shr_u', '<<<': 'rotl',
+    '==': 'eq', '!=': 'ne',
+    '<': `lt_${s}`, '>': `gt_${s}`, '<=': `le_${s}`, '>=': `ge_${s}`,
+  }
+  const helper = ops[op]
+  if (!helper) throw new Error(`operator '${op}' on ${RT.typeToString(type)} is not supported yet`)
+  return helper
+}
+
 function multiValueBinaryOp(n: number, wasmOp: string, left: string, right: string): string {
   if (n === 1) return `(${wasmOp} ${left} ${right})`
   const leftParts = splitMultiValue(left, n)
@@ -419,7 +453,8 @@ function loadFromMemory(type: ResolvedType, ptr: string): string {
 function storeToMemory(type: ResolvedType, ptr: string, value: string): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
-    const parts = splitMultiValue(value, nw)
+    const parts = trySplitMultiValue(value, nw)
+    if (!parts) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
     return parts.map((v, i) =>
       `(i64.store offset=${i * 8} ${ptr} ${v})`
     ).join('\n')
@@ -546,6 +581,15 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   if (nWide > 0) {
     if (leftType && wideIntParts(leftType) < nWide) left = widenToWide(left, leftType, nWide)
     if (rightType && wideIntParts(rightType) < nWide) right = widenToWide(right, rightType, nWide)
+  }
+  if (nWide > 1 && expr.op !== '&&' && expr.op !== '||') {
+    // Bitwise ops and equality need no carries: do them inline, limb by limb,
+    // when both operands split into parts (the hot path in crypto code).
+    const limbwise = INLINE_WIDE_OPS[expr.op]
+    const lp = limbwise ? trySplitMultiValue(left, nWide) : null
+    const rp = lp ? trySplitMultiValue(right, nWide) : null
+    if (limbwise && lp && rp) return limbwise(lp, rp)
+    return wideCall(nWide, wideBinaryOp(expr.op, signed, operandType), left, right)
   }
 
   const op = expr.op
@@ -682,19 +726,16 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         return `(${wt}.neg ${operand})`
       }
       const nw = wideIntParts(type)
-      if (nw > 0) {
-        const parts = splitMultiValue(operand, nw)
-        return parts.map(p => `(i64.sub (i64.const 0) ${p})`).join(' ')
-      }
+      if (nw > 1) return wideCall(nw, 'neg', operand)
       return truncateSubWord(`(${wt}.sub (${wt}.const 0) ${operand})`, type)
     }
 
     case '~': {
       // Bitwise NOT
       const nw = wideIntParts(type)
-      if (nw > 0) {
-        const parts = splitMultiValue(operand, nw)
-        return parts.map(p => `(i64.xor ${p} (i64.const -1))`).join(' ')
+      if (nw > 1) {
+        const parts = trySplitMultiValue(operand, nw)
+        return parts ? parts.map(p => `(i64.xor ${p} (i64.const -1))`).join(' ') : wideCall(nw, 'not', operand)
       }
       return truncateSubWord(`(${wt}.xor ${operand} (${wt}.const -1))`, type)
     }
@@ -1430,6 +1471,25 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
 
+  // Wide integers (128 bits and up) are several i64 values, least significant
+  // first. Their first wasm type is i64, so handle them before the same-type
+  // shortcut below.
+  const fromWide = wideIntParts(fromType)
+  const toWide = wideIntParts(toType)
+  if ((fromWide > 0 || toWide > 0) && !isFloat(fromType) && !isFloat(toType)) {
+    const fromParts = Math.max(fromWide, 1)
+    const toParts = Math.max(toWide, 1)
+    let wat = fromWasm === 'i32' ? `(i64.extend_i32_${isSigned(fromType) ? 's' : 'u'} ${inner})` : inner
+    if (toParts < fromParts) {
+      // Narrowing keeps the low parts: drop the high ones off the top of the stack.
+      wat += ' ' + Array(fromParts - toParts).fill('(drop)').join(' ')
+    } else if (toParts > fromParts) {
+      wat += ' ' + Array(toParts - fromParts).fill(signExtension(wat, fromType, fromParts)).join(' ')
+    }
+    if (toWasm === 'i32' && toParts === 1) wat = `${wat} (i32.wrap_i64)`
+    return wat
+  }
+
   if (fromWasm === toWasm) {
     const toU = unwrap(toType)
     if (toU.kind === 'primitive') {
@@ -1467,32 +1527,27 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
     return `(i32.wrap_i64 ${inner})`
   }
 
-  const toWide = wideIntParts(toType)
-  if (toWide > 0 && (fromWasm === 'i32' || fromWasm === 'i64')) {
-    const ext = fromWasm === 'i32' ? `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})` : inner
-    const zeros = Array(toWide - 1).fill('(i64.const 0)').join(' ')
-    return `${ext} ${zeros}`
-  }
-
-  const fromWide = wideIntParts(fromType)
-  if (fromWide > 0 && toWasm === 'i64') {
-    try {
-      const parts = splitMultiValue(inner, fromWide)
-      return parts[0]
-    } catch {
-      return inner
-    }
-  }
-  if (fromWide > 0 && toWasm === 'i32') {
-    try {
-      const parts = splitMultiValue(inner, fromWide)
-      return `(i32.wrap_i64 ${parts[0]})`
-    } catch {
-      return `(i32.wrap_i64 ${inner})`
-    }
-  }
-
   return inner
+}
+
+// The value of each added high part when widening an integer of `parts` i64s:
+// zero for unsigned types, copies of the sign bit for signed ones. The sign
+// comes from the top part, so the source must be cheap to evaluate twice.
+function signExtension(wat: string, fromType: ResolvedType, parts: number): string {
+  if (!isSigned(fromType)) return '(i64.const 0)'
+  const pure = /^(\((?:local|global)\.get \$[\w-]+\)|\(i64\.const -?\d+\))$/
+  const top = parts === 1 ? wat : (() => {
+    try {
+      return splitMultiValue(wat, parts)[parts - 1]
+    } catch {
+      return ''
+    }
+  })()
+  const source = top.startsWith('(i64.extend_i32_s ') ? top.slice('(i64.extend_i32_s '.length, -1) : top
+  if (!pure.test(source)) {
+    throw new Error('sign-extending a wide integer cast needs a variable or constant source; assign it to a let first')
+  }
+  return `(i64.shr_s ${top} (i64.const 63))`
 }
 
 function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
@@ -1935,6 +1990,11 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
       '<<<=': nv > 0 ? 'i64.shl' : `${wt}.rotl`,
     }
 
+    if (nv > 1 && stmt.op.length > 1 && stmt.op.endsWith('=')) {
+      const helper = wideBinaryOp(stmt.op.slice(0, -1), signed, type)
+      const wideRhs = valueType && wideIntParts(valueType) < nv ? widenToWide(value, valueType, nv) : value
+      return assignLvalue(stmt.target, wideCall(nv, helper, current, wideRhs), ctx)
+    }
     const op = ops[stmt.op]
     if (op) {
       const raw = nv > 1
@@ -2294,17 +2354,11 @@ export function funcToWat(
         ctx.locals.set(ret.name, [ret.name])
         namedReturns.push({ name: ret.name, types: wasmTypes })
       } else {
-        // Unwrap named types to get field names from tuple
-        const unwrappedType = unwrap(ret.type)
-        const names = wasmTypes.map((wt, i) => {
-          // Use actual field names if available from tuple type
-          let fieldName: string
-          if (unwrappedType.kind === 'tuple' && unwrappedType.fields[i]?.name) {
-            fieldName = `${ret.name}_${unwrappedType.fields[i].name}`
-          } else {
-            fieldName = `${ret.name}_${i}`
-          }
-          locals.push({ name: fieldName, type: wt })
+        // Name the parts the way params and lets are flattened (tuple field
+        // names, ptr/len for slices), so member access finds them.
+        const names = flattenType(ret.type).map((f, i) => {
+          const fieldName = f.suffix ? `${ret.name}_${f.suffix}` : `${ret.name}_${i}`
+          locals.push({ name: fieldName, type: f.wasmType })
           return fieldName
         })
         ctx.locals.set(ret.name, names)
@@ -2355,6 +2409,13 @@ export function funcToWat(
       return []
     })
     epilogue = returnGets.join('\n  ')
+  }
+
+  // A block body with unnamed results returns on every path (the checker
+  // ensures it), so its end is unreachable; say so for the wasm validator,
+  // which can't tell that a loop with no break never falls through.
+  if (decl.body.kind === 'Block' && namedReturns.length === 0 && returnTypes.length > 0) {
+    epilogue = '(unreachable)'
   }
 
   const paramsStr = params.join(' ')
@@ -2539,7 +2600,9 @@ function collectLocals(
     if (expr.kind === 'ArrayExpr') {
       let needsSlotLocal = false
       for (const elem of expr.elements) {
-        if (isRuntimeExpr(elem) && elem.kind === 'CallExpr') needsSlotLocal = true
+        // Any runtime slice element that doesn't split into (ptr, len) parts
+        // (a call, a ?? fallback, ...) goes through the scratch local.
+        if (isRuntimeExpr(elem)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -2671,6 +2734,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   }
 
   // Emit helper functions if referenced
+  parts.push(...wideHelpersFor(parts.join('\n')))
   if (parts.some(p => p.includes('$__mul_hi'))) {
     parts.push(MUL_HI_WAT)
   }
@@ -3194,6 +3258,7 @@ export function programToWat(
     }
   }
 
+  parts.push(...wideHelpersFor(parts.join('\n')))
   if (parts.some(p => p.includes('$__mul_hi'))) {
     parts.push(MUL_HI_WAT)
   }
