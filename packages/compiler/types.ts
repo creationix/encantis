@@ -505,11 +505,6 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       return a.count === bArr.count && typeEquals(a.element, bArr.element)
     }
 
-    case 'named': {
-      // Aliases are transparent - compare underlying types
-      return typeEquals(a.type, b)
-    }
-
     case 'forward_ref':
       // Forward refs are equal if they reference the same type name
       return b.kind === 'forward_ref' && a.name === b.name
