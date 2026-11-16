@@ -83,6 +83,8 @@ export func slice_write(s: []mut u8, i: u32, v: u8) -> bool {
 }
 test "const index address" { assert const_idx() == 42 }
 test "checked writes" {
+  assert checked(0, 9)
+  assert (buf[0] ?? 0) == 9
   assert checked(11, 9)
   assert (buf[11] ?? 0) == 9
   assert !checked(12, 9)

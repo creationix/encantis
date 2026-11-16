@@ -86,6 +86,9 @@ export interface DataSection {
  * Deduplicates identical byte sequences using hex-encoded keys.
  * Also deduplicates by finding substrings within already-written data.
  */
+// Bytes at the start of memory that never hold data (address 0 is "none").
+const NULL_PAGE = 8
+
 export class DataSectionBuilder {
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
@@ -120,7 +123,8 @@ export class DataSectionBuilder {
 
     return {
       entries,
-      totalSize: this.currentOffset,
+      // With no data at all, there's no data section (and no reserved bytes).
+      totalSize: entries.length > 0 ? this.currentOffset : 0,
       autoDataStart: 0,
       errors: [],
     }
@@ -130,10 +134,7 @@ export class DataSectionBuilder {
   // Used by type-aware serialization
   // If skipDedup is true, always allocate new space (for mutable data)
   internBytes(bytes: Uint8Array, skipDedup = false, isOptional = false): DataRef {
-    // Avoid placing optional-typed data at offset 0 (null sentinel)
-    if (isOptional && this.currentOffset === 0) {
-      this.currentOffset = 4
-    }
+    void isOptional // data never starts at 0 (see NULL_PAGE)
 
     const key = bytesToKey(bytes)
 
@@ -1012,6 +1013,9 @@ export interface DataSectionResult {
  */
 export function buildDataSection(literals: PendingLiteral[], types: Map<string, ResolvedType>): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
+  // Address 0 means "none" for optional pointers and slices, so program data
+  // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
+  dataBuilder.setAutoDataStart(NULL_PAGE)
   const literalRefs = new Map<number, DataRef>()
 
   // Resolve serialization types from the types map
