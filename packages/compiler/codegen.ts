@@ -3064,10 +3064,6 @@ function emitTestDecl(
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
-    // Collect locals before generating the body, as funcToWat does: destructuring
-    // lets register their names only here, and reads of a name not yet known
-    // would compile to the wrong thing.
-    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
     const seen = new Set<string>()
