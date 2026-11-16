@@ -2708,8 +2708,12 @@ class CheckContext {
     // For an unsigned value and a constant K >= 0:
     //   x & K  → max value K          x % K → max value K-1 (K > 0)
     //   x >> K → max value (max >> K), where max is the range or the type's width
-    const computeRange = (base: ResolvedType, operand: bigint, constantOnRight: boolean): ResolvedType => {
-      if (base.kind !== 'primitive' || operand < 0n) return stripMax(base)
+    // The bound comes from the constant's own value. An if or match of
+    // constants has a constant type but no one value: no range from that.
+    const computeRange = (base: ResolvedType, constant: AST.Expr, constantOnRight: boolean): ResolvedType => {
+      const value = this.evalComptimeExpr(constant)
+      if (base.kind !== 'primitive' || value?.kind !== 'int' || value.value < 0n) return stripMax(base)
+      const operand = value.value
       const limit = (bound: bigint): ResolvedType => {
         const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
         const next = current !== null && current < bound ? current : bound
@@ -2756,7 +2760,7 @@ class CheckContext {
       }
       if (right.kind === 'comptime_int') {
         this.coerce(expr.right, rightType, stripMax(leftType))
-        return computeRange(leftType, right.value, true)
+        return computeRange(leftType, expr.right, true)
       }
       // The count keeps its own type: only its low bits matter. The value is
       // shifted in its own type too, unless the count is wider: then in the
@@ -2787,7 +2791,7 @@ class CheckContext {
       }
       this.coerce(constantExpr, constant, stripMax(otherType))
       if (comparison) return primitive('bool')
-      return constant.kind === 'comptime_int' ? computeRange(otherType, constant.value, constantOnRight) : stripMax(otherType)
+      return constant.kind === 'comptime_int' ? computeRange(otherType, constantExpr, constantOnRight) : stripMax(otherType)
     }
 
     // Two values: the narrower one widens to the other's type. Types neither

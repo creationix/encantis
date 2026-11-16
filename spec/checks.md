@@ -312,6 +312,20 @@ func f(x: u32, b: u8) {
 }
 ```
 
+The constant has to have a value of its own. An `if` or `match` of constants is typed like one but can be any of them, and a complement has all its high bits set: neither bounds the result.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(x: u32, wide: bool) { buf[x >> (if wide { 1 } else { 28 })] = 1 }
+func b(x: u32) { buf[x & ~15] = 2 }
+```
+
+```errors
+runtime index on *[16]u8 requires 'if let' or '??'
+runtime index on *[16]u8 requires 'if let' or '??'
+```
+
 A comparison with a constant narrows the variable where it holds: inside the branch, in later branches of the same `if`, and after an exit that the comparison guards.
 
 ```ents

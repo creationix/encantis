@@ -1253,6 +1253,21 @@ describe('operand types', () => {
     expect(errs(`func f(x: f64) -> f64 => x * ~3`)).toEqual(["'~' needs an integer, not f64"])
   })
 
+  test('a range comes only from a constant whose value is known', () => {
+    const index = (expr: string) => errs(`data t = [0:u8; 16]\nfunc f(x: u32, c: bool, k: i32) -> u8 => t[${expr}]`)
+    const unproven = ["runtime index on *[16]u8 requires 'if let' or '??' (no optional type for u8)"]
+    expect(index('x >> 28')).toEqual([])
+    expect(index('x & (3 | 12)')).toEqual([])
+    expect(index('x % (4 * 4)')).toEqual([])
+    // An if or match of constants is a constant with no one value: x >> 1
+    // isn't below 16 because x >> 28 is.
+    expect(index('x >> (if c { 1 } else { 28 })')).toEqual(unproven)
+    expect(index('x >> (match k { 0 => 28\n _ => 0 })')).toEqual(unproven)
+    expect(index('x & (if c { 3 } else { 15 })')).toEqual(unproven)
+    expect(index('x & ~15')).toEqual(unproven)
+    expect(index('x & (~0 & 7 | 16)')).toEqual(['index type u32#24 may exceed *[16]u8 bounds (max index 23 >= 16) — narrow the index range to fit'])
+  })
+
   test('pointer arithmetic takes 32-bit integers', () => {
     expect(errs(`func f(p: [*]u8, n: u32, q: [*]u8) -> bool => p + n < q`)).toEqual([])
     expect(errs(`func f(p: [*]u8, n: i64) { let q = p + n }`)).toEqual(["'+' cannot be applied to [*]u8 and i64"])
