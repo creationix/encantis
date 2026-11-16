@@ -18,12 +18,15 @@ export type WideUnaryOp = 'not' | 'neg'
 // Stores a wide value (on the stack after the address) to memory.
 export type WideStoreOp = 'store'
 
-export function wideHelperName(n: number, op: WideBinaryOp | WideUnaryOp | WideStoreOp): string {
+// Sign-extends a value of n parts to `to` parts: `sext_<to>`.
+export type WideSextOp = `sext_${number}`
+
+export function wideHelperName(n: number, op: WideBinaryOp | WideUnaryOp | WideStoreOp | WideSextOp): string {
   return `$__w${n}_${op}`
 }
 
 // A call to the helper for `op`, applied to operands already in WAT form.
-export function wideCall(n: number, op: WideBinaryOp | WideUnaryOp, ...operands: string[]): string {
+export function wideCall(n: number, op: WideBinaryOp | WideUnaryOp | WideSextOp, ...operands: string[]): string {
   return `(call ${wideHelperName(n, op)} ${operands.join(' ')})`
 }
 
@@ -159,13 +162,20 @@ function unaryHelper(n: number, op: WideUnaryOp): string {
   return `${head}\n  ${wideCall(n, 'sub', zeros, gets('a', n))}\n)`
 }
 
+function sextHelper(n: number, to: number): string {
+  const sign = `(i64.shr_s ${get('a', n - 1)} (i64.const 63))`
+  return `(func ${wideHelperName(n, `sext_${to}`)} ${params('a', n)} ${results(to)}
+  ${gets('a', n)} ${range(to - n).map(() => sign).join(' ')}
+)`
+}
+
 function storeHelper(n: number): string {
   return `(func ${wideHelperName(n, 'store')} (param $p i32) ${params('a', n)}
   ${range(n).map(i => `(i64.store offset=${i * 8} (local.get $p) ${get('a', i)})`).join('\n  ')}
 )`
 }
 
-const HELPER_REF = /\$__w(\d+)_([a-z_]+)\b/g
+const HELPER_REF = /\$__w(\d+)_([a-z0-9_]+)\b/g
 
 // The helper functions a module's WAT calls, including the helpers those
 // helpers call, as WAT function definitions.
@@ -182,6 +192,7 @@ export function wideHelpersFor(wat: string): string[] {
       const n = Number(m[1])
       const op = m[2]
       const def = op === 'store' ? storeHelper(n)
+        : op.startsWith('sext_') ? sextHelper(n, Number(op.slice(5)))
         : op === 'not' || op === 'neg' ? unaryHelper(n, op)
         : binaryHelper(n, op as WideBinaryOp)
       out.push(def)

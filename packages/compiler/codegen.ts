@@ -1485,9 +1485,13 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
       // Narrowing keeps the low parts: drop the high ones off the top of the stack.
       wat += ' ' + Array(fromParts - toParts).fill('(drop)').join(' ')
     } else if (toParts > fromParts) {
-      wat += ' ' + Array(toParts - fromParts).fill(signExtension(wat, fromType, fromParts)).join(' ')
+      // Unsigned: zero high parts. Signed: copies of the sign, which a helper
+      // computes so the source is evaluated once.
+      wat = isSigned(fromType)
+        ? wideCall(fromParts, `sext_${toParts}`, wat)
+        : `${wat} ${Array(toParts - fromParts).fill('(i64.const 0)').join(' ')}`
     }
-    if (toWasm === 'i32' && toParts === 1) wat = `${wat} (i32.wrap_i64)`
+    if (toWasm === 'i32' && toParts === 1) wat = truncateSubWord(`${wat} (i32.wrap_i64)`, toType)
     return wat
   }
 
@@ -1529,26 +1533,6 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   }
 
   return inner
-}
-
-// The value of each added high part when widening an integer of `parts` i64s:
-// zero for unsigned types, copies of the sign bit for signed ones. The sign
-// comes from the top part, so the source must be cheap to evaluate twice.
-function signExtension(wat: string, fromType: ResolvedType, parts: number): string {
-  if (!isSigned(fromType)) return '(i64.const 0)'
-  const pure = /^(\((?:local|global)\.get \$[\w-]+\)|\(i64\.const -?\d+\))$/
-  const top = parts === 1 ? wat : (() => {
-    try {
-      return splitMultiValue(wat, parts)[parts - 1]
-    } catch {
-      return ''
-    }
-  })()
-  const source = top.startsWith('(i64.extend_i32_s ') ? top.slice('(i64.extend_i32_s '.length, -1) : top
-  if (!pure.test(source)) {
-    throw new Error('sign-extending a wide integer cast needs a variable or constant source; assign it to a let first')
-  }
-  return `(i64.shr_s ${top} (i64.const 63))`
 }
 
 function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
