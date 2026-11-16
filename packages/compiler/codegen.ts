@@ -228,6 +228,8 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
       return memberToWat(expr, ctx)
     case 'IndexExpr':
       return indexToWat(expr, ctx)
+    case 'SliceExpr':
+      return sliceToWat(expr, ctx)
     case 'CoalesceExpr':
       return coalesceToWat(expr, ctx)
     case 'IfExpr':
@@ -745,6 +747,10 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       return `(i32.eqz ${operand})`
 
     case '&': {
+      if (expr.operand.kind === 'IndexExpr') {
+        const addr = addressOfIndexToWat(expr, expr.operand, ctx)
+        if (addr) return addr
+      }
       // If operand is already a pointer, just return it
       const innerType = lookupExprType(expr.operand, ctx)
       if (innerType && (innerType.kind === 'pointer' || innerType.kind === 'slice')) {
@@ -997,8 +1003,13 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
           if (localNames && localNames.length >= 2) return `(local.get $${localNames[idx]})`
         }
         const full = exprToWat(expr.object, ctx)
-        const parts = splitMultiValue(full, 2)
-        return parts[idx]
+        const parts = trySplitMultiValue(full, 2)
+        if (parts) return parts[idx]
+        // A slice that comes off the stack (a call, a ?? fallback): drop the
+        // part we don't want. For .len, ptr sits under it, so park len first.
+        if (idx === 0) return `(block (result i32) ${full} (drop))`
+        const tmp = `$__len_${expr.span.start}`
+        return `(block (result i32) ${full} (local.set ${tmp}) (drop) (local.get ${tmp}))`
       }
       if (member.name === 'wid') {
         // Element byte size is always compile-time known
@@ -1241,6 +1252,139 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (type.kind === 'pointer') return offset
   return loadFromMemory(type, offset)
+}
+
+// items[start..end]: (ptr + start * stride, end - start). Parts that are
+// locals or constants are used directly, so a proven range stays two plain
+// values; anything else goes through a scratch local, evaluated once. An
+// optional result (?[]T) is (0, 0) unless start <= end <= length.
+function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
+  const resultType = ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
+    ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
+  const u = unwrap(objType)
+  const stride = byteSize(resultType.element) ?? 1
+  const uid = expr.span.start
+  const setup: string[] = []
+  const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
+  // A part as a plain expression, through the named scratch local if needed.
+  const keep = (wat: string, name: string): string => {
+    if (simple(wat)) return wat
+    setup.push(`(local.set $__sl_${name}_${uid} ${wat})`)
+    return `(local.get $__sl_${name}_${uid})`
+  }
+
+  const obj = exprToWat(expr.object, ctx)
+  let ptr: string
+  let len: string | null
+  if (u.kind === 'slice') {
+    const parts = trySplitMultiValue(obj, 2)
+    if (parts) {
+      ptr = keep(parts[0], 'p')
+      len = keep(parts[1], 'n')
+    } else {
+      setup.push(obj, `(local.set $__sl_n_${uid})`, `(local.set $__sl_p_${uid})`)
+      ptr = `(local.get $__sl_p_${uid})`
+      len = `(local.get $__sl_n_${uid})`
+    }
+  } else {
+    ptr = keep(obj, 'p')
+    const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+    const size = pointee?.kind === 'array' && typeof pointee.sizes?.[0] === 'number' ? pointee.sizes[0] : null
+    len = size !== null ? `(i32.const ${size})` : null
+  }
+  const start = expr.start ? keep(exprToWat(expr.start, ctx), 'a') : '(i32.const 0)'
+  const endWat = expr.end ? exprToWat(expr.end, ctx) : len
+  if (!endWat) throw new Error('a range on a many-pointer needs an end')
+  const end = keep(endWat, 'b')
+
+  const first = start === '(i32.const 0)' ? ptr
+    : stride === 1 ? `(i32.add ${ptr} ${start})`
+    : `(i32.add ${ptr} (i32.mul ${start} (i32.const ${stride})))`
+  const count = start === '(i32.const 0)' ? end : `(i32.sub ${end} ${start})`
+  let value: string
+  if (!resultType.optional) {
+    value = `${first} ${count}`
+  } else {
+    const fits = `(i32.and (i32.le_u ${start} ${end}) (i32.le_u ${end} ${len}))`
+    value = `(if (result i32 i32) ${fits} (then ${first} ${count}) (else (i32.const 0) (i32.const 0)))`
+  }
+  if (setup.length === 0) return value
+  return `(block (result i32 i32)\n${setup.join('\n')}\n${value})`
+}
+
+// dst[a..b] = v (fill) or dst[a..b] = src (copy), as memory.fill/memory.copy.
+// The checker has proven the range in bounds and, for a copy, the lengths equal.
+function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenContext): string {
+  const dstType = ctx.types.get(typeKey(exprTypeOffset(target), target.kind))
+  if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
+  const elem = dstType.element
+  const stride = byteSize(elem) ?? 1
+  const uid = target.span.start
+  const p = `$__bulk_p_${uid}`
+  const n = `$__bulk_n_${uid}`
+  const setDst = `${sliceToWat(target, ctx)}\n(local.set ${n})\n(local.set ${p})`
+  const bytes = stride === 1 ? `(local.get ${n})` : `(i32.mul (local.get ${n}) (i32.const ${stride}))`
+  const valueType = lookupExprType(value, ctx)
+  const vu = valueType ? unwrap(valueType) : null
+  const isScalar = vu?.kind === 'primitive' || vu?.kind === 'comptime_int' || vu?.kind === 'comptime_float'
+
+  if (!isScalar) {
+    // Copy: the source pointer is the first part of a slice, or the pointer itself.
+    const src = exprToWat(value, ctx)
+    let srcPtr: string
+    if (vu?.kind === 'slice') {
+      const parts = trySplitMultiValue(src, 2)
+      srcPtr = parts ? parts[0] : `(block (result i32) ${src} (drop))`
+    } else {
+      srcPtr = src
+    }
+    return `${setDst}\n(memory.copy (local.get ${p}) ${srcPtr} ${bytes})`
+  }
+
+  const v = exprToWat(value, ctx)
+  const isZero = /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(v)
+  if (stride === 1 || isZero) {
+    // Bytes, or zeros of any width: one memory.fill.
+    return `${setDst}\n(memory.fill (local.get ${p}) ${isZero ? '(i32.const 0)' : v} ${bytes})`
+  }
+  // Wider elements: store each one.
+  const t = `$__bulk_v_${uid}`
+  return `${setDst}
+(local.set ${t} ${v})
+(block $__fill_${uid}
+  (loop $__fill_next_${uid}
+    (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
+    ${storeToMemory(elem, `(local.get ${p})`, `(local.get ${t})`)}
+    (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
+    (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
+    (br $__fill_next_${uid})))`
+}
+
+// &items[i]: the element's address. For an optional result (?*T, when the
+// index isn't known to be in range) it's 0 when i is out of range.
+function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: CodegenContext): string | null {
+  const resultType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const objType = ctx.types.get(typeKey(exprTypeOffset(target.object), target.object.kind))
+    ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+  if (resultType?.kind !== 'pointer' || !objType) return null
+  const u = unwrap(objType)
+  let base = exprToWat(target.object, ctx)
+  let len: string
+  if (u.kind === 'slice') {
+    const parts = trySplitMultiValue(base, 2)
+    if (!parts) throw new Error('&items[i] on a slice expression: assign the slice to a let first')
+    ;[base, len] = parts
+  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
+    len = `(i32.const ${u.pointee.sizes[0]})`
+  } else {
+    return null
+  }
+  if (!resultType.optional) return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  const idx = `$__addr_idx_${expr.span.start}`
+  const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
+  return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
 
 function evalComptimeIndex(expr: AST.Expr): number | null {
@@ -1829,12 +1973,19 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    const value = exprToWat(stmt.value, ctx)
+    let value = exprToWat(stmt.value, ctx)
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
+    }
+    // *[N]T into a slice: add the compile-time length, as call arguments do.
+    if (unwrap(type).kind === 'slice') {
+      const valueType = ctx.types.get(typeKey(exprTypeOffset(stmt.value), stmt.value.kind))
+      const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
+      const len = array ? totalElements(array.sizes) : null
+      if (len !== null) value = `${value} (i32.const ${len})`
     }
     const wasmTypes = typeToWasm(type)
 
@@ -1908,6 +2059,7 @@ function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boole
 }
 
 function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
+  if (stmt.target.kind === 'SliceExpr') return rangeAssignToWat(stmt.target, stmt.value, ctx)
   const value = exprToWat(stmt.value, ctx)
 
   // Handle compound assignment operators
@@ -2149,11 +2301,7 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const valueName = stmt.binding.value
   const indexName = stmt.binding.index
-
-  ctx.locals.set(valueName, [valueName])
-  if (indexName) {
-    ctx.locals.set(indexName, [indexName])
-  }
+  const valueLocals = ctx.locals.get(valueName) ?? [valueName]
 
   const body = bodyToWat(stmt.body, ctx, false, true)
 
@@ -2178,12 +2326,48 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   )`
   }
 
-  // Array/slice loop: for value in arr → iterate elements
-  // TODO: implement array iteration
-  return `(block $break
-    (loop $continue
-      ${body}
-      (br $continue)
+  // Element loop over a slice or *[N]T: walk a pointer from the first
+  // element to the end, loading each element into the binding. No bounds
+  // checks are needed: the pointer never leaves the range.
+  const u = iterType ? unwrap(iterType) : undefined
+  const elemType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
+  if (!u || !elemType) throw new Error('for loop over an untyped iterable')
+  const stride = byteSize(elemType)
+  if (!stride) throw new Error(`for loop over elements of unknown size: ${RT.typeToString(elemType)}`)
+  const uid = stmt.span.start
+  const ptr = `$__for_ptr_${uid}`
+  const end = `$__for_end_${uid}`
+  let setup: string
+  if (u.kind === 'slice') {
+    // The iterable leaves (ptr, len) on the stack.
+    setup = `${iterWat}
+(local.set ${end})
+(local.set ${ptr})
+(local.set ${end} (i32.add (local.get ${ptr}) (i32.mul (local.get ${end}) (i32.const ${stride}))))`
+  } else {
+    const pointee = u.kind === 'pointer' ? unwrap(u.pointee) : null
+    const count = pointee?.kind === 'array' ? pointee.sizes?.[0] : null
+    if (typeof count !== 'number') throw new Error(`cannot iterate over ${RT.typeToString(u)}`)
+    setup = `(local.set ${ptr} ${iterWat})
+(local.set ${end} (i32.add (local.get ${ptr}) (i32.const ${count * stride})))`
+  }
+  const load = loadFromMemory(elemType, `(local.get ${ptr})`)
+  const bind = valueLocals.length === 1
+    ? `(local.set $${valueLocals[0]} ${load})`
+    : `${load}\n${[...valueLocals].reverse().map(n => `(local.set $${n})`).join('\n')}`
+  const index = indexName ? `$${indexName}` : null
+  return `${setup}
+${index ? `(local.set ${index} (i32.const 0))` : ''}
+(block $break
+    (loop $next
+      (br_if $break (i32.ge_u (local.get ${ptr}) (local.get ${end})))
+      ${bind}
+      (block $continue
+        ${body}
+      )
+      (local.set ${ptr} (i32.add (local.get ${ptr}) (i32.const ${stride})))
+      ${index ? `(local.set ${index} (i32.add (local.get ${index}) (i32.const 1)))` : ''}
+      (br $next)
     )
   )`
 }
@@ -2340,8 +2524,6 @@ export function funcToWat(
     seen.add(l.name)
     return true
   })
-  const localStr = dedupedLocals.map((l) => `(local $${l.name} ${l.type})`).join('\n  ')
-
   // Generate body, with implicit return coercion for arrow functions. With named
   // results, a trailing expression with a value supplies them; a trailing if,
   // loop or void call leaves the named locals as set.
@@ -2378,6 +2560,7 @@ export function funcToWat(
     epilogue = '(unreachable)'
   }
 
+  const localStr = declareUsedLocals(dedupedLocals, `${body}\n${epilogue}`, '\n  ')
   const paramsStr = params.join(' ')
   const emitName = watName ?? name
   return `(func $${emitName} ${paramsStr} ${resultStr}
@@ -2385,6 +2568,16 @@ export function funcToWat(
   ${body}
   ${epilogue}
 )`
+}
+
+// Local declarations, leaving out compiler scratch locals (named __...) that
+// the code never uses.
+function declareUsedLocals(locals: LocalDecl[], code: string, sep: string): string {
+  const used = new Set(code.match(/\$[\w.+-]+/g) ?? [])
+  return locals
+    .filter(l => !l.name.startsWith('__') || used.has(`$${l.name}`))
+    .map(l => `(local $${l.name} ${l.type})`)
+    .join(sep)
 }
 
 interface LocalDecl {
@@ -2449,14 +2642,15 @@ function collectLocals(
             : tupleType.fields[stmt.pattern.elements.indexOf(elem)]
           if (!field) continue
 
-          const wasmTypes = typeToWasm(field.type)
-          if (wasmTypes.length === 1) {
-            locals.push({ name, type: wasmTypes[0] })
+          // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
+          const flat = flattenType(field.type)
+          if (flat.length === 1 && flat[0].suffix === '') {
+            locals.push({ name, type: flat[0].wasmType })
             ctx.locals.set(name, [name])
           } else {
-            const names = wasmTypes.map((wt, i) => {
-              const localName = `${name}_${i}`
-              locals.push({ name: localName, type: wt })
+            const names = flat.map((f, i) => {
+              const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
+              locals.push({ name: localName, type: f.wasmType })
               return localName
             })
             ctx.locals.set(name, names)
@@ -2466,32 +2660,50 @@ function collectLocals(
     }
     // Recurse into nested blocks
     if (stmt.kind === 'WhileStmt') {
+      visitExpr(stmt.condition)
       visitBody(stmt.body)
     }
     if (stmt.kind === 'LoopStmt') {
       visitBody(stmt.body)
     }
     if (stmt.kind === 'ForStmt') {
+      visitExpr(stmt.iterable)
       // Collect loop binding variable
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) {
-        const wt = typeToWasmSingle(bindingType)
-        locals.push({ name: stmt.binding.value, type: wt })
-        ctx.locals.set(stmt.binding.value, [stmt.binding.value])
+        // Multi-value elements (slices, tuples) flatten like lets.
+        const flat = flattenType(bindingType)
+        const names = flat.length === 1 && flat[0].suffix === ''
+          ? [stmt.binding.value]
+          : flat.map((f, i) => (f.suffix ? `${stmt.binding.value}_${f.suffix}` : `${stmt.binding.value}_${i}`))
+        for (const [i, f] of flat.entries()) locals.push({ name: names[i], type: f.wasmType })
+        ctx.locals.set(stmt.binding.value, names)
       }
       if (stmt.binding.index) {
         locals.push({ name: stmt.binding.index, type: 'i32' })
         ctx.locals.set(stmt.binding.index, [stmt.binding.index])
       }
+      // Element loops walk a pointer up to an end address.
+      const uid = stmt.span.start
+      locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
       visitBody(stmt.body)
     }
     // Handle expression statements that may contain if expressions
-    if (stmt.kind === 'ExpressionStmt' || stmt.kind === 'DeferStmt') {
+    if (stmt.kind === 'ExpressionStmt' || stmt.kind === 'DeferStmt' || stmt.kind === 'AssertStmt') {
       visitExpr(stmt.expr)
     }
     // Handle assignment statements that may have if expressions on the right side
     if (stmt.kind === 'AssignmentStmt') {
       visitExpr(stmt.value)
+      if (stmt.target.kind === 'SliceExpr') {
+        // Range assignment: the range's own scratch locals, plus the
+        // destination and (for wide fills) the value.
+        const uid = stmt.target.span.start
+        const elem = (checkResult.types.get(typeKey(exprTypeOffset(stmt.target), stmt.target.kind)) as { element?: ResolvedType } | undefined)?.element
+        locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
+        if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
+        visitExpr(stmt.target)
+      }
     }
     // Handle let statements that may have coalesce/if expressions in value
     if (stmt.kind === 'LetStmt' && stmt.value) {
@@ -2499,6 +2711,9 @@ function collectLocals(
     }
     if (stmt.kind === 'ReturnStmt' && stmt.value) {
       visitExpr(stmt.value)
+    }
+    if ((stmt.kind === 'ReturnStmt' || stmt.kind === 'BreakStmt' || stmt.kind === 'ContinueStmt') && stmt.when) {
+      visitExpr(stmt.when)
     }
   }
 
@@ -2535,13 +2750,34 @@ function collectLocals(
           ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
         }
       }
+      visitExpr(expr.condition)
       visitBody(expr.thenBranch)
       for (const elif of expr.elifs) {
+        visitExpr(elif.condition)
         visitBody(elif.thenBranch)
       }
       if (expr.else_) {
         visitBody(expr.else_)
       }
+    }
+    if (expr.kind === 'CastExpr' || expr.kind === 'AnnotationExpr') {
+      visitExpr(expr.expr)
+    }
+    if (expr.kind === 'MemberExpr') {
+      if (expr.member.kind === 'field' && expr.member.name === 'len') {
+        locals.push({ name: `__len_${expr.span.start}`, type: 'i32' })
+      }
+      visitExpr(expr.object)
+    }
+    if (expr.kind === 'IndexExpr') {
+      visitExpr(expr.object)
+      visitExpr(expr.index)
+    }
+    if (expr.kind === 'SliceExpr') {
+      for (const x of ['p', 'n', 'a', 'b']) locals.push({ name: `__sl_${x}_${expr.span.start}`, type: 'i32' })
+      visitExpr(expr.object)
+      if (expr.start) visitExpr(expr.start)
+      if (expr.end) visitExpr(expr.end)
     }
     if (expr.kind === 'CoalesceExpr') {
       const uid = expr.span.start
@@ -2580,12 +2816,25 @@ function collectLocals(
     if (expr.kind === 'GroupExpr') {
       visitExpr(expr.expr)
     }
+    // Parentheses parse as a one-element tuple.
+    if (expr.kind === 'TupleExpr') {
+      for (const el of expr.elements) {
+        if (el.value) visitExpr(el.value)
+      }
+    }
     if (expr.kind === 'CallExpr') {
       for (const arg of expr.args) {
         if (arg.value) visitExpr(arg.value)
       }
     }
     if (expr.kind === 'UnaryExpr') {
+      // &items[i] with a runtime check keeps the index in a scratch local.
+      if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
+        const t = checkResult.types.get(typeKey(expr.span.start, expr.kind))
+        if (t?.kind === 'pointer' && t.optional) {
+          locals.push({ name: `__addr_idx_${expr.span.start}`, type: 'i32' })
+        }
+      }
       visitExpr(expr.operand)
     }
     if (expr.kind === 'BinaryExpr') {
@@ -2599,6 +2848,8 @@ function collectLocals(
       for (const s of b.stmts) {
         visitStmt(s)
       }
+    } else {
+      visitExpr(b.expr)
     }
   }
 
@@ -2784,17 +3035,18 @@ function emitTestDecl(
     // Leaf test: emit as a function
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
+    // Collect locals first: codegen looks up how multi-value locals flatten.
+    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
     const body = bodyToWat(testBody, ctx)
     ctx.testMode = false
-    const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const seen = new Set<string>()
     const locals = rawLocals.filter(l => {
       if (seen.has(l.name)) return false
       seen.add(l.name)
       return true
     })
-    const localStr = locals.map(l => `(local $${l.name} ${l.type})`).join(' ')
+    const localStr = declareUsedLocals(locals, body, ' ')
     const testLabel = decl.name ? ` ;; test "${decl.name}"` : ''
     parts.push(`(func $test_${safeName} ${localStr}${testLabel}\n  ${body}\n)`)
     parts.push(`  (export "test_${safeName}" (func $test_${safeName}))`)
@@ -3238,20 +3490,25 @@ export function programToWatWithTests(
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
   testFiles?: string[],
-): { wat: string; testNames: string[] } {
+): { wat: string; testNames: string[]; testTitles: string[] } {
+  // testNames are the exported function suffixes (test_<name>); testTitles are
+  // the names as written, nested ones joined with ' > ', for display.
   const testNames: string[] = []
+  const testTitles: string[] = []
 
-  function collectTestNames(decl: AST.TestDecl, prefix: string) {
+  function collectTestNames(decl: AST.TestDecl, prefix: string, titlePrefix: string) {
     const myPrefix = decl.name
       ? (prefix ? `${prefix}__${decl.name}` : decl.name).replace(/[^a-zA-Z0-9_]/g, '_')
       : prefix
+    const myTitle = decl.name ? (titlePrefix ? `${titlePrefix} > ${decl.name}` : decl.name) : titlePrefix
     const hasNested = decl.children.some(c => c.kind === 'TestDecl')
     if (hasNested) {
       for (const child of decl.children) {
-        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix)
+        if (child.kind === 'TestDecl') collectTestNames(child, myPrefix, myTitle)
       }
     } else if (decl.name) {
       testNames.push(myPrefix)
+      testTitles.push(myTitle)
     }
   }
 
@@ -3260,9 +3517,9 @@ export function programToWatWithTests(
     const mod = modules.get(filePath)
     if (!mod) continue
     for (const decl of mod.module.decls) {
-      if (decl.kind === 'TestDecl') collectTestNames(decl, '')
+      if (decl.kind === 'TestDecl') collectTestNames(decl, '', '')
     }
   }
   const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest })
-  return { wat, testNames }
+  return { wat, testNames, testTitles }
 }
