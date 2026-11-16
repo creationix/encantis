@@ -366,6 +366,8 @@ function typeCostAnnotation(type: ResolvedType): string {
 }
 
 function symbolTypeString(sym: CheckSymbol): string {
+  // A generic has a signature per instance, not one of its own.
+  if (sym.kind === 'generic') return 'generic func'
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
   if (sym.kind === 'type') return base

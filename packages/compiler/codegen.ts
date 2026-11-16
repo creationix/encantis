@@ -516,7 +516,7 @@ function resolveExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | un
 
   if (expr.kind === 'IdentExpr') {
     const sym = ctx.symbols.get(expr.name)
-    if (sym && sym.kind !== 'func' && sym.kind !== 'type') return sym.type
+    if (sym && sym.kind !== 'func' && sym.kind !== 'type' && sym.kind !== 'generic') return sym.type
   }
 
   // For binary expressions whose type collided with parent, infer from children
@@ -2883,7 +2883,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   for (const decl of module.decls) {
     if (decl.kind === 'DataDecl') {
       const sym = checkResult.symbols.get(decl.ident)
-      if (!sym) continue
+      if (!sym || sym.kind === 'generic') continue
       const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
       const ref = literalRefs.get(expr.span.start)
       if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
@@ -2992,7 +2992,9 @@ function tidyRawWat(wat: string): string {
 }
 
 function usesMemory(checkResult: TypeCheckResult): boolean {
-  for (const [, type] of checkResult.types) {
+  for (const [key, type] of checkResult.types) {
+    // The operand of a sizeof is a type the program names, not a value it has.
+    if (key.endsWith(':SizeofType')) continue
     const u = unwrap(type)
     if (u.kind === 'pointer' || u.kind === 'slice') return true
   }

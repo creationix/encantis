@@ -1192,3 +1192,50 @@ export function byteSize(t: ResolvedType): number | null {
       return null
   }
 }
+
+// === Instance keys ===
+
+// A string that is the same for two types exactly when they are the same type:
+// aliases are unwrapped at every depth, so Pt and the struct it names give one
+// key. It tells the instances of a generic apart and, through watSafe, names
+// them. Only a concrete type has a key.
+export function canonicalKey(t: ResolvedType, open: readonly string[] = []): string {
+  const fields = (fs: ResolvedField[]) =>
+    fs.map((f) => (f.name ? `${f.name}:${canonicalKey(f.type, open)}` : canonicalKey(f.type, open))).join(',')
+  switch (t.kind) {
+    case 'named':
+      // A type that refers to itself is cut at the second mention of its name.
+      return open.includes(t.name) ? `@${t.name}` : canonicalKey(t.type, [...open, t.name])
+    case 'forward_ref':
+      return `@${t.name}`
+    case 'primitive':
+      return t.max !== undefined ? `${t.name}#${t.max}` : t.name
+    case 'pointer': {
+      const opt = t.optional ? '?' : ''
+      const mut = t.mutable ? 'mut ' : ''
+      if (t.pointee.kind === 'array' && t.pointee.sizes === null) {
+        return `${opt}[*]${mut}${canonicalKey(t.pointee.element, open)}`
+      }
+      return `${opt}${t.boundary ? '^' : '*'}${mut}${canonicalKey(t.pointee, open)}`
+    }
+    case 'slice':
+      return `${t.optional ? '?' : ''}[]${t.mutable ? 'mut ' : ''}${canonicalKey(t.element, open)}`
+    case 'array':
+      return `[${t.sizes === null ? '*' : t.sizes.join('x')}]${canonicalKey(t.element, open)}`
+    case 'tuple':
+      return `(${fields(t.fields)})`
+    case 'void':
+      return '()'
+    case 'func':
+      return `(${fields(t.params)})->(${fields(t.returns)})`
+    default:
+      throw new Error(`not a concrete type: ${t.kind}`)
+  }
+}
+
+// A canonicalKey made legal inside a WAT identifier. Each replacement is a
+// character canonicalKey never produces, so distinct keys stay distinct.
+export function watSafe(key: string): string {
+  const subst: Record<string, string> = { ' ': '.', '(': '<', ')': '>', ',': '|', '[': "'", ']': "'" }
+  return key.replaceAll('->', '=>').replace(/[ (),[\]]/g, (c) => subst[c])
+}

@@ -28,6 +28,8 @@ import {
   forwardRef,
   typeToString,
   typeEquals,
+  canonicalKey,
+  watSafe,
   comptimeIntFits,
   typeAssignable,
   unwrap,
@@ -46,12 +48,14 @@ import {
 
 // === Symbol Table ===
 
-// Compile-time constant value (for def constants)
+// Compile-time constant value: what a def is bound to, and what a comptime
+// parameter is given
 export type ComptimeValue =
   | { kind: 'int'; value: bigint }
   | { kind: 'float'; value: number }
   | { kind: 'bool'; value: boolean }
   | { kind: 'data_ptr'; id: number }  // pointer to data section literal (id is AST offset for literalRefs lookup)
+  | { kind: 'type'; type: ResolvedType }  // the argument of `comptime T: type`
 
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
@@ -61,6 +65,37 @@ export type Symbol =
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
   | { kind: 'return'; type: ResolvedType }
+  // A function with comptime parameters. It has no type of its own: each
+  // distinct set of comptime arguments is an instance, which is an ordinary
+  // function. `valid` is false when its declaration already has an error, so
+  // that calls don't add theirs.
+  | { kind: 'generic'; decl: AST.FuncDecl; owner: CheckContext; instances: Map<string, Instance>; valid: boolean }
+
+// One generic function with its comptime arguments fixed: a copy of the
+// declaration with the parameters substituted, collected, checked and compiled
+// as an ordinary function of the module that declares the generic.
+export interface Instance {
+  name: string          // symbol-table key and wasm name: max<u32>
+  label: string         // for messages: max(T = u32)
+  of: AST.FuncDecl      // the generic's declaration
+  decl: AST.FuncDecl    // the substituted copy, its spans shifted by index * INSTANCE_STRIDE
+  args: ComptimeValue[] // in comptime-parameter order
+  depth: number         // instantiation nesting, to stop a generic that never stops instantiating
+}
+
+// The copy of a declaration that instance i (from 1) of a module is made from
+// lives at source offsets i * INSTANCE_STRIDE + original. Everything keyed by
+// offset (types, literals, lowered calls) is then per instance with no further
+// bookkeeping; an offset at or above the stride is mapped back before it is
+// reported.
+export const INSTANCE_STRIDE = 2 ** 28
+const MAX_INSTANCES = 2 ** 24
+const MAX_INSTANCE_DEPTH = 64
+const MAX_INSTANCE_KEY = 4096
+
+// The type of an expression whose error is already reported. Compared by
+// identity, so that what the expression is used for stays silent about it.
+export const RECOVERY: ResolvedType = primitive('i32')
 
 export interface Scope {
   parent: Scope | null
@@ -114,6 +149,12 @@ export interface TypeCheckResult {
   symbolDefOffsets: Map<string, number>
   // Literals that need data section serialization (for codegen)
   literals: PendingLiteral[]
+  // The instances of this module's generic functions, in the order they were
+  // first asked for
+  instances?: { of: AST.FuncDecl; decl: AST.FuncDecl }[]
+  // CallExpr span.end → the expression to compile in place of that call: for
+  // a call of a generic, the plain call of its instance
+  calls?: Map<number, AST.Expr>
 }
 
 // === Concretization Options ===
@@ -162,6 +203,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
+    if (sym.kind === 'generic') continue
     // Function symbols already have correct FuncRT from resolveSignature;
     // the types map at their definition offset may hold a non-func type
     // (e.g. a return type or parameter type), so skip the map lookup.
@@ -192,7 +234,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     const refs = ctx.references.get(defOffset)
     if (refs && refs.length === 0) {
       const sym = ctx.moduleScope.symbols.get(name)
-      if (sym && (sym.kind === 'func' || sym.kind === 'def' || sym.kind === 'global')) {
+      if (sym && (sym.kind === 'func' || sym.kind === 'generic' || sym.kind === 'def' || sym.kind === 'global')) {
         ctx.warnings.push({ offset: defOffset, message: `'${name}' is never used` })
       }
     }
@@ -207,6 +249,8 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
     literals: ctx.pendingLiterals,
+    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
+    calls: ctx.calls,
   }
 }
 
@@ -434,6 +478,20 @@ class CheckContext {
   // Literals that need data section serialization (collected during checking)
   pendingLiterals: PendingLiteral[] = []
 
+  // Generics: the instances this module owns, those whose bodies are still to
+  // be checked, the one being checked, and what each call of a generic is
+  // compiled as.
+  instances: Instance[] = []
+  instanceQueue: Instance[] = []
+  currentInstance: Instance | null = null
+  calls = new Map<number, AST.Expr>()
+  // How many literals were registered when the second pass came to each
+  // generic, which is where a function written in its place would add its own
+  literalSlots = new Map<AST.FuncDecl, number>()
+  // Counts every report, also one that repeats an error already listed: an
+  // expression can be inferred twice, and fails the second time too.
+  errorsReported = 0
+
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
     this.pendingLiterals.push({ id, expr })
@@ -457,6 +515,10 @@ class CheckContext {
     for (const decl of module.decls) {
       this.checkDeclaration(decl)
     }
+
+    // The bodies of the instances the module asked for, and of those they ask for
+    this.drainInstances()
+    this.placeInstanceLiterals()
   }
 
   // Pre-register type names so they can be referenced before their full definition
@@ -514,10 +576,18 @@ class CheckContext {
       switch (item.item.kind) {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
+          if (isGenericSignature(item.item.signature)) {
+            this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
+            break
+          }
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' is not exported from '${decl.module}'` })
+              break
+            }
+            if (exported.kind === 'generic') {
+              this.error(item.span.start, `generic functions cannot be imported yet`)
               break
             }
             if (exported.kind !== 'func') {
@@ -570,7 +640,15 @@ class CheckContext {
   }
 
   collectFunc(decl: AST.FuncDecl): void {
+    if (isGenericDecl(decl)) {
+      this.collectGeneric(decl)
+      return
+    }
     if (!decl.ident) return // Anonymous function
+    if (this.moduleScope.symbols.get(decl.ident)?.kind === 'generic') {
+      this.error(decl.span.start, `'${decl.ident}' is already declared: a generic function's name is unique in its module`)
+      return
+    }
     const sig = this.resolveSignature(decl.signature)
     this.moduleScope.symbols.set(decl.ident, {
       kind: 'func',
@@ -606,7 +684,7 @@ class CheckContext {
     }
     // Second pass: resolve forward refs in all other symbols (funcs, globals, etc.)
     for (const [, sym] of this.moduleScope.symbols) {
-      if (sym.kind !== 'type') {
+      if (sym.kind !== 'type' && sym.kind !== 'generic') {
         sym.type = this.resolveForwardRefsInType(sym.type) as typeof sym.type
       }
     }
@@ -1093,7 +1171,7 @@ class CheckContext {
     if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
       const objOffset = exprTypeOffset(expr.object)
       const objType = this.types.get(typeKey(objOffset, expr.object.kind))
-        ?? (expr.object.kind === 'IdentExpr' ? this.lookup(expr.object.name)?.type : undefined)
+        ?? (expr.object.kind === 'IdentExpr' ? typeOfSymbol(this.lookup(expr.object.name)) : undefined)
       if (objType) {
         const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
           : objType.kind === 'array' ? objType : null
@@ -1159,12 +1237,17 @@ class CheckContext {
     switch (decl.kind) {
       case 'ExportDecl':
         if (decl.item.kind === 'FuncDecl') {
+          if (isGenericDecl(decl.item)) {
+            this.skipGenericBody(decl.item)
+            break
+          }
           this.warnManyPointerParams(decl.item)
           this.checkFuncBody(decl.item)
         }
         break
       case 'FuncDecl':
-        this.checkFuncBody(decl)
+        if (isGenericDecl(decl)) this.skipGenericBody(decl)
+        else this.checkFuncBody(decl)
         break
       case 'TestDecl':
         if (this.options.includeTests !== false) this.checkTestDecl(decl)
@@ -1187,6 +1270,12 @@ class CheckContext {
           this.collectImport(item)
           break
         case 'FuncDecl':
+          // A function declared in a test is registered in module scope, so
+          // two tests declaring one generic would be two functions of one name.
+          if (isGenericDecl(item)) {
+            this.error(item.span.start, `a generic function is declared at module level, not inside a test`)
+            break
+          }
           this.collectFunc(item)
           this.checkFuncBody(item)
           break
@@ -1287,7 +1376,10 @@ class CheckContext {
       const resultType = this.currentReturnType
       const hasResult = resultType.kind !== 'void' && !(resultType.kind === 'tuple' && resultType.fields.length === 0)
       if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
-        this.error(decl.span.start, `function '${decl.ident ?? 'anonymous'}' can reach its end without returning a value`)
+        // The name the user wrote, not max<u32>: the message is followed by
+        // the instance anyway.
+        const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
+        this.error(decl.span.start, `function '${name ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
       this.checkExpr(decl.body.expr, this.currentReturnType)
@@ -1842,7 +1934,7 @@ class CheckContext {
 
       case 'TypeType':
         this.error(type.span.start, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
-        return primitive('i32')
+        return RECOVERY
     }
   }
 
@@ -2109,7 +2201,7 @@ class CheckContext {
     }
 
     // For other types, check assignability and record the inferred type
-    if (!typeAssignable(expected, inferred)) {
+    if (inferred !== RECOVERY && !typeAssignable(expected, inferred)) {
       this.error(
         expr.span.start,
         `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`,
@@ -2214,7 +2306,7 @@ class CheckContext {
       case 'TypeExpr': {
         const shown = expr.type.kind === 'TypeRef' ? expr.type.name : typeToString(this.resolveType(expr.type))
         this.error(expr.span.start, `'${shown}' is a type; a type can only be passed for a comptime parameter`)
-        return primitive('i32')
+        return RECOVERY
       }
 
       case 'ArrayExpr':
@@ -2321,10 +2413,28 @@ class CheckContext {
       case 'type':
         // Type used as expression (constructor)
         return sym.type
+
+      case 'generic':
+        this.error(expr.span.start, `generic function '${expr.name}' must be called`)
+        return RECOVERY
     }
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
+    // A generic comes before the builtins, so that a generic named max or min
+    // is the one that is called.
+    if (expr.callee.kind === 'IdentExpr') {
+      const sym = this.lookup(expr.callee.name)
+      if (sym?.kind === 'generic') return this.inferGenericCall(expr, sym, expr.callee.name)
+    }
+    // T(a, b) in an instance, where T was a type parameter
+    if (expr.callee.kind === 'TypeExpr') {
+      const name = expr.callee.type.kind === 'BoundType' ? expr.callee.type.name : 'T'
+      this.error(expr.span.start, `${name}(...) on a type parameter is not supported yet`)
+      for (const arg of expr.args) if (arg.value) this.inferExpr(arg.value)
+      return RECOVERY
+    }
+
     // Check for builtin functions first
     if (expr.callee.kind === 'IdentExpr') {
       const builtinResult = this.inferBuiltin(expr, expr.callee.name)
@@ -3166,7 +3276,7 @@ class CheckContext {
       } else if (arg.name) {
         // Shorthand: (x:) means use variable x
         const sym = this.lookup(arg.name)
-        argType = sym ? sym.type : primitive('i32')
+        argType = typeOfSymbol(sym) ?? primitive('i32')
       } else {
         argType = VOID
       }
@@ -3328,12 +3438,317 @@ class CheckContext {
 
   inferSizeof(expr: AST.SizeofExpr): ResolvedType {
     const resolvedType = this.resolveType(expr.type)
+    // Codegen takes the operand from here: resolving the AST again, it would
+    // not know what a type parameter was bound to.
+    this.types.set(typeKey(expr.span.start, 'SizeofType'), resolvedType)
     const size = byteSize(resolvedType)
     if (size === null) {
       this.error(expr.span.start, `sizeof: cannot compute size of dynamically sized type`)
     }
     // sizeof always returns u32 (natural size type for WebAssembly)
     return primitive('u32')
+  }
+
+  // === Generics ===
+  //
+  // A function with a comptime parameter is a generic. Nothing of it is
+  // resolved where it is declared. A call finds its comptime arguments, and
+  // each distinct set of them gets an instance: a copy of the declaration with
+  // the parameters replaced by their arguments, collected and checked as an
+  // ordinary function of the module that declares the generic. The call is
+  // recorded as a plain call of that instance.
+
+  private collectGeneric(decl: AST.FuncDecl): void {
+    const valid = this.checkGenericDecl(decl)
+    if (!decl.ident) return
+    if (this.moduleScope.symbols.has(decl.ident)) {
+      this.error(decl.span.start, `'${decl.ident}' is already declared: a generic function's name is unique in its module`)
+      return
+    }
+    this.moduleScope.symbols.set(decl.ident, { kind: 'generic', decl, owner: this, instances: new Map(), valid })
+    this.recordDefinition(decl.ident, decl.span.start)
+  }
+
+  // What a generic is checked for where it is declared. The rest of it waits
+  // for an instance, where its types are known.
+  private checkGenericDecl(decl: AST.FuncDecl): boolean {
+    let valid = true
+    const reject = (offset: number, message: string) => {
+      valid = false
+      this.error(offset, message)
+    }
+    if (!decl.ident) reject(decl.span.start, `a generic function needs a name`)
+    const params = genericParams(decl)
+    const unnamed = params.find((p) => !p.ident)
+    if (unnamed) reject(unnamed.span.start, `a generic function's parameters need names`)
+    const typeParams = new Set<string>()
+    for (const p of params) {
+      if (!p.ident) continue
+      const at = p.span.start
+      if (p.type.kind !== 'TypeType') {
+        if (!p.comptime) continue
+        if (p.type.kind === 'FuncType') {
+          reject(at, `comptime parameter '${p.ident}' must be a type parameter: comptime function parameters are not supported yet`)
+        } else {
+          reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type' or a function type`)
+        }
+      } else if (!p.comptime) {
+        reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
+      } else if (!/^[A-Z]/.test(p.ident)) {
+        reject(at, `a type parameter's name starts with an upper-case letter: write 'comptime T: type'`)
+      } else if (typeParams.has(p.ident)) {
+        reject(at, `type parameter '${p.ident}' is declared twice`)
+      } else if (this.moduleScope.symbols.get(p.ident)?.kind === 'type' || this.pendingTypeNames.has(p.ident)) {
+        reject(at, `type parameter '${p.ident}' has the name of a type declared in this module`)
+      } else {
+        typeParams.add(p.ident)
+      }
+    }
+    return valid
+  }
+
+  // A call of a generic function: find the comptime arguments, get the
+  // instance, check the remaining arguments against its signature and record
+  // the plain call it compiles to.
+  inferGenericCall(expr: AST.CallExpr, sym: Symbol & { kind: 'generic' }, name: string): ResolvedType {
+    // However the call fails, the values among its arguments are still
+    // inferred, so that their own errors appear.
+    const fail = (offset?: number, message?: string): ResolvedType => {
+      if (offset !== undefined && message) this.error(offset, message)
+      for (const arg of expr.args) if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+      return RECOVERY
+    }
+    this.recordReference(name, expr.callee.span.start)
+    if (!sym.valid) return fail()
+
+    // Which form the call is depends only on how many arguments it has: all
+    // the type parameters are written, or all are left out.
+    const params = genericParams(sym.decl)
+    const typeParams = params.filter(isTypeParam).map((p) => p.ident as string)
+    if (expr.args.some((a) => a.name !== null || a.value === null)) {
+      return fail(expr.span.start, `'${name}' takes positional arguments`)
+    }
+    const explicit = expr.args.length === params.length
+    const runtimeCount = params.length - typeParams.length
+    if (!explicit && expr.args.length !== runtimeCount) {
+      return fail(
+        expr.span.start,
+        `'${name}' expects ${runtimeCount} argument${runtimeCount === 1 ? '' : 's'}, or ${params.length} with its type argument${typeParams.length === 1 ? '' : 's'} written; got ${expr.args.length}`,
+      )
+    }
+    const pairs: { param: AST.Field; arg: AST.Expr; index: number }[] = []
+    for (const param of params) {
+      if (isTypeParam(param) && !explicit) continue
+      pairs.push({ param, arg: expr.args[pairs.length].value as AST.Expr, index: pairs.length })
+    }
+
+    const bound = new Map<string, ResolvedType>()
+    if (explicit) {
+      for (const { param, arg, index } of pairs) {
+        if (!isTypeParam(param)) continue
+        const value = this.evalComptimeArg(name, param, arg, index)
+        if (value?.kind !== 'type') return fail()
+        bound.set(param.ident as string, value.type)
+      }
+    } else {
+      // The first argument that can decide a type parameter decides it. An
+      // untyped literal never does: it takes the type the parameter turns out
+      // to have. These arguments are checked again below, against the
+      // instance's parameter types, and that check is the one that registers
+      // their literals.
+      const registered = this.pendingLiterals.length
+      const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
+      for (const { param, arg } of pairs) {
+        if (!mentionsUnbound(param.type, typeParams, bound)) continue
+        const type = this.inferExpr(arg)
+        if (type === RECOVERY) return fail()
+        if (hasOwnType(type)) matchType(param.type, type, typeParams, bound)
+        else untyped.push({ param, arg, type })
+      }
+      this.pendingLiterals.length = registered
+      const missing = typeParams.find((p) => !bound.has(p))
+      if (missing) {
+        const rest = runtimeCount > 0 ? ', ...' : ''
+        const literals = untyped.filter((u) => mentionsUnbound(u.param.type, [missing], bound))
+        if (literals.length === 0) {
+          const plural = typeParams.length === 1 ? '' : 's'
+          return fail(
+            expr.span.start,
+            `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${name}(${typeParams.map(() => 'u32').join(', ')}${rest})`,
+          )
+        }
+        // What the literals would be on their own, to show what to write
+        const guess = new Map(bound)
+        for (const u of untyped) matchType(u.param.type, this.concretize(u.type), typeParams, guess)
+        const written = typeParams.map((p) => {
+          const type = guess.get(p)
+          return type ? typeToString(type) : p
+        })
+        const text = literalText(literals[0].arg)
+        const example = text ? ` (${text}:${typeToString(this.concretize(literals[0].type))})` : ''
+        return fail(
+          expr.span.start,
+          `cannot infer ${missing} for '${name}' from untyped literals: write ${name}(${written.join(', ')}${rest}) or give a literal its type${example}`,
+        )
+      }
+    }
+
+    // A type declared further down is not known yet while declarations are
+    // still being collected (a call in a global's initializer): its instance
+    // would be keyed by the name, not by the type.
+    for (const p of typeParams) {
+      const pending = unresolvedName(bound.get(p) as ResolvedType)
+      if (pending) {
+        return fail(expr.span.start, `type argument ${p} of '${name}' uses type '${pending}' before it is declared`)
+      }
+    }
+
+    const args: ComptimeValue[] = typeParams.map((p) => ({ kind: 'type', type: bound.get(p) as ResolvedType }))
+    const inst = this.instantiate(sym, args, expr.span.start)
+    if (!inst) return fail()
+
+    // Every other argument is an ordinary argument of the instance.
+    const target = sym.owner.moduleScope.symbols.get(inst.name) as Symbol & { kind: 'func' }
+    const sig = target.type
+    const runtimeArgs: AST.Arg[] = []
+    for (const { param, arg, index } of pairs) {
+      if (isTypeParam(param)) continue
+      this.checkExpr(arg, sig.params[runtimeArgs.length].type, `argument ${index + 1}`)
+      runtimeArgs.push(expr.args[index])
+    }
+
+    this.calls.set(expr.span.end, {
+      kind: 'CallExpr',
+      callee: { kind: 'IdentExpr', name: inst.name, span: expr.callee.span },
+      args: runtimeArgs,
+      span: expr.span,
+    })
+    // What the editor shows at the call: the signature of the instance
+    this.types.set(typeKey(expr.callee.span.start, 'IdentExpr'), sig)
+    if (sig.returns.length === 0) return VOID
+    return sig.returns.length === 1 ? sig.returns[0].type : tuple(sig.returns)
+  }
+
+  // The one place a comptime argument is evaluated. A type argument is read as
+  // a type because of where it stands, as after a colon, and resolved in the
+  // calling module.
+  private evalComptimeArg(callee: string, param: AST.Field, arg: AST.Expr, index: number): ComptimeValue | null {
+    const ast = typeOfArg(arg)
+    if (!ast) {
+      this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be a type: ${param.ident} is a type parameter`)
+      return null
+    }
+    const before = this.errorsReported
+    const type = this.resolveType(ast)
+    if (this.errorsReported > before) return null
+    if (!hasOwnType(type)) {
+      this.error(arg.span.start, `type argument ${param.ident} of '${callee}' must be a concrete type`)
+      return null
+    }
+    return { kind: 'type', type }
+  }
+
+  // The instance of a generic for these comptime arguments: made once, in the
+  // module that declares the generic, whoever asks.
+  private instantiate(sym: Symbol & { kind: 'generic' }, args: ComptimeValue[], at: number): Instance | null {
+    const of = sym.decl
+    const comptimeParams = genericParams(of).filter((p) => p.comptime)
+    const types = args.map((a) => (a as ComptimeValue & { kind: 'type' }).type)
+    const key = types.map((t) => watSafe(canonicalKey(t))).join('|')
+    const existing = sym.instances.get(key)
+    if (existing) return existing
+
+    // A generic that instantiates itself with a larger type each time never
+    // finishes; the size of the key stops one that doubles its type long
+    // before the depth does.
+    const depth = (this.currentInstance?.depth ?? 0) + 1
+    if (depth > MAX_INSTANCE_DEPTH || key.length > MAX_INSTANCE_KEY) {
+      this.error(at, `too many nested instantiations (${MAX_INSTANCE_DEPTH}) while instantiating '${of.ident}'`)
+      return null
+    }
+
+    const owner = sym.owner
+    const index = owner.instances.length + 1
+    // Offsets have to stay exact integers, and below the next instance's.
+    if (of.span.end >= INSTANCE_STRIDE || index >= MAX_INSTANCES) {
+      throw new Error(`cannot instantiate '${of.ident}': the source is too large or has too many instances`)
+    }
+    const bound = new Map(comptimeParams.map((p, i) => [p.ident as string, types[i]]))
+    const decl = cloneAst(of, index * INSTANCE_STRIDE, (name) => {
+      const type = bound.get(name)
+      return type && { kind: 'BoundType', name, type, span: { start: 0, end: 0 } }
+    }) as AST.FuncDecl
+    const input = decl.signature.input as AST.CompositeType
+    input.fields = input.fields.filter((f) => !f.comptime)
+    decl.ident = `${of.ident}<${key}>`
+
+    const shown = comptimeParams.map((p, i) => {
+      const text = typeToString(types[i])
+      return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
+    })
+    const inst: Instance = { name: decl.ident, label: `${of.ident}(${shown.join(', ')})`, of, decl, args, depth }
+    sym.instances.set(key, inst)
+    owner.instances.push(inst)
+    owner.instanceQueue.push(inst)
+    // The signature exists from here on, which is all a call needs. The body
+    // waits for drainInstances.
+    owner.collectFunc(decl)
+    return inst
+  }
+
+  // Instance bodies are checked when the checker is at rest, each as a function
+  // of the module that declares the generic: a generic's body sees its own
+  // module, and nothing of a caller's locals, loops or narrowed ranges.
+  // Instances a body asks for join the queue. Recursion needs nothing special:
+  // an instance is known before its body is checked.
+  private drainInstances(): void {
+    for (let inst = this.instanceQueue.shift(); inst; inst = this.instanceQueue.shift()) {
+      const saved = { scope: this.currentScope, instance: this.currentInstance }
+      this.currentScope = this.moduleScope
+      this.currentInstance = inst
+      this.checkFuncBody(inst.decl)
+      this.currentScope = saved.scope
+      this.currentInstance = saved.instance
+    }
+  }
+
+  // A generic's body is checked per instance, with its types filled in, and
+  // not where it is declared.
+  private skipGenericBody(decl: AST.FuncDecl): void {
+    this.literalSlots.set(decl, this.pendingLiterals.length)
+  }
+
+  // The literals of an instance body are registered when the body is checked,
+  // after everything else in the module. Data is laid out in the order
+  // literals are registered, so they are moved to where the same function
+  // written by hand in the generic's place would have registered them: the
+  // instances of one generic follow each other in the order of their names,
+  // as their code does. Without this a generic with a string in its body and
+  // its hand-written twin would differ in every address.
+  private placeInstanceLiterals(): void {
+    const own = this.pendingLiterals.filter((lit) => lit.id < INSTANCE_STRIDE)
+    if (own.length === this.pendingLiterals.length) return
+    const ofInstance = (inst: Instance) => {
+      const base = (this.instances.indexOf(inst) + 1) * INSTANCE_STRIDE
+      return this.pendingLiterals.filter((lit) => lit.id >= base && lit.id < base + INSTANCE_STRIDE)
+    }
+    const placed: { at: number; literals: PendingLiteral[] }[] = []
+    for (const [generic, at] of this.literalSlots) {
+      const instances = this.instances.filter((inst) => inst.of === generic).sort((a, b) => (a.name < b.name ? -1 : 1))
+      placed.push({ at, literals: instances.flatMap(ofInstance) })
+    }
+    // Slots were noted in source order: filling the last one first leaves the
+    // positions of the earlier ones as they were noted.
+    for (const { at, literals } of placed.reverse()) own.splice(at, 0, ...literals)
+    this.pendingLiterals = own
+  }
+
+  // An offset inside an instance, as the place in the generic's source it was
+  // copied from, with the instance named in the message.
+  private atSource(offset: number, message: string): [number, string] {
+    if (offset < INSTANCE_STRIDE) return [offset, message]
+    const inst = this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
+    return [offset % INSTANCE_STRIDE, inst ? `${message}, in ${inst.label}` : message]
   }
 
   // === Scope Lookup ===
@@ -3463,12 +3878,15 @@ class CheckContext {
   }
 
   error(offset: number, message: string): void {
+    this.errorsReported++
+    ;[offset, message] = this.atSource(offset, message)
     if (!this.errors.some((e) => e.offset === offset && e.message === message)) {
       this.errors.push({ offset, message })
     }
   }
 
   warn(offset: number, message: string): void {
+    ;[offset, message] = this.atSource(offset, message)
     if (!this.warnings.some((w) => w.offset === offset && w.message === message)) {
       this.warnings.push({ offset, message })
     }
@@ -3484,12 +3902,21 @@ class CheckContext {
   }
 
   recordDefinition(name: string, offset: number): void {
+    // An instance's parameters and locals are copies: they must not re-point
+    // the names of the declaration they were copied from.
+    if (offset >= INSTANCE_STRIDE) return
     this.symbolDefOffsets.set(name, offset)
     this.references.set(offset, [])
   }
 
   // Record a reference to a symbol (looks up def offset by name)
   recordReference(name: string, refOffset: number): void {
+    if (refOffset >= INSTANCE_STRIDE) {
+      // From an instance, only uses of module-level names count, at their place
+      // in the generic's source: a helper that only generic bodies call is used.
+      if (this.lookup(name) !== this.moduleScope.symbols.get(name)) return
+      refOffset %= INSTANCE_STRIDE
+    }
     const defOffset = this.symbolDefOffsets.get(name)
     if (defOffset !== undefined) {
       const refs = this.references.get(defOffset)
@@ -3499,6 +3926,216 @@ class CheckContext {
       this.symbolRefs.set(refOffset, defOffset)
     }
   }
+}
+
+// === Generics helpers ===
+
+// A generic function has no type until it is given its comptime arguments.
+export function typeOfSymbol(sym: Symbol | undefined): ResolvedType | undefined {
+  return sym && sym.kind !== 'generic' ? sym.type : undefined
+}
+
+// A signature is generic when a parameter is comptime, or is of type `type`
+// (which only a comptime parameter can be; the checker says so).
+function isGenericSignature(signature: AST.FuncSignature): boolean {
+  const input = signature.input
+  return input.kind === 'CompositeType' && input.fields.some((f) => f.comptime || f.type.kind === 'TypeType')
+}
+
+export function isGenericDecl(decl: AST.FuncDecl): boolean {
+  return isGenericSignature(decl.signature)
+}
+
+function genericParams(decl: AST.FuncDecl): AST.Field[] {
+  return (decl.signature.input as AST.CompositeType).fields
+}
+
+function isTypeParam(param: AST.Field): boolean {
+  return param.comptime === true && param.type.kind === 'TypeType'
+}
+
+// A call argument read as a type, by its syntax alone: what could be written
+// after a colon. Forms that only a type can have are already a TypeExpr; the
+// rest are expressions that are also types (u32, (i32, i32)). Null for
+// anything else: a variable, a literal, ().
+function typeOfArg(expr: AST.Expr): AST.Type | null {
+  switch (expr.kind) {
+    case 'TypeExpr':
+      return expr.type
+    case 'IdentExpr':
+      return PRIMITIVE_NAMES.has(expr.name)
+        ? { kind: 'PrimitiveType', name: expr.name as AST.PrimitiveType['name'], span: expr.span }
+        : null
+    case 'GroupExpr':
+      return typeOfArg(expr.expr)
+    case 'TupleExpr': {
+      if (expr.elements.length === 0) return null
+      const fields: AST.Field[] = []
+      for (const el of expr.elements) {
+        const type = el.value ? typeOfArg(el.value) : null
+        if (!type) return null
+        fields.push({ kind: 'Field', ident: el.name, type, span: el.span })
+      }
+      return { kind: 'CompositeType', fields, span: expr.span }
+    }
+    default:
+      return null
+  }
+}
+
+// Whether a value of this type can decide a type parameter. An untyped literal
+// (7, 0.5, [1, 2, 3]) has no type of its own: it takes the one it is used as.
+function hasOwnType(type: ResolvedType): boolean {
+  const t = unwrap(type)
+  switch (t.kind) {
+    case 'comptime_int':
+    case 'comptime_float':
+    case 'comptime_list':
+    case 'comptime_array':
+      return false
+    case 'tuple':
+      return t.fields.every((f) => hasOwnType(f.type))
+    case 'array':
+    case 'slice':
+      return hasOwnType(t.element)
+    case 'pointer':
+      return hasOwnType(t.pointee)
+    case 'func':
+      return t.params.every((p) => hasOwnType(p.type)) && t.returns.every((r) => hasOwnType(r.type))
+    default:
+      return true
+  }
+}
+
+// The name of a type that is referred to but not resolved yet, if there is
+// one. A type that refers to itself keeps a forward reference inside its own
+// alias; that one is resolved.
+function unresolvedName(type: ResolvedType, inside: readonly string[] = []): string | null {
+  const first = (types: ResolvedType[]) => {
+    for (const t of types) {
+      const name = unresolvedName(t, inside)
+      if (name) return name
+    }
+    return null
+  }
+  switch (type.kind) {
+    case 'forward_ref':
+      return inside.includes(type.name) ? null : type.name
+    case 'named':
+      return inside.includes(type.name) ? null : unresolvedName(type.type, [...inside, type.name])
+    case 'pointer':
+      return unresolvedName(type.pointee, inside)
+    case 'array':
+    case 'slice':
+      return unresolvedName(type.element, inside)
+    case 'tuple':
+      return first(type.fields.map((f) => f.type))
+    case 'func':
+      return first([...type.params, ...type.returns].map((f) => f.type))
+    default:
+      return null
+  }
+}
+
+// Whether a parameter's declared type names a type parameter that nothing has
+// decided yet.
+function mentionsUnbound(type: AST.Type, typeParams: readonly string[], bound: ReadonlyMap<string, ResolvedType>): boolean {
+  switch (type.kind) {
+    case 'TypeRef':
+      return typeParams.includes(type.name) && !bound.has(type.name)
+    case 'PointerType':
+      return mentionsUnbound(type.pointee, typeParams, bound)
+    case 'IndexedType':
+      return mentionsUnbound(type.element, typeParams, bound)
+    case 'CompositeType':
+      return type.fields.some((f) => mentionsUnbound(f.type, typeParams, bound))
+    case 'FuncType':
+      return mentionsUnbound(type.input, typeParams, bound) || mentionsUnbound(type.output, typeParams, bound)
+    default:
+      return false
+  }
+}
+
+// Lays a parameter's declared type over its argument's type and binds the type
+// parameters it finds. It looks through the conversions an argument gets
+// anyway (*mut to *, an array pointer to a slice) and only binds: whether the
+// argument fits is decided afterwards, by the ordinary argument check.
+function matchType(
+  pattern: AST.Type,
+  actual: ResolvedType,
+  typeParams: readonly string[],
+  bound: Map<string, ResolvedType>,
+  depth = 0,
+): void {
+  const next = (p: AST.Type, a: ResolvedType) => matchType(p, a, typeParams, bound, depth + 1)
+  const u = unwrap(actual)
+  switch (pattern.kind) {
+    case 'TypeRef':
+      // A later argument never re-decides.
+      if (!typeParams.includes(pattern.name) || bound.has(pattern.name)) return
+      // The argument's own type loses a range it was only known to lie in:
+      // a loop counter that is a u32#12 here decides u32.
+      bound.set(pattern.name, depth === 0 && u.kind === 'primitive' && u.max !== undefined ? primitive(u.name) : actual)
+      return
+    case 'PointerType':
+      if (u.kind === 'pointer') next(pattern.pointee, u.pointee)
+      return
+    case 'IndexedType': {
+      const element =
+        u.kind === 'slice' || u.kind === 'array' ? u.element
+        : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
+        : null
+      if (element) next(pattern.element, element)
+      return
+    }
+    case 'CompositeType':
+      if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
+        pattern.fields.forEach((f, i) => {
+          next(f.type, u.fields[i].type)
+        })
+      }
+      return
+    default:
+      return
+  }
+}
+
+// A number literal as it would be written, for a message
+function literalText(expr: AST.Expr): string | null {
+  if (expr.kind !== 'LiteralExpr') return null
+  if (expr.value.kind === 'int') return expr.value.value.toString()
+  if (expr.value.kind === 'float') {
+    return Number.isInteger(expr.value.value) ? expr.value.value.toFixed(1) : String(expr.value.value)
+  }
+  return null
+}
+
+// A deep copy of an AST subtree with every span moved by `delta` and every
+// type name that `subst` knows replaced by what it returns. This is the whole
+// of instantiation: the copy is ordinary source as far as the rest of the
+// compiler can tell. It is always made from the declaration as parsed, never
+// from another copy, so no offset is moved twice.
+function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.BoundType | undefined): unknown {
+  if (Array.isArray(node)) return node.map((n) => cloneAst(n, delta, subst))
+  if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return node
+  const n = node as Record<string, unknown>
+  const shift = (span: unknown): AST.Span => {
+    const { start, end } = span as AST.Span
+    return { start: start + delta, end: end + delta }
+  }
+  if (n.kind === 'TypeRef' || n.kind === 'IdentExpr') {
+    const to = subst(n.name as string)
+    if (to) {
+      const type: AST.BoundType = { ...to, span: shift(n.span) }
+      // An upper-case name is an expression only as the callee of T(a, b)
+      return n.kind === 'TypeRef' ? type : { kind: 'TypeExpr', type, span: type.span }
+    }
+  }
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(n)) {
+    out[k] = k === 'span' ? shift(v) : cloneAst(v, delta, subst)
+  }
+  return out
 }
 
 function editDistance(a: string, b: string): number {
