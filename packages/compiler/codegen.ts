@@ -745,6 +745,10 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       return `(i32.eqz ${operand})`
 
     case '&': {
+      if (expr.operand.kind === 'IndexExpr') {
+        const addr = addressOfIndexToWat(expr, expr.operand, ctx)
+        if (addr) return addr
+      }
       // If operand is already a pointer, just return it
       const innerType = lookupExprType(expr.operand, ctx)
       if (innerType && (innerType.kind === 'pointer' || innerType.kind === 'slice')) {
@@ -1241,6 +1245,31 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (type.kind === 'pointer') return offset
   return loadFromMemory(type, offset)
+}
+
+// &items[i]: the element's address. For an optional result (?*T, when the
+// index isn't known to be in range) it's 0 when i is out of range.
+function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: CodegenContext): string | null {
+  const resultType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const objType = ctx.types.get(typeKey(exprTypeOffset(target.object), target.object.kind))
+    ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+  if (resultType?.kind !== 'pointer' || !objType) return null
+  const u = unwrap(objType)
+  let base = exprToWat(target.object, ctx)
+  let len: string
+  if (u.kind === 'slice') {
+    const parts = trySplitMultiValue(base, 2)
+    if (!parts) throw new Error('&items[i] on a slice expression: assign the slice to a let first')
+    ;[base, len] = parts
+  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
+    len = `(i32.const ${u.pointee.sizes[0]})`
+  } else {
+    return null
+  }
+  if (!resultType.optional) return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  const idx = `$__addr_idx_${expr.span.start}`
+  const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
+  return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
 
 function evalComptimeIndex(expr: AST.Expr): number | null {
@@ -1802,12 +1831,19 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    const value = exprToWat(stmt.value, ctx)
+    let value = exprToWat(stmt.value, ctx)
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
+    }
+    // *[N]T into a slice: add the compile-time length, as call arguments do.
+    if (unwrap(type).kind === 'slice') {
+      const valueType = ctx.types.get(typeKey(exprTypeOffset(stmt.value), stmt.value.kind))
+      const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
+      const len = array ? totalElements(array.sizes) : null
+      if (len !== null) value = `${value} (i32.const ${len})`
     }
     const wasmTypes = typeToWasm(type)
 
@@ -2598,13 +2634,25 @@ function collectLocals(
           ctx.locals.set(`__iflet_len_${uid}`, [`__iflet_len_${uid}`])
         }
       }
+      visitExpr(expr.condition)
       visitBody(expr.thenBranch)
       for (const elif of expr.elifs) {
+        visitExpr(elif.condition)
         visitBody(elif.thenBranch)
       }
       if (expr.else_) {
         visitBody(expr.else_)
       }
+    }
+    if (expr.kind === 'CastExpr' || expr.kind === 'AnnotationExpr') {
+      visitExpr(expr.expr)
+    }
+    if (expr.kind === 'MemberExpr') {
+      visitExpr(expr.object)
+    }
+    if (expr.kind === 'IndexExpr') {
+      visitExpr(expr.object)
+      visitExpr(expr.index)
     }
     if (expr.kind === 'CoalesceExpr') {
       const uid = expr.span.start
@@ -2655,6 +2703,13 @@ function collectLocals(
       }
     }
     if (expr.kind === 'UnaryExpr') {
+      // &items[i] with a runtime check keeps the index in a scratch local.
+      if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
+        const t = checkResult.types.get(typeKey(expr.span.start, expr.kind))
+        if (t?.kind === 'pointer' && t.optional) {
+          locals.push({ name: `__addr_idx_${expr.span.start}`, type: 'i32' })
+        }
+      }
       visitExpr(expr.operand)
     }
     if (expr.kind === 'BinaryExpr') {
