@@ -561,6 +561,29 @@ func tail(p: [*]u8) -> u32 {
 a range on a many-pointer needs an end
 ```
 
+For the same reason it isn't a slice as it stands: only a pointer to a fixed-size array, which knows its length, becomes one by itself.
+
+```ents
+data text = "hello"
+
+func length(s: []u8) -> u32 => s.len
+
+func a() -> u32 => length(text)
+func b(p: [*]u8, n: u32) -> u32 => length(p[0..n])
+```
+
+```ents
+func length(s: []u8) -> u32 => s.len
+
+func a(p: [*]u8) -> u32 => length(p)
+func b(p: [*]u8) -> []u8 => p
+```
+
+```errors
+argument 1: cannot assign [*]u8 to []u8
+cannot assign [*]u8 to []u8
+```
+
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
 
 ```ents

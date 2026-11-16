@@ -532,6 +532,11 @@ describe('typeAssignable', () => {
     ['*u8', 'int(0)', true],
     ['[]u8', 'int(0)', false],
 
+    // A pointer becomes a slice by itself only when it knows its length
+    ['[]u8', '*[10]u8', true],
+    ['[]u8', '[*]u8', false],
+    ['[]u8', '*[!]u8', false],
+
     // Narrowing is NOT implicit
     ['i8', 'i16', false],
     ['i16', 'i32', false],

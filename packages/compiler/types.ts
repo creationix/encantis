@@ -791,8 +791,10 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability)
-  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array') {
+  // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability).
+  // The slice's length is N: a many-pointer [*]T has none to give, and a
+  // *[!]T would have to be scanned for it.
+  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array' && isFixedSizes(s.pointee.sizes)) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.pointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') {
