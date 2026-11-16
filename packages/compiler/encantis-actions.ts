@@ -858,7 +858,40 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return stmt.toAST()
   },
 
-  LetStmt(_let, patternWithType, assignOpt): AST.LetStmt {
+  LetStmt_multi(_let, pattern, assign): AST.LetStmt {
+    return {
+      kind: 'LetStmt',
+      pattern: pattern.toAST() as AST.TuplePattern,
+      type: null,
+      value: assign.toAST() as AST.Expr,
+      span: span(this),
+    } as AST.LetStmt
+  },
+
+  SetStmt_multi(_set, pattern, assign): AST.SetStmt {
+    return {
+      kind: 'SetStmt',
+      pattern: pattern.toAST() as AST.TuplePattern,
+      type: null,
+      value: assign.toAST() as AST.Expr,
+      span: span(this),
+    } as AST.SetStmt
+  },
+
+  // a, b, c: a positional tuple pattern, as if written (a, b, c).
+  MultiPattern(head, _comma, rest) {
+    const names = [head, ...rest.asIteration().children]
+    return {
+      kind: 'TuplePattern',
+      elements: names.map((n) => ({
+        kind: 'positional',
+        pattern: { kind: 'IdentPattern', name: n.sourceString, span: span(n) } as AST.IdentPattern,
+      })),
+      span: span(this),
+    } as AST.TuplePattern
+  },
+
+  LetStmt_single(_let, patternWithType, assignOpt): AST.LetStmt {
     const pwt = patternWithType.toAST() as PatternWithType
     const value = first<AST.Expr>(assignOpt)
     return {
@@ -870,7 +903,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.LetStmt
   },
 
-  SetStmt(_set, patternWithType, assign): AST.SetStmt {
+  SetStmt_single(_set, patternWithType, assign): AST.SetStmt {
     const pwt = patternWithType.toAST() as PatternWithType
     const value = assign.toAST() as AST.Expr
     return {
