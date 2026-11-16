@@ -1,0 +1,48 @@
+// Filling and copying through ranges: buf[a..b] = v and buf[a..b] = src.
+
+data buf = mut [0:u8; 16]
+data words = mut [0:u32; 8]
+data src = [1:u8, 2, 3, 4, 5, 6, 7, 8]
+data wsrc = [9:u32, 8, 7]
+
+func sum8(s: []u8) -> u32 {
+  let t: u32 = 0
+  for c in s { t += c as u32 }
+  return t
+}
+func sum32(s: []u32) -> u32 {
+  let t: u32 = 0
+  for x in s { t += x }
+  return t
+}
+
+test "fill bytes" {
+  buf[..] = 7
+  assert sum8(buf[..]) == 7 * 16
+  buf[4..8] = 0
+  assert sum8(buf[..]) == 7 * 12
+}
+test "fill with a runtime length that is proven to fit" {
+  buf[..] = 0
+  let n: u32#17 = 5
+  buf[..n] = 1
+  assert sum8(buf[..]) == 5
+}
+test "fill wider elements" {
+  words[..] = 3
+  assert sum32(words[..]) == 24
+  words[2..5] = 0
+  assert sum32(words[..]) == 15
+}
+test "copy" {
+  buf[..] = 0
+  buf[8..16] = src
+  assert sum8(buf[..]) == 36
+  buf[0..4] = src[4..8]
+  assert (buf[0] ?? 0) == 5
+  assert (buf[3] ?? 0) == 8
+  words[..] = 0
+  words[5..8] = wsrc
+  assert sum32(words[..]) == 24
+  assert (words[5] ?? 0) == 9
+}

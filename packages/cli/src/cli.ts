@@ -9,6 +9,7 @@ import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
+import { createTestHost } from '@encantis/compiler/test-host'
 import { resolve } from 'node:path'
 import wabt from 'wabt'
 
@@ -557,7 +558,7 @@ switch (command) {
       const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
       if (!hasTests) continue
 
-      const { wat, testNames } = programToWatWithTests(load.modules, check.results, entryPath)
+      const { wat, testNames, testTitles } = programToWatWithTests(load.modules, check.results, entryPath)
       if (testNames.length === 0) continue
 
       const w = await wabt()
@@ -576,20 +577,19 @@ switch (command) {
       const mod = await WebAssembly.compile(buffer)
       const source = entryMod?.source ?? ''
       let failedOffset = -1
-      const instance = await WebAssembly.instantiate(mod, {
-        test: {
-          __assert_fail: (offset: number) => { failedOffset = offset },
-        },
-      })
+      const host = createTestHost(mod, (offset) => { failedOffset = offset })
+      const instance = await WebAssembly.instantiate(mod, host.imports)
+      host.attach(instance)
 
-      for (const name of testNames) {
+      for (const [t, name] of testNames.entries()) {
+        const title = testTitles[t]
         const fn = instance.exports[`test_${name}`] as Function
         try {
           failedOffset = -1
           fn()
           totalPassed++
-          allResults.push({ file: testFile, name, pass: true })
-          console.log(`  pass: ${name.replace(/_/g, ' ')}`)
+          allResults.push({ file: testFile, name: title, pass: true })
+          console.log(`  pass: ${title}`)
         } catch (e: any) {
           totalFailed++
           let detail = ''
@@ -598,8 +598,8 @@ switch (command) {
             const line = source.split('\n')[loc.line - 1]?.trim() ?? ''
             detail = `\n         ${testFile}:${loc.line}: ${line}`
           }
-          allResults.push({ file: testFile, name, pass: false, error: e.message })
-          console.log(`  FAIL: ${name.replace(/_/g, ' ')}${detail}`)
+          allResults.push({ file: testFile, name: title, pass: false, error: e.message })
+          console.log(`  FAIL: ${title}${detail}`)
         }
       }
     }

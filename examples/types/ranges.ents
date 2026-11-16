@@ -1,0 +1,68 @@
+// Ranges: items[a..b] is a slice over the same memory. Constant ranges on a
+// fixed array are checked at compile time; runtime ones give an optional slice.
+
+data text = "hello, world"
+data nums = mut [1:u32, 2, 3, 4, 5]
+
+func sum(s: []u32) -> u32 {
+  let t: u32 = 0
+  for x in s { t += x }
+  return t
+}
+func eq(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i, c in a {
+    return false when c != (b[i] ?? 0)
+  }
+  return true
+}
+
+test "constant ranges on a fixed array" {
+  let hello = text[0..5]
+  assert hello.len == 5
+  assert eq(hello, "hello")
+  assert eq(text[7..], "world")
+  assert eq(text[..5], "hello")
+  assert text[..].len == 12
+  assert sum(nums[1..4]) == 9
+}
+test "runtime ranges are optional" {
+  let i: u32 = 7
+  let world = text[i..] ?? ""
+  assert eq(world, "world")
+  let k: u32 = 13
+  let bad = text[k..] ?? "none"
+  assert eq(bad, "none")
+  let j: u32 = 3
+  assert eq(text[j..i] ?? "x", "lo, ")
+  assert eq(text[i..j] ?? "x", "x")
+}
+test "ranges of slices" {
+  let s: []u8 = text
+  assert s[..].len == 12
+  let i: u32 = 7
+  if let w = s[i..] {
+    assert eq(w, "world")
+  }
+  assert eq(s[0..20] ?? "too far", "too far")
+}
+test "writing through a mutable range" {
+  let part = nums[0..2]
+  let p = part.ptr
+  assert sum(part) == 3
+}
+
+export func tail_len() -> u32 => text[7..].len
+export func rest_len(s: []u8, i: u32) -> u32 => (s[i..] ?? "").len
+export func count(s: []u8) -> u32 {
+  let n: u32 = 0
+  while (s[n] ?? 0) != 0 { n += 1 }
+  for c in s[1..] ?? "" { n += 1 }
+  return n
+}
+test "ranges off the stack and in loops" {
+  assert tail_len() == 5
+  assert rest_len("hello", 2) == 3
+  assert rest_len("hello", 9) == 0
+  assert count("ab") == 3
+}

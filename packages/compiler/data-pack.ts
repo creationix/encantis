@@ -86,6 +86,9 @@ export interface DataSection {
  * Deduplicates identical byte sequences using hex-encoded keys.
  * Also deduplicates by finding substrings within already-written data.
  */
+// Bytes at the start of memory that never hold data (address 0 is "none").
+const NULL_PAGE = 8
+
 export class DataSectionBuilder {
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
@@ -120,7 +123,8 @@ export class DataSectionBuilder {
 
     return {
       entries,
-      totalSize: this.currentOffset,
+      // With no data at all, there's no data section (and no reserved bytes).
+      totalSize: entries.length > 0 ? this.currentOffset : 0,
       autoDataStart: 0,
       errors: [],
     }
@@ -130,10 +134,7 @@ export class DataSectionBuilder {
   // Used by type-aware serialization
   // If skipDedup is true, always allocate new space (for mutable data)
   internBytes(bytes: Uint8Array, skipDedup = false, isOptional = false): DataRef {
-    // Avoid placing optional-typed data at offset 0 (null sentinel)
-    if (isOptional && this.currentOffset === 0) {
-      this.currentOffset = 4
-    }
+    void isOptional // data never starts at 0 (see NULL_PAGE)
 
     const key = bytesToKey(bytes)
 
@@ -172,27 +173,20 @@ export class DataSectionBuilder {
     return { ptr: entry.offset, len: entry.length }
   }
 
-  // Get all written bytes as a contiguous buffer (for substring search)
-  private getWrittenBytes(): Uint8Array {
-    if (this.currentOffset === 0) return new Uint8Array(0)
-
-    // Build buffer from all interned entries
-    const result = new Uint8Array(this.currentOffset)
-    for (const entry of this.internedMap.values()) {
-      result.set(entry.bytes, entry.offset)
-    }
-
-    return result
-  }
-
-  // Search for needle in existing data section
-  // Returns offset if found, -1 if not found
+  // Search the immutable data written so far for needle, returning its offset
+  // or -1. Matches must lie entirely inside immutable entries: mutable data
+  // can change at runtime, and the gaps it leaves would otherwise read as zeros
+  // and match any run of zero bytes.
   private findSubstring(needle: Uint8Array): number {
-    const haystack = this.getWrittenBytes()
-    if (haystack.length < needle.length) return -1
-
+    if (this.currentOffset < needle.length) return -1
+    const haystack = new Uint8Array(this.currentOffset)
+    const immutable = new Uint8Array(this.currentOffset)
+    for (const entry of this.internedMap.values()) {
+      haystack.set(entry.bytes, entry.offset)
+      immutable.fill(1, entry.offset, entry.offset + entry.bytes.length)
+    }
     for (let i = 0; i <= haystack.length - needle.length; i++) {
-      if (needle.every((byte, j) => haystack[i + j] === byte)) {
+      if (needle.every((byte, j) => immutable[i + j] === 1 && haystack[i + j] === byte)) {
         return i
       }
     }
@@ -1019,6 +1013,9 @@ export interface DataSectionResult {
  */
 export function buildDataSection(literals: PendingLiteral[], types: Map<string, ResolvedType>): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
+  // Address 0 means "none" for optional pointers and slices, so program data
+  // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
+  dataBuilder.setAutoDataStart(NULL_PAGE)
   const literalRefs = new Map<number, DataRef>()
 
   // Resolve serialization types from the types map

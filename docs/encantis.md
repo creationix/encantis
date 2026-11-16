@@ -277,6 +277,24 @@ for i in 4 {                    // i: u32#4
 
 **Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
 
+**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
+
+**Narrowing:** Comparing an unsigned variable with a constant narrows its range wherever the comparison is known to hold:
+
+```ents
+data buf = mut [0:u8; 12]
+
+func f(x: u32) -> u8 {
+  if x < 12 {
+    buf[x] = 1               // x: u32#12 here
+  }
+  return 0 when x >= 12
+  return buf[x]              // and here: the return above guards it
+}
+```
+
+It applies inside an `if` branch, to later `elif` and `else` branches (where earlier conditions are false), and to the rest of a block after `return`, `break` or `continue when c`, or after `if c { ... }` whose branch always exits. `&&` combines bounds; `||` only narrows when it's false. A variable assigned anywhere in the narrowed region isn't narrowed. The comparison you write is the bounds check, so nothing extra runs.
+
 ### 2.3 Value vs Reference Types
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
@@ -1179,11 +1197,25 @@ if let data = entry.dynamic {
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
 
+#### Element Addresses and Writes
+
+Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
+
+```ents
+func put(s: []mut u8, i: u32, v: u8) -> bool {
+  if let p = &s[i] {
+    p.* = v
+    return true
+  }
+  return false
+}
+```
+
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out.
+
 ### 4.8 Slice/Range Syntax
 
-> **Status: Not yet implemented.**
-
-Create slices from existing arrays using range syntax:
+A range makes a slice over part of an array or slice, with no copying:
 
 ```ents
 let arr:*[16]u8 = ...
@@ -1193,18 +1225,25 @@ arr[..4]        // []u8 from 0 to 3
 arr[..]         // []u8 whole array as slice
 ```
 
-Bulk copy via slice assignment (uses `memory.copy`):
+Ranges follow the same bounds rules as indexing:
+
+- On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
+- Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
+- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]`.
+
+A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
+
+#### Filling and Copying
+
+Assigning to a range fills it or copies into it, as `memory.fill` and `memory.copy`:
 
 ```ents
+buffer[0..1024] = 0       // fill: every element gets the value
 cv[0..8] = hs[0..8]       // copy 8 elements
-cv[8..16] = iv[0..8]      // copy to different offset
+cv[8..16] = iv            // a *[8]T copies all of its elements
 ```
 
-Bulk fill (uses `memory.fill`):
-
-```ents
-buffer[0..1024] = 0       // zero 1024 bytes
-```
+The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§9.3), where the length is written out.
 
 ### 4.8 UFCS (Uniform Function Call Syntax)
 
@@ -1291,11 +1330,11 @@ for i in num {           // iterate 0 to n-1
   process(i)
 }
 
-for elem in arr {        // iterate over array/slice elements (not yet implemented)
+for elem in items {      // iterate over the elements of a slice or *[N]T
   process(elem)
 }
 
-for i, elem in arr {     // iterate with index (not yet implemented)
+for i, elem in items {   // with the index (u32) first
   process(i, elem)
 }
 
@@ -1303,6 +1342,8 @@ loop {                   // infinite loop
   // body
 }
 ```
+
+An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 
 ### 5.3 Control Statements
 
@@ -1650,6 +1691,10 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ## 8. Memory Model
 
+### 8.0 Data Layout
+
+Program data (`data` declarations and literals that need memory) is placed from address 8 up. Address 0 means "none" for optional pointers and slices, so nothing real may live there; the first 8 bytes stay unused, which also keeps data 8-byte aligned. `sizeof data` is the address just past the last byte of data, where free memory begins.
+
 ### 8.1 Stack vs Memory Allocation
 
 Encantis distinguishes between register storage (WASM locals/globals) and linear memory:
@@ -1858,8 +1903,12 @@ let offset:u64 = clz(n) * 8  // u8 → u64 implicit
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
+| `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
+| `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
+
+`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. Range assignment (§4.8) is the checked form for compile-time sizes.
 
 ```ents
 let pages = memory-size()    // current page count
