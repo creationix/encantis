@@ -2360,8 +2360,29 @@ class CheckContext {
       }
     }
 
-    // Constructor call (type used as function)
+    // Constructor call (type used as function): each argument is checked against
+    // its field, by position or by name (Point(x: 1, y: 2)), so literals and
+    // expressions inside it get concrete types.
     if (calleeType.kind === 'tuple') {
+      const args = expr.args
+      if (args.length !== calleeType.fields.length) {
+        this.error(
+          expr.span.start,
+          `${typeToString(calleeType)} expects ${calleeType.fields.length} field${calleeType.fields.length === 1 ? '' : 's'}, got ${args.length}`,
+        )
+      }
+      args.forEach((arg, i) => {
+        // `x:` is shorthand for `x: x`: check the variable it names.
+        const value: AST.Expr | null = arg.value ?? (arg.name ? { kind: 'IdentExpr', name: arg.name, span: arg.span } : null)
+        if (!value) return
+        const field = arg.name ? calleeType.fields.find((f) => f.name === arg.name) : calleeType.fields[i]
+        if (field) {
+          this.checkExpr(value, field.type, `field ${field.name ?? i}`)
+        } else {
+          if (arg.name) this.error(arg.span.start, `field '${arg.name}' not found in ${typeToString(calleeType)}`)
+          this.inferExpr(value)
+        }
+      })
       return calleeType
     }
 

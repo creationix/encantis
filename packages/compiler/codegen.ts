@@ -924,6 +924,26 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     }
   }
 
+  // Struct constructor: a type used as a function. Structs are register-flattened,
+  // so constructing one pushes its fields' values in declaration order. Arguments
+  // match fields by position or by name (Point(y: 2, x: 1)); `x:` is shorthand
+  // for `x: x`.
+  const typeSym = ctx.symbols.get(funcName)
+  if (typeSym?.kind === 'type') {
+    const structType = RT.unwrap(typeSym.type)
+    if (structType.kind === 'tuple') {
+      const argWat = (arg: AST.Arg) =>
+        arg.value ? exprToWat(arg.value, ctx) : identToWat({ kind: 'IdentExpr', name: arg.name ?? '', span: arg.span }, ctx)
+      const named = expr.args.some((a) => a.name)
+      return structType.fields
+        .map((field, i) => {
+          const arg = named ? expr.args.find((a) => a.name === field.name) : expr.args[i]
+          return arg ? argWat(arg) : ''
+        })
+        .join(' ')
+    }
+  }
+
   // Get callee type for param coercions
   const calleeSym = ctx.symbols.get(funcName)
   const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null

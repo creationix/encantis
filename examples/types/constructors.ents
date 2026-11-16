@@ -1,0 +1,57 @@
+// Struct constructors check each argument against its field, so literals and
+// expressions inside them get their field's type.
+
+type Point = (x: i32, y: i32)
+type Move = (rope: u32, to: i32, order: i32)
+
+export func doubled(n: i32) -> Point => Point(n, n * 2)
+
+export func origin() -> Point => Point(0, -1)
+
+export func by_name(n: i32) -> Point => Point(y: n + 1, x: 7)
+
+// A struct-valued named result, set from a constructor with literals.
+export func moved(n: i32) -> (p: Point, steps: u32) {
+  p = Point(n, n * 2)
+  steps = 3
+}
+
+export func first_move(rope: u32) -> Move => Move(rope, -1, 2 * 3)
+
+export func sum(p: Point) -> i32 => p.x + p.y
+
+test "constructor arguments may be literals and expressions" {
+  assert sum(doubled(4)) == 12
+  assert sum(origin()) == -1
+}
+
+test "constructor arguments may be named, in any order" {
+  let p = by_name(2)
+  assert p.x == 7
+  assert p.y == 3
+}
+
+test "a struct-valued named result" {
+  let r = moved(5)
+  assert r.p.y == 10
+  assert r.steps == 3
+}
+
+test "a three-field constructor with a negative literal" {
+  let m = first_move(4)
+  assert m.rope == 4
+  assert m.to == -1
+  assert m.order == 6
+}
+
+func shorthand(x: i32, y: i32) -> Point => Point(x:, y:)
+func mixed(x: i32) -> Point => Point(y: 5, x:)
+
+test "shorthand fields" {
+  let p = shorthand(3, 4)
+  assert p.x == 3
+  assert p.y == 4
+  let q = mixed(7)
+  assert q.x == 7
+  assert q.y == 5
+}
