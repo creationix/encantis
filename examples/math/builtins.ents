@@ -144,6 +144,17 @@ test "a literal takes the type of the other operand" {
   assert signed_one(-3.5) == -1.0
 }
 
+def limit = 5
+
+func within(x: i64) -> i64 => max(-limit, min(x, limit))
+
+test "a negated constant operand leaves the constant as it is" {
+  assert within(100) == 5
+  assert within(-100) == -5
+  assert within(3) == 3
+  assert limit == 5
+}
+
 test "with only literals the operands take their default type" {
   assert nearest(2.5) == 2.0
   assert min(3.0, 5.0) == 3.0

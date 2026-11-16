@@ -1281,7 +1281,9 @@ export const semanticsActions: Record<string, SemanticAction> = {
               : inner.kind === 'CastExpr' ? inner.expr
               : inner
     if (lit.kind === 'LiteralExpr' && (lit.value.kind === 'int' || lit.value.kind === 'float')) {
-      lit.value.value = -lit.value.value
+      // A new value, not a change to this one: the inlined value of a def is
+      // shared with the def and with every other use of it.
+      lit.value = { ...lit.value, value: -lit.value.value }
       lit.span = { start: s.start, end: lit.span.end }
       inner.span = s
       return inner

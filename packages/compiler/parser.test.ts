@@ -53,6 +53,21 @@ describe('parser', () => {
     })
   })
 
+  describe('def inlining', () => {
+    test('negating a def leaves the def and its other uses alone', () => {
+      const result = parse(`
+        def n = 5
+        def half: f64 = 0.5
+        func f() -> i32 => -n + n
+        func g() -> f64 => -half + half
+      `)
+      expect(result.errors).toHaveLength(0)
+      const literals = (JSON.stringify(result.module, (_, v) => (typeof v === 'bigint' ? Number(v) : v)).match(/"value":(-?[\d.]+)/g) ?? [])
+      // The two defs, then each one's negation and its plain use.
+      expect(literals).toEqual(['"value":5', '"value":0.5', '"value":-5', '"value":5', '"value":-0.5', '"value":0.5'])
+    })
+  })
+
   describe('comments', () => {
     test('parses source with comments', () => {
       const source = `
