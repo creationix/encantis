@@ -1575,8 +1575,11 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   const fromSigned = isSigned(fromType)
   const toSigned = isSigned(toType)
 
+  // An 8- or 16-bit result is cut to its width, as it is when it comes from
+  // an i32: every such value fills its i32 the same way (zero- or
+  // sign-extended), which comparisons and widening rely on.
   if (fromIsFloat && !toIsFloat) {
-    return `(${toWasm}.trunc_${fromWasm}_${toSigned ? 's' : 'u'} ${inner})`
+    return truncateSubWord(`(${toWasm}.trunc_${fromWasm}_${toSigned ? 's' : 'u'} ${inner})`, toType)
   }
   if (!fromIsFloat && toIsFloat) {
     return `(${toWasm}.convert_${fromWasm}_${fromSigned ? 's' : 'u'} ${inner})`
@@ -1593,7 +1596,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
     return `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})`
   }
   if (fromWasm === 'i64' && toWasm === 'i32') {
-    return `(i32.wrap_i64 ${inner})`
+    return truncateSubWord(`(i32.wrap_i64 ${inner})`, toType)
   }
 
   return inner

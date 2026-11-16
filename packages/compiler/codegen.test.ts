@@ -514,6 +514,23 @@ describe('expression codegen', () => {
     })
   })
 
+  describe('narrowing casts', () => {
+    test('an i64 cast to an 8- or 16-bit type is cut to its width', () => {
+      expect(funcWat('func f(x: i64) -> u8 => x as u8')).toContain('(i32.and (i32.wrap_i64 (local.get $x)) (i32.const 255))')
+      expect(funcWat('func f(x: u64) -> i16 => x as i16')).toContain('(i32.shr_s (i32.shl (i32.wrap_i64 (local.get $x)) (i32.const 16)) (i32.const 16))')
+    })
+
+    test('a float cast to an 8- or 16-bit type is cut to its width', () => {
+      expect(funcWat('func f(x: f64) -> u8 => x as u8')).toContain('(i32.and (i32.trunc_f64_u (local.get $x)) (i32.const 255))')
+      expect(funcWat('func f(x: f32) -> i8 => i8(x)')).toContain('(i32.shr_s (i32.shl (i32.trunc_f32_s (local.get $x)) (i32.const 24)) (i32.const 24))')
+    })
+
+    test('a cast to a 32-bit type needs no cut', () => {
+      expect(funcWat('func f(x: i64) -> u32 => x as u32')).toContain('  (i32.wrap_i64 (local.get $x))\n')
+      expect(funcWat('func f(x: f64) -> i32 => x as i32')).toContain('  (i32.trunc_f64_s (local.get $x))\n')
+    })
+  })
+
   describe('unary operations', () => {
     test('logical not', () => {
       const wat = exprWat('!true')
