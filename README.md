@@ -61,6 +61,8 @@ encantis --version
 
 - [Language reference](docs/encantis.md): semantics, the type system, and behavior.
 - [Grammar](docs/grammar.md): the formal syntax.
+- [Spec tests](spec/): how the language parses and checks, as markdown examples that run as tests.
+- [lib](lib/): helpers for reading input, parsing text and printing, written in Encantis.
 - [Examples](examples/): allocators, data structures, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
 
 ## Development
@@ -76,7 +78,7 @@ The compiler, CLI, and VS Code extension are a [Bun](https://bun.sh) workspace:
 ```sh
 bun install
 bun run cli -- check examples/data/crit-bit/crit-bit.ents  # run the CLI from source
-bun test                 # unit tests, plus every example's inline tests
+bun test                 # unit tests, spec/*.md, and every example's inline tests
 bun run examples:all     # compile every example to WAT and wasm
 bun run typecheck
 bun run lint

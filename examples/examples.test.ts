@@ -2,11 +2,15 @@ import { describe, test, expect } from 'bun:test'
 import { loadModule } from '@encantis/compiler/loader'
 import { typecheckProgram } from '@encantis/compiler/checker'
 import { programToWatWithTests } from '@encantis/compiler/codegen'
+import { createTestHost } from '@encantis/compiler/test-host'
 import { resolve } from 'path'
 import { readdir } from 'fs/promises'
 import wabt from 'wabt'
 
 const examplesDir = resolve(import.meta.dir)
+// The shared library (lib/) has inline tests too.
+const libDir = resolve(import.meta.dir, '../lib')
+const repoDir = resolve(import.meta.dir, '..')
 
 async function findEntsFiles(dir: string): Promise<string[]> {
   const files: string[] = []
@@ -18,7 +22,7 @@ async function findEntsFiles(dir: string): Promise<string[]> {
   return files.sort()
 }
 
-const entsFiles = await findEntsFiles(examplesDir)
+const entsFiles = [...(await findEntsFiles(examplesDir)), ...(await findEntsFiles(libDir))]
 
 // An example with inline tests that fails to load, check, compile or validate
 // registers a failing test instead of being skipped.
@@ -32,7 +36,7 @@ function buildFailed(rel: string, stage: string, err: unknown) {
 }
 
 for (const file of entsFiles) {
-  const rel = file.slice(examplesDir.length + 1)
+  const rel = file.startsWith(examplesDir) ? file.slice(examplesDir.length + 1) : file.slice(repoDir.length + 1)
 
   const load = await loadModule(file, { includeTests: true })
   const entryMod = load.modules.get(file)
@@ -58,7 +62,7 @@ for (const file of entsFiles) {
     continue
   }
 
-  const { wat, testNames } = result
+  const { wat, testNames, testTitles } = result
   if (testNames.length === 0) continue
 
   const w = await wabt()
@@ -77,14 +81,12 @@ for (const file of entsFiles) {
   const source = entryMod?.source ?? ''
 
   describe(rel, () => {
-    for (const name of testNames) {
-      test(name.replace(/_/g, ' '), async () => {
+    for (const [t, name] of testNames.entries()) {
+      test(testTitles[t], async () => {
         let failedOffset = -1
-        const instance = await WebAssembly.instantiate(mod, {
-          test: {
-            __assert_fail: (offset: number) => { failedOffset = offset },
-          },
-        })
+        const host = createTestHost(mod, (offset) => { failedOffset = offset })
+        const instance = await WebAssembly.instantiate(mod, host.imports)
+        host.attach(instance)
         const fn = instance.exports[`test_${name}`] as Function
         fn()
         if (failedOffset >= 0) {

@@ -1,0 +1,98 @@
+// Writes through runtime indices. A ranged index (from a for loop, & or %, or
+// a comparison that narrows it) needs no check; &items[i] gives an optional
+// pointer for indices the compiler can't prove are in range.
+
+data buf = mut [0:u8; 12]
+data grid = mut [0:u8; 256]
+data pairs = mut [0:u8; 16]
+
+export func mask(x: u32) { pairs[x & 15] = 1 }
+export func modulo(x: u32) { buf[x % 12] = 2 }
+export func shift(x: u32) { pairs[x >> 28] = 3 }
+export func byte(b: u8) { grid[b] = 4 }
+export func branch(x: u32) {
+  if x < 12 { buf[x] = 5 }
+}
+export func le(x: u32) {
+  if x <= 11 { buf[x] = 5 }
+}
+export func flipped(x: u32) {
+  if 12 > x { buf[x] = 5 }
+}
+export func both(x: u32, y: u32) {
+  if x < 12 && y < 16 { buf[x] = pairs[y] }
+}
+export func guard(x: u32) {
+  return when x >= 12
+  buf[x] = 6
+}
+export func guard_if(x: u32) -> u8 {
+  if x >= 12 { return 0 }
+  return buf[x]
+}
+export func elif_else(x: u32) -> u8 {
+  if x >= 16 {
+    return 0
+  } elif x >= 12 {
+    return pairs[x]
+  } else {
+    return buf[x]
+  }
+}
+export func in_loop(n: u32) -> u32 {
+  let t: u32 = 0
+  for i in n {
+    continue when i >= 12
+    t += buf[i] as u32
+  }
+  return t
+}
+test "writes land where they should" {
+  branch(3)
+  assert (buf[3] ?? 0) == 5
+  guard(11)
+  assert (buf[11] ?? 0) == 6
+  guard(12)
+  modulo(25)
+  assert (buf[1] ?? 0) == 2
+  assert guard_if(11) == 6
+  assert guard_if(99) == 0
+  assert elif_else(3) == 5
+}
+
+export func const_idx() -> u32 {
+  let p = &buf[3]
+  p.* = 42
+  return (buf[3] ?? 0) as u32
+}
+export func ranged(i: u32#12) { let p = &buf[i]
+  p.* = 1 }
+export func checked(i: u32, v: u8) -> bool {
+  if let p = &buf[i] {
+    p.* = v
+    return true
+  }
+  return false
+}
+export func slice_write(s: []mut u8, i: u32, v: u8) -> bool {
+  if let p = &s[i] {
+    p.* = v
+    return true
+  }
+  return false
+}
+test "const index address" { assert const_idx() == 42 }
+test "checked writes" {
+  assert checked(0, 9)
+  assert (buf[0] ?? 0) == 9
+  assert checked(11, 9)
+  assert (buf[11] ?? 0) == 9
+  assert !checked(12, 9)
+  assert !checked(0xFFFFFFFF, 9)
+}
+test "slice writes" {
+  let s: []mut u8 = buf
+  assert slice_write(s, 5, 77)
+  assert (buf[5] ?? 0) == 77
+  assert !slice_write(s, 12, 1)
+}
