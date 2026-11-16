@@ -1,0 +1,50 @@
+// Tuples and structs in data arrays are laid out in the data section like any
+// other literal: field after field, with no padding.
+
+type Point = (x: i32, y: i32)
+
+data pairs = [(1, 2), (3, 4)]
+data points: *[2]Point = [(x: 5, y: 6), (y: 8, x: 7)]
+data mixed = [(1:u8, 2:i16, 3:u64), (4, 5, 6)]
+data nested = [((1, 2), 3:u8), ((4, 5), 6)]
+
+test "an array of tuples" {
+  assert pairs[0].0 == 1
+  assert pairs[0].1 == 2
+  assert pairs[1].0 == 3
+  assert pairs[1].1 == 4
+}
+
+test "an array of structs, fields by name in any order" {
+  assert points[0].x == 5
+  assert points[0].y == 6
+  assert points[1].x == 7
+  assert points[1].y == 8
+  let t = 0
+  for p in points { t += p.x * p.y }
+  assert t == 86
+}
+
+test "fields of different widths are packed" {
+  assert mixed[0].0 == 1
+  assert mixed[0].1 == 2
+  assert mixed[0].2 == 3
+  assert mixed[1].0 == 4
+  assert mixed[1].1 == 5
+  assert mixed[1].2 == 6
+}
+
+test "tuples in tuples" {
+  assert nested[0].0.1 == 2
+  assert nested[1].0.0 == 4
+  assert nested[1].1 == 6
+}
+
+func corner(a: i32) -> i32 {
+  let local: *[2]Point = [(x: 1, y: 2), (x: a, y: 4)]
+  return local[1].x + local[1].y * 10 + local[0].y * 100
+}
+
+test "a tuple with a runtime field is filled in when the literal is reached" {
+  assert corner(7) == 247
+}

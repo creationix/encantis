@@ -608,6 +608,25 @@ function buildElementBytes(
     return combined
   }
 
+  // (x) is grouping: the element itself.
+  if (expr.kind === 'GroupExpr') return buildElementBytes(expr.expr, elementType, framings)
+  if (expr.kind === 'TupleExpr' && elementType.kind !== 'tuple' && expr.elements.length === 1 && expr.elements[0].value) {
+    return buildElementBytes(expr.elements[0].value, elementType, framings)
+  }
+
+  // A tuple or struct literal: its fields one after another, as they lie in
+  // memory. A field given by name goes where the type has that name.
+  if (expr.kind === 'TupleExpr' && elementType.kind === 'tuple') {
+    const fields = elementType.fields
+    const parts: Uint8Array[] = fields.map((f) => new Uint8Array(byteSize(f.type) ?? 0))
+    expr.elements.forEach((el, i) => {
+      const named = el.name ? fields.findIndex((f) => f.name === el.name) : -1
+      const index = named >= 0 ? named : i
+      if (el.value && index < fields.length) parts[index] = buildElementBytes(el.value, fields[index].type, [])
+    })
+    return concatBytes(parts)
+  }
+
   // Runtime expressions (calls, identifiers, etc.) — emit zero placeholder
   // The actual value will be filled in at runtime via i32.store
   const size = byteSize(elementType)

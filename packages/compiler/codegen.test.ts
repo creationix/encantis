@@ -1047,6 +1047,33 @@ describe('globals of several wasm values', () => {
   })
 })
 
+describe('tuples in data arrays', () => {
+  test('constant tuples are laid out in the data section', () => {
+    const wat = modWat(`
+      type Point = (x: i32, y: i32)
+      data pairs = [(1, 2), (3, 4)]
+      data points: *[2]Point = [(x: 5, y: 6), (y: 8, x: 7)]
+      data mixed = [(1:u8, 2:i16, 3:u64)]
+    `)
+    expect(wat).toContain('"\\01\\00\\00\\00\\02\\00\\00\\00\\03\\00\\00\\00\\04\\00\\00\\00"')
+    expect(wat).toContain('"\\05\\00\\00\\00\\06\\00\\00\\00\\07\\00\\00\\00\\08\\00\\00\\00"')
+    expect(wat).toContain('"\\01\\02\\00\\03\\00\\00\\00\\00\\00\\00\\00"')
+  })
+
+  test('only a tuple with a runtime field is stored when its literal is reached', async () => {
+    const code = `
+      type Point = (x: i32, y: i32)
+      export func corner(a: i32) -> i32 {
+        let local: *[2]Point = [(x: 1, y: 2), (x: a, y: 4)]
+        return local[1].x + local[1].y * 10 + local[0].y * 100
+      }
+    `
+    expect(modWat(code).match(/i32\.store/g)?.length).toBe(2)
+    const { corner } = await run(code)
+    expect(corner(7)).toBe(247)
+  })
+})
+
 // === Module Codegen Tests ===
 
 describe('module codegen', () => {

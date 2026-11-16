@@ -783,6 +783,7 @@ data key = x"9d61b19deffd5a60"      // key: *[8]u8
 data table = [1:u64, 2, 3, 4]       // table: *[4]u64
 data msg = "hello"                   // msg: *[5]u8
 data origin = (0.0, 0.0)            // origin: *(f64, f64)
+data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
 ```
 
 The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:

@@ -1996,6 +1996,8 @@ function isRuntimeExpr(expr: AST.Expr): boolean {
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
   if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr)
+  // A tuple of literals is data too; one runtime field makes the tuple runtime.
+  if (expr.kind === 'TupleExpr') return expr.elements.some((el) => !el.value || isRuntimeExpr(el.value))
   return true
 }
 
