@@ -1352,7 +1352,10 @@ export func work(n: u32) -> u32 {
 - The deferred expression is evaluated when the block exits, not when `defer`
   runs: `defer log(i)` logs `i` as it is at exit.
 - A `return` computes its value first; deferred expressions run after, and the
-  value is returned unchanged.
+  value is returned unchanged. With named results, a trailing expression's
+  value is stored in them before deferred expressions run.
+- A deferred expression can't `return`, or `break` or `continue` a loop outside
+  it. A loop inside it can use `break` and `continue` as usual.
 - Deferred code is emitted inline at each exit. There is no runtime cost and no
   extra wasm features.
 

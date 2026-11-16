@@ -409,6 +409,11 @@ class CheckContext {
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
   currentReturnType: ResolvedType | null = null
+  // Loops open around the statement being checked, and the depth at the
+  // innermost enclosing defer (null outside one). A deferred expression can't
+  // return, or break or continue a loop outside it.
+  loopDepth = 0
+  deferLoopDepth: number | null = null
 
   // Cache for resolved type aliases
   typeCache = new Map<string, ResolvedType>()
@@ -1308,10 +1313,22 @@ class CheckContext {
         this.checkSetStmt(stmt)
         break
       case 'ExpressionStmt':
-      case 'DeferStmt':
         this.inferExpr(stmt.expr)
         break
+      case 'DeferStmt': {
+        const prev = this.deferLoopDepth
+        this.deferLoopDepth = this.loopDepth
+        try {
+          this.inferExpr(stmt.expr)
+        } finally {
+          this.deferLoopDepth = prev
+        }
+        break
+      }
       case 'ReturnStmt':
+        if (this.deferLoopDepth !== null) {
+          this.error(stmt.span.start, `cannot return from inside a deferred expression`)
+        }
         if (stmt.value) {
           // For single-field named returns like (ptr: u32), check against the inner type
           let checkType = this.currentReturnType
@@ -1344,10 +1361,10 @@ class CheckContext {
       }
       case 'WhileStmt':
         this.inferExpr(stmt.condition)
-        this.checkBody(stmt.body)
+        this.checkLoopBody(stmt.body)
         break
       case 'LoopStmt':
-        this.checkBody(stmt.body)
+        this.checkLoopBody(stmt.body)
         break
       case 'ForStmt': {
         const iterableType = this.inferExpr(stmt.iterable)
@@ -1367,7 +1384,7 @@ class CheckContext {
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
         this.currentScope.symbols.set(stmt.binding.value, { kind: 'local', type: elemType })
         this.recordDefinition(stmt.binding.value, stmt.binding.span.start)
-        this.checkBody(stmt.body)
+        this.checkLoopBody(stmt.body)
         break
       }
       case 'AssertStmt':
@@ -1375,8 +1392,21 @@ class CheckContext {
         break
       case 'BreakStmt':
       case 'ContinueStmt':
+        if (this.deferLoopDepth !== null && this.loopDepth <= this.deferLoopDepth) {
+          const what = stmt.kind === 'BreakStmt' ? 'break' : 'continue'
+          this.error(stmt.span.start, `cannot ${what} out of a deferred expression`)
+        }
         if (stmt.when) this.inferExpr(stmt.when)
         break
+    }
+  }
+
+  checkLoopBody(body: AST.FuncBody): void {
+    this.loopDepth++
+    try {
+      this.checkBody(body)
+    } finally {
+      this.loopDepth--
     }
   }
 

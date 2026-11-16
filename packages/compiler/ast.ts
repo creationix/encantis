@@ -681,6 +681,7 @@ export interface ASTVisitor {
   visitContinueStmt?(node: ContinueStmt): void | false
   visitAssignmentStmt?(node: AssignmentStmt): void | false
   visitExpressionStmt?(node: ExpressionStmt): void | false
+  visitDeferStmt?(node: DeferStmt): void | false
 
   // Expressions
   visitBinaryExpr?(node: BinaryExpr): void | false
@@ -826,6 +827,11 @@ function walkStatement(stmt: Statement, visitor: ASTVisitor): void {
       break
     case 'ExpressionStmt':
       if (visitor.visitExpressionStmt?.(stmt) !== false) {
+        walkExpr(stmt.expr, visitor)
+      }
+      break
+    case 'DeferStmt':
+      if (visitor.visitDeferStmt?.(stmt) !== false) {
         walkExpr(stmt.expr, visitor)
       }
       break

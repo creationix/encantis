@@ -974,3 +974,39 @@ describe('typecheck', () => {
     expect(foundI64).toBe(true)
   })
 })
+
+describe('defer', () => {
+  test('a deferred expression cannot return', () => {
+    const result = checkModule(`func f(n: u32) { defer if n > 0 { return } }`)
+    expect(result.errors.map(e => e.message)).toContain('cannot return from inside a deferred expression')
+  })
+
+  test('a deferred expression cannot break or continue an outer loop', () => {
+    const result = checkModule(`
+      func f(n: u32) {
+        loop {
+          defer if n > 1 { break }
+          defer if n > 2 { continue }
+          break
+        }
+      }
+    `)
+    const messages = result.errors.map(e => e.message)
+    expect(messages).toContain('cannot break out of a deferred expression')
+    expect(messages).toContain('cannot continue out of a deferred expression')
+  })
+
+  test('a loop inside a deferred expression can break and continue', () => {
+    const result = checkModule(`
+      func f() {
+        defer if true {
+          for j in 3 {
+            continue when j == 1
+            break when j == 2
+          }
+        }
+      }
+    `)
+    expect(result.errors).toHaveLength(0)
+  })
+})
