@@ -42,19 +42,53 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - name: Build (version from package.json, plus the commit)
-        run: bun scripts/build-release.ts "$(bun -p 'require("./package.json").version')-dev.${GITHUB_SHA::7}"
-      - name: Smoke-test the Linux binary
+        id: version
         run: |
-          tar -xzf release/encantis-*-linux-x64.tar.gz -C release
-          bin=$(echo release/encantis-*-linux-x64/encantis)
-          "$bin" --version
-          "$bin" test examples/data/crit-bit/crit-bit.ents
+          version="$(bun -p 'require("./package.json").version')-dev.${GITHUB_SHA::7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          bun scripts/build-release.ts "$version"
       - uses: actions/upload-artifact@v4
         with:
           name: release-artifacts
-          path: |
-            release/*.tar.gz
-            release/*.zip
-            release/*.vsix
-            release/SHA256SUMS
+          path: release/*
+          if-no-files-found: error
           retention-days: 7
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  smoke:
+    name: Smoke test (${{ matrix.platform }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x64, os: ubuntu-latest }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: darwin-arm64, os: macos-latest }
+          - { platform: darwin-x64, os: macos-15-intel }
+          - { platform: windows-x64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: examples
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: release
+      - name: Unpack
+        shell: bash
+        run: |
+          cd release
+          name="encantis-${{ needs.package.outputs.version }}-${{ matrix.platform }}"
+          if [ -f "$name.zip" ]; then unzip -q "$name.zip"; else tar -xzf "$name.tar.gz"; fi
+          exe=encantis; [ -f "$name.zip" ] && exe=encantis.exe
+          echo "BIN=$PWD/$name/$exe" >> "$GITHUB_ENV"
+      - name: Run
+        shell: bash
+        run: |
+          "$BIN" --version | grep -F "${{ needs.package.outputs.version }}"
+          "$BIN" test examples/data/crit-bit/crit-bit.ents
+          "$BIN" wasm -O examples/alloc/stack.ents -o stack.wasm
+          test -s stack.wasm
