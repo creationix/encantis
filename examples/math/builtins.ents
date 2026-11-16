@@ -144,6 +144,32 @@ test "a literal takes the type of the other operand" {
   assert signed_one(-3.5) == -1.0
 }
 
+// === An `if` or a `match` as an operand ===
+
+func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })
+func mirror_first(x: i64, flip: bool) -> i64 => max(if flip { 0 - x } else { x }, x)
+func stepped(x: i64, k: i32) -> i64 => max(x, match k {
+  0 => x + 1
+  _ => 5
+})
+func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
+func at_least(x: i32, bail: bool) -> i32 {
+  let m = max(x, if bail { return -1 } else { 1 })
+  return m
+}
+
+test "an if or a match operand is typed arm by arm" {
+  assert mirror(-5, true) == 5
+  assert mirror(-5, false) == -5
+  assert mirror_first(-5, true) == 5
+  assert stepped(1, 0) == 2
+  assert stepped(1, 1) == 5
+  assert widened(-5000000000, -9, true) == -9
+  assert widened(-5000000000, -9, false) == 5
+  assert at_least(0, false) == 1
+  assert at_least(0, true) == -1
+}
+
 def limit = 5
 
 func within(x: i64) -> i64 => max(-limit, min(x, limit))

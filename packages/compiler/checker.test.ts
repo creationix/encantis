@@ -1219,6 +1219,36 @@ describe('builtins', () => {
     }`)).toEqual([])
   })
 
+  test('an if or a match operand is checked arm by arm', () => {
+    // With no type of its own (its first arm is an operation, or returns), against the other operand's.
+    expect(types('x: i64, c: bool', 'max(x, if c { 0 - x } else { x })')).toEqual(['i64', 'i64'])
+    expect(types('x: i64, c: bool', 'max(if c { 0 - x } else { x }, x)')).toEqual(['i64', 'i64'])
+    expect(types('x: f32, c: bool', 'copysign(x, if c { x - 1.0 } else { 1.0 })')).toEqual(['f32', 'f32'])
+    expect(types('x: u64, c: bool', 'mul_hi(x, if c { x - 1 } else { x })')).toEqual(['u64', 'u64'])
+    expect(errs(`func f(x: i32, c: bool) -> i32 {
+      let m = max(x, if c { return -1 } else { 1 })
+      return m
+    }`)).toEqual([])
+    // With one, against its own: every arm has to be of it, and the literals take it.
+    expect(types('x: i64, k: i32', 'max(x, match k {\n 0 => x + 1\n _ => 5\n })')).toEqual(['i64', 'i64'])
+    expect(types('x: i64, a: i32, c: bool', 'max(x, if c { a } else { 5 })')).toEqual(['i64', 'i64'])
+    expect(types('a: i32, b: i64, c: bool', 'max(a, if c { b } else { 5 })')).toEqual(['i64', 'i64'])
+    expect(errs(`func f(x: u8, c: bool) -> u8 => max(x, if c { x } else { 300 })`)).toEqual(['cannot assign int(300) to u8'])
+    expect(errs(`func f(a: i32, b: i64, c: bool) -> i64 => max(b, if c { a } else { b })`)).toEqual(['cannot assign i64 to i32'])
+    // Alone, there is nothing to check it against.
+    expect(errs(`func f(x: i64, c: bool) -> i64 => abs(if c { 0 - x } else { x })`)).toContain('abs requires a numeric type, got ()')
+  })
+
+  test('an if or a match operand takes the range away', () => {
+    // Its type is its first arm's: the range of that arm is not the range of the others.
+    expect(types('i: u32#4, j: u32#4, c: bool', 'max(i, if c { j } else { 9 })')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#4, j: u32#4, c: bool', 'min(if c { j } else { i }, i)')).toEqual(['u32', 'u32'])
+    expect(errs(`
+      data table = [10:u8, 20, 30, 40]
+      func f(i: u32#4, j: u32#4, c: bool) -> u8 => table[max(i, if c { j } else { 9 })]
+    `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
   test('a variable in scope hides the declared function, and the builtin is meant again', () => {
     const src = `
       func max(a: i32, b: i32, c: i32) -> i32 => a + b + c

@@ -2575,10 +2575,18 @@ class CheckContext {
     // What checking goes on with after an operand of the wrong kind.
     const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
     const types = args.map((arg) => this.inferExpr(arg.value))
+    // Inference types an `if` or a `match` by its first arm alone, and not at
+    // all when that arm leaves no value (it returns, say). Checking it against
+    // a type is what types every arm.
+    const branching = args.map((arg) => arg.value.kind === 'IfExpr' || arg.value.kind === 'MatchExpr')
+    // An operand that takes its type from the others: a literal, and a
+    // branching one that inference left without a type.
+    const hasTyped = fixed !== null || types.some((t) => !isComptime(t) && accepts(t))
+    const fromOthers = types.map((t, i) => isComptime(t) || (hasTyped && branching[i] && t.kind === 'void'))
 
     let common = fixed
     for (const [i, type] of types.entries()) {
-      if (isComptime(type)) continue
+      if (fromOthers[i]) continue
       if (!accepts(type)) {
         this.error(args[i].value.span.start, `${name} requires ${wanted}, got ${typeToString(type)}`)
         return fallback
@@ -2600,19 +2608,23 @@ class CheckContext {
       common = floatLiteral || kind === 'float' ? primitive('f64') : this.unifyTypes(types)
     }
     for (const [i, type] of types.entries()) {
-      if (isComptime(type)) this.checkExpr(args[i].value, common, name)
+      if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
+      // A branching operand with a type of its own keeps it, for codegen to
+      // widen the value as a whole.
+      else if (branching[i]) this.checkExpr(args[i].value, withoutRange(type), name)
     }
     this.types.set(typeKey(expr.span.start, 'BuiltinCall'), common)
 
     // A result that is one of the operands is in a range when they all are: the
     // widest of their ranges. A literal only has to fit the type to be an
     // operand, but has to be inside that range for the result to be. Only a
-    // constant counts as one: an `if` of two literals has a literal's type and
-    // either of their values.
+    // constant counts as one, and a branching operand never does: its type,
+    // a literal's or a range, is its first arm's, and says nothing of the rest.
     const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
     if (common.kind !== 'primitive' || ranges.length === 0) return common
     const widest = Math.max(...ranges)
     const inRange = types.every((t, i) => {
+      if (branching[i]) return false
       if (t.kind === 'primitive') return t.max !== undefined
       const constant = isComptime(t) ? this.evalComptimeExpr(args[i].value) : null
       return constant?.kind === 'int' && constant.value >= 0n && constant.value < BigInt(widest)

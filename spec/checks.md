@@ -332,7 +332,7 @@ func f(i: u32#4) -> u8 => table[max(i, 9)]
 runtime index on *[4]u8 requires 'if let' or '??'
 ```
 
-A constant operand counts by its value. An `if` of two literals is not one: it can be either of them.
+A constant operand counts by its value. An `if` is not one, and it has no range either: it can be any of its arms.
 
 ```ents
 data table = [10:u8, 20, 30, 40]
@@ -346,11 +346,34 @@ data table = [10:u8, 20, 30, 40]
 
 func f(i: u32#4, far: bool) -> u8 => table[max(i, if far { 100 } else { 1 })]
 func g(i: u32#4, far: bool) -> u8 => table[max(if far { 1 } else { 100 }, i)]
+func h(i: u32#4, j: u32#4, far: bool) -> u8 => table[max(i, if far { j } else { 9 })]
 ```
 
 ```errors
 runtime index on *[4]u8 requires 'if let' or '??'
 runtime index on *[4]u8 requires 'if let' or '??'
+runtime index on *[4]u8 requires 'if let' or '??'
+```
+
+An `if` or a `match` operand is checked arm by arm: against its own type when its first arm gives it one, and against the other operand's when it doesn't.
+
+```ents
+func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })
+func stepped(x: i64, k: i32) -> i64 => max(x, match k {
+  0 => x + 1
+  _ => 5
+})
+func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
+```
+
+```ents
+func f(x: u8, c: bool) -> u8 => max(x, if c { x } else { 300 })
+func g(x: i64, c: bool) -> i64 => abs(if c { 0 - x } else { x })
+```
+
+```errors
+cannot assign int(300) to u8
+abs requires a numeric type, got ()
 ```
 
 `mul_hi` multiplies two `u64`s: a narrower unsigned operand widens, a signed one doesn't.
