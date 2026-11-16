@@ -1056,7 +1056,7 @@ func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
 func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
 ```
 
-The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`.
+The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
 
 A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
 
