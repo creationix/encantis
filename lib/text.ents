@@ -1,0 +1,112 @@
+// Byte-string helpers for parsing text input. Nothing allocates: results are
+// slices of the input.
+
+// Whether a and b hold the same bytes.
+export func eq(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i, c in a {
+    return false when c != (b[i] ?? 0)
+  }
+  return true
+}
+
+// Whether s begins with prefix.
+export func starts_with(s: []u8, prefix: []u8) -> bool {
+  return false when prefix.len > s.len
+  return eq(s[..prefix.len] ?? "", prefix)
+}
+
+// The index of the first c in s, or s.len when there is none.
+export func index_of(s: []u8, c: u8) -> u32 {
+  for i, x in s {
+    return i when x == c
+  }
+  return s.len
+}
+
+// Splits s at the first c: the part before it, and the part after it (empty
+// when there's no c).
+export func split_once(s: []u8, c: u8) -> (head: []u8, rest: []u8) {
+  let i = index_of(s, c)
+  head = s[..i] ?? s
+  rest = s[i + 1..] ?? ""
+}
+
+// The first line of s (without its \n) and everything after it. A final line
+// with no \n counts as a line.
+export func next_line(s: []u8) -> (line: []u8, rest: []u8) {
+  let (head:, rest:) = split_once(s, 10)
+  line = head
+  rest = rest
+}
+
+// s without leading spaces.
+export func skip_spaces(s: []u8) -> []u8 {
+  for i, c in s {
+    return s[i..] ?? "" when c != 32
+  }
+  return ""
+}
+
+func is_digit(c: u8) -> bool => c >= 48 && c <= 57
+
+// Parses an unsigned decimal number at the start of s, after any spaces.
+// Returns the value, what follows it, and whether there were any digits.
+export func parse_u64(s: []u8) -> (value: u64, rest: []u8, ok: bool) {
+  let t = skip_spaces(s)
+  value = 0
+  ok = false
+  rest = t
+  for i, c in t {
+    if !is_digit(c) {
+      rest = t[i..] ?? ""
+      return
+    }
+    value = value * 10 + ((c - 48) as u64)
+    ok = true
+    rest = ""
+  }
+}
+
+// Like parse_u64, with an optional leading - or +.
+export func parse_i64(s: []u8) -> (value: i64, rest: []u8, ok: bool) {
+  let t = skip_spaces(s)
+  let neg = t.len > 0 && (t[0] ?? 0) == 45
+  let plus = t.len > 0 && (t[0] ?? 0) == 43
+  let digits = if neg || plus { t[1..] ?? "" } else { t }
+  let (value: v, rest: r, ok: o) = parse_u64(digits)
+  value = if neg { 0 - (v as i64) } else { v as i64 }
+  rest = r
+  ok = o
+}
+
+test "eq and starts_with" {
+  assert eq("abc", "abc")
+  assert !eq("abc", "abd")
+  assert !eq("abc", "ab")
+  assert starts_with("move 3", "move ")
+  assert !starts_with("mo", "move")
+}
+
+test "split_once and next_line" {
+  let (head:, rest:) = split_once("a=b=c", 61)
+  assert eq(head, "a")
+  assert eq(rest, "b=c")
+  let (line: l1, rest: r1) = next_line("one\ntwo")
+  assert eq(l1, "one")
+  let (line: l2, rest: r2) = next_line(r1)
+  assert eq(l2, "two")
+  assert r2.len == 0
+}
+
+test "parse numbers" {
+  let (value:, rest:, ok:) = parse_u64("  1234 apples")
+  assert ok
+  assert value == 1234
+  assert eq(rest, " apples")
+  let (value: n, rest: r3, ok: good) = parse_i64("-42,")
+  assert good
+  assert n == -42
+  let (value: z, rest: r4, ok: none) = parse_u64("x")
+  assert !none
+}

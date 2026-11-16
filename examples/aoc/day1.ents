@@ -1,0 +1,52 @@
+#!/usr/bin/env encantis run
+// Advent of Code 2023, day 1, part 1: on each line, the first and last digits
+// make a two-digit number; print the sum of those numbers.
+// Usage: encantis run day1.ents < input.txt
+
+import "../../lib/io" (
+  "read_all" func read_all(buf: []mut u8) -> []u8
+  "print_u64" func print_u64(n: u64)
+)
+import "../../lib/text" (
+  "next_line" func next_line(s: []u8) -> (line: []u8, rest: []u8)
+)
+
+export memory
+
+data input = mut [0:u8; 65536]
+
+func calibration(line: []u8) -> u64 {
+  let first: u64 = 10
+  let last: u64 = 0
+  for c in line {
+    continue when c < 48 || c > 57
+    let d = (c - 48) as u64
+    if first == 10 { first = d }
+    last = d
+  }
+  return 0 when first == 10
+  return first * 10 + last
+}
+
+func total(text: []u8) -> u64 {
+  let sum: u64 = 0
+  let rest = text
+  while rest.len > 0 {
+    let (line:, rest: after) = next_line(rest)
+    sum += calibration(line)
+    rest = after
+  }
+  return sum
+}
+
+export "_start" func main() {
+  print_u64(total(read_all(input)))
+}
+
+test "the example from the puzzle" {
+  assert total("1abc2\npqr3stu8vwx\na1b2c3d4e5f\ntreb7uchet\n") == 142
+}
+
+test "no trailing newline, and lines with no digits" {
+  assert total("a1\nxyz\n9") == 11 + 99
+}
