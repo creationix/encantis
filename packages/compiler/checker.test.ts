@@ -975,33 +975,6 @@ describe('typecheck', () => {
   })
 })
 
-describe('struct constructors', () => {
-  test('arguments are checked against their fields', () => {
-    const result = checkModule(`
-      type Point = (x: i32, y: i32)
-      func f(n: i32) -> Point => Point(n, n * 2)
-      func g() -> Point => Point(y: 1, x: -2)
-    `)
-    expect(result.errors).toHaveLength(0)
-  })
-
-  test('the wrong number of arguments is an error', () => {
-    const result = checkModule(`
-      type Point = (x: i32, y: i32)
-      func f() -> Point => Point(1)
-    `)
-    expect(result.errors.map(e => e.message)).toContain('(x: i32, y: i32) expects 2 fields, got 1')
-  })
-
-  test('an unknown field name is an error', () => {
-    const result = checkModule(`
-      type Point = (x: i32, y: i32)
-      func f() -> Point => Point(x: 1, z: 2)
-    `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
-  })
-})
-
 describe('defer', () => {
   test('a deferred expression cannot return', () => {
     const result = checkModule(`func f(n: u32) { defer if n > 0 { return } }`)
@@ -1086,5 +1059,32 @@ describe('missing return', () => {
   test('named results and void functions need no return', () => {
     expect(errs(`func f(x: i32) -> (r: i32) { r = x }`)).toEqual([])
     expect(errs(`func f(x: i32) { let y = x }`)).toEqual([])
+  })
+})
+
+describe('struct constructors', () => {
+  test('arguments are checked against their fields', () => {
+    const result = checkModule(`
+      type Point = (x: i32, y: i32)
+      func f(n: i32) -> Point => Point(n, n * 2)
+      func g() -> Point => Point(y: 1, x: -2)
+    `)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  test('the wrong number of arguments is an error', () => {
+    const result = checkModule(`
+      type Point = (x: i32, y: i32)
+      func f() -> Point => Point(1)
+    `)
+    expect(result.errors.map(e => e.message)).toContain('(x: i32, y: i32) expects 2 fields, got 1')
+  })
+
+  test('an unknown field name is an error', () => {
+    const result = checkModule(`
+      type Point = (x: i32, y: i32)
+      func f() -> Point => Point(x: 1, z: 2)
+    `)
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
   })
 })
