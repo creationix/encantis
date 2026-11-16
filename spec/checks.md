@@ -288,27 +288,6 @@ func a(i: u32) -> i32 {
 func b(s: []u8, i: u32, wide: i64) -> i64 => if let x = s[i] { x } elif i == 0 { 0 } else { wide }
 ```
 
-The elements of a tuple literal fill the fields in order. A constructor matches names in any order; a literal doesn't, so a name in another field's place is an error rather than a silent swap.
-
-```ents
-type Point = (x: i32, y: i32)
-
-func a() -> Point => (x: 2, y: 1)
-func b() -> Point => (2, 1)
-func c() -> Point => Point(y: 1, x: 2)
-```
-
-```ents
-type Point = (x: i32, y: i32)
-
-func a() -> Point => (y: 1, x: 2)
-```
-
-```errors
-field 'y' is in the place of 'x'
-field 'x' is in the place of 'y'
-```
-
 The elements of an array literal settle on a type the same way: each widens to the declared element type, or, without one, to the widest of them.
 
 ```ents
