@@ -121,6 +121,32 @@ cannot write through const pointer
 cannot write through const slice
 ```
 
+## Structs in array literals
+
+An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.
+
+```ents
+type Mixed = (a: u64, b: u8, name: []u8)
+
+data table: *[2]Mixed = [(1, 2, "x"), Mixed(name: "yz", a: 3, b: 4)]
+
+func f(n: u8) -> u64 {
+  let local: *[2]Mixed = [(1, n, "x"), (5, 6, "y")]
+  return local[0].a + table[1].a
+}
+```
+
+```ents
+type Mixed = (a: u64, b: u8, name: []u8)
+
+data table: *[2]Mixed = [(1.5, 2, "x"), (1, 300, "y")]
+```
+
+```errors
+cannot assign float(1.5) to u64
+300
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.

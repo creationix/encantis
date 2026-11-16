@@ -1150,30 +1150,89 @@ describe('globals of several wasm values', () => {
   })
 })
 
-describe('tuples in data arrays', () => {
-  test('constant tuples are laid out in the data section', () => {
+describe('structs in data arrays', () => {
+  test('constant tuples and constructors are laid out in the data section', () => {
     const wat = modWat(`
       type Point = (x: i32, y: i32)
       data pairs = [(1, 2), (3, 4)]
-      data points: *[2]Point = [(x: 5, y: 6), (y: 8, x: 7)]
+      data points: *[2]Point = [Point(x: 5, y: 6), Point(y: 8, x: 7)]
       data mixed = [(1:u8, 2:i16, 3:u64)]
     `)
     expect(wat).toContain('"\\01\\00\\00\\00\\02\\00\\00\\00\\03\\00\\00\\00\\04\\00\\00\\00"')
+    // A constructor can name its fields in any order.
     expect(wat).toContain('"\\05\\00\\00\\00\\06\\00\\00\\00\\07\\00\\00\\00\\08\\00\\00\\00"')
     expect(wat).toContain('"\\01\\02\\00\\03\\00\\00\\00\\00\\00\\00\\00"')
   })
 
-  test('only a tuple with a runtime field is stored when its literal is reached', async () => {
+  test('a tuple gives its fields by position, in data as in a variable', async () => {
+    const { f } = await run(`
+      type Point = (x: i32, y: i32)
+      data points: *[1]Point = [(y: 8, x: 7)]
+      export func f(a: i32) -> i32 {
+        let p: Point = (y: 8, x: 7)
+        let local: *[1]Point = [(y: a, x: 7)]
+        return p.x + points[0].x * 10 + local[0].x * 100
+      }
+    `)
+    expect(f(8)).toBe(888)
+  })
+
+  test('slice and fixed-array fields', async () => {
+    const code = `
+      type Named = (name: []u8, at: (x: i8, y: i8), dims: [3]u16, last: u8)
+      data people: *[2]Named = [("ab", (1, -2), [3:u16, 4, 5], 6), Named("cde", (7, 8), [9:u16, 10, 11], 12)]
+      export func f(i: u32#2) -> u32 {
+        let p = people[i]
+        return p.name.len + (p.name.ptr[1] as u32) * 10 + (p.dims[2] as u32) * 10000 + (p.last as u32) * 1000000
+      }
+      export func y() -> i32 => people[0].at.y as i32
+    `
+    const { f, y } = await run(code)
+    expect(f(0)).toBe(2 + 980 + 50000 + 6000000)
+    expect(f(1)).toBe(3 + 1000 + 110000 + 12000000)
+    expect(y()).toBe(-2)
+    // The names lie apart from the array, which holds their (ptr, len).
+    expect(modWat(code)).toContain('"ab"')
+  })
+
+  test('pointer fields given as literals', async () => {
+    const { f } = await run(`
+      type Entry = (key: *[!]u8, raw: [*]u8, fixed: *[3]u8, code: u8)
+      data entries: *[2]Entry = [("ab", "cd", "efg", 1), Entry("hij", "kl", [1:u8, 2, 3], 2)]
+      export func f(i: u32#2) -> u32 {
+        let e = entries[i]
+        let key = e.key as [*]u8
+        let n: u32 = 0
+        while key[n] != 0 { n += 1 }
+        return n + (e.raw[1] as u32) * 10 + (e.fixed[2] as u32) * 10000 + (e.code as u32) * 10000000
+      }
+    `)
+    expect(f(0)).toBe(2 + 1000 + 1030000 + 10000000)
+    expect(f(1)).toBe(3 + 1080 + 30000 + 20000000)
+  })
+
+  test('only a struct with a runtime field is stored when its literal is reached', async () => {
     const code = `
       type Point = (x: i32, y: i32)
       export func corner(a: i32) -> i32 {
-        let local: *[2]Point = [(x: 1, y: 2), (x: a, y: 4)]
-        return local[1].x + local[1].y * 10 + local[0].y * 100
+        let local: *[3]Point = [(x: 1, y: 2), (x: a, y: 4), Point(5, 6)]
+        return local[1].x + local[1].y * 10 + local[0].y * 100 + local[2].x * 1000
       }
     `
     expect(modWat(code).match(/i32\.store/g)?.length).toBe(2)
     const { corner } = await run(code)
-    expect(corner(7)).toBe(247)
+    expect(corner(7)).toBe(5247)
+  })
+
+  test("a runtime struct's literal fields take the fields' types", async () => {
+    const { f } = await run(`
+      type Mixed = (a: u64, b: u8, c: f32)
+      export func f(x: u8) -> f32 {
+        let l: *[2]Mixed = [(5, x, 1.5), (7, 2, 2.5)]
+        return (l[0].a as f32) + (l[0].b as f32) + l[0].c + l[1].c
+      }
+    `)
+    expect(f(3)).toBe(12)
   })
 })
 

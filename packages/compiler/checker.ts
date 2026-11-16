@@ -2068,8 +2068,11 @@ class CheckContext {
           : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
           : null
         if (innerType) {
+          // A tuple that is a struct element is checked field by field, like
+          // any struct value: its literals take their fields' types.
+          const structElements = unwrap(innerType).kind === 'tuple'
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            if (this.isDataLiteralExpr(elem)) {
+            if (this.isDataLiteralExpr(elem) && !(structElements && elem.kind === 'TupleExpr')) {
               this.validateDataLiteralRange(elem, innerType)
               this.types.set(typeKey(elem.span.start, elem.kind), innerType)
             } else {

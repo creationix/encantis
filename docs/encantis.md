@@ -793,6 +793,15 @@ data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
 data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
 ```
 
+An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+
+```ents
+type Point = (x:i32, y:i32)
+type City = (name:[]u8, at:Point)
+
+data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
+```
+
 #### Mutability
 
 By default, data is mutable (wasm linear memory is always writable). Use `mut` on the literal to signal intent and prevent deduplication:

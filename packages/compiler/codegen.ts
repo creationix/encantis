@@ -1985,9 +1985,21 @@ function isRuntimeExpr(expr: AST.Expr): boolean {
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
   if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr)
-  // A tuple of literals is data too; one runtime field makes the tuple runtime.
-  if (expr.kind === 'TupleExpr') return expr.elements.some((el) => !el.value || isRuntimeExpr(el.value))
+  // A struct written out from literals, as a tuple or a constructor, is data
+  // too; one runtime field makes the whole struct runtime. A type's name is
+  // the identifier that starts with a capital letter.
+  const fields = expr.kind === 'TupleExpr' ? expr.elements
+    : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
+    : null
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value))
   return true
+}
+
+// Inside a struct an array literal is a field of its own ([N]T, or a slice
+// that points at it): runtime when one of its elements is.
+function isRuntimeField(expr: AST.Expr): boolean {
+  if (expr.kind === 'ArrayExpr') return expr.elements.some(isRuntimeField)
+  return isRuntimeExpr(expr)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {

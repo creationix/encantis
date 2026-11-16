@@ -1034,6 +1034,32 @@ describe('writes through pointers', () => {
   })
 })
 
+describe('struct elements of an array literal', () => {
+  const check = (decl: string) =>
+    checkModule(`
+      type Mixed = (a: u64, b: u8, name: []u8)
+      ${decl}
+    `)
+
+  test('a tuple element is checked field by field', () => {
+    expect(check('data ok: *[2]Mixed = [(1, 2, "x"), Mixed(3, 4, "yz")]').errors).toEqual([])
+    expect(check('data bad: *[1]Mixed = [(1.5, 2, "x")]').errors.map(e => e.message)).toEqual([
+      'cannot assign float(1.5) to u64',
+    ])
+    expect(check('data bad: *[1]Mixed = [(1, 300, "x")]').errors.length).toBe(1)
+    expect(check('func f(n: u8) { let l: *[1]Mixed = [(1, n, "x")] }').errors).toEqual([])
+    expect(check('func f(n: u64) { let l: *[1]Mixed = [(1, n, "x")] }').errors.map(e => e.message)).toEqual([
+      'cannot assign u64 to u8',
+    ])
+  })
+
+  test('its literals take the types of their fields', () => {
+    const result = check('func f(n: u8) { let l: *[1]Mixed = [(5, n, "x")] }')
+    const five = [...result.types].find(([key]) => key.endsWith(':LiteralExpr'))
+    expect(five && typeToString(five[1])).toBe('u64')
+  })
+})
+
 describe('a slice from a pointer and a length', () => {
   test('is a value, not a literal for the data section', () => {
     const result = checkModule(`

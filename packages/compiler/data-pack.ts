@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, type ArrayRT, type ArraySize, type ResolvedType } from './types'
+import { byteSize, isOptional, isValueArray, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -456,7 +456,7 @@ function serializeMerged(
   builder: DataSectionBuilder,
   skipDedup: boolean,
 ): DataRef {
-  const bytes = buildMergedBytes(expr, targetType)
+  const bytes = buildMergedBytes(expr, targetType, builder)
   const optional = isOptional(targetType.element)
   return builder.internBytes(bytes, skipDedup, optional)
 }
@@ -464,7 +464,7 @@ function serializeMerged(
 // Build the complete byte sequence for merged brackets
 // Framing order: leftmost is outermost, rightmost is innermost
 // e.g., [?,!]u8 means: ! applies to each element, ? applies to whole array
-function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
+function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSectionBuilder): Uint8Array {
   const framings = getFramings(targetType.sizes)
   const elementType = targetType.element
 
@@ -484,7 +484,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     const innerFramings = framings.slice(1)
 
     for (const elem of expr.elements) {
-      const elemBytes = buildElementBytes(elem, elementType, innerFramings)
+      const elemBytes = buildElementBytes(elem, elementType, innerFramings, builder)
       elementParts.push(elemBytes)
     }
 
@@ -512,7 +512,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     const innerFramings = framings.slice(1)
 
     // Serialize the value once
-    const elemBytes = buildElementBytes(expr.value, elementType, innerFramings)
+    const elemBytes = buildElementBytes(expr.value, elementType, innerFramings, builder)
 
     // Repeat it count times
     const elementParts: Uint8Array[] = []
@@ -530,21 +530,54 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     return combined
   }
 
-  // For tuple expressions, serialize each element according to the tuple field types
-  if (expr.kind === 'TupleExpr' && elementType.kind === 'tuple') {
-    const parts: Uint8Array[] = []
-    for (let i = 0; i < expr.elements.length; i++) {
-      const elemExpr = expr.elements[i].value ?? expr.elements[i]
-      const fieldType = elementType.fields[i]?.type ?? elementType.fields[0]?.type
-      if (!fieldType) throw new Error('Tuple field type mismatch in data packer')
-      const elemBytes = buildElementBytes(elemExpr as AST.Expr, fieldType, [])
-      parts.push(elemBytes)
-    }
-    return concatBytes(parts)
+  // A single tuple (data origin = (0.0, 0.0)): its fields, as for an element
+  if (expr.kind === 'TupleExpr' && unwrap(elementType).kind === 'tuple') {
+    return buildElementBytes(expr, elementType, [], builder)
   }
 
   // Runtime expression — emit zero placeholder, filled at runtime
   return new Uint8Array(getElementSize(elementType))
+}
+
+// The expressions that give a struct's fields, in the order of the type, when
+// `expr` writes the struct out: a tuple gives them by position, as any tuple
+// that becomes a struct does; a constructor (Point(y: 2, x: 1)) can name them.
+// Type names are the identifiers that start with a capital letter.
+function structFieldValues(expr: AST.Expr, struct: TupleRT): (AST.Expr | null)[] | null {
+  let args: AST.Arg[]
+  if (expr.kind === 'TupleExpr') {
+    args = expr.elements
+  } else if (expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name)) {
+    args = expr.args
+    if (args.some((a) => a.name)) return struct.fields.map((f) => args.find((a) => a.name === f.name)?.value ?? null)
+  } else {
+    return null
+  }
+  return struct.fields.map((_, i) => args[i]?.value ?? null)
+}
+
+// The bytes of one field of a struct. A slice or array-pointer field given as
+// a literal points at that literal, which is laid out on its own.
+function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataSectionBuilder): Uint8Array {
+  const t = unwrap(fieldType)
+  let lit = expr
+  while (lit.kind === 'AnnotationExpr' || lit.kind === 'GroupExpr') lit = lit.expr
+  const isString = lit.kind === 'LiteralExpr' && lit.value.kind === 'string'
+  if (isString || lit.kind === 'ArrayExpr' || lit.kind === 'RepeatExpr') {
+    const count = lit.kind === 'ArrayExpr' ? lit.elements.length
+      : lit.kind === 'RepeatExpr' ? getRepeatCount(lit)
+      : lit.kind === 'LiteralExpr' && lit.value.kind === 'string' ? lit.value.bytes.length : 0
+    if (t.kind === 'slice') {
+      const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
+      return concatBytes([serializeI32(ref.ptr), serializeI32(count)])
+    }
+    if (t.kind === 'pointer' && t.pointee.kind === 'array') {
+      // A many-pointer has no count of its own: the literal's.
+      const target = t.pointee.sizes === null ? { ...t.pointee, sizes: [count] } : t.pointee
+      return serializeI32(serializeLiteral(lit, target, builder).ptr)
+    }
+  }
+  return buildElementBytes(expr, fieldType, [], builder)
 }
 
 // Build bytes for a single element with inner framings
@@ -553,10 +586,11 @@ function buildElementBytes(
   expr: AST.Expr,
   elementType: ResolvedType,
   framings: ArraySize[],
+  builder: DataSectionBuilder,
 ): Uint8Array {
   // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
   if (expr.kind === 'AnnotationExpr') {
-    return buildElementBytes(expr.expr, elementType, framings)
+    return buildElementBytes(expr.expr, elementType, framings, builder)
   }
 
   if (expr.kind === 'LiteralExpr') {
@@ -573,20 +607,20 @@ function buildElementBytes(
 
   if (expr.kind === 'ArrayExpr') {
     const parts: Uint8Array[] = []
-    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
+    const innerElementType = arrayElementType(elementType)
 
     if (framings.length > 0) {
       const outerFraming = framings[0]
       const innerFramings = framings.slice(1)
       for (const elem of expr.elements) {
-        parts.push(buildElementBytes(elem, innerElementType, innerFramings))
+        parts.push(buildElementBytes(elem, innerElementType, innerFramings, builder))
       }
       const combined = concatBytes(parts)
       return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
     }
 
     for (const elem of expr.elements) {
-      parts.push(buildElementBytes(elem, innerElementType, []))
+      parts.push(buildElementBytes(elem, innerElementType, [], builder))
     }
     return concatBytes(parts)
   }
@@ -594,8 +628,8 @@ function buildElementBytes(
   if (expr.kind === 'RepeatExpr') {
     // [value; count] - repeat the value bytes count times
     // If elementType is a slice, unwrap it for the inner elements
-    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
-    const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1))
+    const innerElementType = arrayElementType(elementType)
+    const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1), builder)
     const count = getRepeatCount(expr)
     const parts: Uint8Array[] = []
     for (let i = 0; i < count; i++) {
@@ -609,22 +643,21 @@ function buildElementBytes(
   }
 
   // (x) is grouping: the element itself.
-  if (expr.kind === 'GroupExpr') return buildElementBytes(expr.expr, elementType, framings)
-  if (expr.kind === 'TupleExpr' && elementType.kind !== 'tuple' && expr.elements.length === 1 && expr.elements[0].value) {
-    return buildElementBytes(expr.elements[0].value, elementType, framings)
+  const struct = unwrap(elementType)
+  if (expr.kind === 'GroupExpr') return buildElementBytes(expr.expr, elementType, framings, builder)
+  if (expr.kind === 'TupleExpr' && struct.kind !== 'tuple' && expr.elements.length === 1 && expr.elements[0].value) {
+    return buildElementBytes(expr.elements[0].value, elementType, framings, builder)
   }
 
-  // A tuple or struct literal: its fields one after another, as they lie in
-  // memory. A field given by name goes where the type has that name.
-  if (expr.kind === 'TupleExpr' && elementType.kind === 'tuple') {
-    const fields = elementType.fields
-    const parts: Uint8Array[] = fields.map((f) => new Uint8Array(byteSize(f.type) ?? 0))
-    expr.elements.forEach((el, i) => {
-      const named = el.name ? fields.findIndex((f) => f.name === el.name) : -1
-      const index = named >= 0 ? named : i
-      if (el.value && index < fields.length) parts[index] = buildElementBytes(el.value, fields[index].type, [])
-    })
-    return concatBytes(parts)
+  // A struct written out, as a tuple or a constructor: its fields one after
+  // another, as they lie in memory. A field only known when the program runs
+  // stays zero here.
+  const values = struct.kind === 'tuple' ? structFieldValues(expr, struct) : null
+  if (values && struct.kind === 'tuple') {
+    return concatBytes(struct.fields.map((f, i) => {
+      const value = values[i]
+      return value ? buildFieldBytes(value, f.type, builder) : new Uint8Array(byteSize(f.type) ?? 0)
+    }))
   }
 
   // Runtime expressions (calls, identifiers, etc.) — emit zero placeholder
@@ -632,6 +665,15 @@ function buildElementBytes(
   const size = byteSize(elementType)
   if (size !== null) return new Uint8Array(size)
   return new Uint8Array(8) // default: ptr + len for slice
+}
+
+// What the elements of an array literal are, for a target that is a slice or a
+// fixed array ([N]T, as a field of a struct); anything else is the leaf type
+// of merged brackets, which nested literals share.
+function arrayElementType(type: ResolvedType): ResolvedType {
+  if (type.kind === 'slice') return type.element
+  if (type.kind === 'array' && isValueArray(type)) return type.element
+  return type
 }
 
 // Serialize separate brackets (e.g., [!][!]u8) - depth-first with pointer arrays
