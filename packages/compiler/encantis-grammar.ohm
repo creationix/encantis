@@ -240,6 +240,7 @@ Encantis {
                | "." "*"           -- deref
                | "." PrimitiveType -- typePun
                | "." ident         -- field
+               | "[" Expr? ".." Expr? "]"  -- slice
                | "[" Expr "]"      -- index
 
   // ============================================================================

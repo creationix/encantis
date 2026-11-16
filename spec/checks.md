@@ -147,3 +147,79 @@ func put_buf(i: u32, v: u8) {
   if let p = &buf[i] { p.* = v }
 }
 ```
+
+## Ranges
+
+`items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.
+
+```ents
+data text = "hello, world"
+
+func parts(i: u32#8) -> u32 {
+  let hello = text[0..5]
+  let world = text[7..]
+  let all = text[..]
+  let head = text[..i]
+  return hello.len + world.len + all.len + head.len
+}
+```
+
+```ents
+data text = "hello, world"
+
+func f() -> u32 {
+  return text[5..20].len
+}
+```
+
+```errors
+range 5..20 is out of bounds for *[12]u8
+```
+
+A range that can't be proven is an optional slice: none unless the start is at most the end and the end at most the length. On a slice, only the whole slice is known to fit.
+
+```ents
+func rest(s: []u8, i: u32) -> []u8 {
+  return s[i..] ?? ""
+}
+```
+
+```ents
+func rest(s: []u8, i: u32) -> []u8 {
+  return s[i..]
+}
+```
+
+```errors
+cannot assign ?[]u8 to []u8
+```
+
+A many-pointer has no length, so its ranges are unchecked and need an end.
+
+```ents
+func view(p: [*]u8, n: u32) -> []u8 {
+  return p[0..n]
+}
+
+func tail(p: [*]u8) -> u32 {
+  return p[1..].len
+}
+```
+
+```errors
+a range on a many-pointer needs an end
+```
+
+Copying or filling through a range isn't implemented yet:
+
+```ents
+data buf = mut [0:u8; 16]
+
+func clear() {
+  buf[0..8] = 0
+}
+```
+
+```errors
+assigning to a range (bulk copy or fill) is not supported yet
+```

@@ -1351,6 +1351,10 @@ class CheckContext {
         if (stmt.when) this.inferExpr(stmt.when)
         break
       case 'AssignmentStmt': {
+        if (stmt.target.kind === 'SliceExpr') {
+          this.error(stmt.target.span.start, `assigning to a range (bulk copy or fill) is not supported yet`)
+          break
+        }
         let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
@@ -2181,6 +2185,9 @@ class CheckContext {
       case 'IndexExpr':
         return this.inferIndex(expr)
 
+      case 'SliceExpr':
+        return this.inferSlice(expr)
+
       case 'CoalesceExpr':
         return this.inferCoalesce(expr)
 
@@ -2810,6 +2817,62 @@ class CheckContext {
         return punType
       }
     }
+  }
+
+  // items[start..end] is a []T over the same memory. On a *[N]T, constant
+  // bounds, or ranged ones that fit, are checked at compile time and give a
+  // []T. On a many-pointer the range is unchecked, like its indexing, and needs
+  // an end. Otherwise the result is ?[]T: none unless start <= end <= length,
+  // checked at runtime.
+  inferSlice(expr: AST.SliceExpr): ResolvedType {
+    const objType = unwrap(this.inferExpr(expr.object))
+    const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
+      if (!e) return { value: null, max: null }
+      const t = unwrap(this.inferExpr(e))
+      if (t.kind === 'comptime_int') this.checkExpr(e, primitive('u32'))
+      else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
+        this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
+      }
+      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
+      const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
+      return { value: null, max: limit }
+    }
+    const start = bound(expr.start)
+    const end = bound(expr.end)
+
+    let elem: ResolvedType
+    let mutable: boolean
+    let proven: boolean
+    const pointee = objType.kind === 'pointer' ? unwrap(objType.pointee) : null
+    if (objType.kind === 'slice') {
+      elem = objType.element
+      mutable = !!objType.mutable
+      // Only the whole slice is known to fit.
+      proven = (expr.start === null || start.value === 0n) && expr.end === null
+    } else if (pointee?.kind === 'array' && pointee.sizes === null) {
+      elem = pointee.element
+      mutable = !!(objType as { mutable?: boolean }).mutable
+      if (!expr.end) this.error(expr.span.start, `a range on a many-pointer needs an end: it has no length`)
+      proven = true
+    } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
+      elem = pointee.element
+      mutable = !!(objType as { mutable?: boolean }).mutable
+      const n = BigInt(pointee.sizes[0])
+      const s = expr.start ? start : { value: 0n, max: 1n }
+      const e = expr.end ? end : { value: n, max: n + 1n }
+      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
+        this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
+      }
+      // Proven when the end can't pass n and the start can't pass the end.
+      const endFits = e.max !== null && e.max <= n + 1n
+      const startFits = s.value === 0n || (e.value !== null && s.max !== null && s.max <= e.value + 1n)
+      proven = endFits && startFits
+    } else {
+      this.error(expr.span.start, `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
+      return slice(primitive('u8'))
+    }
+    return slice(elem, mutable, !proven)
   }
 
   // The type of &items[i] for a slice or *[N]T: *T when the index is known to

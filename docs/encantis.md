@@ -1215,9 +1215,7 @@ With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no
 
 ### 4.8 Slice/Range Syntax
 
-> **Status: Not yet implemented.**
-
-Create slices from existing arrays using range syntax:
+A range makes a slice over part of an array or slice, with no copying:
 
 ```ents
 let arr:*[16]u8 = ...
@@ -1226,6 +1224,16 @@ arr[8..]        // []u8 from 8 to end
 arr[..4]        // []u8 from 0 to 3
 arr[..]         // []u8 whole array as slice
 ```
+
+Ranges follow the same bounds rules as indexing:
+
+- On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
+- Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
+- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]`.
+
+A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
+
+> **Status: Not yet implemented** — bulk copy and fill through ranges, below.
 
 Bulk copy via slice assignment (uses `memory.copy`):
 
