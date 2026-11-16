@@ -2317,9 +2317,11 @@ class CheckContext {
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
-    // Check for builtin functions first
+    // Check for builtin functions first. A function the program declares takes
+    // the place of the builtin of the same name.
     if (expr.callee.kind === 'IdentExpr') {
-      const builtinResult = this.inferBuiltin(expr, expr.callee.name)
+      const declared = this.lookup(expr.callee.name)?.kind === 'func'
+      const builtinResult = declared ? null : this.inferBuiltin(expr, expr.callee.name)
       if (builtinResult !== null) return builtinResult
 
       // Primitive type cast: u64(x), f32(x), etc.

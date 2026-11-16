@@ -650,6 +650,15 @@ describe('builtin codegen', () => {
       expect(body('func f(a: u32, b: u64) -> u64 => mul_hi(a, b)')).toBe('(call $__mul_hi (i64.extend_i32_u (local.get $a)) (local.get $b))')
     })
 
+    test('a declared function is called in place of the builtin of the same name', () => {
+      const wat = modWat(`
+        func abs(x: i32) -> i32 => x + 1
+        export func f(x: i32) -> i32 => abs(x)
+      `)
+      expect(wat).toContain('(call $abs (local.get $x))')
+      expect(wat).not.toContain('select')
+    })
+
     test('a string literal operand of memcpy is placed in the data section', () => {
       const wat = modWat(`
         data buf = mut [0:u8; 16]

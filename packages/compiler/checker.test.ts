@@ -1191,6 +1191,20 @@ describe('builtins', () => {
     expect(types('i: u32#4, b: u8', 'max(i, b)')).toEqual(['u32', 'u32'])
   })
 
+  test('a declared function takes the place of the builtin of the same name', () => {
+    const result = checkModule(`
+      func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+      export func f() -> i32 => max(1, 2, 3)
+    `)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(result.warnings.map(e => e.message)).toEqual([])
+    // A variable of that name is not a function to call: the builtin is still meant.
+    expect(errs(`func f(a: i32, b: i32) -> i32 {
+      let max = max(a, b)
+      return max(max, 0)
+    }`)).toEqual([])
+  })
+
   test('memzero needs a destination whose size is known', () => {
     expect(errs(`func f(p: *mut [4]u32) { memzero(p) }`)).toEqual([])
     expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])

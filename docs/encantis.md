@@ -1851,7 +1851,7 @@ let (ptr:, len:) = slice         // by name
 
 ## 9. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place.
 
 ### 9.1 Numeric Builtins
 
