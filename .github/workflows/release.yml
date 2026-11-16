@@ -1,10 +1,13 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching the root package.json version) to publish a
-# GitHub release with CLI binaries for each platform and the VS Code extension.
+# Publishes a GitHub release with CLI binaries for each platform and the VS
+# Code extension. Either push a tag like v0.2.0 that matches the root
+# package.json version, or run this workflow by hand on a branch: it then
+# releases that branch's package.json version and creates the tag itself.
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,14 +24,24 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
-      - name: Check the tag matches package.json
+      - name: Check the version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
           expected=$(bun -p 'require("./package.json").version')
-          if [ "$version" != "$expected" ]; then
-            echo "::error::tag $GITHUB_REF_NAME doesn't match package.json version $expected"
-            exit 1
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$expected" ]; then
+              echo "::error::tag $GITHUB_REF_NAME doesn't match package.json version $expected"
+              exit 1
+            fi
+          else
+            version="$expected"
+            if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::v$version is already released; bump the version in package.json"
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: bun run ci
@@ -90,12 +103,14 @@ jobs:
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: v${{ needs.build.outputs.version }}
         run: |
           prerelease=""
           case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          # A pushed tag already exists; a manual run creates it at this commit.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then target="--verify-tag"; else target="--target $GITHUB_SHA"; fi
           gh release create "$TAG" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Encantis ${TAG#v}" \
             --generate-notes \
-            --verify-tag $prerelease
+            $target $prerelease
