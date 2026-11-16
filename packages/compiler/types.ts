@@ -563,14 +563,16 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return typeAssignResult(unwrapOptional(t), s)
   }
 
-  // Comptime int can coerce to any integer type that fits
+  // Comptime int can coerce to any integer type that fits, and to a float
+  // that holds it exactly
   // Not reinterpretable: comptime has no bytes, concrete type does
   if (s.kind === 'comptime_int' && t.kind === 'primitive') {
     return comptimeIntFits(s.value, t) ? lossless(false) : INCOMPATIBLE
   }
 
-  // Comptime int can coerce to pointer types (raw address)
-  if (s.kind === 'comptime_int' && (t.kind === 'pointer' || t.kind === 'slice')) {
+  // Comptime int can coerce to pointer types (raw address). A slice is two
+  // values, a pointer and a length: an address alone isn't one.
+  if (s.kind === 'comptime_int' && t.kind === 'pointer') {
     return lossless(false)
   }
 
@@ -1079,14 +1081,24 @@ export function primitiveByteSize(t: ResolvedType): number | null {
   }
 }
 
+// Bits of integer a float holds exactly: every integer up to 2^bits in magnitude.
+const MANTISSA_BITS: Partial<Record<PrimitiveName, bigint>> = { f32: 24n, f64: 53n }
+
 // Check if converting from one primitive to another is a safe widening conversion
 // Widening: smaller type to larger type where all values are preserved
 export function isWideningConversion(from: PrimitiveName, to: PrimitiveName): boolean {
   if (from === to) return false
   if (from === 'f32' && to === 'f64') return true
   const fromBounds = INT_BOUNDS[from]
+  if (!fromBounds) return false
+  // Integer to float: the mantissa must hold every value of the integer type.
+  const mantissa = MANTISSA_BITS[to]
+  if (mantissa !== undefined) {
+    const limit = 1n << mantissa
+    return fromBounds[0] >= -limit && fromBounds[1] <= limit
+  }
   const toBounds = INT_BOUNDS[to]
-  if (!fromBounds || !toBounds) return false
+  if (!toBounds) return false
   return fromBounds[0] >= toBounds[0] && fromBounds[1] <= toBounds[1]
 }
 
@@ -1141,8 +1153,11 @@ export function fieldByteOffset(t: ResolvedType, fieldName: string): number | nu
   return null
 }
 
-// Check if comptime int value fits in a given integer type
+// Check if comptime int value fits in a given integer type, or is exact in a
+// given float type
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
+  const mantissa = MANTISSA_BITS[target.name]
+  if (mantissa !== undefined) return value >= -(1n << mantissa) && value <= 1n << mantissa
   const bounds = INT_BOUNDS[target.name]
   if (!bounds) return false
   if (value < bounds[0] || value > bounds[1]) return false

@@ -41,6 +41,160 @@ func divmod(a: u32, b: u32) -> (q: u32, r: u32) {
 }
 ```
 
+## Operands
+
+The two operands of an arithmetic, bitwise or comparison operator end up in one type: the narrower one widens to the other's. An integer widens to a wider integer that holds all its values, `f32` to `f64`, and an integer to a float whose mantissa holds it.
+
+```ents
+func a(r: f64, n: i32) -> f64 => r * n
+func b(n: i32, r: f64) -> bool => n < r
+func c(x: u8, y: i16, z: i64) -> i64 => x + y + z
+func d(x: f32, y: f64) -> f64 => x / y
+func e(x: u32, y: i64) -> bool => x == y
+func f(x: f32, n: u16) -> f32 => x - n
+```
+
+Types neither of which holds the other need a cast: signed with unsigned of the same width, or an integer too wide for the float.
+
+```ents
+func a(x: i32, y: u32) -> bool => x < y
+func b(x: i32, y: f32) -> bool => x == y
+func c(x: i64, y: f64) -> f64 => x * y
+```
+
+```errors
+mismatched operands for '<': i32 and u32
+mismatched operands for '==': i32 and f32
+mismatched operands for '*': i64 and f64
+```
+
+A constant takes the type it's used as, and each literal has to fit by its own value. A float literal beside an integer makes the operation an `f64` one.
+
+```ents
+func a(x: f64) -> bool => x > 0
+func b(n: i32) -> f64 => n * 0.5
+func c() -> f32 {
+  let x: f32 = 1.0 + 16777216
+  return x
+}
+```
+
+```ents
+func c() -> f32 {
+  let x: f32 = 1.0 + 16777217
+  return x
+}
+```
+
+```errors
+cannot assign int(16777217) to f32
+```
+
+`%`, the bitwise operators and the shifts are for integers. A bool isn't a number, and a number isn't a bool: conditions and the operands of `&&`, `||` and `!` are bools.
+
+```ents
+func a(x: f64) -> f64 => x % 2.0
+func b(flag: bool, n: i32) -> i32 => flag + n
+func c(n: i32) -> bool => !n
+func d(n: i32) -> i32 {
+  if n { return 1 }
+  return 0
+}
+```
+
+```errors
+'%' needs integer operands, not f64
+'+' cannot be applied to bool
+operand of '!' must be bool, not i32
+condition must be bool, not i32
+```
+
+A shift's count is any integer type; the result has the value's type and sign.
+
+```ents
+func a(x: i64, n: u8) -> i64 => x >> n
+func b(x: i32, n: u32) -> i32 => x << n
+```
+
+## Widening
+
+A value widens wherever it meets a declared type that holds all its values: a `let` with a type, an assignment, an argument, a constructor field, a result.
+
+```ents
+type Sample = (count: i64, mean: f64)
+
+func take(x: i64, y: f64) -> f64 => y
+
+func f(n: i32, x: f32) -> f64 {
+  let a: i64 = n
+  let b: f64 = x
+  a = n
+  b += n
+  set a = n
+  let s = Sample(n, x)
+  let t: (i64, f64) = (n, n)
+  return take(n, n)
+}
+```
+
+Narrowing, and an integer the float can't hold, need a cast.
+
+```ents
+func a(x: i64) -> i32 => x
+func b(x: i32) -> f32 => x
+func c(x: i64) {
+  let y: f64 = x
+}
+```
+
+```errors
+cannot assign i64 to i32
+cannot assign i32 to f32
+cannot assign i64 to f64
+```
+
+The branches of an `if` or `match` used as a value widen to one type: the declared one, or the widest branch. A branch that always exits needs no value.
+
+```ents
+func a(c: bool, n: i32, x: f64) -> f64 => if c { n } else { x }
+
+func b(c: bool, n: i32, big: i64) -> i64 {
+  let v = if c { n } elif n > 0 { big } else { return 0 }
+  return v
+}
+
+func c(k: i32, n: i32, big: i64) -> i64 => match k {
+  0 => n
+  _ => big
+}
+```
+
+```ents
+func a(c: bool, x: i32, y: u32) -> i64 {
+  let v = if c { x } else { y }
+  return v
+}
+
+func b(c: bool, x: i32) -> i32 => if c { x } else { x = 2 }
+```
+
+```errors
+branches have different types: u32 and i32
+this branch has no value: expected i32
+```
+
+An `if` used as a statement has no value, so its branches can end in anything.
+
+```ents
+func one() -> i32 => 1
+func two() -> u32 => 2
+
+func f(c: bool, n: i32) {
+  if c { one() } else { two() }
+  if c { one() } else { n = 2 }
+}
+```
+
 ## Defer
 
 A deferred expression runs when its block exits, so it can't leave the block itself.

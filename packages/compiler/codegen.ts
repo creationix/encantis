@@ -2,6 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
+import { argValue } from './ast'
 import { typeKey, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
@@ -27,6 +28,9 @@ export interface CodegenContext {
   types: Map<string, ResolvedType>
   // Types of expressions from the checker, by AST node
   exprTypes: Map<AST.Expr, ResolvedType>
+  // Implicit widenings from the checker: expression → the wider type its
+  // value is used as
+  coercions: Map<AST.Expr, ResolvedType>
   // Symbol table from checker
   symbols: Map<string, CheckSymbol>
   // Local variable names → WASM local names (handles flattening)
@@ -56,6 +60,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
   return {
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
+    coercions: checkResult.coercions,
     symbols: checkResult.symbols,
     locals: new Map(),
     params: new Map(),
@@ -216,6 +221,18 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 // === Expression Codegen ===
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  const wat = exprValueToWat(expr, ctx)
+  // Every implicit widening happens here: the checker says which expressions
+  // meet a wider type (as an operand, an argument, an initializer, a branch).
+  const to = ctx.coercions.get(expr)
+  const from = to && lookupExprType(expr, ctx)
+  // An integer up to 32 bits already fills its i32: widening one within that
+  // costs nothing.
+  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return wat
+  return emitConversion(wat, from, to)
+}
+
+function exprValueToWat(expr: AST.Expr, ctx: CodegenContext): string {
   switch (expr.kind) {
     case 'LiteralExpr':
       return literalToWat(expr, ctx)
@@ -425,14 +442,6 @@ function wideBinaryOp(op: string, signed: boolean, type: ResolvedType): WideBina
   return helper
 }
 
-function multiValueBinaryOp(n: number, wasmOp: string, left: string, right: string): string {
-  if (n === 1) return `(${wasmOp} ${left} ${right})`
-  const leftParts = splitMultiValue(left, n)
-  const rightParts = splitMultiValue(right, n)
-  return leftParts.map((l, i) => `(${wasmOp} ${l} ${rightParts[i]})`).join(' ')
-}
-
-
 function loadFromMemory(type: ResolvedType, ptr: string): string {
   const nw = wideIntParts(type)
   if (nw > 0) {
@@ -517,9 +526,70 @@ function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: n
   return parts.join(' ')
 }
 
+// The type of the value exprToWat leaves on the stack: the expression's own,
+// or the one the checker widens it to where it's used.
+function valueType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
+  return ctx.coercions.get(expr) ?? lookupExprType(expr, ctx)
+}
+
+const COMPARISON_OPS: ReadonlySet<string> = new Set(['==', '!=', '<', '>', '<=', '>='])
+const SHIFT_OPS: ReadonlySet<string> = new Set(['<<', '>>', '<<<', '>>>'])
+
+// The wasm instruction for a binary operator on operands of one type, each a
+// single wasm value. Saturating operators wrap for now (TODO: saturation).
+function binaryInstruction(op: string, type: ResolvedType): string {
+  const wt = typeToWasmSingle(type)
+  const float = isFloat(type)
+  const sign = isSigned(type) ? 's' : 'u'
+  switch (op) {
+    case '+': case '+|': return `${wt}.add`
+    case '-': case '-|': return `${wt}.sub`
+    case '*': case '*|': return `${wt}.mul`
+    case '/': return float ? `${wt}.div` : `${wt}.div_${sign}`
+    case '%': return `${wt}.rem_${sign}`
+    case '==': return `${wt}.eq`
+    case '!=': return `${wt}.ne`
+    case '<': return float ? `${wt}.lt` : `${wt}.lt_${sign}`
+    case '>': return float ? `${wt}.gt` : `${wt}.gt_${sign}`
+    case '<=': return float ? `${wt}.le` : `${wt}.le_${sign}`
+    case '>=': return float ? `${wt}.ge` : `${wt}.ge_${sign}`
+    case '&': return `${wt}.and`
+    case '|': return `${wt}.or`
+    case '^': return `${wt}.xor`
+    case '<<': return `${wt}.shl`
+    case '>>': return `${wt}.shr_${sign}`
+    case '<<<': return `${wt}.rotl`
+    case '>>>': return `${wt}.shr_u`
+    default: throw new Error(`Unknown binary operator: ${op}`)
+  }
+}
+
+// `left op right` on operands of one type that is a single wasm value. The
+// result of an 8- or 16-bit operation is cut back to its width.
+function scalarBinaryToWat(op: string, type: ResolvedType, left: string, right: string): string {
+  return truncateSubWord(`(${binaryInstruction(op, type)} ${left} ${right})`, type)
+}
+
+// A shift or rotate count can be any integer type; wasm wants it in the
+// value's. Only the count's low bits matter, so widening or wrapping is exact.
+function shiftCountToWat(count: string, countType: ResolvedType | undefined, type: ResolvedType): string {
+  if (!countType) return count
+  const parts = wideIntParts(type)
+  const countParts = wideIntParts(countType)
+  if (parts > 0) return countParts > parts ? emitConversion(count, countType, type) : widenToWide(count, countType, parts)
+  const wt = typeToWasmSingle(type)
+  if (countParts > 0) return emitConversion(count, countType, RT.primitive(wt === 'i64' ? 'u64' : 'u32'))
+  return coerceWasmType(count, typeToWasmSingle(countType), wt, isSigned(countType))
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
-  let left = exprToWat(expr.left, ctx)
+  const left = exprToWat(expr.left, ctx)
   let right = exprToWat(expr.right, ctx)
+  const op = expr.op
+
+  // Logical (short-circuit)
+  if (op === '&&') return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
+  if (op === '||') return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
 
   // Get result type from checker
   const resultType = lookupExprType(expr, ctx)
@@ -527,161 +597,27 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
     throw new Error(`Missing type for binary expression at offset ${expr.span.start}`)
   }
 
-  // For comparison ops, we need the operand type for signedness (result is bool)
-  // For arithmetic ops, use the result type (which is the wider operand type)
-  let leftType = lookupExprType(expr.left, ctx)
-  if (leftType?.kind === 'tuple' && leftType.fields.length === 1) leftType = leftType.fields[0].type
-  let rightType = lookupExprType(expr.right, ctx)
-  if (rightType?.kind === 'tuple' && rightType.fields.length === 1) rightType = rightType.fields[0].type
-  const isComparison = ['==', '!=', '<', '>', '<=', '>='].includes(expr.op)
-  let operandType: ResolvedType
-  if (isComparison) {
-    const lSize = leftType ? primitiveByteSize(unwrap(leftType)) ?? 0 : 0
-    const rSize = rightType ? primitiveByteSize(unwrap(rightType)) ?? 0 : 0
-    operandType = rSize > lSize ? (rightType ?? resultType) : (leftType ?? resultType)
-  } else {
-    operandType = resultType
-  }
+  // The checker brought both operands to one type, the one the operation is
+  // done in: the result's, or for a comparison (whose result is bool) the
+  // operands'. A shift's count is the exception.
+  let operandType = COMPARISON_OPS.has(op) ? valueType(expr.left, ctx) ?? resultType : resultType
   // Unwrap 1-element tuple from parenthesized expressions
   if (operandType.kind === 'tuple' && operandType.fields.length === 1) {
     operandType = operandType.fields[0].type
   }
+  if (SHIFT_OPS.has(op)) right = shiftCountToWat(right, valueType(expr.right, ctx), operandType)
 
-  const wt = typeToWasmSingle(operandType)
-  const signed = isSigned(operandType)
-  const isFloatType = isFloat(operandType)
   const nWide = wideIntParts(operandType)
-
-  // Widen operands if they have fewer i64 parts than the operation requires
-  if (nWide > 0) {
-    if (leftType && wideIntParts(leftType) < nWide) left = widenToWide(left, leftType, nWide)
-    if (rightType && wideIntParts(rightType) < nWide) right = widenToWide(right, rightType, nWide)
-  }
-  if (nWide > 1 && expr.op !== '&&' && expr.op !== '||') {
+  if (nWide > 1) {
     // Bitwise ops and equality need no carries: do them inline, limb by limb,
     // when both operands split into parts (the hot path in crypto code).
-    const limbwise = INLINE_WIDE_OPS[expr.op]
+    const limbwise = INLINE_WIDE_OPS[op]
     const lp = limbwise ? trySplitMultiValue(left, nWide) : null
     const rp = lp ? trySplitMultiValue(right, nWide) : null
     if (limbwise && lp && rp) return limbwise(lp, rp)
-    return wideCall(nWide, wideBinaryOp(expr.op, signed, operandType), left, right)
+    return wideCall(nWide, wideBinaryOp(op, isSigned(operandType), operandType), left, right)
   }
-
-  const op = expr.op
-  let wasmOp: string
-
-  switch (op) {
-    // Arithmetic
-    case '+':
-      wasmOp = nWide > 0 ? 'i64.add' : `${wt}.add`
-      break
-    case '-':
-      wasmOp = nWide > 0 ? 'i64.sub' : `${wt}.sub`
-      break
-    case '*':
-      wasmOp = nWide > 0 ? 'i64.mul' : `${wt}.mul`
-      break
-    case '/':
-      wasmOp = isFloatType ? `${wt}.div` : signed ? `${wt}.div_s` : `${wt}.div_u`
-      break
-    case '%':
-      wasmOp = signed ? `${wt}.rem_s` : `${wt}.rem_u`
-      break
-
-    // Saturating arithmetic
-    case '+|':
-      wasmOp = signed ? `${wt}.add` : `${wt}.add` // TODO: implement saturation
-      break
-    case '-|':
-      wasmOp = signed ? `${wt}.sub` : `${wt}.sub`
-      break
-    case '*|':
-      wasmOp = signed ? `${wt}.mul` : `${wt}.mul`
-      break
-
-    // Comparison
-    case '==':
-      if (nWide > 0) {
-        const lp = splitMultiValue(left, nWide)
-        const rp = splitMultiValue(right, nWide)
-        let eq = `(i64.eq ${lp[0]} ${rp[0]})`
-        for (let i = 1; i < nWide; i++) {
-          eq = `(i32.and ${eq} (i64.eq ${lp[i]} ${rp[i]}))`
-        }
-        return eq
-      }
-      wasmOp = `${wt}.eq`
-      break
-    case '!=':
-      if (nWide > 0) {
-        const lp = splitMultiValue(left, nWide)
-        const rp = splitMultiValue(right, nWide)
-        let neq = `(i64.eq ${lp[0]} ${rp[0]})`
-        for (let i = 1; i < nWide; i++) {
-          neq = `(i32.and ${neq} (i64.eq ${lp[i]} ${rp[i]}))`
-        }
-        return `(i32.eqz ${neq})`
-      }
-      wasmOp = `${wt}.ne`
-      break
-    case '<':
-      wasmOp = isFloatType ? `${wt}.lt` : signed ? `${wt}.lt_s` : `${wt}.lt_u`
-      break
-    case '>':
-      wasmOp = isFloatType ? `${wt}.gt` : signed ? `${wt}.gt_s` : `${wt}.gt_u`
-      break
-    case '<=':
-      wasmOp = isFloatType ? `${wt}.le` : signed ? `${wt}.le_s` : `${wt}.le_u`
-      break
-    case '>=':
-      wasmOp = isFloatType ? `${wt}.ge` : signed ? `${wt}.ge_s` : `${wt}.ge_u`
-      break
-
-    // Bitwise
-    case '&':
-      wasmOp = nWide > 0 ? 'i64.and' : `${wt}.and`
-      break
-    case '|':
-      wasmOp = nWide > 0 ? 'i64.or' : `${wt}.or`
-      break
-    case '^':
-      wasmOp = nWide > 0 ? 'i64.xor' : `${wt}.xor`
-      break
-    case '<<':
-      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.shl`
-      break
-    case '>>':
-      wasmOp = nWide > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
-      break
-    case '>>>':
-      wasmOp = nWide > 0 ? 'i64.shr_u' : `${wt}.shr_u`
-      break
-    case '<<<':
-      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.rotl`
-      break
-
-    // Logical (short-circuit)
-    case '&&':
-      return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
-    case '||':
-      return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
-
-    default:
-      throw new Error(`Unknown binary operator: ${op}`)
-  }
-
-  // Coerce operands to match the operation type when needed
-  const leftWt = leftType ? typeToWasmSingle(leftType) : wt
-  const leftSigned = leftType ? isSigned(leftType) : signed
-  const coercedLeft = coerceWasmType(left, leftWt, wt, leftSigned)
-
-  const rightWt = rightType ? typeToWasmSingle(rightType) : wt
-  const rightSigned = rightType ? isSigned(rightType) : signed
-  const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
-
-  if (nWide > 1) return multiValueBinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
-  const raw = `(${wasmOp} ${coercedLeft} ${coercedRight})`
-  return truncateSubWord(raw, operandType)
+  return scalarBinaryToWat(op, operandType, left, right)
 }
 
 function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
@@ -905,8 +841,10 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   if (typeSym?.kind === 'type') {
     const structType = RT.unwrap(typeSym.type)
     if (structType.kind === 'tuple') {
-      const argWat = (arg: AST.Arg) =>
-        arg.value ? exprToWat(arg.value, ctx) : identToWat({ kind: 'IdentExpr', name: arg.name ?? '', span: arg.span }, ctx)
+      const argWat = (arg: AST.Arg) => {
+        const value = argValue(arg)
+        return value ? exprToWat(value, ctx) : ''
+      }
       const named = expr.args.some((a) => a.name)
       return structType.fields
         .map((field, i) => {
@@ -1587,14 +1525,9 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
 function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   // Flatten tuple elements
   const parts = expr.elements.map((elem) => {
-    if (elem.value) {
-      return exprToWat(elem.value, ctx)
-    }
-    // Shorthand: name:
-    if (elem.name) {
-      return identToWat({ kind: 'IdentExpr', name: elem.name, span: elem.span }, ctx)
-    }
-    return ''
+    // Shorthand `name:` stands for the variable of that name.
+    const value = argValue(elem)
+    return value ? exprToWat(value, ctx) : ''
   })
   return parts.filter(Boolean).join(' ')
 }
@@ -1769,8 +1702,8 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
 
     const body =
       arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
-        ? bodyToWat(arm.body, ctx)
-        : exprToWat(arm.body, ctx)
+        ? bodyToWat(arm.body, ctx, resultTypes.length > 0)
+        : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
 
     if (isWildcard) {
       result = body
@@ -2050,54 +1983,20 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
   // Handle compound assignment operators
   if (stmt.op !== '=') {
     const current = lvalueToWat(stmt.target, ctx)
-    // Use target type for the operation, not value type
-    const targetType = stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr'
+    // x op= v is x = x op v in x's type: the checker has widened v to it.
+    const type = stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr'
       ? lookupExprType(stmt.target, ctx)
       : undefined
-    const valueType = lookupExprType(stmt.value, ctx)
-    const type = targetType ?? valueType
     if (!type) {
       throw new Error(`Missing type for assignment at offset ${stmt.target.span.start}`)
     }
-    const wt = typeToWasmSingle(type)
-    const signed = isSigned(type)
-
-    // Coerce value to target type if needed
-    const valueWt = valueType ? typeToWasmSingle(valueType) : wt
-    const coercedValue = coerceWasmType(value, valueWt, wt, valueType ? isSigned(valueType) : signed)
-
-    // Shift/rotate amounts must match the value type in wasm
-    const isShiftOp = ['<<=', '>>=', '>>>=', '<<<='].includes(stmt.op)
-    const rhs = isShiftOp ? coerceWasmType(value, valueWt, wt, false) : coercedValue
-
+    const op = stmt.op.slice(0, -1)
+    const rhs = SHIFT_OPS.has(op) ? shiftCountToWat(value, valueType(stmt.value, ctx), type) : value
     const nv = wideIntParts(type)
-    const ops: Record<string, string> = {
-      '+=': nv > 0 ? 'i64.add' : `${wt}.add`,
-      '-=': nv > 0 ? 'i64.sub' : `${wt}.sub`,
-      '*=': nv > 0 ? 'i64.mul' : `${wt}.mul`,
-      '/=': signed ? `${wt}.div_s` : `${wt}.div_u`,
-      '%=': signed ? `${wt}.rem_s` : `${wt}.rem_u`,
-      '&=': nv > 0 ? 'i64.and' : `${wt}.and`,
-      '|=': nv > 0 ? 'i64.or' : `${wt}.or`,
-      '^=': nv > 0 ? 'i64.xor' : `${wt}.xor`,
-      '<<=': nv > 0 ? 'i64.shl' : `${wt}.shl`,
-      '>>=': nv > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`),
-      '>>>=': nv > 0 ? 'i64.shr_u' : `${wt}.shr_u`,
-      '<<<=': nv > 0 ? 'i64.shl' : `${wt}.rotl`,
-    }
-
-    if (nv > 1 && stmt.op.length > 1 && stmt.op.endsWith('=')) {
-      const helper = wideBinaryOp(stmt.op.slice(0, -1), signed, type)
-      const wideRhs = valueType && wideIntParts(valueType) < nv ? widenToWide(value, valueType, nv) : value
-      return assignLvalue(stmt.target, wideCall(nv, helper, current, wideRhs), ctx)
-    }
-    const op = ops[stmt.op]
-    if (op) {
-      const raw = nv > 1
-        ? multiValueBinaryOp(nv, op, current, rhs)
-        : `(${op} ${current} ${rhs})`
-      return assignLvalue(stmt.target, truncateSubWord(raw, type), ctx)
-    }
+    const result = nv > 1
+      ? wideCall(nv, wideBinaryOp(op, isSigned(type), type), current, rhs)
+      : scalarBinaryToWat(op, type, current, rhs)
+    return assignLvalue(stmt.target, result, ctx)
   }
 
   return assignLvalue(stmt.target, value, ctx)
@@ -2503,21 +2402,11 @@ export function funcToWat(
     seen.add(l.name)
     return true
   })
-  // Generate body, with implicit return coercion for arrow functions. With named
-  // results, a trailing expression with a value supplies them; a trailing if,
-  // loop or void call leaves the named locals as set.
+  // Generate body. With named results, a trailing expression with a value
+  // supplies them; a trailing if, loop or void call leaves the named locals as
+  // set.
   const tailLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
-  let body = bodyToWat(decl.body, ctx, false, false, tailLocals)
-  if (decl.body.kind === 'ArrowBody' && funcType.type.returns.length === 1 && namedReturns.length === 0) {
-    const retType = funcType.type.returns[0].type
-    const retWt = typeToWasmSingle(retType)
-    const bodyType = lookupExprType(decl.body.expr, ctx)
-    if (bodyType) {
-      const bodyWt = typeToWasmSingle(bodyType)
-      const bodySigned = isSigned(bodyType)
-      body = coerceWasmType(body, bodyWt, retWt, bodySigned)
-    }
-  }
+  const body = bodyToWat(decl.body, ctx, false, false, tailLocals)
 
   // Generate epilogue: push named returns onto stack
   let epilogue = ''

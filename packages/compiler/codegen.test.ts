@@ -43,6 +43,7 @@ function exprWat(code: string): string {
   const ctx = {
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
+    coercions: checkResult.coercions,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -79,6 +80,7 @@ function stmtWat(code: string): string {
   const ctx = {
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
+    coercions: checkResult.coercions,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -395,6 +397,120 @@ describe('expression codegen', () => {
         return x
       }`)
       expect(wat).toContain('(i64.add (local.get $x) (i64.extend_i32_s (i32.mul (local.get $a) (local.get $b))))')
+    })
+  })
+
+  // The checker marks each value that meets a wider type; codegen converts it
+  // there, and only where the wasm type changes.
+  describe('implicit widening', () => {
+    test('an integer operand of a float operation', () => {
+      const wat = funcWat('func f(r: f64, n: i32) -> f64 => r * n')
+      expect(wat).toContain('(f64.mul (local.get $r) (f64.convert_i32_s (local.get $n)))')
+    })
+
+    test('an unsigned operand converts unsigned', () => {
+      const wat = funcWat('func f(r: f64, n: u32) -> bool => n >= r')
+      expect(wat).toContain('(f64.ge (f64.convert_i32_u (local.get $n)) (local.get $r))')
+    })
+
+    test('f32 promotes to f64', () => {
+      const wat = funcWat('func f(a: f32, b: f64) -> f64 => a + b')
+      expect(wat).toContain('(f64.add (f64.promote_f32 (local.get $a)) (local.get $b))')
+    })
+
+    test('integers extend by their own sign', () => {
+      const wat = funcWat('func f(a: i32, b: u32, c: i64) -> i64 => a + c + b')
+      expect(wat).toContain('(i64.add (i64.add (i64.extend_i32_s (local.get $a)) (local.get $c)) (i64.extend_i32_u (local.get $b)))')
+    })
+
+    test('widening within 32 bits costs nothing', () => {
+      const wat = funcWat('func f(a: u8, b: i32) -> bool => a < b')
+      expect(wat).toContain('(i32.lt_s (local.get $a) (local.get $b))')
+    })
+
+    test('a float constant makes an integer operand a float', () => {
+      const wat = funcWat('func f(n: i32) -> f64 => n * 0.5')
+      expect(wat).toContain('(f64.mul (f64.convert_i32_s (local.get $n)) (f64.const 0.5))')
+    })
+
+    test('let, assignment and compound assignment', () => {
+      const wat = funcWat(`func f(n: i32, x: f32) -> f64 {
+        let a: f64 = n
+        a = x
+        a += n
+        a /= x
+        return a
+      }`)
+      expect(wat).toContain('(local.set $a (f64.convert_i32_s (local.get $n)))')
+      expect(wat).toContain('(local.set $a (f64.promote_f32 (local.get $x)))')
+      expect(wat).toContain('(local.set $a (f64.add (local.get $a) (f64.convert_i32_s (local.get $n))))')
+      expect(wat).toContain('(local.set $a (f64.div (local.get $a) (f64.promote_f32 (local.get $x))))')
+    })
+
+    test('return, with a block or an expression body', () => {
+      expect(funcWat('func f(n: i32) -> i64 { return n }')).toContain('(i64.extend_i32_s (local.get $n)) (return)')
+      expect(funcWat('func f(x: f32) -> f64 => x')).toContain('(f64.promote_f32 (local.get $x))')
+    })
+
+    test('call arguments and constructor fields', () => {
+      const wat = modWat(`
+        type Pair = (a: i64, b: f64)
+        func take(x: i64, y: f64) -> f64 => y
+        func f(n: i32) -> f64 => take(n, n)
+        func g(a: i32, b: f32) -> Pair => Pair(a:, b:)
+      `)
+      expect(wat).toContain('(call $take (i64.extend_i32_s (local.get $n)) (f64.convert_i32_s (local.get $n)))')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $a)) (f64.promote_f32 (local.get $b))')
+    })
+
+    test('if and match branches', () => {
+      const wat = funcWat('func f(c: bool, n: i32, x: f64) -> f64 => if c { n } else { x }')
+      expect(wat).toContain('(if (result f64) (local.get $c) (then (f64.convert_i32_s (local.get $n))) (else (local.get $x)))')
+      const inferred = funcWat(`func f(c: bool, n: i32, big: i64) -> i64 {
+        let v = if c { n } else { big }
+        return v
+      }`)
+      expect(inferred).toContain('(if (result i64) (local.get $c) (then (i64.extend_i32_s (local.get $n))) (else (local.get $big)))')
+      const matched = funcWat(`func f(k: i32, n: i32, big: i64) -> i64 => match k { 0 => n
+        _ => big }`)
+      expect(matched).toContain('(then (i64.extend_i32_s (local.get $n)))')
+    })
+
+    test('a constant is emitted in the type it is used as', () => {
+      expect(funcWat('func f() -> f32 { let x: f32 = 1.0 / 3\n return x }')).toContain('(f32.div (f32.const 1) (f32.const 3))')
+      expect(funcWat('func f(n: i64) -> i64 => n + 2 * 3')).toContain('(i64.add (local.get $n) (i64.mul (i64.const 2) (i64.const 3)))')
+      expect(funcWat('func f(x: f64) -> bool => x > 0')).toContain('(f64.gt (local.get $x) (f64.const 0))')
+    })
+
+    test('a constant with a fixed form is converted like a value', () => {
+      const wat = funcWat('func f(p: *[4]i32) -> i64 { let n: i64 = p.len\n return n }')
+      expect(wat).toContain('(local.set $n (i64.extend_i32_s (i32.const 4)))')
+    })
+  })
+
+  describe('operators', () => {
+    test('float division in a compound assignment', () => {
+      const wat = funcWat('func f(x: f64) -> f64 { x /= 2.0\n return x }')
+      expect(wat).toContain('(f64.div (local.get $x) (f64.const 2))')
+    })
+
+    test('a shift count is fitted to the value, which keeps its sign', () => {
+      expect(funcWat('func f(x: i64, n: u8) -> i64 => x >> n')).toContain('(i64.shr_s (local.get $x) (i64.extend_i32_u (local.get $n)))')
+      expect(funcWat('func f(x: i32, n: u64) -> i64 => x >> n')).toContain('(i64.shr_s (i64.extend_i32_s (local.get $x)) (local.get $n))')
+      expect(funcWat('func f(x: u32, n: u64) -> u32 { x <<= n\n return x }')).toContain('(i32.shl (local.get $x) (i32.wrap_i64 (local.get $n)))')
+    })
+
+    test('a wide operand widens with its sign', () => {
+      const wat = funcWat('func f(x: i128, n: i32) -> i128 => x + n')
+      expect(wat).toContain('(call $__w1_sext_2 (i64.extend_i32_s (local.get $n)))')
+    })
+
+    test('a match arm block gives its value', () => {
+      const wat = funcWat(`func f(k: i32) -> i32 => match k {
+        0 => { let x = k + 1\n x * 2 }
+        _ => 7
+      }`)
+      expect(wat).toContain('(then (local.set $x (i32.add (local.get $k) (i32.const 1)))\n(i32.mul (local.get $x) (i32.const 2)))')
     })
   })
 
