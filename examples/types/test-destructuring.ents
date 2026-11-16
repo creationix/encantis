@@ -1,0 +1,27 @@
+// Destructuring lets work the same in a test body as in a function.
+
+export func pair(n: u32) -> (count: u32, clipped: bool) {
+  count = n + 1
+  clipped = n > 5
+}
+
+export func in_func(n: u32) -> u32 {
+  let (count:, clipped:) = pair(n)
+  return count
+}
+
+test "destructure in a test" {
+  let (count:, clipped:) = pair(3)
+  assert count == 4
+  assert !clipped
+}
+
+test "destructure renamed in a test" {
+  let (count: c, clipped: k) = pair(9)
+  assert c == 10
+  assert k
+}
+
+test "destructure in a function, called from a test" {
+  assert in_func(3) == 4
+}
