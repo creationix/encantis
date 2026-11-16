@@ -10,6 +10,7 @@ The blocks after an `ents` block, up to the next one, say what to expect:
 
 - ` ```json ast ` : the AST the source must parse to, without source positions (`span`).
 - ` ```errors ` : one line per expected parse or check error, in order. Each line only has to appear somewhere in the error's message.
+- ` ```ents same-wasm ` : a second module that the source must compile to the same `.wasm` file as, byte for byte. This is how "costs nothing" is stated: a generic program next to the same program written out by hand.
 
 With no `errors` block, the source must parse (and, for a module, check) without errors. Headings group cases; everything else is prose.
 
@@ -25,6 +26,10 @@ A decimal integer literal:
 ```
 ````
 
+## The language reference
+
+The examples of [`docs/encantis.md`](../docs/encantis.md) that stand between a `<!-- spec:begin -->` line and the next `<!-- spec:end -->` line are run by the same rules, so a chapter written that way is its own test and needs no second copy here. A region opened with `<!-- spec:begin compile -->` asks for more: every module in it that is expected to check, and doesn't import another source file, is also compiled and validated as WebAssembly. Examples outside a region are not run.
+
 ## Updating
 
 After a change that's meant to alter the AST, regenerate the `json ast` blocks and review the diff:
@@ -37,5 +42,6 @@ UPDATE_SPEC=1 bun test spec
 
 - `syntax.md`: literals, enums and match, by grammar rule.
 - `checks.md`: programs the checker accepts or rejects.
+- `generics.md`: generic functions: how they parse, what is accepted, and the error for everything that is not.
 
 The format comes from an earlier parser experiment, kept in [`experiments/hand-written-compiler`](../experiments/hand-written-compiler).
