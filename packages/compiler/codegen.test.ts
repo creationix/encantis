@@ -335,9 +335,19 @@ describe('expression codegen', () => {
       expect(wat).toContain('i32.shr_u')
     })
 
-    test('logical right shift always uses shr_u', () => {
-      const wat = funcWat('func shr(a: i32, b: i32) -> i32 => a >>> b')
-      expect(wat).toContain('i32.shr_u')
+    test('rotate right uses rotr, whatever the sign', () => {
+      expect(funcWat('func rot(a: i32, b: i32) -> i32 => a >>> b')).toContain('(i32.rotr (local.get $a) (local.get $b))')
+      expect(funcWat('func rot(a: u64, b: u64) -> u64 => a >>> b')).toContain('(i64.rotr (local.get $a) (local.get $b))')
+      expect(funcWat('func rot(a: u32, b: u32) -> u32 { a >>>= b\n return a }')).toContain('(i32.rotr (local.get $a) (local.get $b))')
+    })
+
+    test('an 8- or 16-bit rotation stays within its width', () => {
+      expect(funcWat('func rot(a: u8, b: u8) -> u8 => a <<< b'))
+        .toContain('(i32.and (i32.rotl (i32.mul (local.get $a) (i32.const 16843009)) (local.get $b)) (i32.const 255))')
+      expect(funcWat('func rot(a: u16, b: u16) -> u16 => a >>> b'))
+        .toContain('(i32.and (i32.rotr (i32.mul (local.get $a) (i32.const 65537)) (local.get $b)) (i32.const 65535))')
+      expect(funcWat('func rot(a: i8, b: u8) -> i8 => a <<< b'))
+        .toContain('(i32.rotl (i32.mul (i32.and (local.get $a) (i32.const 255)) (i32.const 16843009)) (local.get $b))')
     })
 
     test('64-bit unsigned division uses i64.div_u', () => {

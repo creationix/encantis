@@ -9,7 +9,7 @@
 export type WideBinaryOp =
   | 'add' | 'sub' | 'mul'
   | 'and' | 'or' | 'xor'
-  | 'shl' | 'shr_u' | 'shr_s' | 'rotl'
+  | 'shl' | 'shr_u' | 'shr_s' | 'rotl' | 'rotr'
   | 'eq' | 'ne'
   | 'lt_u' | 'lt_s' | 'gt_u' | 'gt_s' | 'le_u' | 'le_s' | 'ge_u' | 'ge_s'
 
@@ -118,16 +118,18 @@ function binaryHelper(n: number, op: WideBinaryOp): string {
 )`
     }
 
-    case 'rotl': {
-      // (a << k) | (a >> (64n - k)), with k = b mod 64n.
+    case 'rotl':
+    case 'rotr': {
+      // rotl: (a << k) | (a >> (64n - k)), with k = b mod 64n. rotr swaps the shifts.
       const bits = 64 * n
       const zeros = range(n - 1).map(() => '(i64.const 0)').join(' ')
+      const [by, back]: WideBinaryOp[] = op === 'rotl' ? ['shl', 'shr_u'] : ['shr_u', 'shl']
       return `${head(results(n))}
   (local $k i64)
   (local.set $k (i64.rem_u ${get('b', 0)} (i64.const ${bits})))
   ${wideCall(n, 'or',
-    wideCall(n, 'shl', gets('a', n), `(local.get $k) ${zeros}`),
-    wideCall(n, 'shr_u', gets('a', n), `(i64.sub (i64.const ${bits}) (local.get $k)) ${zeros}`))}
+    wideCall(n, by, gets('a', n), `(local.get $k) ${zeros}`),
+    wideCall(n, back, gets('a', n), `(i64.sub (i64.const ${bits}) (local.get $k)) ${zeros}`))}
 )`
     }
 

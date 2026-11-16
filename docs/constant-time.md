@@ -9,7 +9,7 @@ Encantis does not currently guarantee constant-time codegen for any construct. T
 These compile to fixed-cost WASM instructions with no branches:
 
 - **Bitwise ops** (`&`, `|`, `^`, `~`) — always a single instruction
-- **Shifts and rotates** (`<<`, `>>`, `<<<`) — always a single instruction
+- **Shifts and rotates** (`<<`, `>>`, `<<<`, `>>>`) — always a single instruction
 - **Add, sub, mul** — always a single instruction
 - **Integer comparisons returning bool** (`==`, `!=`, `<`, `>`, `<=`, `>=`) — compile to a single comparison instruction
 

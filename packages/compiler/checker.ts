@@ -2746,8 +2746,10 @@ class CheckContext {
       // The count keeps its own type: only its low bits matter. The value is
       // shifted in its own type too, unless the count is wider: then in the
       // count's width, with the value's sign (u8 << u32 is a 32-bit shift).
+      // A rotation is always within the value's own width.
       const width = byteSize(right) ?? 0
-      if (width <= (byteSize(left) ?? 0)) return stripMax(leftType)
+      const rotation = op === '<<<' || op === '>>>'
+      if (rotation || width <= (byteSize(left) ?? 0)) return stripMax(leftType)
       const type = primitive(`${isSigned(left) ? 'i' : 'u'}${width * 8}` as PrimitiveName)
       this.coerce(expr.left, leftType, type)
       return type

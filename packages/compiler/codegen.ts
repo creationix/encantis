@@ -433,7 +433,7 @@ function wideBinaryOp(op: string, signed: boolean, type: ResolvedType): WideBina
   const ops: Record<string, WideBinaryOp> = {
     '+': 'add', '-': 'sub', '*': 'mul',
     '&': 'and', '|': 'or', '^': 'xor',
-    '<<': 'shl', '>>': signed ? 'shr_s' : 'shr_u', '>>>': 'shr_u', '<<<': 'rotl',
+    '<<': 'shl', '>>': signed ? 'shr_s' : 'shr_u', '>>>': 'rotr', '<<<': 'rotl',
     '==': 'eq', '!=': 'ne',
     '<': `lt_${s}`, '>': `gt_${s}`, '<=': `le_${s}`, '>=': `ge_${s}`,
   }
@@ -559,7 +559,7 @@ function binaryInstruction(op: string, type: ResolvedType): string {
     case '<<': return `${wt}.shl`
     case '>>': return `${wt}.shr_${sign}`
     case '<<<': return `${wt}.rotl`
-    case '>>>': return `${wt}.shr_u`
+    case '>>>': return `${wt}.rotr`
     default: throw new Error(`Unknown binary operator: ${op}`)
   }
 }
@@ -567,6 +567,13 @@ function binaryInstruction(op: string, type: ResolvedType): string {
 // `left op right` on operands of one type that is a single wasm value. The
 // result of an 8- or 16-bit operation is cut back to its width.
 function scalarBinaryToWat(op: string, type: ResolvedType, left: string, right: string): string {
+  const bits = (primitiveByteSize(type) ?? 4) * 8
+  if (bits < 32 && (op === '<<<' || op === '>>>')) {
+    // An i32 rotation would take a u8 or u16 through the unused high bits.
+    // Repeated across the word, each copy rotates in place.
+    const value = isSigned(type) ? `(i32.and ${left} (i32.const ${bits === 8 ? 255 : 65535}))` : left
+    left = `(i32.mul ${value} (i32.const ${bits === 8 ? 0x01010101 : 0x00010001}))`
+  }
   return truncateSubWord(`(${binaryInstruction(op, type)} ${left} ${right})`, type)
 }
 

@@ -1210,6 +1210,17 @@ describe('operand types', () => {
     expect(typeAt(result, source.indexOf('z ='))).toBe('u64')
   })
 
+  test('a rotation stays in the value\'s type, whatever the count\'s', () => {
+    const source = `func f(a: u16, w: u64) {
+      let x = a <<< w
+      let y = a >>> w
+    }`
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    expect(typeAt(result, source.indexOf('x ='))).toBe('u16')
+    expect(typeAt(result, source.indexOf('y ='))).toBe('u16')
+  })
+
   test('constants take the type they are used as, each literal by its own value', () => {
     expect(errs(`func f() {
       let a: f32 = 1.0 + 42
