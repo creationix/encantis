@@ -93,7 +93,7 @@ for (const entry of entries) {
     continue
   }
 
-  const check = typecheckProgram(load.modules, entry)
+  const check = typecheckProgram(load.modules, entry, { includeTests: false })
   if (check.errors.length > 0) {
     console.log(`FAIL ${rel}: ${check.errors[0].message}`)
     failed++

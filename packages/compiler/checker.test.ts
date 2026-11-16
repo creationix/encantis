@@ -1010,3 +1010,39 @@ describe('defer', () => {
     expect(result.errors).toHaveLength(0)
   })
 })
+
+describe('missing return', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('a block body with an unnamed result must return', () => {
+    expect(errs(`func f(x: i32) -> i32 { let y = x }`)).toContain("function 'f' can reach its end without returning a value")
+    expect(errs(`func f(x: i32) -> i32 {
+      return 1 when x > 0
+    }`)).toContain("function 'f' can reach its end without returning a value")
+  })
+
+  test('returns on every path are accepted', () => {
+    expect(errs(`func f(x: i32) -> i32 { return x }`)).toEqual([])
+    expect(errs(`func f(x: i32) -> i32 {
+      if x > 0 { return 1 } elif x < 0 { return -1 } else { return 0 }
+    }`)).toEqual([])
+    expect(errs(`func f(x: i32) -> i32 {
+      loop {
+        return x when x > 10
+      }
+    }`)).toEqual([])
+  })
+
+  test('a loop that can break can reach the end', () => {
+    expect(errs(`func f(x: i32) -> i32 {
+      loop {
+        break when x > 10
+      }
+    }`)).toContain("function 'f' can reach its end without returning a value")
+  })
+
+  test('named results and void functions need no return', () => {
+    expect(errs(`func f(x: i32) -> (r: i32) { r = x }`)).toEqual([])
+    expect(errs(`func f(x: i32) { let y = x }`)).toEqual([])
+  })
+})

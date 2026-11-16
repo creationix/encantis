@@ -11,7 +11,7 @@ export async function compileToWasm(entryPath: string): Promise<Uint8Array> {
     throw new Error(`Load errors in ${entryPath}:\n${load.errors.map(e => e.message).join('\n')}`)
   }
 
-  const check = typecheckProgram(load.modules, absPath)
+  const check = typecheckProgram(load.modules, absPath, { includeTests: false })
   if (check.errors.length > 0) {
     throw new Error(`Type errors in ${entryPath}:\n${check.errors.map(e => e.message).join('\n')}`)
   }
