@@ -3,8 +3,14 @@
 // in spec/generics.md. These tests pin the rules one by one.
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { parse } from './parser'
-import { typecheck, type TypecheckOptions } from './checker'
+import { typecheck, typecheckProgram, type TypecheckOptions } from './checker'
+import { programToWat, programToWatWithTests } from './codegen'
+import { loadModule } from './loader'
+import { compileToWasm, wasmOfSource, wasmOfWat, watOfSource } from './test-utils'
 
 function check(source: string, options?: TypecheckOptions) {
   const parsed = parse(source)
@@ -565,5 +571,514 @@ export func g(x: f64) -> f64 => sum(x)`
     if (type?.kind !== 'func') return
     expect(type.params.map(p => p.name)).toEqual(['xs', 'x'])
     expect(type.params[1].type).toEqual({ kind: 'primitive', name: 'u8' })
+  })
+})
+
+// === What a generic compiles to ===
+
+// The names of the functions of a module, in the order they are emitted.
+function funcs(wat: string): string[] {
+  return [...wat.matchAll(/^\s*\(func \$(\S+)/gm)].map(m => m[1])
+}
+
+// The text of one function.
+function funcWat(wat: string, name: string): string {
+  const start = wat.indexOf(`(func $${name} `)
+  if (start < 0) throw new Error(`no function ${name} in\n${wat}`)
+  const next = wat.indexOf('\n  (', start + 1)
+  return wat.slice(start, next < 0 ? undefined : next)
+}
+
+// Generics are compile-time only: no function tables, no indirect calls.
+function expectPlainWasm(wat: string): void {
+  for (const forbidden of ['call_indirect', '(table', '(elem', 'ref.func', 'funcref']) {
+    expect(wat).not.toContain(forbidden)
+  }
+}
+
+// The functions that differ between two WATs, with function names replaced by
+// their position so that a generic's instances and hand-written functions of
+// other names compare equal.
+function watDifference(a: string, b: string): string {
+  const numbered = (wat: string) => {
+    const names = funcs(wat)
+    let text = wat
+    for (const name of [...names].sort((x, y) => y.length - x.length)) {
+      text = text.split(`$${name}`).join(`$f${names.indexOf(name)}`)
+    }
+    return text.split(/\n(?= {2}\(func )/)
+  }
+  const [fa, fb] = [numbered(a), numbered(b)]
+  const out: string[] = []
+  for (let i = 0; i < Math.max(fa.length, fb.length); i++) {
+    if (fa[i] !== fb[i]) out.push(`--- generic\n${fa[i] ?? '(nothing)'}\n--- by hand\n${fb[i] ?? '(nothing)'}`)
+  }
+  return out.join('\n')
+}
+
+// A generic program and the same program written out by hand are the same
+// .wasm file. Both assemblers are held to it: moduleToWat, which compiles one
+// module in memory, and programToWat, which the command line uses.
+async function expectSameWasm(generic: string, byHand: string): Promise<Uint8Array> {
+  const [watG, watH] = [watOfSource(generic), watOfSource(byHand)]
+  expectPlainWasm(watG)
+  const [wasmG, wasmH] = [await wasmOfWat(watG), await wasmOfWat(watH)]
+  if (!Buffer.from(wasmG).equals(Buffer.from(wasmH))) {
+    throw new Error(`the generic program and the hand-written one differ:\n${watDifference(watG, watH)}`)
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
+  try {
+    await writeFile(join(dir, 'generic.ents'), generic)
+    await writeFile(join(dir, 'byhand.ents'), byHand)
+    const programG = await compileToWasm(join(dir, 'generic.ents'))
+    const programH = await compileToWasm(join(dir, 'byhand.ents'))
+    expect(Buffer.from(programG).equals(Buffer.from(programH))).toBe(true)
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+  return wasmG
+}
+
+async function run(source: string): Promise<Record<string, (...args: (number | bigint)[]) => unknown>> {
+  const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+  return instance.exports as Record<string, (...args: (number | bigint)[]) => unknown>
+}
+
+const DOC_GENERIC = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+export func widest(a: u32, b: u32) -> u32 => max(u32, a, b)
+export func longest(a: f64, b: f64) -> f64 => max(a, b)
+`
+
+const DOC_BY_HAND = `func max_f64(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+func max_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+
+export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
+export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
+`
+
+// Explicit and inferred calls, a generic calling generics, *mut T, []T with a
+// named result, a u128 instance (which needs a wide-integer helper), and an
+// unused generic whose body could never check.
+const Z1_GENERIC = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func min(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }
+func clamp(comptime T: type, x: T, lo: T, hi: T) -> T => min(max(x, lo), hi)
+
+func swap(comptime T: type, a: *mut T, b: *mut T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+
+func sum(comptime T: type, xs: []T) -> (total: T) {
+  total = 0
+  for v in xs {
+    total += v
+  }
+}
+
+func unused(comptime T: type, x: T) -> T => nothing(x)
+
+export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
+export func max_f64(a: f64, b: f64) -> f64 => max(f64, a, b)
+export func clamp_i32(x: i32, lo: i32, hi: i32) -> i32 => clamp(x, lo, hi)
+export func swap_u64(a: *mut u64, b: *mut u64) { swap(a, b) }
+export func sum_u8(xs: []u8) -> u8 => sum(xs)
+export func sum_u128(xs: []u128) -> u128 => sum(u128, xs)
+`
+
+// Each generic's place is taken by its instances in the order of their names:
+// max<f64>, max<i32>, max<u32>; sum<u128>, sum<u8>.
+const Z1_BY_HAND = `func max_f64_(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+func max_i32_(a: i32, b: i32) -> i32 => if a > b { a } else { b }
+func max_u32_(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+func min_i32_(a: i32, b: i32) -> i32 => if a < b { a } else { b }
+func clamp_i32_(x: i32, lo: i32, hi: i32) -> i32 => min_i32_(max_i32_(x, lo), hi)
+
+func swap_u64_(a: *mut u64, b: *mut u64) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+
+func sum_u128_(xs: []u128) -> (total: u128) {
+  total = 0
+  for v in xs {
+    total += v
+  }
+}
+
+func sum_u8_(xs: []u8) -> (total: u8) {
+  total = 0
+  for v in xs {
+    total += v
+  }
+}
+
+export func max_u32(a: u32, b: u32) -> u32 => max_u32_(a, b)
+export func max_f64(a: f64, b: f64) -> f64 => max_f64_(a, b)
+export func clamp_i32(x: i32, lo: i32, hi: i32) -> i32 => clamp_i32_(x, lo, hi)
+export func swap_u64(a: *mut u64, b: *mut u64) { swap_u64_(a, b) }
+export func sum_u8(xs: []u8) -> u8 => sum_u8_(xs)
+export func sum_u128(xs: []u128) -> u128 => sum_u128_(xs)
+`
+
+describe('zero cost', () => {
+  // Z1. The sizes are those of the hand-written sides compiled by 0.2.1.
+  test('the example of the reference is the module written by hand, byte for byte', async () => {
+    expect(await expectSameWasm(DOC_GENERIC, DOC_BY_HAND)).toHaveLength(105)
+  })
+
+  test('a larger program is the module written by hand, byte for byte', async () => {
+    expect(await expectSameWasm(Z1_GENERIC, Z1_BY_HAND)).toHaveLength(535)
+  })
+
+  test('data literals in a generic body are laid out as in the functions written by hand', async () => {
+    const generic = `data first = "first"
+func greet(comptime T: type, x: T) -> []u8 => if x > 0 { "hello" } else { "bye" }
+func name(comptime T: type) -> []u8 => "name"
+export func a() -> []u8 => greet(u32, 1)
+export func b() -> []u8 => "world!"
+export func c() -> []u8 => greet(7:u8)
+export func d() -> []u8 => name(u8)
+func tail(comptime T: type, x: T) -> []u8 => "tail"
+export func e() -> []u8 => tail(a().len)
+export func f() -> u8 => first.*[0]
+`
+    const byHand = `data first = "first"
+func greet_u32(x: u32) -> []u8 => if x > 0 { "hello" } else { "bye" }
+func greet_u8(x: u8) -> []u8 => if x > 0 { "hello" } else { "bye" }
+func name_u8() -> []u8 => "name"
+export func a() -> []u8 => greet_u32(1)
+export func b() -> []u8 => "world!"
+export func c() -> []u8 => greet_u8(7:u8)
+export func d() -> []u8 => name_u8()
+func tail_u32(x: u32) -> []u8 => "tail"
+export func e() -> []u8 => tail_u32(a().len)
+export func f() -> u8 => first.*[0]
+`
+    await expectSameWasm(generic, byHand)
+  })
+
+  test('a type parameter in every position a type can be written', async () => {
+    const generic = `data room = mut [0:u8; 64]
+
+func store(comptime T: type, at: u32, x: T) -> *mut T {
+  let p = ((room as u32) + at * sizeof(T)) as *mut T
+  let copy: T = x
+  p.* = copy
+  return p
+}
+func load(comptime T: type, at: u32) -> T => (room as [*]T)[at]
+func widen(comptime T: type, n: u8) -> T => (n as T) + 1:T
+func window(comptime T: type, n: u32) -> []mut T => (room as [*]mut T)[0..n]
+func total(comptime T: type, n: u32) -> (sum: T) {
+  let xs: []T = window(T, n)
+  sum = 0
+  for x in xs {
+    sum += x
+  }
+}
+
+export func a(x: u16) -> u16 => store(u16, 3, x).* + load(u16, 3)
+export func b(x: f64) -> f64 => store(1, x).* + load(f64, 1)
+export func c(n: u8) -> u64 => widen(u64, n) + (widen(i32, n) as u64)
+export func d(n: u32) -> u32 => total(u32, n) + window(u8, n).len
+`
+    const byHand = `data room = mut [0:u8; 64]
+
+func store_f64(at: u32, x: f64) -> *mut f64 {
+  let p = ((room as u32) + at * sizeof(f64)) as *mut f64
+  let copy: f64 = x
+  p.* = copy
+  return p
+}
+func store_u16(at: u32, x: u16) -> *mut u16 {
+  let p = ((room as u32) + at * sizeof(u16)) as *mut u16
+  let copy: u16 = x
+  p.* = copy
+  return p
+}
+func load_f64(at: u32) -> f64 => (room as [*]f64)[at]
+func load_u16(at: u32) -> u16 => (room as [*]u16)[at]
+func widen_i32(n: u8) -> i32 => (n as i32) + 1:i32
+func widen_u64(n: u8) -> u64 => (n as u64) + 1:u64
+func window_u32(n: u32) -> []mut u32 => (room as [*]mut u32)[0..n]
+func window_u8(n: u32) -> []mut u8 => (room as [*]mut u8)[0..n]
+func total_u32(n: u32) -> (sum: u32) {
+  let xs: []u32 = window_u32(n)
+  sum = 0
+  for x in xs {
+    sum += x
+  }
+}
+
+export func a(x: u16) -> u16 => store_u16(3, x).* + load_u16(3)
+export func b(x: f64) -> f64 => store_f64(1, x).* + load_f64(1)
+export func c(n: u8) -> u64 => widen_u64(n) + (widen_i32(n) as u64)
+export func d(n: u32) -> u32 => total_u32(n) + window_u8(n).len
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect(exports.a(7)).toBe(14)
+    expect(exports.b(1.5)).toBe(3)
+    expect(exports.c(4)).toBe(10n)
+  })
+
+  test('a mutable literal in a generic body is one buffer per instance', async () => {
+    const generic = `func cell(comptime T: type, x: T) -> *mut T {
+  let p = &0:T
+  p.* = x
+  return p
+}
+export func a() -> *mut u32 => cell(u32, 1)
+export func b() -> *mut u64 => cell(u64, 2)
+`
+    const byHand = `func cell_u32(x: u32) -> *mut u32 {
+  let p = &0:u32
+  p.* = x
+  return p
+}
+func cell_u64(x: u64) -> *mut u64 {
+  let p = &0:u64
+  p.* = x
+  return p
+}
+export func a() -> *mut u32 => cell_u32(1)
+export func b() -> *mut u64 => cell_u64(2)
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect(exports.a()).not.toBe(exports.b())
+  })
+
+  // Z3
+  test('a generic nobody calls leaves no trace', async () => {
+    const program = `data greeting = "hi"
+export func double(x: u32) -> u32 => x * 2
+export func first() -> u8 => greeting.*[0]
+`
+    const withUnused = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+${program}func fill(comptime T: type, xs: []mut T, x: T) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = x
+  }
+}
+export func never(comptime T: type, x: T) -> []u8 => "never"
+`
+    await expectSameWasm(withUnused, program)
+    expect(funcs(watOfSource(withUnused))).toEqual(['double', 'first'])
+  })
+
+  // Z4
+  test('one instance, however the same type argument arrives', () => {
+    const wat = watOfSource(`type Pt = (q: i32, r: i32)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+export func a(c: bool, p: Pt, q: Pt) -> Pt => pick(c, p, q)
+export func b(c: bool, p: (q: i32, r: i32), q: (q: i32, r: i32)) -> Pt => pick(c, p, q)
+export func c(c: bool, p: Pt, q: Pt) -> Pt => pick((q: i32, r: i32), c, pick(Pt, c, p, q), q)
+`)
+    expect(funcs(wat)).toEqual(['pick<<q:i32|r:i32>>', 'a', 'b', 'c'])
+    expectPlainWasm(wat)
+  })
+
+  // Z6
+  test('an instance has the non-comptime parameters, flattened, and a call passes exactly those', () => {
+    const wat = watOfSource(`type Pt = (q: i32, r: i32)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+func head(comptime T: type, xs: []T) -> T => xs.ptr[0]
+export func a(c: bool, p: Pt, q: Pt) -> Pt => pick(Pt, c, p, q)
+export func b(xs: []f64) -> f64 => head(xs)
+`)
+    expect(funcWat(wat, 'pick<<q:i32|r:i32>>')).toStartWith(
+      '(func $pick<<q:i32|r:i32>> (param $first i32) (param $a_q i32) (param $a_r i32) (param $b_q i32) (param $b_r i32) (result i32 i32)',
+    )
+    expect(funcWat(wat, 'a')).toContain(
+      '(call $pick<<q:i32|r:i32>> (local.get $c) (local.get $p_q) (local.get $p_r) (local.get $q_q) (local.get $q_r))',
+    )
+    expect(funcWat(wat, 'head<f64>')).toStartWith('(func $head<f64> (param $xs_ptr i32) (param $xs_len i32) (result f64)')
+    expect(funcWat(wat, 'b')).toContain('(call $head<f64> (local.get $xs_ptr) (local.get $xs_len))')
+  })
+
+  // Z7
+  test('an instance only a test asks for is in test builds only', async () => {
+    const source = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func f(a: u32) -> u32 => max(a, 1)
+test "wide" {
+  assert max(i64, -1, 5) == 5
+}
+`
+    expect(funcs(watOfSource(source))).toEqual(['max<u32>', 'f'])
+
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
+    try {
+      const path = join(dir, 'tested.ents')
+      await writeFile(path, source)
+      const load = await loadModule(path, { includeTests: true })
+      const check = typecheckProgram(load.modules, path, { includeTests: true })
+      expect(check.errors).toEqual([])
+      const { wat } = programToWatWithTests(load.modules, check.results, path)
+      expect(funcs(wat)).toEqual(['max<i64>', 'max<u32>', 'f', 'test_wide'])
+      await wasmOfWat(wat)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+})
+
+describe('compiling generics', () => {
+  test("a generic's place is taken by its instances, in the order of their names", () => {
+    const wat = watOfSource(`export func first(a: u32) -> u32 => min(max(a, 1), 9)
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func middle(a: f64, b: i8) -> f64 => max(a, 1.5) + (max(b, 3) as f64)
+func min(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }
+export func last(a: u8) -> u8 => min(a, max(a, 1))
+`)
+    expect(funcs(wat)).toEqual(['first', 'max<f64>', 'max<i8>', 'max<u32>', 'max<u8>', 'middle', 'min<u32>', 'min<u8>', 'last'])
+  })
+
+  test('operators on T are those of the type argument', () => {
+    const wat = watOfSource(Z1_GENERIC)
+    expect(funcWat(wat, 'max<u32>')).toContain('i32.gt_u')
+    expect(funcWat(wat, 'max<i32>')).toContain('i32.gt_s')
+    expect(funcWat(wat, 'max<f64>')).toContain('f64.gt')
+    expect(funcWat(wat, 'clamp<i32>')).toContain('(call $min<i32> (call $max<i32> (local.get $x) (local.get $lo)) (local.get $hi))')
+  })
+
+  test('a generic named like a builtin is called, not the builtin', () => {
+    const wat = watOfSource(DOC_GENERIC)
+    expect(funcWat(wat, 'widest')).toContain('(call $max<u32> (local.get $a) (local.get $b))')
+    expect(wat).not.toContain('select')
+  })
+
+  test('an exported generic is not exported to the host', async () => {
+    const source = `export func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func f(a: u32) -> u32 => max(a, 1)
+`
+    const wat = watOfSource(source)
+    expect([...wat.matchAll(/\(export "(\w+)"/g)].map(m => m[1])).toEqual(['f'])
+    await wasmOfWat(wat)
+    // A library of generics alone is an empty module.
+    const library = watOfSource('export func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }\n')
+    expect(funcs(library)).toEqual([])
+    await wasmOfWat(library)
+  })
+
+  test('sizeof and recursion follow the type argument', async () => {
+    const source = `func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
+func fact(comptime T: type, n: T) -> T => if n <= 1 { 1 } else { n * fact(T, n - 1) }
+export func a() -> u32 => bytes(u64, 3) + bytes((u32, u16), 2)
+export func b() -> u64 => fact(u64, 20)
+export func c() -> u32 => fact(u32, 5)
+`
+    const wat = watOfSource(source)
+    expect(funcWat(wat, 'bytes<u64>')).toContain('(i32.const 8)')
+    expect(funcWat(wat, 'bytes<<u32|u16>>')).toContain('(i32.const 6)')
+    const exports = await run(source)
+    expect(exports.a()).toBe(36)
+    expect(exports.b()).toBe(2432902008176640000n)
+    expect(exports.c()).toBe(120)
+  })
+
+  test('generic functions over slices and pointers run', async () => {
+    const source = `data nums = [3:u32, 5, 8, 13]
+data room = mut [0:u8; 64]
+
+func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    return i when v == x
+  }
+  return xs.len
+}
+func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
+func fill(comptime T: type, xs: []mut T, x: T) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = x
+  }
+}
+func sum(comptime T: type, xs: []T) -> (total: T) {
+  total = 0
+  for v in xs {
+    total += v
+  }
+}
+func swap(comptime T: type, a: *mut T, b: *mut T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+export func a() -> u32 => find(nums, 8)
+export func b() -> bool => contains(nums, 4)
+export func c() -> u64 {
+  let cells = (room as [*]mut u64)[0..4]
+  fill(cells, 5)
+  cells.ptr[3] = 9
+  swap(room as *mut u64, ((room as u32) + 24) as *mut u64)
+  return sum(cells) + cells.ptr[0]
+}
+`
+    const wat = watOfSource(source)
+    // find<u32> exists once, although contains reaches it too.
+    expect(funcs(wat).filter(name => name.startsWith('find'))).toEqual(['find<u32>'])
+    expectPlainWasm(wat)
+    const exports = await run(source)
+    expect(exports.a()).toBe(2)
+    expect(exports.b()).toBe(0)
+    expect(exports.c()).toBe(33n)
+  })
+
+  test('the instances of a module that is not the entry carry its prefix', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
+    try {
+      await writeFile(
+        join(dir, 'util.ents'),
+        `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func largest(a: u32, b: u32, c: u32) -> u32 => max(max(a, b), c)
+`,
+      )
+      const entry = join(dir, 'main.ents')
+      await writeFile(
+        entry,
+        `import "./util" "largest" func largest(a: u32, b: u32, c: u32) -> u32
+func max(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }
+export func f(a: u32) -> u32 => largest(a, 2, max(a, 3))
+`,
+      )
+      const load = await loadModule(entry)
+      const check = typecheckProgram(load.modules, entry, { includeTests: false })
+      expect(check.errors).toEqual([])
+      const wat = programToWat(load.modules, check.results, entry)
+      expect(funcs(wat).sort()).toEqual(['f', 'max<u32>', 'util$largest', 'util$max<u32>'])
+      const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfWat(wat)))
+      // The entry's max is the smaller of two, util's the larger.
+      expect((instance.exports.f as (a: number) => number)(7)).toBe(7)
+      expect((instance.exports.f as (a: number) => number)(1)).toBe(2)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  // PENDING claude/operand-types. An argument that is implicitly widened to a
+  // parameter of another wasm type (u32 for a u64) is accepted by the checker
+  // and not converted by callToWat, for generic and ordinary calls alike; that
+  // branch owns the conversion. What this branch guarantees is the inference:
+  // T is decided by the first argument, and the later one is checked against it.
+  describe('a later argument is widened to T', () => {
+    const source = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func widen(a: u64, b: u32) -> u64 => max(a, b)
+`
+
+    test('T is decided by the first argument and the call checks', () => {
+      expect(instancesOf(source)).toEqual(['max<u64>'])
+    })
+
+    test.todo('the widened argument is converted (needs claude/operand-types)', async () => {
+      const wat = watOfSource(source)
+      expect(funcWat(wat, 'widen')).toContain('(call $max<u64> (local.get $a) (i64.extend_i32_u (local.get $b)))')
+      await wasmOfWat(wat)
+    })
   })
 })

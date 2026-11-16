@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, exprTypeOffset, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, exprTypeOffset, isGenericDecl, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -48,6 +48,9 @@ export interface CodegenContext {
   // Deferred expressions per open block, innermost last; loop bodies are marked
   // so break and continue run exactly the blocks they leave.
   deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
+  // Calls the checker resolved to something else: CallExpr span.end → the
+  // expression to compile in its place (see TypeCheckResult.calls)
+  calls?: Map<number, AST.Expr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -61,6 +64,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     nameMap: nameMap ?? new Map(),
     namedReturnLocals: [],
     dataSectionSize,
+    calls: checkResult.calls,
   }
 }
 
@@ -899,6 +903,14 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 }
 
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
+  // A call of a generic compiles as the plain call of its instance that the
+  // checker recorded: nothing of the comptime arguments is left. The recorded
+  // call has the written call's span, so compiling it finds itself here and
+  // takes the ordinary path below. This comes before the builtins, so a
+  // generic named max is reachable.
+  const lowered = ctx.calls?.get(expr.span.end)
+  if (lowered && lowered !== expr) return exprToWat(lowered, ctx)
+
   // Get function name
   let funcName: string
   if (expr.callee.kind === 'IdentExpr') {
@@ -1842,8 +1854,9 @@ function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
     // The checker already computed the size and stored it as comptime_int
     return `(i32.const ${type.value})`
   }
-  // Fallback: resolve the type and compute size directly
-  const resolvedType = resolveTypeFromAST(expr.type, ctx)
+  // The operand as the checker resolved it: only the checker knows what a type
+  // parameter was bound to. Resolving the AST here is the fallback.
+  const resolvedType = ctx.types.get(typeKey(expr.span.start, 'SizeofType')) ?? resolveTypeFromAST(expr.type, ctx)
   const size = byteSize(resolvedType)
   return `(i32.const ${size ?? 0})`
 }
@@ -2843,8 +2856,14 @@ function collectLocals(
       }
     }
     if (expr.kind === 'CallExpr') {
-      for (const arg of expr.args) {
-        if (arg.value) visitExpr(arg.value)
+      // What is compiled is the lowered call, when the checker recorded one.
+      const lowered = ctx.calls?.get(expr.span.end)
+      if (lowered && lowered !== expr) {
+        visitExpr(lowered)
+      } else {
+        for (const arg of expr.args) {
+          if (arg.value) visitExpr(arg.value)
+        }
       }
     }
     if (expr.kind === 'UnaryExpr') {
@@ -2932,13 +2951,8 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   }
 
   // Collect function declarations
-  for (const decl of module.decls) {
-    if (decl.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
-    }
-    if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl') {
-      parts.push(funcToWat(decl.item, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
-    }
+  for (const fn of funcsInOrder(module.decls, checkResult)) {
+    parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
   }
 
   // Collect globals
@@ -2953,7 +2967,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   // Collect exports (skip memory exports as they're handled inline above)
   for (const decl of module.decls) {
-    if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl') {
+    if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl' && !isGenericExport(decl)) {
       parts.push(exportToWat(decl, ctx))
     }
   }
@@ -2974,6 +2988,37 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   parts.push(')')
   return tidyRawWat(parts.join('\n'))
+}
+
+// The functions of a module in the order they are emitted. A generic's place
+// is taken by its instances, in the order of their names: the order instances
+// were asked for depends on how the checker walks the program, and a fixed
+// order is what lets a generic program and the same program written out by
+// hand be the same file. A generic nobody called has no instances, and
+// nothing is emitted for it.
+function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): AST.FuncDecl[] {
+  const instancesOf = new Map<AST.FuncDecl, AST.FuncDecl[]>()
+  for (const inst of checkResult.instances ?? []) {
+    instancesOf.set(inst.of, [...(instancesOf.get(inst.of) ?? []), inst.decl])
+  }
+  const funcs: AST.FuncDecl[] = []
+  for (const decl of decls) {
+    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
+    if (!fn) continue
+    if (!isGenericDecl(fn)) {
+      funcs.push(fn)
+      continue
+    }
+    const instances = instancesOf.get(fn) ?? []
+    funcs.push(...instances.sort((a, b) => ((a.ident as string) < (b.ident as string) ? -1 : 1)))
+  }
+  return funcs
+}
+
+// A generic is never exported to the host: there is no one function to export.
+// Its `export` only makes it importable by other source modules.
+function isGenericExport(decl: AST.ExportDecl): boolean {
+  return decl.item.kind === 'FuncDecl' && isGenericDecl(decl.item)
 }
 
 function tidyRawWat(wat: string): string {
@@ -3322,6 +3367,10 @@ export function programToWat(
         modNameMap.set(decl.item.pattern.name, mangled)
       }
     }
+    for (const inst of checkResults.get(path)?.instances ?? []) {
+      const name = inst.decl.ident as string
+      modNameMap.set(name, prefix ? `${prefix}$${name}` : name)
+    }
     perModuleNameMap.set(path, modNameMap)
   }
 
@@ -3430,15 +3479,10 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    for (const decl of loaded.module.decls) {
-      if (decl.kind === 'FuncDecl' && decl.ident) {
-        const watName = modNameMap.get(decl.ident) ?? decl.ident
-        parts.push(funcToWat(decl, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
-      }
-      if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && decl.item.ident) {
-        const watName = modNameMap.get(decl.item.ident) ?? decl.item.ident
-        parts.push(funcToWat(decl.item, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
-      }
+    for (const fn of funcsInOrder(loaded.module.decls, result)) {
+      if (!fn.ident) continue
+      const watName = modNameMap.get(fn.ident) ?? fn.ident
+      parts.push(funcToWat(fn, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
     }
   }
 
@@ -3465,7 +3509,7 @@ export function programToWat(
     const entryResult = checkResults.get(entryPath)!
     const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap, dataSection.totalSize)
     for (const decl of entryModule.module.decls) {
-      if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl') {
+      if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl' && !isGenericExport(decl)) {
         parts.push(exportToWat(decl, ctx))
       }
     }
