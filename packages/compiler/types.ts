@@ -129,6 +129,10 @@ export interface VoidRT {
 export interface ComptimeIntRT {
   kind: 'comptime_int'
   value: bigint
+  // A bit pattern made with ~ (~3, ~0 << 4). In an unsigned type it stands
+  // for the low bits of its negative value, so it also fits an unsigned type
+  // that holds its complement: ~3 is a u8 (0xfc), ~300 isn't.
+  bits?: true
 }
 
 // Compile-time float - can coerce to f32 or f64
@@ -300,8 +304,8 @@ export function func(
 
 export const VOID: VoidRT = { kind: 'void' }
 
-export function comptimeInt(value: bigint): ComptimeIntRT {
-  return { kind: 'comptime_int', value }
+export function comptimeInt(value: bigint, bits = false): ComptimeIntRT {
+  return bits ? { kind: 'comptime_int', value, bits } : { kind: 'comptime_int', value }
 }
 
 export function comptimeFloat(value: number): ComptimeFloatRT {
@@ -567,7 +571,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   // that holds it exactly
   // Not reinterpretable: comptime has no bytes, concrete type does
   if (s.kind === 'comptime_int' && t.kind === 'primitive') {
-    return comptimeIntFits(s.value, t) ? lossless(false) : INCOMPATIBLE
+    const fits = comptimeIntFits(s.value, t) || (s.bits === true && t.max === undefined && comptimeIntFits(~s.value, t))
+    return fits ? lossless(false) : INCOMPATIBLE
   }
 
   // Comptime int can coerce to pointer types (raw address). A slice is two

@@ -1233,6 +1233,26 @@ describe('operand types', () => {
     expect(errs(`func f(n: i32) -> i32 => n * 1.5`)).toEqual(['cannot assign f64 to i32'])
   })
 
+  test('a complement of a constant fits the unsigned types its operand fits', () => {
+    expect(errs(`func f(x: u32, y: u8, z: u64, w: u128) {
+      let a = x & ~3
+      let b: u32 = ~0
+      let c = y & ~1
+      let d = z & ~0xff
+      let e: u8 = ~0 << 4
+      let g = x == ~0
+      let h = w ^ ~0
+      x &= ~7
+    }`)).toEqual([])
+    expect(errs(`func f() { let a: u8 = ~300 }`)).toEqual(['cannot assign int(-301) to u8'])
+    // Arithmetic on a complement is a number again, and a negative one.
+    expect(errs(`func f() { let a: u32 = ~0 - 1 }`)).toEqual(['cannot assign int(-2) to u32'])
+    expect(errs(`func f(x: u32) -> u32 => x & -4`)).toEqual(['cannot assign int(-4) to u32'])
+    // A range is a bound on the value, not a width.
+    expect(errs(`func f() { let i: u32#8 = ~3 }`)).toEqual(['cannot assign int(-4) to u32#8'])
+    expect(errs(`func f(x: f64) -> f64 => x * ~3`)).toEqual(["'~' needs an integer, not f64"])
+  })
+
   test('pointer arithmetic takes 32-bit integers', () => {
     expect(errs(`func f(p: [*]u8, n: u32, q: [*]u8) -> bool => p + n < q`)).toEqual([])
     expect(errs(`func f(p: [*]u8, n: i64) { let q = p + n }`)).toEqual(["'+' cannot be applied to [*]u8 and i64"])

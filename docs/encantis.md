@@ -1024,6 +1024,13 @@ let z = x -| 200     // -128 (min i8)
 
 `&`, `|` and `^` also take two bools. `>>` keeps the sign of a signed value.
 
+`~` of a constant is a bit pattern in the type it's used as, so it fits an unsigned type that holds its operand: `~7` is `0xfffffff8` as a `u32`. A negative constant doesn't: `x & -8` needs a signed `x`.
+
+```ents
+func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
+func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
+```
+
 The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`.
 
 A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.

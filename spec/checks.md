@@ -117,6 +117,29 @@ func c() -> f32 {
 cannot assign int(16777217) to f32
 ```
 
+A `~` of a constant is a bit pattern, not a negative number: it fits the unsigned types its operand fits.
+
+```ents
+func align(n: u32) -> u32 => (n + 7) & ~7
+func ones() -> u64 {
+  let m: u64 = ~0
+  return m
+}
+```
+
+```ents
+func a(x: u32) -> u32 => x & -8
+func b() -> u8 {
+  let m: u8 = ~300
+  return m
+}
+```
+
+```errors
+cannot assign int(-8) to u32
+cannot assign int(-301) to u8
+```
+
 `%`, the bitwise operators and the shifts are for integers. A bool isn't a number, and a number isn't a bool: conditions and the operands of `&&`, `||` and `!` are bools.
 
 ```ents

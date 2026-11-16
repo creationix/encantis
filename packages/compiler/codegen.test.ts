@@ -513,6 +513,11 @@ describe('expression codegen', () => {
       expect(wat).toContain('"\\00\\00\\80?\\00\\00\\00@\\00\\00@@"')
     })
 
+    test('a complement is computed in the type it is used as', () => {
+      expect(funcWat('func f(x: u64) -> u64 => x & ~0xff')).toContain('(i64.and (local.get $x) (i64.xor (i64.const 255) (i64.const -1)))')
+      expect(funcWat('func f(x: u8) -> bool => x == ~0')).toContain('(i32.eq (local.get $x) (i32.and (i32.xor (i32.const 0) (i32.const -1)) (i32.const 255)))')
+    })
+
     test('a constant with a fixed form is converted like a value', () => {
       const wat = funcWat('func f(p: *[4]i32) -> i64 { let n: i64 = p.len\n return n }')
       expect(wat).toContain('(local.set $n (i64.extend_i32_s (i32.const 4)))')

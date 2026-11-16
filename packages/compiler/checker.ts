@@ -1076,6 +1076,14 @@ class CheckContext {
       }
     }
 
+    // Handle bitwise complement
+    if (expr.kind === 'UnaryExpr' && expr.op === '~') {
+      const operand = this.evalComptimeExpr(expr.operand)
+      if (operand?.kind === 'int') {
+        return { kind: 'int', value: ~operand.value }
+      }
+    }
+
     // Handle binary operations on comptime values
     if (expr.kind === 'BinaryExpr') {
       const left = this.evalComptimeExpr(expr.left)
@@ -2807,7 +2815,9 @@ class CheckContext {
   private constantResult(expr: AST.BinaryExpr, left: ResolvedType, right: ResolvedType): ResolvedType {
     if (left.kind === 'comptime_int' && right.kind === 'comptime_int') {
       const value = this.evalComptimeExpr(expr)
-      const result: ResolvedType = value?.kind === 'int' ? comptimeInt(value.value) : left
+      // Bitwise operators and shifts keep a bit pattern one: ~0 << 4, ~3 | 1.
+      const bits = (left.bits || right.bits) && (BITWISE_OPS.has(expr.op) || SHIFT_OPS.has(expr.op))
+      const result: ResolvedType = value?.kind === 'int' ? comptimeInt(value.value, bits) : left
       return [left, right].reduce((widest, t) => (magnitude(t) > magnitude(widest) ? t : widest), result)
     }
     const number = (t: ResolvedType) => (t.kind === 'comptime_int' || t.kind === 'comptime_float' ? Number(t.value) : 0)
@@ -2998,7 +3008,8 @@ class CheckContext {
         // The operand's range doesn't survive: -x of a u32#8 isn't below 8.
         return stripMax(operandType)
       case '~':
-        if (operand.kind === 'comptime_int') return comptimeInt(~operand.value)
+        // A bit pattern: ~3 is -4, and in a u32 it's 0xfffffffc.
+        if (operand.kind === 'comptime_int') return comptimeInt(~operand.value, true)
         if (!isInteger(operand)) {
           this.error(expr.span.start, `'~' needs an integer, not ${typeToString(operandType)}`)
         }
