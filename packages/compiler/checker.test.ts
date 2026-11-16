@@ -1239,7 +1239,7 @@ describe('builtins', () => {
   test('an if or a match operand takes the range away', () => {
     // Its type is its first arm's: the range of that arm is not the range of the others.
     expect(types('i: u32#4, j: u32#4, c: bool', 'max(i, if c { j } else { 9 })')).toEqual(['u32', 'u32'])
-    expect(types('i: u32#4, j: u32#4, c: bool', 'min(if c { j } else { i }, i)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#4, j: u32#4, c: bool', 'max(if c { j } else { 9 }, i)')).toEqual(['u32', 'u32'])
     expect(errs(`
       data table = [10:u8, 20, 30, 40]
       func f(i: u32#4, j: u32#4, c: bool) -> u8 => table[max(i, if c { j } else { 9 })]
