@@ -1686,6 +1686,10 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ## 8. Memory Model
 
+### 8.0 Data Layout
+
+Program data (`data` declarations and literals that need memory) is placed from address 8 up. Address 0 means "none" for optional pointers and slices, so nothing real may live there; the first 8 bytes stay unused, which also keeps data 8-byte aligned. `sizeof data` is the address just past the last byte of data, where free memory begins.
+
 ### 8.1 Stack vs Memory Allocation
 
 Encantis distinguishes between register storage (WASM locals/globals) and linear memory:
