@@ -2710,6 +2710,25 @@ describe('a string with no type to meet', () => {
     expect(got.map((c) => String.fromCharCode(c as number))).toEqual(['A', 'C', 'A', 'E', 'G', 'M', 'P', 'X'])
   })
 
+  test('an empty one is there, at an address that is not none', async () => {
+    // Address 0 is none for an optional pointer or slice; an empty literal
+    // had it, so `""` given for a ?[]u8 read as none.
+    const { a, b, c, d } = await run(`
+      data nothing: *[0]u8 = []
+      func has(s: ?[]u8) -> i32 => if let t = s { 1 } else { 0 }
+      func hasm(s: ?[]mut u8) -> i32 => if let t = s { 1 } else { 0 }
+      func hasp(p: ?*[0]u8) -> i32 => if let q = p { 1 } else { 0 }
+      export func a() -> i32 => has("")
+      export func b() -> i32 => hasm(mut "")
+      export func c() -> i32 {
+        let e: []mut u8 = []
+        return hasm(e)
+      }
+      export func d() -> i32 => hasp(nothing)
+    `)
+    expect([a(), b(), c(), d()]).toEqual([1, 1, 1, 1])
+  })
+
   test('mut makes it a writable copy of its own', async () => {
     const { write, same } = await run(`
       export func write() -> u8 {

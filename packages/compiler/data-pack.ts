@@ -189,9 +189,13 @@ export class DataSectionBuilder {
   /** Next available offset for placing new interned data */
   private currentOffset = 0
 
+  /** Where the data laid out here starts */
+  private dataStart = 0
+
   // Set where auto data starts (for layoutLiterals with explicit addresses)
   setAutoDataStart(offset: number): void {
     this.currentOffset = offset
+    this.dataStart = offset
   }
 
   addLabel(offset: number, label: string): void {
@@ -230,9 +234,10 @@ export class DataSectionBuilder {
     void isOptional // data never starts at 0 (see NULL_PAGE)
     const bytes = given instanceof Uint8Array ? bytesOf(given) : given
     const size = sizeOf(bytes)
-    // Nothing can be written to no bytes: a mutable empty literal needs no
-    // place of its own.
-    if (size === 0) skipDedup = false
+    // No bytes need no place of their own, mutable or not. But the address 0
+    // is none for an optional pointer or slice, and `""` is a slice: an
+    // empty literal is where the data starts.
+    if (size === 0) return { ptr: Math.max(this.dataStart, NULL_PAGE), len: 0 }
 
     const key = bytesToKey(bytes)
 
