@@ -497,6 +497,24 @@ export func a(xs: []u16) -> u16 => at(xs, 2)
 export func b(xs: []u8) -> u8 => at(xs, u8, 2)
 ```
 
+A tuple decides by its typed parts: here `i` decides `T` wherever it stands, also in a tuple inside the tuple, and the literals take the type `T` turns out to be. The literals by themselves decide nothing (see the errors below).
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep((i, 1)) + keep((2, i))
+export func b(i: u16) -> u16 => deep(((1, 2), i)) + deep(((i, 2), 3))
+```
+
+```ents same-wasm
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))
+export func b(i: u16) -> u16 => deep(u16, ((1, 2), i)) + deep(u16, ((i, 2), 3))
+```
+
 A struct literal is an untyped literal: it takes the type the parameter turns out to have.
 
 ```ents
@@ -831,7 +849,19 @@ func f() -> u32 {
 cannot infer T for 'zero': write the type argument, as in zero(u32)
 ```
 
-Untyped literals only. An array literal is untyped even when one of its elements has a type.
+Untyped literals only, also as the parts of a tuple.
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+
+func f() -> u32 => keep((1, 2))
+```
+
+```errors
+cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type
+```
+
+An array literal is untyped even when one of its elements has a type.
 
 ```ents
 func count(comptime T: type, xs: []T, x: T) -> u32 => xs.len

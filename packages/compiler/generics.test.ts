@@ -281,12 +281,38 @@ export func f(x: u32) -> u32 {
 }`
     expect(instancesOf(source)).toEqual(['fst<u32>', 'id<<u32|u32>>', 'keep<u32>'])
     // What an error suggests writing is that type too.
-    expect(errorsOf(`func keep(comptime T: type, p: (T, u8)) -> T => p.0
+    expect(errorsOf(`func pair(comptime T: type, comptime U: type, p: (T, U)) -> T => p.0
 export func f() -> u32 {
   let total: u32 = 0
-  for i in 3 { total += keep((i, 1)) }
+  for i in 3 { total += pair((i, 1)) }
   return total
-}`)).toEqual(["cannot infer T for 'keep' from untyped literals: write keep(u32, ...) or give a literal its type"])
+}`)).toEqual(["cannot infer U for 'pair' from untyped literals: write pair(u32, i32, ...) or give a literal its type"])
+  })
+
+  test('a tuple decides by its typed parts, and its literals by themselves never do', () => {
+    const KEEP = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\n'
+    // i decides T in either place; the literal takes the type T turns out to be.
+    expect(instancesOf(`${KEEP}export func f(i: u16) -> u16 => keep((i, 1)) + keep((2, i))`)).toEqual(['keep<u16>'])
+    // Also inside a nested tuple, behind a pointer, and with the loop counter's range dropped.
+    expect(instancesOf(`func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+func at(comptime T: type, p: *(T, T)) -> T => p.0
+export func f(i: u64) -> u64 => deep(((1, 2), i)) + at(&(i, 1))
+export func g() -> (n: u32) { for j in 4 { n += deep(((j, 2), 3)) } }`)).toEqual(['at<u64>', 'deep<u32>', 'deep<u64>'])
+    // Only literals: nothing decides.
+    expect(errorsOf(`${KEEP}export func f() -> u32 => keep((1, 2))`)).toEqual([
+      "cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type",
+    ])
+    // The first argument that decides decides: here the tuple, by i, and a
+    // later u64 is not widened to.
+    const KEEP2 = 'func keep2(comptime T: type, p: (T, T), q: T) -> T => q\n'
+    expect(errorsOf(`${KEEP2}export func f(i: u32, big: u64) -> u64 => keep2((i, 1), big)`)).toEqual(['argument 2: cannot assign u64 to u32'])
+    expect(instancesOf(`${KEEP2}export func f(big: u64) -> u64 => keep2((1, 2), big)`)).toEqual(['keep2<u64>'])
+  })
+
+  test('a tuple that decides by its typed parts compiles as the same call written out', async () => {
+    const generic = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep((i, 1)) + keep((2, i))'
+    const written = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))'
+    expect(await wasmOfSource(generic)).toEqual(await wasmOfSource(written))
   })
 
   test('a range written in a type is part of the type', () => {

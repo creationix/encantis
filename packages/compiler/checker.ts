@@ -5606,8 +5606,9 @@ class CheckContext {
 
   // The type parameters of an inferred call, found from its arguments; null,
   // with the error reported, when they cannot be. The first argument that can
-  // decide a type parameter decides it. An untyped literal never does: it takes
-  // the type the parameter turns out to have.
+  // decide a type parameter decides it, by its typed parts where some of it is
+  // untyped. An untyped literal never does: it takes the type the parameter
+  // turns out to have.
   private inferTypeArgs(
     expr: AST.CallExpr,
     name: string,
@@ -5648,6 +5649,10 @@ class CheckContext {
         match(param.type, type, bound)
         typed.push(param)
       } else {
+        // The typed parts of an argument decide as a typed argument does:
+        // keep((i, 1)) with i a u32 gives T = u32. The literals in it
+        // decide nothing (see matchType).
+        match(param.type, type, bound)
         untyped.push({ param, arg, type })
       }
     }
@@ -6554,8 +6559,9 @@ function matchType(
   const u = unwrap(actual)
   switch (pattern.kind) {
     case 'TypeRef':
-      // A later argument never re-decides, and () decides nothing.
-      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual)) return
+      // A later argument never re-decides, and () decides nothing, nor does
+      // an untyped literal, also where it is a part of a typed tuple.
+      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual) || !hasOwnType(actual)) return
       // `value`: nothing but tuples lies between the argument and this part
       // of it, so it is a value the argument holds, not memory it points to.
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)
