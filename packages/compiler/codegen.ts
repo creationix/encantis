@@ -1773,12 +1773,14 @@ function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
 
 // Whether the elements an index expression reads are optionals themselves
 // (in a []?*T): then if let and ?? check the element as well as the index,
-// as for any optional, reading it none when the index is out of range.
+// as for any optional, reading it none when the index is out of range. An
+// array value ([3]?*T, also a field of a struct in memory) is indexed only by
+// a constant in range, so only its element is checked.
 function holdsOptionals(expr: AST.IndexExpr, ctx: CodegenContext): boolean {
   const objType = lookupExprType(expr.object, ctx)
   const u = objType && unwrap(objType)
   const pointee = u?.kind === 'pointer' ? unwrap(u.pointee) : null
-  const element = u?.kind === 'slice' ? u.element : pointee?.kind === 'array' ? pointee.element : null
+  const element = u?.kind === 'slice' || u?.kind === 'array' ? u.element : pointee?.kind === 'array' ? pointee.element : null
   return element !== null && RT.isOptional(unwrap(element))
 }
 

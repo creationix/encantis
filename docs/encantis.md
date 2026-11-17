@@ -1761,7 +1761,7 @@ let resolved = msg ?? "default"   // resolve when needed
 
 This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check. An optional element is never read through before it is resolved (see [Optional Types](#optional-types)): `names[i][0]` and `names[i].len` are errors, `(names[i] ?? "")[0]` is not.
 
-When the elements are optionals themselves (`[]?*T`), the element of an index that isn't proven is that optional, none when the index is out of range, and `if let` and `??` check both the index and the element.
+When the elements are optionals themselves (`[]?*T`), the element of an index that isn't proven is that optional, none when the index is out of range, and `if let` and `??` check both the index and the element. An array value of optionals (`[3]?*T`, held in registers or as a field of a struct in memory, `t.a[1]`) is indexed only by a constant in range, so there they check the element.
 
 #### The `??` Operator
 

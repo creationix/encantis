@@ -2098,6 +2098,26 @@ describe('indexes not known to be in range', () => {
     expect([bound(0), bound(1), bound(2), bound(-1)]).toEqual([7, -1, -1, -1])
     expect([fallback(0), fallback(1), fallback(2)]).toEqual([0, 0, 0])
   })
+
+  test('so do they on an element of an array value of optionals, also a field in memory', async () => {
+    const { run: go } = await run(`
+      type U = (n: u8)
+      type T = (a: [3]?*U, n: u8)
+      data us: *[2]U = [(n: 7), (n: 9)]
+      data cell = mut [0:u8; 16]
+      func f(t: *T) -> u8 => if let x = t.a[1] { x.n } else { t.n }
+      func k(t: *T) -> u8 => (t.a[2] ?? (us as *U)).n
+      func v(a: [3]?*U) -> u8 => if let x = a[0] { x.n } else { 1 }
+      export func run() -> u32 {
+        let t = cell as *mut T
+        t.* = T([0 as ?*U, (us as u32 + 1) as *U, 0 as ?*U], 5)
+        let first = f(t) as u32
+        t.a[1] = 0 as ?*U
+        return first * 10000 + f(t) as u32 * 1000 + k(t) as u32 * 10 + v(t.a)
+      }
+    `)
+    expect(go()).toBe(95071)
+  })
 })
 
 describe('literals where a pointer is wanted', () => {
