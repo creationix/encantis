@@ -917,6 +917,87 @@ func put_buf(i: u32, v: u8) {
 }
 ```
 
+## Tables
+
+In a pointer or slice whose element is a fixed array (`*[N][M]T`, `[][M]T`, `[*][M]T`), each element is a pointer to its row. `m[i]` is that row pointer, a `*[M]T`, and `m[i][j]` indexes the row. Each index is checked on its own, and both can be known only at run time.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+
+func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+
+func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+
+func put(i: u32#2, j: u32#3, v: i32) {
+  board[i][j] = v
+}
+
+func rows(i: u32#2) -> i32 {
+  let r = grid[i]
+  return sum(r) + sum(board[i])
+}
+```
+
+A row has no optional type. A row index that isn't known to be in range is resolved where it is taken, with `if let` or `??`, against `N` or a slice's length. `??` and `if let` resolve only the index they are given, so the row in `m[i][j] ?? 0` still has to be in range.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data rows: [][2]i32 = [[7, 1], [3, 4]]
+
+func a(i: u32, j: u32#3) -> i32 => grid[i][j]
+func b(i: u32, j: u32#2) -> i32 => rows[i][j] ?? 0
+func c(i: u32#3, j: u32#3) -> i32 => grid[i][j]
+```
+
+```errors
+runtime index on *[2][3]i32 requires 'if let' or '??' (rows are not optional)
+runtime index on [][2]i32 requires 'if let' or '??' (rows are not optional)
+index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2)
+```
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data rows: [][2]i32 = [[7, 1], [3, 4]]
+
+func a(i: u32, j: u32#3) -> i32 => if let r = grid[i] { r[j] } else { 0 }
+func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? rows[0])[j]
+```
+
+A write goes through the row pointer, so the table has to be mutable. Assigning to `m[i]` points the row elsewhere; there is no `[N][M]T` in the table to load or store whole.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+data spare: *mut [3]i32 = mut [1, 2, 3]
+
+func f() {
+  grid[0][0] = 1
+  board[1] = spare
+  board[0] = grid[0]
+  let all = grid.*
+}
+```
+
+```errors
+cannot write through const pointer
+cannot assign *[3]i32 to *mut [3]i32
+cannot use .* on *[2][3]i32
+```
+
+A table literal is laid out when the program is compiled, its rows apart from it, so every value in it is a constant.
+
+```ents
+func f(a: i32) -> i32 {
+  let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]
+  return t[0][0]
+}
+```
+
+```errors
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+```
+
 ## Ranges
 
 `items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.

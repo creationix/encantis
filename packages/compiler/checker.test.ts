@@ -1239,6 +1239,114 @@ describe('writes through pointers', () => {
   })
 })
 
+describe('tables', () => {
+  // *[N][M]T, [][M]T and [*][M]T hold pointers to rows laid out apart: an
+  // element is a row pointer, *[M]T.
+  const tables = `
+    data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+    data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+    data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+    data many: [*][2]i32 = [[7, 1], [3, 4]]
+    data cube: *[2][2][2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+    data spare: *mut [3]i32 = mut [1, 2, 3]
+    data fixed: *[3]i32 = [1, 2, 3]
+  `
+  const check = (body: string, params = '') => checkModule(`${tables}\nfunc f(${params}) {\n${body}\n}`)
+  const errs = (body: string, params = '') => check(body, params).errors.map(e => e.message)
+  const letType = (value: string, params = '') => {
+    const source = `${tables}\nfunc f(${params}) {\nlet r = ${value}\n}`
+    const result = checkModule(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    return typeAt(result, source.indexOf('let r =') + 4)
+  }
+
+  test('an element is a pointer to its row', () => {
+    expect(letType('grid[1]')).toBe('*[3]i32')
+    expect(letType('board[1]')).toBe('*mut [3]i32')
+    expect(letType('rows[0]')).toBe('*[2]i32')
+    expect(letType('many[5]')).toBe('*[2]i32')
+    expect(letType('cube[1]')).toBe('*[2][2]i32')
+    expect(letType('cube[1][0]')).toBe('*[2]i32')
+    expect(letType('grid[1][2]')).toBe('i32')
+    expect(letType('grid[i][j]', 'i: u32#2, j: u32#3')).toBe('i32')
+    expect(letType('&grid[1]')).toBe('**[3]i32')
+    // A fixed array that is a field of a struct lies in place.
+    expect(letType('ps[1].v', 'ps: *[2](k: u8, v: [2]i32)')).toBe('[2]i32')
+    // A packed block is not a table: its row is an address in the block.
+    expect(letType('p[1]', 'p: *[2x3]i32')).toBe('*[3]i32')
+  })
+
+  test('a run-time index works on both, each checked on its own', () => {
+    expect(errs('let a = grid[i][j]\nlet b = cube[i][k][k]', 'i: u32#2, j: u32#3, k: u32#2')).toEqual([])
+    expect(errs('let a = grid[i][j]', 'i: u32#3, j: u32#3')).toEqual([
+      'index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2) — narrow the index range to fit',
+    ])
+    expect(errs('let a = grid[0][j]', 'j: u32#4')).toEqual([
+      'index type u32#4 may exceed *[3]i32 bounds (max index 3 >= 3) — narrow the index range to fit',
+    ])
+    expect(errs('let a = grid[2][0]')).toEqual(['index 2 out of bounds for *[2][3]i32'])
+  })
+
+  test('a row has no optional type: an unproven row index is resolved where it is taken', () => {
+    const unresolved = (table: string) => `runtime index on ${table} requires 'if let' or '??' (rows are not optional)`
+    expect(errs('let r = grid[i]', 'i: u32')).toEqual([unresolved('*[2][3]i32')])
+    expect(errs('let r = rows[i][0]', 'i: u32')).toEqual([unresolved('[][2]i32')])
+    // ?? and if let resolve the index they are given, not the row it is taken from.
+    expect(errs('let r = grid[i][0] ?? 0', 'i: u32')).toEqual([unresolved('*[2][3]i32')])
+    expect(errs('let r = grid[0][j] ?? 0\nlet s = grid[i] ?? spare', 'i: u32, j: u32')).toEqual([])
+    expect(errs('if let r = rows[i] { let x = r[1] }', 'i: u32')).toEqual([])
+    // A many-pointer has no length: its rows are never checked.
+    expect(errs('let r = many[i][1]', 'i: u32')).toEqual([])
+  })
+
+  test('writes go through the row pointer', () => {
+    const constPointer = 'cannot write through const pointer — use *mut for mutable access'
+    expect(errs('board[i][j] = 5\nboard[1][0] += 1', 'i: u32#2, j: u32#3')).toEqual([])
+    expect(errs('grid[1][0] = 5')).toEqual([constPointer])
+    expect(errs('rows[0][0] = 5')).toEqual([constPointer])
+    // m[i] = r points row i at r.
+    expect(errs('board[1] = spare')).toEqual([])
+    expect(errs('grid[1] = fixed')).toEqual([constPointer])
+    expect(errs('board[1] = fixed')).toEqual(['cannot assign *[3]i32 to *mut [3]i32'])
+  })
+
+  test('the rows of a table literal are constants: they are laid out apart, at compile time', () => {
+    const row = (type: string) => `a row of ${type} is laid out at compile time: its values must be constants`
+    expect(errs('let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]\nlet u: *[2][3]i32 = [v, [1, 2, 3]]\nlet w: [][2]i32 = [[a; 2]; 3]', 'a: i32, v: [3]i32')).toEqual([
+      row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
+    ])
+    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+  })
+
+  test('len and wid are constants', () => {
+    // A constant has to fit a ranged type, which pins it down: n < 3, w < 5.
+    expect(errs('let n: u32#3 = grid.len\nlet w: u32#5 = grid.wid\nlet c: u32#5 = cube.wid\nlet r: u32#4 = grid[0].len')).toEqual([])
+    expect(errs('let n: u32#2 = grid.len\nlet w: u32#4 = grid.wid\nlet c: u32#4 = cube.wid')).toEqual([
+      'cannot assign int(2) to u32#2',
+      'cannot assign int(4) to u32#4',
+      'cannot assign int(4) to u32#4',
+    ])
+  })
+
+  test('each element of a loop is a row pointer', () => {
+    const source = `${tables}\nfunc f() {\nfor r in grid { let a = r[2] }\nfor s in rows { let b = s[1] }\nfor w in board { w[0] = 1 }\n}`
+    const result = checkModule(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(typeAt(result, source.indexOf('r in grid'), 'ForBinding')).toBe('*[3]i32')
+    expect(typeAt(result, source.indexOf('s in rows'), 'ForBinding')).toBe('*[2]i32')
+    expect(typeAt(result, source.indexOf('w in board'), 'ForBinding')).toBe('*mut [3]i32')
+  })
+
+  test('a row passes as a pointer or a slice; the table cannot be loaded whole', () => {
+    const fns = 'func sum(r: *[3]i32) -> i32 => r[0]\nfunc total(s: []i32) -> i32 => s[0] ?? 0\n'
+    const source = (body: string) => `${tables}\n${fns}func f() {\n${body}\n}`
+    expect(checkModule(source('let a = sum(grid[1]) + total(grid[1])\nlet v = grid[1].*')).errors.map(e => e.message)).toEqual([])
+    expect(errs('let v = grid.*')).toEqual([
+      'cannot use .* on *[2][3]i32: a table holds pointers to rows that lie apart — load one row with [i].*',
+    ])
+  })
+})
+
 describe('struct elements of an array literal', () => {
   const check = (decl: string) =>
     checkModule(`
