@@ -447,6 +447,13 @@ function throughNames(t: ResolvedType, open: ReadonlySet<ResolvedType>): Resolve
   }
 }
 
+// A reference to a type declared further down, behind a pointer or a slice,
+// is concrete as it is: it names a declared type, and it is where a type can
+// refer to itself. Going on into it would walk every type it leads to.
+function behindPointer(t: ResolvedType): boolean {
+  return unwrapToCut(t).kind === 'forward_ref'
+}
+
 function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
   const u = throughNames(t, open)
   if (u.kind === 'forward_ref') return u
@@ -496,7 +503,7 @@ function concretizeKind(u: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
       }
 
     case 'slice':
-      return slice(concretizeParts(u.element, opts, made, open), u.mutable, u.optional)
+      return behindPointer(u.element) ? u : slice(concretizeParts(u.element, opts, made, open), u.mutable, u.optional)
 
     case 'array': {
       // Concretize element type
@@ -506,7 +513,7 @@ function concretizeKind(u: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
     }
 
     case 'pointer':
-      return {
+      return behindPointer(u.pointee) ? u : {
         ...u,
         pointee: concretizeParts(u.pointee, opts, made, open),
       }

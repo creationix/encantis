@@ -1856,6 +1856,30 @@ describe('structs in data arrays', () => {
     expect([pair(), short(), real(), repeat()]).toEqual([-39, 7, 2.5, -2])
   })
 
+  test('of a type that refers to itself are laid out as that type, at any depth', async () => {
+    const { total, names, inner } = await run(`
+      type Dir = (name: []u8, subs: []Dir, size: Size)
+      type Size = u32
+      func List(comptime T: type) -> type => (items: []List(T), v: T)
+      data root: *[1]Dir = [(name: "root", subs: [(name: "bin", subs: [], size: 3), (name: "etc", subs: [(name: "x", subs: [], size: 1)], size: 2)], size: 9)]
+      data lists: *[1]List(i16) = [(items: [(items: [], v: -7)], v: 5)]
+      func sizes(d: Dir) -> u32 {
+        let t: u32 = d.size
+        for s in d.subs { t += sizes(s) }
+        return t
+      }
+      func letters(d: Dir) -> u32 {
+        let t: u32 = d.name.len
+        for s in d.subs { t += letters(s) }
+        return t
+      }
+      export func total() -> u32 => sizes(root[0])
+      export func names() -> u32 => letters(root[0])
+      export func inner() -> i32 => if let i = lists[0].items[0] { i.v } else { 0 }
+    `)
+    expect([total(), names(), inner()]).toEqual([15, 11, -7])
+  })
+
   test('constant tuples and constructors are laid out in the data section', () => {
     const wat = modWat(`
       type Point = (x: i32, y: i32)
