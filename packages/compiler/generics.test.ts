@@ -3893,7 +3893,8 @@ func less(a: u8, b: u8) -> bool => a < b
   for x in xs { s += x }
 }
 export func f(v: *Vec(u32)) -> u32 => v.items().total().double()`
-    expect(compiled(source)).toEqual(['double/1', 'total/1', 'items<u32>/1'])
+    // The order the calls are recorded in says nothing: each is looked up by its node.
+    expect(compiled(source).sort()).toEqual(['double/1', 'items<u32>/1', 'total/1'])
     expect(funcWat(watOfSource(source), 'f')).toContain('(call $double (call $total (call $items<u32> (local.get $v))))')
   })
 

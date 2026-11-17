@@ -524,94 +524,25 @@ export function isConcreteType(t: ResolvedType): boolean {
 
 // === Check Context ===
 
-// What the checker's tables took in while an expression was only being looked
-// at (see CheckContext.peek), to take it back. The tables share one journal,
-// so a look is undone as a whole: a type left on a node, or a conversion, is
-// something codegen would act on.
-class Trial {
-  private open = 0
-  private undo: (() => void)[] = []
-
-  get active(): boolean {
-    return this.open > 0
-  }
-
-  note(undo: () => void): void {
-    this.undo.push(undo)
-  }
-
-  begin(): number {
-    this.open++
-    return this.undo.length
-  }
-
-  rollback(mark: number): void {
-    while (this.undo.length > mark) this.undo.pop()?.()
-    this.open--
-  }
-}
-
-class TrialMap<K, V> extends Map<K, V> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override set(key: K, value: V): this {
-    if (this.trial.active) this.remember(key)
-    return super.set(key, value)
-  }
-
-  override delete(key: K): boolean {
-    if (this.trial.active) this.remember(key)
-    return super.delete(key)
-  }
-
-  private remember(key: K): void {
-    const had = this.has(key)
-    const was = this.get(key) as V
-    this.trial.note(() => {
-      if (had) super.set(key, was)
-      else super.delete(key)
-    })
-  }
-}
-
-class TrialSet<T> extends Set<T> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override add(value: T): this {
-    if (this.trial.active && !this.has(value)) this.trial.note(() => super.delete(value))
-    return super.add(value)
-  }
-
-  override delete(value: T): boolean {
-    if (this.trial.active && this.has(value)) this.trial.note(() => super.add(value))
-    return super.delete(value)
-  }
-}
-
 class CheckContext {
   source?: string
-  // What is recorded per offset and per node can be taken back after an
-  // expression was only looked at (see peek).
-  trial = new Trial()
-  types = new TrialMap<string, ResolvedType>(this.trial)
-  exprTypes = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  coercions = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  constants = new TrialMap<AST.Expr, ComptimeValue>(this.trial)
+  types = new Map<string, ResolvedType>()
+  exprTypes = new Map<AST.Expr, ResolvedType>()
+  coercions = new Map<AST.Expr, ResolvedType>()
+  constants = new Map<AST.Expr, ComptimeValue>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
-  statementExprs = new TrialSet<AST.Expr>(this.trial)
+  statementExprs = new Set<AST.Expr>()
   // The constant each branch of an if or match of constants is by itself.
   // The branches share one type, and each has to be a value of it.
-  branchConstants = new TrialMap<AST.Expr, ResolvedType>(this.trial)
+  branchConstants = new Map<AST.Expr, ResolvedType>()
   // The patterns that have declared their local. An operand of a builtin is
   // checked again once its type is settled, statements and all: a `let` in
   // one of its branches is then the same declaration, not a second one.
-  // A look (see peek) declares in a scope of its own, and is no first time.
-  declared = new TrialSet<AST.Pattern>(this.trial)
+  // A look (see peek) declares in a scope of its own, and is no first time:
+  // what it adds is taken out when it ends (`lookDeclared`).
+  declared = new Set<AST.Pattern>()
+  lookDeclared: AST.Pattern[] = []
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -655,7 +586,7 @@ class CheckContext {
   instances: Instance[] = []
   instanceQueue: Instance[] = []
   currentInstance: Instance | null = null
-  calls = new TrialMap<AST.CallExpr, AST.CallExpr | AST.TupleExpr>(this.trial)
+  calls = new Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>()
   // How many literals were registered when the second pass came to each
   // generic, which is where a function written in its place would add its own
   literalSlots = new Map<AST.FuncDecl, number>()
@@ -712,7 +643,9 @@ class CheckContext {
   refused = new Set<AST.CallExpr>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
-  // How many attempts are open (see attempt)
+  // How many looks are open (see untraced), and of them how many are attempts
+  // (see attempt)
+  looking = 0
   attempting = 0
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
@@ -2257,7 +2190,10 @@ class CheckContext {
         if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
-        this.declared.add(pattern)
+        if (!this.declared.has(pattern)) {
+          this.declared.add(pattern)
+          if (this.looking) this.lookDeclared.push(pattern)
+        }
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
@@ -3218,7 +3154,7 @@ class CheckContext {
   // attempt, which keeps nothing of a failure but that it was one. Only a
   // look is cut short: what the check records, it records.
   inferCall(expr: AST.CallExpr): ResolvedType {
-    if (this.trial.active) {
+    if (this.looking) {
       const settled = this.settled.get(expr)
       if (settled) return settled
       const failed = this.failed.get(expr) ?? (this.attempting && this.refused.has(expr) ? RECOVERY : undefined)
@@ -5707,30 +5643,37 @@ class CheckContext {
 
   // The type an expression has by itself, found without leaving a trace. An
   // argument that may decide a type parameter is looked at before the type it
-  // is checked against is known, and then checked as any argument is. Whatever
-  // the look recorded has to go: a `let` inside the argument would be declared
-  // twice, a literal it took the address of would stay marked as its own
-  // writable cell, and the call would no longer compile to what the same call
-  // of a hand-written function does. Errors stay: the check repeats them.
+  // is checked against is known, and then checked as any argument is. What
+  // the look declared and registered has to go: a `let` inside the argument
+  // would be declared twice, a literal it took the address of would stay
+  // marked as its own writable cell, and the call would no longer compile to
+  // what the same call of a hand-written function does. Errors stay: the
+  // check repeats them.
   private peek(expr: AST.Expr): ResolvedType {
     return this.untraced(expr, () => this.inferExpr(expr))
   }
 
-  // Runs a look at `expr` and takes back what it recorded. Errors stay.
+  // Runs a look at `expr` and takes back its scope and what it declared, the
+  // literals it registered and the marks it left on literals. Errors stay.
+  // What it recorded per node and per offset is not taken back: an
+  // expression that was looked at is always checked after the look, which
+  // records the same things again, over what the look left.
   private untraced<T>(expr: AST.Expr | null, look: () => T): T {
     // A call the look will not walk (see inferCall) keeps its marks.
     const literals = literalMarks(expr, (call) => this.known(call))
-    const recorded = this.trial.begin()
+    const declared = this.lookDeclared.length
     const registered = this.pendingLiterals.length
     const warned = this.warnings.length
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
     this.lookScopes.add(this.currentScope)
+    this.looking++
     const found = look()
+    this.looking--
+    for (const pattern of this.lookDeclared.splice(declared)) this.declared.delete(pattern)
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
-    this.trial.rollback(recorded)
     for (const { node, marks } of literals) {
       delete node.mut
       delete node.dataId
