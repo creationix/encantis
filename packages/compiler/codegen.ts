@@ -2588,10 +2588,13 @@ function assignedRoot(target: AST.LValue): string | null {
 // the count where the loop compares with it: nothing in the body may change
 // the variable it is read from (a slice's length is part of the slice), and
 // for a global, the body calls nothing that could.
-function steadyRead(count: AST.Expr, wat: string, body: AST.FuncBody): boolean {
-  let root = ungroup(count)
+function steadyRead(stmt: AST.ForStmt, wat: string): boolean {
+  const body = stmt.body
+  let root = ungroup(stmt.iterable)
   while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
   if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  // for n in n: the loop variable takes the local the count is read from.
+  if (stmt.binding.value === root.name || stmt.binding.index === root.name) return false
   if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
   return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
 }
@@ -2623,7 +2626,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     // times; value counts up from 0 and stops at the count, so it never
     // reaches the values where the two comparisons differ.
     const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
-    const steady = constant !== null || steadyRead(stmt.iterable, iterWat, stmt.body)
+    const steady = constant !== null || steadyRead(stmt, iterWat)
     const count = steady ? iterWat : scratchLocal(ctx, 'i32')
     const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
     const compare = negative ? 'i32.ge_s' : 'i32.ge_u'

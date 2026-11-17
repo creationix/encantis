@@ -1031,11 +1031,17 @@ describe('counted loops', () => {
         }
         return t
       }
+      export func same(n: u32) -> u32 {
+        let t: u32 = 0
+        for n in n { t += 1 }
+        return t
+      }
     `
-    const { call, local, shadow, glob, steady, field, gfield } = await run(code)
+    const { call, local, shadow, glob, steady, field, gfield, same } = await run(code)
     expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
-    // Assigning a field of the variable the count is read from changes it too.
-    expect([field(5), gfield()]).toEqual([5, 4])
+    // Assigning a field of the variable the count is read from changes it
+    // too, and so does a loop variable that takes its name (and its local).
+    expect([field(5), gfield(), same(4)]).toEqual([5, 4, 4])
     // A variable the body doesn't change is read where it is compared.
     expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
   })
