@@ -1083,21 +1083,12 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     }
   }
 
-  // Get callee type for param coercions
-  const calleeSym = ctx.symbols.get(funcName)
-  const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null
-
-  // Generate argument expressions with array→slice coercion
-  const args = expr.args.map((arg, i) => {
-    let wat: string
-    if (arg.value) {
-      wat = exprToWat(arg.value, ctx)
-    } else if (arg.name) {
-      wat = identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
-    } else {
-      return ''
-    }
-    return wat
+  // The arguments, each converted to its parameter's type where the checker
+  // says (a pointer to an array to a slice, a widening)
+  const args = expr.args.map((arg) => {
+    if (arg.value) return exprToWat(arg.value, ctx)
+    if (arg.name) return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    return ''
   }).filter(Boolean).join(' ')
 
   const watName = ctx.nameMap.get(funcName) ?? funcName
@@ -2248,7 +2239,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    let value = exprToWat(stmt.value, ctx)
+    const value = exprToWat(stmt.value, ctx)
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -2359,7 +2350,6 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     return assign(result)
   }
 
-  if (!placeType) return assignLvalue(stmt.target, value, ctx)
   return assignLvalue(stmt.target, value, ctx)
 }
 
