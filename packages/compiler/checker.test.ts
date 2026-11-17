@@ -1729,6 +1729,26 @@ describe('values meeting an expected type', () => {
     expect(errs(`${pair}func f(n: u32) { let t: (q: u32, r: u32) = pair(n) }`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32)'])
   })
 
+  test('a tuple value in parentheses is checked as it is without them', () => {
+    // (e) is e. Taken for a tuple literal of one field, a call in
+    // parentheses made the checker throw.
+    const pair = 'func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)\n'
+    expect(errs(`${pair}func f(n: u32) -> (u32, u32) => (pair(n))`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) => ((pair(n)))`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> u32 { let t: (u32, u32) = (pair(n))\n return t.0 }`)).toEqual([])
+    expect(errs(`func f(t: (u32, u32)) -> (u32, u32) { return (t) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, c: bool) -> (u32, u32) => (if c { pair(n) } else { (1, 2) })`)).toEqual([])
+    // A literal in parentheses still takes the expected type field by field.
+    expect(errs(`func f(n: u8) -> (i64, u32) => ((n, 300))`)).toEqual([])
+    expect(errs(`func f(n: u8) -> (i64, u8) => ((n, 300))`)).toEqual(['cannot assign int(300) to u8'])
+    // And the same errors are reported as without the parentheses.
+    expect(errs(`${pair}func f(n: u32) { let t: (q: u32, r: u32) = (pair(n)) }`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32)'])
+    expect(errs(`${pair}func f(n: u32) -> (u64, u64) => (pair(n))`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u64, r: u64) { (pair(n)) }`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+  })
+
   test('a match pattern has to be a value of the subject\'s type', () => {
     expect(errs(`func f(x: i64) -> i32 => match x { 5000000000 => 1\n _ => 0 }`)).toEqual([])
     expect(errs(`func f(x: f64) -> i32 => match x { 1 => 1\n 2.5 => 2\n _ => 0 }`)).toEqual([])

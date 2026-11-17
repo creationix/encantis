@@ -2294,8 +2294,17 @@ class CheckContext {
       }
     }
 
-    // Propagate expected type into tuple elements for bidirectional inference
+    // (e) is e, not a tuple literal of one field: what's expected of a
+    // tuple in parentheses is expected of the tuple itself.
     const unwrappedExpected = unwrap(expected)
+    const grouped = groupedExpr(expr)
+    if (grouped && unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple') {
+      const type = this.checkExpr(grouped, expected, errorContext)
+      this.exprTypes.set(expr, this.exprTypes.get(grouped) ?? type)
+      return type
+    }
+
+    // Propagate expected type into tuple elements for bidirectional inference
     if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
@@ -3014,6 +3023,7 @@ class CheckContext {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
       return
     }
+    const grouped = groupedExpr(expr)
     if (to.kind === 'primitive' && isComptimeNumber(from)) {
       this.typeConstant(expr, expected, actual)
     } else if (to.kind === 'pointer' && from.kind === 'comptime_int') {
@@ -3025,6 +3035,9 @@ class CheckContext {
         this.exprTypes.set(expr, actual)
         this.coercions.set(expr, expected)
       }
+    } else if (grouped && from.kind === 'tuple' && to.kind === 'tuple') {
+      // (e) is e: a tuple in parentheses is converted as it is without them.
+      this.coerce(grouped, actual, expected, prefix)
     } else if (expr.kind === 'TupleExpr' && from.kind === 'tuple' && to.kind === 'tuple') {
       // A tuple literal is converted element by element.
       for (const [i, element] of expr.elements.entries()) {

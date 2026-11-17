@@ -121,3 +121,18 @@ test "an expression body passes a call's results on in order" {
   assert b.q == 9
   assert b.r == 3
 }
+
+// Parentheses around a value change nothing, a call's several results included.
+export func grouped(n: u32) -> (q: u32, r: u32) => (digits(n))
+
+func first(n: u32) -> u32 {
+  let t: (u32, u32) = (digits(n))
+  return t.0
+}
+
+test "a tuple value in parentheses is the value" {
+  let g = grouped(58)
+  assert g.q == 5
+  assert g.r == 8
+  assert first(58) == 5
+}

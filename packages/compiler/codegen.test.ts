@@ -688,6 +688,11 @@ describe('expression codegen', () => {
       expect(wat).toContain('(if (result i64 i32) (local.get $c) (then (i64.const 1) (i32.const 2)) (else (local.get $x) (i32.const 4)))')
     })
 
+    test('a tuple literal in parentheses takes the expected type field by field', () => {
+      const wat = funcWat('func f(n: u8) -> (i64, u32) => ((n, 300))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $n)) (i32.const 300)')
+    })
+
     test('an if let used as a value leaves the value of each branch', () => {
       const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
       expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)
