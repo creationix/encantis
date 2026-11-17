@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericDeclaring } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -68,6 +68,48 @@ function wordStart(source: string, offset: number): number {
   return start
 }
 
+// The name a function is known by where its own name is written at `offset`
+// in its declaration (a function, or an import of one, also inside a test).
+// Functions that share a name are each known by a name of their own, and by
+// the shared name alone every one of them would be the first.
+function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: number, name: string): string | undefined {
+  const find = (items: readonly (AST.Declaration | AST.TestItem)[]): AST.FuncDecl | AST.ImportFunc | undefined => {
+    for (const item of items) {
+      const decl = item.kind === 'ExportDecl' ? item.item : item
+      if (decl.kind === 'TestDecl') {
+        const found = find(decl.children)
+        if (found) return found
+      } else if (decl.kind === 'FuncDecl') {
+        if (decl.ident === name && offset >= decl.span.start && offset < decl.signature.span.start) return decl
+      } else if (decl.kind === 'ImportDecl') {
+        for (const { item: imported } of decl.items) {
+          if (imported.kind === 'ImportFunc' && imported.ident === name && offset >= imported.span.start && offset < imported.signature.span.start) return imported
+        }
+      }
+    }
+    return undefined
+  }
+  const decl = find(module.decls)
+  return decl && (checkResult.funcNames.get(decl) ?? name)
+}
+
+// The name by which the function called at `offset` is known: of functions
+// that share the name `name`, the one that call means. Undefined for
+// anything but a call of a function of the module.
+function calledAt(checkResult: TypeCheckResult, offset: number, name: string): string | undefined {
+  if (checkResult.symbols.get(name)?.kind !== 'func' || identExprType(checkResult, offset)?.kind !== 'func') return undefined
+  for (const [, first] of checkResult.calls) {
+    if (first.kind !== 'CallExpr' || first.callee.kind !== 'IdentExpr' || first.callee.span.start !== offset) continue
+    // x.f(a) stands for f(x, a), which in turn stands for the one it means.
+    let compiled = first
+    for (let next = checkResult.calls.get(compiled); next?.kind === 'CallExpr'; next = checkResult.calls.get(compiled)) compiled = next
+    if (compiled.callee.kind === 'IdentExpr' && declaredName(compiled.callee.name) === name) return compiled.callee.name
+  }
+  // Nothing is recorded for a call of the first one declared: the name is
+  // the name it is known by.
+  return name
+}
+
 // Where the name at `offset` is defined: exactly, when the checker recorded
 // this position as a use or as a definition; by name otherwise, which finds
 // the names of the module. A generic's own parameters and locals are never
@@ -81,12 +123,36 @@ function definitionOf(
   name: string,
 ): number | undefined {
   const start = wordStart(source, offset)
+  const declared = declaredAt(module, checkResult, start, name)
+  if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
+  // A call in a generic's body means, of functions that share a name, one
+  // function per instance, and is recorded as a use of each: it goes to the
+  // one the first instance calls, which is the one hover shows there.
+  const generic = genericAround(module, start)
+  const shift = generic && firstInstanceShift(checkResult, generic)
+  const called = shift ? calledAt(checkResult, start + shift, name) : undefined
+  if (called !== undefined) return checkResult.symbolDefOffsets.get(called)
   const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
   if (exact !== undefined) return exact
   if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
   }
   return checkResult.symbolDefOffsets.get(name)
+}
+
+// The functions that share a name with the one defined at `defOffset`: where
+// each is defined, itself included. Empty for anything that has its name to
+// itself.
+function sharing(checkResult: TypeCheckResult, defOffset: number): number[] {
+  const known = new Set(checkResult.funcNames.values())
+  const names = (name: string) => [name, ...[...known].filter(k => k !== name && declaredName(k) === name)]
+  for (const [name, offset] of checkResult.symbolDefOffsets) {
+    if (offset !== defOffset || checkResult.symbols.get(name)?.kind !== 'func') continue
+    const members = names(declaredName(name))
+    if (members.length < 2 || !members.includes(name)) continue
+    return members.flatMap(member => checkResult.symbolDefOffsets.get(member) ?? [])
+  }
+  return []
 }
 
 export function gotoDefinition(
@@ -133,9 +199,12 @@ function firstInstanceShift(checkResult: TypeCheckResult, generic: AST.FuncDecl)
 
 // The function a call at this name means, as the checker typed its callee:
 // the instance of a generic, the one meant of functions that share a name,
-// and for x.f(a) the function f.
-function calledType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
-  const type = identExprType(checkResult, offset)
+// and for x.f(a) the function f. In a generic's body, as its first instance
+// has it: the body's own nodes are never checked.
+function calledType(module: AST.Module, checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  const generic = genericAround(module, offset)
+  const shift = generic && firstInstanceShift(checkResult, generic)
+  const type = identExprType(checkResult, offset) ?? (shift ? identExprType(checkResult, offset + shift) : undefined)
   return type?.kind === 'func' ? type : undefined
 }
 
@@ -158,14 +227,15 @@ export function hover(
     return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 
-  // Check module-scope symbols first
-  const sym = checkResult.symbols.get(name)
+  // Check module-scope symbols first. A function that shares its name is, at
+  // its own declaration, the one declared there.
+  const sym = checkResult.symbols.get(declaredAt(module, checkResult, wordStart(source, offset), name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for
     // the function that a call of a shared name means.
     if (sym.kind === 'generic' || sym.kind === 'func') {
-      const called = calledType(checkResult, wordStart(source, offset))
+      const called = calledType(module, checkResult, wordStart(source, offset))
       if (called) return { name, type: typeToString(called), kind: sym.kind }
     }
     const result: HoverResult = {
@@ -247,10 +317,15 @@ export function rename(
   const defOffset = definitionOf(source, module, checkResult, offset, name)
   if (defOffset === undefined) return null
 
-  const refs = checkResult.references.get(defOffset) ?? []
+  // A call spells the name and not which of the functions that share it is
+  // meant, and a call in a generic's body means one or another by instance:
+  // the name is renamed for all of them, or the program no longer checks.
+  const shared = sharing(checkResult, defOffset)
+  const defs = shared.length > 0 ? shared : [defOffset]
+  const refs = new Set(defs.flatMap(def => checkResult.references.get(def) ?? []))
   const locations: Location[] = [
-    { offset: defOffset, length: name.length },
-    ...refs.map(r => ({ offset: r, length: name.length })),
+    ...defs.map(def => ({ offset: def, length: name.length })),
+    ...[...refs].sort((a, b) => a - b).map(r => ({ offset: r, length: name.length })),
   ]
 
   return { oldName: name, locations }
@@ -380,7 +455,7 @@ export function signatureHelp(
   // A generic has the signature of the instance this call uses, which the
   // checker recorded as the type of the callee; of functions that share a
   // name, the call uses the one recorded there.
-  const called = sym?.kind === 'generic' || sym?.kind === 'func' ? calledType(checkResult, wordStart(source, offset)) : undefined
+  const called = sym?.kind === 'generic' || sym?.kind === 'func' ? calledType(module, checkResult, wordStart(source, offset)) : undefined
   const ft = called ?? (sym?.kind === 'func' ? sym.type : null)
   if (ft?.kind !== 'func') return null
 

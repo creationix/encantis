@@ -6671,9 +6671,15 @@ export function localNames(decl: AST.FuncDecl): Set<string> {
 // table of names, so looked up by name alone it would be taken for whatever
 // else is spelled the same: a global, another function's local, a builtin.
 export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | null {
+  const fn = genericAround(module, offset)
+  return fn && localNames(fn).has(name) ? fn : null
+}
+
+// The generic function whose declaration `offset` lies in
+export function genericAround(module: AST.Module, offset: number): AST.FuncDecl | null {
   for (const decl of module.decls) {
     const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
-    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return localNames(fn).has(name) ? fn : null
+    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return fn
   }
   return null
 }
