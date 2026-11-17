@@ -4765,6 +4765,18 @@ class CheckContext {
   // type it names. That is all "structural" takes.
 
   private collectTypeFunc(decl: AST.TypeFuncDecl): void {
+    // A type parameter is in no applied type: the body is resolved with the
+    // argument in the place of every use. Where it is declared and used is
+    // read off the declaration, as for a generic function's, for the editor
+    // to find.
+    const used = typeUses(decl.body)
+    for (const param of decl.params) {
+      if (!isTypeParam(param) || !param.identSpan) continue
+      const declared = param.identSpan.start
+      const uses = used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+      this.references.set(declared, uses)
+      for (const use of uses) this.symbolRefs.set(use, declared)
+    }
     if (this.moduleScope.symbols.has(decl.ident)) {
       this.error(decl.span.start, `'${decl.ident}' is already declared: a generic type's name is unique in its module`)
       return
@@ -6047,12 +6059,28 @@ export function localNames(decl: AST.FuncDecl): Set<string> {
 // parameter, a type parameter, a result or a local. Such a name is in no
 // table of names, so looked up by name alone it would be taken for whatever
 // else is spelled the same: a global, another function's local, a builtin.
-export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | null {
+// A generic type declares its type parameters and the fields of its body.
+export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | AST.TypeFuncDecl | null {
   for (const decl of module.decls) {
-    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
-    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return localNames(fn).has(name) ? fn : null
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl
+    if (offset < item.span.start || offset >= item.span.end) continue
+    if (item.kind === 'FuncDecl' && isGenericDecl(item)) return localNames(item).has(name) ? item : null
+    if (item.kind === 'TypeFuncDecl') return fieldNames([item.params, item.body]).has(name) ? item : null
   }
   return null
+}
+
+// The names of the fields written under an AST node, at any depth: the
+// parameters of a generic type, and the fields of the struct it is.
+function fieldNames(node: unknown, found = new Set<string>()): Set<string> {
+  if (Array.isArray(node)) {
+    for (const n of node) fieldNames(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as { kind?: string; ident?: unknown }
+    if (n.kind === 'Field' && typeof n.ident === 'string') found.add(n.ident)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') fieldNames(value, found)
+  }
+  return found
 }
 
 // The names a declaration refers to, with where, and the names it declares.
