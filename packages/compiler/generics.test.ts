@@ -444,6 +444,18 @@ export func b(k: u32, x: u64) -> u64 => max(match k {
 } else { 2 }, x), x)`)).toEqual([])
   })
 
+  test('a repeated value meets the element type of the instance, in a body and as an argument', () => {
+    // The value of `[n; 2]` is an element of the literal: it widens to the
+    // slots of this instance or is an error of this instance, and an argument
+    // that was looked at reports it once.
+    const WIDE = 'func wide(comptime T: type, n: i32) -> T {\n  let d: *[2]T = [n; 2]\n  return d[1]\n}\n'
+    expect(errorsOf(`${WIDE}export func f(n: i32) -> f64 => wide(f64, n) + (wide(i64, n) as f64)`)).toEqual([])
+    expect(errorsOf(`${WIDE}export func f(n: i32) -> u8 => wide(u8, n)`)).toEqual(['cannot assign i32 to u8, in wide(T = u8)'])
+    const LAST = 'func last(comptime T: type, s: []T) -> T => s[1] ?? 9\n'
+    expect(errorsOf(`${LAST}export func f(n: i32) -> i64 => last(i64, [n; 2])`)).toEqual([])
+    expect(errorsOf(`${LAST}export func f(n: i32) -> u8 => last(u8, [n; 2])`)).toEqual(['cannot assign i32 to u8'])
+  })
+
   test('the look at the argument that decides leaves nothing in the tables kept by node', () => {
     // The argument is inferred once to find T and then checked against it.
     // What the first pass recorded for its nodes (a type, a widening, an `if`
