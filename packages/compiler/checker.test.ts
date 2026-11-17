@@ -1350,6 +1350,32 @@ describe('a slice from a pointer and a length', () => {
     expect(errs('let s: []i32 = (p, w)')).toEqual(['slice length: cannot assign u64 to u32'])
     expect(errs('let s: []i32 = (p, 2.5)')).toEqual(['slice length: cannot assign float(2.5) to u32'])
   })
+
+  test('no other tuple is a slice, in a variable or in a global', () => {
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    expect(errs('global g: []mut i32 = (0)')).toEqual(['cannot assign int(0) to []mut i32'])
+    expect(errs('global g: []i32 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to []i32'])
+    expect(errs('type R = (name: []u8, n: i32)\nglobal g: R = ((0), 1)')).toEqual(['cannot assign int(0) to []u8'])
+    expect(errs('func f() { let s: []i32 = () }')).toEqual(['cannot assign () to []i32'])
+    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['cannot assign (len: int(3)) to []u8'])
+    expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
+      'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
+    ])
+  })
+
+  test('(x) is x: a slice, a string, an array literal or a pair in parentheses is that slice', () => {
+    const result = checkModule(`
+      global g: []u8 = ("abc")
+      func take(s: []u8) -> u32 => s.len
+      func f(s: []u8, p: [*]u8) -> u32 {
+        let a: []u8 = (s)
+        let b: []i32 = ([1, 2, 3])
+        let c: []u8 = ((p, 2))
+        return take((s)) + take(("ab")) + a.len + b.len + c.len
+      }
+    `)
+    expect(result.errors).toEqual([])
+  })
 })
 
 describe('defer', () => {

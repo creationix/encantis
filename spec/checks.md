@@ -592,6 +592,32 @@ slice pointer: cannot assign [*]i32 to [*]u8
 slice length: cannot assign u64 to u32
 ```
 
+No other tuple is a slice. One value in parentheses is that value, so it has to be a slice itself.
+
+```ents
+global word: []u8 = ("abc")
+
+func f(s: []u8) -> u32 {
+  let t: []u8 = (s)
+  return t.len + word.len
+}
+```
+
+```ents
+global a: []mut i32 = (0)
+global b: []i32 = (1, 2, 3)
+
+func f() {
+  let c: []i32 = ()
+}
+```
+
+```errors
+cannot assign int(0) to []mut i32
+cannot assign (int(1), int(2), int(3)) to []i32
+cannot assign () to []i32
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

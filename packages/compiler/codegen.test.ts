@@ -1653,6 +1653,25 @@ describe('a slice from an array literal', () => {
 })
 
 describe('a slice from a pointer and a length', () => {
+  test('in parentheses it is the same slice', async () => {
+    const { f, g } = await run(`
+      type Named = (name: []u8, n: i32)
+      global word: []u8 = ("abc")
+      func take(s: []u8) -> u32 => s.len
+      export func f() -> u32 {
+        let nums: []i32 = ([1, 2, 3])
+        let named = Named(("ab"), 1)
+        return take(("abcd")) + word.len * 10 + nums.len * 100 + (nums[2] as u32) * 1000 + named.name.len * 10000
+      }
+      export func g(p: [*]u8, n: u32) -> u32 {
+        let s: []u8 = ((p, n))
+        return take((s))
+      }
+    `)
+    expect(f()).toBe(23334)
+    expect(g(8, 5)).toBe(5)
+  })
+
   test('nothing is laid out in the data section for it', () => {
     const wat = modWat(`
       data buf = mut [0:u8; 16]
