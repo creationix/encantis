@@ -1839,10 +1839,11 @@ describe('structs in data arrays', () => {
       data points: *[2]Point = [Point(x: 5, y: 6), Point(y: 8, x: 7)]
       data mixed = [(1:u8, 2:i16, 3:u64)]
     `)
-    expect(wat).toContain('"\\01\\00\\00\\00\\02\\00\\00\\00\\03\\00\\00\\00\\04\\00\\00\\00"')
+    // A segment stops at its last byte that isn't zero: memory starts as zeros.
+    expect(wat).toContain('"\\01\\00\\00\\00\\02\\00\\00\\00\\03\\00\\00\\00\\04"')
     // A constructor can name its fields in any order.
-    expect(wat).toContain('"\\05\\00\\00\\00\\06\\00\\00\\00\\07\\00\\00\\00\\08\\00\\00\\00"')
-    expect(wat).toContain('"\\01\\02\\00\\03\\00\\00\\00\\00\\00\\00\\00"')
+    expect(wat).toContain('"\\05\\00\\00\\00\\06\\00\\00\\00\\07\\00\\00\\00\\08"')
+    expect(wat).toContain('"\\01\\02\\00\\03"')
   })
 
   test('an address given for a pointer is laid out as that address', async () => {

@@ -202,7 +202,7 @@ data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 
 The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
 
-**Zero-initialized buffers** are free — wasm memory starts as zeros, so `data buf = mut [0:u8; 1024]` emits no data segment.
+**Zeros are free** — wasm memory starts as zeros, so a data segment stops at the last byte that isn't zero, and `data buf = mut [0:u8; 1024]` emits no data segment at all. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`).
 
 ---
 

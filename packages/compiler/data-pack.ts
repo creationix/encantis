@@ -54,13 +54,94 @@ function isMergedBrackets(type: ArrayRT): boolean {
     (framings.length === 1 && type.element.kind !== 'array')
 }
 
+// The bytes of a literal: those written out, then a run of zeros that is
+// only counted. Memory starts as zeros, so the run costs nothing, neither
+// here however long it is, nor in a data segment: `[0:u8; 16777216]` is no
+// bytes and a count. `head` never ends in a zero.
+export interface Bytes {
+  head: Uint8Array
+  zeros: number
+}
+
+const NO_BYTES = new Uint8Array(0)
+
+// Bytes written out, their trailing zeros as the run.
+export function bytesOf(bytes: Uint8Array): Bytes {
+  let end = bytes.length
+  while (end > 0 && bytes[end - 1] === 0) end--
+  return { head: end === bytes.length ? bytes : bytes.subarray(0, end), zeros: bytes.length - end }
+}
+
+function zerosOf(count: number): Bytes {
+  return { head: NO_BYTES, zeros: count }
+}
+
+function sizeOf(bytes: Bytes): number {
+  return bytes.head.length + bytes.zeros
+}
+
+// All of the bytes, the zeros too: only for what is small.
+function written(bytes: Bytes): Uint8Array {
+  if (bytes.zeros === 0) return bytes.head
+  const all = new Uint8Array(sizeOf(bytes))
+  all.set(bytes.head)
+  return all
+}
+
+// One after another. Only the zeros after the last byte written out stay a count.
+function concat(parts: Bytes[]): Bytes {
+  let last = -1
+  for (let i = 0; i < parts.length; i++) if (parts[i].head.length > 0) last = i
+  let tail = 0
+  for (let i = last + 1; i < parts.length; i++) tail += sizeOf(parts[i])
+  if (last < 0) return zerosOf(tail)
+  if (last === 0) return { head: parts[0].head, zeros: parts[0].zeros + tail }
+  let size = parts[last].head.length
+  for (let i = 0; i < last; i++) size += sizeOf(parts[i])
+  const head = new Uint8Array(size)
+  let at = 0
+  for (let i = 0; i < last; i++) {
+    head.set(parts[i].head, at)
+    at += sizeOf(parts[i])
+  }
+  head.set(parts[last].head, at)
+  return { head, zeros: parts[last].zeros + tail }
+}
+
+// `count` copies of the same bytes.
+function repeat(bytes: Bytes, count: number): Bytes {
+  if (count === 0) return zerosOf(0)
+  if (bytes.head.length === 0) return zerosOf(bytes.zeros * count)
+  const stride = sizeOf(bytes)
+  const head = new Uint8Array(stride * (count - 1) + bytes.head.length)
+  head.set(bytes.head)
+  // Each copy doubles what is there.
+  for (let done = 1; done < count; done *= 2) {
+    const copies = Math.min(done, count - done)
+    head.copyWithin(done * stride, 0, Math.min(copies * stride, head.length - done * stride))
+  }
+  return { head, zeros: bytes.zeros }
+}
+
 // An interned string entry in the data section
 export interface DataEntry {
-  bytes: Uint8Array // The actual bytes (includes null terminator for strings)
+  head: Uint8Array // The bytes up to the last one that isn't zero; zeros follow up to `length`
+  readonly bytes: Uint8Array // All of them (includes null terminator for strings)
   offset: number // Offset in the data section
   length: number // Length in bytes (includes null terminator for strings)
   explicit: boolean // True for user-specified memory data, false for auto-interned literals
   labels: string[] // Names/descriptions of declarations using this entry
+}
+
+function dataEntry(bytes: Bytes, offset: number, explicit: boolean): DataEntry {
+  return {
+    head: bytes.head,
+    get bytes() { return written(bytes) },
+    offset,
+    length: sizeOf(bytes),
+    explicit,
+    labels: [],
+  }
 }
 
 // Result of building the data section
@@ -145,11 +226,13 @@ export class DataSectionBuilder {
   // Intern arbitrary bytes, returning a DataRef
   // Used by type-aware serialization
   // If skipDedup is true, always allocate new space (for mutable data)
-  internBytes(bytes: Uint8Array, skipDedup = false, isOptional = false): DataRef {
+  internBytes(given: Uint8Array | Bytes, skipDedup = false, isOptional = false): DataRef {
     void isOptional // data never starts at 0 (see NULL_PAGE)
+    const bytes = given instanceof Uint8Array ? bytesOf(given) : given
+    const size = sizeOf(bytes)
     // Nothing can be written to no bytes: a mutable empty literal needs no
     // place of its own.
-    if (bytes.length === 0) skipDedup = false
+    if (size === 0) skipDedup = false
 
     const key = bytesToKey(bytes)
 
@@ -164,54 +247,132 @@ export class DataSectionBuilder {
       const existingOffset = this.findSubstring(bytes)
       if (existingOffset !== -1) {
         // Found! Return ref without adding to entries (we're reusing, not writing)
-        return { ptr: existingOffset, len: bytes.length }
+        return { ptr: existingOffset, len: size }
       }
     }
 
     // 3. Not found (or skipDedup) - write new bytes
-    const entry: DataEntry = {
-      bytes,
-      offset: this.currentOffset,
-      length: bytes.length,
-      explicit: false,
-      labels: [],
-    }
+    const entry = dataEntry(bytes, this.currentOffset, false)
     if (skipDedup) {
       // Mutable data: track separately, don't share with future lookups
       this.mutEntries.push(entry)
     } else {
       // Immutable data: cache for deduplication
       this.internedMap.set(key, entry)
+      this.regions = null
     }
-    this.currentOffset += bytes.length
+    this.currentOffset += size
 
     return { ptr: entry.offset, len: entry.length }
+  }
+
+  // The immutable data written so far, as runs of entries that follow each
+  // other with no gap, in the order of their addresses.
+  private regions: DataEntry[][] | null = null
+
+  private immutableRegions(): DataEntry[][] {
+    if (this.regions) return this.regions
+    const entries = [...this.internedMap.values()].filter((e) => e.length > 0).sort((a, b) => a.offset - b.offset)
+    const regions: DataEntry[][] = []
+    for (const entry of entries) {
+      const last = regions.at(-1)
+      const end = last ? last.at(-1)! : null
+      if (last && end && end.offset + end.length === entry.offset) last.push(entry)
+      else regions.push([entry])
+    }
+    this.regions = regions
+    return regions
   }
 
   // Search the immutable data written so far for needle, returning its offset
   // or -1. Matches must lie entirely inside immutable entries: mutable data
   // can change at runtime, and the gaps it leaves would otherwise read as zeros
-  // and match any run of zero bytes.
-  private findSubstring(needle: Uint8Array): number {
-    if (this.currentOffset < needle.length) return -1
-    const haystack = new Uint8Array(this.currentOffset)
-    const immutable = new Uint8Array(this.currentOffset)
-    for (const entry of this.internedMap.values()) {
-      haystack.set(entry.bytes, entry.offset)
-      immutable.fill(1, entry.offset, entry.offset + entry.bytes.length)
-    }
-    for (let i = 0; i <= haystack.length - needle.length; i++) {
-      if (needle.every((byte, j) => immutable[i + j] === 1 && haystack[i + j] === byte)) {
-        return i
-      }
+  // and match any run of zero bytes. The first match in address order, as a
+  // scan of every byte would find it, but the zeros an entry ends with are
+  // only counted, never visited.
+  private findSubstring(needle: Bytes): number {
+    const size = sizeOf(needle)
+    if (this.currentOffset < size) return -1
+    if (size === 0) return 0
+    for (const region of this.immutableRegions()) {
+      const at = findIn(region, needle)
+      if (at !== -1) return at
     }
     return -1
   }
 }
 
-// Convert bytes to a string key for Map (for deduplication)
-// Use bytesToHex as deduplication key
-const bytesToKey = bytesToHex
+// Convert bytes to a string key for Map (for deduplication): the bytes
+// written out and the count of zeros after them.
+function bytesToKey(bytes: Bytes): string {
+  return `${bytesToHex(bytes.head)}+${bytes.zeros}`
+}
+
+// The first place in a run of entries with no gap between them where the
+// needle's bytes are, or -1.
+function findIn(region: DataEntry[], needle: Bytes): number {
+  const start = region[0].offset
+  const end = region.at(-1)!.offset + region.at(-1)!.length
+  const size = sizeOf(needle)
+  if (end - start < size) return -1
+  // The byte at an address of the region: past an entry's head, zero.
+  const heads = region.map((e) => ({ from: e.offset, head: e.head }))
+  const byteAt = (address: number): number => {
+    let lo = 0
+    let hi = heads.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (heads[mid].from <= address) lo = mid
+      else hi = mid - 1
+    }
+    const h = heads[lo]
+    const i = address - h.from
+    return i < h.head.length ? h.head[i] : 0
+  }
+  // Whether nothing but zeros lies in [from, to).
+  const zerosIn = (from: number, to: number): boolean => {
+    for (const h of heads) {
+      const lo = Math.max(from, h.from)
+      const hi = Math.min(to, h.from + h.head.length)
+      for (let a = lo; a < hi; a++) if (h.head[a - h.from] !== 0) return false
+    }
+    return true
+  }
+  const matchesAt = (p: number): boolean => {
+    if (p < start || p + size > end) return false
+    for (let k = 0; k < needle.head.length; k++) if (byteAt(p + k) !== needle.head[k]) return false
+    return zerosIn(p + needle.head.length, p + size)
+  }
+  if (needle.head.length === 0) {
+    // All zeros: the first run of `size` of them.
+    let run = 0
+    let runStart = start
+    for (const entry of region) {
+      for (let i = 0; i < entry.head.length; i++) {
+        if (entry.head[i] === 0) {
+          if (++run === size) return runStart
+        } else {
+          run = 0
+          runStart = entry.offset + i + 1
+        }
+      }
+      const tail = entry.length - entry.head.length
+      if (run + tail >= size) return runStart
+      run += tail
+    }
+    return -1
+  }
+  // The needle's first byte that isn't zero lies in some entry's head: each
+  // place a byte there equals it is where a match could be.
+  const first = needle.head.findIndex((b) => b !== 0)
+  const wanted = needle.head[first]
+  for (const h of heads) {
+    for (let i = 0; i < h.head.length; i++) {
+      if (h.head[i] === wanted && matchesAt(h.from + i - first)) return h.from + i - first
+    }
+  }
+  return -1
+}
 
 /**
  * Serialize a DataSection to a single byte array for embedding in WASM.
@@ -222,8 +383,9 @@ export function serializeDataSection(section: DataSection): Uint8Array {
   const result = new Uint8Array(section.totalSize)
 
   for (const entry of section.entries) {
-    // Copy bytes (null terminators already included for strings)
-    result.set(entry.bytes, entry.offset)
+    // Copy bytes (null terminators already included for strings); memory
+    // starts as zeros, so those after the last other byte are there already.
+    result.set(entry.head, entry.offset)
   }
 
   return result
@@ -252,18 +414,24 @@ function describeBytes(bytes: Uint8Array): string {
   return `${bytes.length} bytes`
 }
 
+// A segment holds an entry's bytes up to the last one that isn't zero:
+// memory starts as zeros, so the zeros after it need no bytes in the module,
+// and an entry of zeros needs no segment. The entry keeps its place and size.
 export function dataToWat(section: DataSection): string[] {
   const segments: string[] = []
 
   for (const entry of section.entries) {
     const label = entry.labels.length > 0 ? entry.labels.join(', ') : null
-    const auto = !label ? describeBytes(entry.bytes) : null
-    if (entry.bytes.every(b => b === 0)) {
-      const desc = label ?? `${entry.bytes.length} zero bytes`
-      segments.push(`  ;; ${entry.bytes.length} zero bytes at 0x${entry.offset.toString(16)} — ${desc}`)
+    if (entry.head.length === 0) {
+      const desc = label ?? `${entry.length} zero bytes`
+      segments.push(`  ;; ${entry.length} zero bytes at 0x${entry.offset.toString(16)} — ${desc}`)
       continue
     }
-    const escaped = escapeWatString(entry.bytes)
+    // A short entry is described by all of its bytes, as it lies in memory;
+    // a long one is text or a count of bytes.
+    const long = entry.length > 64 ? describeBytes(entry.head) : null
+    const auto = !label ? (long === null ? describeBytes(entry.bytes) : long.startsWith('"') ? long : `${entry.length} bytes`) : null
+    const escaped = escapeWatString(entry.head)
     const comment = label ?? (auto && !auto.startsWith('"') ? auto : null)
     segments.push(`(data (i32.const ${entry.offset}) "${escaped}")${comment ? '  ;; ' + comment : ''}`)
   }
@@ -537,19 +705,19 @@ function serializeMerged(
 // Build the complete byte sequence for merged brackets
 // Framing order: leftmost is outermost, rightmost is innermost
 // e.g., [?,!]u8 means: ! applies to each element, ? applies to whole array
-function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSectionBuilder): Uint8Array {
+function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSectionBuilder): Bytes {
   const framings = getFramings(targetType.sizes)
   const elementType = targetType.element
 
   // For single-element types (string literal, int array), serialize directly
   if (expr.kind === 'LiteralExpr') {
-    const rawBytes = literalToBytes(expr, elementType)
+    const rawBytes = bytesOf(literalToBytes(expr, elementType))
     return applyFramings(rawBytes, framings, getElementSize(elementType))
   }
 
   // For array expressions, serialize each element then apply outer framings
   if (expr.kind === 'ArrayExpr') {
-    const elementParts: Uint8Array[] = []
+    const elementParts: Bytes[] = []
 
     // Leftmost framing is outermost (applies to whole array)
     // Rightmost framings are innermost (apply to each element)
@@ -562,7 +730,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
     }
 
     // Concatenate all elements
-    const combined = concatBytes(elementParts)
+    const combined = concat(elementParts)
 
     // Apply outer framing (final terminator or prefix)
     if (outerFraming) {
@@ -580,17 +748,9 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
     const outerFraming = framings[0]
     const innerFramings = framings.slice(1)
 
-    // Serialize the value once
+    // Serialize the value once, and repeat it count times
     const elemBytes = buildElementBytes(expr.value, elementType, innerFramings, builder)
-
-    // Repeat it count times
-    const elementParts: Uint8Array[] = []
-    for (let i = 0; i < count; i++) {
-      elementParts.push(elemBytes)
-    }
-
-    // Concatenate all elements
-    const combined = concatBytes(elementParts)
+    const combined = repeat(elemBytes, count)
 
     // Apply outer framing (final terminator or prefix)
     if (outerFraming) {
@@ -605,7 +765,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
   }
 
   // Runtime expression — emit zero placeholder, filled at runtime
-  return new Uint8Array(getElementSize(elementType))
+  return zerosOf(getElementSize(elementType))
 }
 
 // The expressions that give a struct's fields, in the order of the type, when
@@ -630,7 +790,7 @@ function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSection
 
 // The bytes of one field of a struct. A slice or array-pointer field given as
 // a literal points at that literal, which is laid out on its own.
-function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataSectionBuilder): Uint8Array {
+function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataSectionBuilder): Bytes {
   const t = unwrap(fieldType)
   let lit = ungroup(expr)
   while (lit.kind === 'AnnotationExpr') lit = ungroup(lit.expr)
@@ -641,12 +801,12 @@ function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataS
       : lit.kind === 'LiteralExpr' && lit.value.kind === 'string' ? lit.value.bytes.length : 0
     if (t.kind === 'slice') {
       const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
-      return concatBytes([serializeI32(ref.ptr), serializeI32(count)])
+      return bytesOf(concatBytes([serializeI32(ref.ptr), serializeI32(count)]))
     }
     if (t.kind === 'pointer' && t.pointee.kind === 'array') {
       // A many-pointer has no count of its own: the literal's.
       const target = t.pointee.sizes === null ? { ...t.pointee, sizes: [count] } : t.pointee
-      return serializeI32(serializeLiteral(lit, target, builder).ptr)
+      return bytesOf(serializeI32(serializeLiteral(lit, target, builder).ptr))
     }
   }
   return buildElementBytes(expr, fieldType, [], builder)
@@ -659,7 +819,7 @@ function buildElementBytes(
   elementType: ResolvedType,
   framings: ArraySize[],
   builder: DataSectionBuilder,
-): Uint8Array {
+): Bytes {
   // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
   if (expr.kind === 'AnnotationExpr') {
     return buildElementBytes(expr.expr, elementType, framings, builder)
@@ -669,7 +829,7 @@ function buildElementBytes(
     // If elementType is a slice, we need to unwrap it to get the actual element type
     // for serialization. This happens when a literal is used where a slice is expected.
     const actualType = elementType.kind === 'slice' ? elementType.element : elementType
-    const rawBytes = literalToBytes(expr, actualType)
+    const rawBytes = bytesOf(literalToBytes(expr, actualType))
     if (framings.length === 0) {
       return rawBytes
     }
@@ -678,7 +838,7 @@ function buildElementBytes(
   }
 
   if (expr.kind === 'ArrayExpr') {
-    const parts: Uint8Array[] = []
+    const parts: Bytes[] = []
     const innerElementType = arrayElementType(elementType)
 
     if (framings.length > 0) {
@@ -687,14 +847,14 @@ function buildElementBytes(
       for (const elem of expr.elements) {
         parts.push(buildElementBytes(elem, innerElementType, innerFramings, builder))
       }
-      const combined = concatBytes(parts)
+      const combined = concat(parts)
       return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
     }
 
     for (const elem of expr.elements) {
       parts.push(buildElementBytes(elem, innerElementType, [], builder))
     }
-    return concatBytes(parts)
+    return concat(parts)
   }
 
   if (expr.kind === 'RepeatExpr') {
@@ -703,11 +863,7 @@ function buildElementBytes(
     const innerElementType = arrayElementType(elementType)
     const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1), builder)
     const count = getRepeatCount(expr, builder)
-    const parts: Uint8Array[] = []
-    for (let i = 0; i < count; i++) {
-      parts.push(valueBytes)
-    }
-    const combined = concatBytes(parts)
+    const combined = repeat(valueBytes, count)
     if (framings.length > 0) {
       return applyFraming(combined, framings[0], getElementSize(innerElementType), count)
     }
@@ -722,7 +878,7 @@ function buildElementBytes(
   // A value the checker worked out: 1 + 1, sizeof(u64), ~0, a def, data.
   const constant = builder.constants?.get(expr)
   const bytes = constant && constantBytes(constant, elementType, builder)
-  if (bytes) return framings.length > 0 ? applyFramings(bytes, framings, getElementSize(elementType)) : bytes
+  if (bytes) return applyFramings(bytesOf(bytes), framings, getElementSize(elementType))
 
   // A slice written as its two parts, (ptr, len).
   if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
@@ -732,17 +888,17 @@ function buildElementBytes(
   // stays zero here.
   const values = struct.kind === 'tuple' ? structFieldValues(expr, struct, builder) : null
   if (values && struct.kind === 'tuple') {
-    return concatBytes(struct.fields.map((f, i) => {
+    return concat(struct.fields.map((f, i) => {
       const value = values[i]
-      return value ? buildFieldBytes(value, f.type, builder) : new Uint8Array(byteSize(f.type) ?? 0)
+      return value ? buildFieldBytes(value, f.type, builder) : zerosOf(byteSize(f.type) ?? 0)
     }))
   }
 
   // Runtime expressions (calls, identifiers, etc.) — emit zero placeholder
   // The actual value will be filled in at runtime via i32.store
   const size = byteSize(elementType)
-  if (size !== null) return new Uint8Array(size)
-  return new Uint8Array(8) // default: ptr + len for slice
+  if (size !== null) return zerosOf(size)
+  return zerosOf(8) // default: ptr + len for slice
 }
 
 // (ptr, len) where a slice is expected is that slice, built from its parts.
@@ -753,11 +909,11 @@ function isSlicePair(expr: AST.Expr): expr is AST.TupleExpr {
 // The eight bytes of a slice given as (ptr, len): the address, a number or a
 // literal that is laid out on its own, and the count of elements. A part only
 // known when the program runs stays zero here.
-function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Uint8Array {
+function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Bytes {
   const [ptr, len] = expr.elements.map((part) => part.value)
-  return concatBytes([
-    ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : new Uint8Array(4),
-    len ? buildElementBytes(len, primitive('u32'), [], builder) : new Uint8Array(4),
+  return concat([
+    ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : zerosOf(4),
+    len ? buildElementBytes(len, primitive('u32'), [], builder) : zerosOf(4),
   ])
 }
 
@@ -817,7 +973,8 @@ function serializeSeparate(
         refsMap.set(child.span.start, ref)
       }
     } else if (elem.kind === 'slice' && isSlicePair(child)) {
-      const words = new DataView(slicePairBytes(child, elem, builder).buffer)
+      const pair = written(slicePairBytes(child, elem, builder))
+      const words = new DataView(pair.buffer, pair.byteOffset, pair.byteLength)
       const ref = { ptr: words.getUint32(0, true), len: words.getUint32(4, true) }
       childRefs.push(ref)
       pairs.add(ref)
@@ -860,7 +1017,7 @@ function encodePointerArray(
   refs: DataRef[],
   framings: ArraySize[],
   isSlice: boolean,
-): Uint8Array {
+): Bytes {
   const parts: Uint8Array[] = []
 
   if (isSlice) {
@@ -876,7 +1033,7 @@ function encodePointerArray(
     }
   }
 
-  const combined = concatBytes(parts)
+  const combined = bytesOf(concatBytes(parts))
 
   // Apply framings (e.g., null terminator for !)
   if (framings.length > 0) {
@@ -938,10 +1095,10 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
 
 // Apply all framings to bytes (inside-out order)
 function applyFramings(
-  bytes: Uint8Array,
+  bytes: Bytes,
   framings: ArraySize[],
   elementSize: number,
-): Uint8Array {
+): Bytes {
   let result = bytes
   for (const framing of framings) {
     result = applyFraming(result, framing, elementSize, 0)
@@ -952,21 +1109,20 @@ function applyFramings(
 // Apply a single framing to bytes
 // Framing is '!' (null-terminated) or '?' (LEB128 prefix)
 function applyFraming(
-  bytes: Uint8Array,
+  bytes: Bytes,
   framing: ArraySize,
   elementSize: number,
   count: number,
-): Uint8Array {
+): Bytes {
   if (framing === '!') {
     // Null terminator: append zeros of element width
-    const terminator = new Uint8Array(elementSize)
-    return concatBytes([bytes, terminator])
+    return { head: bytes.head, zeros: bytes.zeros + elementSize }
   }
 
   if (framing === '?') {
     // Length/count prefix (always LEB128)
-    const prefixBytes = encodeLEB128(count || bytes.length)
-    return concatBytes([prefixBytes, bytes])
+    const prefixBytes = encodeLEB128(count || sizeOf(bytes))
+    return concat([bytesOf(prefixBytes), bytes])
   }
 
   // Other sizes (numbers, '_') don't modify the bytes
@@ -1176,13 +1332,7 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
 
   // Combine explicit and auto entries
   const section = builder.result()
-  const explicitDataEntries: DataEntry[] = explicitEntries.map((e) => ({
-    bytes: e.bytes,
-    offset: e.offset,
-    length: e.bytes.length,
-    explicit: true,
-    labels: [],
-  }))
+  const explicitDataEntries: DataEntry[] = explicitEntries.map((e) => dataEntry(bytesOf(e.bytes), e.offset, true))
   const allEntries = [...explicitDataEntries, ...section.entries].sort(
     (a, b) => a.offset - b.offset,
   )
