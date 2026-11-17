@@ -2,7 +2,7 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue } from './ast'
+import { argValue, ungroupedType } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
@@ -1894,7 +1894,9 @@ class CheckContext {
     const prevScope = this.currentScope
     const prevReturnType = this.currentReturnType
     this.currentScope = funcScope
-    const results = this.resolveType(decl.signature.output)
+    // `-> (u32)` lists one result, as `-> (q: i32, r: i32)` lists two.
+    const output = decl.signature.output
+    const results = output.kind === 'CompositeType' ? tuple(this.typeToFields(output)) : this.resolveType(output)
     // What follows `->` is a list of results only where it is written in
     // parentheses. An instance's `-> T` is one result, also when T is bound
     // to a tuple or a struct: it is held as the list of that one, so that
@@ -1902,7 +1904,6 @@ class CheckContext {
     const oneTuple = decl.signature.output.kind === 'BoundType' && results.kind === 'tuple'
     this.currentReturnType = oneTuple ? tuple([field(null, results)]) : results
     if (decl.body.kind === 'Block') {
-      const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
       // With named results, a trailing expression with a value supplies them.
       this.checkBody(decl.body, named)
@@ -2525,6 +2526,9 @@ class CheckContext {
       }
 
       case 'CompositeType': {
+        // (u32) is u32: parentheses around one type only group it.
+        const inner = ungroupedType(type)
+        if (inner !== type) return this.resolveType(inner)
         const fields = type.fields.map((f) =>
           field(f.ident, this.resolveType(f.type)),
         )
@@ -6251,6 +6255,9 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
         : null
     case 'TupleExpr': {
       if (expr.elements.length === 0) return null
+      // (u32) is u32, as a type in parentheses is anywhere.
+      const only = expr.elements[0]
+      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value) : null
       const fields: AST.Field[] = []
       for (const el of expr.elements) {
         const type = el.value ? typeOfArg(el.value) : null
@@ -6545,7 +6552,9 @@ function matchType(
       return
     }
     case 'CompositeType':
-      if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
+      if (ungroupedType(pattern) !== pattern) {
+        matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand)
+      } else if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
         pattern.fields.forEach((f, i) => {
           matchType(f.type, u.fields[i].type, typeParams, bound, value, expand)
         })

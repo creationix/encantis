@@ -671,10 +671,22 @@ export interface IndexedType extends BaseNode {
   optional?: boolean // true for ?[]T, ?[*]T
 }
 
-// () or (type, type) or (name: type, name: type)
+// () or (type, type) or (name: type, name: type). One type without a name in
+// parentheses, (u32), is that type: see ungroupedType.
 export interface CompositeType extends BaseNode {
   kind: 'CompositeType'
   fields: Field[]
+}
+
+// A type in parentheses is the type inside, however many there are: (u32) is
+// u32, as (x) is x among expressions. A named field, (v: f64), makes a struct.
+// Only the parentheses after `->` and around parameters are a list as well,
+// and those are read as one before the types in them are.
+export function ungroupedType(type: Type): Type {
+  while (type.kind === 'CompositeType' && type.fields.length === 1 && !type.fields[0].ident && !type.fields[0].comptime) {
+    type = type.fields[0].type
+  }
+  return type
 }
 
 // Named type reference (uppercase identifier)

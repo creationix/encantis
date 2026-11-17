@@ -89,14 +89,18 @@ describe('calling a generic function', () => {
     expect(instancesOf(`${MAX}export func f(a: f64, b: f64) -> f64 => max(a, b)`)).toEqual(['max<f64>'])
   })
 
-  test('a type in parentheses is the tuple of one element it is after a colon', () => {
+  test('a type in parentheses is the type inside, as an argument, after a colon and after an arrow', () => {
     const id = 'func id(comptime T: type, a: T) -> T => a\n'
-    // After `->` parentheses list the results, so one result that is a tuple
-    // of one element is written ((u32)).
-    expect(instancesOf(`${id}export func f(a: (u32)) -> ((u32)) => id((u32), a)`)).toEqual(['id<<u32>>'])
-    expect(errorsOf(`${id}func f(a: u32) -> u32 => id((u32), a)`)).toEqual([
-      'argument 2: cannot assign u32 to (u32)',
-      'cannot assign (u32) to u32',
+    // After `->` parentheses list the results: ((u32)) is the one result
+    // (u32), which is u32.
+    expect(instancesOf(`${id}export func f(a: (u32)) -> ((u32)) => id((u32), a)`)).toEqual(['id<u32>'])
+    expect(instancesOf(`${id}export func f(a: u32) -> u32 => id(((u32)), a) + id(a)`)).toEqual(['id<u32>'])
+    // Inferred from a parameter written in parentheses, as from one without.
+    expect(instancesOf(`func id(comptime T: type, a: (T)) -> T => a\nexport func f(a: u32) -> u32 => id(a)`)).toEqual(['id<u32>'])
+    // A name makes it a struct of one field.
+    expect(errorsOf(`${id}func f(a: u32) -> u32 => id((v: u32), a)`)).toEqual([
+      'argument 2: cannot assign u32 to (v: u32)',
+      'cannot assign (v: u32) to u32',
     ])
   })
 
@@ -106,12 +110,12 @@ describe('calling a generic function', () => {
     const source = `func id(comptime T: type, a: T) -> T => a
 func back(comptime T: type, a: T) -> T { return a }
 func none(comptime T: type, a: T) -> T { return }
-export func f(a: (u32)) -> ((u32)) => back((u32), id(a))
+export func f(a: (u32, u8)) -> ((u32, u8)) => back((u32, u8), id(a))
 export func g(q: i32, r: i32) -> i32 {
   let p = back((q: i32, r: i32), id((q: i32, r: i32), (q: q, r: r)))
   return p.q + p.r
 }`
-    expect(instancesOf(source)).toEqual(['back<<q:i32|r:i32>>', 'back<<u32>>', 'id<<q:i32|r:i32>>', 'id<<u32>>'])
+    expect(instancesOf(source)).toEqual(['back<<q:i32|r:i32>>', 'back<<u32|u8>>', 'id<<q:i32|r:i32>>', 'id<<u32|u8>>'])
     const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
     expect((instance.exports.g as (q: number, r: number) => number)(3, 4)).toBe(7)
     // Not a function with the named results q and r, which a bare return hands back.
@@ -4409,11 +4413,21 @@ export func f(a: i32, b: i32) -> i32 {
     expect(f(3, 4)).toBe(34743)
   })
 
-  test('the type that is called, in parentheses, is the tuple of one element a type in parentheses is', () => {
-    // As for a type argument (see 'a type in parentheses is the tuple of one
-    // element'): it is the value in parentheses that is the value inside.
-    expect(errorsOf(`${POINT}export func f(a: i32, b: i32) -> i32 => (Pt(i32))(a, b).x`)[0]).toBe('(Pt(i32)) expects 1 field, got 2')
-    expect(errorsOf(`${POINT}export func f(a: i32) -> i32 => (Box(i32))(Box(i32)(a)).0.v`)).toEqual([])
+  test('the type that is called, in parentheses, is the type inside', async () => {
+    // As for a type argument (see 'a type in parentheses is the type
+    // inside'), and as a value in parentheses is the value inside.
+    const generic = `${POINT}type Q = (x: i32, y: i32)
+export func f(a: i32, b: i32) -> i32 => (Pt(i32))(a, b).x * 100 + ((Q))(a, b).y * 10 + (Box(i32))(a).v
+`
+    const byHand = `type Pt = (x: i32, y: i32)
+type Box = (v: i32)
+export func f(a: i32, b: i32) -> i32 => Pt(a, b).x * 100 + Pt(a, b).y * 10 + Box(a).v
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).f(3, 4)).toBe(343)
+    expect(errorsOf(`${POINT}export func f(a: i32) -> i32 => (Box(i32))(Box(i32)(a)).v`)).toEqual([
+      'field v: cannot assign Box(i32) to i32',
+    ])
   })
 
   test('a repeat literal of constructors stores what is only known when the program runs', async () => {

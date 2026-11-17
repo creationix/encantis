@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { argValue } from './ast'
+import { argValue, ungroupedType } from './ast'
 import { typeKey, isGenericDecl, INSTANCE_STRIDE, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
@@ -3472,6 +3472,8 @@ function resolveAstType(type: AST.Type): ResolvedType {
       return { kind: 'array', element, sizes }
     }
     case 'CompositeType':
+      // (u32) is u32
+      if (ungroupedType(type) !== type) return resolveAstType(ungroupedType(type))
       return {
         kind: 'tuple',
         fields: type.fields.map((f) => ({

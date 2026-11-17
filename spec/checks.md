@@ -1511,3 +1511,34 @@ func apply(f: (u32) -> u32, x: f64) -> u32 => f(x)
 calling a function value is not supported yet
 argument 1: cannot assign f64 to u32
 ```
+
+## Types in parentheses
+
+One type without a name in parentheses is that type, wherever it is written: there is no tuple of one element.
+
+```ents
+type W = (u32)
+type Q = (x: i32, y: i32)
+
+func id(comptime T: type, a: T) -> T => a
+func twice(a: (u32)) -> ((u32)) => a * 2
+func f(a: W, b: u32) -> u32 {
+  let c: (u32) = twice(a) + id((u32), b)
+  return c as (u32)
+}
+func g(a: i32, b: i32) -> i32 => (Q)(a, b).y
+```
+
+A name makes a struct of one field, which is not the type of its field.
+
+```ents
+func h(a: f64) -> f64 {
+  let s: (v: f64) = a
+  return s
+}
+```
+
+```errors
+cannot assign f64 to (v: f64)
+cannot assign (v: f64) to f64
+```

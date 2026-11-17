@@ -472,6 +472,8 @@ Standard tuple semantics:
 - `(x)` is grouping, not a tuple — the type is just `x`
 - `(x, y, ...)` is a tuple (2+ elements)
 
+Grouping holds wherever a type is written: after a colon, in a `type` declaration, in a cast, as a type argument, and as the type a constructor call names, so `x: (u32)` takes a `u32` and `(Point)(1.0, 2.0)` is `Point(1.0, 2.0)`. A field with a name makes a struct of one field: `(v: f64)`. After `->` the parentheses list the results: `-> (u32)` is one `u32`, `-> (q: i32, r: i32)` two named results, and `-> ((q: i32, r: i32))` one result that is a struct.
+
 Tuples compile to multiple wasm values — no memory, no pointers. Access elements by position or name:
 
 ```ents

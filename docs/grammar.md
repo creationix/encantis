@@ -362,7 +362,10 @@ u32#6                  // u32 with values 0..5
 ```encantis
 (x: f64, y: f64)       // Point struct
 (name: []u8, age: u32) // Person struct
+(v: f64)               // a struct of one field
 ```
+
+**Grouping:** one type without a name in parentheses is that type, wherever a type is written: `(u32)` is `u32`, `((i32, i32))` is `(i32, i32)`, and `(Point)(1.0, 2.0)` constructs a `Point`. There is no tuple of one element. After `->` the parentheses list the results, so `-> ((q: i32, r: i32))` is one result that is a struct, where `-> (q: i32, r: i32)` is two named results.
 
 **Mixed (rare):**
 ```encantis
