@@ -2883,6 +2883,13 @@ function collectLocals(
     if (stmt.kind === 'LetStmt') ctx.locals.set(name, names)
   }
 
+  // A `let` without a value shares its locals with no other variable: it is
+  // a variable of its own, and does not start as what a loop or a `let` of
+  // its name before it left there (`for c in 3 { }` then `let c: u32`).
+  function unshared(stmt: AST.LetStmt): string {
+    return stmt.value ? '' : `let ${stmt.span.start} `
+  }
+
   // Declare locals for each element of a tuple pattern, and for the elements
   // of an element that is a tuple pattern itself.
   function declarePattern(stmt: AST.LetStmt, pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
@@ -2899,7 +2906,7 @@ function collectLocals(
       }
       const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
       // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-      declare(stmt, name, claimLocals(ctx, name, field.type, locals))
+      declare(stmt, name, claimLocals(ctx, name, field.type, locals, false, unshared(stmt)))
     }
   }
 
@@ -2912,7 +2919,7 @@ function collectLocals(
         if (!type) {
           throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
         }
-        declare(stmt, name, claimLocals(ctx, name, type, locals, true))
+        declare(stmt, name, claimLocals(ctx, name, type, locals, true, unshared(stmt)))
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // Get the overall tuple type from the pattern
         const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))

@@ -3123,4 +3123,34 @@ describe('the wasm names of variables', () => {
     const body = wat.slice(wat.indexOf('(func $in_branch'), wat.indexOf('(func $hides'))
     expect(body.match(/\(local \$(?!__)\w+ \w+\)/g)).toEqual(['(local $s f64)', '(local $c f64)', '(local $_1_c i32)'])
   })
+
+  test('a let without a value does not start as what a variable of its name left', async () => {
+    const { x } = await accepted(`
+      data cells = [7:u32, 8, 9]
+      export func after_loop() -> u32 {
+        let t: u32 = 0
+        for c in 3 {
+          t += c
+        }
+        let c: u32
+        return t * 100 + c
+      }
+      export func after_branch(i: u32) -> u32 {
+        if let v = cells[i] {
+          let k: u32 = v
+        }
+        let k: u32
+        return k
+      }
+      export func pair_after_loop() -> u32 {
+        for a in 2 {
+        }
+        let (a, b): (u32, u32)
+        return a + b
+      }
+    `)
+    expect(x.after_loop()).toBe(300)
+    expect(x.after_branch(0)).toBe(0)
+    expect(x.pair_after_loop()).toBe(0)
+  })
 })
