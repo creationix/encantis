@@ -2971,7 +2971,7 @@ let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
 
-`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is converted field by field.
+`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
 ### 9.6 Structs and Slices in Memory
 

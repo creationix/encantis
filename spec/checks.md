@@ -837,6 +837,11 @@ func named() -> u32 {
   s = more
   return s.len
 }
+func fields() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h = Holder(t.s, t.n)
+  return h.s.len
+}
 
 test "each has the length of its array" {
   assert g.len == 3
@@ -849,12 +854,13 @@ test "each has the length of its array" {
   let (p, n) = pair()
   assert p.len == 3
   assert named() == 5
+  assert fields() == 3
 }
 ```
 
 <!-- spec:end -->
 
-A struct or tuple that is already a value holds a pointer, one wasm value where the slice is two: it is converted field by field, as a literal.
+A struct or tuple that is already a value holds a pointer, one wasm value where the slice is two: it is not converted as a whole. Built from its fields, as a literal is, each field converts (`fields` above).
 
 ```ents
 data text = "abc"
