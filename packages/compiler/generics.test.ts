@@ -3897,6 +3897,20 @@ export func f(v: *Vec(u32)) -> u32 => v.items().total().double()`
     expect(funcWat(watOfSource(source), 'f')).toContain('(call $double (call $total (call $items<u32> (local.get $v))))')
   })
 
+  test('each receiver is evaluated once, before the arguments of its call', async () => {
+    const source = `global n: u32 = 0
+func tick() -> u32 {
+  n += 1
+  return n
+}
+func pair(a: u32, b: u32) -> u32 => a * 10 + b
+export func once() -> u32 => tick().pair(tick())
+export func chain() -> u32 => tick().pair(tick()).pair(tick()) * 100 + n`
+    expect((await run(source)).once()).toBe(12)
+    // pair(1, 2) = 12, then pair(12, 3) = 123, and tick ran three times
+    expect((await run(source)).chain()).toBe(12303)
+  })
+
   test('a field wins over a function of the same name', async () => {
     const source = `type Box = (size: u32, n: u32)
 func size(b: Box) -> u32 => 99
