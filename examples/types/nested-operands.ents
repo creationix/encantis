@@ -1,0 +1,75 @@
+// Every expression has its own type, however it nests. An operand keeps its
+// type inside a larger expression that starts or ends where it does, and a
+// block's last expression gives an if expression its value.
+
+// Arithmetic on the right of a comparison.
+func below_half(a: i32, b: i32, c: i32) -> bool => a < b / c
+func half_above(a: i32, b: i32, c: i32) -> bool => b / c > a
+func below_sum64(a: i64, b: i64, c: i64) -> bool => a < b + c
+func enough(covered: f64, area: f64) -> bool => covered >= 0.72 * area
+func rem_is(a: i32, b: i32, c: i32) -> bool => a == b % c
+func shifted_is(a: i32, b: i32, c: u32) -> bool => a == b >> c
+
+test "a < b / c divides signed numbers as signed" {
+  assert !below_half(5, -6, 2)          // 5 < -3 is false
+  assert below_half(-4, -6, 2)
+  assert !half_above(5, -6, 2)
+}
+
+test "a < b + c adds in 64 bits" {
+  assert below_sum64(5000000000, 4000000000, 4000000000)
+  assert !below_sum64(9000000000, 4000000000, 4000000000)
+}
+
+test "a >= k * b multiplies floats" {
+  assert enough(72.0, 100.0)
+  assert !enough(71.9, 100.0)
+}
+
+test "remainder and shift on the right keep their sign" {
+  assert rem_is(-1, -7, 3)              // -7 % 3 is -1
+  assert shifted_is(-2, -8, 2)          // -8 >> 2 is -2
+}
+
+// A narrower operation inside a wider one is done in its own type, then widened.
+func add_product(a: i64, b: i32, c: i32) -> i64 => a + b * c
+func below_sum(a: i64, b: i32, c: i32) -> bool => a < b + c
+
+test "an i32 product wraps before it widens to i64" {
+  assert add_product(1, 65536, 65536) == 1          // 2^32 wraps to 0 in i32
+  assert add_product(10, -3, 4) == -2
+}
+
+test "an i32 sum widens to i64 with its sign" {
+  assert below_sum(-5, -1, -1)                      // -5 < -2
+  assert !below_sum(0, -1, -1)
+}
+
+// The value of an if expression, whatever its first branch is.
+type Pair = (x: i32, y: i32)
+
+func diff_or(c: bool, p: i32, l: i32) -> i32 {
+  let v = if c { p - l } else { -1 }
+  return v
+}
+
+func third_or(c: bool, xs: [*]i32) -> i32 {
+  let v = if c { xs[2] } else { -1 }
+  return v
+}
+
+func x_or(c: bool, p: Pair) -> i32 {
+  let v = if c { p.x } else { p.y }
+  return v
+}
+
+data numbers = [10:i32, 20, 30]
+
+test "an if expression takes its value from an operator, an index or a field" {
+  assert diff_or(true, 9, 4) == 5
+  assert diff_or(false, 9, 4) == -1
+  assert third_or(true, numbers) == 30
+  assert third_or(false, numbers) == -1
+  assert x_or(true, Pair(1, 2)) == 1
+  assert x_or(false, Pair(1, 2)) == 2
+}

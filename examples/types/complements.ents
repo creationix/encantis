@@ -1,0 +1,59 @@
+// The complement of a constant is a bit pattern in the type it's used as:
+// ~7 is 0xfffffff8 as a u32 and 0xf8 as a u8. It fits every unsigned type
+// that holds its operand, unlike a negative number.
+
+def low = 7
+def high = ~low
+
+func align_down(n: u32) -> u32 => n & ~7
+func align_up(n: u32) -> u32 => (n + 7) & ~7
+func with_def(n: u32) -> u32 => n & high
+func clear_byte(x: u64) -> u64 => x & ~0xff
+func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
+func even(x: u8) -> u8 => x & ~1
+func is_max(x: u32) -> bool => x == ~0
+func is_max_byte(x: u8) -> bool => x == ~0
+func flip(x: u32) -> u32 => x ^ ~0
+func wide(x: u128) -> u128 => x & ~1
+func signed(x: i32) -> i32 => x & ~3
+
+func all_ones() -> u64 {
+  let m: u64 = ~0
+  return m
+}
+
+func high_nibble() -> u8 {
+  let m: u8 = ~0 << 4
+  return m
+}
+
+func masked(x: u32) -> u32 {
+  x &= ~7
+  x |= ~0 << 28
+  return x
+}
+
+test "a complement clears bits of an unsigned value" {
+  assert align_down(29) == 24
+  assert align_up(29) == 32
+  assert with_def(29) == 24
+  assert clear_byte(0x1234) == 0x1200
+  assert low_byte(0x1234) == 0x34
+  assert even(255) == 254
+  assert masked(0x1f) == 0xf0000018
+  assert wide(340282366920938463463374607431768211455) == 340282366920938463463374607431768211454
+}
+
+test "~0 is all ones in the type it meets" {
+  assert is_max(4294967295)
+  assert !is_max(255)
+  assert is_max_byte(255)
+  assert flip(1) == 4294967294
+  assert all_ones() == 18446744073709551615
+  assert high_nibble() == 0xf0
+}
+
+test "in a signed type it is the negative number it always was" {
+  assert signed(-1) == -4
+  assert signed(7) == 4
+}

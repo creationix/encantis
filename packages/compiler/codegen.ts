@@ -2,7 +2,8 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, exprTypeOffset, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { argValue } from './ast'
+import { typeKey, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -23,8 +24,13 @@ import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './w
 // === Context ===
 
 export interface CodegenContext {
-  // Type map from checker (keyed by "offset:kind" composite key)
+  // Types of bindings and declarations from the checker ("offset:kind" keys)
   types: Map<string, ResolvedType>
+  // Types of expressions from the checker, by AST node
+  exprTypes: Map<AST.Expr, ResolvedType>
+  // Implicit widenings from the checker: expression → the wider type its
+  // value is used as
+  coercions: Map<AST.Expr, ResolvedType>
   // Symbol table from checker
   symbols: Map<string, CheckSymbol>
   // Local variable names → WASM local names (handles flattening)
@@ -55,6 +61,8 @@ export interface CodegenContext {
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
   return {
     types: checkResult.types,
+    exprTypes: checkResult.exprTypes,
+    coercions: checkResult.coercions,
     symbols: checkResult.symbols,
     locals: new Map(),
     params: new Map(),
@@ -215,6 +223,22 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 // === Expression Codegen ===
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  return wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
+}
+
+// Every implicit widening happens here: the checker says which expressions
+// meet a wider type (as an operand, an argument, an initializer, a branch).
+// Gives what takes an expression's value from its own type to that one.
+function wideningOf(expr: AST.Expr, ctx: CodegenContext): (wat: string) => string {
+  const to = ctx.coercions.get(expr)
+  const from = to && lookupExprType(expr, ctx)
+  // An integer up to 32 bits already fills its i32: widening one within that
+  // costs nothing.
+  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return (wat) => wat
+  return (wat) => emitConversion(wat, from, to)
+}
+
+function exprValueToWat(expr: AST.Expr, ctx: CodegenContext): string {
   switch (expr.kind) {
     case 'LiteralExpr':
       return literalToWat(expr, ctx)
@@ -243,7 +267,7 @@ export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
     case 'CastExpr':
       return castToWat(expr, ctx)
     case 'AnnotationExpr': {
-      const annType = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const annType = lookupExprType(expr, ctx)
       if (annType?.kind === 'slice') {
         const inner = expr.expr
         const id = (inner as any).dataId ?? inner.span.start
@@ -273,7 +297,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
   switch (lit.kind) {
     case 'int': {
       // Type must be concretized before codegen
-      const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const type = lookupExprType(expr, ctx)
       if (!type) {
         throw new Error(`Missing type for integer literal at offset ${expr.span.start}`)
       }
@@ -291,7 +315,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
     }
 
     case 'float': {
-      const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+      const type = lookupExprType(expr, ctx)
       if (!type) {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
@@ -306,7 +330,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       const id = (expr as any).dataId ?? expr.span.start
       const ref = ctx.literalRefs.get(id)
       if (ref) {
-        const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+        const type = lookupExprType(expr, ctx)
         if (type?.kind === 'slice') {
           return literalSliceToWat(ref, type)
         }
@@ -419,7 +443,7 @@ function wideBinaryOp(op: string, signed: boolean, type: ResolvedType): WideBina
   const ops: Record<string, WideBinaryOp> = {
     '+': 'add', '-': 'sub', '*': 'mul',
     '&': 'and', '|': 'or', '^': 'xor',
-    '<<': 'shl', '>>': signed ? 'shr_s' : 'shr_u', '>>>': 'shr_u', '<<<': 'rotl',
+    '<<': 'shl', '>>': signed ? 'shr_s' : 'shr_u', '>>>': 'rotr', '<<<': 'rotl',
     '==': 'eq', '!=': 'ne',
     '<': `lt_${s}`, '>': `gt_${s}`, '<=': `le_${s}`, '>=': `ge_${s}`,
   }
@@ -427,14 +451,6 @@ function wideBinaryOp(op: string, signed: boolean, type: ResolvedType): WideBina
   if (!helper) throw new Error(`operator '${op}' on ${RT.typeToString(type)} is not supported yet`)
   return helper
 }
-
-function multiValueBinaryOp(n: number, wasmOp: string, left: string, right: string): string {
-  if (n === 1) return `(${wasmOp} ${left} ${right})`
-  const leftParts = splitMultiValue(left, n)
-  const rightParts = splitMultiValue(right, n)
-  return leftParts.map((l, i) => `(${wasmOp} ${l} ${rightParts[i]})`).join(' ')
-}
-
 
 // A fresh wasm local for a value that has to wait while other code runs: an
 // address that is used several times, or values that come off the stack in an
@@ -620,39 +636,9 @@ function splitMultiValue(wat: string, n: number): string[] {
 // the wide-integer store helper, which an array literal uses for its slots.
 const STATEMENT = /^\((?:local\.set|global\.set|drop|nop|br|br_if|return|unreachable|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?|call \$__w\d+_store|(?:block|loop|if)(?!\s+\(result))\b/
 
-function lookupExprType(expr: { kind: string; span: { start: number; end: number } }, ctx: CodegenContext): ResolvedType | undefined {
-  return ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
-}
-
-function resolveExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
-  // Try direct lookup — MemberExpr and BinaryExpr use span.end to avoid collisions
-  const key = (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr')
-    ? typeKey(expr.span.end, expr.kind)
-    : typeKey(expr.span.start, expr.kind)
-  const direct = ctx.types.get(key)
-  if (direct) return direct
-
-  // For expressions that may collide with parent (same start offset),
-  // try looking up based on span end
-  const byEnd = ctx.types.get(typeKey(expr.span.end, expr.kind))
-  if (byEnd) return byEnd
-
-  if (expr.kind === 'IdentExpr') {
-    const sym = ctx.symbols.get(expr.name)
-    if (sym && sym.kind !== 'func' && sym.kind !== 'type') return sym.type
-  }
-
-  // For binary expressions whose type collided with parent, infer from children
-  if (expr.kind === 'BinaryExpr') {
-    const lt = resolveExprType(expr.left, ctx)
-    if (lt && !['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op)) {
-      return lt
-    }
-  }
-
-  return undefined
+// The type the checker recorded for an expression.
+function lookupExprType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
+  return ctx.exprTypes.get(expr)
 }
 
 function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: number): string {
@@ -669,9 +655,77 @@ function widenToWide(wat: string, fromType: ResolvedType | undefined, toParts: n
   return parts.join(' ')
 }
 
+// The type of the value exprToWat leaves on the stack: the expression's own,
+// or the one the checker widens it to where it's used.
+function valueType(expr: AST.Expr, ctx: CodegenContext): ResolvedType | undefined {
+  return ctx.coercions.get(expr) ?? lookupExprType(expr, ctx)
+}
+
+const COMPARISON_OPS: ReadonlySet<string> = new Set(['==', '!=', '<', '>', '<=', '>='])
+const SHIFT_OPS: ReadonlySet<string> = new Set(['<<', '>>', '<<<', '>>>'])
+
+// The wasm instruction for a binary operator on operands of one type, each a
+// single wasm value. Saturating operators wrap for now (TODO: saturation).
+function binaryInstruction(op: string, type: ResolvedType): string {
+  const wt = typeToWasmSingle(type)
+  const float = isFloat(type)
+  const sign = isSigned(type) ? 's' : 'u'
+  switch (op) {
+    case '+': case '+|': return `${wt}.add`
+    case '-': case '-|': return `${wt}.sub`
+    case '*': case '*|': return `${wt}.mul`
+    case '/': return float ? `${wt}.div` : `${wt}.div_${sign}`
+    case '%': return `${wt}.rem_${sign}`
+    case '==': return `${wt}.eq`
+    case '!=': return `${wt}.ne`
+    case '<': return float ? `${wt}.lt` : `${wt}.lt_${sign}`
+    case '>': return float ? `${wt}.gt` : `${wt}.gt_${sign}`
+    case '<=': return float ? `${wt}.le` : `${wt}.le_${sign}`
+    case '>=': return float ? `${wt}.ge` : `${wt}.ge_${sign}`
+    case '&': return `${wt}.and`
+    case '|': return `${wt}.or`
+    case '^': return `${wt}.xor`
+    case '<<': return `${wt}.shl`
+    case '>>': return `${wt}.shr_${sign}`
+    case '<<<': return `${wt}.rotl`
+    case '>>>': return `${wt}.rotr`
+    default: throw new Error(`Unknown binary operator: ${op}`)
+  }
+}
+
+// `left op right` on operands of one type that is a single wasm value. The
+// result of an 8- or 16-bit operation is cut back to its width.
+function scalarBinaryToWat(op: string, type: ResolvedType, left: string, right: string): string {
+  const bits = (primitiveByteSize(type) ?? 4) * 8
+  if (bits < 32 && (op === '<<<' || op === '>>>')) {
+    // An i32 rotation would take a u8 or u16 through the unused high bits.
+    // Repeated across the word, each copy rotates in place.
+    const value = isSigned(type) ? `(i32.and ${left} (i32.const ${bits === 8 ? 255 : 65535}))` : left
+    left = `(i32.mul ${value} (i32.const ${bits === 8 ? 0x01010101 : 0x00010001}))`
+  }
+  return truncateSubWord(`(${binaryInstruction(op, type)} ${left} ${right})`, type)
+}
+
+// A shift or rotate count can be any integer type; wasm wants it in the
+// value's. Only the count's low bits matter, so widening or wrapping is exact.
+function shiftCountToWat(count: string, countType: ResolvedType | undefined, type: ResolvedType): string {
+  if (!countType) return count
+  const parts = wideIntParts(type)
+  const countParts = wideIntParts(countType)
+  if (parts > 0) return countParts > parts ? emitConversion(count, countType, type) : widenToWide(count, countType, parts)
+  const wt = typeToWasmSingle(type)
+  if (countParts > 0) return emitConversion(count, countType, RT.primitive(wt === 'i64' ? 'u64' : 'u32'))
+  return coerceWasmType(count, typeToWasmSingle(countType), wt, isSigned(countType))
+}
+
 function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
-  let left = exprToWat(expr.left, ctx)
+  const left = exprToWat(expr.left, ctx)
   let right = exprToWat(expr.right, ctx)
+  const op = expr.op
+
+  // Logical (short-circuit)
+  if (op === '&&') return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
+  if (op === '||') return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
 
   // Get result type from checker
   const resultType = lookupExprType(expr, ctx)
@@ -679,168 +733,34 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
     throw new Error(`Missing type for binary expression at offset ${expr.span.start}`)
   }
 
-  // For comparison ops, we need the operand type for signedness (result is bool)
-  // For arithmetic ops, use the result type (which is the wider operand type)
-  let leftType = lookupExprType(expr.left, ctx)
-  if (leftType?.kind === 'tuple' && leftType.fields.length === 1) leftType = leftType.fields[0].type
-  let rightType = lookupExprType(expr.right, ctx)
-  if (rightType?.kind === 'tuple' && rightType.fields.length === 1) rightType = rightType.fields[0].type
-  const isComparison = ['==', '!=', '<', '>', '<=', '>='].includes(expr.op)
-  let operandType: ResolvedType
-  if (isComparison) {
-    const lSize = leftType ? primitiveByteSize(unwrap(leftType)) ?? 0 : 0
-    const rSize = rightType ? primitiveByteSize(unwrap(rightType)) ?? 0 : 0
-    operandType = rSize > lSize ? (rightType ?? resultType) : (leftType ?? resultType)
-  } else {
-    operandType = resultType
-  }
+  // The checker brought both operands to one type, the one the operation is
+  // done in: the result's, or for a comparison (whose result is bool) the
+  // operands'. A shift's count is the exception.
+  let operandType = COMPARISON_OPS.has(op) ? valueType(expr.left, ctx) ?? resultType : resultType
   // Unwrap 1-element tuple from parenthesized expressions
   if (operandType.kind === 'tuple' && operandType.fields.length === 1) {
     operandType = operandType.fields[0].type
   }
+  if (SHIFT_OPS.has(op)) right = shiftCountToWat(right, valueType(expr.right, ctx), operandType)
 
-  const wt = typeToWasmSingle(operandType)
-  const signed = isSigned(operandType)
-  const isFloatType = isFloat(operandType)
   const nWide = wideIntParts(operandType)
-
-  // Widen operands if they have fewer i64 parts than the operation requires
-  if (nWide > 0) {
-    if (leftType && wideIntParts(leftType) < nWide) left = widenToWide(left, leftType, nWide)
-    if (rightType && wideIntParts(rightType) < nWide) right = widenToWide(right, rightType, nWide)
-  }
-  if (nWide > 1 && expr.op !== '&&' && expr.op !== '||') {
+  if (nWide > 1) {
     // Bitwise ops and equality need no carries: do them inline, limb by limb,
     // when both operands split into parts (the hot path in crypto code).
-    const limbwise = INLINE_WIDE_OPS[expr.op]
+    const limbwise = INLINE_WIDE_OPS[op]
     const lp = limbwise ? trySplitMultiValue(left, nWide) : null
     const rp = lp ? trySplitMultiValue(right, nWide) : null
     if (limbwise && lp && rp) return limbwise(lp, rp)
-    return wideCall(nWide, wideBinaryOp(expr.op, signed, operandType), left, right)
+    return wideCall(nWide, wideBinaryOp(op, isSigned(operandType), operandType), left, right)
   }
-
-  const op = expr.op
-  let wasmOp: string
-
-  switch (op) {
-    // Arithmetic
-    case '+':
-      wasmOp = nWide > 0 ? 'i64.add' : `${wt}.add`
-      break
-    case '-':
-      wasmOp = nWide > 0 ? 'i64.sub' : `${wt}.sub`
-      break
-    case '*':
-      wasmOp = nWide > 0 ? 'i64.mul' : `${wt}.mul`
-      break
-    case '/':
-      wasmOp = isFloatType ? `${wt}.div` : signed ? `${wt}.div_s` : `${wt}.div_u`
-      break
-    case '%':
-      wasmOp = signed ? `${wt}.rem_s` : `${wt}.rem_u`
-      break
-
-    // Saturating arithmetic
-    case '+|':
-      wasmOp = signed ? `${wt}.add` : `${wt}.add` // TODO: implement saturation
-      break
-    case '-|':
-      wasmOp = signed ? `${wt}.sub` : `${wt}.sub`
-      break
-    case '*|':
-      wasmOp = signed ? `${wt}.mul` : `${wt}.mul`
-      break
-
-    // Comparison
-    case '==':
-      if (nWide > 0) {
-        const lp = splitMultiValue(left, nWide)
-        const rp = splitMultiValue(right, nWide)
-        let eq = `(i64.eq ${lp[0]} ${rp[0]})`
-        for (let i = 1; i < nWide; i++) {
-          eq = `(i32.and ${eq} (i64.eq ${lp[i]} ${rp[i]}))`
-        }
-        return eq
-      }
-      wasmOp = `${wt}.eq`
-      break
-    case '!=':
-      if (nWide > 0) {
-        const lp = splitMultiValue(left, nWide)
-        const rp = splitMultiValue(right, nWide)
-        let neq = `(i64.eq ${lp[0]} ${rp[0]})`
-        for (let i = 1; i < nWide; i++) {
-          neq = `(i32.and ${neq} (i64.eq ${lp[i]} ${rp[i]}))`
-        }
-        return `(i32.eqz ${neq})`
-      }
-      wasmOp = `${wt}.ne`
-      break
-    case '<':
-      wasmOp = isFloatType ? `${wt}.lt` : signed ? `${wt}.lt_s` : `${wt}.lt_u`
-      break
-    case '>':
-      wasmOp = isFloatType ? `${wt}.gt` : signed ? `${wt}.gt_s` : `${wt}.gt_u`
-      break
-    case '<=':
-      wasmOp = isFloatType ? `${wt}.le` : signed ? `${wt}.le_s` : `${wt}.le_u`
-      break
-    case '>=':
-      wasmOp = isFloatType ? `${wt}.ge` : signed ? `${wt}.ge_s` : `${wt}.ge_u`
-      break
-
-    // Bitwise
-    case '&':
-      wasmOp = nWide > 0 ? 'i64.and' : `${wt}.and`
-      break
-    case '|':
-      wasmOp = nWide > 0 ? 'i64.or' : `${wt}.or`
-      break
-    case '^':
-      wasmOp = nWide > 0 ? 'i64.xor' : `${wt}.xor`
-      break
-    case '<<':
-      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.shl`
-      break
-    case '>>':
-      wasmOp = nWide > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`)
-      break
-    case '>>>':
-      wasmOp = nWide > 0 ? 'i64.shr_u' : `${wt}.shr_u`
-      break
-    case '<<<':
-      wasmOp = nWide > 0 ? 'i64.shl' : `${wt}.rotl`
-      break
-
-    // Logical (short-circuit)
-    case '&&':
-      return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
-    case '||':
-      return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
-
-    default:
-      throw new Error(`Unknown binary operator: ${op}`)
-  }
-
-  // Coerce operands to match the operation type when needed
-  const leftWt = leftType ? typeToWasmSingle(leftType) : wt
-  const leftSigned = leftType ? isSigned(leftType) : signed
-  const coercedLeft = coerceWasmType(left, leftWt, wt, leftSigned)
-
-  const rightWt = rightType ? typeToWasmSingle(rightType) : wt
-  const rightSigned = rightType ? isSigned(rightType) : signed
-  const coercedRight = coerceWasmType(right, rightWt, wt, rightSigned)
-
-  if (nWide > 1) return multiValueBinaryOp(nWide, wasmOp, coercedLeft, coercedRight)
-  const raw = `(${wasmOp} ${coercedLeft} ${coercedRight})`
-  return truncateSubWord(raw, operandType)
+  return scalarBinaryToWat(op, operandType, left, right)
 }
 
 function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   const operand = exprToWat(expr.operand, ctx)
 
   // Get type from checker - must be recorded
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (!type) {
     throw new Error(`Missing type for unary expression at offset ${expr.span.start}`)
   }
@@ -896,24 +816,51 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   }
 }
 
+// The type a numeric builtin computes in, as the checker settled it from all
+// of the operands.
+function builtinOperandType(expr: AST.CallExpr, ctx: CodegenContext): ResolvedType {
+  const type = ctx.types.get(typeKey(expr.span.start, 'BuiltinCall'))
+  if (!type) throw new Error(`Missing operand type for builtin call at offset ${expr.span.start}`)
+  return type
+}
+
+// The scratch local a builtin keeps operand `index` in when it needs the
+// value twice.
+function builtinScratchLocal(name: string, index: number, expr: AST.CallExpr): string {
+  return `__${name}_${index}_${expr.span.start}`
+}
+
+// A read of a local, a global or a constant: free to repeat.
+const PLAIN_READ = /^\((?:(local|global)\.get (\$[^\s()]+)|(?:i32|i64|f32|f64)\.const [^\s()]+)\)$/
+
+// An operand's code for its first use and for its second, each in the type
+// `widen` gives it. A plain read is repeated, unless `between` (what runs
+// between the two uses) can change what it reads; anything else is evaluated
+// once, into the scratch local.
+function useTwice(wat: string, widen: (wat: string) => string, scratch: string, between: string): [string, string] {
+  const read = PLAIN_READ.exec(wat)
+  if (read) {
+    const [, scope, name] = read
+    const writes = (op: string) => new RegExp(`\\(${op} ${name.replace(/[^\w-]/g, '\\$&')}[\\s)]`).test(between)
+    // A local changes only where this function sets it; a global, in any call too.
+    const changed = scope === 'local' ? writes('local\\.(?:set|tee)')
+      : scope === 'global' && (writes('global\\.set') || /\((?:call|call_indirect) /.test(between))
+    if (!changed) return [widen(wat), widen(wat)]
+  }
+  return [`(local.tee $${scratch} ${widen(wat)})`, `(local.get $${scratch})`]
+}
+
 // Handle builtin functions
 // Returns null if not a builtin
 function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): string | null {
   const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
-
-  // Helper to get the wasm type for the first argument
-  const getArgType = (): string => {
-    if (args.length === 0) return 'i32'
-    const argType = ctx.types.get(typeKey(exprTypeOffset(args[0].value), args[0].value.kind))
-    return argType ? typeToWasmSingle(argType) : 'i32'
-  }
 
   switch (name) {
     case 'memzero': {
       // memzero(dest) -> memory.fill with 0, size from type
       if (args.length !== 1) return null
       const dest = exprToWat(args[0].value, ctx)
-      const destType = resolveExprType(args[0].value, ctx)
+      const destType = lookupExprType(args[0].value, ctx)
       const size = destType ? byteSize(destType.kind === 'pointer' ? destType.pointee : destType) : null
       if (size === null) return null
       return `(memory.fill ${dest} (i32.const 0) (i32.const ${size}))`
@@ -944,60 +891,58 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'trunc':
     case 'nearest': {
       if (args.length !== 1) return null
-      const arg = exprToWat(args[0].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.${name} ${arg})`
+      const type = builtinOperandType(expr, ctx)
+      return `(${typeToWasmSingle(type)}.${name} ${exprToWat(args[0].value, ctx)})`
     }
 
     // Float-only binary: copysign
     case 'copysign': {
       if (args.length !== 2) return null
+      const type = builtinOperandType(expr, ctx)
       const a = exprToWat(args[0].value, ctx)
       const b = exprToWat(args[1].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.copysign ${a} ${b})`
+      return `(${typeToWasmSingle(type)}.copysign ${a} ${b})`
     }
 
     // min/max: native for floats, select for integers
     case 'min':
     case 'max': {
       if (args.length !== 2) return null
-      const a = exprToWat(args[0].value, ctx)
-      const b = exprToWat(args[1].value, ctx)
-      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
-      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
+      // Each operand's own value, and the widening that takes a narrower one
+      // to the type computed in: a plain read is cheaper widened twice than kept.
+      const [a, b] = args.map((arg) => exprValueToWat(arg.value, ctx))
+      const [widenA, widenB] = args.map((arg) => wideningOf(arg.value, ctx))
+      if (isFloat(type)) return `(${wt}.${name} ${widenA(a)} ${widenB(b)})`
 
-      if (argType && isFloat(argType)) {
-        // Native float min/max
-        return `(${wt}.${name} ${a} ${b})`
-      } else {
-        // Integer min/max using select
-        const signed = argType ? isSigned(argType) : true
-        const cmp = name === 'min'
-          ? (signed ? `${wt}.lt_s` : `${wt}.lt_u`)
-          : (signed ? `${wt}.gt_s` : `${wt}.gt_u`)
-        return `(select ${a} ${b} (${cmp} ${a} ${b}))`
-      }
+      const sign = isSigned(type) ? 's' : 'u'
+      const nWide = wideIntParts(type)
+      if (nWide > 1) return wideCall(nWide, `${name}_${sign}`, widenA(a), widenB(b))
+      // select takes both values and the comparison takes them again: a b (a < b).
+      // b runs between the two uses of a; nothing runs between the two of b.
+      const [a1, a2] = useTwice(a, widenA, builtinScratchLocal(name, 0, expr), b)
+      const [b1, b2] = useTwice(b, widenB, builtinScratchLocal(name, 1, expr), '')
+      return `(select ${a1} ${b1} (${wt}.${name === 'min' ? 'lt' : 'gt'}_${sign} ${a2} ${b2}))`
     }
 
     // abs: native for floats, conditional negate for signed integers
     case 'abs': {
       if (args.length !== 1) return null
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
       const arg = exprToWat(args[0].value, ctx)
-      const argType = ctx.types.get(typeKey(args[0].value.span.start, args[0].value.kind))
-      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+      if (isFloat(type)) return `(${wt}.abs ${arg})`
+      // Unsigned integer: abs is identity
+      if (!isSigned(type)) return arg
 
-      if (argType && isFloat(argType)) {
-        // Native float abs
-        return `(${wt}.abs ${arg})`
-      } else if (argType && isInteger(argType) && isSigned(argType)) {
-        // Signed integer abs: select(x, -x, x >= 0)
-        // -x = 0 - x
-        return `(select ${arg} (${wt}.sub (${wt}.const 0) ${arg}) (${wt}.ge_s ${arg} (${wt}.const 0)))`
-      } else {
-        // Unsigned integer: abs is identity
-        return arg
-      }
+      const nWide = wideIntParts(type)
+      if (nWide > 1) return wideCall(nWide, 'abs', arg)
+      // select(x, -x, x >= 0). The most negative value has no positive in its
+      // type: -x wraps back to it, as negation does.
+      const [x, again] = useTwice(arg, (wat) => wat, builtinScratchLocal(name, 0, expr), '')
+      const negated = truncateSubWord(`(${wt}.sub (${wt}.const 0) ${again})`, type)
+      return `(select ${x} ${negated} (${wt}.ge_s ${again} (${wt}.const 0)))`
     }
 
     // Integer-only unary: clz, ctz, popcnt
@@ -1005,9 +950,11 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'ctz':
     case 'popcnt': {
       if (args.length !== 1) return null
-      const arg = exprToWat(args[0].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.${name} ${arg})`
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
+      const count = `(${wt}.${name} ${exprToWat(args[0].value, ctx)})`
+      // The result is a u8, an i32 on the stack, whatever the operand's width.
+      return wt === 'i64' ? `(i32.wrap_i64 ${count})` : count
     }
 
     case 'mul_hi': {
@@ -1033,8 +980,11 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     return `(call_indirect ${exprToWat(expr.callee, ctx)})`
   }
 
-  // Handle builtin functions
-  const builtin = builtinToWat(funcName, expr, ctx)
+  // Handle builtin functions. The checker decides which calls are to one (a
+  // function the program declares takes the builtin's name, unless a variable
+  // in scope hides that function), and marks them.
+  const isBuiltin = ctx.types.has(typeKey(expr.span.start, 'BuiltinCall'))
+  const builtin = isBuiltin ? builtinToWat(funcName, expr, ctx) : null
   if (builtin !== null) return builtin
 
   // Primitive type cast: u64(x), f32(x), etc.
@@ -1057,8 +1007,10 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   if (typeSym?.kind === 'type') {
     const structType = RT.unwrap(typeSym.type)
     if (structType.kind === 'tuple') {
-      const argWat = (arg: AST.Arg) =>
-        arg.value ? exprToWat(arg.value, ctx) : identToWat({ kind: 'IdentExpr', name: arg.name ?? '', span: arg.span }, ctx)
+      const argWat = (arg: AST.Arg) => {
+        const value = argValue(arg)
+        return value ? exprToWat(value, ctx) : ''
+      }
       const named = expr.args.some((a) => a.name)
       return structType.fields
         .map((field, i) => {
@@ -1087,7 +1039,7 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     if (paramTypes && i < paramTypes.length) {
       const paramType = paramTypes[i].type
       const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
-      const argType = ctx.types.get(typeKey(argExpr.span.start, argExpr.kind))
+      const argType = lookupExprType(argExpr, ctx)
       const innerArray = argType?.kind === 'array' ? argType
         : (argType?.kind === 'pointer' && argType.pointee.kind === 'array') ? argType.pointee
         : null
@@ -1332,7 +1284,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 
   if (member.kind === 'field') {
     // Get the type of the object to check for indexed/pointer-to-indexed
-    const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
+    const objType = lookupExprType(expr.object, ctx)
 
     // Handle .ptr, .len on slice types
     if (objType?.kind === 'slice') {
@@ -1440,7 +1392,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
   if (member.kind === 'deref') {
     // Pointer dereference: .* - load from memory
     const ptr = exprToWat(expr.object, ctx)
-    const type = ctx.types.get(typeKey(expr.span.end, expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     if (!type) {
       throw new Error(`Missing type for pointer dereference at offset ${expr.span.start}`)
     }
@@ -1457,8 +1409,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 }
 
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
-  const arrayTypeKey = typeKey(exprTypeOffset(object), object.kind)
-  const arrayType = ctx.types.get(arrayTypeKey) ?? ctx.types.get(typeKey(object.span.start, object.kind))
+  const arrayType = lookupExprType(object, ctx)
   let elemSize = 1
   if (arrayType) {
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
@@ -1507,9 +1458,8 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
 // values; anything else goes through a scratch local, evaluated once. An
 // optional result (?[]T) is (0, 0) unless start <= end <= length.
 function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
-  const resultType = ctx.types.get(typeKey(exprTypeOffset(expr), expr.kind)) ?? ctx.types.get(typeKey(expr.span.start, expr.kind))
-  const objType = ctx.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind))
-    ?? ctx.types.get(typeKey(expr.object.span.start, expr.object.kind))
+  const resultType = lookupExprType(expr, ctx)
+  const objType = lookupExprType(expr.object, ctx)
   if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
   const u = unwrap(objType)
   const stride = byteSize(resultType.element) ?? 1
@@ -1565,7 +1515,7 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
 // dst[a..b] = v (fill) or dst[a..b] = src (copy), as memory.fill/memory.copy.
 // The checker has proven the range in bounds and, for a copy, the lengths equal.
 function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenContext): string {
-  const dstType = ctx.types.get(typeKey(exprTypeOffset(target), target.kind))
+  const dstType = lookupExprType(target, ctx)
   if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
   const elem = dstType.element
   const stride = byteSize(elem) ?? 1
@@ -1613,9 +1563,8 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
 // &items[i]: the element's address. For an optional result (?*T, when the
 // index isn't known to be in range) it's 0 when i is out of range.
 function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: CodegenContext): string | null {
-  const resultType = ctx.types.get(typeKey(expr.span.start, expr.kind))
-  const objType = ctx.types.get(typeKey(exprTypeOffset(target.object), target.object.kind))
-    ?? ctx.types.get(typeKey(target.object.span.start, target.object.kind))
+  const resultType = lookupExprType(expr, ctx)
+  const objType = lookupExprType(target.object, ctx)
   if (resultType?.kind !== 'pointer' || !objType) return null
   const u = unwrap(objType)
   let base = exprToWat(target.object, ctx)
@@ -1679,8 +1628,7 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const ptrLocal = `__coal_ptr_${uid}`
   const lenLocal = `__coal_len_${uid}`
 
-  const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
-  const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+  const objType = lookupExprType(indexExpr.object, ctx)
 
   const parts: string[] = []
   parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
@@ -1715,14 +1663,12 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
   if (!elemType) throw new Error('Missing element type for if-let')
 
-  const thenBody = bodyToWat(expr.thenBranch, ctx)
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  // As a value, each branch leaves its last expression on the stack.
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
-  let elseBody = ''
-  if (expr.else_) {
-    elseBody = bodyToWat(expr.else_, ctx)
-  }
+  const thenBody = bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0)
+  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
 
   // Bind helper
   const found = ctx.locals.get(pattern.name)
@@ -1744,8 +1690,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
 
-    const objTypeKey = typeKey(exprTypeOffset(indexExpr.object), indexExpr.object.kind)
-    const objType = ctx.types.get(objTypeKey) ?? ctx.types.get(typeKey(indexExpr.object.span.start, indexExpr.object.kind))
+    const objType = lookupExprType(indexExpr.object, ctx)
 
     const parts: string[] = []
     parts.push(`(local.set $${idxLocal} ${exprToWat(indexExpr.index, ctx)})`)
@@ -1816,28 +1761,13 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const cond = exprToWat(expr.condition, ctx)
 
   // Get result type
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
   const hasResult = resultTypes.length > 0
 
   const thenBody = bodyToWat(expr.thenBranch, ctx, hasResult)
-
-  // Handle elif chains
-  let elseBody = ''
-  if (expr.elifs.length > 0) {
-    // Build nested if/else for elifs
-    let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
-    for (let i = expr.elifs.length - 1; i >= 0; i--) {
-      const elif = expr.elifs[i]
-      const elifCond = exprToWat(elif.condition, ctx)
-      const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
-      current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
-    }
-    elseBody = current
-  } else if (expr.else_) {
-    elseBody = bodyToWat(expr.else_, ctx, hasResult)
-  }
+  const elseBody = elseToWat(expr, ctx, hasResult, resultStr)
 
   if (elseBody) {
     return `(if ${resultStr} ${cond} (then ${thenBody}) (else ${elseBody}))`
@@ -1845,19 +1775,46 @@ function ifExprToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   return `(if ${resultStr} ${cond} (then ${thenBody}))`
 }
 
+// What an if or if-let does when its first test fails: the elif branches,
+// as nested ifs, then the else branch. Empty when it has neither.
+function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, resultStr: string): string {
+  let current = expr.else_ ? bodyToWat(expr.else_, ctx, hasResult) : ''
+  for (let i = expr.elifs.length - 1; i >= 0; i--) {
+    const elif = expr.elifs[i]
+    const elifCond = exprToWat(elif.condition, ctx)
+    const elifThen = bodyToWat(elif.thenBranch, ctx, hasResult)
+    current = `(if ${resultStr} ${elifCond} (then ${elifThen}) (else ${current}))`
+  }
+  return current
+}
+
 function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   // Flatten tuple elements
   const parts = expr.elements.map((elem) => {
-    if (elem.value) {
-      return exprToWat(elem.value, ctx)
-    }
-    // Shorthand: name:
-    if (elem.name) {
-      return identToWat({ kind: 'IdentExpr', name: elem.name, span: elem.span }, ctx)
-    }
-    return ''
+    // Shorthand `name:` stands for the variable of that name.
+    const value = argValue(elem)
+    return value ? exprToWat(value, ctx) : ''
   })
   return parts.filter(Boolean).join(' ')
+}
+
+// Whether `wat` is one parenthesized expression, not several side by side.
+function isSingleExpr(wat: string): boolean {
+  let depth = 0
+  for (let i = 0; i < wat.length; i++) {
+    if (wat[i] === '(') depth++
+    else if (wat[i] === ')' && --depth === 0) return i === wat.length - 1
+  }
+  return false
+}
+
+// An i32 widened to i64. The bit count of an i64 (clz, ctz, popcnt) is computed
+// in 64 bits and wrapped to its u8 result: widening it again is the count
+// itself, so `x >> ctz(x)` on a u64 stays two instructions.
+function extendToI64(wat: string, signed: boolean): string {
+  const count = /^\(i32\.wrap_i64 (\(i64\.(?:clz|ctz|popcnt) [\s\S]*\))\)$/.exec(wat)
+  if (count && isSingleExpr(count[1])) return count[1]
+  return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
 }
 
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
@@ -1872,7 +1829,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   if ((fromWide > 0 || toWide > 0) && !isFloat(fromType) && !isFloat(toType)) {
     const fromParts = Math.max(fromWide, 1)
     const toParts = Math.max(toWide, 1)
-    let wat = fromWasm === 'i32' ? `(i64.extend_i32_${isSigned(fromType) ? 's' : 'u'} ${inner})` : inner
+    let wat = fromWasm === 'i32' ? extendToI64(inner, isSigned(fromType)) : inner
     if (toParts < fromParts) {
       // Narrowing keeps the low parts: drop the high ones off the top of the stack.
       wat += ' ' + Array(fromParts - toParts).fill('(drop)').join(' ')
@@ -1903,8 +1860,11 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   const fromSigned = isSigned(fromType)
   const toSigned = isSigned(toType)
 
+  // An 8- or 16-bit result is cut to its width, as it is when it comes from
+  // an i32: every such value fills its i32 the same way (zero- or
+  // sign-extended), which comparisons and widening rely on.
   if (fromIsFloat && !toIsFloat) {
-    return `(${toWasm}.trunc_${fromWasm}_${toSigned ? 's' : 'u'} ${inner})`
+    return truncateSubWord(`(${toWasm}.trunc_${fromWasm}_${toSigned ? 's' : 'u'} ${inner})`, toType)
   }
   if (!fromIsFloat && toIsFloat) {
     return `(${toWasm}.convert_${fromWasm}_${fromSigned ? 's' : 'u'} ${inner})`
@@ -1918,10 +1878,10 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
     }
   }
   if (fromWasm === 'i32' && toWasm === 'i64') {
-    return `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})`
+    return extendToI64(inner, fromSigned)
   }
   if (fromWasm === 'i64' && toWasm === 'i32') {
-    return `(i32.wrap_i64 ${inner})`
+    return truncateSubWord(`(i32.wrap_i64 ${inner})`, toType)
   }
 
   return inner
@@ -1939,7 +1899,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
-    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     // Emit runtime stores for mixed arrays (elements that aren't compile-time literals)
     const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
@@ -1952,7 +1912,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
 }
 
 function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (!type) return ''
   // Get the element type to determine stride
   const elemType = type.kind === 'slice' ? type.element
@@ -2011,7 +1971,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
   const id = expr.dataId ?? expr.span.start
   const ref = ctx.literalRefs.get(id)
   if (ref) {
-    const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+    const type = lookupExprType(expr, ctx)
     if (type?.kind === 'slice') {
       return literalSliceToWat(ref, type)
     }
@@ -2027,8 +1987,19 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 }
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
-  const subject = exprToWat(expr.subject, ctx)
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  let subject = exprToWat(expr.subject, ctx)
+  // Each arm's test reads the subject again. Anything but a plain read (a
+  // call, arithmetic) is evaluated once, into a scratch local.
+  let setup = ''
+  if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
+    const local = `$__match_${expr.span.start}`
+    setup = `(local.set ${local} ${subject})\n`
+    subject = `(local.get ${local})`
+  }
+  // Patterns are compared in the subject's type.
+  const subjectType = lookupExprType(expr.subject, ctx)
+  const wt = subjectType ? typeToWasmSingle(subjectType) : 'i32'
+  const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
 
@@ -2044,8 +2015,8 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
 
     const body =
       arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
-        ? bodyToWat(arm.body, ctx)
-        : exprToWat(arm.body, ctx)
+        ? bodyToWat(arm.body, ctx, resultTypes.length > 0)
+        : resultTypes.length > 0 ? exprToWat(arm.body, ctx) : discardedExprToWat(arm.body, ctx)
 
     if (isWildcard) {
       result = body
@@ -2054,12 +2025,12 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
       const conditions = arm.patterns.map((p) => {
         if (p.kind === 'literal') {
           const litValue =
-            p.value.kind === 'int'
-              ? `(i32.const ${p.value.value})`
+            p.value.kind === 'int' || p.value.kind === 'float'
+              ? `(${wt}.const ${p.value.value})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
-          return `(i32.eq ${subject} ${litValue})`
+          return `(${wt}.eq ${subject} ${litValue})`
         }
         return '(i32.const 0)'
       })
@@ -2074,12 +2045,12 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
     }
   }
 
-  return result
+  return setup + result
 }
 
 function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
   // Get the resolved type from the checker
-  const type = ctx.types.get(typeKey(expr.span.start, expr.kind))
+  const type = lookupExprType(expr, ctx)
   if (type && type.kind === 'comptime_int') {
     // The checker already computed the size and stored it as comptime_int
     return `(i32.const ${type.value})`
@@ -2169,16 +2140,14 @@ export function stmtToWat(stmt: AST.Statement, ctx: CodegenContext): string {
 
 // Whether an expression leaves at least one value on the stack.
 function exprHasValue(expr: AST.Expr, ctx: CodegenContext): boolean {
-  const t = ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  const t = lookupExprType(expr, ctx)
   return !!t && t.kind !== 'void' && typeToWasm(t).length > 0
 }
 
 // An expression evaluated for its effect, dropping any result.
 function discardedExprToWat(expr: AST.Expr, ctx: CodegenContext): string {
   const exprWat = exprToWat(expr, ctx)
-  const exprType = ctx.types.get(typeKey(expr.span.start, expr.kind))
-    ?? ctx.types.get(typeKey(expr.span.end, expr.kind))
+  const exprType = lookupExprType(expr, ctx)
   if (exprType && exprType.kind !== 'void') {
     const slots = typeToWasm(exprType).length
     if (slots > 0) return exprWat + '\n' + Array(slots).fill('(drop)').join('\n')
@@ -2234,7 +2203,7 @@ function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx:
 function withSliceLength(value: string, valueExpr: AST.Expr, target: ResolvedType, ctx: CodegenContext): string {
   if (unwrap(target).kind !== 'slice') return value
   valueExpr = ungroup(valueExpr)
-  const valueType = ctx.types.get(typeKey(exprTypeOffset(valueExpr), valueExpr.kind))
+  const valueType = lookupExprType(valueExpr, ctx)
   const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
   const len = array ? totalElements(array.sizes) : null
   return len === null ? value : `${value} (i32.const ${len})`
@@ -2320,7 +2289,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
 
 function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boolean): string {
   if (fromWt === toWt) return wat
-  if (fromWt === 'i32' && toWt === 'i64') return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+  if (fromWt === 'i32' && toWt === 'i64') return extendToI64(wat, signed)
   if (fromWt === 'i64' && toWt === 'i32') return `(i32.wrap_i64 ${wat})`
   return wat
 }
@@ -2343,55 +2312,18 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
       current = loadFromMemory(placeType, `(local.get ${tmp})`, ctx)
       assign = (result) => `(local.set ${tmp} ${addr})\n${storeToMemory(placeType, `(local.get ${tmp})`, result, ctx)}`
     }
-    // Use target type for the operation, not value type
-    const targetKey = (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr')
-      ? typeKey(stmt.target.span.end, stmt.target.kind)
-      : typeKey(stmt.target.span.start, stmt.target.kind)
-    const targetType = ctx.types.get(targetKey)
-    const valueType = ctx.types.get(typeKey(stmt.value.span.start, stmt.value.kind))
-    const type = targetType ?? valueType
+    // x op= v is x = x op v in x's type: the checker has widened v to it.
+    const type = placeType
     if (!type) {
       throw new Error(`Missing type for assignment at offset ${stmt.target.span.start}`)
     }
-    const wt = typeToWasmSingle(type)
-    const signed = isSigned(type)
-
-    // Coerce value to target type if needed
-    const valueWt = valueType ? typeToWasmSingle(valueType) : wt
-    const coercedValue = coerceWasmType(value, valueWt, wt, valueType ? isSigned(valueType) : signed)
-
-    // Shift/rotate amounts must match the value type in wasm
-    const isShiftOp = ['<<=', '>>=', '>>>=', '<<<='].includes(stmt.op)
-    const rhs = isShiftOp ? coerceWasmType(value, valueWt, wt, false) : coercedValue
-
+    const op = stmt.op.slice(0, -1)
+    const rhs = SHIFT_OPS.has(op) ? shiftCountToWat(value, valueType(stmt.value, ctx), type) : value
     const nv = wideIntParts(type)
-    const ops: Record<string, string> = {
-      '+=': nv > 0 ? 'i64.add' : `${wt}.add`,
-      '-=': nv > 0 ? 'i64.sub' : `${wt}.sub`,
-      '*=': nv > 0 ? 'i64.mul' : `${wt}.mul`,
-      '/=': signed ? `${wt}.div_s` : `${wt}.div_u`,
-      '%=': signed ? `${wt}.rem_s` : `${wt}.rem_u`,
-      '&=': nv > 0 ? 'i64.and' : `${wt}.and`,
-      '|=': nv > 0 ? 'i64.or' : `${wt}.or`,
-      '^=': nv > 0 ? 'i64.xor' : `${wt}.xor`,
-      '<<=': nv > 0 ? 'i64.shl' : `${wt}.shl`,
-      '>>=': nv > 0 ? (signed ? 'i64.shr_s' : 'i64.shr_u') : (signed ? `${wt}.shr_s` : `${wt}.shr_u`),
-      '>>>=': nv > 0 ? 'i64.shr_u' : `${wt}.shr_u`,
-      '<<<=': nv > 0 ? 'i64.shl' : `${wt}.rotl`,
-    }
-
-    if (nv > 1 && stmt.op.length > 1 && stmt.op.endsWith('=')) {
-      const helper = wideBinaryOp(stmt.op.slice(0, -1), signed, type)
-      const wideRhs = valueType && wideIntParts(valueType) < nv ? widenToWide(value, valueType, nv) : value
-      return assign(wideCall(nv, helper, current, wideRhs))
-    }
-    const op = ops[stmt.op]
-    if (op) {
-      const raw = nv > 1
-        ? multiValueBinaryOp(nv, op, current, rhs)
-        : `(${op} ${current} ${rhs})`
-      return assign(truncateSubWord(raw, type))
-    }
+    const result = nv > 1
+      ? wideCall(nv, wideBinaryOp(op, isSigned(type), type), current, rhs)
+      : scalarBinaryToWat(op, type, current, rhs)
+    return assign(result)
   }
 
   if (!placeType) return assignLvalue(stmt.target, value, ctx)
@@ -2487,7 +2419,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const body = bodyToWat(stmt.body, ctx, false, true)
 
   // Check if iterable is a comptime integer (for i in N)
-  const iterType = ctx.types.get(typeKey(exprTypeOffset(stmt.iterable), stmt.iterable.kind))
+  const iterType = lookupExprType(stmt.iterable, ctx)
   const iterWat = exprToWat(stmt.iterable, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
@@ -2705,25 +2637,16 @@ export function funcToWat(
     seen.add(l.name)
     return true
   })
-  // Generate body, with implicit return coercion for arrow functions. With named
-  // results, a trailing expression with a value supplies them; a trailing if,
-  // loop or void call leaves the named locals as set.
+  // Generate body. With named results, a trailing expression with a value
+  // supplies them; a trailing if, loop or void call leaves the named locals as
+  // set.
   const tailLocals = namedReturns.flatMap(r => ctx.locals.get(r.name) ?? [])
-  let body = bodyToWat(decl.body, ctx, false, false, tailLocals)
-  if (decl.body.kind === 'ArrowBody' && funcType.type.returns.length === 1 && namedReturns.length === 0) {
-    const retType = funcType.type.returns[0].type
-    const retWt = typeToWasmSingle(retType)
-    const bodyType = ctx.types.get(typeKey(decl.body.expr.span.start, decl.body.expr.kind))
-    if (bodyType) {
-      const bodyWt = typeToWasmSingle(bodyType)
-      const bodySigned = isSigned(bodyType)
-      body = coerceWasmType(body, bodyWt, retWt, bodySigned)
-    }
-  }
+  const body = bodyToWat(decl.body, ctx, false, false, tailLocals)
 
-  // Generate epilogue: push named returns onto stack
+  // Generate epilogue: push named returns onto stack. An expression body's
+  // value is the result already.
   let epilogue = ''
-  if (namedReturns.length > 0) {
+  if (namedReturns.length > 0 && decl.body.kind !== 'ArrowBody') {
     const returnGets = namedReturns.flatMap((r) => {
       const localNames = ctx.locals.get(r.name)
       if (localNames) {
@@ -2880,14 +2803,17 @@ function collectLocals(
         // Range assignment: the range's own scratch locals, plus the
         // destination and (for wide fills) the value.
         const uid = stmt.target.span.start
-        const elem = (checkResult.types.get(typeKey(exprTypeOffset(stmt.target), stmt.target.kind)) as { element?: ResolvedType } | undefined)?.element
+        const elem = (checkResult.exprTypes.get(stmt.target) as { element?: ResolvedType } | undefined)?.element
         locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
         if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
+      }
+      // An index or a range in the target can need scratch locals of its own.
+      if (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr' || stmt.target.kind === 'SliceExpr') {
         visitExpr(stmt.target)
       }
     }
-    // Handle let statements that may have coalesce/if expressions in value
-    if (stmt.kind === 'LetStmt' && stmt.value) {
+    // Handle let and set statements that may have coalesce/if expressions in value
+    if ((stmt.kind === 'LetStmt' || stmt.kind === 'SetStmt') && stmt.value) {
       visitExpr(stmt.value)
     }
     if (stmt.kind === 'ReturnStmt' && stmt.value) {
@@ -2989,6 +2915,12 @@ function collectLocals(
       }
     }
     if (expr.kind === 'MatchExpr') {
+      // Where the subject is kept when it's more than a plain read.
+      const subjectType = checkResult.exprTypes.get(expr.subject)
+      if (subjectType && typeToWasm(subjectType).length === 1) {
+        locals.push({ name: `__match_${expr.span.start}`, type: typeToWasm(subjectType)[0] })
+      }
+      visitExpr(expr.subject)
       for (const arm of expr.arms) {
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') visitBody(arm.body)
         else visitExpr(arm.body)
@@ -3004,6 +2936,13 @@ function collectLocals(
       }
     }
     if (expr.kind === 'CallExpr') {
+      // Integer min, max and abs use an operand twice: one that isn't a plain
+      // read is kept in a scratch local.
+      const operandType = checkResult.types.get(typeKey(expr.span.start, 'BuiltinCall'))
+      if (expr.callee.kind === 'IdentExpr' && ['min', 'max', 'abs'].includes(expr.callee.name) && operandType && isInteger(operandType)) {
+        const wasmType = typeToWasm(operandType)[0]
+        for (const i of expr.args.keys()) locals.push({ name: builtinScratchLocal(expr.callee.name, i, expr), type: wasmType })
+      }
       for (const arg of expr.args) {
         if (arg.value) visitExpr(arg.value)
       }
@@ -3011,7 +2950,7 @@ function collectLocals(
     if (expr.kind === 'UnaryExpr') {
       // &items[i] with a runtime check keeps the index in a scratch local.
       if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
-        const t = checkResult.types.get(typeKey(expr.span.start, expr.kind))
+        const t = checkResult.exprTypes.get(expr)
         if (t?.kind === 'pointer' && t.optional) {
           locals.push({ name: `__addr_idx_${expr.span.start}`, type: 'i32' })
         }
@@ -3337,13 +3276,36 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
     throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
   }
   const wasmTypes = typeToWasm(type)
-  const init = decl.value
+  let init = decl.value
     ? withSliceLength(exprToWat(decl.value, ctx), decl.value, type, ctx)
     : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
+  // A global's initializer is one constant instruction for each wasm value.
+  // Where the expression isn't one as written (1 + 1, an integer widened to a
+  // float), the checker has worked out its value.
+  const sym = ctx.symbols.get(name)
+  if (sym?.kind === 'global' && sym.init && !/^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/.test(init)) {
+    init = constantToWat(sym.init, type) ?? init
+  }
   const inits = trySplitMultiValue(init, wasmTypes.length)
   if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
 
   return globalNames(name, type, ctx).map((n, i) => `  (global $${n} (mut ${wasmTypes[i]}) ${inits[i]})`).join('\n')
+}
+
+// A constant's value as an instruction of a type held in one wasm value.
+function constantToWat(value: ComptimeValue, type: ResolvedType): string | null {
+  if (typeToWasm(type).length !== 1) return null
+  const wt = typeToWasmSingle(type)
+  if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
+  if (value.kind === 'data_ptr') return null
+  if (wt === 'f32' || wt === 'f64') {
+    const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
+    return `(${wt}.const ${Number.isNaN(v) ? 'nan' : Number.isFinite(v) ? v : v > 0 ? 'inf' : '-inf'})`
+  }
+  if (value.kind === 'float') return null
+  // A complement or a sub-word value: the bits it has in this type.
+  const bits = (primitiveByteSize(type) ?? 4) * 8
+  return `(${wt}.const ${isSigned(type) ? BigInt.asIntN(bits, value.value) : BigInt.asUintN(bits, value.value)})`
 }
 
 function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {

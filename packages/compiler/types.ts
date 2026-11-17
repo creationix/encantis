@@ -129,6 +129,10 @@ export interface VoidRT {
 export interface ComptimeIntRT {
   kind: 'comptime_int'
   value: bigint
+  // A bit pattern made with ~ (~3, ~0 << 4). In an unsigned type it stands
+  // for the low bits of its negative value, so it also fits an unsigned type
+  // that holds its complement: ~3 is a u8 (0xfc), ~300 isn't.
+  bits?: true
 }
 
 // Compile-time float - can coerce to f32 or f64
@@ -300,8 +304,8 @@ export function func(
 
 export const VOID: VoidRT = { kind: 'void' }
 
-export function comptimeInt(value: bigint): ComptimeIntRT {
-  return { kind: 'comptime_int', value }
+export function comptimeInt(value: bigint, bits = false): ComptimeIntRT {
+  return bits ? { kind: 'comptime_int', value, bits } : { kind: 'comptime_int', value }
 }
 
 export function comptimeFloat(value: number): ComptimeFloatRT {
@@ -563,14 +567,17 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return typeAssignResult(unwrapOptional(t), s)
   }
 
-  // Comptime int can coerce to any integer type that fits
+  // Comptime int can coerce to any integer type that fits, and to a float
+  // that holds it exactly
   // Not reinterpretable: comptime has no bytes, concrete type does
   if (s.kind === 'comptime_int' && t.kind === 'primitive') {
-    return comptimeIntFits(s.value, t) ? lossless(false) : INCOMPATIBLE
+    const fits = comptimeIntFits(s.value, t) || (s.bits === true && t.max === undefined && comptimeIntFits(~s.value, t))
+    return fits ? lossless(false) : INCOMPATIBLE
   }
 
-  // Comptime int can coerce to pointer types (raw address)
-  if (s.kind === 'comptime_int' && (t.kind === 'pointer' || t.kind === 'slice')) {
+  // Comptime int can coerce to pointer types (raw address). A slice is two
+  // values, a pointer and a length: an address alone isn't one.
+  if (s.kind === 'comptime_int' && t.kind === 'pointer') {
     return lossless(false)
   }
 
@@ -760,9 +767,12 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     // Optional slice cannot implicitly narrow to non-optional
     if (s.optional && !t.optional) return INCOMPATIBLE
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
+    // A slice is a view of memory: its elements are read as they lie, so they
+    // have to be laid out as the target's are. A []u8 isn't a []u16, though a
+    // u8 is a u16.
     const elemResult = typeAssignResult(t.element, s.element)
-    if (!elemResult.compatible || elemResult.lossiness !== 'lossless') return INCOMPATIBLE
-    return lossless(elemResult.reinterpret)
+    if (!elemResult.compatible || elemResult.lossiness !== 'lossless' || !elemResult.reinterpret) return INCOMPATIBLE
+    return lossless(true)
   }
 
   // Optional pointer cannot implicitly narrow to non-optional
@@ -784,12 +794,14 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability)
-  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array') {
+  // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability).
+  // The slice's length is N: a many-pointer [*]T has none to give, and a
+  // *[!]T would have to be scanned for it.
+  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array' && isFixedSizes(s.pointee.sizes)) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
-      return lossless(elemResult.reinterpret)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
+      return lossless(true)
     }
   }
 
@@ -797,8 +809,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   if (t.kind === 'array' && t.sizes?.some(s => s === '!' || s === '?') &&
       s.kind === 'pointer' && s.pointee.kind === 'array') {
     const elemResult = typeAssignResult(t.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
-      return lossless(elemResult.reinterpret)
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
+      return lossless(true)
     }
   }
 
@@ -807,7 +819,7 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
       s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
     const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') {
+    if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
   }
@@ -1079,14 +1091,24 @@ export function primitiveByteSize(t: ResolvedType): number | null {
   }
 }
 
+// Bits of integer a float holds exactly: every integer up to 2^bits in magnitude.
+const MANTISSA_BITS: Partial<Record<PrimitiveName, bigint>> = { f32: 24n, f64: 53n }
+
 // Check if converting from one primitive to another is a safe widening conversion
 // Widening: smaller type to larger type where all values are preserved
 export function isWideningConversion(from: PrimitiveName, to: PrimitiveName): boolean {
   if (from === to) return false
   if (from === 'f32' && to === 'f64') return true
   const fromBounds = INT_BOUNDS[from]
+  if (!fromBounds) return false
+  // Integer to float: the mantissa must hold every value of the integer type.
+  const mantissa = MANTISSA_BITS[to]
+  if (mantissa !== undefined) {
+    const limit = 1n << mantissa
+    return fromBounds[0] >= -limit && fromBounds[1] <= limit
+  }
   const toBounds = INT_BOUNDS[to]
-  if (!fromBounds || !toBounds) return false
+  if (!toBounds) return false
   return fromBounds[0] >= toBounds[0] && fromBounds[1] <= toBounds[1]
 }
 
@@ -1197,8 +1219,11 @@ export function memoryParts(t: ResolvedType): MemoryPart[] | null {
   }
 }
 
-// Check if comptime int value fits in a given integer type
+// Check if comptime int value fits in a given integer type, or is exact in a
+// given float type
 export function comptimeIntFits(value: bigint, target: PrimitiveRT): boolean {
+  const mantissa = MANTISSA_BITS[target.name]
+  if (mantissa !== undefined) return value >= -(1n << mantissa) && value <= 1n << mantissa
   const bounds = INT_BOUNDS[target.name]
   if (!bounds) return false
   if (value < bounds[0] || value > bounds[1]) return false

@@ -2,6 +2,7 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
+import { argValue } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
@@ -33,7 +34,11 @@ import {
   unwrap,
   isFloat,
   isInteger,
+  isSigned,
   isNumeric,
+  isComptime,
+  intBitWidth,
+  isBool,
   byteSize,
   isFixedSizes,
   isValueArray,
@@ -57,7 +62,8 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean }
-  | { kind: 'global'; type: ResolvedType }
+  // init: the value of the initializer, when it's a constant expression
+  | { kind: 'global'; type: ResolvedType; init?: ComptimeValue }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
@@ -71,17 +77,14 @@ export interface Scope {
 // === Type Key Helper ===
 
 /**
- * Create a unique key for the types Map.
- * Uses "offset:kind" format to avoid collisions when nested expressions
- * share the same start offset (e.g., `a > b` where both the binary expr
- * and identifier `a` start at the same position).
+ * The key of a binding or declaration (a pattern, a field, a loop variable)
+ * in the types Map: "offset:kind". Each of those has a source offset of its
+ * own. Expressions don't (`a < b / c` and its `b / c` end together, `x as T`
+ * starts where `x` does, and a def's value is pasted at each use with its
+ * offsets unchanged), so their types are keyed by node, in exprTypes.
  */
 export function typeKey(offset: number, kind: string): string {
   return `${offset}:${kind}`
-}
-
-export function exprTypeOffset(expr: { kind: string; span: { start: number; end: number } }): number {
-  return (expr.kind === 'MemberExpr' || expr.kind === 'BinaryExpr' || expr.kind === 'IndexExpr') ? expr.span.end : expr.span.start
 }
 
 // === Type Check Result ===
@@ -99,8 +102,14 @@ export interface PendingLiteral {
 }
 
 export interface TypeCheckResult {
-  // Type map: "offset:kind" → resolved type
+  // Types of bindings and declarations: "offset:kind" → resolved type
   types: Map<string, ResolvedType>
+  // The type of every expression, by AST node
+  exprTypes: Map<AST.Expr, ResolvedType>
+  // Implicit widenings: an expression whose value is used as this wider type
+  // (an i32 operand of an i64 addition, an f32 argument for an f64 parameter).
+  // Its entry in exprTypes stays the type it's computed in.
+  coercions: Map<AST.Expr, ResolvedType>
   // Symbol table (module scope)
   symbols: Map<string, Symbol>
   // Type errors
@@ -161,6 +170,9 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   for (const [key, type] of ctx.types) {
     ctx.types.set(key, concretizeType(type, opts))
   }
+  for (const [expr, type] of ctx.exprTypes) {
+    ctx.exprTypes.set(expr, concretizeType(type, opts))
+  }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
     // Function symbols already have correct FuncRT from resolveSignature;
@@ -201,6 +213,8 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 
   return {
     types: ctx.types,
+    exprTypes: ctx.exprTypes,
+    coercions: ctx.coercions,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
     warnings: ctx.warnings,
@@ -404,6 +418,11 @@ export function isConcreteType(t: ResolvedType): boolean {
 class CheckContext {
   source?: string
   types = new Map<string, ResolvedType>()
+  exprTypes = new Map<AST.Expr, ResolvedType>()
+  coercions = new Map<AST.Expr, ResolvedType>()
+  // if and match expressions used as statements: nothing takes their value,
+  // so their branches don't have to agree on a type.
+  statementExprs = new Set<AST.Expr>()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -1053,8 +1072,9 @@ class CheckContext {
     }
 
     // Handle group expression
-    if (expr.kind === 'GroupExpr') {
-      return this.evalComptimeExpr(expr.expr)
+    const grouped = groupedExpr(expr)
+    if (grouped) {
+      return this.evalComptimeExpr(grouped)
     }
 
     // Handle unary negation
@@ -1065,6 +1085,14 @@ class CheckContext {
       }
       if (operand?.kind === 'float') {
         return { kind: 'float', value: -operand.value }
+      }
+    }
+
+    // Handle bitwise complement
+    if (expr.kind === 'UnaryExpr' && expr.op === '~') {
+      const operand = this.evalComptimeExpr(expr.operand)
+      if (operand?.kind === 'int') {
+        return { kind: 'int', value: ~operand.value }
       }
     }
 
@@ -1084,8 +1112,20 @@ class CheckContext {
           case '&': return { kind: 'int', value: l & r }
           case '|': return { kind: 'int', value: l | r }
           case '^': return { kind: 'int', value: l ^ r }
-          case '<<': return { kind: 'int', value: l << r }
-          case '>>': return { kind: 'int', value: l >> r }
+          // A wider shift than any integer type isn't a value worth computing.
+          case '<<': return r >= 0n && r <= 512n ? { kind: 'int', value: l << r } : null
+          case '>>': return r >= 0n && r <= 512n ? { kind: 'int', value: l >> r } : null
+        }
+      }
+      const number = (v: ComptimeValue | null) => (v?.kind === 'int' || v?.kind === 'float' ? Number(v.value) : null)
+      const l = number(left)
+      const r = number(right)
+      if (l !== null && r !== null && (left?.kind === 'float' || right?.kind === 'float')) {
+        switch (expr.op) {
+          case '+': return { kind: 'float', value: l + r }
+          case '-': return { kind: 'float', value: l - r }
+          case '*': return { kind: 'float', value: l * r }
+          case '/': return { kind: 'float', value: l / r }
         }
       }
     }
@@ -1100,8 +1140,7 @@ class CheckContext {
 
     // Handle member access: .len and .wid on pointer-to-array types
     if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
-      const objOffset = exprTypeOffset(expr.object)
-      const objType = this.types.get(typeKey(objOffset, expr.object.kind))
+      const objType = this.exprTypes.get(expr.object)
         ?? (expr.object.kind === 'IdentExpr' ? this.lookup(expr.object.name)?.type : undefined)
       if (objType) {
         const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
@@ -1157,9 +1196,43 @@ class CheckContext {
       type = primitive('i32')
     }
 
-    this.moduleScope.symbols.set(name, { kind: 'global', type })
+    const init = decl.value ? this.globalInitializer(decl.value) : undefined
+    this.moduleScope.symbols.set(name, init ? { kind: 'global', type, init } : { kind: 'global', type })
     this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
     this.recordDefinition(name, decl.pattern.span.start)
+  }
+
+  // A wasm global starts as a constant, so its initializer has to be one: a
+  // number or bool the compiler can work out, the address of data or of a
+  // function, or a tuple or struct of those. A number's value goes to
+  // codegen, which emits it when the expression as written would need an
+  // instruction (1 + 1, a literal that widens).
+  private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
+    const value = this.evalComptimeExpr(expr)
+    if (!value && !this.isConstantInitializer(expr)) {
+      this.error(expr.span.start, 'global initializer must be a compile-time constant')
+    }
+    return value ?? undefined
+  }
+
+  private isConstantInitializer(expr: AST.Expr): boolean {
+    if (this.evalComptimeExpr(expr)) return true
+    switch (expr.kind) {
+      case 'AnnotationExpr':
+      case 'GroupExpr':
+        return this.isConstantInitializer(expr.expr)
+      case 'TupleExpr':
+        return expr.elements.every(e => e.value !== null && this.isConstantInitializer(e.value))
+      case 'CallExpr':
+        // A struct constructor of constants.
+        return expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
+          && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
+      case 'IdentExpr':
+        return this.lookup(expr.name)?.kind === 'func'
+      default:
+        // A string or an array literal lives in the data section.
+        return this.isDataLiteralExpr(expr)
+    }
   }
 
   // === Second Pass: Check Declarations ===
@@ -1213,16 +1286,22 @@ class CheckContext {
     this.currentScope = prevScope
   }
 
-  private checkMemOpPtr(expr: AST.Expr, context: string): void {
+  // A many-pointer is refused where it's written through; memcpy may read from one.
+  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      if (u.pointee.sizes === null) {
+      if (u.pointee.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
-      return
+      // A string literal gets its bytes in the data section when it's checked
+      // against the type it's used at, as the argument of a function is. So
+      // does one in an arm of an `if` or a `match`.
+      if (expr.kind === 'LiteralExpr' || expr.kind === 'IfExpr' || expr.kind === 'MatchExpr') this.checkExpr(expr, type)
+      return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
+    return type
   }
 
   private checkMemOpBounds(ptrExpr: AST.Expr, lenExpr: AST.Expr, op: string): void {
@@ -1231,8 +1310,7 @@ class CheckContext {
     if (srcExpr.kind === 'CastExpr') srcExpr = srcExpr.expr
     if (srcExpr.kind === 'MemberExpr' && srcExpr.member.kind === 'type') srcExpr = srcExpr.object
 
-    const srcOffset = exprTypeOffset(srcExpr)
-    const srcType = this.types.get(typeKey(srcOffset, srcExpr.kind))
+    const srcType = this.exprTypes.get(srcExpr)
     if (!srcType) return
 
     const arrType = srcType.kind === 'pointer' && srcType.pointee.kind === 'array' ? srcType.pointee : null
@@ -1288,21 +1366,44 @@ class CheckContext {
     this.currentScope = funcScope
     this.currentReturnType = this.resolveType(decl.signature.output)
     if (decl.body.kind === 'Block') {
-      this.checkBody(decl.body)
-      // A block body with unnamed results has to return on every path: there
-      // are no named locals to return when it falls off the end.
       const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
+      // With named results, a trailing expression with a value supplies them.
+      this.checkBody(decl.body, named)
+      const tail = named ? decl.body.stmts.at(-1) : undefined
+      const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
+      if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
+        this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
+      }
+      // A block body with unnamed results has to return on every path: there
+      // are no named locals to return when it falls off the end.
       const resultType = this.currentReturnType
       const hasResult = resultType.kind !== 'void' && !(resultType.kind === 'tuple' && resultType.fields.length === 0)
       if (!named && hasResult && !blockTerminates(decl.body.stmts)) {
         this.error(decl.span.start, `function '${decl.ident ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
-      this.checkExpr(decl.body.expr, this.currentReturnType)
+      this.checkExpr(decl.body.expr, this.returnValueType())
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
+  }
+
+  // The type a returned value is checked against: for a single named result
+  // like (ptr: u32), the type inside.
+  private returnValueType(): ResolvedType {
+    const type = this.currentReturnType ?? VOID
+    return type.kind === 'tuple' && type.fields.length === 1 ? type.fields[0].type : type
+  }
+
+  // The type a trailing value has to have to supply the named results. It
+  // fills them in order, as `let a, b = f()` binds by position, so the names
+  // of its own fields don't matter: the expected type takes them over.
+  private resultsFilledBy(valueType: ResolvedType): ResolvedType {
+    const results = this.returnValueType()
+    const value = unwrap(valueType)
+    if (results.kind !== 'tuple' || value.kind !== 'tuple' || value.fields.length !== results.fields.length) return results
+    return tuple(results.fields.map((f, i) => field(value.fields[i].name, f.type)))
   }
 
   private bindFields(type: AST.Type, scope: Scope, kind: 'param' | 'return'): void {
@@ -1318,15 +1419,16 @@ class CheckContext {
     }
   }
 
-  checkBody(body: AST.FuncBody): void {
+  checkBody(body: AST.FuncBody, tailValueUsed = false): void {
     if (body.kind === 'Block') {
-      this.checkStmts(body.stmts)
+      this.checkStmts(body.stmts, tailValueUsed)
     } else {
       this.inferExpr(body.expr)
     }
   }
 
-  checkStmt(stmt: AST.Statement): void {
+  // valueUsed: the statement is the last of a block whose value something takes.
+  checkStmt(stmt: AST.Statement, valueUsed = false): void {
     switch (stmt.kind) {
       case 'LetStmt':
         this.checkLetStmt(stmt)
@@ -1335,12 +1437,15 @@ class CheckContext {
         this.checkSetStmt(stmt)
         break
       case 'ExpressionStmt':
+        if (valueUsed) this.statementExprs.delete(stmt.expr)
+        else this.statementExprs.add(stmt.expr)
         this.inferExpr(stmt.expr)
         break
       case 'DeferStmt': {
         const prev = this.deferLoopDepth
         this.deferLoopDepth = this.loopDepth
         try {
+          this.statementExprs.add(stmt.expr)
           this.inferExpr(stmt.expr)
         } finally {
           this.deferLoopDepth = prev
@@ -1352,18 +1457,23 @@ class CheckContext {
           this.error(stmt.span.start, `cannot return from inside a deferred expression`)
         }
         if (stmt.value) {
-          // For single-field named returns like (ptr: u32), check against the inner type
-          let checkType = this.currentReturnType
-          if (checkType?.kind === 'tuple' && checkType.fields.length === 1) {
-            checkType = checkType.fields[0].type
-          }
+          const checkType = this.currentReturnType ? this.returnValueType() : undefined
           if (checkType && checkType.kind !== 'void') {
             this.checkExpr(stmt.value, checkType)
           } else {
             this.inferExpr(stmt.value)
           }
+        } else {
+          // A bare return hands back the named results as they are set. With
+          // an unnamed result there is nothing for it to return.
+          const type = this.currentReturnType
+          const named = type?.kind === 'tuple' && type.fields.some(f => f.name)
+          const hasResult = type && type.kind !== 'void' && !(type.kind === 'tuple' && type.fields.length === 0)
+          if (type && hasResult && !named) {
+            this.error(stmt.span.start, `return needs a value: the function returns ${typeToString(type)}`)
+          }
         }
-        if (stmt.when) this.inferExpr(stmt.when)
+        if (stmt.when) this.checkCondition(stmt.when)
         break
       case 'AssignmentStmt': {
         if (stmt.target.kind === 'SliceExpr') {
@@ -1375,18 +1485,17 @@ class CheckContext {
           targetType = this.inferExpr(stmt.target)
         }
         this.checkMutability(stmt.target, stmt.span.start)
-        const targetUnwrapped = targetType ? unwrap(targetType) : undefined
         if (targetType && stmt.op === '=') {
           this.checkExpr(stmt.value, targetType)
-        } else if (targetType && targetUnwrapped?.kind === 'primitive') {
-          this.checkExpr(stmt.value, targetType)
+        } else if (targetType) {
+          this.checkCompoundAssignment(stmt, targetType)
         } else {
           this.inferExpr(stmt.value)
         }
         break
       }
       case 'WhileStmt':
-        this.inferExpr(stmt.condition)
+        this.checkCondition(stmt.condition)
         this.checkLoopBody(stmt.body)
         break
       case 'LoopStmt':
@@ -1420,7 +1529,7 @@ class CheckContext {
         break
       }
       case 'AssertStmt':
-        this.inferExpr(stmt.expr)
+        this.checkCondition(stmt.expr)
         break
       case 'BreakStmt':
       case 'ContinueStmt':
@@ -1428,17 +1537,50 @@ class CheckContext {
           const what = stmt.kind === 'BreakStmt' ? 'break' : 'continue'
           this.error(stmt.span.start, `cannot ${what} out of a deferred expression`)
         }
-        if (stmt.when) this.inferExpr(stmt.when)
+        if (stmt.when) this.checkCondition(stmt.when)
         break
     }
   }
 
+  // x op= v is x = x op v with the result stored back in x: the operator has
+  // to apply to x's type, and v has to widen to it (x can't widen to v's).
+  private checkCompoundAssignment(stmt: AST.AssignmentStmt, targetType: ResolvedType): void {
+    const op = stmt.op.slice(0, -1)
+    const target = unwrap(targetType)
+    if (target.kind !== 'primitive') {
+      // p += n moves a pointer: n is an integer that fits an address.
+      const valueType = this.inferExpr(stmt.value)
+      const value = unwrap(valueType)
+      if (target.kind === 'pointer' && value.kind === 'comptime_int') {
+        this.coerce(stmt.value, valueType, addressType(value))
+      } else if (target.kind !== 'pointer' || !isInteger(value) || (byteSize(value) ?? 8) > 4) {
+        this.error(stmt.span.start, `'${stmt.op}' cannot be applied to ${typeToString(targetType)} and ${typeToString(valueType)}`)
+      }
+      return
+    }
+    const problem = operandProblem(op, targetType)
+    if (problem) {
+      this.error(stmt.span.start, problem)
+      this.inferExpr(stmt.value)
+      return
+    }
+    if (SHIFT_OPS.has(op)) {
+      // A count is any integer; a constant one takes x's type.
+      const valueType = this.inferExpr(stmt.value)
+      const value = unwrap(valueType)
+      if (value.kind === 'comptime_int') this.coerce(stmt.value, valueType, stripMax(targetType))
+      else if (!isInteger(value)) this.error(stmt.value.span.start, `'${stmt.op}' needs an integer count, not ${typeToString(valueType)}`)
+      return
+    }
+    this.checkExpr(stmt.value, targetType)
+  }
+
   // Check statements in order. After `return/break/continue when c`, or an
   // `if c { ... }` whose branch always exits, c is false for the rest.
-  private checkStmts(stmts: AST.Statement[]): void {
+  private checkStmts(stmts: AST.Statement[], tailValueUsed = false): void {
     for (let i = 0; i < stmts.length; i++) {
       const stmt = stmts[i]
-      this.checkStmt(stmt)
+      this.checkStmt(stmt, tailValueUsed && i === stmts.length - 1)
       let exitCond: AST.Expr | null = null
       if ((stmt.kind === 'ReturnStmt' || stmt.kind === 'BreakStmt' || stmt.kind === 'ContinueStmt') && stmt.when) {
         exitCond = stmt.when
@@ -1448,7 +1590,7 @@ class CheckContext {
       }
       if (exitCond) {
         const rest = stmts.slice(i + 1)
-        this.withNarrowing(this.boundsFrom(exitCond, false), rest, () => this.checkStmts(rest))
+        this.withNarrowing(this.boundsFrom(exitCond, false), rest, () => this.checkStmts(rest, tailValueUsed))
         return
       }
     }
@@ -1486,6 +1628,8 @@ class CheckContext {
       }
       // Concretize comptime types for variables
       type = this.concretize(valueType)
+      // A constant initializer takes the variable's type, down to its literals.
+      if (isComptimeNumber(valueType)) this.typeConstant(stmt.value, type, valueType, false)
     } else {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
@@ -1496,7 +1640,11 @@ class CheckContext {
   }
 
   checkSetStmt(stmt: AST.SetStmt): void {
-    const valueType = this.inferExpr(stmt.value)
+    // set x = v assigns like x = v: the value is checked against x's type.
+    const sym = stmt.pattern.kind === 'IdentPattern' ? this.lookup(stmt.pattern.name) : undefined
+    const valueType = sym && sym.kind !== 'func' && sym.kind !== 'type'
+      ? this.checkExpr(stmt.value, sym.type)
+      : this.inferExpr(stmt.value)
     this.validatePatternBindingsExist(stmt.pattern, valueType)
   }
 
@@ -1515,6 +1663,15 @@ class CheckContext {
           this.error(pattern.span.start, `cannot destructure non-tuple type in set: ${typeToString(type)}`)
           break
         }
+        // A field goes from the stack straight into its variable, so it has
+        // to be held the way the variable is: nothing widens it on the way.
+        const fits = (varName: string, fieldType: ResolvedType | undefined) => {
+          const sym = this.lookup(varName)
+          if (!sym || !fieldType || sym.kind === 'func' || sym.kind === 'type') return
+          if (!typeAssignable(sym.type, fieldType) || !sameRepresentation(fieldType, sym.type)) {
+            this.error(pattern.span.start, `cannot set '${varName}' (${typeToString(sym.type)}) from a field of type ${typeToString(fieldType)}`)
+          }
+        }
         for (const element of pattern.elements) {
           if (element.kind === 'named') {
             const varName = element.binding ?? element.field
@@ -1522,8 +1679,11 @@ class CheckContext {
             if (!sym) {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             }
+            fits(varName, unwrappedType.fields.find(f => f.name === element.field)?.type)
           } else {
-            this.validatePatternBindingsExist(element.pattern, unwrappedType.fields[pattern.elements.indexOf(element)]?.type ?? type)
+            const fieldType = unwrappedType.fields[pattern.elements.indexOf(element)]?.type
+            this.validatePatternBindingsExist(element.pattern, fieldType ?? type)
+            if (element.pattern.kind === 'IdentPattern') fits(element.pattern.name, fieldType)
           }
         }
         break
@@ -1876,10 +2036,7 @@ class CheckContext {
     const type = this.inferExprInner(expr)
     // Record type for ALL expressions - codegen needs this
     // Note: comptime types are stored as-is; concretization happens in a later pass
-    // For MemberExpr, use span.end so chained accesses like a.b.c each get unique keys
-    // This allows hover to show: a -> type1, a.b -> type2, a.b.c -> type3
-    const offset = exprTypeOffset(expr)
-    this.types.set(typeKey(offset, expr.kind), type)
+    this.exprTypes.set(expr, type)
     return type
   }
 
@@ -1902,31 +2059,31 @@ class CheckContext {
         this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
       }
       const result = pointer(expected.pointee, false, expected.mutable)
-      this.types.set(typeKey(expr.span.start, expr.kind), result)
+      this.exprTypes.set(expr, result)
       return result
     }
 
     // Bidirectional: propagate expected type into if-expression branches
     if (expr.kind === 'IfExpr' && !expr.pattern && expr.else_) {
-      this.inferExpr(expr.condition)
+      this.checkCondition(expr.condition)
       this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.checkBodyAgainst(expr.thenBranch, expected))
       const seen = [expr.condition]
       for (const elif of expr.elifs) {
         this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
-          this.inferExpr(elif.condition)
+          this.checkElifCondition(elif)
           this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.checkBodyAgainst(elif.thenBranch, expected))
         })
         seen.push(elif.condition)
       }
       const else_ = expr.else_
       this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
     // Bidirectional: propagate expected type into match-expression arms
     if (expr.kind === 'MatchExpr') {
-      this.inferExpr(expr.subject)
+      this.checkMatchSubject(expr)
       for (const arm of expr.arms) {
         if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') {
           this.checkBodyAgainst(arm.body, expected)
@@ -1934,11 +2091,11 @@ class CheckContext {
           this.checkExpr(arm.body, expected)
         }
       }
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
-    const inferred = this.inferExprInner(expr)
+    const inferred = this.inferExprInner(expr, true)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
     // Helper to check if sizes include inferred marker
@@ -1969,7 +2126,7 @@ class CheckContext {
       const resolved = this.resolveListToArray(inferred, resolvedExpected)
       // For LSP, record the comptime_list type (not resolved) so user sees the literal type
       if (expr.kind === 'ArrayExpr') {
-        this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+        this.exprTypes.set(expr, inferred)
       }
       // Collect literal for deferred serialization (concrete types only)
       if (!hasInferredMarker(resolvedExpected.sizes)) {
@@ -1999,7 +2156,7 @@ class CheckContext {
         }
       }
       // Record the inferred comptime type
-      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+      this.exprTypes.set(expr, inferred)
       // Collect literal for deferred serialization
       this.addLiteral(expr.span.start, expr, resolvedExpected)
       // Return concretized type
@@ -2026,7 +2183,7 @@ class CheckContext {
         this.checkExpr(elem, innerType)
       }
       // Record and return
-      this.types.set(typeKey(expr.span.start, expr.kind), inferred)
+      this.exprTypes.set(expr, inferred)
       this.addLiteral(expr.span.start, expr, resolvedPointee)
       return resolvedExpected
     }
@@ -2034,7 +2191,7 @@ class CheckContext {
     // (ptr, len) against a slice is that slice, built from its two parts: a
     // value like any other tuple, with nothing to lay out in the data section.
     if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && expected.kind === 'slice') {
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -2074,7 +2231,7 @@ class CheckContext {
           for (const elem of (expr as AST.ArrayExpr).elements) {
             if (this.isDataLiteralExpr(elem) && !(structElements && elem.kind === 'TupleExpr')) {
               this.validateDataLiteralRange(elem, innerType)
-              this.types.set(typeKey(elem.span.start, elem.kind), innerType)
+              this.exprTypes.set(elem, innerType)
             } else {
               this.checkExpr(elem, innerType)
             }
@@ -2082,7 +2239,7 @@ class CheckContext {
         }
       }
       // Record the expected type so codegen knows to emit ptr+len for slices
-      this.types.set(typeKey(expr.span.start, expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
     }
 
@@ -2098,7 +2255,7 @@ class CheckContext {
       const inferredTotal = totalElements(inferred.sizes)
       if (inferredTotal !== null) {
         const resolved = array(expected.element, fillInferredSize(expected.sizes, inferredTotal))
-        this.types.set(typeKey(expr.span.start, expr.kind), resolved)
+        this.exprTypes.set(expr, resolved)
         return resolved
       }
     }
@@ -2109,21 +2266,13 @@ class CheckContext {
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
       for (let i = 0; i < unwrappedExpected.fields.length; i++) {
-        const elemExpr = (expr as AST.TupleExpr).elements[i]
-        if (elemExpr?.value) {
-          this.checkExpr(elemExpr.value, unwrappedExpected.fields[i].type)
+        const value = argValue((expr as AST.TupleExpr).elements[i])
+        if (value) {
+          this.checkExpr(value, unwrappedExpected.fields[i].type)
         }
       }
-      this.types.set(typeKey(exprTypeOffset(expr), expr.kind), expected)
+      this.exprTypes.set(expr, expected)
       return expected
-    }
-
-    // For other types, check assignability and record the inferred type
-    if (!typeAssignable(expected, inferred)) {
-      this.error(
-        expr.span.start,
-        `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`,
-      )
     }
 
     // Record the type for LSP hints
@@ -2136,9 +2285,11 @@ class CheckContext {
     const compatible = typeAssignable(expected, inferred)
     const recordType = expected.kind === 'named' ? expected
       : (isComptimeLiteral && !expectedHasInferredSize && compatible ? expected : inferred)
-    // Use span.end for MemberExpr to match inferExpr behavior (allows distinguishing a.b from a.b.c)
-    const typeOffset = exprTypeOffset(expr)
-    this.types.set(typeKey(typeOffset, expr.kind), recordType)
+    this.exprTypes.set(expr, recordType)
+
+    // For other types, check assignability; a constant takes the expected
+    // type and a narrower value is marked to be widened.
+    this.coerce(expr, inferred, expected, prefix)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
@@ -2189,7 +2340,10 @@ class CheckContext {
     return this.concretize(type)
   }
 
-  inferExprInner(expr: AST.Expr): ResolvedType {
+  // typedByContext: the expression is about to meet an expected type.
+  inferExprInner(expr: AST.Expr, typedByContext = false): ResolvedType {
+    // Inferring afresh: whatever context marked it for widening before is gone.
+    this.coercions.delete(expr)
     switch (expr.kind) {
       case 'LiteralExpr':
         return this.inferLiteral(expr)
@@ -2222,7 +2376,7 @@ class CheckContext {
         return this.inferTuple(expr)
 
       case 'ArrayExpr':
-        return this.inferArray(expr)
+        return this.inferArray(expr, typedByContext)
 
       case 'RepeatExpr':
         return this.inferRepeat(expr)
@@ -2242,10 +2396,14 @@ class CheckContext {
       case 'MatchExpr':
         return this.inferMatch(expr)
 
-      case 'CastExpr':
+      case 'CastExpr': {
         // Explicit cast - always returns the target type (may generate conversion code)
-        this.inferExpr(expr.expr)
-        return this.resolveType(expr.type)
+        const from = this.inferExpr(expr.expr)
+        const to = this.resolveType(expr.type)
+        const problem = castProblem(from, to)
+        if (problem) this.error(expr.span.start, problem)
+        return to
+      }
 
       case 'AnnotationExpr': {
         // Type annotation - use bidirectional type checking to propagate type down
@@ -2329,20 +2487,24 @@ class CheckContext {
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
-    // Check for builtin functions first
+    // Check for builtin functions first. A function the program declares takes
+    // the place of the builtin of the same name.
     if (expr.callee.kind === 'IdentExpr') {
-      const builtinResult = this.inferBuiltin(expr, expr.callee.name)
+      const declared = this.lookup(expr.callee.name)?.kind === 'func'
+      const builtinResult = declared ? null : this.inferBuiltin(expr, expr.callee.name)
       if (builtinResult !== null) return builtinResult
 
       // Primitive type cast: u64(x), f32(x), etc.
       if (PRIMITIVE_NAMES.has(expr.callee.name)) {
         const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
+        const to = primitive(expr.callee.name as PrimitiveName)
         if (args.length !== 1) {
           this.error(expr.span.start, `type cast '${expr.callee.name}' expects 1 argument, got ${args.length}`)
         } else {
-          this.inferExpr(args[0].value)
+          const problem = castProblem(this.inferExpr(args[0].value), to)
+          if (problem) this.error(expr.span.start, problem)
         }
-        return primitive(expr.callee.name as PrimitiveName)
+        return to
       }
     }
 
@@ -2394,7 +2556,7 @@ class CheckContext {
       }
       args.forEach((arg, i) => {
         // `x:` is shorthand for `x: x`: check the variable it names.
-        const value: AST.Expr | null = arg.value ?? (arg.name ? { kind: 'IdentExpr', name: arg.name, span: arg.span } : null)
+        const value = argValue(arg)
         if (!value) return
         const field = arg.name ? calleeType.fields.find((f) => f.name === arg.name) : calleeType.fields[i]
         if (field) {
@@ -2412,7 +2574,9 @@ class CheckContext {
   }
 
   // Handle builtin functions: memset, memcpy, zero
-  // Returns null if not a builtin, otherwise returns the result type
+  // Returns null if not a builtin, otherwise returns the result type.
+  // The BuiltinCall entry each one records is what tells codegen that the call
+  // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
@@ -2423,7 +2587,11 @@ class CheckContext {
           this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
           return VOID
         }
-        this.checkMemOpPtr(args[0].value, 'memzero dest')
+        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
+        // memzero has no length operand: the destination's type gives it.
+        if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
+          this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
+        }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
       }
@@ -2452,7 +2620,7 @@ class CheckContext {
         }
 
         this.checkMemOpPtr(args[0].value, 'memcpy dest')
-        this.inferExpr(args[1].value)
+        this.checkMemOpPtr(args[1].value, 'memcpy src', true)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')
         this.checkMemOpBounds(args[1].value, args[2].value, 'memcpy')
@@ -2461,39 +2629,19 @@ class CheckContext {
         return VOID
       }
 
-      // Float-only unary operations: sqrt, ceil, floor, trunc, nearest
+      // Float-only: sqrt, ceil, floor, trunc, nearest, copysign
       case 'sqrt':
       case 'ceil':
       case 'floor':
       case 'trunc':
-      case 'nearest': {
-        if (args.length !== 1) {
-          this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('f64')
-        }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a float type, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
-      }
-
-      // Float-only binary: copysign
+      case 'nearest':
       case 'copysign': {
-        if (args.length !== 2) {
-          this.error(expr.span.start, `copysign expects 2 arguments, got ${args.length}`)
+        const arity = name === 'copysign' ? 2 : 1
+        if (args.length !== arity) {
+          this.error(expr.span.start, `${name} expects ${arity} argument${arity === 1 ? '' : 's'}, got ${args.length}`)
           return primitive('f64')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `copysign requires float types, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.checkExpr(args[1].value, argType, 'copysign')
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'float')
       }
 
       // Numeric binary: min, max (works for all numeric types)
@@ -2503,47 +2651,33 @@ class CheckContext {
           this.error(expr.span.start, `${name} expects 2 arguments, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        this.checkExpr(args[1].value, argType, name)
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Numeric unary: abs (works for floats and signed integers)
+      // Numeric unary: abs (works for floats and integers; an unsigned value is its own abs)
       case 'abs': {
         if (args.length !== 1) {
           this.error(expr.span.start, `abs expects 1 argument, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `abs requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        // For unsigned types, abs is a no-op but we still allow it
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Integer-only unary: clz, ctz, popcnt
+      // Integer-only unary: clz, ctz, popcnt. The count fits a u8 whatever the
+      // operand's width, so it widens to any integer type.
       case 'clz':
       case 'ctz':
       case 'popcnt': {
         if (args.length !== 1) {
           this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('i32')
+          return primitive('u8')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isInteger(argType)) {
-          this.error(args[0].value.span.start, `${name} requires an integer type, got ${typeToString(argType)}`)
-          return primitive('i32')
+        const operandType = this.builtinOperandType(expr, name, args, 'integer')
+        // The count is of the operand's own bits, and wasm counts in 32 or 64.
+        if (intBitWidth(operandType) !== 32 && intBitWidth(operandType) !== 64) {
+          this.error(args[0].value.span.start, `${name} requires i32, u32, i64 or u64, got ${typeToString(operandType)}`)
         }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return primitive('u8')
       }
 
       // sizeof(T) - returns byte size of a type as comptime u32
@@ -2584,8 +2718,8 @@ class CheckContext {
           this.error(expr.span.start, `mul_hi expects 2 arguments, got ${args.length}`)
           return primitive('u64')
         }
-        this.checkExpr(args[0].value, primitive('u64'), 'mul_hi a')
-        this.checkExpr(args[1].value, primitive('u64'), 'mul_hi b')
+        // The product is of two u64s, so that is the type the operands meet at.
+        this.builtinOperandType(expr, name, args, 'integer', primitive('u64'))
         return primitive('u64')
       }
 
@@ -2594,29 +2728,110 @@ class CheckContext {
     }
   }
 
+  // Types the operands of a numeric builtin together, the way a binary operator
+  // types its own: typed operands meet at the wider type, and a literal takes
+  // that type wherever it stands, so max(1.0, x) is max(x, 1.0). With only
+  // literals it's their default type. A builtin that computes in one type
+  // only (mul_hi) gives it as `fixed`: every operand has to widen to it.
+  // A narrower operand is marked to be widened like any other value (coerce).
+  // Records the type the builtin computes in for codegen and returns the type
+  // of its result, for a builtin that returns one of its operands.
+  private builtinOperandType(
+    expr: AST.CallExpr,
+    name: string,
+    args: { value: AST.Expr }[],
+    kind: 'float' | 'integer' | 'numeric',
+    fixed: ResolvedType | null = null,
+  ): ResolvedType {
+    const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
+    const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
+    // What checking goes on with after an operand of the wrong kind.
+    const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
+    const types = args.map((arg) => this.inferExpr(arg.value))
+    // Inference types an `if` or a `match` from all of its arms, and leaves it
+    // without a type when one of them has no value. Checking it against the
+    // type of the other operands is what says which arm that is.
+    const branching = args.map((arg) => arg.value.kind === 'IfExpr' || arg.value.kind === 'MatchExpr')
+    // An operand that takes its type from the others: a constant, and a
+    // branching one that inference left without a type.
+    const hasTyped = fixed !== null || types.some((t) => !isComptime(t) && accepts(t))
+    const fromOthers = types.map((t, i) => isComptime(t) || (hasTyped && branching[i] && t.kind === 'void'))
+
+    let common = fixed
+    for (const [i, type] of types.entries()) {
+      if (fromOthers[i]) continue
+      if (!accepts(type)) {
+        this.error(args[i].value.span.start, `${name} requires ${wanted}, got ${typeToString(type)}`)
+        return fallback
+      }
+      const plain = stripMax(type)
+      if (common === null || (!fixed && !typeAssignable(common, plain) && typeAssignable(plain, common))) {
+        common = plain
+      } else if (!typeAssignable(common, plain)) {
+        this.error(args[i].value.span.start, `${name}: cannot assign ${typeToString(type)} to ${typeToString(common)}`)
+        return common
+      }
+    }
+    if (common === null) {
+      const floatLiteral = types.find((t) => t.kind === 'comptime_float')
+      if (floatLiteral && kind === 'integer') {
+        this.error(args[0].value.span.start, `${name} requires ${wanted}, got ${typeToString(floatLiteral)}`)
+        return fallback
+      }
+      common = floatLiteral || kind === 'float' ? primitive('f64') : this.unifyTypes(types)
+    }
+    for (const [i, type] of types.entries()) {
+      if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
+      else this.coerce(args[i].value, type, common, `${name}: `)
+    }
+    this.types.set(typeKey(expr.span.start, 'BuiltinCall'), common)
+
+    // A result that is one of the operands is in a range when they all are: the
+    // widest of their ranges. A literal only has to fit the type to be an
+    // operand, but has to be inside that range for the result to be. Only a
+    // constant whose value is known counts as one, and a branching operand
+    // never does: no one arm's value or range speaks for the others.
+    const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
+    if (common.kind !== 'primitive' || ranges.length === 0) return common
+    const widest = Math.max(...ranges)
+    const inRange = types.every((t, i) => {
+      if (branching[i]) return false
+      if (t.kind === 'primitive') return t.max !== undefined
+      const constant = isComptime(t) ? this.evalComptimeExpr(args[i].value) : null
+      return constant?.kind === 'int' && constant.value >= 0n && constant.value < BigInt(widest)
+    })
+    return inRange ? primitive(common.name, widest) : common
+  }
+
   inferBinary(expr: AST.BinaryExpr): ResolvedType {
     const leftType = this.inferExpr(expr.left)
     const rightType = this.inferExpr(expr.right)
+    const op = expr.op
+
+    if (op === '&&' || op === '||') {
+      this.requireBool(expr.left, leftType, `operand of '${op}'`)
+      this.requireBool(expr.right, rightType, `operand of '${op}'`)
+      return primitive('bool')
+    }
 
     const left = unwrap(leftType)
     const right = unwrap(rightType)
-    const leftIsComptime = left.kind === 'comptime_int' || left.kind === 'comptime_float'
-    const rightIsComptime = right.kind === 'comptime_int' || right.kind === 'comptime_float'
-    const stripMax = (t: ResolvedType): ResolvedType =>
-      t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
+    const comparison = COMPARISON_OPS.has(op)
+    // The type the expression keeps when its operands are rejected: the wider
+    // operand's, which is the likeliest to let checking go on without a
+    // second error.
+    const wider = (isFloat(right) && !isFloat(left)) || (byteSize(right) ?? 0) > (byteSize(left) ?? 0)
+    const fallback = comparison ? primitive('bool') : stripMax(wider ? rightType : leftType)
 
-    // Comparison and logical operators: propagate concrete type to comptime operand
-    // Strip range — comparing u32#8 with a literal shouldn't constrain the literal to <8
-    if (['==', '!=', '<', '>', '<=', '>='].includes(expr.op)) {
-      if (leftIsComptime && right.kind === 'primitive') {
-        this.checkExpr(expr.left, stripMax(rightType))
-      } else if (rightIsComptime && left.kind === 'primitive') {
-        this.checkExpr(expr.right, stripMax(leftType))
-      }
-      return primitive('bool')
+    if (!isScalar(left) || !isScalar(right)) {
+      this.checkAddressOperands(expr, leftType, rightType)
+      return fallback
     }
-    if (['&&', '||'].includes(expr.op)) {
-      return primitive('bool')
+
+    const problem = operandProblem(op, leftType) ?? operandProblem(op, rightType)
+    if (problem) {
+      this.error(expr.span.start, problem)
+      return fallback
     }
 
     // Arithmetic with a comptime constant propagates ranges:
@@ -2627,8 +2842,12 @@ class CheckContext {
     // For an unsigned value and a constant K >= 0:
     //   x & K  → max value K          x % K → max value K-1 (K > 0)
     //   x >> K → max value (max >> K), where max is the range or the type's width
-    const computeRange = (base: ResolvedType, operand: bigint, constantOnRight: boolean): ResolvedType => {
-      if (base.kind !== 'primitive' || operand < 0n) return stripMax(base)
+    // The bound comes from the constant's own value. An if or match of
+    // constants has a constant type but no one value: no range from that.
+    const computeRange = (base: ResolvedType, constant: AST.Expr, constantOnRight: boolean): ResolvedType => {
+      const value = this.evalComptimeExpr(constant)
+      if (base.kind !== 'primitive' || value?.kind !== 'int' || value.value < 0n) return stripMax(base)
+      const operand = value.value
       const limit = (bound: bigint): ResolvedType => {
         const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
         const next = current !== null && current < bound ? current : bound
@@ -2648,32 +2867,267 @@ class CheckContext {
       return stripMax(base)
     }
 
-    let resultType = stripMax(leftType)
-    if (left.kind === 'primitive' && right.kind === 'primitive') {
-      const leftSize = byteSize(left)
-      const rightSize = byteSize(right)
-      if (leftSize !== null && rightSize !== null && rightSize > leftSize) {
-        resultType = stripMax(rightType)
+    // Two constants: the operands take the result's type, so that 1.0 + 2 is
+    // a float addition and 5000000000 + 1 a 64-bit one, whatever type the
+    // context then gives the whole expression.
+    if (isComptimeNumber(left) && isComptimeNumber(right)) {
+      if (comparison) {
+        const type = left.kind === 'comptime_float' || right.kind === 'comptime_float'
+          ? this.concretize(comptimeFloat(0))
+          : this.unifyTypes([left, right])
+        this.coerce(expr.left, leftType, type)
+        this.coerce(expr.right, rightType, type)
+        return primitive('bool')
       }
-    } else if (right.kind === 'comptime_int' && left.kind === 'primitive') {
-      resultType = computeRange(leftType, right.value, true)
-    } else if (left.kind === 'comptime_int' && right.kind === 'primitive') {
-      resultType = computeRange(rightType, left.value, false)
-    } else if (rightIsComptime && left.kind === 'primitive') {
-      resultType = stripMax(leftType)
-    } else if (leftIsComptime && right.kind === 'primitive') {
-      resultType = stripMax(rightType)
+      const result = this.constantResult(expr, left, right)
+      this.typeConstant(expr.left, result, leftType)
+      this.typeConstant(expr.right, result, rightType)
+      return result
     }
 
-    // Propagate concrete type to comptime operands (only for numeric types).
-    // The operand gets the plain type: in x % 12 the 12 needn't fit u32#12.
-    if (leftIsComptime && right.kind === 'primitive') {
-      this.checkExpr(expr.left, stripMax(resultType))
-    } else if (rightIsComptime && left.kind === 'primitive') {
-      this.checkExpr(expr.right, stripMax(resultType))
+    if (SHIFT_OPS.has(op)) {
+      // 1 << n has n's type.
+      if (left.kind === 'comptime_int') {
+        const type = stripMax(rightType)
+        this.coerce(expr.left, leftType, type)
+        return type
+      }
+      if (right.kind === 'comptime_int') {
+        this.coerce(expr.right, rightType, stripMax(leftType))
+        return computeRange(leftType, expr.right, true)
+      }
+      // The count keeps its own type: only its low bits matter. The value is
+      // shifted in its own type too, unless the count is wider: then in the
+      // count's width, with the value's sign (u8 << u32 is a 32-bit shift).
+      // A rotation is always within the value's own width.
+      const width = byteSize(right) ?? 0
+      const rotation = op === '<<<' || op === '>>>'
+      if (rotation || width <= (byteSize(left) ?? 0)) return stripMax(leftType)
+      const type = primitive(`${isSigned(left) ? 'i' : 'u'}${width * 8}` as PrimitiveName)
+      this.coerce(expr.left, leftType, type)
+      return type
     }
 
-    return resultType
+    // A constant takes the other operand's plain type: comparing a u32#8 with
+    // a literal, or x % 12, shouldn't need the literal to be below the range.
+    if (isComptimeNumber(left) || isComptimeNumber(right)) {
+      const constantOnRight = isComptimeNumber(right)
+      const constant = constantOnRight ? right : left
+      const [constantExpr, otherExpr] = constantOnRight ? [expr.right, expr.left] : [expr.left, expr.right]
+      const otherType = constantOnRight ? leftType : rightType
+      // A float constant next to an integer is a float operation, when the
+      // integer widens to the default float: n * 1.5 with an i32 n is an f64.
+      const float = this.concretize(comptimeFloat(0))
+      if (constant.kind === 'comptime_float' && isInteger(otherType) && typeAssignable(float, stripMax(otherType))) {
+        this.coerce(constantExpr, constant, float)
+        this.coerce(otherExpr, otherType, float)
+        return comparison ? primitive('bool') : float
+      }
+      this.coerce(constantExpr, constant, stripMax(otherType))
+      if (comparison) return primitive('bool')
+      return constant.kind === 'comptime_int' ? computeRange(otherType, constantExpr, constantOnRight) : stripMax(otherType)
+    }
+
+    // Two values: the narrower one widens to the other's type. Types neither
+    // of which holds the other (i32 and u32, i32 and f32) need a cast.
+    const plainLeft = stripMax(leftType)
+    const plainRight = stripMax(rightType)
+    let type: ResolvedType
+    if (typeEquals(unwrap(plainLeft), unwrap(plainRight)) || typeAssignable(plainLeft, plainRight)) {
+      type = plainLeft
+    } else if (typeAssignable(plainRight, plainLeft)) {
+      type = plainRight
+    } else {
+      this.error(expr.span.start, `mismatched operands for '${op}': ${typeToString(leftType)} and ${typeToString(rightType)} (cast one side explicitly)`)
+      return fallback
+    }
+    this.coerce(expr.left, leftType, type)
+    this.coerce(expr.right, rightType, type)
+    return comparison ? primitive('bool') : type
+  }
+
+  // The type of a constant operator expression: its value when that can be
+  // computed, so that the context can check it fits. An operand further from
+  // zero stands in for it, so that the type the expression defaults to holds
+  // its operands too: 5000000000 - 4999999999 is an i64 subtraction.
+  private constantResult(expr: AST.BinaryExpr, left: ResolvedType, right: ResolvedType): ResolvedType {
+    if (left.kind === 'comptime_int' && right.kind === 'comptime_int') {
+      const value = this.evalComptimeExpr(expr)
+      // Bitwise operators and shifts keep a bit pattern one: ~0 << 4, ~3 | 1.
+      const bits = (left.bits || right.bits) && (BITWISE_OPS.has(expr.op) || SHIFT_OPS.has(expr.op))
+      const result: ResolvedType = value?.kind === 'int' ? comptimeInt(value.value, bits) : left
+      return [left, right].reduce((widest, t) => (magnitude(t) > magnitude(widest) ? t : widest), result)
+    }
+    const number = (t: ResolvedType) => (t.kind === 'comptime_int' || t.kind === 'comptime_float' ? Number(t.value) : 0)
+    const l = number(left)
+    const r = number(right)
+    switch (expr.op) {
+      case '+': return comptimeFloat(l + r)
+      case '-': return comptimeFloat(l - r)
+      case '*': return comptimeFloat(l * r)
+      case '/': return comptimeFloat(l / r)
+      default: return comptimeFloat(l)
+    }
+  }
+
+  // An operator with a pointer operand works on addresses, which are 32 bits:
+  // the other operand is a pointer too, or an integer no wider than that.
+  private checkAddressOperands(expr: AST.BinaryExpr, leftType: ResolvedType, rightType: ResolvedType): void {
+    const check = (operand: AST.Expr, type: ResolvedType): boolean => {
+      const t = unwrap(type)
+      if (t.kind === 'pointer' || t.kind === 'func') return true
+      if (t.kind === 'comptime_int') {
+        this.coerce(operand, type, addressType(t))
+        return true
+      }
+      return isInteger(t) && (byteSize(t) ?? 8) <= 4
+    }
+    const leftOk = check(expr.left, leftType)
+    const rightOk = check(expr.right, rightType)
+    if (!leftOk || !rightOk) {
+      this.error(expr.span.start, `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}`)
+    }
+  }
+
+  private checkCondition(expr: AST.Expr): void {
+    this.requireBool(expr, this.inferExpr(expr), 'condition')
+  }
+
+  // `elif let x = e` tests an optional, not a bool.
+  private checkElifCondition(elif: AST.ElifBranch): void {
+    if (elif.pattern) this.inferExpr(elif.condition)
+    else this.checkCondition(elif.condition)
+  }
+
+  // Report a condition or logical operand that isn't a bool: there is no
+  // implicit truthiness.
+  private requireBool(expr: AST.Expr, type: ResolvedType, what: string): void {
+    if (!isBool(type)) {
+      this.error(expr.span.start, `${what} must be bool, not ${typeToString(type)}`)
+    }
+  }
+
+  // Make an expression, already inferred as `actual`, give a value of type
+  // `expected`. A constant takes the type itself, down to its literals. A
+  // narrower value keeps its type and is marked to be widened where it's
+  // used. Anything else is an error.
+  private coerce(expr: AST.Expr, actual: ResolvedType, expected: ResolvedType, prefix = ''): void {
+    const from = unwrap(actual)
+    const to = unwrap(expected)
+    // An array literal's own type is a guess from its elements ([0.5, x] an
+    // f64 one). With the right number of them, what counts is that each fits
+    // its place, which is checked below.
+    const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr'
+    const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
+      && to.sizes?.length === 1 && to.sizes[0] === from.count
+    if (!elementwise && !typeAssignable(expected, actual)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
+      return
+    }
+    if (to.kind === 'primitive' && isComptimeNumber(from)) {
+      this.typeConstant(expr, expected, actual)
+    } else if (to.kind === 'pointer' && from.kind === 'comptime_int') {
+      // A constant address is a 32-bit value, whatever it's computed from.
+      this.coerce(expr, actual, addressType(from), prefix)
+      this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'primitive' && from.kind === 'primitive') {
+      if (from.name !== to.name) {
+        this.exprTypes.set(expr, actual)
+        this.coercions.set(expr, expected)
+      }
+    } else if (expr.kind === 'TupleExpr' && from.kind === 'tuple' && to.kind === 'tuple') {
+      // A tuple literal is converted element by element.
+      for (const [i, element] of expr.elements.entries()) {
+        const value = argValue(element)
+        if (value) this.coerce(value, from.fields[i].type, to.fields[i].type, prefix)
+      }
+    } else if ((expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') && from.kind === 'comptime_array' && to.kind === 'array') {
+      // So is an array literal held in registers. (One that goes to the data
+      // section has had its elements checked against the element type.)
+      const elementType = this.peelArraySize(to)
+      for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        const type = this.exprTypes.get(element)
+        if (type) this.coerce(element, type, elementType, prefix)
+      }
+    } else if (!sameRepresentation(from, to)) {
+      // Any other struct or tuple value is several wasm values already on
+      // the stack: its fields can't be widened in place.
+      this.error(expr.span.start, `${prefix}cannot convert ${typeToString(actual)} to ${typeToString(expected)} implicitly: convert its fields`)
+    }
+  }
+
+  // Give a constant expression the type it's used as. Its operands are
+  // constants too, so the type goes down to the literals: 1.0 / 3 as an f32
+  // is an f32 division of two f32 constants. `type` is a concrete type, or
+  // the comptime type of an enclosing constant expression; `actual` is the
+  // comptime type the expression was inferred as.
+  private typeConstant(expr: AST.Expr, type: ResolvedType, actual: ResolvedType, checkLiterals = true): void {
+    const again = (inner: AST.Expr, check = checkLiterals) => {
+      const innerType = this.exprTypes.get(inner)
+      if (innerType && isComptimeNumber(unwrap(innerType))) this.typeConstant(inner, type, innerType, check)
+      else if (innerType && !isComptimeNumber(unwrap(type))) this.coerce(inner, innerType, type)
+    }
+    const tail = (body: AST.FuncBody | AST.Expr) => {
+      if (body.kind === 'Block') {
+        const last = body.stmts.at(-1)
+        if (last?.kind === 'ExpressionStmt') again(last.expr)
+      } else {
+        again(body.kind === 'ArrowBody' ? body.expr : body)
+      }
+    }
+    switch (expr.kind) {
+      case 'LiteralExpr': {
+        // Each literal has to fit by its own value: 1.0 + 16777217 isn't an f32.
+        const own = this.inferLiteral(expr)
+        if (checkLiterals && !isComptimeNumber(type) && !typeAssignable(type, own)) {
+          this.error(expr.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
+        }
+        break
+      }
+      case 'GroupExpr':
+      case 'TupleExpr': {
+        const inner = groupedExpr(expr)
+        if (inner) again(inner)
+        break
+      }
+      case 'UnaryExpr':
+        if (expr.op === '~' && (isFloat(type) || type.kind === 'comptime_float')) {
+          this.error(expr.span.start, `'~' needs an integer, not ${typeToString(type)}`)
+        }
+        // The operand of a negation is only in range once negated: -(128) is an i8.
+        again(expr.operand, false)
+        break
+      case 'BinaryExpr': {
+        // 7 % 2 can't be computed as a float, nor 1 / 3 as an i128 yet.
+        const problem = operandProblem(expr.op, type)
+        if (problem) this.error(expr.span.start, problem)
+        again(expr.left)
+        again(expr.right)
+        break
+      }
+      case 'IfExpr':
+        tail(expr.thenBranch)
+        for (const elif of expr.elifs) tail(elif.thenBranch)
+        if (expr.else_) tail(expr.else_)
+        break
+      case 'MatchExpr':
+        for (const arm of expr.arms) tail(arm.body)
+        break
+      default: {
+        // A constant with a fixed form (items.len, sizeof(T)) is emitted in its
+        // default type and converted like any other value.
+        if (isComptimeNumber(unwrap(type))) return
+        const own = this.concretize(actual)
+        this.exprTypes.set(expr, own)
+        const from = unwrap(own)
+        const to = unwrap(type)
+        if (from.kind === 'primitive' && to.kind === 'primitive' && from.name !== to.name) {
+          this.coercions.set(expr, type)
+        }
+        return
+      }
+    }
+    this.exprTypes.set(expr, type)
   }
 
   inferUnary(expr: AST.UnaryExpr): ResolvedType {
@@ -2683,13 +3137,27 @@ class CheckContext {
       if (addr) return addr
     }
     const operandType = this.inferExpr(expr.operand)
+    const operand = unwrap(operandType)
 
     switch (expr.op) {
       case '!':
+        this.requireBool(expr.operand, operandType, `operand of '!'`)
         return primitive('bool')
       case '-':
+        if (operand.kind === 'comptime_int') return comptimeInt(-operand.value)
+        if (operand.kind === 'comptime_float') return comptimeFloat(-operand.value)
+        if (!isNumeric(operand)) {
+          this.error(expr.span.start, `'-' needs a number, not ${typeToString(operandType)}`)
+        }
+        // The operand's range doesn't survive: -x of a u32#8 isn't below 8.
+        return stripMax(operandType)
       case '~':
-        return operandType
+        // A bit pattern: ~3 is -4, and in a u32 it's 0xfffffffc.
+        if (operand.kind === 'comptime_int') return comptimeInt(~operand.value, true)
+        if (!isInteger(operand)) {
+          this.error(expr.span.start, `'~' needs an integer, not ${typeToString(operandType)}`)
+        }
+        return stripMax(operandType)
       case '&': {
         if (expr.operand.kind === 'IndexExpr') {
           const addr = this.addressOfIndex(expr.operand)
@@ -2926,7 +3394,7 @@ class CheckContext {
 
   // The number of elements in a range, when it's known at compile time.
   rangeLength(expr: AST.SliceExpr): bigint | null {
-    const objType = unwrap(this.types.get(typeKey(exprTypeOffset(expr.object), expr.object.kind)) ?? this.inferExpr(expr.object))
+    const objType = unwrap(this.exprTypes.get(expr.object) ?? this.inferExpr(expr.object))
     const pointee = objType.kind === 'pointer' ? unwrap(objType.pointee) : null
     const size = pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number'
       ? BigInt(pointee.sizes[0]) : null
@@ -2950,7 +3418,7 @@ class CheckContext {
       return
     }
     const dst = this.inferSlice(target)
-    this.types.set(typeKey(exprTypeOffset(target), target.kind), dst)
+    this.exprTypes.set(target, dst)
     if (dst.kind !== 'slice') return
     if (dst.optional) {
       this.error(target.span.start, `writing to a range needs bounds known to fit: use constant or ranged bounds (on a slice, only s[..])`)
@@ -3018,9 +3486,8 @@ class CheckContext {
     } else {
       return null
     }
-    const idxType = unwrap(this.inferExpr(expr.index))
-    if (idxType.kind === 'comptime_int') this.checkExpr(expr.index, primitive('u32'))
-    this.types.set(typeKey(exprTypeOffset(expr), expr.kind), elem)
+    this.inferIndexValue(expr.index)
+    this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
     let proven = false
     if (size !== null) {
@@ -3037,7 +3504,7 @@ class CheckContext {
   }
 
   private indexInRange(expr: AST.IndexExpr, arraySize: number): boolean {
-    const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+    const idxType = this.exprTypes.get(expr.index)
     if (idxType?.kind !== 'primitive') return false
     if (idxType.max !== undefined) return idxType.max <= arraySize
     // A u8 or u16 can't exceed its width: a u8 always indexes a *[256]T.
@@ -3045,9 +3512,21 @@ class CheckContext {
     return limit !== null && limit <= 65536n && limit <= BigInt(arraySize)
   }
 
+  // An index is an offset in 32-bit memory: an integer no wider than that.
+  private inferIndexValue(index: AST.Expr): ResolvedType {
+    const type = this.inferExpr(index)
+    const t = unwrap(type)
+    if (t.kind === 'comptime_int') {
+      this.coerce(index, type, addressType(t))
+    } else if (!isInteger(t) || (byteSize(t) ?? 8) > 4) {
+      this.error(index.span.start, `an index must be an integer of at most 32 bits, not ${typeToString(type)}`)
+    }
+    return type
+  }
+
   inferIndex(expr: AST.IndexExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
-    this.inferExpr(expr.index)
+    this.inferIndexValue(expr.index)
 
     if (objType.kind === 'slice') {
       const idx = this.evalComptimeExpr(expr.index)
@@ -3103,7 +3582,7 @@ class CheckContext {
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
-              const idxType = this.types.get(typeKey(exprTypeOffset(expr.index), expr.index.kind))
+              const idxType = this.exprTypes.get(expr.index)
               if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
                 const elem = arrayType.element
                 const canBeOptional = elem.kind === 'pointer' || elem.kind === 'slice'
@@ -3164,16 +3643,9 @@ class CheckContext {
   inferTuple(expr: AST.TupleExpr): ResolvedType {
     const fields: ResolvedField[] = []
     for (const arg of expr.elements) {
-      let argType: ResolvedType
-      if (arg.value) {
-        argType = this.inferExpr(arg.value)
-      } else if (arg.name) {
-        // Shorthand: (x:) means use variable x
-        const sym = this.lookup(arg.name)
-        argType = sym ? sym.type : primitive('i32')
-      } else {
-        argType = VOID
-      }
+      // Shorthand: (x:) means use variable x
+      const value = argValue(arg)
+      const argType = value ? this.inferExpr(value) : VOID
       fields.push(field(arg.name, argType))
     }
     // (x) is grouping, not a 1-element tuple
@@ -3181,7 +3653,9 @@ class CheckContext {
     return tuple(fields)
   }
 
-  inferArray(expr: AST.ArrayExpr): ResolvedType {
+  // typedByContext: the elements are about to be checked against a declared
+  // element type, one by one, so they aren't settled on a type here.
+  inferArray(expr: AST.ArrayExpr, typedByContext = false): ResolvedType {
     if (expr.elements.length === 0) {
       // Empty array - needs context to determine element type
       // For now, return comptime list with no elements
@@ -3190,10 +3664,33 @@ class CheckContext {
 
     // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
-    const elementType = this.unifyTypes(elemTypes)
+    const numbers = elemTypes.every(t => isScalar(unwrap(t)))
+    const elementType = numbers && !typedByContext
+      ? this.unifyElements(expr.elements, elemTypes)
+      : this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(elementType, expr.elements.length)
+  }
+
+  // The element type of an array literal of numbers with no declared type:
+  // the one type they all widen to, like the branches of an if. Each element
+  // is converted to it.
+  private unifyElements(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    if (types.every(isComptimeNumber)) {
+      // All constants: the default type that holds them all.
+      const type = types.some(t => t.kind === 'comptime_float') ? this.concretize(comptimeFloat(0)) : this.unifyTypes(types)
+      for (const [i, element] of elements.entries()) this.typeConstant(element, type, types[i])
+      return type
+    }
+    const { type, odd } = this.commonType(types)
+    if (odd) {
+      const at = elements[types.indexOf(odd)]
+      this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
+      return type
+    }
+    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    return type
   }
 
   inferRepeat(expr: AST.RepeatExpr): ResolvedType {
@@ -3222,23 +3719,87 @@ class CheckContext {
     if (expr.pattern) {
       return this.inferIfLet(expr)
     }
-    this.inferExpr(expr.condition)
-    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.inferBody(expr.thenBranch))
+    const valueUsed = !this.statementExprs.has(expr)
+    this.checkCondition(expr.condition)
+    const branches: Branch[] = []
+    const thenType = this.withNarrowing(this.boundsFrom(expr.condition, true), expr.thenBranch, () => this.inferBody(expr.thenBranch, valueUsed))
+    branches.push({ body: expr.thenBranch, type: thenType })
     const seen = [expr.condition]
     for (const elif of expr.elifs) {
       this.withNarrowing(this.boundsAfterAllFalse(seen), elif, () => {
-        this.inferExpr(elif.condition)
-        this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.inferBody(elif.thenBranch))
+        this.checkElifCondition(elif)
+        const type = this.withNarrowing(this.boundsFrom(elif.condition, true), elif.thenBranch, () => this.inferBody(elif.thenBranch, valueUsed))
+        branches.push({ body: elif.thenBranch, type })
       })
       seen.push(elif.condition)
     }
     if (expr.else_) {
       const else_ = expr.else_
-      this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.inferBody(else_))
+      const type = this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.inferBody(else_, valueUsed))
+      branches.push({ body: else_, type })
     }
     // Without an else branch, the expression can't produce a value
     if (!expr.else_) return VOID
-    return thenType
+    return this.unifyBranches(branches, valueUsed)
+  }
+
+  // The type of an if or match with no expected type: the one type every
+  // branch's value widens to. A branch that always exits has no say, and if
+  // any other branch has no value, neither has the expression. Branches that
+  // don't agree are an error where the value is used; in a statement they
+  // just leave the expression without one.
+  private unifyBranches(branches: Branch[], valueUsed: boolean): ResolvedType {
+    const valued = branches.filter(b => !bodyExits(b.body))
+    if (valued.length === 0 || valued.some(b => b.type.kind === 'void')) return VOID
+    let type = valued[0].type
+    if (valued.every(b => isComptimeNumber(b.type))) {
+      // All constants: the expression is one too, typed by where it's used.
+      // Every branch takes the type that holds them all, so they agree on a
+      // default when nothing else types them.
+      for (const b of valued) {
+        if (type.kind === 'comptime_float') break
+        if (b.type.kind === 'comptime_float' || magnitude(b.type) > magnitude(type)) type = b.type
+      }
+      for (const b of valued) {
+        const value = bodyValue(b.body)
+        if (value) this.typeConstant(value, type, b.type)
+      }
+      return type
+    }
+    const common = this.commonType(valued.map(b => b.type))
+    type = common.type
+    const odd = valued.find(b => b.type === common.odd)
+    if (odd) {
+      if (!valueUsed) return VOID
+      const at = bodyValue(odd.body) ?? odd.body
+      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)} (cast one explicitly)`)
+      return type
+    }
+    for (const b of valued) {
+      const value = bodyValue(b.body)
+      if (value) this.coerce(value, b.type, type)
+    }
+    return type
+  }
+
+  // The one type several values, not all of them constants, widen to: the
+  // widest of them. `odd` is one that doesn't widen to it, when they have no
+  // such type.
+  private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    let type = types[0]
+    for (const t of types) {
+      const constant = isComptimeNumber(unwrap(t))
+      if (isComptimeNumber(unwrap(type)) || (!constant && typeAssignable(t, type))) type = t
+    }
+    // One value's range says nothing about the others'.
+    type = stripMax(type)
+    // A constant too big for that type widens it, if its own default type
+    // holds the rest: n and 5000000000 are an i64.
+    for (const t of types) {
+      const own = this.concretize(t)
+      if (isComptimeNumber(t) && !typeAssignable(type, t) && typeAssignable(own, type)) type = own
+    }
+    return { type, odd: types.find(t => !typeAssignable(type, t)) }
   }
 
   inferIfLet(expr: AST.IfExpr): ResolvedType {
@@ -3247,6 +3808,7 @@ class CheckContext {
       this.error(expr.span.start, 'if let only supports simple bindings')
       return VOID
     }
+    const valueUsed = !this.statementExprs.has(expr)
 
     // Infer the condition — allow runtime indexing for primitive elements
     this.insideIfLetCondition = true
@@ -3271,18 +3833,18 @@ class CheckContext {
     this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
     this.recordDefinition(pattern.name, expr.condition.span.start)
-    const thenType = this.inferBody(expr.thenBranch)
+    const branches: Branch[] = [{ body: expr.thenBranch, type: this.inferBody(expr.thenBranch, valueUsed) }]
     this.currentScope = prevScope
 
     for (const elif of expr.elifs) {
-      this.inferExpr(elif.condition)
-      this.inferBody(elif.thenBranch)
+      this.checkElifCondition(elif)
+      branches.push({ body: elif.thenBranch, type: this.inferBody(elif.thenBranch, valueUsed) })
     }
     if (expr.else_) {
-      this.inferBody(expr.else_)
+      branches.push({ body: expr.else_, type: this.inferBody(expr.else_, valueUsed) })
     }
     if (!expr.else_) return VOID
-    return thenType
+    return this.unifyBranches(branches, valueUsed)
   }
 
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
@@ -3292,42 +3854,66 @@ class CheckContext {
       }
       const last = body.stmts[body.stmts.length - 1]
       if (last?.kind === 'ExpressionStmt') {
+        this.statementExprs.delete(last.expr)
         this.checkExpr(last.expr, expected)
-      } else if (last) {
-        this.checkStmt(last)
+        return
+      }
+      if (last) this.checkStmt(last)
+      const wanted = expected.kind !== 'void' && !(expected.kind === 'tuple' && expected.fields.length === 0)
+      if (wanted && !bodyExits(body)) {
+        this.error(last?.span.start ?? body.span.start, `this branch has no value: expected ${typeToString(expected)}`)
       }
     } else {
       this.checkExpr(body.expr, expected)
     }
   }
 
-  private inferBody(body: AST.FuncBody): ResolvedType {
+  // valueUsed: whether something takes the value of the body's last expression.
+  private inferBody(body: AST.FuncBody | AST.Expr, valueUsed = true): ResolvedType {
     if (body.kind === 'Block') {
-      for (const stmt of body.stmts) {
-        this.checkStmt(stmt)
+      for (const [i, stmt] of body.stmts.entries()) {
+        this.checkStmt(stmt, valueUsed && i === body.stmts.length - 1)
       }
       // Block's type is the last expression statement, if any
       const last = body.stmts[body.stmts.length - 1]
       if (last?.kind === 'ExpressionStmt') {
-        return this.types.get(typeKey(last.expr.span.start, last.expr.kind)) ?? VOID
+        return this.exprTypes.get(last.expr) ?? VOID
       }
       return VOID
     }
-    return this.inferExpr(body.expr)
+    const expr = body.kind === 'ArrowBody' ? body.expr : body
+    if (valueUsed) this.statementExprs.delete(expr)
+    else this.statementExprs.add(expr)
+    return this.inferExpr(expr)
+  }
+
+  // A literal pattern is compared with the subject, so it has to be a value
+  // of the subject's type.
+  private checkMatchSubject(expr: AST.MatchExpr): void {
+    const subjectType = this.inferExpr(expr.subject)
+    const subject = unwrap(stripMax(subjectType))
+    for (const arm of expr.arms) {
+      for (const pattern of arm.patterns) {
+        if (pattern.kind !== 'literal') continue
+        const value = pattern.value
+        const type = value.kind === 'int' ? comptimeInt(value.value)
+          : value.kind === 'float' ? comptimeFloat(value.value)
+          : value.kind === 'bool' ? primitive('bool')
+          : null
+        const comparable = subject.kind === 'primitive' && (byteSize(subject) ?? 16) <= 8
+        if (!type || !comparable || !typeAssignable(subject, type)) {
+          const shown = type ? typeToString(type) : 'a string'
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}`)
+        }
+      }
+    }
   }
 
   inferMatch(expr: AST.MatchExpr): ResolvedType {
-    this.inferExpr(expr.subject)
-    let resultType: ResolvedType = VOID
-    for (const arm of expr.arms) {
-      const armType = arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody'
-        ? this.inferBody(arm.body)
-        : this.inferExpr(arm.body)
-      if (resultType.kind === 'void' && armType.kind !== 'void') {
-        resultType = armType
-      }
-    }
-    return resultType
+    const valueUsed = !this.statementExprs.has(expr)
+    this.checkMatchSubject(expr)
+    const branches: Branch[] = expr.arms.map(arm => ({ body: arm.body, type: this.inferBody(arm.body, valueUsed) }))
+    return this.unifyBranches(branches, valueUsed)
   }
 
   inferSizeof(expr: AST.SizeofExpr): ResolvedType {
@@ -3521,6 +4107,92 @@ function editDistance(a: string, b: string): number {
   return dp[a.length][b.length]
 }
 
+const COMPARISON_OPS: ReadonlySet<string> = new Set(['==', '!=', '<', '>', '<=', '>='])
+const SHIFT_OPS: ReadonlySet<string> = new Set(['<<', '>>', '<<<', '>>>'])
+const BITWISE_OPS: ReadonlySet<string> = new Set(['&', '|', '^'])
+const SATURATING_OPS: ReadonlySet<string> = new Set(['+|', '-|', '*|'])
+
+function isComptimeNumber(t: ResolvedType): t is ResolvedType & { kind: 'comptime_int' | 'comptime_float' } {
+  return t.kind === 'comptime_int' || t.kind === 'comptime_float'
+}
+
+// A single number or bool: what the arithmetic, bitwise and comparison
+// operators work on.
+function isScalar(t: ResolvedType): boolean {
+  return t.kind === 'primitive' || isComptimeNumber(t)
+}
+
+// A ranged integer type (u32#8) as the plain type its values are held in (u32).
+function stripMax(t: ResolvedType): ResolvedType {
+  return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
+}
+
+// Why an operator can't take an operand of this type, or null when it can.
+function operandProblem(op: string, type: ResolvedType): string | null {
+  const t = unwrap(type)
+  if (t.kind === 'comptime_float' || isFloat(t)) {
+    const integerOnly = op === '%' || BITWISE_OPS.has(op) || SHIFT_OPS.has(op) || SATURATING_OPS.has(op)
+    return integerOnly ? `'${op}' needs integer operands, not ${typeToString(type)}` : null
+  }
+  if (isBool(t)) {
+    const boolean = op === '==' || op === '!=' || BITWISE_OPS.has(op)
+    return boolean ? null : `'${op}' cannot be applied to bool: cast it to an integer first`
+  }
+  const wide = t.kind === 'primitive' && (byteSize(t) ?? 0) >= 16
+  if (wide && (op === '/' || op === '%' || SATURATING_OPS.has(op))) {
+    return `'${op}' on ${typeToString(type)} is not supported yet`
+  }
+  return null
+}
+
+// Why a value of one type can't be cast to another, or null when it can. A
+// cast converts between numbers, bools and addresses: single values. Anything
+// else (a slice, a struct) can only be cast to a type it's already held as.
+function castProblem(from: ResolvedType, to: ResolvedType): string | null {
+  const f = unwrap(from)
+  const t = unwrap(to)
+  const single = (x: ResolvedType) => x.kind === 'primitive' || x.kind === 'pointer' || x.kind === 'func' || isComptimeNumber(x)
+  const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
+  if (!single(f) || !single(t)) {
+    const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
+    return same ? null : cannot
+  }
+  const wide = (x: ResolvedType) => x.kind === 'primitive' && (byteSize(x) ?? 0) >= 16
+  const float = (x: ResolvedType) => isFloat(x) || x.kind === 'comptime_float'
+  if ((wide(f) && float(t)) || (float(f) && wide(t))) return `${cannot}: not supported yet`
+  // A bool is 0 or 1. Cutting a number down to its low bits doesn't make one
+  // (256 isn't false), and which test is meant is for the program to say.
+  if (isBool(t) && !isBool(f)) return `${cannot}: compare it instead (x != 0)`
+  return null
+}
+
+// The integer type a constant has as an address or an offset from one: 32
+// bits, signed only when it's negative.
+function addressType(constant: ResolvedType & { kind: 'comptime_int' }): ResolvedType {
+  return primitive(constant.value < 0n ? 'i32' : 'u32')
+}
+
+// The wasm value(s) a primitive is held in: bool and the integers up to 32
+// bits share an i32.
+function representation(t: ResolvedType & { kind: 'primitive' }): string {
+  if (t.name === 'f32' || t.name === 'f64') return t.name
+  const size = byteSize(t) ?? 4
+  return size <= 4 ? 'i32' : `i${size * 8}`
+}
+
+// Whether a value of one type can be used as another it's assignable to
+// without converting any of the wasm values it's held in.
+function sameRepresentation(from: ResolvedType, to: ResolvedType): boolean {
+  const a = unwrap(from)
+  const b = unwrap(to)
+  if (a.kind === 'primitive' && b.kind === 'primitive') return representation(a) === representation(b)
+  if (a.kind === 'tuple' && b.kind === 'tuple') {
+    return a.fields.every((f, i) => b.fields[i] !== undefined && sameRepresentation(f.type, b.fields[i].type))
+  }
+  if (a.kind === 'array' && b.kind === 'array') return sameRepresentation(a.element, b.element)
+  return true
+}
+
 function isUnsignedName(name: string): boolean {
   return name.startsWith('u')
 }
@@ -3531,6 +4203,35 @@ function unsignedLimit(t: ResolvedType): bigint | null {
   if (t.kind !== 'primitive' || !isUnsignedName(t.name)) return null
   const bits = Number(t.name.slice(1))
   return Number.isFinite(bits) && bits > 0 ? 1n << BigInt(bits) : null
+}
+
+// One branch of an if or match, with the type of its value.
+type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// The expression inside (x), which parses as a group or a one-element tuple.
+function groupedExpr(expr: AST.Expr): AST.Expr | null {
+  if (expr.kind === 'GroupExpr') return expr.expr
+  if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
+  return null
+}
+
+// How far from zero a constant integer is.
+function magnitude(t: ResolvedType): bigint {
+  if (t.kind !== 'comptime_int') return 0n
+  return t.value < 0n ? -t.value : t.value
+}
+
+// The expression a branch takes its value from, if it ends in one.
+function bodyValue(body: AST.FuncBody | AST.Expr): AST.Expr | null {
+  if (body.kind === 'ArrowBody') return body.expr
+  if (body.kind !== 'Block') return body
+  const last = body.stmts.at(-1)
+  return last?.kind === 'ExpressionStmt' ? last.expr : null
+}
+
+// Whether control never reaches the end of a branch, so it needs no value.
+function bodyExits(body: AST.FuncBody | AST.Expr): boolean {
+  return bodyTerminates(body) || (body.kind === 'Block' && alwaysExits(body))
 }
 
 // Whether a body ends in an unconditional return, break or continue.

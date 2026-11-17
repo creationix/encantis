@@ -63,9 +63,10 @@ func chain_u32(x: u32) -> u32 => add_u32(add_u32(x, 1), 2)
 
 test "integers" {
   test "mixed sizes" {
-    // Cross-type equality
-    assert 123:i8 == 123:u8
-    assert 123:i8 == 123:u32
+    // Cross-type equality (signed against unsigned needs a cast to a type
+    // that holds both)
+    assert i16(123:i8) == 123:u8
+    assert i64(123:i8) == 123:u32
     assert 12345:u32 == 12345:i64
     assert 0xdeadbeef == 0xdeadbeef:i64
     assert 42:u8 == 42

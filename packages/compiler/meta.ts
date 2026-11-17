@@ -66,10 +66,10 @@ const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
     [{ name: null, type: primitive('i32') }],
   ),
 
-  // Integer bit operations (i32/i64/u32/u64)
-  clz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
-  ctz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
-  popcnt: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
+  // Integer bit operations (i32/i64/u32/u64): the count is a u8
+  clz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
+  ctz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
+  popcnt: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
 }
 
 // Build a simplified expression string for hover hints
@@ -884,9 +884,7 @@ class MetaBuilder {
   }
 
   private generateHintsForExpr(expr: AST.Expr): void {
-    // MemberExpr uses span.end as key to distinguish chained accesses (a.b vs a.b.c)
-    const typeOffset = expr.kind === 'MemberExpr' ? expr.span.end : expr.span.start
-    const type = this.checkResult.types.get(typeKey(typeOffset, expr.kind))
+    const type = this.checkResult.exprTypes.get(expr)
 
     switch (expr.kind) {
       case 'IdentExpr': {
@@ -949,8 +947,7 @@ class MetaBuilder {
             const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
             // Compute compile-time value for .len and .wid on indexed types
             let comptimeValue: string | undefined
-            const objTypeOffset = expr.object.kind === 'MemberExpr' ? expr.object.span.end : expr.object.span.start
-            const objType = this.checkResult.types.get(typeKey(objTypeOffset, expr.object.kind))
+            const objType = this.checkResult.exprTypes.get(expr.object)
             if (objType) {
               // Get the array/slice type (either directly or through pointer)
               const arrayType = (objType.kind === 'array' || objType.kind === 'slice') ? objType
@@ -1077,7 +1074,7 @@ class MetaBuilder {
         // Recurse into value expression (e.g., 0:u8)
         this.generateHintsForExpr(expr.value)
         // Generate hint for the count (e.g., 1024)
-        const countType = this.checkResult.types.get(typeKey(expr.count.span.start, expr.count.kind))
+        const countType = this.checkResult.exprTypes.get(expr.count)
         if (countType) {
           const typeIndex = this.typeRegistry.register(countType)
           const len = this.lineMap.spanLength(expr.count.span.start, expr.count.span.end)

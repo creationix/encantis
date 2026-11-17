@@ -1,0 +1,324 @@
+// The builtin functions of the reference (§9): what they compute, how their
+// operands are typed, and that each operand is evaluated once, in order.
+
+// === Operands that are expressions ===
+
+type Pair = (lo: u32, hi: u32)
+
+data words = [0x80000000:u32, 1, 2, 3]
+data reals = [-1.5:f64, 2.5]
+data lone = -2.5:f64
+
+func gap(a: f64, b: f64) -> f64 => abs(a - b)
+func gap32(a: i32, b: i32) -> i32 => abs(a - b)
+func gap64(a: i64, b: i64) -> i64 => abs(a - b)
+func size(p: (x: f32, y: f32)) -> f32 => abs(p.x) + abs(p.y)
+func real(i: u32#2) -> f64 => abs(reals[i])
+func deref(p: *f64) -> f64 => abs(p.*)
+
+test "abs of a difference, a field, an element and a dereference" {
+  assert gap(1.0, 2.5) == 1.5
+  assert gap(2.5, 1.0) == 1.5
+  assert gap32(3, 10) == 7
+  assert gap64(3, 10000000000) == 9999999997
+  assert size((-3.0, -4.0)) == 7.0
+  assert real(0) == 1.5
+  assert deref(lone) == 2.5
+}
+
+// === Signedness comes from the operands' type ===
+
+func top(p: Pair) -> u32 => max(p.lo, p.hi)
+func bottom(p: Pair) -> u32 => min(p.lo, p.hi)
+func word_max(i: u32#4, j: u32#4) -> u32 => max(words[i], words[j])
+func next_or(a: u32, b: u32) -> u32 => max(a + 1, b)
+func shortest(a: []u8, b: []u8) -> u32 => min(a.len, b.len)
+func max_u64(a: u64, b: u64) -> u64 => max(a, b)
+func magnitude(x: u32) -> u32 => abs(x)
+func min_i64(a: i64, b: i64) -> i64 => min(a - 1, b)
+func max_f64(a: f64, b: f64) -> f64 => max(a - b, b)
+
+test "min and max compare unsigned operands unsigned" {
+  assert top(Pair(0x80000000, 1)) == 0x80000000
+  assert bottom(Pair(0x80000000, 1)) == 1
+  assert word_max(0, 1) == 0x80000000
+  assert next_or(0xFFFFFFFE, 5) == 0xFFFFFFFF
+  assert shortest("abc", "hello") == 3
+  assert max_u64(0x8000000000000000, 1) == 0x8000000000000000
+}
+
+test "abs of an unsigned value is the value" {
+  assert magnitude(0xFFFFFFFF) == 0xFFFFFFFF
+}
+
+test "min and max of signed, 64-bit and float expressions" {
+  assert min_i64(-5000000000, 3) == -5000000001
+  assert min_i64(5000000000, 3) == 3
+  assert max_f64(5.0, 1.5) == 3.5
+  assert max_f64(1.0, 1.5) == 1.5
+}
+
+// === Each operand is evaluated once, in order ===
+
+global calls: i32 = 0
+global trail: i32 = 0
+
+func next() -> i32 {
+  calls += 1
+  return calls
+}
+
+// Records the order it was called in: 1 then 2 leaves 12.
+func mark(n: i32) -> i32 {
+  trail = trail * 10 + n
+  return n
+}
+
+test "min and max evaluate each operand once" {
+  calls = 0
+  let m = max(next(), 0)
+  assert calls == 1
+  assert m == 1
+  let n = min(next(), next())
+  assert calls == 3
+  assert n == 2
+}
+
+test "min and max evaluate their operands in order" {
+  trail = 0
+  assert max(mark(1), mark(2)) == 2
+  assert trail == 12
+  trail = 0
+  assert min(mark(1), mark(2)) == 1
+  assert trail == 12
+}
+
+test "integer abs evaluates its operand once" {
+  calls = 0
+  assert abs(0 - next()) == 1
+  assert calls == 1
+}
+
+test "nested builtins evaluate each operand once" {
+  calls = 0
+  assert max(min(next(), 9), abs(0 - next())) == 2
+  assert calls == 2
+}
+
+// The second operand changes what the first one read. The value the first
+// operand had when it was evaluated is the one compared and returned.
+func first_read(x: i32) -> i32 => max(x, if x > 0 {
+  x = -100
+  3
+} else { 0 })
+
+func lower() -> i32 {
+  calls -= 10
+  return 0
+}
+
+test "an operand is read before the next one is evaluated" {
+  assert first_read(5) == 5
+  calls = 3
+  assert max(calls, lower()) == 3
+  assert calls == -7
+}
+
+// === Literals, in any position ===
+
+func at_least_one(x: f64) -> f64 => max(1.0, x)
+func at_most_one(x: f32) -> f32 => min(x, 1.0)
+func not_negative(x: i64) -> i64 => max(0, x)
+func capped(x: u8) -> u8 => min(200, x)
+func signed_one(x: f32) -> f32 => copysign(1.0, x)
+
+test "a literal takes the type of the other operand" {
+  assert at_least_one(0.5) == 1.0
+  assert at_least_one(2.5) == 2.5
+  assert at_most_one(0.5) == 0.5
+  assert at_most_one(2.5) == 1.0
+  assert not_negative(-5000000000) == 0
+  assert not_negative(5000000000) == 5000000000
+  assert capped(250) == 200
+  assert capped(7) == 7
+  assert signed_one(-3.5) == -1.0
+}
+
+// === An `if` or a `match` as an operand ===
+
+func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })
+func mirror_first(x: i64, flip: bool) -> i64 => max(if flip { 0 - x } else { x }, x)
+func stepped(x: i64, k: i32) -> i64 => max(x, match k {
+  0 => x + 1
+  _ => 5
+})
+func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
+func at_least(x: i32, bail: bool) -> i32 {
+  let m = max(x, if bail { return -1 } else { 1 })
+  return m
+}
+
+test "an if or a match operand is typed arm by arm" {
+  assert mirror(-5, true) == 5
+  assert mirror(-5, false) == -5
+  assert mirror_first(-5, true) == 5
+  assert stepped(1, 0) == 2
+  assert stepped(1, 1) == 5
+  assert widened(-5000000000, -9, true) == -9
+  assert widened(-5000000000, -9, false) == 5
+  assert at_least(0, false) == 1
+  assert at_least(0, true) == -1
+}
+
+def limit = 5
+
+func within(x: i64) -> i64 => max(-limit, min(x, limit))
+
+test "a negated constant operand leaves the constant as it is" {
+  assert within(100) == 5
+  assert within(-100) == -5
+  assert within(3) == 3
+  assert limit == 5
+}
+
+test "with only literals the operands take their default type" {
+  assert nearest(2.5) == 2.0
+  assert min(3.0, 5.0) == 3.0
+  assert copysign(5.0, -1.0) == -5.0
+  assert abs(sqrt(2.0) * sqrt(2.0) - 2.0) < 1.0e-12
+  assert floor(-3.7) == -4.0
+  assert ceil(-3.7) == -3.0
+  assert trunc(-3.7) == -3.0
+  assert abs(-5) == 5
+  assert max(1, 2) == 2
+}
+
+// === Operands of different widths meet at the wider type ===
+
+func widest(a: i32, b: i64) -> i64 => max(a, b)
+func widest_first(a: i64, b: i32) -> i64 => max(a, b)
+func least(a: u32, b: u64) -> u64 => min(a, b)
+func least_f(a: f32, b: f64) -> f64 => min(a, b)
+func with_sign(a: f32, b: f64) -> f64 => copysign(a, b)
+func high(a: u32, b: u64) -> u64 => mul_hi(a, b)
+
+test "a narrower operand is widened, by its own signedness" {
+  assert widest(-1, -2) == -1
+  assert widest(-1, 5000000000) == 5000000000
+  assert widest_first(-2, -1) == -1
+  assert least(0xFFFFFFFF, 0x100000000) == 0xFFFFFFFF
+  assert least_f(0.5, 0.25) == 0.25
+  assert with_sign(0.5, -2.0) == -0.5
+  assert high(0x80000000, 0x400000000) == 2
+}
+
+// A length is a constant, but not a literal: it is an i32 that widens.
+func at_least_a_row(x: i64, row: *[4]u32) -> i64 => max(x, row.len)
+func rows_or_fewer(x: f64, row: *[4]u32) -> f64 => min(row.len, x)
+func bits_or(x: u64, n: u64) -> u64 => max(popcnt(x), n)
+
+test "a length or a bit count is widened as an operand" {
+  assert at_least_a_row(1, words) == 4
+  assert at_least_a_row(5000000000, words) == 5000000000
+  assert rows_or_fewer(2.5, words) == 2.5
+  assert rows_or_fewer(7.5, words) == 4.0
+  assert bits_or(0xFFFFFFFFFFFFFFFF, 3) == 64
+  assert bits_or(0xFF, 0x100000000) == 0x100000000
+}
+
+// === Small integers stay in their type ===
+
+func abs8(x: i8) -> i8 => abs(x)
+func abs16(x: i16) -> i16 => abs(x)
+func max8(a: i8, b: i8) -> i8 => max(a, b)
+func min_u8(a: u8, b: u8) -> u8 => min(a, b)
+
+test "abs, min and max on small integers" {
+  assert abs8(-5) == 5
+  assert abs8(-128) == -128
+  assert abs16(-300) == 300
+  assert abs16(-32768) == -32768
+  assert max8(-1, 1) == 1
+  assert min_u8(200, 100) == 100
+}
+
+// === Bit counts are u8, whatever the operand's width ===
+
+func leading(x: u32) -> u8 => clz(x)
+func trailing(x: u64) -> u8 => ctz(x)
+func ones(x: u64) -> u32 => popcnt(x)
+func strip(x: u64) -> u64 => x >> ctz(x)
+func log2(x: u64) -> u8 => 63 - clz(x)
+
+test "clz, ctz and popcnt" {
+  assert leading(0b00001000) == 28
+  assert leading(0) == 32
+  assert trailing(0b00001000) == 3
+  assert trailing(0x100000000) == 32
+  assert trailing(0) == 64
+  assert ones(0xFFFFFFFFFFFFFFFF) == 64
+  assert ones(0x8000000000000001) == 2
+  assert strip(0x500000000) == 5
+  assert log2(0x100000000) == 32
+  assert clz(1) == 31
+}
+
+// === Wide integers ===
+
+func pow2(n: u64) -> i128 => (1 as i128) << (n as i128)
+func max128(a: i128, b: i128) -> i128 => max(a, b)
+func min128(a: i128, b: i128) -> i128 => min(a, b)
+func max_u128(a: u128, b: u128) -> u128 => max(a, b)
+func abs128(a: i128) -> i128 => abs(a)
+func widen128(a: i64, b: i128) -> i128 => min(a, b)
+
+test "min, max and abs on wide integers" {
+  let big = pow2(100)
+  let low = -big
+  assert max128(-1, 1) == 1
+  assert max128(-1, -2) == -1
+  assert max128(big, 5) == big
+  assert min128(big, 5) == 5
+  assert min128(low, 5) == low
+  // The top bit set: the largest u128, not a negative number.
+  let huge = pow2(127) as u128
+  assert max_u128(huge, 1) == huge
+  assert abs128(-5) == 5
+  assert abs128(low) == big
+  assert abs128(big) == big
+  assert widen128(-1, 5) == -1
+}
+
+// === A range survives min and max when every operand is inside it ===
+
+data table = [10:u8, 20, 30, 40]
+
+func clamped(i: u32#4) -> u8 => table[min(i, 2)]
+
+test "min of a ranged index needs no bounds check" {
+  assert clamped(1) == 20
+  assert clamped(3) == 30
+}
+
+// === Memory builtins ===
+
+data bytes = mut [0:u8; 8]
+data quad = mut [1:u32, 2, 3, 4]
+
+func stamp(upper: bool) { memcpy(bytes, if upper { "ABCD" } else { "abcd" }, 4) }
+
+test "memcpy, memset and memzero" {
+  stamp(true)
+  assert bytes[3] == 68
+  stamp(false)
+  assert bytes[3] == 100
+  memcpy(bytes, "abcdefgh", 8)
+  assert bytes[0] == 97
+  assert bytes[7] == 104
+  memset(bytes, 7, 2)
+  assert bytes[1] == 7
+  assert bytes[2] == 99
+  memzero(quad)
+  assert quad[0] == 0
+  assert quad[3] == 0
+}

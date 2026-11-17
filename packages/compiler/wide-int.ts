@@ -9,11 +9,12 @@
 export type WideBinaryOp =
   | 'add' | 'sub' | 'mul'
   | 'and' | 'or' | 'xor'
-  | 'shl' | 'shr_u' | 'shr_s' | 'rotl'
+  | 'shl' | 'shr_u' | 'shr_s' | 'rotl' | 'rotr'
   | 'eq' | 'ne'
   | 'lt_u' | 'lt_s' | 'gt_u' | 'gt_s' | 'le_u' | 'le_s' | 'ge_u' | 'ge_s'
+  | 'min_u' | 'min_s' | 'max_u' | 'max_s'
 
-export type WideUnaryOp = 'not' | 'neg'
+export type WideUnaryOp = 'not' | 'neg' | 'abs'
 
 // Stores a wide value (on the stack after the address) to memory.
 export type WideStoreOp = 'store'
@@ -118,16 +119,18 @@ function binaryHelper(n: number, op: WideBinaryOp): string {
 )`
     }
 
-    case 'rotl': {
-      // (a << k) | (a >> (64n - k)), with k = b mod 64n.
+    case 'rotl':
+    case 'rotr': {
+      // rotl: (a << k) | (a >> (64n - k)), with k = b mod 64n. rotr swaps the shifts.
       const bits = 64 * n
       const zeros = range(n - 1).map(() => '(i64.const 0)').join(' ')
+      const [by, back]: WideBinaryOp[] = op === 'rotl' ? ['shl', 'shr_u'] : ['shr_u', 'shl']
       return `${head(results(n))}
   (local $k i64)
   (local.set $k (i64.rem_u ${get('b', 0)} (i64.const ${bits})))
   ${wideCall(n, 'or',
-    wideCall(n, 'shl', gets('a', n), `(local.get $k) ${zeros}`),
-    wideCall(n, 'shr_u', gets('a', n), `(i64.sub (i64.const ${bits}) (local.get $k)) ${zeros}`))}
+    wideCall(n, by, gets('a', n), `(local.get $k) ${zeros}`),
+    wideCall(n, back, gets('a', n), `(i64.sub (i64.const ${bits}) (local.get $k)) ${zeros}`))}
 )`
     }
 
@@ -135,6 +138,16 @@ function binaryHelper(n: number, op: WideBinaryOp): string {
     case 'ne': {
       const eq = range(n).map(i => `(i64.eq ${get('a', i)} ${get('b', i)})`).reduce((x, y) => `(i32.and ${x} ${y})`)
       return `${head('(result i32)')}\n  ${op === 'eq' ? eq : `(i32.eqz ${eq})`}\n)`
+    }
+
+    case 'min_u':
+    case 'min_s':
+    case 'max_u':
+    case 'max_s': {
+      // a when it's the lesser (min) or the greater (max), else b.
+      const [which, sign] = op.split('_') as ['min' | 'max', 'u' | 's']
+      const picksA = wideCall(n, `${which === 'min' ? 'lt' : 'gt'}_${sign}`, gets('a', n), gets('b', n))
+      return `${head(results(n))}\n  (if ${results(n)} ${picksA} (then ${gets('a', n)}) (else ${gets('b', n)}))\n)`
     }
 
     default: {
@@ -156,6 +169,11 @@ function unaryHelper(n: number, op: WideUnaryOp): string {
   const head = `(func ${wideHelperName(n, op)} ${params('a', n)} ${results(n)}`
   if (op === 'not') {
     return `${head}\n  ${range(n).map(i => `(i64.xor ${get('a', i)} (i64.const -1))`).join(' ')}\n)`
+  }
+  if (op === 'abs') {
+    // The sign is the top limb's.
+    const negative = `(i64.lt_s ${get('a', n - 1)} (i64.const 0))`
+    return `${head}\n  (if ${results(n)} ${negative} (then ${wideCall(n, 'neg', gets('a', n))}) (else ${gets('a', n)}))\n)`
   }
   // neg: 0 - a
   const zeros = range(n).map(() => '(i64.const 0)').join(' ')
@@ -193,7 +211,7 @@ export function wideHelpersFor(wat: string): string[] {
       const op = m[2]
       const def = op === 'store' ? storeHelper(n)
         : op.startsWith('sext_') ? sextHelper(n, Number(op.slice(5)))
-        : op === 'not' || op === 'neg' ? unaryHelper(n, op)
+        : op === 'not' || op === 'neg' || op === 'abs' ? unaryHelper(n, op)
         : binaryHelper(n, op as WideBinaryOp)
       out.push(def)
       pending.push(def)
