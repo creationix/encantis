@@ -77,6 +77,9 @@ func a(n: u32) -> (lo: u32, hi: u32) { pair(n) }
 func b(n: u16) -> (lo: u64, hi: f64) { (n, n) }
 func c(n: u16) -> (lo: u64, hi: f64) => (n, n)
 func d(n: i32) -> (r: i64) => n
+func e(n: u32) -> (lo: u32, hi: u32) => pair(n)
+func f(n: u32) -> (hi: u32, lo: u32) => e(n)
+func g(n: u32, c: bool) -> (lo: u32, hi: u32) => if c { pair(n) } else { (0, 0) }
 ```
 
 ```ents
@@ -85,12 +88,16 @@ func pair(n: u32) -> (u32, u32) => (n, n + 1)
 func a(n: u32) -> (lo: u64, hi: u64) { pair(n) }
 func b(n: u32) -> (lo: u32, hi: u32) { n }
 func c(x: f64) -> (r: i64) => x
+func d(n: u32) -> (lo: u64, hi: u64) => pair(n)
+func e(n: u32) -> (lo: u32, hi: u32, top: u32) => pair(n)
 ```
 
 ```errors
 cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields
 cannot assign u32 to (lo: u32, hi: u32)
 cannot assign f64 to i64
+cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields
+cannot assign (u32, u32) to (lo: u32, hi: u32, top: u32)
 ```
 
 ## Operands

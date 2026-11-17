@@ -575,6 +575,14 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('local.get $r')
     })
 
+    test('an expression body passes a call\'s values on as the named results', () => {
+      const wat = funcWat(`func f(n: u32) -> (q: u32, r: u32) => pair(n)
+        func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)`)
+      expect(wat).toContain('(result i32 i32)')
+      expect(wat).toContain('(call $pair (local.get $n))')
+      expect(wat).not.toContain('local.get $q')
+    })
+
     test('a match evaluates a computed subject once, into a scratch local', () => {
       const wat = funcWat(`func f(a: i64, b: i64) -> i32 => match a * b {
         6 => 1

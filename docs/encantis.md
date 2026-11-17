@@ -924,6 +924,8 @@ func halves(n: u16) -> (hi: u64, lo: f64) {
 func swapped(n: u32) -> (lo: u32, hi: u32) {
   split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
 }
+
+func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
 ```
 
 #### Calling Conventions

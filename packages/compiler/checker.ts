@@ -429,6 +429,9 @@ class CheckContext {
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
   currentReturnType: ResolvedType | null = null
+  // The named results an expression body is being checked against, when
+  // there are several: its value fills them in order.
+  resultsInOrder: ResolvedType | null = null
   // Loops open around the statement being checked, and the depth at the
   // innermost enclosing defer (null outside one). A deferred expression can't
   // return, or break or continue a loop outside it.
@@ -1408,7 +1411,15 @@ class CheckContext {
         this.error(decl.span.start, `function '${decl.ident ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
-      this.checkExpr(decl.body.expr, this.returnValueType())
+      // An expression body supplies the results as a trailing value does:
+      // several named ones are filled in order, whatever the value's own
+      // fields are called. checkExpr knows the value by this copy of them.
+      const results = this.returnValueType()
+      const named = results.kind === 'tuple' && results.fields.some(f => f.name)
+      const prevResults = this.resultsInOrder
+      this.resultsInOrder = named ? tuple(results.fields) : null
+      this.checkExpr(decl.body.expr, this.resultsInOrder ?? results)
+      this.resultsInOrder = prevResults
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
@@ -2310,8 +2321,11 @@ class CheckContext {
     this.exprTypes.set(expr, recordType)
 
     // For other types, check assignability; a constant takes the expected
-    // type and a narrower value is marked to be widened.
-    this.coerce(expr, inferred, expected, prefix)
+    // type and a narrower value is marked to be widened. The value of an
+    // expression body with several named results fills them in order: its
+    // own field names give way to theirs (see checkFuncBody).
+    const filled = expected === this.resultsInOrder ? this.resultsFilledBy(inferred) : expected
+    this.coerce(expr, inferred, filled, prefix)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)

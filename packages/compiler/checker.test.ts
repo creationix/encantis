@@ -1689,6 +1689,24 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(x: f64) -> (r: i64) => x`)).toEqual(['cannot assign f64 to i64'])
   })
 
+  test('an expression body fills several named results in order, like a trailing value', () => {
+    const pair = 'func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)\n'
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) => pair(n)`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) { pair(n) }`)).toEqual([])
+    // Whatever the value's own fields are called.
+    expect(errs(`func other(n: u32) -> (r: u32, x: u32) => (n, n)\nfunc f(n: u32) -> (q: u32, r: u32) => other(n)`)).toEqual([])
+    expect(errs(`func f(t: (u32, u32)) -> (q: u32, r: u32) => t`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, c: bool) -> (q: u32, r: u32) => if c { pair(n) } else { (0, 0) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, k: i32) -> (q: u32, r: u32) => match k { 0 => pair(n)\n _ => (n, 1) }`)).toEqual([])
+    // Each still has to fit the result it fills, and there have to be as many.
+    expect(errs(`${pair}func f(n: u32) -> (q: u64, r: u64) => pair(n)`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u16, r: u16) => pair(n)`)).toEqual(['cannot assign (u32, u32) to (u16, u16)'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32, s: u32) => pair(n)`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32, s: u32)'])
+    // Elsewhere a tuple's field names count.
+    expect(errs(`${pair}func f(n: u32) { let t: (q: u32, r: u32) = pair(n) }`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32)'])
+  })
+
   test('a match pattern has to be a value of the subject\'s type', () => {
     expect(errs(`func f(x: i64) -> i32 => match x { 5000000000 => 1\n _ => 0 }`)).toEqual([])
     expect(errs(`func f(x: f64) -> i32 => match x { 1 => 1\n 2.5 => 2\n _ => 0 }`)).toEqual([])

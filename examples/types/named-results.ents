@@ -98,3 +98,26 @@ test "an expression body supplies named results" {
   assert h.lo == 52.0
   assert wide(-7) == -7
 }
+
+// As a call's results passed on: they fill the named results in order,
+// whatever the call names them, under an if or a match too.
+func digits(n: u32) -> (u32, u32) => (n / 10, n % 10)
+
+export func tens(n: u32) -> (q: u32, r: u32) => digits(n)
+export func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)
+export func tens_or(n: u32, small: bool) -> (q: u32, r: u32) => if small { (0, n) } else { digits(n) }
+
+test "an expression body passes a call's results on in order" {
+  let t = tens(47)
+  assert t.q == 4
+  assert t.r == 7
+  let c = turned(0x12345678)
+  assert c.lo == 0x5678
+  assert c.hi == 0x1234
+  let s = tens_or(7, true)
+  assert s.q == 0
+  assert s.r == 7
+  let b = tens_or(93, false)
+  assert b.q == 9
+  assert b.r == 3
+}
