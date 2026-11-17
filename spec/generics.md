@@ -1484,6 +1484,39 @@ export func third(l: *List16) -> u16 => if let a = l.next { if let b = a.next { 
 export func hop(e: Even8) -> u8 => if let o = e.odd[0] { if let f = o.even { f.v } else { o.v } } else { e.v }
 ```
 
+A generic type whose body is a pointer, a slice, an array or an optional is that type, as a `type` that names one is: `.*`, `.len`, indexing, `if let` and `??` see through it.
+
+```ents
+func Ref(comptime T: type) -> type => *mut T
+func Sl(comptime T: type) -> type => []T
+func Four(comptime T: type) -> type => [4]T
+func Maybe(comptime T: type) -> type => ?*T
+
+func swap(comptime T: type, a: Ref(T), b: Ref(T)) {
+  let t = a.*
+  a.* = b.*
+  b.* = t
+}
+func last(comptime T: type, s: Sl(T)) -> T => s[s.len - 1] ?? 0
+export func f(a: Ref(u32), b: Ref(u32), s: Sl(i16), x: Four(u8), o: Maybe(u64)) -> u64 {
+  swap(a, b)
+  return a.* as u64 + last(s) as u64 + x[3] as u64 + (if let q = o { q.* } else { 0 })
+}
+```
+
+```ents same-wasm
+func swap(a: *mut u32, b: *mut u32) {
+  let t = a.*
+  a.* = b.*
+  b.* = t
+}
+func last(s: []i16) -> i16 => s[s.len - 1] ?? 0
+export func f(a: *mut u32, b: *mut u32, s: []i16, x: [4]u8, o: ?*u64) -> u64 {
+  swap(a, b)
+  return a.* as u64 + last(s) as u64 + x[3] as u64 + (if let q = o { q.* } else { 0 })
+}
+```
+
 Type parameters are found through a generic type by its body, at any depth, and through two at once.
 
 ```ents

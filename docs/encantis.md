@@ -891,7 +891,40 @@ Casts are required for:
 
 A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
 
-### 2.11 Limits
+### 2.11 Type Names
+
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+
+<!-- spec:begin compile -->
+
+```ents
+type P = *mut u32
+type S = []u16
+type O = ?*u32
+
+data cells = mut [0:u32; 4]
+data shorts = [1:u16, 2, 3]
+
+func bump(p: P) -> u32 {
+  p.* += 1
+  return p.*
+}
+func last(s: S) -> u16 => s[s.len - 1] ?? 0
+func read(o: O) -> u32 => if let q = o { q.* } else { 0 }
+
+test "names are the types they name" {
+  let p = cells as P
+  assert bump(p) == 1
+  let s: S = shorts
+  assert last(s) == 3
+  assert read(p) == 1
+  assert read(0 as O) == 0
+}
+```
+
+<!-- spec:end -->
+
+### 2.12 Limits
 
 A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied; the types made of it say nothing more.
 
@@ -2725,7 +2758,7 @@ Also not in this version: generics across source modules, a generic type with a 
 
 One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
-Two limits are older than generics and are met through them. A name for a pointer, slice, array or optional type (a `type`, and so a generic type with such a body) is passed, stored, matched and measured as the type it names, but `.*`, `.ptr`, `.len`, indexing and `if let` do not see through the name yet: give a generic type a struct or tuple as its body, and write such a type out where its value is used. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
+A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
 <!-- spec:end -->
 

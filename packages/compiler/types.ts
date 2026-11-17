@@ -224,17 +224,21 @@ export function slice(element: ResolvedType, mutable?: boolean, optional?: boole
   return result
 }
 
+// A name for a pointer or a slice is the type it names: these see through it.
 export function optionalOf(type: ResolvedType): ResolvedType {
-  if (type.kind === 'pointer') return { ...type, optional: true }
-  if (type.kind === 'slice') return { ...type, optional: true }
+  const u = unwrap(type)
+  if (u.kind === 'pointer') return { ...u, optional: true }
+  if (u.kind === 'slice') return { ...u, optional: true }
   return type
 }
 
 export function isOptional(type: ResolvedType): boolean {
-  return (type.kind === 'pointer' || type.kind === 'slice') && !!type.optional
+  const u = unwrap(type)
+  return (u.kind === 'pointer' || u.kind === 'slice') && !!u.optional
 }
 
-export function unwrapOptional(type: ResolvedType): ResolvedType {
+export function unwrapOptional(written: ResolvedType): ResolvedType {
+  const type = isOptional(written) ? unwrap(written) : written
   if (type.kind === 'pointer' && type.optional) {
     const result: PointerRT = { ...type }
     delete result.optional

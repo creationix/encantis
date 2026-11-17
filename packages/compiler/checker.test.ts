@@ -2908,3 +2908,41 @@ describe('types too large to write out', () => {
     expect(errs(`${D}func Big(comptime T: type) -> type => (x: ${nest(18, 'T')})\nfunc f(p: *Big(u8)) -> u32 => 1`)).toEqual([large('Big(u8)')])
   })
 })
+
+describe('a name for a pointer, a slice, an array or an optional', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const names = `type P = *mut u16
+type S = []f64
+type A = [4]i8
+type M = [*]u32
+type O = ?*i32
+type PP = *mut P
+type PA = *mut [3]u8
+type E = []P
+`
+
+  test('is the type it names: dereferenced, measured, indexed and unwrapped', () => {
+    expect(errs(`${names}func a(p: P) -> u16 => p.*
+func b(s: S) -> f64 => s.ptr[0]
+func c(s: S) -> u32 => s.len
+func d(x: A) -> i8 => x[2]
+func e(m: M, i: u32) -> u32 => m[i]
+func f(p: O) -> i32 => if let q = p { q.* } else { 4 }
+func g(p: PP, q: P) { p.* = q }
+func h(p: PA) -> u32 => p.len + p[2] + p.wid
+func i(p: O, q: *i32) -> i32 => (p ?? q).*
+func j(e: E, i: u32) -> u16 => if let p = e[i] { p.* } else { 0 }
+func k(s: S) -> f64 {
+  let t: f64 = 0.0
+  for v in s { t += v }
+  return t
+}`)).toEqual([])
+  })
+
+  test('and what cannot be done with the type cannot be done with the name', () => {
+    expect(errs(`${names}func a(s: S) -> f64 => s.*`)).toEqual(['cannot use .* on S - use [0] to access the first element'])
+    expect(errs(`${names}func a(x: A, i: u32) -> i8 => x[i]`)).toEqual(['dynamic index on value type [4]i8 — use a pointer or slice for dynamic access'])
+    expect(errs(`${names}func a(m: M) -> u32 => m.len`)).toEqual(['cannot get .len on unbounded array [*]u32 - length is unknown'])
+    expect(errs(`${names}func a(p: P) -> u32 => p[0..2].len`)).toEqual(['cannot take a range of *mut u16: use a slice or a pointer to an array'])
+  })
+})
