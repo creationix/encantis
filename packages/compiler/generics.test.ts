@@ -4174,8 +4174,108 @@ describe('examples/generics', () => {
     }
   })
 
+  test('methods.ents: the receiver decides T, and each chain is nested direct calls', async () => {
+    const wat = await compileExample('methods.ents')
+    // What only the tests use (u8 vectors, pop, get, find, unique) is absent.
+    expect(funcs(wat)).toEqual(['alloc', 'vec<u32>', 'push<u32>', 'items<u32>', 'double', 'sum_to'])
+    expect(funcWat(wat, 'sum_to')).toContain('(call $push<u32> (local.get $v) (local.get $i))')
+    const source = await Bun.file(join(dir, 'methods.ents')).text()
+    // v.push(i) and push(v, i) are the same instruction, and so is every other pair.
+    const plain = source
+      .replace('v.push(i)\n', 'push(v, i)\n')
+      .replace('for x in v.items()', 'for x in items(v)')
+    expect(plain).not.toBe(source)
+    expect(funcWat(watOfSource(plain), 'sum_to')).toContain('(call $push<u32> (local.get $v) (local.get $i))')
+    expect(Buffer.from(await wasmOfSource(plain)).equals(Buffer.from(await wasmOfSource(source)))).toBe(true)
+  })
+
+  test('methods.ents with its tests: chains through generics and plain functions', async () => {
+    const source = await Bun.file(join(dir, 'methods.ents')).text()
+    const { ran, failed } = await runTestsOfSource(source)
+    expect(failed).toEqual([])
+    expect(ran).toEqual([
+      'the receiver decides T',
+      'explicit type arguments come after the receiver',
+      'calls chain, and plain functions are methods too',
+    ])
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map(i => i.decl.ident as string).sort()).toEqual([
+      'contains<u32>', 'contains<u8>', 'find<u32>', 'find<u8>', 'get<u32>', 'get<u8>', 'items<u32>', 'items<u8>',
+      'pop<u32>', 'push<u32>', 'push<u8>', 'unique<u32>', 'unique<u8>', 'vec<u32>', 'vec<u8>',
+    ])
+  })
+
+  test('set.ents: each instance calls the hash and the eq of its own key type', async () => {
+    const dirOf = await mkdtemp(join(tmpdir(), 'encantis-set-'))
+    try {
+      const path = join(dirOf, 'set.ents')
+      await writeFile(path, await Bun.file(join(dir, 'set.ents')).text())
+      const load = await loadModule(path, { includeTests: true })
+      const checked = typecheckProgram(load.modules, path, { includeTests: true })
+      expect(checked.errors).toEqual([])
+      const { wat } = programToWatWithTests(load.modules, checked.results, path)
+      expectPlainWasm(wat)
+      expect(funcs(wat).filter(name => !name.startsWith('test_'))).toEqual([
+        'alloc', "hashset<''u32>", 'hashset<u32>', "slot<''u32>", 'slot<u32>', "has<''u32>", 'has<u32>', "add<''u32>", 'add<u32>',
+        'hash', 'eq', "hash:''u32", "eq:''u32|''u32",
+      ])
+      const calls = (name: string) => [...new Set([...funcWat(wat, name).matchAll(/\(call \$(\S+?)[\s)]/g)].map(m => m[1]))]
+      expect(calls('add<u32>')).toEqual(['hash', 'slot<u32>'])
+      expect(calls('slot<u32>')).toEqual(['eq'])
+      expect(calls("add<''u32>")).toEqual(["hash:''u32", "slot<''u32>"])
+      expect(calls("slot<''u32>")).toEqual(["eq:''u32|''u32"])
+      expect(calls("has<''u32>")).toEqual(["slot<''u32>", "hash:''u32"])
+    } finally {
+      await rm(dirOf, { recursive: true })
+    }
+    // Without its tests nothing asks for a set: the two pairs are all there is.
+    expect(funcs(await compileExample('set.ents'))).toEqual(['alloc', 'hash', 'eq', "hash:''u32", "eq:''u32|''u32"])
+    const { ran, failed } = await runTestsOfSource(await Bun.file(join(dir, 'set.ents')).text())
+    expect(failed).toEqual([])
+    expect(ran).toEqual(['a set of u32', 'a set of slices compares contents'])
+  })
+
+  // The two examples are written with an explicit `.*`, a u32 for a flag and
+  // one store for each field, as they were before structs and bools could be
+  // stored through a pointer. Their natural spelling passes the same tests.
+  test('methods.ents and set.ents pass their tests with fields through the pointer too', async () => {
+    const edit = (source: string, edits: [string, string][]) => {
+      for (const [from, to] of edits) {
+        expect(source).toContain(from)
+        source = source.replaceAll(from, to)
+      }
+      return source
+    }
+    const methods = edit(await Bun.file(join(dir, 'methods.ents')).text(), [
+      ['  let made = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n  v.*.ptr = made.ptr\n  v.*.len = made.len\n  v.*.cap = made.cap\n',
+        '  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n'],
+      ['.*.', '.'],
+      ['find(xs, x) < xs.len', 'xs.find(x) < xs.len'],
+      ['unique(repeats)', 'repeats.unique()'],
+      ['unique(letters)', 'letters.unique()'],
+    ])
+    expect(methods).not.toContain('.*.')
+    expect((await runTestsOfSource(methods)).failed).toEqual([])
+    const set = edit(await Bun.file(join(dir, 'set.ents')).text(), [
+      ['(used: u32, hash: u32, key: K)', '(used: bool, hash: u32, key: K)'],
+      ['  s.*.slots = p as [*]mut Slot(K)\n  s.*.mask = size - 1\n  s.*.count = 0\n', '  s.* = Set(K)(p as [*]mut Slot(K), size - 1, 0)\n'],
+      ['  s.*.slots[i].used = 1\n  s.*.slots[i].hash = h\n  s.*.slots[i].key = k\n', '  s.*.slots[i] = (true, h, k)\n'],
+      ['return i when s.*.slots[i].used == 0', 'return i when !s.*.slots[i].used'],
+      ['return false when s.*.slots[i].used != 0', 'return false when s.*.slots[i].used'],
+      ['.used != 0', '.used'],
+      ['eq(s.*.slots[i].key, k)', 's.*.slots[i].key.eq(k)'],
+      ['let h = hash(k)', 'let h = k.hash()'],
+      ['.*.', '.'],
+    ])
+    expect(set).not.toContain('.*.')
+    const { ran, failed } = await runTestsOfSource(set)
+    expect(failed).toEqual([])
+    expect(ran).toHaveLength(2)
+  })
+
   test('no offset of an instance reaches the tables the editor reads', async () => {
-    for (const name of ['pick.ents', 'minmax.ents', 'slices.ents', 'vec.ents', 'sort.ents']) {
+    for (const name of ['pick.ents', 'minmax.ents', 'slices.ents', 'vec.ents', 'sort.ents', 'methods.ents', 'set.ents']) {
       const source = await Bun.file(join(dir, name)).text()
       const result = check(source)
       const inside = (offset: number) => offset >= 0 && offset < source.length

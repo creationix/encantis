@@ -1,0 +1,96 @@
+// Duck typing through overloads: Set(K) calls hash(k) and eq(a, b) for its K.
+// Two key types in one module means two functions named hash and two named eq;
+// each instance of slot, has and add calls the pair for its own K, directly.
+// (A slot's `used` flag is a u32 and fields are reached with an explicit `.*`
+// here; a `bool` flag and `s.mask` through the pointer read the same.)
+
+data space = mut [0:u8; 8192]
+global top: u32 = 0
+func alloc(n: u32) -> u32 {
+  let p = (space as u32) + top
+  top += n
+  return p
+}
+
+func Slot(comptime K: type) -> type => (used: u32, hash: u32, key: K)
+func Set(comptime K: type) -> type => (slots: [*]mut Slot(K), mask: u32, count: u32)
+
+func hashset(comptime K: type, bits: u32) -> *mut Set(K) {
+  let s = alloc(sizeof(Set(K))) as *mut Set(K)
+  let size: u32 = 1 << bits
+  let bytes = size * sizeof(Slot(K))
+  let p = alloc(bytes)
+  let raw = p as [*]mut u8
+  raw[0..bytes] = 0
+  s.*.slots = p as [*]mut Slot(K)
+  s.*.mask = size - 1
+  s.*.count = 0
+  return s
+}
+
+// The slot of k: its own, or the empty one where it would go.
+func slot(comptime K: type, s: *Set(K), h: u32, k: K) -> u32 {
+  let i = h & s.*.mask
+  loop {
+    return i when s.*.slots[i].used == 0
+    return i when s.*.slots[i].hash == h && eq(s.*.slots[i].key, k)
+    i = (i + 1) & s.*.mask
+  }
+}
+
+func has(comptime K: type, s: *Set(K), k: K) -> bool => s.*.slots[s.slot(k.hash(), k)].used != 0
+
+func add(comptime K: type, s: *mut Set(K), k: K) -> bool {
+  let h = hash(k)
+  let i = s.slot(h, k)
+  return false when s.*.slots[i].used != 0
+  s.*.slots[i].used = 1
+  s.*.slots[i].hash = h
+  s.*.slots[i].key = k
+  s.*.count += 1
+  return true
+}
+
+func hash(k: u32) -> (h: u32) {
+  h = (k ^ (k >> 16)) * 0x45d9f3b
+  h = h ^ (h >> 16)
+}
+func eq(a: u32, b: u32) -> bool => a == b
+
+func hash(k: []u32) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ w) * 0x01000193
+  }
+}
+func eq(a: []u32, b: []u32) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+
+data abc = [1:u32, 2, 3]
+data abd = [1:u32, 2, 4]
+data abc2 = mut [1:u32, 2, 3]
+
+test "a set of u32" {
+  let s = hashset(u32, 6)
+  assert s.add(7)
+  assert s.add(8)
+  assert !s.add(7)
+  assert s.has(8)
+  assert !s.has(9)
+  assert s.*.count == 2
+}
+
+test "a set of slices compares contents" {
+  let s = hashset([]u32, 4)
+  assert s.add(abc)
+  assert s.add(abd)
+  assert !s.add(abc2)
+  assert s.has(abc2[..])
+  assert s.*.count == 2
+  assert hash(5:u32) == hash(5:u32)
+}
