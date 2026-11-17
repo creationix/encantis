@@ -3385,6 +3385,20 @@ class CheckContext {
         )
       }
 
+      // A function's arguments go to its parameters in order: a name in the
+      // call (`f(b: 1)`, `f(b:)`) would say a parameter it does not choose.
+      if (expr.args.some((a) => a.name !== null)) {
+        const calleeName = expr.callee.kind === 'IdentExpr' ? expr.callee.name : 'a function'
+        this.error(expr.span.start, `'${declaredName(calleeName)}' takes positional arguments`)
+        for (const arg of expr.args) {
+          const value = argValue(arg)
+          if (value && !typeOfArg(value)) this.inferExpr(value)
+        }
+        return calleeType.returns.length === 0 ? VOID
+          : calleeType.returns.length === 1 ? calleeType.returns[0].type
+          : tuple(calleeType.returns)
+      }
+
       // Check argument count
       const argCount = expr.args.filter((a) => a.value).length
       if (argCount !== calleeType.params.length) {
@@ -3420,10 +3434,16 @@ class CheckContext {
     // expressions inside it get concrete types.
     // A `type` that names another name for a struct (type IntVec = Vec(u32))
     // constructs what that one does.
+    // Only a type constructs: a value of a struct type (p(1, 2)) is not one.
     const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
-    const struct = namesType ? unwrap(calleeType) : calleeType
-    if (struct.kind === 'tuple') {
-      this.checkConstructorArgs(expr, struct, typeToString(calleeType))
+    const struct = unwrap(calleeType)
+    if (namesType && struct.kind === 'tuple') {
+      const given = this.checkConstructorArgs(expr, struct, (expr.callee as AST.IdentExpr).name)
+      // With names among the arguments, it compiles as the fields' values
+      // in the order of the type, as a generic type's constructor does.
+      if (expr.args.some((a) => a.name !== null) && given.every((args) => args.length === 1)) {
+        this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
+      }
       return calleeType
     }
 
@@ -3447,9 +3467,12 @@ class CheckContext {
     return primitive('i32')
   }
 
-  // The arguments of a constructor, each against the field it is for. Gives
-  // the arguments each field was given, in the order of the fields.
+  // The arguments of a constructor, each against the field it is for: an
+  // argument with a name is for the field of that name, and one without is
+  // for the field at its place. Gives the arguments each field was given, in
+  // the order of the fields.
   private checkConstructorArgs(expr: AST.CallExpr, struct: TupleRT, shown: string): AST.Arg[][] {
+    const before = this.errorsReported
     const args = expr.args
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
@@ -3471,7 +3494,14 @@ class CheckContext {
         this.inferExpr(value)
       }
     })
-    return struct.fields.map((f) => given.get(f) ?? [])
+    const fields = struct.fields.map((f) => given.get(f) ?? [])
+    // As many arguments as fields, each for a field there is: then one
+    // field has two of them, Pt(1, q: 2), and another none.
+    const twice = fields.findIndex((args) => args.length > 1)
+    if (twice >= 0 && this.errorsReported === before) {
+      this.error(fields[twice][1].span.start, `${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
+    }
+    return fields
   }
 
   // Vec(u32)(p, 0, cap), or T(a, b) in an instance: a value of the type the
@@ -3498,13 +3528,6 @@ class CheckContext {
     const given = this.checkConstructorArgs(expr, struct, typeToString(type))
     if (given.every((args) => args.length === 1)) {
       this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-    } else if (this.errorsReported === before) {
-      // As many arguments as fields, each for a field there is: then one
-      // field has two of them.
-      const twice = given.findIndex((args) => args.length > 1)
-      if (twice >= 0) {
-        this.error(given[twice][1].span.start, `${typeToString(type)}: field '${struct.fields[twice].name ?? twice}' is given twice`)
-      }
     }
     return type
   }
@@ -3809,6 +3832,15 @@ class CheckContext {
   // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
     if (!BUILTIN_NAMES.has(name)) return null
+    // Its operands are taken in order, as a function's arguments are.
+    if (expr.args.some((a) => a.name !== null)) {
+      this.error(expr.span.start, `'${name}' takes positional arguments`)
+      for (const arg of expr.args) {
+        const value = argValue(arg)
+        if (value && !typeOfArg(value)) this.inferExpr(value)
+      }
+      return RECOVERY
+    }
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
     switch (name) {

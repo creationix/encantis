@@ -554,8 +554,10 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
 
 // The expressions that give a struct's fields, in the order of the type, when
 // `expr` writes the struct out: a tuple gives them by position, as any tuple
-// that becomes a struct does; a constructor (Point(y: 2, x: 1)) can name them.
-// Type names are the identifiers that start with a capital letter.
+// that becomes a struct does, and so does a constructor. One that names its
+// arguments (Point(y: 2, x: 1)) is given by the checker as the tuple of its
+// fields in order. Type names are the identifiers that start with a capital
+// letter.
 function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSectionBuilder): (AST.Expr | null)[] | null {
   let args: AST.Arg[]
   // A type that is called: the checker gives its arguments field by field.
@@ -565,7 +567,6 @@ function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSection
     args = expr.elements
   } else if (expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name)) {
     args = expr.args
-    if (args.some((a) => a.name)) return struct.fields.map((f) => args.find((a) => a.name === f.name)?.value ?? null)
   } else {
     return null
   }

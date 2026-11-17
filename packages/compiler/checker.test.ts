@@ -2162,7 +2162,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(1)
     `)
-    expect(result.errors.map(e => e.message)).toContain('(x: i32, y: i32) expects 2 fields, got 1')
+    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1')
   })
 
   test('an unknown field name is an error', () => {
@@ -2170,7 +2170,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(x: 1, z: 2)
     `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point")
   })
 })
 
@@ -2831,5 +2831,49 @@ describe('calling a function value', () => {
   test('a function named directly is called as before', () => {
     expect(errs('func inc(a: u32) -> u32 => a + 1\nfunc f(x: u32) -> u32 => inc(inc(x))')).toEqual([])
     expect(errs('import "env" "now" func now() -> u64\nfunc f() -> u64 => now()')).toEqual([])
+  })
+})
+
+describe('arguments by place and by name', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('a function or a builtin is called with positional arguments only', () => {
+    expect(errs(`
+      func f(a: i32, b: i32) -> i32 => a - b
+      func g() -> i32 => f(b: 1, a: 2)
+      func h(b: i32) -> i32 => f(b:, 3)
+      func k(x: i32) -> i32 => x.f(b: 2)
+      func m(x: i32, y: i32) -> i32 => min(a: x, b: y)
+    `)).toEqual([
+      "'f' takes positional arguments",
+      "'f' takes positional arguments",
+      "'f' takes positional arguments",
+      "'min' takes positional arguments",
+    ])
+    expect(errs(`
+      func h(k: u32) -> u32 => k
+      func h(k: u64) -> u32 => 1
+      func g(x: u32) -> u32 => h(k: x)
+    `)).toEqual(["'h' takes positional arguments"])
+  })
+
+  test('a constructor gives each field once, by name or by place', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a() -> Pt => Pt(1, q: 2)
+      func b() -> Pt => Pt(r: 2, 1)
+      func c(q: i32) -> Pt => Pt(q, r: 2)
+    `)).toEqual(["Pt: field 'q' is given twice", "Pt: field 'r' is given twice"])
+  })
+
+  test('a value of a struct type is not a constructor', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func f(p: Pt) { p(3, 4) }
+      func g() {
+        let p = Pt(1, 2)
+        p(3, 4)
+      }
+    `)).toEqual(['cannot call non-function type: Pt', 'cannot call non-function type: (q: i32, r: i32)'])
   })
 })

@@ -2671,3 +2671,45 @@ describe('set takes the types of the variables it sets', () => {
     expect(errs).toEqual(["cannot set 'a' (i64) from a field of type i32"])
   })
 })
+
+describe('arguments by place and by name', () => {
+  test('a constructor takes each named argument for its field, and the others by place', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      type Wide = (a: i64, b: f64, c: u8)
+      global gp: Pt = Pt(r: 4, q: 3)
+      data dp: *[2]Pt = [Pt(r: 6, q: 5), Pt(7, r: 8)]
+      export func mixed(q: i32) -> i32 {
+        let p = Pt(q, r: 2)
+        return p.q * 10 + p.r
+      }
+      export func swapped() -> i32 {
+        let p = Pt(r: 2, q: 1)
+        return p.q * 10 + p.r
+      }
+      export func short(q: i32, r: i32) -> i32 => Pt(r:, q:).q * 10 + Pt(r:, q:).r
+      export func wide() -> f64 {
+        let w = Wide(c: 3, a: 1, b: 2)
+        return (w.a as f64) * 100 + w.b * 10 + (w.c as f64)
+      }
+      export func glob() -> i32 => gp.q * 10 + gp.r
+      export func dat() -> i32 => dp[0].q * 1000 + dp[0].r * 100 + dp[1].q * 10 + dp[1].r
+    `)
+    expect(x.mixed(1)).toBe(12)
+    expect(x.swapped()).toBe(12)
+    expect(x.short(1, 2)).toBe(12)
+    expect(x.wide()).toBe(123)
+    expect(x.glob()).toBe(34)
+    expect(x.dat()).toBe(5678)
+  })
+
+  test('the fields of a named constructor are computed in the order of the type', () => {
+    const wat = modWat(`
+      type Pt = (q: i32, r: i32)
+      func one() -> i32 => 1
+      func two() -> i32 => 2
+      export func f() -> i32 => Pt(r: two(), q: one()).r
+    `)
+    expect(wat).toContain('(call $one) (call $two)')
+  })
+})

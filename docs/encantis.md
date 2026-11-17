@@ -518,6 +518,52 @@ let y = 4.0
 let p = (x:, y:)             // equivalent to (x: x, y: y)
 ```
 
+<!-- spec:begin compile -->
+
+An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix. The struct is built from its fields in the order the type declares them, and that is the order their values are computed in, whatever the order they are written in:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func half(x: f32) -> Point => Point(x, y: x / 2.0)
+
+test "arguments by place and by name" {
+  assert half(4.0).y == 2.0
+  assert Point(y: 1.0, x: 3.0).x == 3.0
+}
+```
+
+Each field is given once:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func f(x: f32) -> f32 => Point(x, y: 2.0).y
+func g() -> f32 => Point(2.0, x: 1.0).x
+func h() -> f32 => Point(y: 1.0, 2.0).x
+```
+
+```errors
+Point: field 'x' is given twice
+Point: field 'y' is given twice
+```
+
+Only a constructor takes fields by name. A tuple literal becomes a struct field by field, by position, as any tuple does ([9.2](#structural-coercion)), whatever its elements are named: as a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 2.0. To give the fields in another order, construct the struct:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func by_place() -> Point => (y: 2.0, x: 1.0)
+func by_name() -> Point => Point(y: 2.0, x: 1.0)
+
+test "a tuple by position, a constructor by name" {
+  assert by_place().x == 2.0
+  assert by_name().x == 1.0
+}
+```
+
+<!-- spec:end -->
+
 #### Struct Field Access
 
 ```ents
@@ -1101,6 +1147,24 @@ let q, r = divmod(17, 5)
 // Destructure tuple return values (parens match the tuple)
 let (x:, y:) = get_point()
 ```
+
+<!-- spec:begin compile -->
+
+An argument goes to the parameter at its place, so a call of a function, or of a builtin, names none of them (only a constructor's arguments can have names, [2.8](#struct-constructors)):
+
+```ents
+func sub(a: i32, b: i32) -> i32 => a - b
+
+func f() -> i32 => sub(b: 1, a: 2)
+func g(x: f64) -> f64 => sqrt(v: x)
+```
+
+```errors
+'sub' takes positional arguments
+'sqrt' takes positional arguments
+```
+
+<!-- spec:end -->
 
 #### Function Types and Pointers
 
