@@ -3850,7 +3850,15 @@ class CheckContext {
   // A literal pattern is compared with the subject, so it has to be a value
   // of the subject's type.
   private checkMatchSubject(expr: AST.MatchExpr): void {
-    const subjectType = this.inferExpr(expr.subject)
+    let subjectType = this.inferExpr(expr.subject)
+    // A constant subject (1, a def, a fixed array's len) has no type for the
+    // patterns to be compared in: it takes its default one, as the
+    // initializer of a let without a type does.
+    if (isComptimeNumber(subjectType)) {
+      const type = this.concretize(subjectType)
+      this.typeConstant(expr.subject, type, subjectType, false)
+      subjectType = type
+    }
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
       for (const pattern of arm.patterns) {

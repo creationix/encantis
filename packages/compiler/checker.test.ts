@@ -1596,6 +1596,17 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(x: i32) -> i32 => match x { 1.5 => 1\n _ => 0 }`)).toEqual(['cannot match i32 against float(1.5)'])
   })
 
+  test('a constant match subject is compared in its default type', () => {
+    expect(errs(`func f() -> i32 => match 1 { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`def k = 1\nfunc f() -> i32 => match k { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f(a: [3]u8) -> i32 => match a.len { 3 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 5000000000 { 5000000000 => 2\n 1 => 1\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 0.5 { 0.5 => 2\n 1 => 1\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i32 => match if c { 1 } else { 2 } { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 1 { 5000000000 => 2\n _ => 3 }`)).toEqual(['cannot match i32 against int(5000000000)'])
+    expect(errs(`func f() -> i32 => match 1 { 1.5 => 2\n _ => 3 }`)).toEqual(['cannot match i32 against float(1.5)'])
+  })
+
   test('a struct value is not widened field by field', () => {
     expect(errs(`
       type Small = (a: i32, b: i32)

@@ -1546,7 +1546,7 @@ match value {
 }
 ```
 
-Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). A constant subject (`1`, a `def`, a fixed array's `len`) is compared in its default type. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
 
 ```ents
 let result = match code {

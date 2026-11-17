@@ -335,6 +335,36 @@ func b(x: u8) -> i32 => match x {
 cannot match u8 against int(300)
 ```
 
+A constant subject has no type of its own. It is compared in its default type: `i32` or `i64` by its size, `f64` for a float.
+
+```ents
+def limit = 1
+
+func a() -> i32 => match limit {
+  1 => 2
+  _ => 3
+}
+
+func b(items: [3]u8) -> i32 => match items.len {
+  3 => 2
+  _ => 3
+}
+
+func c() -> i32 => match 5000000000 {
+  5000000000 => 2
+  _ => 3
+}
+
+func d() -> i32 => match 1 {
+  5000000000 => 2
+  _ => 3
+}
+```
+
+```errors
+cannot match i32 against int(5000000000)
+```
+
 An `if` used as a statement has no value, so its branches can end in anything.
 
 ```ents
