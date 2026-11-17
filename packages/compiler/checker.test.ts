@@ -1738,8 +1738,12 @@ describe('struct constructors', () => {
   })
 })
 
+// A struct, a tuple, a slice and an array have no operators: the types a
+// generic's type argument can be and its body cannot assume operators for.
 describe('operands of operators', () => {
   const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  // The checker's wording (noOperator), written once
+  const noOperator = (op: string, left: string, right = left) => `'${op}' cannot be applied to ${left} and ${right}`
 
   test('a struct has no comparison and no arithmetic', () => {
     expect(errs(`
@@ -1747,11 +1751,7 @@ describe('operands of operators', () => {
       func a(p: Pt, q: Pt) -> bool => p > q
       func b(p: Pt, q: Pt) -> bool => p == q
       func c(p: Pt, q: Pt) -> Pt => p + q
-    `)).toEqual([
-      'operator > is not defined for Pt',
-      'operator == is not defined for Pt',
-      'operator + is not defined for Pt',
-    ])
+    `)).toEqual([noOperator('>', 'Pt'), noOperator('==', 'Pt'), noOperator('+', 'Pt')])
   })
 
   test('a slice, a tuple and an array have none either', () => {
@@ -1761,10 +1761,10 @@ describe('operands of operators', () => {
       func c(x: [4]u8, y: [4]u8) -> bool => x < y
       func d(x: []u8) -> bool => x == 0
     `)).toEqual([
-      'operator == is not defined for []u8',
-      'operator != is not defined for (i32, i32)',
-      'operator < is not defined for [4]u8',
-      'operator == is not defined for []u8',
+      noOperator('==', '[]u8'),
+      noOperator('!=', '(i32, i32)'),
+      noOperator('<', '[4]u8'),
+      noOperator('==', '[]u8', 'int(0)'),
     ])
   })
 
@@ -1773,7 +1773,7 @@ describe('operands of operators', () => {
       func nothing() { }
       func a() -> bool => nothing() == nothing()
       func b(x: u32) -> u32 => x + nothing()
-    `)).toEqual(['operator == is not defined for ()', 'operator + is not defined for ()'])
+    `)).toEqual([noOperator('==', '()'), noOperator('+', 'u32', '()')])
   })
 
   test('the error is the only one: a comparison is still a bool', () => {
@@ -1784,18 +1784,42 @@ describe('operands of operators', () => {
         let same: bool = p == q
         return 0
       }
-    `)).toEqual(['operator > is not defined for Pt', 'operator == is not defined for Pt'])
+    `)).toEqual([noOperator('>', 'Pt'), noOperator('==', 'Pt')])
   })
 
-  test('function values can be told apart, and have no order or arithmetic', () => {
+  test('a unary operator and a compound assignment have no struct or slice operand either', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(p: Pt) -> Pt => -p
+      func b(p: Pt) -> Pt => ~p
+      func c(p: Pt) -> bool => !p
+      func d(xs: []u8) -> []u8 => -xs
+      func e(p: Pt, q: Pt) {
+        let t = p
+        t += q
+      }
+      func f(xs: []u8, n: u32) {
+        let t = xs
+        t += n
+        t <<= 1
+      }
+    `)).toEqual([
+      "'-' needs a number, not Pt",
+      "'~' needs an integer, not Pt",
+      "operand of '!' must be bool, not Pt",
+      "'-' needs a number, not []u8",
+      noOperator('+=', 'Pt'),
+      noOperator('+=', '[]u8', 'u32'),
+      noOperator('<<=', '[]u8', 'int(1)'),
+    ])
+  })
+
+  test('function values can be told apart', () => {
     // f == g compiled to one i32.eq on 0.2.1, and still does.
     expect(errs(`
       func same(f: (i32) -> i32, g: (i32) -> i32) -> bool => f == g
       func differ(f: (i32) -> i32, g: (i32) -> i32) -> bool => f != g
     `)).toEqual([])
-    expect(errs(`
-      func a(f: (i32) -> i32, g: (i32) -> i32) -> bool => f < g
-    `)).toEqual(['operator < is not defined for func(i32) -> i32'])
   })
 
   test('numbers, bools and pointers keep their operators', () => {

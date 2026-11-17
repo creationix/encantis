@@ -925,25 +925,54 @@ export func g(a: Pt, b: Pt) -> Pt => max(Pt, b, a)
 ```
 
 ```errors
-operator > is not defined for Pt, in max(T = Pt)
+'>' cannot be applied to Pt and Pt, in max(T = Pt)
+```
+
+A unary operator or a compound assignment the type argument does not have.
+
+```ents
+type Pt = (q: i32, r: i32)
+func neg(comptime T: type, a: T) -> T => -a
+func inv(comptime T: type, a: T) -> T => ~a
+func not(comptime T: type, a: T) -> bool => !a
+func twice(comptime T: type, a: T) -> T {
+  let b = a
+  b += a
+  return b
+}
+
+export func f(p: Pt) -> Pt => twice(inv(neg(p)))
+export func g(xs: []u8) -> bool => not(xs)
+export func h(x: i32, y: bool) -> bool => not(y) && twice(inv(neg(x))) > 0
+```
+
+```errors
+'-' needs a number, not Pt, in neg(T = Pt)
+'~' needs an integer, not Pt, in inv(T = Pt)
+'+=' cannot be applied to Pt and Pt, in twice(T = Pt)
+operand of '!' must be bool, not []u8, in not(T = []u8)
 ```
 
 A literal the type argument cannot hold.
 
 ```ents
-func positive(comptime T: type, x: T) -> bool => x > 0
+func over(comptime T: type, x: T) -> bool => x > 300
 
-export func f(x: f64) -> bool => positive(x)
+export func f(x: u8) -> bool => over(x)
+export func g(x: u32) -> bool => over(x)
 ```
 
 ```errors
-cannot assign int(0) to f64, in positive(T = f64)
+cannot assign int(300) to u8, in over(T = u8)
 ```
 
 A name that only the caller has. A generic body sees its own module.
 
 ```ents
-func leak(comptime T: type, x: T) -> T => x + hidden
+func leak(comptime T: type, x: T) -> T {
+  let seen = hidden
+  return x
+}
 
 export func f() -> u32 {
   let hidden: u32 = 1

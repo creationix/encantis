@@ -2049,7 +2049,7 @@ cannot infer T for 'zero': write the type argument, as in zero(u32)
 
 A generic states no requirements. It uses its type parameter, and each use is checked for the concrete type when the generic is instantiated. There are no traits or interfaces: what a type must provide is whatever the generic's body does with it.
 
-Operators are requirements. The two operands of an operator are single values: numbers, `bool`s and pointers, and for `==` and `!=` also function values. No operator is defined for structs, tuples, slices or arrays:
+Operators are requirements. The operands of an operator are single values: numbers, `bool`s and pointers, each operator with the types [chapter 4](#4-expressions--operators) gives it. No operator is defined for structs, tuples, slices or arrays:
 
 ```ents
 type Pt = (q: i32, r: i32)
@@ -2059,7 +2059,26 @@ export func f(a: Pt, b: Pt) -> Pt => max(a, b)
 ```
 
 ```errors
-operator > is not defined for Pt, in max(T = Pt)
+'>' cannot be applied to Pt and Pt, in max(T = Pt)
+```
+
+This holds for every operator, whether it stands between two operands, before one (`-a`, `~a`, `!a`) or in a compound assignment:
+
+```ents
+type Pt = (q: i32, r: i32)
+func neg(comptime T: type, a: T) -> T => -a
+func add(comptime T: type, a: T, b: T) -> T {
+  let sum = a
+  sum += b
+  return sum
+}
+
+export func f(a: Pt, b: Pt) -> Pt => add(neg(a), b)
+```
+
+```errors
+'-' needs a number, not Pt, in neg(T = Pt)
+'+=' cannot be applied to Pt and Pt, in add(T = Pt)
 ```
 
 The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.

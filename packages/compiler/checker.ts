@@ -1826,7 +1826,7 @@ class CheckContext {
       if (target.kind === 'pointer' && value.kind === 'comptime_int') {
         this.coerce(stmt.value, valueType, addressType(value))
       } else if (target.kind !== 'pointer' || !isInteger(value) || (byteSize(value) ?? 8) > 4) {
-        this.error(stmt.span.start, `'${stmt.op}' cannot be applied to ${typeToString(targetType)} and ${typeToString(valueType)}`)
+        this.error(stmt.span.start, noOperator(stmt.op, targetType, valueType))
       }
       return
     }
@@ -3316,7 +3316,7 @@ class CheckContext {
     const leftOk = check(expr.left, leftType)
     const rightOk = check(expr.right, rightType)
     if (!leftOk || !rightOk) {
-      this.error(expr.span.start, `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}`)
+      this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
     }
   }
 
@@ -5278,6 +5278,14 @@ function isScalar(t: ResolvedType): boolean {
 // A ranged integer type (u32#8) as the plain type its values are held in (u32).
 function stripMax(t: ResolvedType): ResolvedType {
   return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
+}
+
+// What an operator or a compound assignment is told when it has no meaning
+// for its operands: a struct, a tuple, a slice or an array on either side, or
+// a pointer with something that is no address. The one place for the wording,
+// which a generic's users meet whenever a type argument lacks an operator.
+function noOperator(op: string, left: ResolvedType, right: ResolvedType): string {
+  return `'${op}' cannot be applied to ${typeToString(left)} and ${typeToString(right)}`
 }
 
 // Why an operator can't take an operand of this type, or null when it can.

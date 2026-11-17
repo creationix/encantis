@@ -22,6 +22,10 @@ function check(source: string, options?: TypecheckOptions) {
 
 const errorsOf = (source: string) => check(source).errors.map(e => e.message)
 
+// What the checker says of an operator that its operands do not have. Its
+// wording is written once here, as it is once in the checker (noOperator).
+const noOperator = (op: string, left: string, right = left) => `'${op}' cannot be applied to ${left} and ${right}`
+
 // The names of the instances a module ends up with, sorted. Each must check.
 function instancesOf(source: string, options?: TypecheckOptions): string[] {
   const result = check(source, options)
@@ -105,7 +109,7 @@ export func g(xs: []u64) -> u64 => head(u64, xs)`
 
   test('a name in a type position is the type, whatever variables are in scope', () => {
     const source = `${COUNT}export func f(xs: []u8) -> u32 {
-  let u8 = 3
+  let u8: u32 = 3
   return count(u8, xs, 7) + u8
 }`
     expect(instancesOf(source)).toEqual(['count<u8>'])
@@ -591,7 +595,10 @@ export func c(w: *Worlds) -> u32 => addr(w)`
   })
 
   test('a generic sees its own module, not the locals of its caller', () => {
-    const source = `func leak(comptime T: type, x: T) -> T => x + hidden
+    const source = `func leak(comptime T: type, x: T) -> T {
+  let seen = hidden
+  return x
+}
 export func f() -> u32 {
   let hidden: u32 = 1
   return leak(hidden)
@@ -646,39 +653,40 @@ type Late = (q: i32, r: i32)`
 })
 
 describe('errors in an instance', () => {
-  const POSITIVE = 'func positive(comptime T: type, x: T) -> bool => x > 0\n'
+  // 300 is a literal that a u8 and an i8 cannot hold, and a u32 can.
+  const OVER = 'func over(comptime T: type, x: T) -> bool => x > 300\n'
 
   test('are reported in the generic, with types as the instance has them, followed by the instance', () => {
-    const source = `${POSITIVE}export func f(x: f64) -> bool => positive(x)`
+    const source = `${OVER}export func f(x: u8) -> bool => over(x)`
     const result = check(source)
     expect(result.errors).toEqual([
-      { offset: source.indexOf('0\n'), message: 'cannot assign int(0) to f64, in positive(T = f64)' },
+      { offset: source.indexOf('300\n'), message: 'cannot assign int(300) to u8, in over(T = u8)' },
     ])
   })
 
   test('appear once, however many calls use the instance', () => {
-    const source = `${POSITIVE}export func a(x: f64) -> bool => positive(x)
-export func b(x: f64) -> bool => positive(f64, x) && positive(x + 1.0)`
-    expect(errorsOf(source)).toEqual(['cannot assign int(0) to f64, in positive(T = f64)'])
+    const source = `${OVER}export func a(x: u8) -> bool => over(x)
+export func b(x: u8) -> bool => over(u8, x) && over(x + 1)`
+    expect(errorsOf(source)).toEqual(['cannot assign int(300) to u8, in over(T = u8)'])
   })
 
   test('appear once per instance that has them', () => {
-    const source = `${POSITIVE}export func a(x: f64, y: f32, z: u8) -> bool => positive(x) && positive(y) && positive(z)`
+    const source = `${OVER}export func a(x: u8, y: i8, z: u32) -> bool => over(x) && over(y) && over(z)`
     expect(errorsOf(source)).toEqual([
-      'cannot assign int(0) to f64, in positive(T = f64)',
-      'cannot assign int(0) to f32, in positive(T = f32)',
+      'cannot assign int(300) to u8, in over(T = u8)',
+      'cannot assign int(300) to i8, in over(T = i8)',
     ])
   })
 
   test('read the same whichever alias a call wrote: an alias that only renames a type is not named', () => {
-    // One instance for Meters, Feet and f64. Named after the first call, its
+    // One instance for Meters, Feet and u8. Named after the first call, its
     // error would read differently when the calls change places.
-    const calls = ['positive(m)', 'positive(Feet, f)', 'positive(x)']
+    const calls = ['over(m)', 'over(Feet, f)', 'over(x)']
     for (const order of [calls, [...calls].reverse()]) {
-      const source = `type Meters = f64
-type Feet = f64
-${POSITIVE}export func f(m: Meters, f: Feet, x: f64) -> bool => ${order.join(' && ')}`
-      expect(errorsOf(source)).toEqual(['cannot assign int(0) to f64, in positive(T = f64)'])
+      const source = `type Meters = u8
+type Feet = u8
+${OVER}export func f(m: Meters, f: Feet, x: u8) -> bool => ${order.join(' && ')}`
+      expect(errorsOf(source)).toEqual(['cannot assign int(300) to u8, in over(T = u8)'])
     }
   })
 
@@ -694,11 +702,11 @@ export func f(a: Hex, b: *Hex) -> bool => bad(a) && bad(b)`
   })
 
   test('come after the errors of the module itself', () => {
-    const source = `${POSITIVE}export func a(x: f64) -> bool => positive(x)
+    const source = `${OVER}export func a(x: u8) -> bool => over(x)
 export func b() -> i32 => missing`
     expect(errorsOf(source)).toEqual([
       "unknown identifier 'missing'",
-      'cannot assign int(0) to f64, in positive(T = f64)',
+      'cannot assign int(300) to u8, in over(T = u8)',
     ])
   })
 
@@ -715,29 +723,51 @@ export func f(x: u32) -> u32 => noret(x)`
 ${MAX}export func f(a: Pt, b: Pt) -> Pt => max(a, b)
 export func g(a: u32, b: u32) -> u32 => max(a, b)`
     expect(check(source).errors).toEqual([
-      { offset: source.indexOf('a > b'), message: 'operator > is not defined for Pt, in max(T = Pt)' },
+      { offset: source.indexOf('a > b'), message: `${noOperator('>', 'Pt')}, in max(T = Pt)` },
     ])
     const eq = `func same(comptime T: type, a: T, b: T) -> bool => a == b
 export func f(a: []u8, b: []u8) -> bool => same(a, b)`
-    expect(errorsOf(eq)).toEqual(['operator == is not defined for []u8, in same(T = []u8)'])
+    expect(errorsOf(eq)).toEqual([`${noOperator('==', '[]u8')}, in same(T = []u8)`])
   })
 
-  // Checked for the two operands of an operator only. claude/operand-types
-  // checks unary operators and compound assignment, for hand-written code as
-  // for instances; until it lands these pass the checker and compile to an
-  // instruction that takes one value for an operand that is two.
-  test.todo('a unary operator or compound assignment the type argument does not have is an error (needs claude/operand-types)', () => {
-    const source = `type Pt = (q: i32, r: i32)
+  // The checks are the ones every function gets (inferUnary, compound
+  // assignment): an instance is told what the same function written by hand
+  // for that type would be told, once, with the instance after it.
+  test('a unary operator or compound assignment the type argument does not have is an error in the instance', () => {
+    const generics = `type Pt = (q: i32, r: i32)
 func neg(comptime T: type, a: T) -> T => -a
+func inv(comptime T: type, a: T) -> T => ~a
+func not(comptime T: type, a: T) -> bool => !a
 func twice(comptime T: type, a: T) -> T {
   let b = a
   b += a
   return b
 }
-func not(comptime T: type, a: T) -> bool => !a
-export func f(p: Pt) -> Pt => twice(neg(p))
-export func g(p: Pt) -> bool => not(p)`
-    expect(errorsOf(source)).toHaveLength(3)
+func shl(comptime T: type, a: T) -> T {
+  let b = a
+  b <<= 1
+  return b
+}
+`
+    const source = `${generics}export func f(p: Pt) -> Pt => shl(twice(inv(neg(p))))
+export func g(p: Pt, q: Pt) -> bool => not(p) && not(q)
+export func h(xs: []u8) -> []u8 => shl(twice(inv(neg(xs))))
+export func k(xs: []u8) -> bool => not(xs)`
+    const result = check(source)
+    const at = (text: string) => source.indexOf(text)
+    const expected = (type: string) => [
+      { offset: at('-a'), message: `'-' needs a number, not ${type}, in neg(T = ${type})` },
+      { offset: at('~a'), message: `'~' needs an integer, not ${type}, in inv(T = ${type})` },
+      { offset: at('b += a'), message: `${noOperator('+=', type)}, in twice(T = ${type})` },
+      { offset: at('b <<= 1'), message: `${noOperator('<<=', type, 'int(1)')}, in shl(T = ${type})` },
+      // This one points at the operand.
+      { offset: at('!a') + 1, message: `operand of '!' must be bool, not ${type}, in not(T = ${type})` },
+    ]
+    const byPlace = (a: { offset: number; message: string }, b: { offset: number; message: string }) =>
+      a.offset - b.offset || (a.message < b.message ? -1 : 1)
+    expect([...result.errors].sort(byPlace)).toEqual([...expected('Pt'), ...expected('[]u8')].sort(byPlace))
+    // The types that have these operators are untouched by the checks.
+    expect(errorsOf(`${generics}export func ok(x: i32, y: bool) -> bool => not(y) && twice(neg(inv(shl(x)))) > 0`)).toEqual([])
   })
 
   test('a type parameter cannot construct yet', () => {
