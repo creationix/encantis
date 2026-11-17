@@ -1233,6 +1233,32 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
 ```
 
+<!-- spec:begin compile -->
+
+A result named like a parameter is that parameter: one variable, which holds the argument and then the result. So it has the parameter's type:
+
+```ents
+func round(acc: u64, v: u64) -> (acc: u64) {
+  acc = (acc + v) * 31
+}
+
+test "a result named like a parameter starts as the argument" {
+  assert round(1, 2) == 93
+}
+```
+
+```ents
+func grow(n: u32) -> (n: u64) {
+  n = n + 1
+}
+```
+
+```errors
+result 'n' is the parameter 'n', so it has its type: u32, not u64
+```
+
+<!-- spec:end -->
+
 A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
 #### Functions That Share a Name

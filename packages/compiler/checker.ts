@@ -2286,6 +2286,11 @@ class CheckContext {
         const resolvedType = this.resolveType(field.type)
         const sym: Symbol = { kind, type: resolvedType }
         const param = kind === 'return' ? scope.symbols.get(field.ident) : undefined
+        // A result named like a parameter is that parameter, so it has the
+        // parameter's type: with another one it could hold neither.
+        if (param?.kind === 'param' && !typeEquals(unwrap(param.type), unwrap(resolvedType))) {
+          this.error(field.span.start, `result '${field.ident}' is the parameter '${field.ident}', so it has its type: ${typeToString(param.type)}, not ${typeToString(resolvedType)}`)
+        }
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
