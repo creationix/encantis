@@ -934,6 +934,8 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
+A constant with no type, alone or as an element of a tuple, takes its default type ([1.5](#integer-literals)), the same for a `let` and a `global`: `global big = 2147483648` is an `i64` and `let t = (3000000000, 1)` an `(i64, i32)`. The variable is of that type from then on, so `global count = 0` holds any `i32` it is assigned.
+
 A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
 
 ```ents

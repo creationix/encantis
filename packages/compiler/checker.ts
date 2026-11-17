@@ -409,11 +409,12 @@ export function concretizeType(
 
   switch (u.kind) {
     case 'comptime_int': {
+      // The default the checker gives a variable (CheckContext.concretize):
+      // an i32 if the value fits one, or else an i64, which also holds the
+      // bits of a 64-bit pattern past it (18446744073709551615 is its -1).
       const val = u.value
       if (val >= -2147483648n && val <= 2147483647n) return primitive(opts.defaultInt)
-      if (val >= 0n && val <= 4294967295n) return primitive('u32')
-      if (val >= -9223372036854775808n && val <= 9223372036854775807n) return primitive('i64')
-      if (val >= 0n && val <= 18446744073709551615n) return primitive('u64')
+      if (val >= -9223372036854775808n && val <= 18446744073709551615n) return primitive('i64')
       // Auto-size to smallest power-of-two type that fits
       for (const bits of [128, 256, 512]) {
         if (val >= -(2n ** BigInt(bits - 1)) && val <= 2n ** BigInt(bits) - 1n) {
@@ -1669,7 +1670,11 @@ class CheckContext {
         }
       }
     } else if (decl.value) {
-      type = this.inferExpr(decl.value)
+      // As in checkLetStmt: a constant takes its default type, down to its
+      // literals, so `global g = 2147483648` is an i64 that can be assigned.
+      const valueType = this.inferExpr(decl.value)
+      type = this.concretize(valueType)
+      this.typeDefault(decl.value, type, valueType)
     } else {
       this.error(decl.span.start, 'global needs type annotation or initializer')
       type = primitive('i32')
@@ -2187,7 +2192,7 @@ class CheckContext {
       // Concretize comptime types for variables
       type = this.concretize(valueType)
       // A constant initializer takes the variable's type, down to its literals.
-      if (isComptimeNumber(valueType)) this.typeConstant(stmt.value, type, valueType, false)
+      this.typeDefault(stmt.value, type, valueType)
     } else {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
@@ -4243,6 +4248,30 @@ class CheckContext {
       // the stack: its fields can't be widened in place.
       this.error(expr.span.start, `${prefix}cannot convert ${typeToString(actual)} to ${typeToString(expected)} implicitly: convert its fields`)
     }
+  }
+
+  // A variable's initializer with nothing to type it but the variable's
+  // default type (`type`, from concretize): a constant takes it down to its
+  // literals, and so does each element of a tuple literal, so
+  // (3000000000, 1) is an (i64, i32) literal by literal as it is as a value.
+  private typeDefault(expr: AST.Expr, type: ResolvedType, actual: ResolvedType): void {
+    if (isComptimeNumber(actual)) {
+      this.typeConstant(expr, type, actual, false)
+      return
+    }
+    const inner = groupedExpr(expr)
+    if (inner) {
+      this.typeDefault(inner, type, this.exprTypes.get(inner) ?? actual)
+      return
+    }
+    const to = unwrap(type)
+    const from = unwrap(actual)
+    if (expr.kind !== 'TupleExpr' || to.kind !== 'tuple' || from.kind !== 'tuple' || to.fields.length !== expr.elements.length) return
+    expr.elements.forEach((element, i) => {
+      const value = argValue(element)
+      const own = value && this.exprTypes.get(value)
+      if (value && own && from.fields[i]) this.typeDefault(value, to.fields[i].type, own)
+    })
   }
 
   // Give a constant expression the type it's used as. Its operands are

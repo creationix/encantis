@@ -753,6 +753,15 @@ describe('concretizeType', () => {
       // Value is lost, but type is concrete
       expect(result.kind).toBe('primitive')
     })
+
+    test('past an i32 is an i64, as a variable of it is', () => {
+      // A literal left with no type of its own is emitted in this type, and
+      // the variable it starts in the checker's default (i64), not a u32.
+      for (const value of [2147483648n, 3000000000n, 4294967295n, 9223372036854775808n, 18446744073709551615n]) {
+        expect(concretizeType(comptimeInt(value))).toEqual(primitive('i64'))
+      }
+      expect(concretizeType(comptimeInt(-2147483649n))).toEqual(primitive('i64'))
+    })
   })
 
   describe('comptime_float', () => {

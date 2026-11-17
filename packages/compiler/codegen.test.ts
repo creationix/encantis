@@ -2556,3 +2556,35 @@ describe('members named like a primitive type', () => {
     expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
   })
 })
+
+describe('declarations take the types they are checked as', () => {
+  test('a constant past an i32 with no type is an i64, alone or in a tuple, local or global', async () => {
+    const x = await run(`
+      global big = 2147483648
+      global count = 0
+      export func pair() -> i64 {
+        let t = (3000000000, 1)
+        return t.0 + (t.1 as i64)
+      }
+      export func parts() -> i64 {
+        let (p, q) = (3000000000, 2147483648)
+        return p - q
+      }
+      export func named() -> i64 {
+        let t = (x: 3000000000, y: 1)
+        return t.x
+      }
+      export func wide() -> i64 => big + 1
+      export func bump() -> i32 {
+        count = 7
+        count += 1
+        return count
+      }
+    `)
+    expect(x.pair()).toBe(3000000001n)
+    expect(x.parts()).toBe(852516352n)
+    expect(x.named()).toBe(3000000000n)
+    expect(x.wide()).toBe(2147483649n)
+    expect(x.bump()).toBe(8)
+  })
+})
