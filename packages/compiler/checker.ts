@@ -3034,8 +3034,12 @@ class CheckContext {
     // Constructor call (type used as function): each argument is checked against
     // its field, by position or by name (Point(x: 1, y: 2)), so literals and
     // expressions inside it get concrete types.
-    if (calleeType.kind === 'tuple') {
-      this.checkConstructorArgs(expr, calleeType, typeToString(calleeType))
+    // A `type` that names another name for a struct (type IntVec = Vec(u32))
+    // constructs what that one does.
+    const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
+    const struct = namesType ? unwrap(calleeType) : calleeType
+    if (struct.kind === 'tuple') {
+      this.checkConstructorArgs(expr, struct, typeToString(calleeType))
       return calleeType
     }
 
@@ -5527,11 +5531,13 @@ function signatureKey(type: FuncRT): string | null {
   return hasOwnType(type) ? canonicalKey(type) : null
 }
 
-// Whether a type is the recovery type, or what points to it or holds it: a
-// parameter `v: *Vex(u32)` whose type did not resolve. Nothing is said about
-// its fields or elements either.
+// Whether a type is the recovery type, or what points to it, holds it or
+// names it: a parameter `v: *Vex(u32)` whose type did not resolve, or one
+// `v: *V` where `type V = Vex(u32)`. Nothing is said about its fields or
+// elements either.
 function unresolved(type: ResolvedType): boolean {
   if (type === RECOVERY) return true
+  if (type.kind === 'named') return unresolved(type.type)
   if (type.kind === 'pointer') return unresolved(type.pointee)
   return (type.kind === 'slice' || type.kind === 'array') && unresolved(type.element)
 }

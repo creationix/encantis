@@ -2806,6 +2806,20 @@ func c() -> u32 {
     ])
   })
 
+  test('nor where a `type` names it', () => {
+    const source = `${VEC}type V = Vec(u32, u8)
+type L = List(u32)
+func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+func f(v: *V) -> u32 => v.len
+func g(v: V, vs: []V) -> u32 => v.len + vs[0].cap
+func h(l: *L) -> u32 => l.head
+func k() -> u32 {
+  let v: V = (0 as [*]mut u32, 1, 2)
+  return v.len
+}`
+    expect(errorsOf(source)).toEqual(["generic type 'List' refers to itself", 'Vec expects 1 type argument, got 2'])
+  })
+
   // An instance would repeat such an error for each set of type arguments,
   // and the inferred call of c, which cannot find T through *Vec(T, T), would
   // say that it cannot infer T.
@@ -2897,6 +2911,28 @@ export func c() -> u32 => empty(u8).cap + three(7:u32).2 + (u32, u32)(1, 2).1`
     expect(a()).toBe(2.5)
     expect(b()).toBe(4)
     expect(c(9)).toBe(94)
+  })
+
+  // The applied type is itself a name for its body, so the `type` is a name
+  // for a name: its constructor is still the struct's.
+  test('a type that names an applied type constructs what the applied type does', async () => {
+    const use = `data table = [PP(1, 2), QQ(second: 4, first: 3)]
+global origin: PP = PP(0, 0)
+func take(p: PP) -> u32 => p.second
+export func go() -> u32 => take(PP(1, 5)) + take(QQ(second: 7, first: 2)) + IntVec(0 as [*]mut u32, 3, 4).cap + (table as [*]PP)[1].second + origin.second`
+    const generic = `${PAIR}${VEC}type PP = Pair(u8, u32)
+type QQ = PP
+type IntVec = Vec(u32)
+${use}`
+    const byHand = `type PP = (first: u8, second: u32)
+type QQ = (first: u8, second: u32)
+type IntVec = (ptr: [*]mut u32, len: u32, cap: u32)
+${use}`
+    await expectSameWasm(generic, byHand)
+    const { go } = await run(generic)
+    expect(go()).toBe(5 + 7 + 4 + 4)
+    // A value of that type is not a constructor because its type has a name.
+    expect(errorsOf(`${PAIR}type PP = Pair(u8, u32)\nfunc f(p: PP) -> i32 => p(1, 2)`)).toEqual(['cannot call non-function type: PP'])
   })
 })
 
