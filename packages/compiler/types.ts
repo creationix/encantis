@@ -1245,8 +1245,10 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
   }
 }
 
-// A canonicalKey made legal inside a WAT identifier. Each replacement is a
-// character canonicalKey never produces, so distinct keys stay distinct.
+// A canonicalKey made legal inside a WAT identifier. Distinct keys stay
+// distinct: a replacement is a character canonicalKey does not produce where
+// the replaced one stands, and the two brackets, which share one, never nest,
+// so the first of each pair is the opening one.
 export function watSafe(key: string): string {
   const subst: Record<string, string> = { ' ': '.', '(': '<', ')': '>', ',': '|', '[': "'", ']': "'" }
   return key.replaceAll('->', '=>').replace(/[ (),[\]]/g, (c) => subst[c])

@@ -118,7 +118,7 @@ const MAX_NAME_KEY = 120
 
 // The type of an expression whose error is already reported. Compared by
 // identity, so that what the expression is used for stays silent about it.
-export const RECOVERY: ResolvedType = primitive('i32')
+const RECOVERY: ResolvedType = primitive('i32')
 
 export interface Scope {
   parent: Scope | null
@@ -174,10 +174,10 @@ export interface TypeCheckResult {
   literals: PendingLiteral[]
   // The instances of this module's generic functions, in the order they were
   // first asked for
-  instances?: { of: AST.FuncDecl; decl: AST.FuncDecl }[]
+  instances: { of: AST.FuncDecl; decl: AST.FuncDecl }[]
   // CallExpr span.end → the expression to compile in place of that call: for
   // a call of a generic, the plain call of its instance
-  calls?: Map<number, AST.Expr>
+  calls: Map<number, AST.Expr>
 }
 
 // === Concretization Options ===
@@ -3905,14 +3905,11 @@ class CheckContext {
     for (let inst = this.instanceQueue.shift(); inst; inst = this.instanceQueue.shift()) {
       // Of a chain that never ends, the one error is all there is to say.
       if (inst.chain.stopped) continue
-      const saved = { scope: this.currentScope, instance: this.currentInstance }
-      this.currentScope = this.moduleScope
       this.currentInstance = inst
       this.instanceDefs.clear()
       this.checkFuncBody(inst.decl)
-      this.currentScope = saved.scope
-      this.currentInstance = saved.instance
     }
+    this.currentInstance = null
   }
 
   // A generic's body is checked per instance, with its types filled in, and
@@ -4169,7 +4166,7 @@ class CheckContext {
 // === Generics helpers ===
 
 // A generic function has no type until it is given its comptime arguments.
-export function typeOfSymbol(sym: Symbol | undefined): ResolvedType | undefined {
+function typeOfSymbol(sym: Symbol | undefined): ResolvedType | undefined {
   return sym && sym.kind !== 'generic' ? sym.type : undefined
 }
 

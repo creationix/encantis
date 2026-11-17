@@ -25,7 +25,7 @@ const errorsOf = (source: string) => check(source).errors.map(e => e.message)
 function instancesOf(source: string, options?: TypecheckOptions): string[] {
   const result = check(source, options)
   expect(result.errors.map(e => e.message)).toEqual([])
-  return (result.instances ?? []).map(i => i.decl.ident as string).sort()
+  return result.instances.map(i => i.decl.ident as string).sort()
 }
 
 const MAX = 'func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }\n'
@@ -1597,7 +1597,7 @@ describe('examples/generics', () => {
       const result = check(source)
       const inside = (offset: number) => offset >= 0 && offset < source.length
       expect(result.errors).toEqual([])
-      expect((result.instances ?? []).length).toBeGreaterThan(3)
+      expect(result.instances.length).toBeGreaterThan(3)
       for (const w of result.warnings) expect(inside(w.offset)).toBe(true)
       for (const [def, refs] of result.references) {
         expect(inside(def)).toBe(true)

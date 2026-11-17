@@ -50,7 +50,7 @@ export interface CodegenContext {
   deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
   // Calls the checker resolved to something else: CallExpr span.end → the
   // expression to compile in its place (see TypeCheckResult.calls)
-  calls?: Map<number, AST.Expr>
+  calls: Map<number, AST.Expr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -915,7 +915,7 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // call has the written call's span, so compiling it finds itself here and
   // takes the ordinary path below. This comes before the builtins, so a
   // generic named max is reachable.
-  const lowered = ctx.calls?.get(expr.span.end)
+  const lowered = ctx.calls.get(expr.span.end)
   if (lowered && lowered !== expr) return exprToWat(lowered, ctx)
 
   // Get function name
@@ -1862,49 +1862,10 @@ function sizeofToWat(expr: AST.SizeofExpr, ctx: CodegenContext): string {
     return `(i32.const ${type.value})`
   }
   // The operand as the checker resolved it: only the checker knows what a type
-  // parameter was bound to. Resolving the AST here is the fallback.
-  const resolvedType = ctx.types.get(typeKey(expr.span.start, 'SizeofType')) ?? resolveTypeFromAST(expr.type, ctx)
-  const size = byteSize(resolvedType)
-  return `(i32.const ${size ?? 0})`
-}
-
-// Helper to resolve an AST type to a ResolvedType (for sizeof fallback)
-function resolveTypeFromAST(type: AST.Type, ctx: CodegenContext): RT.ResolvedType {
-  switch (type.kind) {
-    case 'PrimitiveType':
-      return RT.primitive(type.name)
-    case 'TypeRef': {
-      const sym = ctx.symbols.get(type.name)
-      if (sym && sym.kind === 'type') return sym.type
-      return RT.primitive('i32')
-    }
-    case 'PointerType':
-      return RT.pointer(resolveTypeFromAST(type.pointee, ctx))
-    case 'IndexedType': {
-      const element = resolveTypeFromAST(type.element, ctx)
-      // Slice: []T (size is null, not many-pointer)
-      if (type.size === null && !type.manyPointer) {
-        return RT.slice(element)
-      }
-      // Array: [N]T, [_]T, [*]T, etc.
-      let sizes: RT.ArraySize[] | null = null
-      if (type.size === null && type.manyPointer) {
-        // Many-pointer [*]T - null sizes
-        sizes = null
-      } else if (type.size === 'inferred') {
-        sizes = ['_']
-      } else if (typeof type.size === 'number') {
-        sizes = [type.size]
-      } else if (Array.isArray(type.size)) {
-        sizes = type.size
-      }
-      return RT.array(element, sizes)
-    }
-    case 'CompositeType':
-      return RT.tuple(type.fields.map(f => RT.field(f.ident, resolveTypeFromAST(f.type, ctx))))
-    default:
-      return RT.primitive('i32')
-  }
+  // parameter was bound to.
+  const operand = ctx.types.get(typeKey(expr.span.start, 'SizeofType'))
+  if (!operand) throw new Error(`Missing type for sizeof operand at offset ${expr.span.start}`)
+  return `(i32.const ${byteSize(operand) ?? 0})`
 }
 
 // === Statement Codegen ===
@@ -2863,14 +2824,8 @@ function collectLocals(
       }
     }
     if (expr.kind === 'CallExpr') {
-      // What is compiled is the lowered call, when the checker recorded one.
-      const lowered = ctx.calls?.get(expr.span.end)
-      if (lowered && lowered !== expr) {
-        visitExpr(lowered)
-      } else {
-        for (const arg of expr.args) {
-          if (arg.value) visitExpr(arg.value)
-        }
+      for (const arg of expr.args) {
+        if (arg.value) visitExpr(arg.value)
       }
     }
     if (expr.kind === 'UnaryExpr') {
@@ -3005,7 +2960,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 // nothing is emitted for it.
 function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): AST.FuncDecl[] {
   const instancesOf = new Map<AST.FuncDecl, AST.FuncDecl[]>()
-  for (const inst of checkResult.instances ?? []) {
+  for (const inst of checkResult.instances) {
     instancesOf.set(inst.of, [...(instancesOf.get(inst.of) ?? []), inst.decl])
   }
   const funcs: AST.FuncDecl[] = []
