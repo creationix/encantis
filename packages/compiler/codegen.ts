@@ -3487,8 +3487,9 @@ export function programToWat(
 
   // Build per-module name mappings
   const perModuleNameMap = new Map<string, Map<string, string>>()
-  // Each module's exported functions that share their name with an earlier
-  // one, by the name they are exported under: that is what an importer names.
+  // Each module's exported functions by the name they are exported under,
+  // which is what an importer names: not always the name of the function,
+  // and for functions that share a name never the same for two of them.
   const perModuleExports = new Map<string, Map<string, string>>()
   for (const [path, loaded] of modules) {
     const prefix = path === entryPath ? '' : modulePrefix(path)
@@ -3504,7 +3505,7 @@ export function programToWat(
         const known = funcNames?.get(decl.item) ?? decl.item.ident
         const mangled = prefix ? `${prefix}$${known}` : known
         modNameMap.set(known, mangled)
-        if (known !== decl.item.ident) modExports.set(decl.name, mangled)
+        modExports.set(decl.name, mangled)
       }
       if (decl.kind === 'GlobalDecl' && decl.pattern.kind === 'IdentPattern') {
         const mangled = prefix ? `${prefix}$${decl.pattern.name}` : decl.pattern.name

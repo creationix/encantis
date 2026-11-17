@@ -2265,6 +2265,33 @@ describe('functions that share a name', () => {
     expect(errs('import "env" ( "a" func log(x: u32) "b" func log(y: u32) )')).toEqual(["'log' is already declared with parameters (u32)"])
   })
 
+  test('a global, a def or data that takes the name afterwards is checked without a throw', () => {
+    // Other declarations of one name replace each other, as they always
+    // have. The functions that shared it are no reason to fail on that.
+    const two = 'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\n'
+    for (const taker of ['global hash: u32 = 3', 'def hash = 3', 'data hash = [1:u8, 2]']) {
+      expect(() => checkModule(`${two}${taker}\nfunc hash(k: f64) -> u32 => 2\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
+      expect(() => checkModule(`${two}${taker}\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
+    }
+  })
+
+  test('one function of another source module imported twice is that function, not a second one', () => {
+    const twice = `
+      import "./keys" "hash" func hash(k: u32) -> u32
+      import "./keys" (
+        "hash" func hash(k: u32) -> u32
+        "hash_bytes" func hash(k: []u8) -> u32
+        "hash_bytes" func hash(k: []u8) -> u32
+      )
+      func f(k: u32, s: []u8) -> u32 => hash(k) + hash(s)
+    `
+    const result = checkModule(twice)
+    expect(result.errors).toEqual([])
+    expect([...result.symbols.keys()]).toEqual(['hash', "hash:''u8", 'f'])
+    // Two imports of one name from the host are two functions of one name in the module.
+    expect(errs('import "env" "now" func now() -> u64\nimport "env" "now" func now() -> u64')).toEqual(["'now' is already declared with parameters ()"])
+  })
+
   test('a function a test declares replaces the one of the module, as it always has', () => {
     const result = checkModule(`
       func hash(k: u32) -> u32 => k
@@ -2308,6 +2335,13 @@ describe('functions that share a name', () => {
     expect(errs('export "x" func a() { }\nexport "x" global g: u32 = 0')).toEqual([
       `export name 'x' is used twice: give one an explicit name, as in export "x_2" global g`,
     ])
+    // Of several memory declarations only the first is the module's memory,
+    // so only its export is one.
+    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([])
+    expect(errs('export "memory" func f() { }\nexport memory 8')).toEqual([
+      `export name 'memory' is used twice: give one an explicit name, as in export "memory_2" memory`,
+    ])
+    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
   })
 })
 

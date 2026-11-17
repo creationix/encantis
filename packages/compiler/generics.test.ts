@@ -3271,14 +3271,17 @@ describe('functions that share a name in a program of two modules', () => {
   test('each is exported under a name of its own and imported under the shared one', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-overloads-'))
     try {
-      await writeFile(join(dir, 'keys.ents'), `export func hash(k: u32) -> u32 => k * 3
+      // A function of the name `hash_bytes` that is not the exported one:
+      // an import is found by the name of the export.
+      await writeFile(join(dir, 'keys.ents'), `export "hash_u32" func hash(k: u32) -> u32 => k * 3
 export "hash_bytes" func hash(k: []u8) -> u32 => k.len
 func hash(k: u64) -> u32 => 7
-export func both(k: u64) -> u32 => k.hash() + hash(1:u32)
+func hash_bytes(k: []u8) -> u32 => 99
+export func both(k: u64) -> u32 => k.hash() + hash(1:u32) + hash_bytes("") - 99
 `)
       const entry = join(dir, 'main.ents')
       await writeFile(entry, `import "./keys" (
-  "hash" func hash(k: u32) -> u32
+  "hash_u32" func hash(k: u32) -> u32
   "hash_bytes" func hash(k: []u8) -> u32
   "both" func both(k: u64) -> u32
 )
@@ -3293,7 +3296,7 @@ export func run(s: []u8) -> u32 => bucket(5:u32) + bucket(s) * 10 + bucket(1.5:f
       expectPlainWasm(wat)
       expect(funcs(wat)).toEqual([
         'hash:f64', "bucket<''u8>", 'bucket<f64>', 'bucket<u32>', 'run',
-        'keys$hash', "keys$hash:''u8", 'keys$hash:u64', 'keys$both',
+        'keys$hash', "keys$hash:''u8", 'keys$hash:u64', 'keys$hash_bytes', 'keys$both',
       ])
       expect(funcWat(wat, "bucket<''u8>")).toContain("(call $keys$hash:''u8 ")
       expect(funcWat(wat, 'bucket<u32>')).toContain('(call $keys$hash ')
@@ -3880,6 +3883,18 @@ export func b(x: i32, y: i32) -> u8 => x.min(y).abs().clz()`
     expect(b(-3, 5)).toBe(30)
     expect(watOfSource(source)).toContain('(f64.max (f64.sqrt (local.get $x)) (f64.const 1.5))')
     expect(compiled(`func abs(x: i32) -> i32 => 1\nexport func a(x: i32) -> i32 => x.abs()`)).toEqual(['abs/1'])
+  })
+
+  test('what fails among a builtin\'s operands is reported as in the plain call', () => {
+    // Whether `min` here is the builtin is asked before its operands are
+    // checked; the answer must not swallow what they report.
+    const hash = 'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\n'
+    for (const operand of ['y.nope()', 'hash(z)', 'head(7)']) {
+      const method = errorsOf(`${hash}${HEAD}export func f(x: u32, y: u32, z: f64) -> u32 => x.min(${operand})`)
+      const plain = errorsOf(`${hash}${HEAD}export func f(x: u32, y: u32, z: f64) -> u32 => min(x, ${operand})`)
+      expect(method.length).toBeGreaterThan(0)
+      expect(method).toEqual(plain)
+    }
   })
 
   test('each builtin of a chain keeps the type it computes in', async () => {

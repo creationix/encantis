@@ -675,6 +675,9 @@ class CheckContext {
   // stands for, in the order they were declared.
   overloads = new Map<string, string[]>()
   funcNames = new Map<AST.FuncDecl | AST.ImportFunc, string>()
+  // Where a function imported from another source module comes from, by the
+  // name it is known by here (see declareFunc)
+  origins = new Map<string, string>()
   // What a call was found to mean, for the same reason `inferred` is kept:
   // which function of a shared name (null when none), and for x.f(a) the
   // call f(x, a) it stands for, or that f is a member of x, or that it failed.
@@ -682,6 +685,8 @@ class CheckContext {
   methodCalls = new Map<AST.CallExpr, AST.CallExpr | 'member' | 'failed'>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
+  // How many attempts are open (see attempt)
+  attempting = 0
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
@@ -797,10 +802,10 @@ class CheckContext {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a function` })
               break
             }
-            this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest)
+            this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest, `${decl.module}:${item.name}`)
           } else {
             const sig = this.resolveSignature(item.item.signature)
-            this.declareFunc(item.item, name, { kind: 'func', type: sig, inline: false }, inTest)
+            this.declareFunc(item.item, name, { kind: 'func', type: sig, inline: false }, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
           }
           break
         }
@@ -871,14 +876,22 @@ class CheckContext {
   // name of its own, and a call says which is meant by its arguments. A
   // function a test declares replaces the module's of that name, as any
   // declaration replaces what is not a function.
-  private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean): void {
+  // `origin`: for a function imported from another source module, the module
+  // and the name it is exported under. Importing one function twice is no
+  // second function: the import is the same one again, as it always was.
+  private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean, origin?: string): void {
     let known = name
     if (!inTest && this.moduleScope.symbols.get(name)?.kind === 'func') {
       const members = this.overloads.get(name) ?? [name]
+      const again = origin === undefined ? undefined : members.find((m) => this.origins.get(m) === origin)
+      if (again !== undefined) {
+        if (again !== name) this.funcNames.set(decl, again)
+        this.moduleScope.symbols.set(again, sym)
+        this.recordDefinition(again, decl.span.start)
+        return
+      }
       const key = paramsKey(sym.type)
-      const same = members
-        .map((m) => (this.moduleScope.symbols.get(m) as Symbol & { kind: 'func' }).type)
-        .find((type) => paramsKey(type) === key)
+      const same = members.flatMap((m) => this.funcType(m) ?? []).find((type) => paramsKey(type) === key)
       if (same) {
         this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(same)})`)
         return
@@ -887,10 +900,18 @@ class CheckContext {
       this.overloads.set(name, [...members, known])
       this.funcNames.set(decl, known)
     }
+    if (origin !== undefined && !inTest) this.origins.set(known, origin)
     this.moduleScope.symbols.set(known, sym)
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
     this.recordDefinition(known, decl.span.start)
+  }
+
+  // The type of the function known by this name. Undefined where a global, a
+  // def or a data declaration of the name came after and replaced it.
+  private funcType(known: string): FuncRT | undefined {
+    const sym = this.moduleScope.symbols.get(known)
+    return sym?.kind === 'func' ? sym.type : undefined
   }
 
   // A parameter type that names a type declared further down is known only
@@ -900,11 +921,12 @@ class CheckContext {
     for (const [name, members] of this.overloads) {
       const seen = new Map<string, FuncRT>()
       const distinct = members.filter((member) => {
-        const sym = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
-        const key = paramsKey(sym.type)
+        const type = this.funcType(member)
+        if (!type) return false
+        const key = paramsKey(type)
         const same = seen.get(key)
         if (!same) {
-          seen.set(key, sym.type)
+          seen.set(key, type)
           return true
         }
         this.error(this.symbolDefOffsets.get(member) ?? 0, `'${name}' is already declared with parameters (${paramsText(same)})`)
@@ -918,11 +940,14 @@ class CheckContext {
   // the host sees and for a module that imports by it.
   private checkExportNames(module: AST.Module): void {
     const used = new Set<string>()
+    // Of several memory declarations the first is the module's memory.
+    const memory = module.decls.find((d) => d.kind === 'MemoryDecl' || (d.kind === 'ExportDecl' && d.item.kind === 'MemoryDecl'))
     for (const decl of module.decls) {
       if (decl.kind !== 'ExportDecl') continue
       const item = decl.item
       // A generic's export emits nothing, and its name is unique already.
       if (item.kind === 'TypeFuncDecl' || (item.kind === 'FuncDecl' && isGenericDecl(item))) continue
+      if (item.kind === 'MemoryDecl' && decl !== memory) continue
       if (!used.has(decl.name)) {
         used.add(decl.name)
         continue
@@ -3312,7 +3337,7 @@ class CheckContext {
   private pickOverload(expr: AST.CallExpr, name: string, members: readonly string[]): string | null {
     const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
     const fail = (message?: string): null => {
-      this.picked.set(expr, null)
+      if (!this.attempting) this.picked.set(expr, null)
       if (message) this.requirement(expr.span.start, message)
       // A call that failed is still a use of what it tried to call.
       for (const member of members) this.recordReference(member, expr.callee.span.start)
@@ -3365,7 +3390,7 @@ class CheckContext {
   // call is one of that member's value.
   private inferMethodCall(expr: AST.CallExpr, receiver: AST.Expr, name: string): ResolvedType | null {
     const fail = (message?: string): ResolvedType => {
-      this.methodCalls.set(expr, 'failed')
+      if (!this.attempting) this.methodCalls.set(expr, 'failed')
       if (message) this.requirement(expr.callee.span.start, message)
       this.inferExpr(receiver)
       for (const arg of expr.args) {
@@ -3402,9 +3427,9 @@ class CheckContext {
         args: [...expr.args.slice(0, slot), self, ...expr.args.slice(slot)],
         span: { start: at, end: expr.span.end },
       }
-      const callable = sym?.kind === 'generic' || sym?.kind === 'func'
-        // A builtin, unless something of the program has the name
-        || (!sym && this.attempt(call, () => this.inferBuiltin(call as AST.CallExpr, name) !== null))
+      // A builtin is a function too, unless something of the program has
+      // its name.
+      const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name))
       if (!callable) {
         const types = [typeToString(type), ...expr.args.flatMap((a) => (a.value ? [this.shownArg(a.value, (value) => this.peek(value))] : []))]
         return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)
@@ -3457,6 +3482,7 @@ class CheckContext {
   // The BuiltinCall entry each one records is what tells codegen that the call
   // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
+    if (!BUILTIN_NAMES.has(name)) return null
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
     switch (name) {
@@ -5135,7 +5161,7 @@ class CheckContext {
       let found = this.inferred.get(expr)
       if (found === undefined) {
         found = this.inferTypeArgs(expr, name, pairs, typeParams, funcs, sym.owner)
-        this.inferred.set(expr, found)
+        if (found || !this.attempting) this.inferred.set(expr, found)
       }
       if (!found) return fail()
       for (const [param, type] of found) bound.set(param, type)
@@ -5324,11 +5350,14 @@ class CheckContext {
   }
 
   // A look whose errors go too: it asks whether something would check, where
-  // a no is an answer and not yet a mistake.
+  // a no is an answer and not yet a mistake. A call that fails in one is not
+  // remembered as failed (see `picked`): its error is yet to be reported.
   attempt<T>(expr: AST.Expr | null, look: () => T): T {
     const errors = this.errors.length
     const reported = this.errorsReported
+    this.attempting++
     const found = this.untraced(expr, look)
+    this.attempting--
     this.errors.length = errors
     this.errorsReported = reported
     return found
@@ -5781,6 +5810,16 @@ class CheckContext {
     }
   }
 }
+
+// The names inferBuiltin answers to. What is asked of a name before a call
+// of it is inferred (whether x.sqrt() can be the call sqrt(x)) is asked here.
+const BUILTIN_NAMES: ReadonlySet<string> = new Set([
+  'memzero', 'memset', 'memcpy',
+  'sqrt', 'ceil', 'floor', 'trunc', 'nearest', 'copysign',
+  'min', 'max', 'abs',
+  'clz', 'ctz', 'popcnt',
+  'sizeof', 'mul_hi',
+])
 
 // === Generics helpers ===
 
