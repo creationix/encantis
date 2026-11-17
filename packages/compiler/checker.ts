@@ -1061,6 +1061,15 @@ class CheckContext {
     return overflows && expr.kind === 'BinaryExpr' && expr.op === '/' ? null : held
   }
 
+  // The value a constant has in the type it has been given: the one the
+  // program computes. The bare value of a bit pattern (~0 as a u32) is
+  // negative, and would pass for small where a length or a bound is checked.
+  private constantInType(expr: AST.Expr): ComptimeValue | null {
+    const value = this.evalComptimeExpr(expr)
+    const type = this.exprTypes.get(expr)
+    return value?.kind === 'int' && type ? constantIn(value, type) : value
+  }
+
   private comptimeValue(expr: AST.Expr, typed: boolean): ComptimeValue | null {
     // Handle annotation expression (e.g., 42:u32)
     if (expr.kind === 'AnnotationExpr') {
@@ -1362,7 +1371,7 @@ class CheckContext {
     const bufferSize = totalCount * elemSize
 
     // Length must be a comptime constant to verify bounds
-    const len = this.evalComptimeExpr(lenExpr)
+    const len = this.constantInType(lenExpr)
     if (!len || len.kind !== 'int') {
       this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`)
       return
@@ -3399,7 +3408,7 @@ class CheckContext {
       else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
         this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
       }
-      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
       const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
       return { value: null, max: limit }
@@ -3450,7 +3459,7 @@ class CheckContext {
       ? BigInt(pointee.sizes[0]) : null
     const value = (e: AST.Expr | null, fallback: bigint | null): bigint | null => {
       if (!e) return fallback
-      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       return c && c.kind === 'int' && typeof c.value === 'bigint' ? c.value : null
     }
     const start = value(expr.start, 0n)

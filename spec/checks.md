@@ -632,6 +632,21 @@ index 16 out of bounds for *[16]u8
 memset length 1073741839 exceeds buffer size 16 bytes
 ```
 
+A range bound and a length are that value too: `~4294967200` is 95 as a `u32`, not a negative number that would fit anywhere.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a() { buf[~4294967295..~4294967200] = 1 }
+func b() { memset(buf, 0, ~4294967200) }
+func c() { buf[~4294967295..~4294967279] = 1 }
+```
+
+```errors
+range 0..95 is out of bounds for *[16]u8
+memset length 95 exceeds buffer size 16 bytes
+```
+
 A comparison with a constant narrows the variable where it holds: inside the branch, in later branches of the same `if`, and after an exit that the comparison guards.
 
 ```ents

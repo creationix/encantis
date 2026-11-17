@@ -1502,6 +1502,20 @@ describe('operand types', () => {
     expect(index('(0 - 64) / 4 + 17')).toEqual([])
   })
 
+  test('a range bound or a length is the value its constant has in its type', () => {
+    // ~4294967200 is 95 as a u32. As a bare number it is negative, which
+    // passed for a bound or a length that fits anything.
+    const past = ['range 0..95 is out of bounds for *[16]u8']
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[~4294967295..~4294967200] = 1 }`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..~4294967200] = 1 }`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() -> []u8 => t[~4294967295..~4294967200]`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[~4294967295..~4294967279] = 1 }`)).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~4294967200) }`)).toEqual(['memset length 95 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~0) }`)).toEqual(['memset length 4294967295 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\ndata s = [0:u8; 128]\nfunc f() { memcpy(t, s, ~4294967200) }`)).toEqual(['memcpy length 95 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~4294967279) }`)).toEqual([])
+  })
+
   test('pointer arithmetic takes 32-bit integers', () => {
     expect(errs(`func f(p: [*]u8, n: u32, q: [*]u8) -> bool => p + n < q`)).toEqual([])
     expect(errs(`func f(p: [*]u8, n: i64) { let q = p + n }`)).toEqual(["'+' cannot be applied to [*]u8 and i64"])
