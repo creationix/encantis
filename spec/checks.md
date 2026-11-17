@@ -877,6 +877,55 @@ func f() -> u32 {
 cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
 ```
 
+A table converts the same way, to a slice of rows (`[][2]u16`), in a constructor as in a literal, and in a generic type's constructor. Pointers to arrays of different lengths in one literal are slices of their own lengths, with no type written for it (`[three, four]` is a `[2][]i32`), in a tuple and nested too.
+
+<!-- spec:begin compile -->
+
+```ents
+type Rows = (rows: [][2]u16, base: u32)
+type Outer = (inner: Rows, k: u32)
+func Of(comptime R: type) -> type => (rows: []R, base: u32)
+
+data table: *[2][2]u16 = [[100, 200], [300, 400]]
+data three: *[3]i32 = [1, 2, 3]
+data four: *[4]i32 = [4, 5, 6, 7]
+
+func count(r: Rows) -> u32 => r.rows.len
+func cell(r: Rows) -> u16 => r.rows[1][1] ?? 0
+func any(comptime R: type, r: Of(R)) -> u32 => r.rows.len
+
+test "a table is a slice of its rows" {
+  assert count(Rows(table, 0)) == 2
+  assert count(Rows(rows: table, base: 0)) == 2
+  assert count((table, 0)) == 2
+  assert cell(Rows(table, 0)) == 400
+  let o = Outer(Rows(table, 0), 1)
+  assert o.inner.rows.len == 2
+  let p: Outer = ((table, 0), 1)
+  assert p.inner.rows.len == 2
+  assert any(Of([2]u16)(table, 0)) == 2
+  assert any(Of(i32)(four, 0)) == 4
+}
+
+test "pointers to arrays of different lengths in one literal" {
+  let both = [three, four]
+  assert both[0].len == 3
+  assert both[1].len == 4
+  let words = ["ab", "cde"]
+  assert words[1].len == 3
+  let some: []i32 = four
+  let mixed = [some, three]
+  assert mixed[1].len == 3
+  let t = ([three, four], 9)
+  assert t.0[1].len == 4
+  let nested = [[three, four], [four, three]]
+  assert nested[1][0].len == 4
+  assert nested[1][1].len == 3
+}
+```
+
+<!-- spec:end -->
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

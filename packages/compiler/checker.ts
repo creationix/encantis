@@ -2352,6 +2352,12 @@ class CheckContext {
       }
       // Concretize comptime types for variables
       type = this.concretize(valueType)
+      // A literal that holds slices, [three, four] for pointers to arrays of
+      // different lengths, holds each as a slice of its length (9.5).
+      const value = ungrouped(stmt.value)
+      if ((value.kind === 'ArrayExpr' || value.kind === 'RepeatExpr' || value.kind === 'TupleExpr') && holdsSlice(type)) {
+        this.coerce(value, valueType, type)
+      }
       // A constant initializer takes the variable's type, down to its literals.
       if (isComptimeNumber(valueType)) this.typeConstant(stmt.value, type, valueType, false)
     } else {
@@ -7367,6 +7373,19 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// Whether a value of this type holds a slice in registers: is one, or has one
+// as an element of a fixed array or as a field. (A type that holds itself by
+// value is an error of its own: `seen` only keeps this from going round.)
+function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
+  const u = unwrap(t)
+  if (seen.has(u)) return false
+  seen.add(u)
+  if (u.kind === 'slice') return true
+  if (u.kind === 'array') return isValueArray(u) && holdsSlice(u.element, seen)
+  if (u.kind === 'tuple') return u.fields.some((f) => holdsSlice(f.type, seen))
+  return false
+}
 
 // The expression inside (x), which parses as a group or a one-element tuple.
 function groupedExpr(expr: AST.Expr): AST.Expr | null {
