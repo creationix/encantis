@@ -2980,9 +2980,9 @@ class CheckContext {
       // pointer to framed arrays: codegen fills in an element that is known
       // only at run time, but not what is inside one of them.
       const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
-      const element = arrType.element
+      const of = arrType.element
       const apart = !tableRow(expected) && framings <= 1 &&
-        (element.kind === 'slice' || element.kind === 'array' || (element.kind === 'pointer' && element.pointee.kind === 'array'))
+        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && of.pointee.kind === 'array'))
       if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
         for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           let inner = ungrouped(element)
