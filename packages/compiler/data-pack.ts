@@ -31,11 +31,14 @@ function getNumericSizes(sizes: ArraySize[] | null): number[] {
   return sizes.filter((s): s is number => typeof s === 'number')
 }
 
-// Helper to get repeat count from a RepeatExpr
-function getRepeatCount(expr: AST.RepeatExpr): number {
+// Helper to get repeat count from a RepeatExpr: a literal, or a constant
+// expression ([0; k]) whose value the checker worked out
+function getRepeatCount(expr: AST.RepeatExpr, builder?: DataSectionBuilder): number {
   if (expr.count.kind === 'LiteralExpr' && expr.count.value.kind === 'int') {
     return Number(expr.count.value.value)
   }
+  const constant = builder?.constants?.get(expr.count)
+  if (constant?.kind === 'int') return Number(constant.value)
   throw new Error('RepeatExpr count must be a literal integer')
 }
 
@@ -570,11 +573,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
 
   // For repeat expressions [value; count], serialize value count times
   if (expr.kind === 'RepeatExpr') {
-    // Get count from literal
-    if (expr.count.kind !== 'LiteralExpr' || expr.count.value.kind !== 'int') {
-      throw new Error(`RepeatExpr count must be an int literal`)
-    }
-    const count = Number(expr.count.value.value)
+    const count = getRepeatCount(expr, builder)
 
     // Leftmost framing is outermost (applies to whole array)
     // Rightmost framings are innermost (apply to each element)
@@ -638,7 +637,7 @@ function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataS
   const isString = lit.kind === 'LiteralExpr' && lit.value.kind === 'string'
   if (isString || lit.kind === 'ArrayExpr' || lit.kind === 'RepeatExpr') {
     const count = lit.kind === 'ArrayExpr' ? lit.elements.length
-      : lit.kind === 'RepeatExpr' ? getRepeatCount(lit)
+      : lit.kind === 'RepeatExpr' ? getRepeatCount(lit, builder)
       : lit.kind === 'LiteralExpr' && lit.value.kind === 'string' ? lit.value.bytes.length : 0
     if (t.kind === 'slice') {
       const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
@@ -703,7 +702,7 @@ function buildElementBytes(
     // If elementType is a slice, unwrap it for the inner elements
     const innerElementType = arrayElementType(elementType)
     const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1), builder)
-    const count = getRepeatCount(expr)
+    const count = getRepeatCount(expr, builder)
     const parts: Uint8Array[] = []
     for (let i = 0; i < count; i++) {
       parts.push(valueBytes)
@@ -789,7 +788,7 @@ function serializeSeparate(
   refsMap?: Map<number, DataRef>,
 ): DataRef {
   // [row; n] is n rows, each laid out like a row written out.
-  const elements = expr.kind === 'RepeatExpr' ? Array<AST.Expr>(getRepeatCount(expr)).fill(expr.value)
+  const elements = expr.kind === 'RepeatExpr' ? Array<AST.Expr>(getRepeatCount(expr, builder)).fill(expr.value)
     : expr.kind === 'ArrayExpr' ? expr.elements
     : null
   if (!elements) {

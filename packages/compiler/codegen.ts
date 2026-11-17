@@ -1670,6 +1670,13 @@ function evalComptimeIndex(expr: AST.Expr): number | null {
   return null
 }
 
+// How many times a repeat literal repeats its value: a count written as a
+// constant expression ([0; k]) has the value the checker worked out.
+function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
+  const constant = ctx.constants.get(expr.count)
+  return evalComptimeIndex(expr.count) ?? (constant?.kind === 'int' ? Number(constant.value) : null)
+}
+
 function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
   if (!elemType) throw new Error('Missing element type for coalesce')
@@ -2028,7 +2035,7 @@ function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedT
   // to visit, however many it has.
   if (expr.kind === 'RepeatExpr' && !inPlace(expr.value) && !isRuntimeExpr(expr.value, ctx)) return
   const elements = expr.kind === 'ArrayExpr' ? expr.elements
-    : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
+    : Array<AST.Expr>(repeatCount(expr, ctx) ?? 0).fill(expr.value)
   for (let i = 0; i < elements.length; i++) {
     const elem = elements[i]
     const at = base + i * elemSize
@@ -2100,7 +2107,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
     return `${stores}(i32.const ${ref.ptr})`
   }
   // Value repeat literal: emit element N times
-  const countVal = evalComptimeIndex(expr.count)
+  const countVal = repeatCount(expr, ctx)
   if (countVal !== null) {
     const elem = exprToWat(expr.value, ctx)
     return Array(countVal).fill(elem).join(' ')

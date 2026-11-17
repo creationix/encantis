@@ -5099,6 +5099,9 @@ class CheckContext {
       this.error(expr.count.span.start, 'repeat count cannot be negative')
       return comptimeArrayLiteral(valueType, 0)
     }
+    // A count written as a constant expression ([0; k], [0; 2 * 8]) is laid
+    // out and compiled as its value.
+    if (expr.count.kind !== 'LiteralExpr') this.constants.set(expr.count, countValue)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(valueType, count)

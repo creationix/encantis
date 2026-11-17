@@ -2803,6 +2803,23 @@ describe('values of literals laid out in memory', () => {
     expect([f.a(), f.b(), f.c(), f.e(), f.local()]).toEqual([ones * 1000 + 5, twos * 1000 + 6, 223, 23, 29])
   })
 
+  test('a repeat count written as a constant expression is its value', async () => {
+    // The data packer threw "RepeatExpr count must be an int literal", and a
+    // repeat in registers had no values.
+    const { f, g } = await run(`
+      def k = 4
+      data a = mut [0:u8; k]
+      data b: *[4]u8 = [1; 2 + 2]
+      export func f() -> u32 => a.len * 10 + (b[3] as u32)
+      export func g(x: i32) -> i32 {
+        let v: [4]i32 = [x; k]
+        let p: *[4]i32 = [x + 1; 2 * 2]
+        return v[3] * 10 + p[3]
+      }
+    `)
+    expect([f(), g(5)]).toEqual([41, 56])
+  })
+
   test('a literal with values only known at run time is a cell of its own', async () => {
     const { two, packed } = await run(`
       export func two(x: i32, y: i32) -> i32 {
