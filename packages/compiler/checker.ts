@@ -3800,7 +3800,12 @@ class CheckContext {
       // find that out for themselves.
       const single = sym?.kind === 'func' && !this.shared(name) ? sym : null
       const first = single?.type.params[0]?.type
-      if (!type && (!callable || (single && !(first && this.fits(receiver, first))))) return fail()
+      if (!type && (!callable || (single && !(first && this.fits(receiver, first))))) {
+        // The function is named all the same, as it is in f(x) with x wrong:
+        // it is used, and the editor finds it there.
+        if (single) this.recordReference(name, at)
+        return fail()
+      }
       if (!callable && type) {
         const types = [typeToString(type), ...expr.args.flatMap((a) => (a.value ? [this.shownArg(a.value, (value) => this.peek(value))] : []))]
         return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)

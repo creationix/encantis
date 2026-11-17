@@ -4251,6 +4251,24 @@ export func f(seed: u32) -> u32 => seed${'.inc()'.repeat(calls)}`
     expect(callee && typeToString(callee[1])).toStartWith('func(v: *mut (ptr: [*]mut u32, ')
   })
 
+  test('the method is used where its receiver is wrong, as the function is in f(x)', () => {
+    // A receiver with an error of its own still names the function: that
+    // error is said once, and nothing says the function is never used.
+    const sum = 'data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]\nfunc sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]\n'
+    const dbl = 'func dbl(n: u32) -> u32 => n * 2\n'
+    for (const [method, plain] of [
+      [`${sum}export func f(i: u32) -> i32 => grid[i].sum()`, `${sum}export func f(i: u32) -> i32 => sum(grid[i])`],
+      [`${dbl}export func f() -> u32 => nope.dbl()`, `${dbl}export func f() -> u32 => dbl(nope)`],
+    ]) {
+      const m = check(method)
+      expect(m.errors[0].message).toBe(check(plain).errors[0].message)
+      expect(m.warnings).toEqual([])
+      expect(check(plain).warnings).toEqual([])
+      const name = method.includes('sum()') ? 'sum' : 'dbl'
+      expect(m.symbolRefs.get(method.indexOf(`${name}()`))).toBe(method.indexOf(`func ${name}`))
+    }
+  })
+
   test('a method only a generic nobody calls uses is still used', () => {
     // Which of the two it would be is known only in an instance: both count.
     const result = check(`func hash(k: u32) -> u32 => k
