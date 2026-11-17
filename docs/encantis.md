@@ -699,7 +699,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
-- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s.
 
 ```ents
 type Sample = (count: i64, mean: f64)

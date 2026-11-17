@@ -1894,6 +1894,28 @@ describe('structs in data arrays', () => {
     `)).not.toContain('store')
   })
 
+  test('a repeated runtime value is widened to the slots it is stored in', async () => {
+    // It was stored as it came, and an i32 in an i64 slot is not valid wasm.
+    const { wide, real, field, arg } = await run(`
+      type Row = (v: []i64, tag: u8)
+      func last(s: []i64) -> i64 => s[2] ?? 9
+      export func wide(n: i32) -> i64 {
+        let d: *[3]i64 = [n; 3]
+        return d[0] + d[2]
+      }
+      export func real(n: i32) -> f64 {
+        let d: *mut [2]f64 = mut [n; 2]
+        return d[1]
+      }
+      export func field(n: i32) -> i64 {
+        let rows: *[1]Row = [([n; 3], 7)]
+        return last(rows[0].v) + rows[0].tag
+      }
+      export func arg(n: u8) -> i64 => last([n; 3])
+    `)
+    expect([wide(-5), real(-5), field(-5), arg(200)]).toEqual([-10n, -5, 2n, 200n])
+  })
+
   test("a runtime struct's literal fields take the fields' types", async () => {
     const { f } = await run(`
       type Mixed = (a: u64, b: u8, c: f32)

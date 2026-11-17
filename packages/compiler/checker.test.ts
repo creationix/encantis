@@ -1326,6 +1326,39 @@ describe('a string literal as a slice', () => {
   })
 })
 
+describe('the values in a literal that is laid out', () => {
+  const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
+
+  test('the value of a repeat literal meets the element type, as an element of an array literal does', () => {
+    // These were laid out as they came: three bytes as three u32s, 300 as 44.
+    expect(errs('data d: []u32 = [true; 3]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data d: *[3]u32 = [1.5; 3]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: []u8 = [300; 3]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: []Pt = [5; 3]')).toEqual(['cannot assign int(5) to Pt'])
+    expect(errs('func f() -> u32 { let d: []u32 = [true; 3]\n return d.len }')).toEqual(['cannot assign bool to u32'])
+    expect(errs('type R = (v: []u32, n: i32)\ndata rs: []R = [([true; 3], 1)]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data z: *mut [4]u8 = mut [0; 4]\ndata w: []f32 = [1; 2]\ndata t: []u32 = [7:u8; 3]\ndata b: []bool = [true; 2]\ndata p: []Pt = [(1, 2); 2]')).toEqual([])
+  })
+
+  test('a value known at run time widens to the element type or is an error', () => {
+    const result = checkModule('func f(n: i32) -> i64 { let d: *[3]i64 = [n; 3]\n return d[2] }')
+    expect(result.errors).toEqual([])
+    const widened = [...result.coercions].find(([expr]) => expr.kind === 'IdentExpr' && expr.name === 'n')
+    expect(widened && typeToString(widened[1])).toBe('i64')
+    expect(errs('func take(s: []f64) -> u32 => s.len\nfunc f(n: i32) -> u32 => take([n; 3])')).toEqual([])
+    expect(errs('func f(n: i32) -> u8 { let d: *[3]u8 = [n; 3]\n return d[2] }')).toEqual(['cannot assign i32 to u8'])
+    expect(errs('func f(x: f64) -> u32 { let d: []i32 = [x; 3]\n return d.len }')).toEqual(['cannot assign f64 to i32'])
+  })
+
+  test('so do the elements of a literal inside another', () => {
+    expect(errs('data d: [][]u32 = [[true, false], [3, 4]]')).toEqual(['cannot assign bool to u32', 'cannot assign bool to u32'])
+    expect(errs('data d: [][]u32 = [[1.5, 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: *[2][2]u32 = [[1.5; 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: [][]u8 = [[300, 1], [3, 4]]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: [][]u32 = [[1, 2], [3, 4]]\ndata e: *[2][2]u8 = [[1, 2], [3, 4]]')).toEqual([])
+  })
+})
+
 describe('a slice from a pointer and a length', () => {
   test('is a value, not a literal for the data section', () => {
     const result = checkModule(`

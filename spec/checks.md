@@ -682,6 +682,36 @@ cannot assign float(1.5) to u64
 300
 ```
 
+## Values in a literal in memory
+
+The value of a repeat literal, and each element of an array literal inside another, meets the element type as an element of the outer literal does: it widens to it, or it is an error.
+
+```ents
+data zeros: *mut [4]u8 = mut [0; 4]
+data rows: [][]u32 = [[1, 2], [3, 4]]
+
+func f(n: i32) -> i64 {
+  let wide: *[3]i64 = [n; 3]
+  return wide[2]
+}
+```
+
+```ents
+data flags: []u32 = [true; 3]
+data rows: [][]u8 = [[300, 1], [2, 3]]
+
+func f(n: i32) -> u8 {
+  let bytes: *[3]u8 = [n; 3]
+  return bytes[0]
+}
+```
+
+```errors
+cannot assign bool to u32
+cannot assign int(300) to u8
+cannot assign i32 to u8
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
