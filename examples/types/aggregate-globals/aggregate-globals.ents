@@ -27,6 +27,12 @@ global lanes: []Lane = (0, 0)
 global rows: [][]i32 = (0, 0)
 export global seen: []i32 = (0, 0)
 
+// A cast of a constant is a constant in each part too.
+data primes = [2:i32, 3, 5, 7]
+global first: []i32 = (primes as [*]i32, 3:u32)
+global low: []u8 = (primes as [*]u8, sizeof(i32) as u32)
+global scaled: (u8, f64) = (300 as u8, 7 as f64)
+
 func count() -> u32 => list.len
 
 func words() -> []i32 => ((buf as [*]i32), 3:u32)
@@ -48,6 +54,15 @@ test "a slice global starts as its initializer" {
   let total: u32 = 0
   for c in message { total += c as u32 }
   assert total == 532
+}
+
+test "a cast in a part of a global's initializer" {
+  assert first.len == 3
+  assert first[2] == 5
+  assert low.len == 4
+  assert low[0] == 2
+  assert scaled.0 == 44
+  assert scaled.1 == 7.0
 }
 
 test "a struct global starts as its initializer" {

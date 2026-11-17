@@ -1389,6 +1389,35 @@ describe('globals of several wasm values', () => {
     expect(wat).toContain('(global $low_0 (mut i64) (i64.const 4))\n  (global $low_1 (mut i64) (i64.const -64))')
   })
 
+  test('a cast in a part is a constant: the value the cast gives', () => {
+    const wat = modWat(`
+      type Size = (w: u8, h: f64)
+      def page = 64 * 1024
+      data table = mut [1:i32, 2, 3, 4]
+      global words: []i32 = (table as [*]i32, 4:u32)
+      global bytes: []mut u8 = (table as [*]mut u8, sizeof(i32) as u32)
+      global size: Size = Size(300 as u8, page as f64)
+      global row: [2]i64 = [-1 as i64, (-1 as u32) as i64]
+      global big: u128 = -1 as u128
+    `)
+    expect(wat).toMatch(/\(global \$words_ptr \(mut i32\) \(i32\.const 8\)\)\n {2}\(global \$words_len \(mut i32\) \(i32\.const 4\)\)/)
+    expect(wat).toMatch(/\(global \$bytes_ptr \(mut i32\) \(i32\.const 8\)\)\n {2}\(global \$bytes_len \(mut i32\) \(i32\.const 4\)\)/)
+    expect(wat).toContain('(global $size_w (mut i32) (i32.const 44))\n  (global $size_h (mut f64) (f64.const 65536))')
+    expect(wat).toContain('(global $row_0 (mut i64) (i64.const -1))\n  (global $row_1 (mut i64) (i64.const 4294967295))')
+    expect(wat).toContain('(global $big_0 (mut i64) (i64.const -1))\n  (global $big_1 (mut i64) (i64.const -1))')
+  })
+
+  test('a cast of a value that is not constant cannot start a part', () => {
+    const errors = (source: string) => {
+      const parsed = parse(source)
+      return parsed.module ? typecheck(parsed.module as AST.Module).errors.map(e => e.message) : ['parse error']
+    }
+    const message = 'global initializer must be a compile-time constant'
+    expect(errors(`func one() -> i32 => 1\nglobal size: (u8, f64) = (one() as u8, 1.0)`)).toEqual([message])
+    // An address cut down isn't known until data is laid out.
+    expect(errors(`data table = [1:i32, 2]\nglobal words: []i32 = ((table as u8) as [*]i32, 2)`)).toEqual([message])
+  })
+
   test('a slice global starts as a string or a data array', () => {
     const wat = modWat(`
       data buf = mut [0:u8; 16]

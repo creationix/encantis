@@ -389,7 +389,10 @@ A global can be a slice, a struct, an array or a wide integer. Each of its parts
 ```ents
 type Size = (w: i32, h: f64)
 
+data table = [1:i32, 2, 3]
+
 global order: []i32 = (0, 0)
+global view: []i32 = (table as [*]i32, 2:u32)
 global size: Size = Size(3, 2 + 2)
 global row: [2]i64 = [1 << 40, 5:i32]
 global total: u128 = 1 << 100
