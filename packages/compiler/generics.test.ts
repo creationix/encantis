@@ -29,6 +29,38 @@ const place = ({ offset, message }: { offset: number; message: string }) => ({ o
 // wording is written once here, as it is once in the checker (noOperator).
 const noOperator = (op: string, left: string, right = left) => `'${op}' cannot be applied to ${left} and ${right}`
 
+// How often the checker reads the name of the identifier `name`, which the
+// source uses once: a count of how often it comes to that place.
+function readsOf(source: string, name: string): number {
+  const parsed = parse(source)
+  if (!parsed.module) throw new Error('no module')
+  let reads = 0
+  let found = 0
+  const seen = new Set<unknown>()
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return
+    seen.add(node)
+    const n = node as { kind?: string; name?: string }
+    if (n.kind === 'IdentExpr' && n.name === name) {
+      found++
+      Object.defineProperty(n, 'name', {
+        enumerable: true,
+        get: () => {
+          reads++
+          return name
+        },
+      })
+      return
+    }
+    for (const value of Object.values(node)) visit(value)
+  }
+  visit(parsed.module)
+  expect(found).toBe(1)
+  typecheck(parsed.module)
+  expect(reads).toBeGreaterThan(0)
+  return reads
+}
+
 // The names of the instances a module ends up with, sorted. Each must check.
 function instancesOf(source: string, options?: TypecheckOptions): string[] {
   const result = check(source, options)
@@ -3997,6 +4029,40 @@ export func f(a: Pt, b: Pt) -> Pt => a.id().max(b)`
 ${MAX}export func f(x: u32) -> u32 => ${receiver}${'.inc().max(x)'.repeat(calls)}`
     expect(errorsOf(chain(60, 'x'))).toEqual([])
     expect(errorsOf(chain(60, 'nope'))).toEqual(["unknown identifier 'nope'"])
+    // Each call looks at its receiver before it is checked. Where that look
+    // walked the whole chain below, the start of the chain was read once for
+    // every call after it: now as often for 80 calls as for 20.
+    const shared = (calls: number) => `func inc(n: u32) -> u32 => n + 1
+func inc(n: u64) -> u64 => n + 1
+export func f(seed: u32) -> u32 => seed${'.inc()'.repeat(calls)}`
+    for (const program of [(calls: number) => chain(calls / 2, 'seed').replace('x: u32', 'x: u32, seed: u32'), (calls: number) => chain(calls / 2, 'nope'), shared]) {
+      const start = program(20).includes('nope') ? 'nope' : 'seed'
+      expect(readsOf(program(80), start)).toBe(readsOf(program(20), start))
+    }
+  })
+
+  test('a receiver that is one value only once the parameter says of what type is passed as the argument is', async () => {
+    // By itself the `if` has branches of two types, and no members to look
+    // for: it is the first argument of the function all the same.
+    const total = `func total(xs: []u32) -> (s: u32) {
+  for x in xs {
+    s += x
+  }
+}
+`
+    const method = `${total}export func f(k: bool) -> u32 => (if k { [1, 2, 3] } else { [4, 5] }).total()`
+    const plain = `${total}export func f(k: bool) -> u32 => total(if k { [1, 2, 3] } else { [4, 5] })`
+    await expectSameWasm(method, plain)
+    // The same where the name is shared, and where the function is generic
+    // as far as a plain call of it goes.
+    const shared = `${total}func total(x: u64) -> u32 => 1\n`
+    await expectSameWasm(method.replace(total, shared), plain.replace(total, shared))
+    const count = `${COUNT}export func f(k: bool) -> u32 => `
+    expect(errorsOf(`${count}(if k { [1, 2, 3] } else { [4, 5] }).count(4)`)).toEqual(errorsOf(`${count}count(if k { [1, 2, 3] } else { [4, 5] }, 4)`))
+    // Where nothing takes it, what is wrong with it is all that is said.
+    expect(errorsOf(`${DOUBLE}export func f(k: bool) -> u32 => (if k { [1, 2, 3] } else { [4, 5] }).double()`)).toEqual([
+      'branches have different types: [2]i32 and [3]i32 (cast one explicitly)',
+    ])
   })
 
   test('the method is used, and found from its name in the call', () => {
@@ -4094,6 +4160,35 @@ func step(comptime T: type, x: T) -> u64 => wide(x) + x.wide()
 export func f(x: u8) -> u64 => step(x) + step(x as u64)`
     const { f } = await run(source)
     expect(f(4)).toBe(20n)
+  })
+
+  test('an argument that is one value only once the parameter says of what type is passed as in any function', async () => {
+    // By itself each `if` and the `match` has branches of two types and is
+    // an error. What the body requires must not be asked of the argument alone.
+    const helpers = `func slen(s: []u8) -> u32 => s.len
+func total(xs: []u32) -> (s: u32) {
+  for x in xs {
+    s += x
+  }
+}
+func first(p: (u32, u64)) -> u32 => p.0
+`
+    const body = 'slen(if k { "yes" } else { "no" }) + total(match k { true => [7], false => [8, 9] }) + first(if k { (1, 2) } else { (3, 4) })'
+    const generic = `${helpers}func g(comptime T: type, c: T, k: bool) -> u32 => ${body}
+export func f(c: u32, k: bool) -> u32 => g(c, k)`
+    const byHand = `${helpers}func g_u32(c: u32, k: bool) -> u32 => ${body}
+export func f(c: u32, k: bool) -> u32 => g_u32(c, k)`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    expect(f(0, 1)).toBe(3 + 7 + 1)
+    expect(f(0, 0)).toBe(2 + 17 + 3)
+  })
+
+  test('where an argument has an error of its own the call reads as in any function', () => {
+    // Nothing is required of T here: what is wrong is in the arguments.
+    expect(errorsOf(`func eq(a: u32, b: u32) -> bool => a == b
+func g(comptime T: type, x: T) -> bool => eq(x, nope)
+export func f(x: u32) -> bool => g(x)`)).toEqual(["unknown identifier 'nope', in g(T = u32)", 'argument 2: cannot assign i32 to u32, in g(T = u32)'])
   })
 
   test('a function value is not called in an instance either', () => {

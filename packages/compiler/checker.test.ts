@@ -2552,6 +2552,27 @@ describe('functions that share a name', () => {
     expect(called(sized, 'func f() -> u32 => put([1, 300])', 'put')).toEqual(["put:''u32"])
   })
 
+  test('an argument that is one value only once a parameter says of what type goes to the only function that takes it', () => {
+    // By itself the `if` has branches of two types, and is an error. It
+    // takes no part in the first step, and is passed for a []u8 as it would
+    // be to a function that has its name to itself.
+    const use = 'func f(k: bool) -> u32 => slen(if k { "yes" } else { "no" })'
+    expect(called('func slen(s: []u8) -> u32 => s.len\nfunc slen(n: u64) -> u32 => 8', use, 'slen')).toEqual([])
+    expect(called('func slen(n: u64) -> u32 => 8\nfunc slen(s: []u8) -> u32 => s.len', use, 'slen')).toEqual(["slen:''u8"])
+    // So is a tuple of literals, and the arms of a match.
+    const total = 'func total(n: u64) -> u32 => 8\nfunc total(xs: []u32) -> u32 => xs.len\nfunc total(p: (u8, f64)) -> u32 => 2'
+    expect(called(total, 'func f(k: bool) -> u32 => total(match k { true => [7], false => [8, 9] }) + total(if k { (1, 2) } else { (3, 4.5) })', 'total')).toEqual([
+      "total:''u32",
+      'total:<u8|f64>',
+    ])
+    // Where no function takes it, or more than one does, what is wrong with
+    // it by itself is what there is to say.
+    expect(errs(`func slen(n: f64) -> u32 => 8\nfunc slen(n: u64) -> u32 => 8\n${use}`)).toEqual(['branches have different types: *[2]u8 and *[3]u8 (cast one explicitly)'])
+    expect(errs('func total(xs: []u32) -> u32 => 1\nfunc total(xs: []u64) -> u32 => 2\nfunc f(k: bool) -> u32 => total(if k { [1, 2, 3] } else { [4, 5] })')).toEqual([
+      'branches have different types: [2]i32 and [3]i32 (cast one explicitly)',
+    ])
+  })
+
   test('none is one error that lists the argument types', () => {
     expect(errs(`${HASH}\nfunc f(x: f64) -> u32 => hash(x)`)).toEqual(["no function 'hash' accepts (f64)"])
     expect(errs(`${HASH}\nfunc f(x: u32) -> u32 => hash(x, x, x)`)).toEqual(["no function 'hash' accepts (u32, u32, u32)"])

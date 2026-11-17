@@ -694,6 +694,13 @@ class CheckContext {
   // call f(x, a) it stands for, or that f is a member of x, or that it failed.
   picked = new Map<AST.CallExpr, string | null>()
   methodCalls = new Map<AST.CallExpr, AST.CallExpr | 'member' | 'failed'>()
+  // What a look need not walk again (see inferCall): the type of a call of a
+  // function that was checked without an error, the type a call was given
+  // when it had one, and the calls that had one while errors were not being
+  // reported.
+  settled = new Map<AST.CallExpr, ResolvedType>()
+  failed = new Map<AST.CallExpr, ResolvedType>()
+  refused = new Set<AST.CallExpr>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
   // How many attempts are open (see attempt)
@@ -3156,7 +3163,38 @@ class CheckContext {
     }
   }
 
+  // A call is looked at before it is checked, by the call it is an argument
+  // or the receiver of, and that one by the next: without a memory each level
+  // of a chain would walk all the levels below it again. So a look at a call
+  // that is known to check gives its type. A look at one whose errors are
+  // listed fails as it did, and so does an attempt at one that failed in an
+  // attempt, which keeps nothing of a failure but that it was one. Only a
+  // look is cut short: what the check records, it records.
   inferCall(expr: AST.CallExpr): ResolvedType {
+    if (this.trial.active) {
+      const settled = this.settled.get(expr)
+      if (settled) return settled
+      const failed = this.failed.get(expr) ?? (this.attempting && this.refused.has(expr) ? RECOVERY : undefined)
+      if (failed) {
+        this.errorsReported++
+        return failed
+      }
+    }
+    const reported = this.errorsReported
+    const type = this.inferCallInner(expr)
+    if (this.errorsReported > reported) {
+      if (this.attempting) this.refused.add(expr)
+      else this.failed.set(expr, type)
+    }
+    return type
+  }
+
+  // Whether a look would be cut short at this call
+  private known(call: AST.CallExpr): boolean {
+    return this.settled.has(call) || this.failed.has(call) || (this.attempting > 0 && this.refused.has(call))
+  }
+
+  private inferCallInner(expr: AST.CallExpr): ResolvedType {
     // x.f(a) is the call f(x, a) where x has no member f.
     if (expr.callee.kind === 'MemberExpr' && expr.callee.member.kind === 'field') {
       const result = this.inferMethodCall(expr, expr.callee.object, expr.callee.member.name)
@@ -3167,6 +3205,9 @@ class CheckContext {
     // `named`: the function the callee stands for, where its name alone does
     // not say which that is.
     let named: (Symbol & { kind: 'func' }) | null = null
+    // `required`: the call is of the one function of its name, from the body
+    // of an instance.
+    let required: string | null = null
     if (expr.callee.kind === 'IdentExpr') {
       const name = expr.callee.name
       const sym = this.lookup(name)
@@ -3180,18 +3221,20 @@ class CheckContext {
         this.recordReference(name, expr.callee.span.start)
       } else if (sym?.kind === 'func' && sym === this.moduleScope.symbols.get(name)) {
         // Of functions that share the name, the arguments say which is
-        // meant. In an instance a call of the one function of a name is
-        // asked the same question: what the body calls is what it requires
-        // of its type arguments, and a type the function does not take is
-        // one error, not one for each argument.
+        // meant.
         const members = this.overloads.get(name) ?? [name]
-        const argCount = expr.args.filter((a) => a.value).length
-        if (members.length > 1 || (this.currentInstance && argCount === sym.type.params.length)) {
+        if (members.length > 1) {
           const member = this.pickOverload(expr, name, members)
           if (member === null) return RECOVERY
           named = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
           if (member !== name) this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: member } })
           this.recordReference(member, expr.callee.span.start)
+        } else if (this.currentInstance && expr.args.filter((a) => a.value).length === sym.type.params.length) {
+          // What the body of an instance calls is what it requires of its
+          // type arguments: see below, where the arguments are checked.
+          named = sym
+          required = name
+          this.recordReference(name, expr.callee.span.start)
         }
       }
     }
@@ -3258,6 +3301,8 @@ class CheckContext {
 
       // Use bidirectional type checking for arguments
       // This allows log("message") to propagate *[!u8] to the string literal
+      const listed = this.errors.length
+      const reported = this.errorsReported
       let argIndex = 0
       for (const arg of expr.args) {
         if (arg.value && argIndex < calleeType.params.length) {
@@ -3266,16 +3311,15 @@ class CheckContext {
           argIndex++
         }
       }
+      if (required !== null && this.errorsReported > reported && this.notAccepted(expr, required, listed)) return RECOVERY
 
       // Return type of function
-      if (calleeType.returns.length === 0) {
-        return VOID
-      } else if (calleeType.returns.length === 1) {
-        return calleeType.returns[0].type
-      } else {
+      const result = calleeType.returns.length === 0 ? VOID
+        : calleeType.returns.length === 1 ? calleeType.returns[0].type
         // Multiple returns become a tuple
-        return tuple(calleeType.returns)
-      }
+        : tuple(calleeType.returns)
+      if (this.picked.get(expr) && this.errorsReported === reported) this.settled.set(expr, result)
+      return result
     }
 
     // Constructor call (type used as function): each argument is checked against
@@ -3431,11 +3475,12 @@ class CheckContext {
     if (known) return known
     if (known === null) return fail()
 
-    // An argument with an error of its own is nothing to choose by: the type
-    // it was given is a guess.
-    const reported = this.errorsReported
-    const types = args.map((arg) => this.peek(arg))
-    if (this.errorsReported > reported || types.some(unresolved)) return fail()
+    // What each argument is by itself. One that is nothing by itself takes
+    // no part in the first step: an `if` whose branches are literals of two
+    // shapes has a type only where a parameter gives it one.
+    const alone = args.map((arg) => this.alone(arg))
+    const types = alone.flatMap((type) => type ?? [])
+    const typed = types.length === args.length
 
     const candidates = members.flatMap((member) => {
       const sym = this.moduleScope.symbols.get(member)
@@ -3446,15 +3491,51 @@ class CheckContext {
     // parameter asks for that very range.
     const key = (type: ResolvedType) => (hasOwnType(type) ? canonicalKey(type) : null)
     const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
-    let found = candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i])))
-    if (found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
+    let found = typed ? candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i]))) : []
+    if (typed && found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
     if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
     if (found.length !== 1) {
+      // An argument that is nothing by itself, and that no one function gives
+      // a type: what is wrong with it is what there is to say.
+      if (!typed) return fail()
       const shown = args.map((arg, i) => this.shownArg(arg, () => types[i])).join(', ')
       return fail(found.length === 0 ? `no function '${name}' accepts (${shown})` : `'${name}' is ambiguous for (${shown})`)
     }
     this.picked.set(expr, found[0].member)
     return found[0].member
+  }
+
+  // The type an expression has by itself, or null where it has an error of
+  // its own, which is not reported: whoever asks goes on to check the
+  // expression, against a type that may be the one thing it lacked. A call
+  // lacks nothing: it is what it is whatever is expected of it, and its
+  // errors are reported here.
+  private alone(expr: AST.Expr): ResolvedType | null {
+    const look = () => {
+      const reported = this.errorsReported
+      const type = this.inferExpr(expr)
+      return this.errorsReported > reported || unresolved(type) ? null : type
+    }
+    if (expr.kind !== 'CallExpr') return this.attempt(expr, look)
+    const settled = this.settled.get(expr)
+    if (settled) return settled
+    if (this.failed.has(expr) || (this.attempting && this.refused.has(expr))) return null
+    return this.untraced(expr, look)
+  }
+
+  // In an instance, arguments that the one function of a name does not take
+  // are something the body requires of the type arguments and they do not
+  // bring: one error, in place of the one each argument was given (those
+  // listed from `listed` on). Only where each argument is something by
+  // itself: an error of its own stays as it is.
+  private notAccepted(expr: AST.CallExpr, name: string, listed: number): boolean {
+    const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
+    const types = args.flatMap((arg) => this.alone(arg) ?? [])
+    if (types.length !== args.length) return false
+    this.errors.length = listed
+    const shown = args.map((arg, i) => this.shownArg(arg, () => types[i])).join(', ')
+    this.requirement(expr.span.start, `no function '${name}' accepts (${shown})`)
+    return true
   }
 
   // Whether an argument can be passed for a parameter of this type: it is
@@ -3485,12 +3566,19 @@ class CheckContext {
     if (call === 'member') return null
     if (call === 'failed') return fail()
     if (!call) {
+      // A chain is looked at from where it starts: each of its calls then
+      // looks no further down than the call before it.
+      const below: AST.CallExpr[] = []
+      for (let r = receiver; r.kind === 'CallExpr' && r.callee.kind === 'MemberExpr' && !this.known(r); r = r.callee.object) {
+        below.push(r)
+      }
+      for (let i = below.length - 1; i > 0; i--) this.alone(below[i])
       // Members win, so the receiver's type is needed before anything else.
-      // With an error of its own there is no saying what it has.
-      const reported = this.errorsReported
-      const type = this.peek(receiver)
-      if (unresolved(type) || this.errorsReported > reported) return fail()
-      if (hasMember(type, name)) {
+      // A receiver that is nothing by itself has no members to speak of: it
+      // may still be what the function's first parameter takes, as the same
+      // expression is when it is written as the first argument.
+      const type = this.alone(receiver)
+      if (type && hasMember(type, name)) {
         this.methodCalls.set(expr, 'member')
         return null
       }
@@ -3513,20 +3601,35 @@ class CheckContext {
       // A builtin is a function too, unless something of the program has
       // its name.
       const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name))
-      if (!callable) {
+      // With nothing that could take it, what is wrong with the receiver is
+      // all there is to say. Functions that share the name and a generic
+      // find that out for themselves.
+      const single = sym?.kind === 'func' && !this.shared(name) ? sym : null
+      const first = single?.type.params[0]?.type
+      if (!type && (!callable || (single && !(first && this.fits(receiver, first))))) return fail()
+      if (!callable && type) {
         const types = [typeToString(type), ...expr.args.flatMap((a) => (a.value ? [this.shownArg(a.value, (value) => this.peek(value))] : []))]
         return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)
       }
       // A value has no address, and none is taken for it.
-      const pointer = sym ? this.pointerWanted(sym, name, expr.args, type) : null
-      if (pointer) {
+      const pointer = sym && type ? this.pointerWanted(sym, name, expr.args, type) : null
+      if (pointer && type) {
         this.recordReference(name, at)
         return fail(`${name} takes ${pointer} first; the receiver is a ${typeToString(type)}, which is held in registers and has no address`)
       }
       this.methodCalls.set(expr, call)
     }
     this.calls.set(expr, call)
-    return this.inferExpr(call)
+    const reported = this.errorsReported
+    const result = this.inferExpr(call)
+    // A builtin's value can be a constant, which is more than its type.
+    if (this.errorsReported === reported && this.lookup(name)) this.settled.set(expr, result)
+    return result
+  }
+
+  // Whether several functions of the module share this name
+  private shared(name: string): boolean {
+    return (this.overloads.get(name)?.length ?? 1) > 1
   }
 
   // The pointer type a function takes as its first argument, where the
@@ -5503,7 +5606,8 @@ class CheckContext {
 
   // Runs a look at `expr` and takes back what it recorded. Errors stay.
   private untraced<T>(expr: AST.Expr | null, look: () => T): T {
-    const literals = literalMarks(expr)
+    // A call the look will not walk (see inferCall) keeps its marks.
+    const literals = literalMarks(expr, (call) => this.known(call))
     const recorded = this.trial.begin()
     const registered = this.pendingLiterals.length
     const warned = this.warnings.length
@@ -6419,18 +6523,19 @@ function bindTypes(of: AST.FuncDecl, params: AST.Field[], values: ComptimeValue[
 // The marks the checker leaves on the literals of an expression (that it is
 // writable data, and which data entry it is), to put them back as they were.
 type LiteralMarks = { mut?: boolean; dataId?: number }
-function literalMarks(node: unknown, found: { node: LiteralMarks; marks: LiteralMarks }[] = []) {
+function literalMarks(node: unknown, skip: (call: AST.CallExpr) => boolean, found: { node: LiteralMarks; marks: LiteralMarks }[] = []) {
   if (Array.isArray(node)) {
-    for (const n of node) literalMarks(n, found)
+    for (const n of node) literalMarks(n, skip, found)
   } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
     const n = node as LiteralMarks & { kind?: string }
+    if (n.kind === 'CallExpr' && skip(n as AST.CallExpr)) return found
     if (n.kind === 'LiteralExpr' || n.kind === 'ArrayExpr' || n.kind === 'RepeatExpr' || n.kind === 'TupleExpr') {
       const marks: LiteralMarks = {}
       if ('mut' in n) marks.mut = n.mut
       if ('dataId' in n) marks.dataId = n.dataId
       found.push({ node: n, marks })
     }
-    for (const [key, value] of Object.entries(n)) if (key !== 'span') literalMarks(value, found)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') literalMarks(value, skip, found)
   }
   return found
 }
