@@ -2505,7 +2505,7 @@ describe('builtins', () => {
       export func f() -> i32 => max(1, 2, 3)
     `)
     expect(result.errors.map(e => e.message)).toEqual([])
-    expect(result.warnings.map(e => e.message)).toEqual([])
+    expect(result.warnings.map(e => e.message)).toEqual(["'max' replaces the builtin max in this module"])
     // A variable of that name is not a function to call: the builtin is still meant.
     expect(errs(`func f(a: i32, b: i32) -> i32 {
       let max = max(a, b)
@@ -2555,6 +2555,44 @@ describe('builtins', () => {
       data table = [10:u8, 20, 30, 40]
       func f(i: u32#4, j: u32#4, c: bool) -> u8 => table[max(i, if c { j } else { 9 })]
     `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
+  test('a function that replaces a builtin is warned of once, where it is declared', () => {
+    const src = `
+      func max(a: u32, b: u32) -> u32 => a
+      func max(a: f64, b: f64) -> f64 => a
+      func min(comptime T: type, a: T, b: T) -> T => a
+      import "env" "abs" func abs(x: i32) -> i32
+      func maximum(a: u32) -> u32 => a
+      func clz-of(a: u32) -> u32 => a
+      export func f(a: u32, b: f64, sqrt: f64) -> f64 {
+        let popcnt = max(a, a) + min(a, a) + maximum(a) + clz-of(a) + abs(1) as u32
+        return max(b, b) + sqrt(sqrt) + popcnt as f64
+      }
+      test "t" {
+        func ceil(x: f64) -> f64 => x
+        assert ceil(1.5) == 1.5
+      }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    // One for each declaration, plain, shared, generic, imported or in a
+    // test, and none for a call or for a parameter or local of the name.
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual([
+      "'max' replaces the builtin max in this module",
+      "'max' replaces the builtin max in this module",
+      "'min' replaces the builtin min in this module",
+      "'abs' replaces the builtin abs in this module",
+      "'ceil' replaces the builtin ceil in this module",
+    ])
+    expect(replaced.map(w => w.offset)).toEqual([
+      src.indexOf('func max(a: u32'),
+      src.indexOf('func max(a: f64'),
+      src.indexOf('func min'),
+      src.indexOf('func abs'),
+      src.indexOf('func ceil'),
+    ])
   })
 
   test('a variable in scope hides the declared function, and the builtin is meant again', () => {

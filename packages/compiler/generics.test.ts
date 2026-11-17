@@ -1125,7 +1125,9 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 
   test('an exported generic is not reported as unused', () => {
-    expect(check(`export ${MAX}`).warnings).toEqual([])
+    // It is a function that replaces a builtin, which is said once.
+    expect(check(`export ${MAX}`).warnings.map(w => w.message)).toEqual(["'max' replaces the builtin max in this module"])
+    expect(check(`export ${MAX.replace('max', 'largest')}`).warnings).toEqual([])
   })
 
   // The import may be written as if the function were ordinary; what the

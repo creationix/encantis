@@ -871,6 +871,15 @@ class CheckContext {
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
     this.recordDefinition(known, decl.span.start)
+    this.replacesBuiltin(name, decl.span.start)
+  }
+
+  // A function the module declares or imports with the name of a builtin is
+  // what that name calls in the module: said once, where it is declared. A
+  // variable of the name is no function, and calls of the name still reach
+  // the builtin (reference 10).
+  private replacesBuiltin(name: string, offset: number): void {
+    if (BUILTIN_NAMES.has(name)) this.warn(offset, `'${name}' replaces the builtin ${name} in this module`)
   }
 
   // A test's function takes over the name of the module's function, for the
@@ -5176,6 +5185,7 @@ class CheckContext {
     }
     this.moduleScope.symbols.set(decl.ident, { kind: 'generic', decl, owner: this, instances: new Map(), valid })
     this.recordDefinition(decl.ident, decl.span.start)
+    this.replacesBuiltin(decl.ident, decl.span.start)
   }
 
   // Whether a type as written is a function type: one written out, or a name
