@@ -2820,6 +2820,24 @@ describe('values of literals laid out in memory', () => {
     expect([f(), g(5)]).toEqual([41, 56])
   })
 
+  test('a repeat whose element is a slice is that many slices', async () => {
+    // The data packer threw "Expected ArrayExpr for separate brackets, got
+    // RepeatExpr" for these on 0.2.1.
+    const { counts, local } = await run(`
+      data d: [][]u8 = [[1; 2]; 3]
+      data e: *[3][]u8 = [[1, 2]; 3]
+      data f: [][]u8 = ["ab"; 3]
+      export func counts() -> u32 => d.len * 1000 + d[2].len * 100 + (e[1].len) * 10 + f.len
+      export func local(n: u32) -> u32 {
+        let x: []u8 = "abc"
+        let a: *[3][]u8 = [x; 3]
+        let s: [][]u8 = [x; 2]
+        return a[2].len * 100 + s.len * 10 + (if let r = s[n] { r.len } else { 0 })
+      }
+    `)
+    expect([counts(), local(1), local(5)]).toEqual([3223, 323, 320])
+  })
+
   test('a literal with values only known at run time is a cell of its own', async () => {
     const { two, packed } = await run(`
       export func two(x: i32, y: i32) -> i32 {
