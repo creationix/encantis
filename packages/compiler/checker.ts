@@ -3169,7 +3169,8 @@ class CheckContext {
   }
 
   // The least constant an if or match of constants can be, through branches
-  // that are ifs or matches themselves. Null for any other expression.
+  // that are ifs or matches themselves. Null for any other expression. A
+  // complement doesn't count: ~0 is a bit pattern, not a negative value.
   private leastBranch(expr: AST.Expr): bigint | null {
     const bodies = expr.kind === 'IfExpr' ? [expr.thenBranch, ...expr.elifs.map(elif => elif.thenBranch), expr.else_]
       : expr.kind === 'MatchExpr' ? expr.arms.map(arm => arm.body)
@@ -3178,7 +3179,8 @@ class CheckContext {
     let least: bigint | null = null
     for (const body of bodies) {
       const value = body && bodyValue(body)
-      if (!value || !this.branchConstants.has(value)) continue
+      const own = value && this.branchConstants.get(value)
+      if (!value || !own || (own.kind === 'comptime_int' && own.bits)) continue
       const inner = groupedExpr(value) ?? value
       const constant = this.evalComptimeExpr(inner)
       const low = inner.kind === 'IfExpr' || inner.kind === 'MatchExpr' ? this.leastBranch(inner)

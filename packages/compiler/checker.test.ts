@@ -1629,6 +1629,9 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(c: bool) -> i64 { let v = if c { -9223372036854775808 } else { 9223372036854775807 }\n return v }`)).toEqual([])
     expect(errs(`func f(c: bool) -> i64 { let v = if c { 0x9E3779B97F4A7C15 } else { 0xcbf29ce484222325 }\n return v }`)).toEqual([])
     expect(errs(`func f(c: bool) -> i64 { let v = if c { -1 } else { ~0 }\n return v }`)).toEqual([])
+    // A complement is a pattern itself, not a negative value.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { ~0 } else { 0x8000000000000000 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { ~1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
     // A type that holds them both can be given.
     expect(errs(`func f(c: bool) -> i128 { let v: i128 = if c { -1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
   })
