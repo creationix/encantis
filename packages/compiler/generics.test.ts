@@ -3905,6 +3905,17 @@ export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid
     expect(compiled(source)).toEqual(['wid/1'])
   })
 
+  test('a many-pointer has no length, so len is a function it can be the receiver of', () => {
+    // .len of a [*]u8 is an error of its own: it is no member that could win.
+    const len = 'func len(s: [*]u8) -> u32 => 3\n'
+    expect(compiled(`${len}func f(s: [*]u8, sized: *[4]u8) -> u32 => s.len() + sized.len`)).toEqual(['len/1'])
+    expect(errorsOf('func f(s: [*]u8) -> u32 => s.len()')).toEqual(["no field 'len' on type [*]u8, and no function 'len' accepts ([*]u8)"])
+    // What it does have is still a member.
+    expect(errorsOf('func ptr(s: [*]u8) -> u32 => 3\nfunc f(s: [*]u8) -> u32 => s.ptr()')).toEqual([
+      "cannot call non-function type: [*]u8 ('ptr' is a field here, and a field wins over the function 'ptr': write ptr(...))",
+    ])
+  })
+
   test('the receiver is passed as written: no address is taken of a value', () => {
     expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(7) }`)).toEqual([
       'push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address',

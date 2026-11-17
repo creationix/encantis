@@ -6176,7 +6176,8 @@ function hasMember(type: ResolvedType, name: string): boolean {
   if (struct.kind === 'tuple' && struct.fields.some((f) => f.name === name)) return true
   const held = type.kind === 'pointer' ? type.pointee : type
   if (held.kind === 'slice') return name === 'ptr' || name === 'len'
-  return held.kind === 'array' && (name === 'ptr' || name === 'len' || name === 'wid')
+  // A many-pointer has no length: `len` is no member of it.
+  return held.kind === 'array' && (name === 'ptr' || name === 'wid' || (name === 'len' && held.sizes !== null))
 }
 
 // A call argument read as a type, by its syntax alone: what could be written

@@ -1564,7 +1564,7 @@ test "method calls" {
 }
 ```
 
-1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense.
+1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense. A many-pointer has no `.len`, so `s.len()` for `s: [*]u8` calls a function `len`.
 2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)) the receiver is the first argument that is not a comptime one, and the call is the inferred form, so the receiver usually decides the type parameters. `v.push(u32, 7)`, with the type parameters written after the receiver, is the explicit form and means `push(u32, v, 7)`.
 3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it.
 4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
