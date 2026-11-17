@@ -741,6 +741,10 @@ class CheckContext {
   // Set where an application inside another's body made a type too large to
   // write out (MAX_TYPE_PARTS), until the application that began it reports it
   applyTooLarge = false
+  // Set while a type written in place is resolved, and while the body of a
+  // `type` is: a written type is measured once, as a whole (resolveType)
+  resolvingType = false
+  declaringType = false
   // What an inferred call found for its type parameters, or null when it
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
@@ -1088,7 +1092,13 @@ class CheckContext {
     }
     // Types with @ prefix are unique/nominal, others are structural aliases
     const unique = name.startsWith('@')
-    let resolved = this.resolveType(decl.type)
+    this.declaringType = true
+    let resolved: ResolvedType
+    try {
+      resolved = this.resolveType(decl.type)
+    } finally {
+      this.declaringType = false
+    }
     // A type that holds itself, not through a pointer or a slice, has no size.
     const refs = this.forwardRefs.get(name) ?? []
     if (refs.length > 0 && containsByValue(resolved, refs)) {
@@ -2612,6 +2622,27 @@ class CheckContext {
   // === Type Resolution ===
 
   resolveType(type: AST.Type): ResolvedType {
+    // A type written in place, in a signature, a cast or after a colon, is
+    // held to the size a declared type is (MAX_TYPE_PARTS), as a whole. The
+    // body of a `type` is counted where it is declared, and a generic type
+    // where it is applied: each with what it is made of resolved.
+    if (this.resolvingType || this.declaringType || this.applyDepth > 0) return this.resolveTypeParts(type)
+    this.resolvingType = true
+    let resolved: ResolvedType
+    try {
+      resolved = this.resolveTypeParts(type)
+    } finally {
+      this.resolvingType = false
+    }
+    if (resolved !== RECOVERY && typeParts(resolved) > MAX_TYPE_PARTS) {
+      this.error(type.span.start, tooLarge(typeText(type)))
+      return RECOVERY
+    }
+    return resolved
+  }
+
+  // resolveType, for each part of a type written in place
+  private resolveTypeParts(type: AST.Type): ResolvedType {
     switch (type.kind) {
       case 'PrimitiveType':
         return primitive(type.name, type.max)

@@ -3015,6 +3015,17 @@ describe('types too large to write out', () => {
     // Inside the body of another, said where that one is applied
     expect(errs(`${D}func Big(comptime T: type) -> type => (x: ${nest(18, 'T')})\nfunc f(p: *Big(u8)) -> u32 => 1`)).toEqual([large('Big(u8)')])
   })
+
+  test('a type written in place is one error where it is written, as a whole', () => {
+    // *(a: D14, b: D14) has 65536 parts, *(a: D15, b: D15) 131072
+    expect(errs(`${doubling(15)}func f(p: *(a: D14, b: D14)) -> u32 => 1`)).toEqual([])
+    expect(errs(`${doubling(15)}func f(p: *(a: D15, b: D15)) -> u32 => 1`)).toEqual([large('*(a: D15, b: D15)')])
+    const many = Array.from({ length: 300 }, (_, i) => `f${i}: D15`).join(', ')
+    expect(errs(`${doubling(15)}func f(p: *D15) -> u32 {\n  let q = p as *(${many})\n  return 1\n}`)).toEqual([large(`*(${many})`)])
+    // As a type argument, and inside a generic, once for each instance it is in
+    expect(errs(`${doubling(15)}func id(comptime T: type, p: *T) -> u32 => 1\nfunc f(p: *D15) -> u32 => id((D15, D15), p)`)).toEqual([large('(D15, D15)')])
+    expect(errs(`${doubling(15)}func g(comptime T: type, x: T) -> u32 {\n  let q = 0 as *(a: T, b: T)\n  return 1\n}\nfunc f(d: *D15) -> u32 => g(D15, d.*)`)).toEqual([`${large('*(a: D15, b: D15)')}, in g(T = D15)`])
+  })
 })
 
 describe('a name for a pointer, a slice, an array or an optional', () => {
