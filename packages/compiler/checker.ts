@@ -1039,11 +1039,12 @@ class CheckContext {
     return 'inferred'
   }
 
-  // Evaluate a compile-time constant expression
-  evalComptimeExpr(expr: AST.Expr): ComptimeValue | null {
+  // Evaluate a compile-time constant expression. `typed` is for a global's
+  // initializer, where a cast of a constant is one too.
+  evalComptimeExpr(expr: AST.Expr, typed = false): ComptimeValue | null {
     // Handle annotation expression (e.g., 42:u32)
     if (expr.kind === 'AnnotationExpr') {
-      return this.evalComptimeExpr(expr.expr)
+      return this.evalComptimeExpr(expr.expr, typed)
     }
 
     // Handle literal expression
@@ -1063,12 +1064,12 @@ class CheckContext {
     // Handle group expression
     const grouped = groupedExpr(expr)
     if (grouped) {
-      return this.evalComptimeExpr(grouped)
+      return this.evalComptimeExpr(grouped, typed)
     }
 
     // Handle unary negation
     if (expr.kind === 'UnaryExpr' && expr.op === '-') {
-      const operand = this.evalComptimeExpr(expr.operand)
+      const operand = this.evalComptimeExpr(expr.operand, typed)
       if (operand?.kind === 'int') {
         return { kind: 'int', value: -operand.value }
       }
@@ -1079,7 +1080,7 @@ class CheckContext {
 
     // Handle bitwise complement
     if (expr.kind === 'UnaryExpr' && expr.op === '~') {
-      const operand = this.evalComptimeExpr(expr.operand)
+      const operand = this.evalComptimeExpr(expr.operand, typed)
       if (operand?.kind === 'int') {
         return { kind: 'int', value: ~operand.value }
       }
@@ -1087,8 +1088,8 @@ class CheckContext {
 
     // Handle binary operations on comptime values
     if (expr.kind === 'BinaryExpr') {
-      const left = this.evalComptimeExpr(expr.left)
-      const right = this.evalComptimeExpr(expr.right)
+      const left = this.evalComptimeExpr(expr.left, typed)
+      const right = this.evalComptimeExpr(expr.right, typed)
       if (left?.kind === 'int' && right?.kind === 'int') {
         const l = left.value
         const r = right.value
@@ -1155,6 +1156,16 @@ class CheckContext {
       }
     }
 
+    // A cast (`x as T`, `T(x)`): the operand's value, converted from the
+    // type the checker gave the operand as the cast converts it at run time.
+    const castee = typed ? castOperand(expr) : null
+    if (castee) {
+      const value = this.evalComptimeExpr(castee, true)
+      const from = this.exprTypes.get(castee)
+      const to = this.exprTypes.get(expr)
+      return value && from && to ? castConstant(constantIn(value, from), to) : null
+    }
+
     return null
   }
 
@@ -1195,9 +1206,9 @@ class CheckContext {
   // number or bool the compiler can work out, the address of data or of a
   // function, or a tuple or struct of those. A number's value goes to
   // codegen, which emits it when the expression as written would need an
-  // instruction (1 + 1, a literal that widens).
+  // instruction (1 + 1, a literal that widens, a cast that narrows).
   private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
-    const value = this.evalComptimeExpr(expr)
+    const value = this.evalComptimeExpr(expr, true)
     if (!value && !this.isConstantInitializer(expr)) {
       this.error(expr.span.start, 'global initializer must be a compile-time constant')
     }
@@ -1205,7 +1216,14 @@ class CheckContext {
   }
 
   private isConstantInitializer(expr: AST.Expr): boolean {
-    if (this.evalComptimeExpr(expr)) return true
+    if (this.evalComptimeExpr(expr, true)) return true
+    // An address cast to another pointer type or to a 32-bit integer is the
+    // same i32, so the same constant.
+    const castee = castOperand(expr)
+    if (castee) {
+      return holdsAddress(this.exprTypes.get(expr)) && holdsAddress(this.exprTypes.get(castee))
+        && this.isConstantInitializer(castee)
+    }
     switch (expr.kind) {
       case 'AnnotationExpr':
       case 'GroupExpr':
@@ -4087,6 +4105,64 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   // (256 isn't false), and which test is meant is for the program to say.
   if (isBool(t) && !isBool(f)) return `${cannot}: compare it instead (x != 0)`
   return null
+}
+
+// The operand of a cast: `x as T`, or `T(x)` with a primitive type.
+function castOperand(expr: AST.Expr): AST.Expr | null {
+  if (expr.kind === 'CastExpr') return expr.expr
+  if (expr.kind !== 'CallExpr' || expr.callee.kind !== 'IdentExpr' || !PRIMITIVE_NAMES.has(expr.callee.name)) return null
+  const args = expr.args.filter((a) => a.value !== null)
+  return args.length === 1 ? args[0].value : null
+}
+
+// A constant as a type holds it: an integer wrapped to the type's width and
+// sign, a float rounded to it. Any other type holds the value as it is.
+function constantIn(value: ComptimeValue, type: ResolvedType): ComptimeValue {
+  const t = unwrap(type)
+  if (t.kind !== 'primitive' || isBool(t) || (value.kind !== 'int' && value.kind !== 'float')) return value
+  if (isFloat(t)) {
+    if (t.name === 'f64') return { kind: 'float', value: Number(value.value) }
+    return { kind: 'float', value: value.kind === 'int' ? nearestF32(value.value) : Math.fround(value.value) }
+  }
+  if (value.kind === 'float') return value
+  const bits = (byteSize(t) ?? 4) * 8
+  return { kind: 'int', value: isSigned(t) ? BigInt.asIntN(bits, value.value) : BigInt.asUintN(bits, value.value) }
+}
+
+// The f32 nearest an integer. Past 53 bits a double is already rounded, and
+// rounding it again can land on the other side of a tie. So keep 53 bits,
+// the lowest of them set if any bit below it is: that rounds as the integer does.
+function nearestF32(n: bigint): number {
+  const size = n < 0n ? -n : n
+  const cut = BigInt(Math.max(0, size.toString(2).length - 53))
+  const sticky = (size & ((1n << cut) - 1n)) !== 0n ? 1n : 0n
+  const nearest = Math.fround(Number(((size >> cut) | sticky) << cut))
+  return n < 0n ? -nearest : nearest
+}
+
+// What a cast makes of a constant: the value its conversion gives at run
+// time (10.2). Null where there isn't one to give: a float outside the
+// integer type traps, and an address is only known once data is laid out.
+function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | null {
+  const t = unwrap(to)
+  if (value.kind === 'data_ptr') return null
+  if (isBool(t)) return value.kind === 'bool' ? value : null
+  const number: ComptimeValue = value.kind === 'bool' ? { kind: 'int', value: value.value ? 1n : 0n } : value
+  if (number.kind === 'float' && !isFloat(t)) {
+    // Toward zero, into the i32 or i64 the type is held in, then cut to the type.
+    const whole = Math.trunc(number.value)
+    const bits = (byteSize(t) ?? 4) > 4 ? 64 : 32
+    const [low, high] = isSigned(t) ? [-(2 ** (bits - 1)), 2 ** (bits - 1)] : [0, 2 ** bits]
+    if (!(whole >= low && whole < high)) return null
+    return constantIn({ kind: 'int', value: BigInt(whole) }, to)
+  }
+  return constantIn(number, to)
+}
+
+// Whether a type holds an address whole: a pointer, or a 32-bit integer.
+function holdsAddress(type: ResolvedType | undefined): boolean {
+  const t = type && unwrap(type)
+  return t?.kind === 'pointer' || (t?.kind === 'primitive' && (t.name === 'i32' || t.name === 'u32'))
 }
 
 // The integer type a constant has as an address or an offset from one: 32

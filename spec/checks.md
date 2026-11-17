@@ -362,7 +362,21 @@ global mask: u8 = ~0 << 4
 global base: [*]u8 = table
 ```
 
-A value that only exists at run time can't start one: assign it in a function.
+A cast of a constant is a constant: the value the cast gives at run time. An address stays one as another pointer type or as a 32-bit integer.
+
+```ents
+def page = 64 * 1024
+data table = [1:u8, 2, 3]
+
+global bits: u32 = -1 as u32
+global byte: u8 = 300 as u8
+global whole: i32 = 2.9 as i32
+global wide: i64 = i64(page)
+global words: [*]u16 = table as [*]u16
+global start: u32 = table as u32
+```
+
+A value that only exists at run time can't start one: assign it in a function. Nor can a float cast to an integer type it doesn't fit, which traps at run time.
 
 ```ents
 func one() -> i32 => 1
@@ -370,12 +384,16 @@ func one() -> i32 => 1
 global a: i32 = one()
 global b: i32 = a
 global c: u8 = 200 + 100
+global d: i64 = one() as i64
+global e: u32 = -1.5 as u32
 ```
 
 ```errors
 global initializer must be a compile-time constant
 global initializer must be a compile-time constant
 cannot assign int(300) to u8
+global initializer must be a compile-time constant
+global initializer must be a compile-time constant
 ```
 
 ## Defer

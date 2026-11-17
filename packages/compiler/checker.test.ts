@@ -1036,8 +1036,68 @@ describe('globals', () => {
     const message = 'global initializer must be a compile-time constant'
     expect(errs(`func one() -> i32 => 1\nglobal g: i32 = one()`)).toEqual([message])
     expect(errs(`global a: i32 = 1\nglobal b: i32 = a`)).toEqual([message])
-    expect(errs(`global g: i64 = 5 as i64`)).toEqual([message])
+    expect(errs(`func one() -> i32 => 1\nglobal g: i64 = one() as i64`)).toEqual([message])
+    expect(errs(`func one() -> i32 => 1\nglobal g: i64 = i64(one())`)).toEqual([message])
     expect(errs(`global g: u8 = 200 + 100`)).toEqual(['cannot assign int(300) to u8'])
+  })
+
+  test('a cast of a constant is a constant: the value the cast gives at run time', () => {
+    const result = checkModule(`
+      def k = 7
+      global same: u32 = 5 as u32
+      global bits: u32 = -1 as u32
+      global wide: i64 = k as i64
+      global byte: u8 = 300 as u8
+      global small: i8 = i8(200)
+      global whole: i32 = 2.9 as i32
+      global down: i32 = -2.9 as i32
+      global real: f64 = k as f64
+      global single: f64 = (0.1 as f32) as f64
+      global nearest: f32 = 9007199791611905 as f32
+      global flag: u8 = true as u8
+      global again: i64 = (-1 as u8) as i64
+    `)
+    expect(result.errors).toEqual([])
+    const init = (name: string) => {
+      const sym = result.symbols.get(name)
+      return sym?.kind === 'global' ? sym.init : undefined
+    }
+    expect(init('same')).toEqual({ kind: 'int', value: 5n })
+    expect(init('bits')).toEqual({ kind: 'int', value: 4294967295n })
+    expect(init('wide')).toEqual({ kind: 'int', value: 7n })
+    expect(init('byte')).toEqual({ kind: 'int', value: 44n })
+    expect(init('small')).toEqual({ kind: 'int', value: -56n })
+    expect(init('whole')).toEqual({ kind: 'int', value: 2n })
+    expect(init('down')).toEqual({ kind: 'int', value: -2n })
+    expect(init('real')).toEqual({ kind: 'float', value: 7 })
+    expect(init('single')).toEqual({ kind: 'float', value: Math.fround(0.1) })
+    // Rounded once, as f32.convert_i64_s does: by way of a double it would be 2^53.
+    expect(init('nearest')).toEqual({ kind: 'float', value: 9007200328482816 })
+    expect(init('flag')).toEqual({ kind: 'int', value: 1n })
+    expect(init('again')).toEqual({ kind: 'int', value: 255n })
+  })
+
+  test('an address cast to a pointer or a 32-bit integer is still the address', () => {
+    const message = 'global initializer must be a compile-time constant'
+    const table = 'data table = mut [1:i32, 2, 3, 4]\n'
+    expect(errs(`${table}
+      global words: [*]i32 = table as [*]i32
+      global bytes: [*]mut u8 = table as [*]mut u8
+      global start: u32 = table as u32
+      global also: u32 = u32(table)
+      global name: [*]u8 = "name" as [*]u8
+      global fixed: *mut i32 = 4096 as *mut i32
+    `)).toEqual([])
+    // Cut down or widened, it's a value only the laid-out module has.
+    expect(errs(`${table}global low: u8 = table as u8`)).toEqual([message])
+    expect(errs(`${table}global wide: u64 = table as u64`)).toEqual([message])
+  })
+
+  test('a float cast to an integer it does not fit is not a constant', () => {
+    const message = 'global initializer must be a compile-time constant'
+    expect(errs(`global g: u32 = -1.5 as u32`)).toEqual([message])
+    expect(errs(`global g: i32 = 3000000000.0 as i32`)).toEqual([message])
+    expect(errs(`global g: u32 = -0.5 as u32\nglobal h: u32 = 3000000000.0 as u32`)).toEqual([])
   })
 
   test('a tuple or struct of constants is a constant too', () => {
