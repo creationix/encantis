@@ -740,6 +740,7 @@ class MetaBuilder {
           this.generateHintsForDef(item)
           break
         case 'ImportDecl':
+        case 'TypeFuncDecl':
           break
         default:
           this.generateHintsForStmt(item)

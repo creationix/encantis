@@ -22,6 +22,9 @@ function check(source: string, options?: TypecheckOptions) {
 
 const errorsOf = (source: string) => check(source).errors.map(e => e.message)
 
+// Where an error is and what it says, without the calls it was required from
+const place = ({ offset, message }: { offset: number; message: string }) => ({ offset, message })
+
 // What the checker says of an operator that its operands do not have. Its
 // wording is written once here, as it is once in the checker (noOperator).
 const noOperator = (op: string, left: string, right = left) => `'${op}' cannot be applied to ${left} and ${right}`
@@ -308,24 +311,24 @@ export func d(c: bool, p: Pt, q: Pt) -> Pt => pick((q: i32, r: i32), c, p, q)`
     expect(instancesOf(`${ZERO}export func f() -> u32 => zero(u32)`)).toEqual(['zero<u32>'])
   })
 
-  // Matching does not look into a function type (that comes with comptime
-  // function parameters). A function passed for f: (T) -> T decides nothing,
-  // and the literal after it is no hint at T: inc takes a u32, not an i32.
-  test('a function type is not matched, and the literals after it are not taken as a hint', () => {
+  // A function type is laid over a function's signature: a function passed
+  // for f: (T) -> T decides T, and the literal after it takes that type. inc
+  // takes a u32, so the 3 is a u32, not the i32 it would be on its own.
+  test('a function type is matched by the signature of a function', () => {
     const source = `func inc(x: u32) -> u32 => x + 1
+func wide(x: u64) -> u64 => x
 func apply(comptime T: type, f: (T) -> T, x: T) -> T => x
 func keep(comptime T: type, f: (T) -> T) -> u32 => sizeof(T)
 `
-    expect(errorsOf(`${source}func a() -> u32 => apply(inc, 3)`)).toEqual([
-      "cannot infer T for 'apply': write the type argument, as in apply(u32, ...)",
-    ])
-    expect(errorsOf(`${source}func b() -> u32 => keep(inc)`)).toEqual([
-      "cannot infer T for 'keep': write the type argument, as in keep(u32, ...)",
-    ])
-    // An argument that does decide T, and the type written, are accepted.
-    expect(instancesOf(`${source}export func c(v: u32) -> u32 => apply(inc, v) + apply(u32, inc, 3) + keep(u32, inc)`)).toEqual([
-      'apply<u32>',
-      'keep<u32>',
+    expect(instancesOf(`${source}export func a() -> u32 => apply(inc, 3) + keep(inc)`)).toEqual(['apply<u32>', 'keep<u32>'])
+    expect(instancesOf(`${source}export func b(v: u32) -> u64 => apply(wide, v) + apply(u64, wide, 3)`)).toEqual(['apply<u64>'])
+    // The first argument that can decides: the function, which stands first.
+    expect(errorsOf(`${source}func c(v: u64) -> u64 => apply(inc, v)`)).toEqual(['argument 2: cannot assign u64 to u32'])
+    // Matching only binds, part by part: T is found in add's result, and
+    // that add does not fit is the ordinary argument error.
+    const two = 'func add(a: u32, b: u32) -> u32 => a + b\n'
+    expect(errorsOf(`${source}${two}func d() -> u32 => keep(add)`)).toEqual([
+      'argument 1: cannot assign func(a: u32, b: u32) -> u32 to func(u32) -> u32',
     ])
     // The same when a typed argument has the wrong shape for its parameter
     expect(errorsOf(`${COUNT}func d(n: u32) -> u32 => count(n, 5)`)).toEqual([
@@ -687,7 +690,11 @@ describe('errors in an instance', () => {
     const source = `${OVER}export func f(x: u8) -> bool => over(x)`
     const result = check(source)
     expect(result.errors).toEqual([
-      { offset: source.indexOf('300\n'), message: 'cannot assign int(300) to u8, in over(T = u8)' },
+      {
+        offset: source.indexOf('300\n'),
+        message: 'cannot assign int(300) to u8, in over(T = u8)',
+        notes: [{ offset: source.indexOf('over(x)'), message: 'required from' }],
+      },
     ])
   })
 
@@ -749,7 +756,7 @@ export func f(x: u32) -> u32 => noret(x)`
     const source = `type Pt = (q: i32, r: i32)
 ${MAX}export func f(a: Pt, b: Pt) -> Pt => max(a, b)
 export func g(a: u32, b: u32) -> u32 => max(a, b)`
-    expect(check(source).errors).toEqual([
+    expect(check(source).errors.map(place)).toEqual([
       { offset: source.indexOf('a > b'), message: `${noOperator('>', 'Pt')}, in max(T = Pt)` },
     ])
     const eq = `func same(comptime T: type, a: T, b: T) -> bool => a == b
@@ -792,19 +799,21 @@ export func k(xs: []u8) -> bool => not(xs)`
     ]
     const byPlace = (a: { offset: number; message: string }, b: { offset: number; message: string }) =>
       a.offset - b.offset || (a.message < b.message ? -1 : 1)
-    expect([...result.errors].sort(byPlace)).toEqual([...expected('Pt'), ...expected('[]u8')].sort(byPlace))
+    expect(result.errors.map(place).sort(byPlace)).toEqual([...expected('Pt'), ...expected('[]u8')].sort(byPlace))
     // The types that have these operators are untouched by the checks.
     expect(errorsOf(`${generics}export func ok(x: i32, y: bool) -> bool => not(y) && twice(neg(inv(shl(x)))) > 0`)).toEqual([])
   })
 
-  test('a type parameter cannot construct yet', () => {
+  test('a type parameter that is not a struct or tuple has no constructor', () => {
     const source = `func make(comptime T: type, x: i32) -> T => T(x, x)
 export func f() -> (i32, i32) => make((i32, i32), 1)`
-    expect(errorsOf(source)).toEqual(['T(...) on a type parameter is not supported yet, in make(T = (i32, i32))'])
+    expect(errorsOf(source)).toEqual([])
+    const number = 'u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T, in make(T = u32)'
+    expect(errorsOf(source.replace(/\(i32, i32\)/g, 'u32'))).toEqual([number])
     // Its arguments are still checked: their own mistakes are not hidden.
-    expect(errorsOf(source.replace('T(x, x)', 'T(x, nope)'))).toEqual([
-      'T(...) on a type parameter is not supported yet, in make(T = (i32, i32))',
-      "unknown identifier 'nope', in make(T = (i32, i32))",
+    expect(errorsOf(source.replace(/\(i32, i32\)/g, 'u32').replace('T(x, x)', 'T(x, nope)'))).toEqual([
+      number,
+      "unknown identifier 'nope', in make(T = u32)",
     ])
   })
 
@@ -817,7 +826,7 @@ func clear(comptime T: type, n: u32, x: T) -> T {
 export func f(n: u32) -> u32 => clear(n, n) + (clear(n, 1:u8) as u32)`
     const warning = 'memset length is not a compile-time constant — cannot verify bounds (buffer is 16 bytes)'
     const offset = source.indexOf('n)\n  return')
-    expect(check(source).warnings).toEqual([
+    expect(check(source).warnings.map(place)).toEqual([
       { offset, message: `${warning}, in clear(T = u32)` },
       { offset, message: `${warning}, in clear(T = u8)` },
     ])
@@ -946,14 +955,9 @@ export func g() -> u32 => f(u32, 1) + f(2)`
 describe('declaring a generic function', () => {
   const cases: [string, string, string][] = [
     [
-      'a comptime function parameter',
-      'func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }',
-      "comptime parameter 'before' must be a type parameter: comptime function parameters are not supported yet",
-    ],
-    [
       'a comptime value parameter',
       'func f(comptime n: u32) -> u32 => n',
-      "comptime value parameters are not supported yet: 'n' must be 'type'",
+      "comptime value parameters are not supported yet: 'n' must be 'type' or a function type",
     ],
     [
       'a lower-case type parameter',

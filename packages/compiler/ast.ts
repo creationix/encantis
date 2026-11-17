@@ -30,6 +30,7 @@ export type Declaration =
   | ImportDecl
   | ExportDecl
   | FuncDecl
+  | TypeFuncDecl
   | TypeDecl
   | EnumDecl
   | DataDecl
@@ -68,7 +69,7 @@ export interface ImportGlobal extends BaseNode {
 export interface ExportDecl extends BaseNode {
   kind: 'ExportDecl'
   name: string
-  item: FuncDecl | GlobalDecl | MemoryDecl
+  item: FuncDecl | TypeFuncDecl | GlobalDecl | MemoryDecl
 }
 
 // func name(params) -> returns { body }
@@ -78,6 +79,15 @@ export interface FuncDecl extends BaseNode {
   ident: string | null
   signature: FuncSignature
   body: FuncBody
+}
+
+// func Name(comptime T: type) -> type => Type
+// A generic type: a function from types to a type, applied as Name(u32).
+export interface TypeFuncDecl extends BaseNode {
+  kind: 'TypeFuncDecl'
+  ident: string
+  params: Field[]
+  body: Type
 }
 
 // Function signature with symmetric input/output design
@@ -181,6 +191,7 @@ export type TestItem =
   | DataDecl
   | DefDecl
   | FuncDecl
+  | TypeFuncDecl
   | Statement
 
 // ============================================================================
@@ -603,6 +614,7 @@ export type Type =
   | ComptimeIntType
   | ComptimeFloatType
   | TypeRef
+  | TypeApply
   | TypeType
   | BoundType
   | FuncType
@@ -667,6 +679,13 @@ export interface TypeRef extends BaseNode {
   name: string // e.g., "Point", "Color"
 }
 
+// A generic type applied to its arguments: Vec(u32), Map(K, Vec(V))
+export interface TypeApply extends BaseNode {
+  kind: 'TypeApply'
+  name: string
+  args: Type[]
+}
+
 // The keyword `type`, as the type of a comptime parameter
 export interface TypeType extends BaseNode {
   kind: 'TypeType'
@@ -715,6 +734,7 @@ export interface ASTVisitor {
   visitImportDecl?(node: ImportDecl): void | false
   visitExportDecl?(node: ExportDecl): void | false
   visitFuncDecl?(node: FuncDecl): void | false
+  visitTypeFuncDecl?(node: TypeFuncDecl): void | false
   visitTypeDecl?(node: TypeDecl): void | false
   visitDataDecl?(node: DataDecl): void | false
   visitDefDecl?(node: DefDecl): void | false
@@ -787,6 +807,9 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
       if (visitor.visitFuncDecl?.(decl) !== false) {
         walkFuncBody(decl.body, visitor)
       }
+      break
+    case 'TypeFuncDecl':
+      visitor.visitTypeFuncDecl?.(decl)
       break
     case 'TypeDecl':
       visitor.visitTypeDecl?.(decl)

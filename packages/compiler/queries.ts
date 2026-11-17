@@ -409,6 +409,11 @@ function symbolTypeString(sym: CheckSymbol, source?: string): string {
     const { start, end } = sym.decl.signature.span
     return source ? `generic func${source.slice(start, end)}` : 'generic func'
   }
+  // A generic type is a type once it is applied: until then, its declaration.
+  if (sym.kind === 'typefunc') {
+    const { decl } = sym
+    return source ? `generic type ${decl.ident}${source.slice(decl.params[0]?.span.start ?? decl.body.span.start, decl.body.span.end)}` : 'generic type'
+  }
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
   if (sym.kind === 'type') return base

@@ -56,9 +56,9 @@ export interface CodegenContext {
   // Deferred expressions per open block, innermost last; loop bodies are marked
   // so break and continue run exactly the blocks they leave.
   deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
-  // Calls the checker resolved to something else: the written call → the
-  // call to compile in its place (see TypeCheckResult.calls)
-  calls: Map<AST.CallExpr, AST.CallExpr>
+  // Calls the checker resolved to something else: the written call → what
+  // to compile in its place (see TypeCheckResult.calls)
+  calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
 }
@@ -995,9 +995,10 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // A call of a generic compiles as the plain call of its instance that the
   // checker recorded: nothing of the comptime arguments is left. This comes
-  // before the builtins, so a generic named max is reachable.
+  // before the builtins, so a generic named max is reachable. A type that is
+  // called, Vec(u32)(p, 0, cap), compiles as the struct of its arguments.
   const lowered = ctx.calls.get(expr)
-  if (lowered) return callToWat(lowered, ctx)
+  if (lowered) return lowered.kind === 'CallExpr' ? callToWat(lowered, ctx) : tupleToWat(lowered, ctx)
 
   // Get function name
   let funcName: string
@@ -2973,7 +2974,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   for (const decl of module.decls) {
     if (decl.kind === 'DataDecl') {
       const sym = checkResult.symbols.get(decl.ident)
-      if (!sym || sym.kind === 'generic') continue
+      if (!sym || sym.kind === 'generic' || sym.kind === 'typefunc') continue
       const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
       const ref = literalRefs.get(expr.span.start)
       if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
@@ -3086,10 +3087,11 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): A
   return funcs
 }
 
-// A generic is never exported to the host: there is no one function to export.
-// Its `export` only makes it importable by other source modules.
+// A generic is never exported to the host: there is no one function to
+// export, and a generic type is not there at run time at all. Its `export`
+// only makes it importable by other source modules.
 function isGenericExport(decl: AST.ExportDecl): boolean {
-  return decl.item.kind === 'FuncDecl' && isGenericDecl(decl.item)
+  return decl.item.kind === 'TypeFuncDecl' || (decl.item.kind === 'FuncDecl' && isGenericDecl(decl.item))
 }
 
 function tidyRawWat(wat: string): string {
@@ -3157,6 +3159,8 @@ function emitTestDecl(
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
+    } else if (item.kind === 'TypeFuncDecl') {
+      // The checker has refused it: a generic type is declared at module level
     } else {
       stmts.push(item)
     }
@@ -3315,7 +3319,7 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
   if (typeToWasm(type).length !== 1) return null
   const wt = typeToWasmSingle(type)
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
-  if (value.kind === 'data_ptr' || value.kind === 'type') return null
+  if (value.kind === 'data_ptr' || value.kind === 'type' || value.kind === 'func') return null
   if (wt === 'f32' || wt === 'f64') {
     const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
     const text = Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`

@@ -1,0 +1,70 @@
+// A stable sort with a comparator. The comparator is a comptime function
+// parameter: each (T, comparator) pair is its own copy of sort, and the copy
+// calls the comparator directly. No function table, no call_indirect.
+
+data space = mut [0:u8; 256]
+data costs = [5:i32, 1, 5, 3, 1, 9]
+
+// Sorts xs in place. `before(a, b)` says a must come before b; elements neither
+// of which must come before the other keep their order (insertion sort).
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+
+func ascending(a: i32, b: i32) -> bool => a < b
+func by_cost_desc(a: i32, b: i32) -> bool => costs.i32[a] > costs.i32[b]
+func longer(a: f64, b: f64) -> bool => a > b
+func inc(x: u32) -> u32 => x + 1
+
+export func sort_ids(ids: []mut i32) { sort(ids, by_cost_desc) }
+export func sort_up(xs: []mut i32) { sort(i32, xs, ascending) }
+
+test "ints sort ascending" {
+  let a = space as [*]mut i32
+  a[0] = 3
+  a[1] = -1
+  a[2] = 2
+  a[3] = -1
+  sort(a[0..4], ascending)
+  assert a[0] == -1
+  assert a[1] == -1
+  assert a[2] == 2
+  assert a[3] == 3
+}
+
+test "ids sort by cost, highest first, equal costs keeping their order" {
+  let ids = space as [*]mut i32
+  for i in 6 {
+    ids[i] = i as i32
+  }
+  sort_ids(ids[0..6])
+  assert ids[0] == 5
+  assert ids[1] == 0
+  assert ids[2] == 2
+  assert ids[3] == 3
+  assert ids[4] == 1
+  assert ids[5] == 4
+}
+
+test "another element type, and a comptime function that decides T" {
+  let f = space as [*]mut f64
+  f[0] = 1.5
+  f[1] = 4.0
+  f[2] = 2.5
+  sort(f[0..3], longer)
+  assert f[0] == 4.0
+  assert f[2] == 1.5
+  assert twice(inc, 5) == 7
+  assert twice(u32, inc, 0) == 2
+}

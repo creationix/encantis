@@ -89,6 +89,7 @@ export function astToResolved(ast: AST.Type): ResolvedType {
 
     case 'TypeType':
     case 'BoundType':
+    case 'TypeApply':
       throw new Error(`${ast.kind} cannot be resolved without context`)
   }
 }

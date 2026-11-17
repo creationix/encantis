@@ -65,7 +65,12 @@ Encantis {
   // Functions
   // ============================================================================
 
-  FuncDecl = inline? func ident? FuncSignature Body
+  // A generic type is a function from types to a type. It comes first because
+  // `func Vec(...)` would otherwise read `Vec` as the input type of an
+  // anonymous function; `func Point -> Point => p` still does, since this
+  // alternative fails at its `->`.
+  FuncDecl = func typeIdent ParamList "->" type "=>" Type  -- typeFunc
+           | inline? func ident? FuncSignature Body        -- func
 
   // Function signature - return type is optional (defaults to void)
   // Uses BaseType for input to avoid ambiguity with function types
@@ -162,7 +167,13 @@ Encantis {
            | ComptimeType                      -- comptimeScalar
            | rangedUnsigned                    -- rangedPrimitive
            | PrimitiveType                     -- primitive
+           | typeApplyHead NonemptyListOf<Type, ","> ")"  -- apply
            | typeIdent                         -- named
+
+  // A generic type applied to its arguments: Vec(u32). Lexical, so there is no
+  // space before the parenthesis: a type can end a statement, and the next
+  // line can start with one.
+  typeApplyHead = typeIdent "("
 
         // Lengths and Framing: single or x-separated for multi-dimensional
         // [_]T = inferred, [5]T = 5 elements, [12x16]T = 12×16 packed

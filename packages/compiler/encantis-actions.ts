@@ -318,9 +318,11 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   ExportDecl_unnamed(_export, item): AST.ExportDecl {
-    const decl = item.toAST() as AST.FuncDecl | AST.GlobalDecl | AST.MemoryDecl
+    const decl = item.toAST() as AST.ExportDecl['item']
     let exportName: string
-    if (decl.kind === 'FuncDecl') {
+    if (decl.kind === 'TypeFuncDecl') {
+      exportName = decl.ident
+    } else if (decl.kind === 'FuncDecl') {
       if (!decl.ident) {
         throw new Error('Cannot export anonymous function without explicit name')
       }
@@ -345,7 +347,17 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return item.toAST()
   },
 
-  FuncDecl(inlineOpt, _func, identOpt, sig, body): AST.FuncDecl {
+  FuncDecl_typeFunc(_func, name, params, _arrow, _type, _fatArrow, body): AST.TypeFuncDecl {
+    return {
+      kind: 'TypeFuncDecl',
+      ident: name.sourceString,
+      params: (params.toAST() as AST.CompositeType).fields,
+      body: body.toAST(),
+      span: span(this),
+    } as AST.TypeFuncDecl
+  },
+
+  FuncDecl_func(inlineOpt, _func, identOpt, sig, body): AST.FuncDecl {
     return {
       kind: 'FuncDecl',
       inline: inlineOpt.sourceString !== '',
@@ -879,6 +891,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   BaseType_named(typeIdent) {
     return typeIdent.toAST()
+  },
+
+  BaseType_apply(head, args, _rp) {
+    return {
+      kind: 'TypeApply',
+      name: head.toAST(),
+      args: args.asIteration().children.map((a: ohm.Node) => a.toAST()),
+      span: span(this),
+    } as AST.TypeApply
+  },
+
+  typeApplyHead(name, _lp) {
+    return name.sourceString
   },
 
   ComptimeType_int(_int, _lp, value, _rp) {

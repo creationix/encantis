@@ -546,16 +546,6 @@ export func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
 Each of these is one mistake and one error.
 
-A comptime function parameter.
-
-```ents
-func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
-```
-
-```errors
-comptime parameter 'before' must be a type parameter: comptime function parameters are not supported yet
-```
-
 A comptime value parameter.
 
 ```ents
@@ -563,7 +553,7 @@ func f(comptime n: u32) -> u32 => n
 ```
 
 ```errors
-comptime value parameters are not supported yet: 'n' must be 'type'
+comptime value parameters are not supported yet: 'n' must be 'type' or a function type
 ```
 
 An array size that names a comptime value parameter is not parsed at all.
@@ -752,17 +742,17 @@ func f() -> u32 => count([3:u32, 5, 5], 5)
 cannot infer T for 'count' from untyped literals: write count(u32, ...) or give a literal its type
 ```
 
-A type parameter that only a function type mentions. Matching does not look into a function type, and the literal is not taken as a hint: `inc` takes a `u32`.
+A function type is laid over the signature of the function given for it, part by part. Whether the function fits is the ordinary argument check, afterwards: here `T` is found in the result, and `add` is then not a `(u32) -> u32`.
 
 ```ents
-func inc(x: u32) -> u32 => x + 1
+func add(a: u32, b: u32) -> u32 => a + b
 func apply(comptime T: type, f: (T) -> T, x: T) -> T => x
 
-func f() -> u32 => apply(inc, 3)
+func f() -> u32 => apply(add, 3)
 ```
 
 ```errors
-cannot infer T for 'apply': write the type argument, as in apply(u32, ...)
+argument 1: cannot assign func(a: u32, b: u32) -> u32 to func(u32) -> u32
 ```
 
 A value where a type is needed.
@@ -984,16 +974,16 @@ export func f() -> u32 {
 unknown identifier 'hidden', in leak(T = u32)
 ```
 
-Constructing with a type parameter.
+Constructing with a type parameter that is not a struct or tuple.
 
 ```ents
-func make(comptime T: type, x: i32) -> T => T(x, x)
+func make(comptime T: type, x: i32) -> T => T(x)
 
-export func f() -> (i32, i32) => make((i32, i32), 1)
+export func f() -> u32 => make(u32, 1)
 ```
 
 ```errors
-T(...) on a type parameter is not supported yet, in make(T = (i32, i32))
+u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T, in make(T = u32)
 ```
 
 A generic that instantiates itself with a larger type each time. It is stopped once, with one error, by whichever comes first: the nesting, the number of instances one call has led to, or the size of the type.
