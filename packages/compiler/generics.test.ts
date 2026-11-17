@@ -651,19 +651,31 @@ test "group" {
     expect(errorsOf(shadowed)).toEqual([])
   })
 
-  // The checker only: a call in a global's initializer, generic or not, is
-  // not a valid wasm initializer on 0.2.1, so this is no accepted program.
-  test('a call in a global initializer is instantiated when the global is collected', () => {
-    const source = `${MAX}global limit: u32 = max(u32, 3, 4)
-export func f() -> u32 => limit`
-    expect(instancesOf(source)).toEqual(['max<u32>'])
+  test('a call in a global initializer is no constant, a generic\'s no more than another\'s', () => {
+    const notConstant = ['global initializer must be a compile-time constant']
+    expect(errorsOf(`${MAX}global limit: u32 = max(u32, 3, 4)
+export func f() -> u32 => limit`)).toEqual(notConstant)
+    expect(errorsOf(`func max_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+global limit: u32 = max_u32(3, 4)
+export func f() -> u32 => limit`)).toEqual(notConstant)
   })
 
-  test('a type argument has to be declared before a call that runs during collection', () => {
-    const source = `func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
-global g: i32 = pick(Late, true, (1, 2), (3, 4)).q
-type Late = (q: i32, r: i32)`
-    expect(errorsOf(source)).toContain("type argument T of 'pick' uses type 'Late' before it is declared")
+  // The initializer of a global and the value of a def are inferred while
+  // declarations are still being collected, before they are found not to be
+  // constants. A type argument declared further down is not resolved yet
+  // there; instantiated all the same, the instance would be made for the
+  // name alone and its errors would be about that.
+  test('a type argument has to be declared before a call that is inferred during collection', () => {
+    const pick = 'func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\n'
+    const late = "type argument T of 'pick' uses type 'Late' before it is declared"
+    expect(errorsOf(`${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q
+type Late = (q: i32, r: i32)`)).toEqual([late, 'global initializer must be a compile-time constant'])
+    expect(errorsOf(`${pick}def d = pick(Late, true, (1, 2), (3, 4)).q
+type Late = (q: i32, r: i32)
+export func f() -> i32 => d`)).toEqual([late, 'def value must be a compile-time constant'])
+    // Declared first, the type is no part of what is wrong.
+    expect(errorsOf(`type Late = (q: i32, r: i32)
+${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q`)).toEqual(['global initializer must be a compile-time constant'])
   })
 })
 

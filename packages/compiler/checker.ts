@@ -4382,8 +4382,9 @@ class CheckContext {
     }
 
     // A type declared further down is not known yet while declarations are
-    // still being collected (a call in a global's initializer): its instance
-    // would be keyed by the name, not by the type.
+    // still being collected. A call in a global's initializer or a def's
+    // value is inferred there, before it is rejected for not being a
+    // constant: its instance would be keyed by the name, not by the type.
     for (const p of typeParams) {
       const pending = unresolvedName(bound.get(p) as ResolvedType)
       if (pending) {
