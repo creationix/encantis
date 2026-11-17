@@ -3109,11 +3109,23 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   }
 }
 
+// A wasm memory has at most 65536 pages of 64 KiB: 4 GiB. Laying out zeros
+// costs nothing, so data can be declared that no memory can hold, and its
+// addresses would not be i32s.
+const MEMORY_LIMIT = 65536 * 65536
+
+function memoryHolds(size: number): void {
+  if (size > MEMORY_LIMIT) {
+    throw new Error(`the data takes ${size} bytes of memory, more than the ${MEMORY_LIMIT} (4 GiB) a wasm memory can hold`)
+  }
+}
+
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
   const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls, constants: checkResult.constants })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
   const parts: string[] = ['(module']
@@ -3594,6 +3606,7 @@ export function programToWat(
     if (result) labelDataEntries(loaded.module, result, dataBuilder, refsOf(path))
   }
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   // Build per-module name mappings
   const perModuleNameMap = new Map<string, Map<string, string>>()

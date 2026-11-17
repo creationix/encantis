@@ -2935,3 +2935,15 @@ describe('values of literals laid out in memory', () => {
     expect([f.a(), f.b(), f.c(), f.d()]).toEqual([22, 2, 2, 4])
   })
 })
+
+describe('data larger than memory', () => {
+  test('is an error, not addresses past what an i32 holds', () => {
+    // Zeros cost nothing to lay out, so nothing stopped data that no wasm
+    // memory holds: c's address was written as (i32.const 5000000008).
+    expect(() => modWat('data a = mut [0:u8; 3000000000]\ndata b = mut [0:u8; 2000000000]\ndata c = [7:u8, 8]')).toThrow(
+      'the data takes 5000000010 bytes of memory, more than the 4294967296 (4 GiB) a wasm memory can hold',
+    )
+    // 4 GiB to the byte is what a memory holds.
+    expect(modWat('data a = mut [0:u8; 4294967287]\ndata c = [7:u8]\nexport func f() -> u8 => c[0]')).toContain('(memory 65536)')
+  })
+})
