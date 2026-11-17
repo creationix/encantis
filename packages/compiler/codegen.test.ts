@@ -2754,6 +2754,27 @@ describe('a literal given for a mutable pointer or slice', () => {
     // c is untouched, t's rows are two, cstr is "h", a and b are two buffers
     expect(go()).toBe(20081000 + 104 + 30 + 400)
   })
+
+  test('so is each element of a slice of mutable slices, and each row of a mutable pointer to framed arrays', async () => {
+    const { run: go } = await run(`
+      data c = "ab"
+      data cc: *[2]u8 = [1, 2]
+      data p: *mut [2][!]u8 = ["ab", "ab"]
+      data q: *[2][]mut u8 = ["ab", "ab"]
+      data r: [][]mut u8 = [[1, 2], [1, 2]]
+      export func run(v: u8) -> u32 {
+        if let a = p[0] { a[0] = v }
+        q[0][0] = v
+        if let b = r[0] { b[0] = v }
+        let s: [][]mut u8 = [[1, 2], [1, 2]]
+        if let d = s[0] { d[0] = v }
+        let rows = (if let e = r[1] { e[0] ?? 0 } else { 0 }) * 10 + (if let f = s[1] { f[0] ?? 0 } else { 0 })
+        return (c[0] as u32) * 100000 + (cc[0] as u32) * 10000 + ((q[1][0] ?? 0) as u32) * 100 + (rows as u32)
+      }
+    `)
+    // c, cc, q's second row, r's and s's second rows are as written
+    expect(go(9)).toBe(9700000 + 10000 + 9700 + 11)
+  })
 })
 
 describe('values of literals laid out in memory', () => {

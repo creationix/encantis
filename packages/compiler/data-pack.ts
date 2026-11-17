@@ -962,12 +962,14 @@ function serializeSeparate(
   // The elements given as (ptr, len): what they hold is what was written.
   const pairs = new Set<DataRef>()
 
+  // The rows of a mutable table, or of a mutable pointer to framed arrays, are
+  // written through it, and the elements of a slice of mutable slices through
+  // themselves: each is its own, shared with no other data.
+  const mutableChildren = elem.kind === 'slice' ? elem.mutable : skipDedup
   for (const element of elements) {
     const child = ungroup(element)
     if (isSerializableExpr(child)) {
-      // The rows of a mutable table are written through it: each is its own,
-      // shared with no other data.
-      const ref = serializeLiteral(child, innerType, builder, undefined, rows && skipDedup)
+      const ref = serializeLiteral(child, innerType, builder, undefined, mutableChildren)
       childRefs.push(ref)
       if (refsMap && child.span.start !== 0) {
         refsMap.set(child.span.start, ref)

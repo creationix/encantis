@@ -173,7 +173,7 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
-A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T`.
+A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T` (or for a `*mut [N][!]T`) and the elements of a literal given for a slice of mutable slices (`[][]mut u8`).
 
 #### `def` — Compile-Time Constants
 
