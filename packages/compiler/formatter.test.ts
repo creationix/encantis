@@ -63,8 +63,17 @@ describe('formatter', () => {
     expect(shape(formatEncantis(GENERICS))).toEqual(shape(GENERICS))
   })
 
-  test('comptime is spaced as a keyword, and a call keeps its name next to the parenthesis', () => {
+  test('a comptime parameter and a type argument are spaced like any other', () => {
     const formatted = formatEncantis('func max( comptime   T:type ,a :T)->T=>a\nfunc f(a:i32)->i32=>max (i32 , -a)\n')
     expect(formatted).toBe('func max(comptime T:type, a:T) -> T => a\nfunc f(a:i32) -> i32 => max(i32, -a)\n')
+  })
+
+  // comptime is a word of the language, not a name. No valid program has a
+  // parenthesis or a bracket right after it, but a line being typed may, and
+  // there it is not drawn up to it the way the name of a called function is.
+  test('comptime is spaced as a keyword', () => {
+    expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
+    expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')
+    expect(formatEncantis('func f(computed(T), computed[n]) {}\n')).toBe('func f(computed(T), computed[n]) {}\n')
   })
 })

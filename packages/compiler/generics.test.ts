@@ -49,6 +49,15 @@ describe('calling a generic function', () => {
     expect(instancesOf(`${MAX}export func f(a: f64, b: f64) -> f64 => max(a, b)`)).toEqual(['max<f64>'])
   })
 
+  test('a type in parentheses is the tuple of one element it is after a colon', () => {
+    const id = 'func id(comptime T: type, a: T) -> T => a\n'
+    expect(instancesOf(`${id}export func f(a: (u32)) -> (u32) => id((u32), a)`)).toEqual(['id<<u32>>'])
+    expect(errorsOf(`${id}func f(a: u32) -> u32 => id((u32), a)`)).toEqual([
+      'argument 2: cannot assign u32 to (u32)',
+      'cannot assign (u32) to u32',
+    ])
+  })
+
   test('a type argument is written as after a colon', () => {
     const source = `type Pt = (q: i32, r: i32)
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
@@ -294,6 +303,14 @@ func keep(comptime T: type, f: (T) -> T) -> u32 => sizeof(T)
     // The same when a typed argument has the wrong shape for its parameter
     expect(errorsOf(`${COUNT}func d(n: u32) -> u32 => count(n, 5)`)).toEqual([
       "cannot infer T for 'count': write the type argument, as in count(u32, ...)",
+    ])
+  })
+
+  test('a tuple parameter is matched by a tuple of as many elements only', () => {
+    const both = 'func both(comptime A: type, comptime B: type, p: (A, B)) -> A => p.0\n'
+    expect(instancesOf(`${both}export func f(t: (i32, f64)) -> i32 => both(t)`)).toEqual(['both<i32|f64>'])
+    expect(errorsOf(`${both}func f(t: (i32, f64, u8)) -> i32 => both(t)`)).toEqual([
+      "cannot infer A for 'both': write the type arguments, as in both(u32, u32, ...)",
     ])
   })
 
@@ -682,6 +699,26 @@ export func g(p: Pt) -> bool => not(p)`
     const source = `func make(comptime T: type, x: i32) -> T => T(x, x)
 export func f() -> (i32, i32) => make((i32, i32), 1)`
     expect(errorsOf(source)).toEqual(['T(...) on a type parameter is not supported yet, in make(T = (i32, i32))'])
+    // Its arguments are still checked: their own mistakes are not hidden.
+    expect(errorsOf(source.replace('T(x, x)', 'T(x, nope)'))).toEqual([
+      'T(...) on a type parameter is not supported yet, in make(T = (i32, i32))',
+      "unknown identifier 'nope', in make(T = (i32, i32))",
+    ])
+  })
+
+  test('a warning in an instance is placed in the generic and names the instance', () => {
+    const source = `data buf = mut [0:u8; 16]
+func clear(comptime T: type, n: u32, x: T) -> T {
+  memset(buf, 0, n)
+  return x
+}
+export func f(n: u32) -> u32 => clear(n, n) + (clear(n, 1:u8) as u32)`
+    const warning = 'memset length is not a compile-time constant — cannot verify bounds (buffer is 16 bytes)'
+    const offset = source.indexOf('n)\n  return')
+    expect(check(source).warnings).toEqual([
+      { offset, message: `${warning}, in clear(T = u32)` },
+      { offset, message: `${warning}, in clear(T = u8)` },
+    ])
   })
 })
 
@@ -918,6 +955,35 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
 
   test('an exported generic is not reported as unused', () => {
     expect(check(`export ${MAX}`).warnings).toEqual([])
+  })
+
+  // The import may be written as if the function were ordinary; what the
+  // other module exports under that name is what counts.
+  test('a generic of another module cannot be imported under a plain signature either', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
+    try {
+      await writeFile(join(dir, 'util.ents'), `export ${MAX}`)
+      const entry = join(dir, 'main.ents')
+      await writeFile(entry, 'import "./util" "max" func max(a: u32, b: u32) -> u32\nexport func f(a: u32) -> u32 => max(a, 1)\n')
+      const load = await loadModule(entry)
+      const program = typecheckProgram(load.modules, entry, { includeTests: false })
+      expect(program.errors.map(e => e.message)).toEqual(['generic functions cannot be imported yet'])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+})
+
+describe('the editor', () => {
+  // The TextMate grammar is a file nothing else reads: a word missing from it
+  // shows as a plain name in the editor and in every highlighted code block.
+  test('comptime is highlighted as a keyword', async () => {
+    const grammar = await Bun.file(new URL('../extension/encantis.tmlanguage.json', import.meta.url)).json()
+    const patterns: { name: string; match: string }[] = grammar.repository.keywords.patterns
+    const scopes = (line: string) => patterns.filter(p => new RegExp(p.match).test(line)).map(p => p.name)
+    expect(scopes('func max(comptime T: type)')).toContain('storage.type.encantis')
+    expect(scopes('comptime')).toEqual(['storage.type.encantis'])
+    expect(scopes('comptimes')).toEqual([])
   })
 })
 
@@ -1275,6 +1341,49 @@ export func b() -> *mut u64 => cell_u64(2)
     await expectSameWasm(generic, byHand)
     const exports = await run(generic)
     expect(exports.a()).not.toBe(exports.b())
+  })
+
+  test('the literals of instances are laid out in the order of the instances, not of the calls', async () => {
+    // Asked for as u8, f64, i16; emitted, like the functions, as f64, i16, u8.
+    const generic = `func scratch(comptime T: type, x: T) -> *mut [4]u8 => mut "abcd"
+export func s1() -> *mut [4]u8 => scratch(1:u8)
+export func s2() -> *mut [4]u8 => scratch(1.5:f64)
+export func s3() -> *mut [4]u8 => scratch(1:i16)
+`
+    const byHand = `func scratch_f64(x: f64) -> *mut [4]u8 => mut "abcd"
+func scratch_i16(x: i16) -> *mut [4]u8 => mut "abcd"
+func scratch_u8(x: u8) -> *mut [4]u8 => mut "abcd"
+export func s1() -> *mut [4]u8 => scratch_u8(1:u8)
+export func s2() -> *mut [4]u8 => scratch_f64(1.5:f64)
+export func s3() -> *mut [4]u8 => scratch_i16(1:i16)
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect([exports.s2(), exports.s3(), exports.s1()]).toEqual([8, 12, 16])
+  })
+
+  test('a pointer or slice type that is only measured gives the module no memory', async () => {
+    const generic = `func size(comptime T: type) -> u32 => sizeof(T)
+export func f() -> u32 => size(*u8) + size([]u8) + sizeof(*u32)
+`
+    const byHand = `func size_slice() -> u32 => sizeof([]u8)
+func size_pointer() -> u32 => sizeof(*u8)
+export func f() -> u32 => size_pointer() + size_slice() + sizeof(*u32)
+`
+    expect(watOfSource(generic)).not.toContain('(memory')
+    await expectSameWasm(generic, byHand)
+  })
+
+  test('a literal in the argument that decides T keeps its place among the literals of the call', async () => {
+    // The look at &7:u32 comes before "x" is checked. What it registered must
+    // go, or 7 would be laid out before "x" and every address would differ.
+    const generic = `func pair(comptime T: type, s: []u8, p: *mut T) -> u32 => s.len + (p as u32)
+export func f() -> u32 => pair("x", &7:u32) + pair("yz", &9:u32)
+`
+    const byHand = `func pair_u32(s: []u8, p: *mut u32) -> u32 => s.len + (p as u32)
+export func f() -> u32 => pair_u32("x", &7:u32) + pair_u32("yz", &9:u32)
+`
+    await expectSameWasm(generic, byHand)
   })
 
   test('the address of a literal passed for a read-only *T is shared, as for a hand-written function', async () => {

@@ -4155,9 +4155,9 @@ class CheckContext {
       // From an instance, a use is recorded at its place in the generic's
       // source: of a module-level name always (a helper that only generic
       // bodies call is used), of the instance's own names for the first
-      // instance only.
+      // instance only, which is the one whose definitions are held.
       if (this.lookup(name) !== this.moduleScope.symbols.get(name)) {
-        local = this.currentInstance?.first ? this.instanceDefs.get(name) : undefined
+        local = this.instanceDefs.get(name)
         if (local === undefined) return
       }
       refOffset %= INSTANCE_STRIDE
@@ -4211,8 +4211,6 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
       return PRIMITIVE_NAMES.has(expr.name)
         ? { kind: 'PrimitiveType', name: expr.name as AST.PrimitiveType['name'], span: expr.span }
         : null
-    case 'GroupExpr':
-      return typeOfArg(expr.expr)
     case 'TupleExpr': {
       if (expr.elements.length === 0) return null
       const fields: AST.Field[] = []
