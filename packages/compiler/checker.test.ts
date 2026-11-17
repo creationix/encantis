@@ -2764,6 +2764,16 @@ describe('functions that share a name', () => {
     ])
     expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
   })
+
+  test('a declaration that repeats another is that one error, exported or not', () => {
+    // It is no function of the module, so it exports nothing: a name for its
+    // export would not help.
+    expect(errs('export func f(x: u32) -> u32 => 1\nexport func f(x: u32) -> u32 => 2')).toEqual(["'f' is already declared with parameters (u32)"])
+    // The same where the two turn out to be one only once a later type is known.
+    expect(errs('export func f(x: u32) -> u32 => 1\nexport func f(x: Later) -> u32 => 2\ntype Later = u32')).toEqual([
+      "'f' is already declared with parameters (u32)",
+    ])
+  })
 })
 
 describe('calling a function value', () => {

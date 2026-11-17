@@ -3374,6 +3374,24 @@ export func run(s: []u8) -> u32 => bucket(5:u32) + bucket(s) * 10 + bucket(1.5:f
       await rm(dir, { recursive: true })
     }
   })
+
+  test('two exports of one name are an error of the module that has them, and of no module that imports one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-overloads-'))
+    try {
+      // The import was bound to the last export of the name, and the call
+      // that fits the first was reported in the importer as well.
+      await writeFile(join(dir, 'keys.ents'), 'export func hash(k: u32) -> u32 => k * 3\nexport func hash(k: []u8) -> u32 => k.len\n')
+      const entry = join(dir, 'main.ents')
+      await writeFile(entry, 'import "./keys" (\n  "hash" func hash(k: u32) -> u32\n)\nexport func f() -> u32 => hash(1:u32)\n')
+      const load = await loadModule(entry)
+      const check = typecheckProgram(load.modules, entry, { includeTests: false })
+      expect([...check.results.values()].flatMap(result => result.errors.map(e => e.message))).toEqual([
+        `export name 'hash' is used twice: give one an explicit name, as in export "hash_2" func hash(...)`,
+      ])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
 })
 
 describe('where an instance was required from', () => {

@@ -338,6 +338,9 @@ function getExportedSymbols(module: AST.Module, { symbols, funcNames }: TypeChec
   for (const decl of module.decls) {
     if (decl.kind !== 'ExportDecl') continue
     const item = decl.item
+    // Where an export name is used twice, which is an error of this module,
+    // the first keeps it: an importer is not told of a second mistake.
+    if (exports.has(decl.name)) continue
     if (item.kind === 'FuncDecl' && item.ident) {
       const sym = symbols.get(funcNames.get(item) ?? item.ident)
       if (sym) exports.set(decl.name, sym)
@@ -686,6 +689,8 @@ class CheckContext {
   // stands for, in the order they were declared.
   overloads = new Map<string, string[]>()
   funcNames = new Map<AST.FuncDecl | AST.ImportFunc, string>()
+  // The declarations refused for repeating a function of their name
+  repeated = new Set<AST.FuncDecl | AST.ImportFunc>()
   // Where a function imported from another source module comes from, by the
   // name it is known by here (see declareFunc)
   origins = new Map<string, string>()
@@ -917,6 +922,7 @@ class CheckContext {
       const same = members.flatMap((m) => this.funcType(m) ?? []).find((type) => paramsKey(type) === key)
       if (same) {
         this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(same)})`)
+        this.repeated.add(decl)
         return
       }
       known = keyedName(`${name}:`, key, '', (taken) => this.moduleScope.symbols.has(taken))
@@ -964,6 +970,7 @@ class CheckContext {
           return true
         }
         this.error(this.symbolDefOffsets.get(member) ?? 0, `'${name}' is already declared with parameters (${paramsText(same)})`)
+        for (const [decl, known] of this.funcNames) if (known === member) this.repeated.add(decl)
         return false
       })
       this.overloads.set(name, distinct)
@@ -982,6 +989,8 @@ class CheckContext {
       // A generic's export emits nothing, and its name is unique already.
       if (item.kind === 'TypeFuncDecl' || (item.kind === 'FuncDecl' && isGenericDecl(item))) continue
       if (item.kind === 'MemoryDecl' && decl !== memory) continue
+      // A declaration that repeats another is that error, and no export.
+      if (item.kind === 'FuncDecl' && this.repeated.has(item)) continue
       if (!used.has(decl.name)) {
         used.add(decl.name)
         continue
