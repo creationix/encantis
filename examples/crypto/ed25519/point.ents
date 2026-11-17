@@ -215,7 +215,9 @@ export func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32
       bit -= 1
     }
     break when byte-idx == 0
-    byte-idx -= 1
+    // byte-idx is above 0 here, but its range can't show that: the & keeps
+    // the result a u32#32, as scalar[byte-idx] needs.
+    byte-idx = (byte-idx - 1) & 31
   }
 }
 

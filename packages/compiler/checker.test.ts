@@ -1907,6 +1907,31 @@ describe('operand types', () => {
     expect(ranged('u256', 1, 256)).toEqual(['cannot assign u256 to u256#1'])
   })
 
+  test('a compound assignment keeps a range only where x = x op v would', () => {
+    // x op= v is x = x op v: the result goes back into x, so it has to fit
+    // x's range, or an index the range proved would pass the end.
+    const body = (init: string, update: string, params = 'x: u32') =>
+      errs(`data buf = mut [0:u8; 16]\nfunc f(${params}) {\n  let i = ${init}\n  ${update}\n  buf[i] = 1\n}`)
+    const over = (result: string, range: string, op: string) => [`cannot assign ${result} to ${range} (the result of '${op}')`]
+    expect(body('x & 15', 'i += 1')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(body('x & 3', 'i <<= 3')).toEqual(over('u32', 'u32#4', '<<='))
+    expect(body('x & 7', 'i *= 3')).toEqual(over('u32#22', 'u32#8', '*='))
+    expect(body('x >> 28', 'i += 1')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(body('x & 15', 'i -= 1')).toEqual(over('u32', 'u32#16', '-='))
+    expect(body('x & 15', 'i += k', 'x: u32, k: u32#1')).toEqual(over('u32', 'u32#16', '+='))
+    // As the plain assignment says.
+    expect(body('x & 15', 'i = i + 1')).toEqual(['cannot assign u32#17 to u32#16'])
+    // A result that stays in the range is fine.
+    expect(body('x & 15', 'i &= 7\ni >>= 1\ni %= 9\ni += 0')).toEqual([])
+    expect(body('x & 15', 'i *= 1\ni >>= 0')).toEqual([])
+    // Through a parameter, a loop variable and an element of a ranged type.
+    expect(errs('data buf = mut [0:u8; 16]\nfunc f(i: u32#16) {\n  i += 1\n  buf[i] = 1\n}')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(errs('data buf = mut [0:u8; 16]\nfunc f() {\n  for i in 16 {\n    i += 1\n    buf[i] = 1\n  }\n}')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(errs('data g = mut [0:u8#4; 4]\nfunc f(k: u32#4) {\n  g[k] += 1\n}')).toEqual(over('u8#5', 'u8#4', '+='))
+    // Without a range nothing changes.
+    expect(body('x', 'i += 1\ni <<= 3', 'x: u32').filter((e) => e.includes('the result'))).toEqual([])
+  })
+
   test('a constant with a shift in it has the value the shift gives in its type', () => {
     const index = (expr: string) => errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) -> u8 => t[${expr}]`)
     // 65535 >> 32 as a u32 is 65535, and 1 >> 32 is 1.

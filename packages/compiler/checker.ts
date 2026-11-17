@@ -2146,10 +2146,29 @@ class CheckContext {
       const valueType = this.inferExpr(stmt.value)
       const value = unwrap(valueType)
       if (value.kind === 'comptime_int') this.coerce(stmt.value, valueType, stripMax(targetType))
-      else if (!isInteger(value)) this.error(stmt.value.span.start, `'${stmt.op}' needs an integer count, not ${typeToString(valueType)}`)
+      else if (!isInteger(value)) {
+        this.error(stmt.value.span.start, `'${stmt.op}' needs an integer count, not ${typeToString(valueType)}`)
+        return
+      }
+      this.checkResultInRange(stmt, op, targetType)
       return
     }
+    const reported = this.errorsReported
     this.checkExpr(stmt.value, targetType)
+    if (this.errorsReported === reported) this.checkResultInRange(stmt, op, targetType)
+  }
+
+  // x op= v stores x op v back in x, so the result has to fit x's range, as
+  // in the plain x = x op v: with i: u32#16, i += 1 can make 16, which an
+  // index proven by the range would then pass. Only a constant v keeps a
+  // range (i &= 7, i >>= 1, i %= 4); any other value drops it.
+  private checkResultInRange(stmt: AST.AssignmentStmt, op: string, targetType: ResolvedType): void {
+    const target = unwrap(targetType)
+    if (target.kind !== 'primitive' || target.max === undefined) return
+    const constant = this.evalComptimeExpr(stmt.value)
+    const result = constant?.kind === 'int' ? this.operatorRange(op, target, stmt.value, true) : stripMax(target)
+    if (result.kind === 'primitive' && result.max !== undefined && result.max <= target.max) return
+    this.error(stmt.span.start, `cannot assign ${typeToString(result)} to ${typeToString(targetType)} (the result of '${stmt.op}')`)
   }
 
   // Check statements in order. After `return/break/continue when c`, or an
@@ -4059,30 +4078,8 @@ class CheckContext {
     //   x >> K → max value (max >> K), where max is the range or the type's width
     // The bound comes from the constant's own value. An if or match of
     // constants has a constant type but no one value: no range from that.
-    const computeRange = (base: ResolvedType, constant: AST.Expr, constantOnRight: boolean): ResolvedType => {
-      const value = this.evalComptimeExpr(constant)
-      if (base.kind !== 'primitive' || value?.kind !== 'int' || value.value < 0n) return stripMax(base)
-      const operand = value.value
-      const limit = (bound: bigint): ResolvedType => {
-        const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
-        const next = current !== null && current < bound ? current : bound
-        return next <= BigInt(Number.MAX_SAFE_INTEGER) ? primitive(base.name, Number(next)) : stripMax(base)
-      }
-      if (isUnsignedName(base.name)) {
-        if (expr.op === '&') return limit(operand + 1n)
-        if (expr.op === '%' && constantOnRight && operand > 0n) return limit(operand)
-        if (expr.op === '>>' && constantOnRight) {
-          // The count as the shift takes it: modulo the width it's done in.
-          const max = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
-          const width = shiftWidth(base)
-          if (max !== null && width) return limit(((max - 1n) >> (operand & BigInt(width - 1))) + 1n)
-        }
-      }
-      if (base.max === undefined) return stripMax(base)
-      if (expr.op === '+') return primitive(base.name, base.max + Number(operand))
-      if (expr.op === '*' && operand > 0n) return primitive(base.name, (base.max - 1) * Number(operand) + 1)
-      return stripMax(base)
-    }
+    const computeRange = (base: ResolvedType, constant: AST.Expr, constantOnRight: boolean): ResolvedType =>
+      this.operatorRange(expr.op, base, constant, constantOnRight)
 
     // Two constants: the operands take the result's type, so that 1.0 + 2 is
     // a float addition and 5000000000 + 1 a 64-bit one, whatever type the
@@ -4161,6 +4158,34 @@ class CheckContext {
     this.coerce(expr.left, leftType, type)
     this.coerce(expr.right, rightType, type)
     return comparison ? primitive('bool') : type
+  }
+
+  // The range of `base op constant` (or `constant op base`) for an unsigned
+  // base and a constant K >= 0, as described in inferBinary; the plain type
+  // when there is none.
+  private operatorRange(op: string, base: ResolvedType, constant: AST.Expr, constantOnRight: boolean): ResolvedType {
+    const value = this.evalComptimeExpr(constant)
+    if (base.kind !== 'primitive' || value?.kind !== 'int' || value.value < 0n) return stripMax(base)
+    const operand = value.value
+    const limit = (bound: bigint): ResolvedType => {
+      const current = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
+      const next = current !== null && current < bound ? current : bound
+      return next <= BigInt(Number.MAX_SAFE_INTEGER) ? primitive(base.name, Number(next)) : stripMax(base)
+    }
+    if (isUnsignedName(base.name)) {
+      if (op === '&') return limit(operand + 1n)
+      if (op === '%' && constantOnRight && operand > 0n) return limit(operand)
+      if (op === '>>' && constantOnRight) {
+        // The count as the shift takes it: modulo the width it's done in.
+        const max = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
+        const width = shiftWidth(base)
+        if (max !== null && width) return limit(((max - 1n) >> (operand & BigInt(width - 1))) + 1n)
+      }
+    }
+    if (base.max === undefined) return stripMax(base)
+    if (op === '+') return primitive(base.name, base.max + Number(operand))
+    if (op === '*' && operand > 0n) return primitive(base.name, (base.max - 1) * Number(operand) + 1)
+    return stripMax(base)
   }
 
   // The type of a constant operator expression: its value when that can be
