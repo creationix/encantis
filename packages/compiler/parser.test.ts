@@ -442,5 +442,18 @@ describe('parser', () => {
       expect(target('p.u32s = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32s' } } })
       expect(target('p.u32 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'type' } } })
     })
+
+    test('the editor colours a type pun where the parser reads one', async () => {
+      const grammar = await Bun.file(new URL('../extension/encantis.tmlanguage.json', import.meta.url)).json()
+      const patterns: { name: string; match: string }[] = grammar.repository.variables.patterns
+      const rule = patterns.find((p) => p.name === 'punctuation.accessor.typepun.encantis')
+      const pun = (source: string) => (rule ? new RegExp(rule.match).exec(source)?.[0] ?? null : 'no rule')
+      expect(pun('p.u32')).toBe('.u32')
+      expect(pun('p.u32-1')).toBe('.u32')
+      expect(pun('p.u32-count')).toBe('.u32')
+      expect(pun('s.boolish')).toBeNull()
+      expect(pun('v.u32s()')).toBeNull()
+      expect(pun('p.i8_le')).toBeNull()
+    })
   })
 })
