@@ -67,7 +67,7 @@ encantis fmt src/sha512.ents          # format in place
 encantis fmt --check src/sha512.ents  # check without modifying (for CI)
 ```
 
-The formatter normalizes indentation and collapses multiple blank lines. This keeps line numbers stable and predictable — important for your line-based queries.
+The formatter normalizes indentation and collapses multiple blank lines, and leaves the text of every literal as written (a string or a template that goes on over lines keeps its spaces and blank lines). This keeps line numbers stable and predictable — important for your line-based queries.
 
 ## Memory reservation pattern
 

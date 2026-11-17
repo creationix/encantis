@@ -3,21 +3,29 @@ export function formatEncantis(source: string): string {
   const bracketPositions: number[] = []
   const bracketChars: string[] = []
   const templateStack: number[] = []
+  // The line breaks inside a string or a template, each with where the text
+  // it is in starts: the lines they begin are part of the literal, and are
+  // left as they are written.
+  const breaksInLiteral = new Map<number, number>()
 
   let i = 0
 
   function skipString(q: string) {
+    const start = i
     i++
     while (i < source.length && source[i] !== q) {
       if (source[i] === '\\') i++
+      if (source[i] === '\n') breaksInLiteral.set(i, start)
       i++
     }
     if (i < source.length) i++
   }
 
   function scanTemplateContent(): boolean {
+    const start = i
     while (i < source.length) {
-      if (source[i] === '\\') { i += 2; continue }
+      if (source[i] === '\\') { if (source[i + 1] === '\n') breaksInLiteral.set(i + 1, start); i += 2; continue }
+      if (source[i] === '\n') breaksInLiteral.set(i, start)
       if (source[i] === '`') { i++; return false }
       if (source[i] === '$' && i + 1 < source.length && source[i + 1] === '{') {
         i++
@@ -357,7 +365,26 @@ export function formatEncantis(source: string): string {
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const raw = lines[lineIdx]
-    const trimmed = raw.trim()
+    // A line a string or a template goes on into is its text, spaces and
+    // blank lines too.
+    if (breaksInLiteral.has(offset - 1)) {
+      out.push(raw)
+      prevBlank = false
+      offset += raw.length + 1
+      continue
+    }
+    // One whose end a literal goes on past is formatted up to the literal,
+    // which keeps the spaces it ends with; where that cannot be (the text
+    // after the end of a template's ${...}), the line is left as it is.
+    const literal = breaksInLiteral.get(offset + raw.length)
+    const trimmed = literal !== undefined ? raw.trimStart() : raw.trim()
+    if (literal !== undefined) {
+      const line = '  '.repeat(lineDepths[lineIdx]) + formatTokens(tokenizeLine(trimmed))
+      out.push(line.endsWith(source.slice(literal, offset + raw.length)) ? line : raw)
+      prevBlank = false
+      offset += raw.length + 1
+      continue
+    }
     if (trimmed === '') {
       if (!prevBlank && out.length > 0) out.push('')
       prevBlank = true

@@ -181,6 +181,32 @@ describe('formatter', () => {
     expect(shape(formatted)).toEqual(shape(program))
   })
 
+  // A string or a template that goes on over lines was formatted line by
+  // line, but the spaces a line of it ends with, the indentation of the next
+  // and its blank lines are its text: `"ab  \n    cd"` came out as
+  // `"ab\n  cd "`, and a template's `${n}` on a line of its own as `$ { n }`.
+  test('a string or a template that goes on over lines keeps its text', () => {
+    const literal = [
+      '"ab   ', '      ', '', '', '   cd { [ ( // not a comment', '  ef"',
+    ]
+    const template = ['`x${n}', '    y ${n}   ', 'z`']
+    const hex = ['x"01', '        02 03"']
+    const program = (indent: (line: string) => string) => [
+      'export func f(n:u32) -> u32 {',
+      `${indent('let a =')} ${literal.join('\n')}`,
+      `${indent('let b =')} ${template.join('\n')}.len`,
+      `${indent('let c =')} ${hex.join('\n')}`,
+      `${indent('return a.len + b + c.len')}`,
+      '}',
+      '',
+    ].join('\n')
+    // Up to a literal, and after it, the lines are formatted as any other
+    const formatted = formatEncantis(program((line) => `      ${line.replaceAll(' ', '   ')}`))
+    expect(formatted).toBe(program((line) => `  ${line}`))
+    expect(shape(formatted)).toEqual(shape(program((line) => line)))
+    expect(formatEncantis(formatted)).toBe(formatted)
+  })
+
   test('comptime is spaced as a keyword', () => {
     expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
     expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')
