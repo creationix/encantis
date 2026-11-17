@@ -5018,6 +5018,12 @@ class CheckContext {
         }
         return packed ? elem : row ?? elem
       }
+      // A *T points to one T: index 0 is that T, as .* is, and any other
+      // index is past it, unchecked. A [*]T is the way to index past one.
+      const one = this.evalComptimeExpr(expr.index)
+      if (!(one?.kind === 'int' && one.value === 0n)) {
+        this.error(expr.index.span.start, `cannot index ${typeToString(objType)} past its one element: read it with .*, or index a [*]${typeToString(objType.pointee)}`)
+      }
       return objType.pointee
     }
 

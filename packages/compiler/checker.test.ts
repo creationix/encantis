@@ -1445,6 +1445,14 @@ describe('indexes not known to be in range', () => {
     expect(errs('if let p = mp[i] { }', 'mp: [*]?*i32, i: u32')).toEqual([])
   })
 
+  test('a *T is one T: an index past it is refused', () => {
+    const past = (type: string, element: string) => `cannot index ${type} past its one element: read it with .*, or index a [*]${element}`
+    expect(errs('let a = p[0]\nlet b = q[0]', 'p: *u8, q: *mut Pt')).toEqual([])
+    expect(errs('let a = p[1]\nlet b = p[i]', 'p: *u8, i: u32')).toEqual([past('*u8', 'u8'), past('*u8', 'u8')])
+    expect(errs('p[3] = 1', 'p: *mut u8')).toEqual([past('*mut u8', 'u8')])
+    expect(errs('let a = p[i]\np[i] = 1', 'p: [*]mut u8, i: u32')).toEqual([])
+  })
+
   test('the row index of a packed *[NxM]T is checked against N', () => {
     expect(errs('let a = packed[i][j]', 'i: u32#2, j: u32#3')).toEqual([])
     expect(errs('let a = packed[2][0]')).toEqual(['index 2 out of bounds for *[2x3]i32'])

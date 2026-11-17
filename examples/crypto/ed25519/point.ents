@@ -291,7 +291,7 @@ export func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6) {
 
 def mask51 = 0x7FFFFFFFFFFFF:u64
 
-func load-le64(ptr: *u8, offset: u32) -> u64 {
+func load-le64(ptr: [*]u8, offset: u32) -> u64 {
   let p = ptr + offset
   return p[0] as u64
     | (p[1] as u64 << 8)
@@ -304,11 +304,11 @@ func load-le64(ptr: *u8, offset: u32) -> u64 {
 }
 
 export func fe-frombytes(s: *[32]u8) -> Fe {
-  let h0 = load-le64(s as *u8, 0) & mask51
-  let h1 = (load-le64(s as *u8, 6) >> 3) & mask51
-  let h2 = (load-le64(s as *u8, 12) >> 6) & mask51
-  let h3 = (load-le64(s as *u8, 19) >> 1) & mask51
-  let h4 = (load-le64(s as *u8, 24) >> 12) & mask51
+  let h0 = load-le64(s as [*]u8, 0) & mask51
+  let h1 = (load-le64(s as [*]u8, 6) >> 3) & mask51
+  let h2 = (load-le64(s as [*]u8, 12) >> 6) & mask51
+  let h3 = (load-le64(s as [*]u8, 19) >> 1) & mask51
+  let h4 = (load-le64(s as [*]u8, 24) >> 12) & mask51
   return (h0, h1, h2, h3, h4)
 }
 

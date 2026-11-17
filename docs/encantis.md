@@ -1427,6 +1427,8 @@ arr[2]          // offset by 2 elements (8 bytes for i32)
 
 Note: `ptr + n` offsets by bytes, `ptr[n]` offsets by elements.
 
+A `*T` points to one `T`: `p[0]` is that `T`, as `p.*` is, and any other index is an error (`cannot index *u8 past its one element: read it with .*, or index a [*]u8`). A pointer to bytes read one after another is a `[*]u8`.
+
 For arrays and slices with known bounds, runtime indexing is bounds-checked. See [4.7 Bounds-Checked Indexing](#47-bounds-checked-indexing) for details on how `if let`, `??`, and optional types interact with indexing.
 
 #### Type-Punned Memory Access
