@@ -3053,6 +3053,44 @@ export func f(xs: []mut i32) { ${call} }`
     })
   }
 
+  // The hand-written fold calls add_f64 and assigns what it returns to an
+  // Acc: the generic one takes the function the same way. What could not be
+  // assigned there, results without the fields' names, is not taken here.
+  test('a function that lists a struct\'s fields as its results is one that returns the struct', async () => {
+    const fold = (step: string, result: string) => `func Acc(comptime T: type) -> type => (sum: T, n: u32)
+func fold(comptime T: type, xs: []T, comptime step: (Acc(T), T) -> ${step}, init: T) -> Acc(T) {
+  let acc = Acc(T)(init, 0)
+  for x in xs { acc = step(acc, x) }
+  return acc
+}
+func add_f64(a: (sum: f64, n: u32), x: f64) -> ${result} => (a.sum + x, a.n + 1)
+export func b(xs: []f64) -> u32 => fold(f64, xs, add_f64, 0.5).n`
+    const byHand = `type AccF64 = (sum: f64, n: u32)
+func fold_f64(xs: []f64, init: f64) -> AccF64 {
+  let acc = AccF64(init, 0)
+  for x in xs { acc = add_f64(acc, x) }
+  return acc
+}
+func add_f64(a: (sum: f64, n: u32), x: f64) -> (sum: f64, n: u32) => (a.sum + x, a.n + 1)
+export func b(xs: []f64) -> u32 => fold_f64(xs, 0.5).n`
+    await expectSameWasm(fold('Acc(T)', '(sum: f64, n: u32)'), byHand)
+    expect(instancesOf(fold('(sum: T, n: u32)', 'Acc(f64)'))).toEqual(['fold<f64|add_f64>'])
+    expect(errorsOf(fold('Acc(T)', '(f64, u32)'))).toEqual([
+      "'add_f64' is ((sum: f64, n: u32), f64) -> (f64, u32), but 'fold' needs step: (Acc(f64), f64) -> Acc(f64)",
+    ])
+    expect(errorsOf(fold('Acc(T)', '(total: f64, n: u32)'))).toEqual([
+      "'add_f64' is ((sum: f64, n: u32), f64) -> (total: f64, n: u32), but 'fold' needs step: (Acc(f64), f64) -> Acc(f64)",
+    ])
+    // The names of several results that are no struct's fields are not compared.
+    const div = `func both(comptime T: type, comptime f: (T, T) -> (T, T), a: T, b: T) -> T {
+  let (q, r) = f(a, b)
+  return q + r
+}
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
+export func g(a: u32, b: u32) -> u32 => both(divmod, a, b)`
+    expect(instancesOf(div)).toEqual(['both<u32|divmod>'])
+  })
+
   test('a function a test declares cannot be given: it is no function of the module', () => {
     const source = `${SORT}data space = mut [0:u8; 64]
 test "t" {

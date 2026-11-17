@@ -2319,7 +2319,7 @@ export func down(xs: []mut i32) { sort_descending(xs) }
 
 Comptime function parameters are always written, also in the inferred form: `sort(xs, ascending)` is the inferred form of `sort(i32, xs, ascending)`. The argument is the name of a function of the module (declared at module level or imported; not a generic, not an expression, not a function a `test` declares), or a comptime function parameter of the enclosing generic passed on. Two instances are the same when the functions are the same function.
 
-The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside:
+The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside. A function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
 
 ```ents
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))

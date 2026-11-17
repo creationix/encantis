@@ -1988,6 +1988,32 @@ func f(xs: []mut i32) { sort(xs, inc) }
 'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
 ```
 
+A function that lists a struct's fields as its results is one that returns the struct; results without the fields' names are not.
+
+```ents
+func Acc(comptime T: type) -> type => (sum: T, n: u32)
+func step(comptime T: type, comptime f: (Acc(T), T) -> Acc(T), a: Acc(T), x: T) -> Acc(T) => f(a, x)
+func add(a: Acc(f64), x: f64) -> (sum: f64, n: u32) => (a.sum + x, a.n + 1)
+
+export func one(x: f64) -> u32 => step(add, Acc(f64)(0.0, 0), x).n
+
+test "the listed results are the struct" {
+  assert one(2.5) == 1
+}
+```
+
+```ents
+func Acc(comptime T: type) -> type => (sum: T, n: u32)
+func step(comptime T: type, comptime f: (Acc(T), T) -> Acc(T), a: Acc(T), x: T) -> Acc(T) => f(a, x)
+func add(a: Acc(f64), x: f64) -> (f64, u32) => (a.sum + x, a.n + 1)
+
+func one(x: f64) -> u32 => step(add, Acc(f64)(0.0, 0), x).n
+```
+
+```errors
+'add' is (Acc(f64), f64) -> (f64, u32), but 'step' needs f: (Acc(f64), f64) -> Acc(f64)
+```
+
 A function that a test declares is no function of the module.
 
 ```ents

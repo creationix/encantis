@@ -4827,7 +4827,7 @@ class CheckContext {
       if (!given) continue
       const wanted = sym.owner.comptimeParamType(param, bound)
       if (!wanted) return fail()
-      if (signatureKey(wanted) === null || signatureKey(wanted) !== signatureKey(given.type)) {
+      if (!sameSignature(wanted, given.type)) {
         const written = arg.kind === 'IdentExpr' ? arg.name : given.name
         return fail(
           arg.span.start,
@@ -5532,17 +5532,29 @@ function typeText(type: AST.Type): string {
 }
 
 // A function's type as a comptime function parameter declares it: the types
-// of its parameters and results, without their names.
+// of its parameters and results, without their names. Several results keep
+// theirs, which are what makes them the fields of a struct.
 function signatureText(type: FuncRT): string {
-  const list = (fields: ResolvedField[]) => fields.map((f) => typeToString(f.type)).join(', ')
-  const results = type.returns.length === 1 ? typeToString(type.returns[0].type) : `(${list(type.returns)})`
-  return `(${list(type.params)}) -> ${results}`
+  const list = (fields: ResolvedField[], names: boolean) =>
+    fields.map((f) => (names && f.name ? `${f.name}: ` : '') + typeToString(f.type)).join(', ')
+  const results = type.returns.length === 1 ? typeToString(type.returns[0].type) : `(${list(type.returns, true)})`
+  return `(${list(type.params, false)}) -> ${results}`
 }
 
-// What two function types have to share to be the same type; null for one
-// that is not concrete.
-function signatureKey(type: FuncRT): string | null {
-  return hasOwnType(type) ? canonicalKey(type) : null
+// Whether a function of the type `given` is what a comptime function
+// parameter of the type `wanted` takes: the same type, the names of
+// parameters and results aside, or one that differs only in how a struct
+// result is written. `-> (sum: f64, n: u32)` lists as results the fields
+// that `-> Acc(f64)` returns as one value; a call of either gives the same
+// values, and what the first gives can be assigned where the second is expected.
+function sameSignature(wanted: FuncRT, given: FuncRT): boolean {
+  if (!hasOwnType(wanted) || !hasOwnType(given)) return false
+  if (canonicalKey(wanted) === canonicalKey(given)) return true
+  const asStruct = ({ params, returns }: FuncRT) => {
+    const only = returns.length === 1 ? unwrap(returns[0].type) : null
+    return canonicalKey(func(params, [field(null, only?.kind === 'tuple' ? only : tuple(returns))]))
+  }
+  return asStruct(wanted) === asStruct(given)
 }
 
 // Whether a type is the recovery type, or what points to it, holds it or
