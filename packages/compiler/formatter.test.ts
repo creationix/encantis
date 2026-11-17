@@ -174,6 +174,13 @@ describe('formatter', () => {
     expect(shape(once)).toEqual(shape(source))
   })
 
+  // A space after b would make the base64 string an identifier and a string.
+  test('a hex or base64 string keeps its prefix', () => {
+    const source = 'data k = b"SGVs bG8="\ndata h = x"41 42"\n'
+    expect(formatEncantis(source)).toBe(source)
+    expect(shape(formatEncantis(source))).toEqual(shape(source))
+  })
+
   test('comptime is spaced as a keyword', () => {
     expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
     expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')

@@ -44,7 +44,7 @@ export function formatEncantis(source: string): string {
       continue
     }
     if (ch === '"' || ch === "'") { skipString(ch); continue }
-    if (ch === 'x' && source[i + 1] === '"') { i++; skipString('"'); continue }
+    if ((ch === 'x' || ch === 'b') && source[i + 1] === '"') { i++; skipString('"'); continue }
     if (ch === '`') {
       i++
       if (scanTemplateContent()) templateStack.push(1)
@@ -194,7 +194,8 @@ export function formatEncantis(source: string): string {
         tokens.push({ kind: 'comment', text: line.slice(j) }); break
       }
       if (line[j] === '"' || line[j] === "'") { scanString(line[j]); continue }
-      if (line[j] === 'x' && line[j + 1] === '"') {
+      // x"41 42" and b"QUI=": the prefix is part of the string.
+      if ((line[j] === 'x' || line[j] === 'b') && line[j + 1] === '"') {
         const start = j; j += 2
         while (j < line.length && line[j] !== '"') j++
         if (j < line.length) j++
