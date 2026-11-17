@@ -572,7 +572,7 @@ Point: field 'x' is given twice
 Point: field 'y' is given twice
 ```
 
-A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value, an argument, a receiver, a returned value or a function's named results, a field of a larger struct, the value of a global or of `data`, or a value stored through a pointer. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
+A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value, an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, or a value stored through a pointer. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
 
 ```ents
 type Point = (x:f32, y:f32)

@@ -4491,10 +4491,14 @@ class CheckContext {
     } else if ((expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') && from.kind === 'comptime_array' && to.kind === 'array') {
       // So is an array literal held in registers. (One that goes to the data
       // section has had its elements checked against the element type.)
+      // A tuple literal among them meets a struct element as it meets any
+      // struct: field by field, by name where it has names.
       const elementType = this.peelArraySize(to)
+      const structs = unwrap(elementType).kind === 'tuple'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (type) this.coerce(element, type, elementType, prefix)
+        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on

@@ -2998,6 +2998,10 @@ describe('a tuple literal with names gives each field by name', () => {
       }
       export func address() -> i32 => at().x
       export func slice() -> i32 => (view().len as i32) * 10 + (view().ptr[2] as i32)
+      export func registers() -> i32 {
+        let a: [2]Pt = [(y: 1, x: 2), (3, 4)]
+        return a[0].x * 1000 + a[0].y * 100 + a[1].x * 10 + a[1].y
+      }
     `)
     expect(x.let_()).toBe(21)
     expect(x.arg()).toBe(2)
@@ -3013,6 +3017,7 @@ describe('a tuple literal with names gives each field by name', () => {
     expect(x.branch(0)).toBe(3)
     expect(x.address()).toBe(18)
     expect(x.slice()).toBe(33)
+    expect(x.registers()).toBe(2134)
   })
 
   test('computing its values in the order they are written', async () => {
