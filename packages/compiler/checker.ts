@@ -1277,14 +1277,15 @@ class CheckContext {
     if (dataLiteral) {
       // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
-      if (isMut && ptrType.kind === 'pointer') {
-        ptrType = pointer(ptrType.pointee, ptrType.boundary, true)
-      } else if (isMut && ptrType.kind === 'slice') {
-        ptrType = slice(ptrType.element, true)
+      const shape = unwrap(ptrType)
+      if (isMut && shape.kind === 'pointer') {
+        ptrType = pointer(shape.pointee, shape.boundary, true)
+      } else if (isMut && shape.kind === 'slice') {
+        ptrType = slice(shape.element, true)
       }
       // Use checkExpr to propagate element types and register the data literal
       // checkExpr's data literal path handles pendingLiterals, dataId, and element checking
-      if (ptrType.kind === 'pointer' || ptrType.kind === 'slice') {
+      if (unwrap(ptrType).kind === 'pointer' || unwrap(ptrType).kind === 'slice') {
         this.checkExpr(dataLiteral.expr, ptrType)
       } else {
         // Rare case: bare array type — register manually
@@ -1344,22 +1345,24 @@ class CheckContext {
     indexedType: ArrayRT
     ptrType: ResolvedType
   } | null {
-    // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
+    // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8. A name for
+    // a pointer, a slice or an array is the type it names (2.11).
     if (expr.kind === 'AnnotationExpr') {
       const innerExpr = ungrouped(expr.expr)
+      const annotated = unwrap(inferredType)
       if (this.isDataLiteralExpr(innerExpr)) {
-        if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
-          return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
+        if (annotated.kind === 'pointer' && unwrap(annotated.pointee).kind === 'array') {
+          return { expr: innerExpr, indexedType: unwrap(annotated.pointee) as ArrayRT, ptrType: inferredType }
         }
-        if (inferredType.kind === 'slice') {
+        if (annotated.kind === 'slice') {
           const litSize = this.getLiteralSize(innerExpr)
           if (typeof litSize === 'number') {
-            const arrType = array(inferredType.element, [litSize])
+            const arrType = array(annotated.element, [litSize])
             return { expr: innerExpr, indexedType: arrType, ptrType: pointer(arrType) }
           }
         }
-        if (inferredType.kind === 'array') {
-          return { expr: innerExpr, indexedType: inferredType, ptrType: pointer(inferredType) }
+        if (annotated.kind === 'array') {
+          return { expr: innerExpr, indexedType: annotated, ptrType: pointer(annotated) }
         }
       }
     }
@@ -1367,9 +1370,12 @@ class CheckContext {
     // Handle type annotation on LHS: def x:*[_]u32 = [0;12]
     // The expr is a bare literal and declaredType is the pointer type
     if (declaredType && this.isDataLiteralExpr(expr)) {
+      // The type a name stands for (2.11); the data is still of the name.
+      const declared = unwrap(declaredType)
+      const pointee = declared.kind === 'pointer' ? unwrap(declared.pointee) : null
       // Handle explicit pointer type *[_]u32
-      if (declaredType.kind === 'pointer' && declaredType.pointee.kind === 'array') {
-        let sizes = declaredType.pointee.sizes
+      if (pointee?.kind === 'array') {
+        let sizes = pointee.sizes
         // If sizes includes '_' (inferred), fill it in from literal
         if (sizes && sizes.includes('_')) {
           const literalSize = this.getLiteralSize(expr)
@@ -1378,7 +1384,7 @@ class CheckContext {
           }
         }
         const arrayType: ArrayRT = {
-          ...declaredType.pointee,
+          ...pointee,
           sizes,
         }
         return {
@@ -1388,15 +1394,15 @@ class CheckContext {
         }
       }
       // Handle array type [N]T - reserves memory, type stays as array
-      if (declaredType.kind === 'array') {
-        let sizes = declaredType.sizes
+      if (declared.kind === 'array') {
+        let sizes = declared.sizes
         if (sizes && sizes.includes('_')) {
           const literalSize = this.getLiteralSize(expr)
           if (typeof literalSize === 'number') {
             sizes = sizes.map(s => s === '_' ? literalSize : s)
           }
         }
-        const arrayType: ArrayRT = { ...declaredType, sizes }
+        const arrayType: ArrayRT = { ...declared, sizes }
         return {
           expr,
           indexedType: arrayType,
@@ -1404,12 +1410,12 @@ class CheckContext {
         }
       }
       // Handle slice type []T - array literal coerces to slice
-      if (declaredType.kind === 'slice') {
+      if (declared.kind === 'slice') {
         const literalSize = this.getLiteralSize(expr)
         const sizes: ArraySize[] = typeof literalSize === 'number' ? [literalSize] : ['_']
         const arrayType: ArrayRT = {
           kind: 'array',
-          element: declaredType.element,
+          element: declared.element,
           sizes,
         }
         return {
@@ -2769,6 +2775,8 @@ class CheckContext {
     // the value has to be is read off that. (It is still recorded, and said,
     // by the name.)
     const shape = unwrap(expected)
+    // And what a pointer points to, under its name as well: *A for A = [3]u16
+    const pointee = shape.kind === 'pointer' ? unwrap(shape.pointee) : null
 
     // Bidirectional: propagate expected type through & (ref) expressions
     if (expr.kind === 'UnaryExpr' && expr.op === '&' && shape.kind === 'pointer') {
@@ -2899,15 +2907,15 @@ class CheckContext {
     // Handle pointer-to-array with inferred size: *[_]T
     if (
       shape.kind === 'pointer' &&
-      shape.pointee.kind === 'array' &&
-      hasInferredMarker(shape.pointee.sizes) &&
+      pointee?.kind === 'array' &&
+      hasInferredMarker(pointee.sizes) &&
       (inferred.kind === 'array' && hasInferredMarker(inferred.sizes)) &&
       expr.kind === 'ArrayExpr'
     ) {
       // Fill in the size from the literal
       const resolvedPointee = array(
-        shape.pointee.element,
-        fillInferredSize(shape.pointee.sizes, expr.elements.length),
+        pointee.element,
+        fillInferredSize(pointee.sizes, expr.elements.length),
       )
       const resolvedExpected = pointer(resolvedPointee)
       // Check elements
@@ -2953,7 +2961,7 @@ class CheckContext {
     const isFramedArray = shape.kind === 'array' && shape.sizes?.some(s => s === '!' || s === '?')
     if (
       this.isDataLiteralExpr(expr) &&
-      (shape.kind === 'pointer' && shape.pointee.kind === 'array' ||
+      (pointee?.kind === 'array' ||
        shape.kind === 'slice' ||
        isFramedArray)
     ) {
@@ -2962,7 +2970,7 @@ class CheckContext {
         ? array(shape.element, [typeof litSize === 'number' ? litSize : 0])
         : shape.kind === 'array'
         ? shape
-        : (shape.pointee as ArrayRT)
+        : (pointee as ArrayRT)
       // Infer mut from target type — no need for explicit mut on the literal
       const targetMut = (shape.kind === 'pointer' && shape.mutable) ||
         (shape.kind === 'slice' && shape.mutable)
@@ -2977,7 +2985,7 @@ class CheckContext {
       // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
         const innerType = shape.kind === 'slice' ? shape.element
-          : shape.kind === 'pointer' && shape.pointee.kind === 'array' ? this.peelArraySize(shape.pointee)
+          : pointee?.kind === 'array' ? this.peelArraySize(pointee)
           : null
         if (innerType) {
           // A tuple that is a struct element is checked field by field, like

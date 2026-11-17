@@ -918,7 +918,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
 
 <!-- spec:begin compile -->
 
@@ -926,9 +926,11 @@ A `type` declaration gives a type a name, and the name is that type wherever it 
 type P = *mut u32
 type S = []u16
 type O = ?*u32
+type A = [3]u16
 
 data cells = mut [0:u32; 4]
 data shorts = [1:u16, 2, 3]
+data list: S = [4, 5, 6]
 
 func bump(p: P) -> u32 {
   p.* += 1
@@ -944,6 +946,9 @@ test "names are the types they name" {
   assert last(s) == 3
   assert read(p) == 1
   assert read(0 as O) == 0
+  assert last(list) == 6
+  let q: *A = [7, 8, 9]
+  assert last(q) == 9
 }
 ```
 

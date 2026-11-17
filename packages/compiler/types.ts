@@ -850,12 +850,15 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     }
   }
 
+  // What a pointer points to, under its name as well: *A for A = [3]u16
+  const sPointee = s.kind === 'pointer' ? unwrap(s.pointee) : null
+
   // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability).
   // The slice's length is N: a many-pointer [*]T has none to give, and a
   // *[!]T would have to be scanned for it.
-  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array' && isFixedSizes(s.pointee.sizes)) {
+  if (t.kind === 'slice' && s.kind === 'pointer' && sPointee?.kind === 'array' && isFixedSizes(sPointee.sizes)) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
-    const elemResult = typeAssignResult(t.element, s.pointee.element)
+    const elemResult = typeAssignResult(t.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
@@ -863,8 +866,8 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
 
   // Pointer-to-array can coerce to framed array: *[N]T -> [!]T, [?]T
   if (t.kind === 'array' && t.sizes?.some(s => s === '!' || s === '?') &&
-      s.kind === 'pointer' && s.pointee.kind === 'array') {
-    const elemResult = typeAssignResult(t.element, s.pointee.element)
+      sPointee?.kind === 'array') {
+    const elemResult = typeAssignResult(t.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
@@ -872,9 +875,9 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
 
   // Pointer-to-array can coerce to many-pointer: *[N]T -> [*]T (respects mutability)
   if (t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null &&
-      s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
+      s.kind === 'pointer' && sPointee?.kind === 'array' && sPointee.sizes !== null) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
-    const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
+    const elemResult = typeAssignResult(t.pointee.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }

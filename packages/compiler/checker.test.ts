@@ -3047,6 +3047,15 @@ func k(s: S) -> f64 {
 }`)).toEqual([])
   })
 
+  test('lays out a literal, in data or in place, and makes a pointer to it a slice', () => {
+    // A data declared with the name, or a literal given for it after a colon
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
+    // A pointer to a name for an array, whatever names the pointer
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\nfunc f() -> []u16 {\n  let q: *B = [1, 2, 3]\n  let r: PB = q\n  let m: [*]u16 = r\n  let s: []u16 = r\n  return q\n}`)).toEqual([])
+    // Not as writable as a slice that is: the same refusal as written out
+    expect(errs(`${names}type B = [3]u16\nfunc f(q: *B) -> []mut u16 => q`)).toEqual(['cannot assign *B to []mut u16'])
+  })
+
   test('and what cannot be done with the type cannot be done with the name', () => {
     expect(errs(`${names}func a(s: S) -> f64 => s.*`)).toEqual(['cannot use .* on S - use [0] to access the first element'])
     expect(errs(`${names}func a(x: A, i: u32) -> i8 => x[i]`)).toEqual(['dynamic index on value type [4]i8 — use a pointer or slice for dynamic access'])
