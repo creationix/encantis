@@ -2970,6 +2970,44 @@ describe('the wasm names of variables', () => {
     expect(x.both()).toBe(4.5)
   })
 
+  test('two parts of one variable named alike are two', async () => {
+    // A field x_y, and the field y of a field x: both parts are named t_x_y.
+    const source = `
+      type In = (y: i32)
+      type T = (x: In, x_y: i32)
+      type W = (x: In, x_y: f64)
+      type P = (x: i32, y: i32)
+      import "env" "h" func host(a: P, a_x: f64, w: W) -> i32
+      global g: T = T(In(1), 2)
+      data ts = [T(In(3), 4), T(In(5), 6)]
+      func mk(a: i32, b: i32) -> T => T(In(a), b)
+      export func local(a: i32, b: i32) -> i32 {
+        let t = mk(a, b)
+        return t.x.y * 10 + t.x_y
+      }
+      export func param(w: W) -> f64 => (w.x.y as f64) + w.x_y
+      export func glob() -> i32 => g.x.y * 10 + g.x_y
+      export func walk() -> i32 {
+        let s = 0
+        for t in ts { s += t.x.y * 10 + t.x_y }
+        return s
+      }
+      export func bound(i: u32) -> i32 => if let t = ts[i] { t.x.y * 10 + t.x_y } else { -1 }
+    `
+    const { default: wabt } = await import('wabt')
+    const wasm = (await wabt()).parseWat('test.wat', modWat(source), { multi_value: true, bulk_memory: true })
+    wasm.validate()
+    const { buffer } = wasm.toBinary({})
+    wasm.destroy()
+    const { instance } = await WebAssembly.instantiate(buffer, { env: { h: () => 0 } })
+    const x = instance.exports as Record<string, (...args: number[]) => unknown>
+    expect(x.local(1, 2)).toBe(12)
+    expect(x.param(1, 2.5)).toBe(3.5)
+    expect(x.glob()).toBe(12)
+    expect(x.walk()).toBe(90)
+    expect(x.bound(1)).toBe(56)
+  })
+
   test('a name goes to the first variable that asks, and another gets it with a prefix', () => {
     const wat = modWat(`
       type P = (x: i32, y: i32)

@@ -1205,6 +1205,13 @@ function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nam
     const suffixes = flatSuffixes(sym.type)
     for (let n = 0; ; n++) {
       const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
+      // Two parts of one global named alike take names apart, as a local's do.
+      for (let i = 1; i < names.length; i++) {
+        for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+          const w = `_${k}_${name}${suffixes[i]}`
+          if (!claimed.has(w) && !names.includes(w)) names[i] = w
+        }
+      }
       if (names.some((w) => claimed.has(w))) continue
       for (const w of names) claimed.add(w)
       into.set(watName, names.map((w) => `${modulePrefix}${w}`))
@@ -2797,7 +2804,7 @@ export function funcToWat(
 // only, so it shares a name only with another `if let` binding (`kind`),
 // and not with one whose then-branch it is in (`ctx.busy`).
 function claimLocals(
-  ctx: CodegenContext, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
+  ctx: Pick<CodegenContext, 'claimed' | 'busy'>, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
 ): string[] {
   ctx.claimed ??= new Map()
   const claimed = ctx.claimed
@@ -2809,6 +2816,15 @@ function claimLocals(
   for (let n = 0; ; n++) {
     const prefix = n === 0 ? '' : `_${n}_`
     const names = parts.map((p) => `${prefix}${name}${p.suffix ? `_${p.suffix}` : ''}`)
+    // Two parts of one variable can be named alike: a field `x_y`, and the
+    // field `y` of a field `x`. The later one takes the next prefix whose
+    // name is free, or is the same part's of a variable like this one.
+    for (let i = 1; i < names.length; i++) {
+      for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+        const w = `_${k}_${name}_${parts[i].suffix}`
+        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !ctx.busy?.has(w) && !names.includes(w)) names[i] = w
+      }
+    }
     if (names.some((w, i) => (claimed.has(w) && claimed.get(w) !== owners[i]) || ctx.busy?.has(w))) continue
     names.forEach((w, i) => {
       if (claimed.has(w)) return
@@ -3402,19 +3418,16 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     }
 
     // Parse input type for params
+    const own: Pick<CodegenContext, 'claimed' | 'busy'> = {}
     if (imp.signature.input.kind === 'CompositeType') {
       const fields = imp.signature.input.fields
       for (const [index, field] of fields.entries()) {
         const resolved = checked('params', index, fields.length, field.type)
         const flattened = flattenType(resolved)
         if (field.ident) {
-          if (flattened.length === 1) {
-            params.push(`(param $${field.ident} ${flattened[0].wasmType})`)
-          } else {
-            for (const f of flattened) {
-              params.push(`(param $${field.ident}_${f.suffix} ${f.wasmType})`)
-            }
-          }
+          // Named as a function's params are, so that no two are named alike.
+          const names = claimLocals(own, field.ident, resolved, null, true)
+          for (const [i, f] of flattened.entries()) params.push(`(param $${names[i]} ${f.wasmType})`)
         } else {
           for (const f of flattened) {
             params.push(`(param ${f.wasmType})`)
