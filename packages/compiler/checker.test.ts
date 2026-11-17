@@ -1549,6 +1549,43 @@ describe('values meeting an expected type', () => {
     expect(typeAt(result, source.indexOf('e ='))).toBe('i32')
   })
 
+  test('branches that are all constants default to a type that holds each of them', () => {
+    // v is an i64, as its second branch is, whichever branch comes first.
+    const narrowed = ['cannot assign i64 to i32']
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { -2147483648 } else { 2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { 2147483648 } else { -2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(k: i32) -> i32 { let v = match k { 0 => -2147483648\n 1 => 5\n _ => 2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool, d: bool) -> i32 { let v = if c { -2147483648 } else { if d { 1 } else { 1073741824 * 2 } }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { -2147483648 } else { 2147483647 }\n return v }`)).toEqual([])
+    // A 64-bit pattern is an i64, as it is by itself; more bits than that have no default.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 1 } else { 18446744073709551616 }\n return v }`))
+      .toEqual(['cannot assign int(18446744073709551616) to i64'])
+    expect(errs(`func f() { let v = 18446744073709551616 }`)).toEqual(['cannot assign int(18446744073709551616) to i64'])
+    expect(errs(`func f() { let v = -9223372036854775809 }`)).toEqual(['cannot assign int(-9223372036854775809) to i64'])
+    expect(errs(`func f() { let v = 18446744073709551615 }`)).toEqual([])
+    // As an f64, an integer branch has to be one exactly.
+    expect(errs(`func f(c: bool) -> f64 { let v = if c { 1.5 } else { 3 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> f64 { let v = if c { 1.5 } else { 9007199254740993 }\n return v }`))
+      .toEqual(['cannot assign int(9007199254740993) to f64'])
+  })
+
+  test('each constant branch has to be a value of the type the expression is used as', () => {
+    const negative = ['cannot assign int(-2147483648) to u32']
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n / (if c { -2147483648 } else { 2147483648 })`)).toEqual(negative)
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n / (if c { 2147483648 } else { -2147483648 })`)).toEqual(negative)
+    expect(errs(`func f(k: i32, n: u32) -> u32 => n + match k { 0 => 5\n _ => -1 }`)).toEqual(['cannot assign int(-1) to u32'])
+    expect(errs(`func f(c: bool, d: bool, n: u32) -> u32 => n + (if c { 1 } else { if d { 2 } else { -3 } })`)).toEqual(['cannot assign int(-3) to u32'])
+    expect(errs(`func f(c: bool, n: i32) -> i32 => n + (if c { -2147483648 } else { 2147483648 })`)).toEqual(['cannot assign int(2147483648) to i32'])
+    expect(errs(`func f(c: bool, n: i64) -> i64 => n + (if c { -2147483648 } else { 2147483648 })`)).toEqual([])
+    // Not only literal by literal: a negation's operand is in range only once negated.
+    expect(errs(`def k = 3\nfunc f(c: bool, n: u32) -> u32 => n / (if c { 5 } else { -k })`)).toEqual(['cannot assign int(-3) to u32'])
+    expect(errs(`func f(c: bool, n: u8) -> u8 => n / (if c { 200 } else { -(100) })`)).toEqual(['cannot assign int(-100) to u8'])
+    expect(errs(`func f(c: bool, n: i8) -> i8 => n / (if c { 100 } else { -(128) })`)).toEqual([])
+    // A complement is a bit pattern of the type, as anywhere else.
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n & (if c { ~7 } else { 255 })`)).toEqual([])
+  })
+
   test('branches that cannot agree are an error where the value is used', () => {
     expect(errs(`func f(c: bool, a: i32, b: u32) { let v = if c { a } else { b } }`))
       .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])

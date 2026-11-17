@@ -728,6 +728,17 @@ func big() -> i64 {
 func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
 ```
 
+The branches of an `if` or `match` that are all constants make a constant too. Where nothing else types it, it takes the default that holds every branch, and each branch has to be a value of the type it ends up with:
+
+```ents
+func pick(c: bool) -> i64 {
+  let v = if c { -2147483648 } else { 2147483648 }   // an i64: 2147483648 isn't an i32
+  return v
+}
+```
+
+An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`).
+
 Once a value has a concrete type, normal promotion rules apply:
 
 ```ents

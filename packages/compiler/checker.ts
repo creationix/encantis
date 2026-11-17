@@ -420,6 +420,9 @@ class CheckContext {
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
+  // The constant each branch of an if or match of constants is by itself.
+  // The branches share one type, and each has to be a value of it.
+  branchConstants = new Map<AST.Expr, ResolvedType>()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -3032,19 +3035,31 @@ class CheckContext {
       if (innerType && isComptimeNumber(unwrap(innerType))) this.typeConstant(inner, type, innerType, check)
       else if (innerType && !isComptimeNumber(unwrap(type))) this.coerce(inner, innerType, type)
     }
+    // A branch is one of the values the expression can have, so it has to be
+    // a value of the type by itself, not only literal by literal: -1 is no
+    // branch of a u32. A default type is chosen to hold its integers; as a
+    // float it has to hold them exactly.
     const tail = (body: AST.FuncBody | AST.Expr) => {
-      if (body.kind === 'Block') {
-        const last = body.stmts.at(-1)
-        if (last?.kind === 'ExpressionStmt') again(last.expr)
+      const value = bodyValue(body)
+      if (!value) return
+      const own = this.branchConstants.get(value)
+      const checked = checkLiterals || isFloat(type)
+      if (own && checked && !isComptimeNumber(unwrap(type)) && !typeAssignable(type, own)) {
+        this.error(value.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
+        again(value, false)
       } else {
-        again(body.kind === 'ArrowBody' ? body.expr : body)
+        again(value)
       }
     }
     switch (expr.kind) {
       case 'LiteralExpr': {
         // Each literal has to fit by its own value: 1.0 + 16777217 isn't an f32.
+        // One that isn't checked that way (the operand of a negation, a
+        // constant with no type but its default) still has to be a number
+        // the type has the bits for: 18446744073709551616 is no i64.const.
         const own = this.inferLiteral(expr)
-        if (checkLiterals && !isComptimeNumber(type) && !typeAssignable(type, own)) {
+        const fits = checkLiterals ? typeAssignable(type, own) : own.kind !== 'comptime_int' || hasBitsFor(type, own.value)
+        if (!isComptimeNumber(type) && !fits) {
           this.error(expr.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
         }
         break
@@ -3720,14 +3735,17 @@ class CheckContext {
     if (valued.every(b => isComptimeNumber(b.type))) {
       // All constants: the expression is one too, typed by where it's used.
       // Every branch takes the type that holds them all, so they agree on a
-      // default when nothing else types them.
+      // default when nothing else types them: -2147483648 and 2147483648
+      // are an i64 together, whichever comes first.
       for (const b of valued) {
         if (type.kind === 'comptime_float') break
-        if (b.type.kind === 'comptime_float' || magnitude(b.type) > magnitude(type)) type = b.type
+        if (b.type.kind === 'comptime_float' || standsInFor(b.type, type)) type = b.type
       }
       for (const b of valued) {
         const value = bodyValue(b.body)
-        if (value) this.typeConstant(value, type, b.type)
+        if (!value) continue
+        this.branchConstants.set(value, b.type)
+        this.typeConstant(value, type, b.type)
       }
       return type
     }
@@ -4259,6 +4277,23 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
 function magnitude(t: ResolvedType): bigint {
   if (t.kind !== 'comptime_int') return 0n
   return t.value < 0n ? -t.value : t.value
+}
+
+// Whether constant `a` stands in for `b` too, where one type has to hold
+// both: it's further from zero, or as far and positive, which takes a bit
+// more as a signed value (-2147483648 is an i32, 2147483648 isn't).
+function standsInFor(a: ResolvedType, b: ResolvedType): boolean {
+  if (magnitude(a) !== magnitude(b)) return magnitude(a) > magnitude(b)
+  return a.kind === 'comptime_int' && b.kind === 'comptime_int' && a.value > b.value
+}
+
+// Whether an integer type's bits can hold a constant, signed or unsigned:
+// what its wasm constant can be written as.
+function hasBitsFor(type: ResolvedType, value: bigint): boolean {
+  const t = unwrap(type)
+  if (t.kind !== 'primitive' || !isInteger(t)) return true
+  const bits = BigInt((byteSize(t) ?? 4) * 8)
+  return value >= -(1n << (bits - 1n)) && value < 1n << bits
 }
 
 // The expression a branch takes its value from, if it ends in one.

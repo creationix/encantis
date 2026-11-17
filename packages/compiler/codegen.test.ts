@@ -661,6 +661,15 @@ describe('expression codegen', () => {
       expect(wat).toContain('else')
     })
 
+    test('constant branches are all emitted in the type that holds each of them', () => {
+      const wat = funcWat(`func f(c: bool) -> i64 {
+        let v = if c { -2147483648 } else { 2147483648 }
+        return v
+      }`)
+      expect(wat).toContain('(local $v i64)')
+      expect(wat).toContain('(if (result i64) (local.get $c) (then (i64.const -2147483648)) (else (i64.const 2147483648)))')
+    })
+
     test('an if let used as a value leaves the value of each branch', () => {
       const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
       expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)

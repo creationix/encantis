@@ -1,0 +1,92 @@
+// The branches of an if or match that are all constants make a constant. With
+// no type from where it's used, it takes the default that holds every branch:
+// i32, or i64 when any branch needs one.
+
+def low = -2147483648
+def high = 2147483648
+
+// 2147483648 isn't an i32, so both branches are i64 constants.
+func either(c: bool) -> i64 {
+  let v = if c { -2147483648 } else { 2147483648 }
+  return v
+}
+
+func flipped(c: bool) -> i64 {
+  let v = if c { 2147483648 } else { -2147483648 }
+  return v
+}
+
+func named(c: bool) -> i64 {
+  let v = if c { low } else { high }
+  return v
+}
+
+func by_arm(k: i32) -> i64 {
+  let v = match k {
+    0 => -2147483648
+    1 => 5
+    _ => 2147483648
+  }
+  return v
+}
+
+func nested(c: bool, d: bool) -> i64 {
+  let v = if c { low } else { if d { 1 } else { 1073741824 * 2 } }
+  return v
+}
+
+// As an operand of other constants, and as an element.
+func scaled(c: bool) -> i64 {
+  let v = (if c { low } else { high }) * 2
+  return v
+}
+
+func listed(c: bool) -> i64 {
+  let pair = [if c { low } else { high }, 1]
+  return pair[0] + pair[1]
+}
+
+// Every branch fits an i32: the variable is one.
+func small(c: bool) -> i32 {
+  let v = if c { -2147483648 } else { 2147483647 }
+  return v
+}
+
+// A float branch makes them all f64.
+func mixed(c: bool) -> f64 {
+  let v = if c { 0.5 } else { 2147483648 }
+  return v
+}
+
+test "constant branches default to a type that holds each of them" {
+  assert either(true) == -2147483648
+  assert either(false) == 2147483648
+  assert flipped(true) == 2147483648
+  assert flipped(false) == -2147483648
+  assert named(false) == 2147483648
+  assert by_arm(0) == -2147483648
+  assert by_arm(1) == 5
+  assert by_arm(2) == 2147483648
+  assert nested(true, false) == -2147483648
+  assert nested(false, true) == 1
+  assert nested(false, false) == 2147483648
+  assert scaled(true) == -4294967296
+  assert scaled(false) == 4294967296
+  assert listed(false) == 2147483649
+  assert small(true) == -2147483648
+  assert small(false) == 2147483647
+  assert mixed(true) == 0.5
+  assert mixed(false) == 2147483648.0
+}
+
+// The subject of a match is typed the same way.
+func subject(c: bool) -> i32 => match if c { low } else { high } {
+  -2147483648 => 2
+  2147483648 => 1
+  _ => 3
+}
+
+test "a match on constant branches compares in the type that holds them" {
+  assert subject(false) == 1
+  assert subject(true) == 2
+}

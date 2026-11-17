@@ -275,6 +275,36 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
+Branches that are all constants are a constant, typed by where it's used. With no type from there it takes the default that holds every branch: `i32`, or `i64` when any of them needs one. Each branch has to be a value of the type by itself.
+
+```ents
+func a(c: bool) -> i64 {
+  let v = if c { -2147483648 } else { 2147483648 }
+  return v
+}
+
+func b(c: bool) -> i32 {
+  let v = if c { -2147483648 } else { 2147483648 }
+  return v
+}
+
+func c(k: i32, n: u32) -> u32 => n + match k {
+  0 => 5
+  _ => -1
+}
+
+func d(c: bool) -> f64 {
+  let v = if c { 1.5 } else { 9007199254740993 }
+  return v
+}
+```
+
+```errors
+cannot assign i64 to i32
+cannot assign int(-1) to u32
+cannot assign int(9007199254740993) to f64
+```
+
 An `if let` is a value too, and goes on to `elif` and `else` branches like any `if`.
 
 ```ents
