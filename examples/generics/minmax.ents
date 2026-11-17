@@ -17,9 +17,9 @@ export func max_i32(a: i32, b: i32) -> i32 => max(a, b)
 export func max_f64(a: f64, b: f64) -> f64 => max(f64, a, b)
 export func clamp_i32(x: i32, lo: i32, hi: i32) -> i32 => clamp(x, lo, hi)
 export func swap_u32(a: *mut u32, b: *mut u32) { swap(a, b) }
-// T = u64, decided by a. The conversion of b is written out: a u32 passed
-// for a u64 parameter is accepted without it, but not converted yet.
-export func widen(a: u64, b: u32) -> u64 => max(a, b as u64)
+// T = u64, decided by a. b is a u32 passed for a u64 parameter: it is widened
+// at the call, as for any function.
+export func widen(a: u64, b: u32) -> u64 => max(a, b)
 
 test "max and min compare as their type does" {
   let big: u32 = 0xFFFFFFFF
@@ -57,6 +57,6 @@ test "a later argument is widened to T" {
   assert max(n, small) == 200       // T = u32; a u8 needs no conversion
   let a: u64 = 0x100000000
   let b: u32 = 7
-  assert max(a, b as u64) == a
+  assert max(a, b) == a
   assert widen(1, b) == 7
 }

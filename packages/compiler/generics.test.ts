@@ -1837,11 +1837,10 @@ export func f(xs: []mut ${first}, ys: []mut ${then}, p: ?*${first}, q: ?*${then}
     expect(Math.max(...scratch)).toBeLessThan(generics.length)
   })
 
-  // PENDING claude/operand-types. An argument that is implicitly widened to a
-  // parameter of another wasm type (u32 for a u64) is accepted by the checker
-  // and not converted by callToWat, for generic and ordinary calls alike; that
-  // branch owns the conversion. What this branch guarantees is the inference:
-  // T is decided by the first argument, and the later one is checked against it.
+  // An argument that is implicitly widened to a parameter of another wasm type
+  // (a u32 for a u64) is converted where it is passed, by the conversion the
+  // checker records for any expression that meets a wider type: there is no
+  // second mechanism for the arguments of a generic call.
   describe('a later argument is widened to T', () => {
     const source = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 export func widen(a: u64, b: u32) -> u64 => max(a, b)
@@ -1851,10 +1850,54 @@ export func widen(a: u64, b: u32) -> u64 => max(a, b)
       expect(instancesOf(source)).toEqual(['max<u64>'])
     })
 
-    test.todo('the widened argument is converted (needs claude/operand-types)', async () => {
+    test('the widened argument is converted', async () => {
       const wat = watOfSource(source)
       expect(funcWat(wat, 'widen')).toContain('(call $max<u64> (local.get $a) (i64.extend_i32_u (local.get $b)))')
-      await wasmOfWat(wat)
+      const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfWat(wat)))
+      const widen = instance.exports.widen as (a: bigint, b: number) => bigint
+      expect(widen(1n, 7)).toBe(7n)
+      expect(widen(0x1_0000_0000n, -1)).toBe(0x1_0000_0000n)
+    })
+
+    test('the conversion is recorded for the call that needs it, whichever call made the instance', () => {
+      const callers = [
+        'export func widen(a: u64, b: u32) -> u64 => max(a, b)',
+        'export func plain(a: u64, b: u64) -> u64 => max(a, b)',
+        'export func signed(a: i64, b: i32) -> i64 => max(a, b)',
+        'export func promoted(a: f64, b: f32) -> f64 => max(a, b)',
+      ]
+      for (const order of [callers, [...callers].reverse()]) {
+        const wat = watOfSource(`${MAX}${order.join('\n')}\n`)
+        expect(funcWat(wat, 'widen')).toContain('(call $max<u64> (local.get $a) (i64.extend_i32_u (local.get $b)))')
+        expect(funcWat(wat, 'plain')).toContain('(call $max<u64> (local.get $a) (local.get $b))')
+        expect(funcWat(wat, 'signed')).toContain('(call $max<i64> (local.get $a) (i64.extend_i32_s (local.get $b)))')
+        expect(funcWat(wat, 'promoted')).toContain('(call $max<f64> (local.get $a) (f64.promote_f32 (local.get $b)))')
+      }
+    })
+
+    // The body of an instance is checked with its own type argument, on its
+    // own nodes: what widens in one instance does not in another.
+    test('an instance widens in its body what its own type argument makes narrower', async () => {
+      const generic = `func add(comptime T: type, a: T, n: u32) -> T => a + n
+export func a(x: u64, n: u32) -> u64 => add(x, n)
+export func b(x: u32, n: u32) -> u32 => add(x, n)
+export func c(x: f64, n: u32) -> f64 => add(x, n)
+export func d(x: i64, n: u8) -> i64 => add(i64, x, n)
+`
+      const wat = watOfSource(generic)
+      expect(funcWat(wat, 'add<u64>')).toContain('(i64.add (local.get $a) (i64.extend_i32_u (local.get $n)))')
+      expect(funcWat(wat, 'add<u32>')).toContain('(i32.add (local.get $a) (local.get $n))')
+      expect(funcWat(wat, 'add<f64>')).toContain('(f64.add (local.get $a) (f64.convert_i32_u (local.get $n)))')
+      expect(funcWat(wat, 'add<i64>')).toContain('(i64.add (local.get $a) (i64.extend_i32_u (local.get $n)))')
+      await expectSameWasm(generic, `func add_f64(a: f64, n: u32) -> f64 => a + n
+func add_i64(a: i64, n: u32) -> i64 => a + n
+func add_u32(a: u32, n: u32) -> u32 => a + n
+func add_u64(a: u64, n: u32) -> u64 => a + n
+export func a(x: u64, n: u32) -> u64 => add_u64(x, n)
+export func b(x: u32, n: u32) -> u32 => add_u32(x, n)
+export func c(x: f64, n: u32) -> f64 => add_f64(x, n)
+export func d(x: i64, n: u8) -> i64 => add_i64(x, n)
+`)
     })
   })
 })
@@ -1901,7 +1944,6 @@ describe('examples/generics', () => {
     expect(funcWat(wat, 'clamp<i32>')).toContain('(call $min<i32> (call $max<i32> (local.get $x) (local.get $lo)) (local.get $hi))')
     expect(funcWat(wat, 'max_u32')).toContain('(call $max<u32> (local.get $a) (local.get $b))')
     expect(wat).not.toContain('select')
-    // The example writes `b as u64`; without the cast this needs claude/operand-types (see the todo above).
     expect(funcWat(wat, 'widen')).toContain('(call $max<u64> (local.get $a) (i64.extend_i32_u (local.get $b)))')
   })
 
