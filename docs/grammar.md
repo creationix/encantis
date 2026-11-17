@@ -734,7 +734,7 @@ v.items().sort(u64, less)     // Calls chain; type arguments are written after t
 
 **Type arguments.** A call of a generic function may pass a type where the parameter is `comptime T: type`:
 
-[Grammar: `Arg` type and funcType cases, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
+[Grammar: `Arg` type and otherType cases, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
 
 ```encantis
 max(u32, a, b)                // u32 is an identifier, read as a type by its position
@@ -743,13 +743,14 @@ head([]u8, xs)                // []u8 can only be a type: parsed as one
 head(*mut Point, xs)
 first(Point, ps)              // a bare type name is not an expression: parsed as a type
 apply((u32) -> u32, f)        // so is a function type
+pick((name: []u8, at: Point), a, b)   // and a struct type whose fields are not all expressions
 ```
 
-An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`) or is a function type, and the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
+An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8` or `Point`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
 
 A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too.
 
-One consequence: a struct type with named fields is an argument list of named arguments, whose values are expressions. `(q: i32, r: i32)` works; `(name: []u8, at: Point)` is a syntax error. Give such a type a name, with `type` or as a generic type, and pass the name.
+So a struct type with named fields is written in place like any other type argument: `(q: i32, r: i32)` is an expression read as a type, and `(name: []u8, at: Point)` is parsed as a type because it is no expression.
 
 ### Literals and Constructors
 

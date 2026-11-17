@@ -353,7 +353,7 @@ describe('parser', () => {
       expect(firstArg('f((x), y)')).toMatchObject({ kind: 'TupleExpr' })
     })
 
-    test('a function type is tried only after an expression', async () => {
+    test('a type that may be an expression is tried only after an expression', async () => {
       // Tried first, every argument and every element of a tuple was parsed as
       // a type before it was parsed as what it is, and a file without one
       // generic took a quarter longer to parse (a third, for one full of
@@ -361,7 +361,7 @@ describe('parser', () => {
       const grammar = await Bun.file(new URL('./encantis-grammar.ohm', import.meta.url)).text()
       const rule = grammar.slice(grammar.indexOf('\n  Arg = '), grammar.indexOf('\n  TypeLit = '))
       expect([...rule.matchAll(/-- (\w+)/g)].map(m => m[1])).toEqual([
-        'named', 'shorthand', 'type', 'positional', 'funcType', 'unfinished',
+        'named', 'shorthand', 'type', 'positional', 'otherType', 'unfinished',
       ])
     })
 
@@ -369,11 +369,29 @@ describe('parser', () => {
       const error = (source: string) => parse(source, { startRule: 'Expr' }).errors.map(e => e.message.split('\n')[0])
       expect(error('f(a b)')).toEqual(['Line 1, col 5:'])
       expect(error('f([]u8 x)')).toEqual(['Line 1, col 8:'])
-      // A struct type with named fields cannot be written in place: its field
-      // types are not expressions, and it is not followed by ->.
-      const struct = parse('size((at: Pt, n: u8))', { startRule: 'Expr' }).errors
-      expect(struct).toHaveLength(1)
-      expect(struct[0].message).toEndWith('Expected "->"')
+      // After a type that is no expression comes a comma or the parenthesis.
+      expect(error('f((at: Pt, n: u8) x)')).toEqual(['Line 1, col 19:'])
+    })
+
+    test('a struct type written in place is a type argument', () => {
+      // Its field types are not all expressions, so it is no expression: it
+      // is read as the type it is, as after a colon.
+      const fields = (source: string) => {
+        const result = parse(source, { startRule: 'Expr' })
+        expect(result.errors).toEqual([])
+        const arg = (result.module as unknown as { args: { value: { kind: string; type?: { kind: string; fields: { ident: string | null }[] } } }[] }).args[0]
+        expect(arg.value.kind).toBe('TypeExpr')
+        return arg.value.type?.fields.map(f => f.ident)
+      }
+      expect(fields('size((at: Pt, n: u8))')).toEqual(['at', 'n'])
+      expect(fields('pick((name: []u8, at: Pt), a, b)')).toEqual(['name', 'at'])
+      // One that is also an expression stays an expression: the checker
+      // reads it as a type where the parameter is one. (p: ?*Node) is the
+      // name p given a type, in parentheses.
+      const kind = (source: string) => (parse(source, { startRule: 'Expr' }).module as unknown as { args: { value: { kind: string } }[] }).args[0].value.kind
+      expect(kind('pick((q: i32, r: i32), a, b)')).toBe('TupleExpr')
+      expect(kind('pick((*u8, u32), a, b)')).toBe('TupleExpr')
+      expect(kind('id((p: ?*Node), v)')).toBe('GroupExpr')
     })
 
     test('a named argument still takes a value, not a type', () => {

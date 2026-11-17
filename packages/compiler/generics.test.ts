@@ -120,6 +120,27 @@ export func g(q: i32, r: i32) -> i32 {
     ])
   })
 
+  test('a struct type is written in place as a type argument, whatever its fields are', async () => {
+    const PICK = 'type Pt = (q: i32, r: i32)\nfunc pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\nfunc size(comptime T: type) -> u32 => sizeof(T)\n'
+    // Fields whose types are no expressions, and one field: (at: Pt) is the
+    // name at given a type, in parentheses, and as a type argument the struct.
+    const source = `${PICK}export func f(c: bool, s: []u8, p: Pt) -> i32 => pick((name: []u8, at: Pt), c, (name: s, at: p), (name: s, at: p)).at.q
+export func g() -> u32 => size((at: Pt)) + size((p: ?*Pt)) + size((n: u8, at: Pt))
+func wrap(comptime T: type, x: T) -> u8 => pick((t: T, n: u8), true, (t: x, n: 1), (t: x, n: 2)).n
+export func h(x: u64) -> u8 => wrap(x)`
+    expect(instancesOf(source)).toEqual([
+      "pick<<name:''u8|at:<q:i32|r:i32>>>",
+      'pick<<t:u64|n:u8>>',
+      'size<<at:<q:i32|r:i32>>>',
+      'size<<n:u8|at:<q:i32|r:i32>>>',
+      'size<<p:?*<q:i32|r:i32>>>',
+      'wrap<u64>',
+    ])
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+    expect((instance.exports.g as () => number)()).toBe(8 + 4 + 9)
+    expect((instance.exports.h as (x: bigint) => number)(5n)).toBe(1)
+  })
+
   test('a type argument is written as after a colon', () => {
     const source = `type Pt = (q: i32, r: i32)
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }

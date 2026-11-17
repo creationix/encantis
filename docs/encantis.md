@@ -2211,6 +2211,7 @@ export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32,
 export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
 export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
 export func f(xs: []u64) -> u64 => head(u64, xs)
+export func g(c: bool, n: []u8, p: Pt) -> []u8 => pick((name: []u8, at: Pt), c, (name: n, at: p), (name: "-", at: p)).name
 ```
 
 In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`).
@@ -2695,8 +2696,6 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
 Also not in this version: generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
-
-One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
 Two limits are older than generics and are met through them. A name for a pointer, slice, array or optional type (a `type`, and so a generic type with such a body) is passed, stored, matched and measured as the type it names, but `.*`, `.ptr`, `.len`, indexing and `if let` do not see through the name yet: give a generic type a struct or tuple as its body, and write such a type out where its value is used. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 

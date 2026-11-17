@@ -6307,6 +6307,13 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
       }
       return { kind: 'TypeApply', name: expr.callee.name, args, span: expr.span }
     }
+    case 'GroupExpr': {
+      // (at: Pt) parses as the name `at` given the type Pt, in parentheses:
+      // as a type it is the struct of that one field, as (v: f64) is.
+      const inner = expr.expr
+      if (inner.kind !== 'AnnotationExpr' || inner.expr.kind !== 'IdentExpr') return null
+      return { kind: 'CompositeType', fields: [{ kind: 'Field', ident: inner.expr.name, type: inner.type, span: inner.span }], span: expr.span }
+    }
     default:
       return null
   }
