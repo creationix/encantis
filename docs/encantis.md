@@ -1184,7 +1184,7 @@ func flip(p:Point, q:*mut Point) -> Point {
 }
 ```
 
-The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
+The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from, and for a value that writes on its way: after `q.* = Point(1, if c { q.x = 9 ... })`, `q.x` is 1. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
 
 The target's address is evaluated once, and before the value, also for a compound assignment: `xs[next()] += 1` calls `next` one time, and `p.* = if c { p = q ... }` writes where `p` pointed before.
 

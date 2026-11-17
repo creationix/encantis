@@ -1017,6 +1017,62 @@ describe('structs in memory', () => {
     expect([whole(1), field(1), slice(1), index(1)]).toEqual([1200, 123, 30, 40])
   })
 
+  test('a later part that writes memory runs before any part is stored', async () => {
+    // The value is computed whole first: what a part of it stores on its way
+    // is overwritten by the assignment, not the other way round.
+    const { struct, three, slice, array, fill } = await run(`
+      type Point = (x: i32, y: i32)
+      type P3 = (x: i32, y: i32, z: i32)
+      data cells: *mut [1]Point = [Point(0, 0)]
+      data threes: *mut [1]P3 = [P3(0, 0, 0)]
+      data names: *mut [1][]u8 = [""]
+      data pairs: *mut [1][2]i32 = [[0, 0]]
+      data bytes: *[3]u8 = "abc"
+      export func struct(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        p.* = Point(1, if c {
+          p.x = 9
+          2
+        } else { 2 })
+        return p.x * 10 + p.y
+      }
+      export func three(c: bool) -> i32 {
+        let p: *mut P3 = &threes[0]
+        p.* = P3(1, 2, if c {
+          p.x = 8
+          p.y = 9
+          3
+        } else { 3 })
+        return p.x * 100 + p.y * 10 + p.z
+      }
+      export func slice(c: bool) -> u32 {
+        let p: *mut []u8 = &names[0]
+        p.* = (bytes as [*]u8, if c {
+          p.* = "zzzzzzz"
+          3
+        } else { 3 })
+        return p.len * 10 + (if p.ptr as u32 == bytes as u32 { 1 } else { 0 })
+      }
+      export func array(c: bool) -> i32 {
+        let p: *mut [2]i32 = &pairs[0]
+        p.* = [1, if c {
+          p.*[0] = 9
+          2
+        } else { 2 }]
+        return p.*[0] * 10 + p.*[1]
+      }
+      export func fill(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        p.* = Point(1, if c {
+          memset(cells, 7, 4)
+          2
+        } else { 2 })
+        return p.x * 10 + p.y
+      }
+    `)
+    expect([struct(1), three(1), slice(1), array(1), fill(1)]).toEqual([12, 123, 31, 12, 12])
+  })
+
   test('a copy over a place that overlaps its source arrives whole', async () => {
     const { spots, slices } = await run(`${SPOT}
       export func spots() -> i32 {

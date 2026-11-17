@@ -489,6 +489,9 @@ const readsGlobal = (wat: string) => /\(global\.get\b/.test(wat)
 // Whether an expression reads memory, or could through a call.
 const readsMemory = (wat: string) => loadsMemory(wat) || /\((?:call|call_indirect)\b/.test(wat)
 
+// Whether an expression writes memory, or could through a call.
+const writesMemory = (wat: string) => /\((?:call|call_indirect|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?)\b/.test(wat)
+
 // Whether `wat` sets a local that `address` reads: an if or a block that is a
 // value can assign on its way to it (p.* = if c { p = q ... }), and then the
 // address is another one after the value than before it.
@@ -581,6 +584,10 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // integer is also the exception to the rule: it is one scalar, stored limb by
 // limb in order, so a copy over a place that partly overlaps it is not whole.
 //
+// What a later part writes counts as much as what it reads: a store it makes
+// on its way (p.* = Point(1, if c { p.x = 9 ... })) belongs to the value, so it
+// comes before every store of the assignment, not between two of them.
+//
 // The address is evaluated once, as for loads, and before the value: it is the
 // place the target named when the assignment began. A local or a constant is
 // repeated instead, and a slice or wide integer repeats an address that reads
@@ -613,7 +620,7 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
   const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${offset(i)}${operands})`
 
   if (values) {
-    if (nw > 0 || !values.slice(1).some(readsMemory)) {
+    if (nw > 0 || !values.slice(1).some((v) => readsMemory(v) || writesMemory(v))) {
       return parts.map((_, i) => store(i, ` ${at(i)} ${values[i]}`)).join('\n')
     }
     return [
