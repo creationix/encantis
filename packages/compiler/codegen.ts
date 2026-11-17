@@ -422,8 +422,9 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
     }
   }
 
-  // Unknown - emit error comment
-  return `(i32.const 0)`
+  // The checker refuses a name it does not know, so nothing that is compiled
+  // comes here. Emitting a zero instead would hide the day something does.
+  throw new Error(`Unknown identifier '${name}' at offset ${expr.span.start}`)
 }
 
 function truncateSubWord(wat: string, type: ResolvedType): string {
