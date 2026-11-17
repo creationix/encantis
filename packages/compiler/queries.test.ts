@@ -216,6 +216,55 @@ export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
     expect(gotoDefinition(unused.source, unused.module, unused.check, calls.indexOf('twice(n)'))?.location.offset).toBe(0)
   })
 
+  // No instance has the type parameter: it is found from the generic as
+  // written, used or not.
+  const typed = `type Pt = (q: i32, r: i32)
+func keep(comptime T: type, x: T) -> T {
+  let y: T = x
+  return y
+}
+func both(comptime A: type, comptime B: type, a: A, b: B) -> (A, B) => (keep(A, a), B(b))
+`
+  const calls = 'export func f(n: u8) -> u8 => keep(n) + both(n, 2:u64).0\n'
+  for (const [what, program] of [['never instantiated', typed], ['instantiated', typed + calls]]) {
+    test(`a type parameter is defined in its generic and found at each use (${what})`, () => {
+      const { source, module, check } = setup(program)
+      const declared = program.indexOf('T: type')
+      const uses = [program.indexOf('x: T') + 3, program.indexOf('-> T') + 3, program.indexOf('y: T') + 3]
+      for (const at of [declared, ...uses]) {
+        expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'T', location: { offset: declared, length: 1 } })
+        expect(findReferences(source, module, check, at)).toEqual({
+          definition: { offset: declared, length: 1 },
+          references: uses.map(offset => ({ offset, length: 1 })),
+        })
+        expect(rename(source, module, check, at)).toEqual({
+          oldName: 'T',
+          locations: [declared, ...uses].map(offset => ({ offset, length: 1 })),
+        })
+      }
+      // Each of two type parameters has its own uses: as a type, as a type
+      // argument and as a constructor.
+      const a = program.indexOf('A: type')
+      expect(rename(source, module, check, program.indexOf('keep(A') + 5)?.locations.map(l => l.offset)).toEqual([
+        a, program.indexOf('a: A') + 3, program.indexOf('(A, B)') + 1, program.indexOf('keep(A') + 5,
+      ])
+      const b = program.indexOf('B: type')
+      expect(rename(source, module, check, b)?.locations.map(l => l.offset)).toEqual([
+        b, program.indexOf('b: B') + 3, program.indexOf('(A, B)') + 4, program.indexOf('B(b)'),
+      ])
+    })
+  }
+
+  test('a type parameter with the name of another generic\'s is that generic\'s own', () => {
+    const two = 'func one(comptime T: type, x: T) -> T => x\nfunc two(comptime T: type, x: T, y: T) -> T => y\n'
+    const { source, module, check } = setup(two)
+    const second = two.indexOf('T: type', two.indexOf('func two'))
+    expect(rename(source, module, check, two.indexOf('y: T') + 3)?.locations.map(l => l.offset)).toEqual([
+      second, two.indexOf('x: T', second) + 3, two.indexOf('y: T') + 3, two.indexOf('-> T', second) + 3,
+    ])
+    expect(rename(source, module, check, two.indexOf('T: type'))?.locations.length).toBe(3)
+  })
+
   test('examples/generics/minmax.ents: renaming a parameter of swap stays inside swap', async () => {
     const example = await Bun.file(new URL('../../examples/generics/minmax.ents', import.meta.url)).text()
     const { source, module, check } = setup(example)

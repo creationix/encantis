@@ -84,7 +84,7 @@ function stripSpans(node: unknown): unknown {
   if (node && typeof node === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(node)) {
-      if (k === 'span' || v === undefined) continue
+      if (k === 'span' || k === 'identSpan' || v === undefined) continue
       out[k] = typeof v === 'bigint' ? v.toString() : stripSpans(v)
     }
     return out

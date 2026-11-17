@@ -49,7 +49,7 @@ function shape(source: string): unknown {
   const parsed = parse(source)
   expect(parsed.errors.map(e => e.message)).toEqual([])
   return JSON.parse(
-    JSON.stringify(parsed.module, (key, value) => (key === 'span' ? undefined : typeof value === 'bigint' ? `${value}n` : value)),
+    JSON.stringify(parsed.module, (key, value) => (key === 'span' || key === 'identSpan' ? undefined : typeof value === 'bigint' ? `${value}n` : value)),
   )
 }
 

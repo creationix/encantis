@@ -219,6 +219,16 @@ describe('parser', () => {
       expect('comptime' in a).toBe(false)
     })
 
+    test('a type parameter says where its name stands, whatever lies between the keyword and it', () => {
+      const source = 'func max(comptime  /* any */ T: type, a: T, b: T) -> T => a'
+      const [t, a] = paramsOf(source)
+      // The field begins at the keyword: an ordinary one begins with its name.
+      expect(t.span.start).toBe(source.indexOf('comptime'))
+      expect(t.identSpan).toEqual({ start: source.indexOf('T:'), end: source.indexOf('T:') + 1 })
+      expect(a.span.start).toBe(source.indexOf('a:'))
+      expect('identSpan' in a).toBe(false)
+    })
+
     test('a comptime parameter may stand anywhere in the list', () => {
       const fields = paramsOf('func at(xs: []T, comptime T: type, i: u32) -> T => xs.ptr[i]')
       expect(fields.map(f => f.comptime === true)).toEqual([false, true, false])

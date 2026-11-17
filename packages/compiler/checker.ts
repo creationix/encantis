@@ -4860,6 +4860,16 @@ class CheckContext {
     for (const { name, offset } of names) {
       if (!locals.has(name) && this.moduleScope.symbols.has(name)) this.recordReference(name, offset)
     }
+    // A type parameter is in no instance: the copy is made without it, and
+    // with the type in the place of every use. Where it is declared and used
+    // is read off the declaration too, for the editor to find.
+    for (const param of genericParams(decl)) {
+      if (!isTypeParam(param) || !param.identSpan) continue
+      const declared = param.identSpan.start
+      const uses = names.filter((n) => n.name === param.ident).map((n) => n.offset)
+      this.references.set(declared, uses)
+      for (const use of uses) this.symbolRefs.set(use, declared)
+    }
   }
 
   // The literals of an instance body are registered when the body is checked,
