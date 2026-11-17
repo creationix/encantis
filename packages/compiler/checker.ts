@@ -3084,11 +3084,15 @@ class CheckContext {
     // a value of the type by itself, not only literal by literal: -1 is no
     // branch of a u32. A default type is chosen to hold its integers; as a
     // float it has to hold them exactly.
+    // With a negative branch the default is a signed type, and the other
+    // branches have to be values of it too, not only bits it has: no 64-bit
+    // type holds both -1 and 18446744073709551615.
+    const least = checkLiterals ? null : this.leastBranch(expr)
     const tail = (body: AST.FuncBody | AST.Expr) => {
       const value = bodyValue(body)
       if (!value) return
       const own = this.branchConstants.get(value)
-      const checked = checkLiterals || isFloat(type)
+      const checked = checkLiterals || isFloat(type) || (least !== null && least < 0n)
       if (own && checked && !isComptimeNumber(unwrap(type)) && !typeAssignable(type, own)) {
         this.error(value.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
         again(value, false)
@@ -3153,6 +3157,27 @@ class CheckContext {
       }
     }
     this.exprTypes.set(expr, type)
+  }
+
+  // The least constant an if or match of constants can be, through branches
+  // that are ifs or matches themselves. Null for any other expression.
+  private leastBranch(expr: AST.Expr): bigint | null {
+    const bodies = expr.kind === 'IfExpr' ? [expr.thenBranch, ...expr.elifs.map(elif => elif.thenBranch), expr.else_]
+      : expr.kind === 'MatchExpr' ? expr.arms.map(arm => arm.body)
+      : null
+    if (!bodies) return null
+    let least: bigint | null = null
+    for (const body of bodies) {
+      const value = body && bodyValue(body)
+      if (!value || !this.branchConstants.has(value)) continue
+      const inner = groupedExpr(value) ?? value
+      const constant = this.evalComptimeExpr(inner)
+      const low = inner.kind === 'IfExpr' || inner.kind === 'MatchExpr' ? this.leastBranch(inner)
+        : constant?.kind === 'int' ? constant.value
+        : null
+      if (low !== null && (least === null || low < least)) least = low
+    }
+    return least
   }
 
   inferUnary(expr: AST.UnaryExpr): ResolvedType {

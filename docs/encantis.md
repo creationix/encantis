@@ -752,7 +752,7 @@ func step(d: i32) -> (i32, i32) {
 }
 ```
 
-An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`).
+An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`). Nor have branches of which one is negative and another past an `i64`: `if c { -1 } else { 18446744073709551615 }` needs a type that holds both.
 
 Once a value has a concrete type, normal promotion rules apply:
 

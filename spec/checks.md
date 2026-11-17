@@ -282,7 +282,7 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
-Branches that are all constants are a constant, typed by where it's used. With no type from there it takes the default that holds every branch: `i32`, or `i64` when any of them needs one. Each branch has to be a value of the type by itself.
+Branches that are all constants are a constant, typed by where it's used. With no type from there it takes the default that holds every branch: `i32`, or `i64` when any of them needs one. Each branch has to be a value of the type by itself. A 64-bit pattern past an `i64` (`18446744073709551615`) is one only where no branch is negative.
 
 ```ents
 func a(c: bool) -> i64 {
@@ -304,12 +304,18 @@ func d(c: bool) -> f64 {
   let v = if c { 1.5 } else { 9007199254740993 }
   return v
 }
+
+func e(c: bool) -> i64 {
+  let v = if c { -1 } else { 18446744073709551615 }
+  return v
+}
 ```
 
 ```errors
 cannot assign i64 to i32
 cannot assign int(-1) to u32
 cannot assign int(9007199254740993) to f64
+cannot assign int(18446744073709551615) to i64
 ```
 
 Branches that are tuples agree field by field. A field that is a constant in every branch takes the default that holds each of them; one that is a value in some branch takes the type the values agree on.

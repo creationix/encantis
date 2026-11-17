@@ -1598,6 +1598,27 @@ describe('values meeting an expected type', () => {
       .toEqual(['cannot assign int(9007199254740993) to f64'])
   })
 
+  test('constant branches of both signs have to be values of the signed default', () => {
+    // An i64 has the bits of 18446744073709551615, but they are its -1:
+    // both branches came out the same, with nothing said.
+    const past = ['cannot assign int(18446744073709551615) to i64']
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -1 } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 18446744073709551615 } else { -1 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(k: i32) -> i64 { let v = match k { 0 => -1\n 1 => 18446744073709551615\n _ => 0 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool, d: bool) -> i64 { let v = if c { if d { -1 } else { 5 } } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool, d: bool) -> i64 { let v = if c { -1 } else { if d { 5 } else { 18446744073709551615 } }\n return v }`)).toEqual(past)
+    expect(errs(`def k = 3\nfunc f(c: bool) -> i64 { let v = if c { 1 - k } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -9223372036854775808 } else { 9223372036854775808 }\n return v }`))
+      .toEqual(['cannot assign int(9223372036854775808) to i64'])
+    expect(errs(`func f(c: bool) -> i32 => match (if c { -1 } else { 18446744073709551615 }) { -1 => 1\n _ => 2 }`)).toEqual(past)
+    // Every value of an i64 is fine, and so are 64-bit patterns among themselves.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -9223372036854775808 } else { 9223372036854775807 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 0x9E3779B97F4A7C15 } else { 0xcbf29ce484222325 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -1 } else { ~0 }\n return v }`)).toEqual([])
+    // A type that holds them both can be given.
+    expect(errs(`func f(c: bool) -> i128 { let v: i128 = if c { -1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
+  })
+
   test('each constant branch has to be a value of the type the expression is used as', () => {
     const negative = ['cannot assign int(-2147483648) to u32']
     expect(errs(`func f(c: bool, n: u32) -> u32 => n / (if c { -2147483648 } else { 2147483648 })`)).toEqual(negative)
