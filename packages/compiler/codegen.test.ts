@@ -1921,6 +1921,34 @@ describe('tables', () => {
     expect([framed(0), framed(1), framed(2)]).toEqual([71, 34, -1])
   })
 
+  test('a *[!]T of structs or slices ends with one whole zero element, which its scan finds', async () => {
+    // Each is followed by bytes that aren't zero: a terminator shorter than
+    // an element would let the scan run on into them.
+    const { pairs, alias, rows, words, local } = await run(`
+      type Pr = (a: u16, b: u16)
+      type W = u16
+      data pr: *[!]Pr = [(a: 1, b: 2), (a: 0, b: 3), (a: 4, b: 0)]
+      data after: *[4]u8 = [7, 7, 7, 7]
+      data wa: *[!]W = [1, 2]
+      data after2: *[4]u8 = [7, 7, 7, 7]
+      data rs: *[2][!]Pr = [[(a: 1, b: 1)], [(a: 2, b: 2), (a: 3, b: 0)]]
+      data after3: *[4]u8 = [7, 7, 7, 7]
+      data ws: *[!][]u8 = ["ab", "f", "cde"]
+      data after4: *[4]u8 = [7, 7, 7, 7]
+      export func pairs(i: u32) -> u32 => pr.len * 1000 + (if let x = pr[i] { x.a as u32 * 10 + x.b as u32 } else { 99 })
+      export func alias() -> u32 => wa.len
+      export func rows() -> u32 => (if let r = rs[1] { r.len } else { 9 }) * 10 + (if let r = rs[0] { r.len } else { 9 })
+      export func words(i: u32) -> u32 => ws.len * 10 + (if let x = ws[i] { x.len } else { 9 })
+      export func local() -> u32 {
+        let z: *[!]Pr = [(a: 5, b: 6), (a: 7, b: 8)]
+        return z.len
+      }
+    `)
+    expect([pairs(0), pairs(1), pairs(2), pairs(3)]).toEqual([3012, 3003, 3040, 3099])
+    expect([alias(), rows(), local()]).toEqual([2, 21, 2])
+    expect([words(0), words(1), words(2), words(3)]).toEqual([32, 31, 33, 39])
+  })
+
   test('len of a packed block is its rows, and wid of a slice the width of an element', async () => {
     const { lens, size } = await run(`
       data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]

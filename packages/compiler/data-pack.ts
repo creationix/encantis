@@ -45,10 +45,12 @@ function getRepeatCount(expr: AST.RepeatExpr): number {
  * Merged: framings apply to contiguous data (e.g., [!x!]u8)
  * Separate: nested array types requiring pointer indirection (e.g., [!][!]u8)
  */
+// A framed array of slices ([!][]u8) is separate: its elements are (ptr,
+// len) pairs, the strings laid out apart, as for any array of slices.
 function isMergedBrackets(type: ArrayRT): boolean {
   const framings = getFramings(type.sizes)
   return framings.length > 1 ||
-    (framings.length === 1 && type.element.kind !== 'array')
+    (framings.length === 1 && type.element.kind !== 'array' && type.element.kind !== 'slice')
 }
 
 // An interned string entry in the data section
@@ -902,8 +904,13 @@ function applyFraming(
   return bytes
 }
 
-// Get the byte size of an element type (for null terminators)
+// Get the byte size of an element type (for null terminators): a *[!]T ends
+// at its first element whose bytes are all zero, so the terminator is one
+// whole element, a struct's or a slice's too.
 function getElementSize(type: ResolvedType): number {
+  const u = unwrap(type)
+  if (u !== type) return getElementSize(u)
+  if (type.kind === 'tuple' || type.kind === 'slice') return byteSize(type) ?? 1
   if (type.kind === 'primitive') {
     switch (type.name) {
       case 'i8':
