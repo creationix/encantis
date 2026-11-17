@@ -420,24 +420,45 @@ export function concretizeType(
   t: ResolvedType,
   options: TypecheckOptions = DEFAULT_OPTIONS,
 ): ResolvedType {
-  return concretizeParts(t, { ...DEFAULT_OPTIONS, ...options }, new Map())
+  return concretizeParts(t, { ...DEFAULT_OPTIONS, ...options }, new Map(), new Set())
 }
 
 // concretizeType, once for each part of a type: a part that the type holds in
 // several places is made once, so a type that names a type many times is
-// made in a time of its own size (see typeParts).
-function concretizeParts(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>): ResolvedType {
+// made in a time of its own size (see typeParts). `open` holds the types
+// being made, outermost first.
+function concretizeParts(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
   const known = made.get(t)
   if (known) return known
-  const result = concretizeOnce(t, opts, made)
+  const result = concretizeOnce(t, opts, made, open)
   made.set(t, result)
   return result
 }
 
-function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>): ResolvedType {
-  // A type that refers to itself is concrete where it refers to itself.
-  const u = unwrapToCut(t)
+// What a name, or a reference to a type declared further down, stands for:
+// the type it names, as unwrap() has it, except where that is a type being
+// made. A type that refers to itself comes round to itself through a forward
+// reference, and is concrete where it does: that reference is kept.
+function throughNames(t: ResolvedType, open: ReadonlySet<ResolvedType>): ResolvedType {
+  for (;;) {
+    if (t.kind === 'named') t = t.type
+    else if (t.kind === 'forward_ref' && t.target && !open.has(unwrap(t.target))) t = t.target
+    else return t
+  }
+}
 
+function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
+  const u = throughNames(t, open)
+  if (u.kind === 'forward_ref') return u
+  open.add(u)
+  try {
+    return concretizeKind(u, opts, made, open)
+  } finally {
+    open.delete(u)
+  }
+}
+
+function concretizeKind(u: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
   switch (u.kind) {
     case 'comptime_int': {
       const val = u.value
@@ -460,7 +481,7 @@ function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
     case 'comptime_list': {
       // Comptime lists become *[_]T with concretized element type (pointer to inferred-size array)
       const elemType = u.elements.length > 0
-        ? concretizeParts(u.elements[0], opts, made)
+        ? concretizeParts(u.elements[0], opts, made, open)
         : primitive(opts.defaultInt)
       return pointer(array(elemType, ['_']))
     }
@@ -470,16 +491,16 @@ function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
         ...u,
         fields: u.fields.map((f) => ({
           ...f,
-          type: concretizeParts(f.type, opts, made),
+          type: concretizeParts(f.type, opts, made, open),
         })),
       }
 
     case 'slice':
-      return slice(concretizeParts(u.element, opts, made), u.mutable, u.optional)
+      return slice(concretizeParts(u.element, opts, made, open), u.mutable, u.optional)
 
     case 'array': {
       // Concretize element type
-      const elemType = concretizeParts(u.element, opts, made)
+      const elemType = concretizeParts(u.element, opts, made, open)
       // Comptime arrays [_]T stay as [_]T after concretization
       return array(elemType, u.sizes)
     }
@@ -487,7 +508,7 @@ function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
     case 'pointer':
       return {
         ...u,
-        pointee: concretizeParts(u.pointee, opts, made),
+        pointee: concretizeParts(u.pointee, opts, made, open),
       }
 
     case 'func':
@@ -495,18 +516,18 @@ function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
         ...u,
         params: u.params.map((p) => ({
           ...p,
-          type: concretizeParts(p.type, opts, made),
+          type: concretizeParts(p.type, opts, made, open),
         })),
         returns: u.returns.map((r) => ({
           ...r,
-          type: concretizeParts(r.type, opts, made),
+          type: concretizeParts(r.type, opts, made, open),
         })),
       }
 
     case 'named':
       return {
         ...u,
-        type: concretizeParts(u.type, opts, made),
+        type: concretizeParts(u.type, opts, made, open),
       }
 
     default:

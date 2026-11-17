@@ -1832,6 +1832,30 @@ describe('tables', () => {
 })
 
 describe('structs in data arrays', () => {
+  test('of a type declared further down, through a chain of names, are laid out as that type', async () => {
+    const { pair, short, real, repeat } = await run(`
+      data pairs: *[2]Pair = [(1, 2), Pair(3, -4)]
+      data reals: *[2]Real = [1.5, 2.5]
+      type Pair = (first: Byte, second: Short)
+      type Byte = u8
+      type Short = Small
+      type Small = i16
+      type Real = Wide
+      type Wide = f64
+      export func pair() -> i32 => pairs[1].second * 10 + pairs[0].first
+      export func short() -> i32 {
+        let s: []Short = [5, 6, 7]
+        return s[2] ?? 0
+      }
+      export func real() -> f64 => reals[1]
+      export func repeat() -> i32 {
+        let r: *[3]Short = [-2:Short; 3]
+        return r[2]
+      }
+    `)
+    expect([pair(), short(), real(), repeat()]).toEqual([-39, 7, 2.5, -2])
+  })
+
   test('constant tuples and constructors are laid out in the data section', () => {
     const wat = modWat(`
       type Point = (x: i32, y: i32)

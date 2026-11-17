@@ -50,11 +50,12 @@ A type can be named anywhere in its module, above its declaration as well as bel
 
 ```ents
 global origin: Pair = (1, 2)
+data corners: *[2]Pair = [(3, 4), (5, 6)]
 type Pair = (first: Coord, second: Coord)
 type Coord = Size
 type Size = u32
 
-export func far() -> Size => origin.first + origin.second
+export func far() -> Size => origin.first + origin.second + corners[1].second
 ```
 
 <!-- spec:end -->
