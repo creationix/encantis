@@ -2996,6 +2996,23 @@ test "t" {
     expect(check(source).warnings.map(w => w.message).filter(m => m.includes('by_low_bits'))).toEqual([])
   })
 
+  // The test's function replaces the module's in scope. The instance would
+  // call the module's, a function other than the one the test named.
+  test("nor can a test's function that has the name of a function of the module", () => {
+    const source = `func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func helper(x: u32) -> u32 => x + 1
+export func go() -> u32 => twice(helper, 1)
+test "t" {
+  func helper(x: u32) -> u32 => x + 10
+  assert helper(1) == 11
+  assert twice(helper, 1) == 21
+}`
+    expect(check(source).errors.map(e => e.message)).toEqual([
+      "argument 1 of 'twice' must be a function declared at module level: 'helper' is declared inside a test",
+    ])
+    expect(check(source, { includeTests: false }).errors).toEqual([])
+  })
+
   test('the parameter is not a value: it is called, or passed on', () => {
     const source = `func keep(comptime T: type, x: T, comptime f: (T) -> T) -> T {
   let g = f

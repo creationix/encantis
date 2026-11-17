@@ -2004,6 +2004,22 @@ test "t" {
 argument 2 of 'sort' must be a function declared at module level: 'by_low_bits' is declared inside a test
 ```
 
+Also when it has the name of a function of the module: inside the test the name is the test's function.
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func helper(x: u32) -> u32 => x + 1
+
+test "t" {
+  func helper(x: u32) -> u32 => x + 10
+  assert twice(helper, 1) == 21
+}
+```
+
+```errors
+argument 1 of 'twice' must be a function declared at module level: 'helper' is declared inside a test
+```
+
 The parameter used as a value.
 
 ```ents

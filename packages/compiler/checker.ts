@@ -642,6 +642,9 @@ class CheckContext {
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
+  // The same by symbol: a test's function that takes the name of one of the
+  // module's replaces it in module scope, and its name is then no new name.
+  testDeclared = new Set<Symbol>()
   // Names of generics that a later declaration tried to take
   contested = new Set<string>()
   // The module's generic types, in the order they are declared, and how deep
@@ -1578,6 +1581,10 @@ class CheckContext {
           }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
           this.collectFunc(item)
+          if (item.ident) {
+            const declared = this.moduleScope.symbols.get(item.ident)
+            if (declared?.kind === 'func') this.testDeclared.add(declared)
+          }
           this.checkFuncBody(item)
           break
         case 'TypeFuncDecl':
@@ -4975,7 +4982,8 @@ class CheckContext {
       this.recordReference(arg.name, arg.span.start)
       // A function a test declares has a wasm name of its test's, which the
       // instance, a function of the module, could not call.
-      if (this.testOnly.has(arg.name) && target === this.moduleScope.symbols.get(arg.name)) {
+      const ofTest = this.testDeclared.has(target) || (this.testOnly.has(arg.name) && target === this.moduleScope.symbols.get(arg.name))
+      if (ofTest) {
         this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be a function declared at module level: '${arg.name}' is declared inside a test`)
         return null
       }
