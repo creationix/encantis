@@ -1346,7 +1346,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
       }
       if (member.name === 'wid') {
         // Element byte size is always compile-time known
-        const elemSize = byteSize(objType.element)
+        const elemSize = byteSize(RT.tableRow(objType) ?? objType.element)
         if (elemSize === null) {
           throw new Error(`Cannot determine element size for ${objType.element.kind}`)
         }
@@ -1413,7 +1413,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
-        const elemSize = byteSize(arrayType.element)
+        const elemSize = byteSize(RT.tableRow(objType) ?? arrayType.element)
         if (elemSize === null) {
           throw new Error(`Cannot determine element size for ${arrayType.element.kind}`)
         }
@@ -1453,7 +1453,11 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
 function indexOffset(object: AST.Expr, base: string, index: string, ctx: CodegenContext): { offset: string; elemSize: number } {
   const arrayType = lookupExprType(object, ctx)
   let elemSize = 1
-  if (arrayType) {
+  // The elements of a table are its row pointers.
+  const row = arrayType && RT.tableRow(arrayType)
+  if (row) {
+    elemSize = byteSize(row) ?? 4
+  } else if (arrayType) {
     if (arrayType.kind === 'slice' || arrayType.kind === 'array') {
       elemSize = byteSize(arrayType.element) ?? 1
     } else if (arrayType.kind === 'pointer' && arrayType.pointee.kind === 'array') {
@@ -1504,7 +1508,7 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
   const objType = lookupExprType(expr.object, ctx)
   if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
   const u = unwrap(objType)
-  const stride = byteSize(resultType.element) ?? 1
+  const stride = byteSize(RT.tableRow(resultType) ?? resultType.element) ?? 1
   const uid = expr.span.start
   const setup: string[] = []
   const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
@@ -1560,7 +1564,7 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
   const dstType = lookupExprType(target, ctx)
   if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
   const elem = dstType.element
-  const stride = byteSize(elem) ?? 1
+  const stride = byteSize(RT.tableRow(dstType) ?? elem) ?? 1
   const uid = target.span.start
   const p = `$__bulk_p_${uid}`
   const n = `$__bulk_n_${uid}`

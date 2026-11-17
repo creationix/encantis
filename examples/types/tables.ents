@@ -1,0 +1,131 @@
+// Tables: a pointer or slice whose element is a fixed array. Each element of
+// *[N][M]T, [][M]T or [*][M]T is a pointer to its row, and the rows are laid
+// out on their own. *[NxM]T is the other spelling: one packed block of N×M
+// elements. A fixed array that is a field of a struct lies in place.
+
+export memory 1
+
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data packed: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+data many: [*][2]i32 = [[10, 11], [12, 13]]
+data cube: *[2][2][2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+data spare: *mut [3]i32 = mut [40, 41, 42]
+
+type Tagged = (tag: u8, v: [2]i32)
+data tagged: *[2]Tagged = [(1, [7, 8]), (2, [9, 10])]
+
+func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+
+func total(xs: []i32) -> i32 {
+  let t = 0
+  for x in xs {
+    t += x
+  }
+  return t
+}
+
+// Both indexes known to be in range: no check at run time.
+export func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+
+// A row index only known at run time is resolved where it is taken.
+export func row-sum(i: u32) -> i32 => if let r = grid[i] { sum(r) } else { -1 }
+
+// A slice's rows are checked against its length. ?? and if let resolve the
+// index they are given: in rows[i][j] ?? 0 the row index would be unchecked,
+// so that is an error, and the row is resolved first.
+export func slice-cell(i: u32, j: u32#2) -> i32 => if let r = rows[i] { r[j] } else { -1 }
+
+test "a cell is read through its row pointer" {
+  assert cell(0, 0) == 7
+  assert cell(0, 2) == 2
+  assert cell(1, 0) == 3
+  assert cell(1, 2) == 5
+}
+
+test "the table holds the addresses of its rows" {
+  let first = grid[0]
+  let second = grid[1]
+  assert (grid as [*]u32)[0] == first as u32
+  assert (grid as [*]u32)[1] == second as u32
+}
+
+test "a packed block holds the cells themselves" {
+  assert packed[1][0] == 3
+  assert (packed as [*]i32)[3] == 3
+  assert (packed[1] as u32) - (packed as u32) == 12
+}
+
+test "len, wid and sizeof" {
+  assert grid.len == 2
+  assert grid.wid == 4
+  assert grid[1].len == 3
+  assert grid[1].wid == 4
+  assert sizeof(*[2][3]i32) == 4
+  assert sizeof([2][3]i32) == 24
+}
+
+test "a row index checked at run time" {
+  assert row-sum(0) == 10
+  assert row-sum(1) == 12
+  assert row-sum(2) == -1
+}
+
+test "a slice of rows" {
+  assert rows.len == 3
+  assert slice-cell(0, 1) == 1
+  assert slice-cell(2, 0) == 5
+  assert slice-cell(3, 0) == -1
+}
+
+test "a many-pointer to rows" {
+  assert many[0][1] == 11
+  assert many[1][0] == 12
+}
+
+test "each element of a loop is a row pointer" {
+  let t = 0
+  for k, r in grid {
+    t += r[0] * (k as i32 + 1)
+  }
+  assert t == 13
+}
+
+test "a row passes as a pointer or a slice" {
+  assert sum(grid[1]) == 12
+  assert total(grid[1]) == 12
+  assert total(grid[0][1..]) == 3
+}
+
+test "a row loaded whole" {
+  let v = grid[1].*
+  assert v[0] == 3
+  assert v[2] == 5
+}
+
+test "tables nest" {
+  assert cube[0][0][1] == 2
+  assert cube[1][0][0] == 5
+  assert cube[1][1][1] == 8
+}
+
+test "a write goes through the row pointer" {
+  board[1][2] = 9
+  board[0][2] = 4
+  assert board[1][2] == 9
+  assert board[0][2] == 4
+  assert board[1][0] == 0
+}
+
+test "a row can be pointed elsewhere" {
+  board[1] = spare
+  board[1][0] = 50
+  assert spare[0] == 50
+  assert board[1][1] == 41
+}
+
+test "a fixed array in a struct lies in place" {
+  assert tagged[1].v[1] == 10
+  assert tagged[0].v[0] == 7
+}

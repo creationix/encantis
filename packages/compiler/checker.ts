@@ -43,6 +43,7 @@ import {
   byteSize,
   isFixedSizes,
   isValueArray,
+  tableRow,
   totalElements,
   optionalOf,
   isOptional,
@@ -1219,7 +1220,7 @@ class CheckContext {
             return { kind: 'int', value: BigInt(arrType.sizes[0]) }
           }
           if (expr.member.name === 'wid') {
-            const elemSize = byteSize(arrType.element)
+            const elemSize = byteSize(tableRow(objType) ?? arrType.element)
             if (elemSize !== null) return { kind: 'int', value: BigInt(elemSize) }
           }
         }
@@ -1621,9 +1622,9 @@ class CheckContext {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
         } else if (iterableType.kind === 'slice') {
-          elemType = iterableType.element
+          elemType = tableRow(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
-          elemType = pointee.element
+          elemType = tableRow(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
@@ -2390,6 +2391,15 @@ class CheckContext {
             } else {
               this.checkExpr(elem, innerType)
             }
+          }
+        }
+      }
+      // The rows of a table are laid out apart from it, at compile time: a
+      // row or a cell known only at run time has no place to be stored.
+      if (tableRow(expected) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+        for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+          if (!this.isConstantInitializer(row)) {
+            this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
           }
         }
       }
@@ -3524,7 +3534,7 @@ class CheckContext {
             return primitive('u32')
           }
           if (expr.member.name === 'wid') {
-            const ws = byteSize(arrayType.element)
+            const ws = byteSize(tableRow(objType) ?? arrayType.element)
             if (ws !== null) return comptimeInt(BigInt(ws))
             return primitive('u32')
           }
@@ -3559,6 +3569,11 @@ class CheckContext {
         // Pointer dereference: p.* - only valid for basic pointers *T
         // Many-pointers [*]T and slices []T should use [0] syntax instead
         if (objType.kind === 'pointer') {
+          // A table is row pointers, not the rows: there is no [N][M]T in
+          // memory to load or store whole.
+          if (tableRow(objType)) {
+            this.error(expr.span.start, `cannot use .* on ${typeToString(objType)}: a table holds pointers to rows that lie apart — load one row with [i].*`)
+          }
           return objType.pointee
         }
         if (objType.kind === 'array' || objType.kind === 'slice') {
@@ -3746,6 +3761,8 @@ class CheckContext {
     } else {
       return null
     }
+    // The element of a table is its row pointer: &m[i] is where that is.
+    elem = tableRow(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
@@ -3785,8 +3802,19 @@ class CheckContext {
   }
 
   inferIndex(expr: AST.IndexExpr): ResolvedType {
+    // if let and ?? resolve the index they are given, not one it is taken
+    // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
+    const resolvable = this.insideIfLetCondition
+    this.insideIfLetCondition = false
     const objType = this.inferExpr(expr.object)
+    this.insideIfLetCondition = resolvable
     this.inferIndexValue(expr.index)
+
+    // An element of a table is its row pointer. A row has no optional type:
+    // like a value element, an index not known to be in range is resolved
+    // where it is taken, with if let or ??.
+    const row = tableRow(objType)
+    const noOptional = (elem: ResolvedType) => row ? 'rows are not optional' : `no optional type for ${typeToString(elem)}`
 
     if (objType.kind === 'slice') {
       const idx = this.evalComptimeExpr(expr.index)
@@ -3797,10 +3825,10 @@ class CheckContext {
           return optionalOf(elem)
         }
         if (!this.insideIfLetCondition) {
-          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
         }
       }
-      return objType.element
+      return row ?? objType.element
     }
 
     if (objType.kind === 'comptime_array') {
@@ -3856,7 +3884,7 @@ class CheckContext {
                   return optionalOf(elem)
                 }
                 if (!this.insideIfLetCondition) {
-                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
                 }
               }
             }
@@ -3864,7 +3892,7 @@ class CheckContext {
             this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${n}]${typeToString(arrayType.element)}`)
           }
         }
-        return arrayType.element
+        return row ?? arrayType.element
       }
       return objType.pointee
     }
