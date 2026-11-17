@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult } from './checker'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
@@ -977,7 +977,7 @@ class MetaBuilder {
                   }
                   // Slices have runtime length, no comptime value
                 } else if (expr.member.name === 'wid') {
-                  const elemSize = byteSize(arrayType.element)
+                  const elemSize = byteSize(tableRow(objType) ?? arrayType.element)
                   if (elemSize !== null) {
                     comptimeValue = String(elemSize)
                   }
