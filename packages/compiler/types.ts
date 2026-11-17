@@ -745,12 +745,9 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Fixed array coerces to slice: [N]T → []T. A framed one ([!]T, [?]T)
-  // has no length to give it here: (s.ptr, s.len) is the slice (9.5).
-  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'slice' && !s.sizes?.includes('_') && !s.sizes?.some(isFraming)) {
-    const elemResult = typeAssignResult(t.element, s.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
-  }
+  // No array without its pointer coerces to a slice: a [N]T is a value, and
+  // one held as its pointer ([!]T, [?]T, a packed [NxM]T) has no length to
+  // give it here: (s.ptr, s.len) is the slice (9.5). A pointer to it does.
 
   // Fixed array coerces to many-pointer: [N]T → [*]T
   if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {

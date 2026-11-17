@@ -1504,6 +1504,11 @@ describe('arrays where a pointer is wanted', () => {
       'cannot assign [!]u8 to []u8',
     ])
     expect(errs('func m(p: [*]u8) -> u8 => p[1]\nfunc z(p: *[!]u8) -> u32 => p.len\nfunc f(v: [!]u8) -> u32 => m(v) as u32 + z(v)')).toEqual([])
+    // Nor does a packed [NxM]T written without the *, which is held the same
+    // way: the call passed its pointer alone, an invalid module.
+    expect(errs('func n(s: []i32) -> u32 => s.len\nfunc f(v: [2x3]i32) -> u32 => n(v)')).toEqual([
+      'argument 1: cannot assign [2x3]i32 to []i32',
+    ])
   })
 
   test('the elements of a literal for a *[N]T are its elements, not arrays or strings', () => {
