@@ -1428,7 +1428,8 @@ export func sum_u128(xs: []u128) -> u128 => sum_u128_(xs)
 `
 
 describe('zero cost', () => {
-  // Z1. The sizes are those of the hand-written sides compiled by 0.2.1.
+  // Z1. The sizes are those of the hand-written sides compiled by 0.2.1, and
+  // by the stack of fixes this branch now stands on.
   test('the example of the reference is the module written by hand, byte for byte', async () => {
     expect(await expectSameWasm(DOC_GENERIC, DOC_BY_HAND)).toHaveLength(105)
   })
@@ -1686,6 +1687,384 @@ test "wide" {
     } finally {
       await rm(dir, { recursive: true })
     }
+  })
+})
+
+// What the stack of compiler fixes added (implicit conversions recorded by
+// node, values loaded from and stored to memory by their type, scratch locals
+// of its own) is new ground for the claim. Each pair is a program that leans
+// on one of those and the same program written by hand.
+describe('zero cost, on what the fix branches added', () => {
+  test('a widened argument, at the call and inside the instance', async () => {
+    const generic = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func scale(comptime T: type, x: T, by: u32) -> T => x * by
+export func a(x: u64, y: u32) -> u64 => max(x, y)
+export func b(x: f64, y: f32, n: u32) -> f64 => max(x, y) + scale(x, n)
+export func c(x: i64, y: u8) -> i64 => scale(max(i64, x, y), y)
+export func d(x: u128, y: u64) -> u128 => max(x, y)
+`
+    const byHand = `func max_f64(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+func max_i64(a: i64, b: i64) -> i64 => if a > b { a } else { b }
+func max_u128(a: u128, b: u128) -> u128 => if a > b { a } else { b }
+func max_u64(a: u64, b: u64) -> u64 => if a > b { a } else { b }
+func scale_f64(x: f64, by: u32) -> f64 => x * by
+func scale_i64(x: i64, by: u32) -> i64 => x * by
+export func a(x: u64, y: u32) -> u64 => max_u64(x, y)
+export func b(x: f64, y: f32, n: u32) -> f64 => max_f64(x, y) + scale_f64(x, n)
+export func c(x: i64, y: u8) -> i64 => scale_i64(max_i64(x, y), y)
+export func d(x: u128, y: u64) -> u128 => max_u128(x, y)
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect(exports.a(5n, 7)).toBe(7n)
+    expect(exports.b(1.5, 2.5, 2)).toBe(5.5)
+    expect(exports.c(-5n, 3)).toBe(9n)
+    expect(exports.d(0n, 1n, 5n)).toEqual([0n, 1n])
+  })
+
+  test('an instance over a struct that is loaded from and stored to memory', async () => {
+    const generic = `type Spot = (c: i32, di: i32, room: i32)
+type Mixed = (a: u8, b: i16, c: u64, d: f32)
+data space = mut [0:u8; 256]
+
+func cell(comptime T: type, i: u32) -> *mut T => ((space as u32) + i * sizeof(T)) as *mut T
+func load(comptime T: type, p: *T) -> T => p.*
+func store(comptime T: type, p: *mut T, v: T) { p.* = v }
+func swap(comptime T: type, a: *mut T, b: *mut T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+func put(comptime T: type, list: [*]mut T, i: u32, v: T) { list[i] = v }
+func get(comptime T: type, list: [*]T, i: u32) -> T => list[i]
+
+export func spot(i: u32, j: u32) -> i32 {
+  store(cell(Spot, i), Spot(1, 2, 3))
+  store(Spot, cell(Spot, j), Spot(4, 5, 6))
+  swap(cell(Spot, i), cell(Spot, j))
+  let s = load(cell(Spot, i))
+  put(space as [*]mut Spot, 7, s)
+  return get(space as [*]Spot, 7).room + s.c
+}
+export func mixed(i: u32) -> u64 {
+  store(cell(Mixed, i), Mixed(1, -2, 3, 0.5))
+  swap(cell(Mixed, i), cell(Mixed, i + 1))
+  let m = load(cell(Mixed, i + 1))
+  return m.c + (m.a as u64)
+}
+`
+    const byHand = `type Spot = (c: i32, di: i32, room: i32)
+type Mixed = (a: u8, b: i16, c: u64, d: f32)
+data space = mut [0:u8; 256]
+
+func cell_mixed(i: u32) -> *mut Mixed => ((space as u32) + i * sizeof(Mixed)) as *mut Mixed
+func cell_spot(i: u32) -> *mut Spot => ((space as u32) + i * sizeof(Spot)) as *mut Spot
+func load_mixed(p: *Mixed) -> Mixed => p.*
+func load_spot(p: *Spot) -> Spot => p.*
+func store_mixed(p: *mut Mixed, v: Mixed) { p.* = v }
+func store_spot(p: *mut Spot, v: Spot) { p.* = v }
+func swap_mixed(a: *mut Mixed, b: *mut Mixed) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+func swap_spot(a: *mut Spot, b: *mut Spot) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+func put_spot(list: [*]mut Spot, i: u32, v: Spot) { list[i] = v }
+func get_spot(list: [*]Spot, i: u32) -> Spot => list[i]
+
+export func spot(i: u32, j: u32) -> i32 {
+  store_spot(cell_spot(i), Spot(1, 2, 3))
+  store_spot(cell_spot(j), Spot(4, 5, 6))
+  swap_spot(cell_spot(i), cell_spot(j))
+  let s = load_spot(cell_spot(i))
+  put_spot(space as [*]mut Spot, 7, s)
+  return get_spot(space as [*]Spot, 7).room + s.c
+}
+export func mixed(i: u32) -> u64 {
+  store_mixed(cell_mixed(i), Mixed(1, -2, 3, 0.5))
+  swap_mixed(cell_mixed(i), cell_mixed(i + 1))
+  let m = load_mixed(cell_mixed(i + 1))
+  return m.c + (m.a as u64)
+}
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).spot(0, 1)).toBe(10)
+    expect((await run(generic)).mixed(2)).toBe(4n)
+  })
+
+  test('a []T of structs with an element loop, and a bool field in memory', async () => {
+    const generic = `type Spot = (c: i32, di: i32, room: i32)
+type Seat = (room: i32, taken: bool)
+data space = mut [0:u8; 256]
+
+func rooms(comptime T: type, xs: []T) -> (n: i32) {
+  n = 0
+  for v in xs {
+    n += v.room
+  }
+}
+func last(comptime T: type, xs: []T, or: T) -> T {
+  let found = or
+  for i, v in xs {
+    if i > 0 { found = v }
+  }
+  return found
+}
+func fill(comptime T: type, xs: []mut T, v: T) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = v
+  }
+}
+func count(comptime T: type, xs: []T, x: T) -> u32 {
+  let n: u32 = 0
+  for v in xs {
+    if v == x { n += 1 }
+  }
+  return n
+}
+func load(comptime T: type, p: *T) -> T => p.*
+func store(comptime T: type, p: *mut T, v: T) { p.* = v }
+
+export func spots(n: u32) -> i32 {
+  let xs: []mut Spot = (space as [*]mut Spot, n)
+  fill(xs, Spot(1, 2, 3))
+  return rooms(xs) + last(xs, Spot(0, 0, 0)).di
+}
+export func seats(n: u32) -> i32 {
+  let xs: []mut Seat = (space as [*]mut Seat, n)
+  fill(xs, Seat(7, true))
+  let s = last(Seat, xs, Seat(0, false))
+  return if s.taken { rooms(xs) } else { 0 }
+}
+export func seat(room: i32, taken: bool) -> bool {
+  let p = space as *mut Seat
+  store(p, Seat(room, taken))
+  p.taken = !load(p).taken
+  return load(p).taken
+}
+export func flags(n: u32) -> u32 {
+  let xs: []mut bool = (space as [*]mut bool, n)
+  store(space as *mut bool, true)
+  fill(xs[1..] ?? xs, false)
+  return count(xs, true) * 100 + count(bool, xs, false)
+}
+`
+    const byHand = `type Spot = (c: i32, di: i32, room: i32)
+type Seat = (room: i32, taken: bool)
+data space = mut [0:u8; 256]
+
+func rooms_spot(xs: []Spot) -> (n: i32) {
+  n = 0
+  for v in xs {
+    n += v.room
+  }
+}
+func rooms_seat(xs: []Seat) -> (n: i32) {
+  n = 0
+  for v in xs {
+    n += v.room
+  }
+}
+func last_spot(xs: []Spot, or: Spot) -> Spot {
+  let found = or
+  for i, v in xs {
+    if i > 0 { found = v }
+  }
+  return found
+}
+func last_seat(xs: []Seat, or: Seat) -> Seat {
+  let found = or
+  for i, v in xs {
+    if i > 0 { found = v }
+  }
+  return found
+}
+func fill_spot(xs: []mut Spot, v: Spot) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = v
+  }
+}
+func fill_seat(xs: []mut Seat, v: Seat) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = v
+  }
+}
+func fill_bool(xs: []mut bool, v: bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    p[i] = v
+  }
+}
+func count_bool(xs: []bool, x: bool) -> u32 {
+  let n: u32 = 0
+  for v in xs {
+    if v == x { n += 1 }
+  }
+  return n
+}
+func load_seat(p: *Seat) -> Seat => p.*
+func store_seat(p: *mut Seat, v: Seat) { p.* = v }
+func store_bool(p: *mut bool, v: bool) { p.* = v }
+
+export func spots(n: u32) -> i32 {
+  let xs: []mut Spot = (space as [*]mut Spot, n)
+  fill_spot(xs, Spot(1, 2, 3))
+  return rooms_spot(xs) + last_spot(xs, Spot(0, 0, 0)).di
+}
+export func seats(n: u32) -> i32 {
+  let xs: []mut Seat = (space as [*]mut Seat, n)
+  fill_seat(xs, Seat(7, true))
+  let s = last_seat(xs, Seat(0, false))
+  return if s.taken { rooms_seat(xs) } else { 0 }
+}
+export func seat(room: i32, taken: bool) -> bool {
+  let p = space as *mut Seat
+  store_seat(p, Seat(room, taken))
+  p.taken = !load_seat(p).taken
+  return load_seat(p).taken
+}
+export func flags(n: u32) -> u32 {
+  let xs: []mut bool = (space as [*]mut bool, n)
+  store_bool(space as *mut bool, true)
+  fill_bool(xs[1..] ?? xs, false)
+  return count_bool(xs, true) * 100 + count_bool(xs, false)
+}
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect(exports.spots(3)).toBe(11)
+    expect(exports.seats(2)).toBe(14)
+    expect(exports.seat(5, 1)).toBe(0)
+    expect(exports.seat(5, 0)).toBe(1)
+    expect(exports.flags(4)).toBe(103)
+  })
+
+  // A match subject and the operands of an integer min, max and abs are kept
+  // in locals named after their place in the source, and an address that is
+  // used twice in a local the function numbers. In an instance the first kind
+  // must not carry the instance's private offsets.
+  test('scratch locals, a global of several values and an element read with a fallback', async () => {
+    const generic = `type Spot = (c: i32, di: i32, room: i32)
+data table = [3:u32, 1, 4, 1, 5]
+data space = mut [0:u8; 64]
+global saved: Spot = Spot(0, 0, 0)
+global calls: u32 = 0
+
+func bucket(comptime T: type, x: T, y: T) -> i32 => match (x + y) / 2 {
+  0 => 0
+  1 => 10
+  _ => -1
+}
+func spread(comptime T: type, a: T, b: T, c: T) -> T => max(a + b, b + c) - min(a * b, abs(c - a))
+func pick(comptime T: type, xs: []T, i: u32, fallback: T) -> T => xs[i] ?? fallback
+func keep(comptime T: type, v: T) -> T {
+  calls += 1
+  saved = v
+  return saved
+}
+func first(comptime T: type, xs: []T, fallback: T) -> T {
+  if let v = xs[0] { return v }
+  return fallback
+}
+func bump(comptime T: type, p: *mut T, by: T) {
+  p.* += by
+  p.* <<= 1
+}
+
+export func a(x: u32, y: u32) -> i32 => bucket(x, y) + bucket(u8, 3, 1)
+export func b(x: i32, y: i64) -> i64 => (spread(x, 2, 3) as i64) + spread(y, 2, 3)
+export func c(i: u32) -> u32 => pick(table, i, 9) + first(table[i..] ?? table[0..1], 7)
+export func d(n: i32) -> i32 {
+  let list: []mut Spot = (space as [*]mut Spot, 2:u32)
+  list.ptr[1] = keep(Spot(n, 2, 3))
+  return pick(list, 1, saved).c + first(Spot, list, saved).room
+}
+export func e(v: u64) -> u64 {
+  let p = space as *mut u64
+  bump(p, v)
+  bump(space as *mut u16, 3)
+  return p.*
+}
+`
+    const byHand = `type Spot = (c: i32, di: i32, room: i32)
+data table = [3:u32, 1, 4, 1, 5]
+data space = mut [0:u8; 64]
+global saved: Spot = Spot(0, 0, 0)
+global calls: u32 = 0
+
+func bucket_u32(x: u32, y: u32) -> i32 => match (x + y) / 2 {
+  0 => 0
+  1 => 10
+  _ => -1
+}
+func bucket_u8(x: u8, y: u8) -> i32 => match (x + y) / 2 {
+  0 => 0
+  1 => 10
+  _ => -1
+}
+func spread_i32(a: i32, b: i32, c: i32) -> i32 => max(a + b, b + c) - min(a * b, abs(c - a))
+func spread_i64(a: i64, b: i64, c: i64) -> i64 => max(a + b, b + c) - min(a * b, abs(c - a))
+func pick_spot(xs: []Spot, i: u32, fallback: Spot) -> Spot => xs[i] ?? fallback
+func pick_u32(xs: []u32, i: u32, fallback: u32) -> u32 => xs[i] ?? fallback
+func keep_spot(v: Spot) -> Spot {
+  calls += 1
+  saved = v
+  return saved
+}
+func first_spot(xs: []Spot, fallback: Spot) -> Spot {
+  if let v = xs[0] { return v }
+  return fallback
+}
+func first_u32(xs: []u32, fallback: u32) -> u32 {
+  if let v = xs[0] { return v }
+  return fallback
+}
+func bump_u16(p: *mut u16, by: u16) {
+  p.* += by
+  p.* <<= 1
+}
+func bump_u64(p: *mut u64, by: u64) {
+  p.* += by
+  p.* <<= 1
+}
+
+export func a(x: u32, y: u32) -> i32 => bucket_u32(x, y) + bucket_u8(3, 1)
+export func b(x: i32, y: i64) -> i64 => (spread_i32(x, 2, 3) as i64) + spread_i64(y, 2, 3)
+export func c(i: u32) -> u32 => pick_u32(table, i, 9) + first_u32(table[i..] ?? table[0..1], 7)
+export func d(n: i32) -> i32 {
+  let list: []mut Spot = (space as [*]mut Spot, 2:u32)
+  list.ptr[1] = keep_spot(Spot(n, 2, 3))
+  return pick_spot(list, 1, saved).c + first_spot(list, saved).room
+}
+export func e(v: u64) -> u64 {
+  let p = space as *mut u64
+  bump_u64(p, v)
+  bump_u16(space as *mut u16, 3)
+  return p.*
+}
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).a(1, 1)).toBe(9)
+    expect((await run(generic)).b(1, 1n)).toBe(6n)
+    expect((await run(generic)).c(0)).toBe(6)
+    expect((await run(generic)).c(9)).toBe(12)
+    expect((await run(generic)).d(5)).toBe(5)
+    expect((await run(generic)).e(5n)).toBe(26n)
+    // The names are those of the generic's source, the same in each instance.
+    const wat = watOfSource(generic)
+    const scratch = (name: string) => [...funcWat(wat, name).matchAll(/\(local (\$__[\w]+)/g)].map(m => m[1])
+    expect(scratch('bucket<u32>').length).toBeGreaterThan(0)
+    expect(scratch('bucket<u8>')).toEqual(scratch('bucket<u32>'))
+    expect(scratch('spread<i32>').length).toBeGreaterThan(0)
+    expect(scratch('spread<i64>')).toEqual(scratch('spread<i32>'))
+    expect(scratch('pick<u32>').length).toBeGreaterThan(0)
   })
 })
 
