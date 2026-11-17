@@ -1084,7 +1084,11 @@ export interface DataSectionResult {
  * Build the data section from pending literals collected during type checking.
  * Serialization types are looked up from the types map at typeKey(id, 'DataTarget').
  */
-export function buildDataSection(literals: PendingLiteral[], types: Map<string, ResolvedType>): DataSectionResult {
+export function buildDataSection(
+  literals: PendingLiteral[],
+  types: Map<string, ResolvedType>,
+  options: { tolerant?: boolean } = {},
+): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
@@ -1105,8 +1109,15 @@ export function buildDataSection(literals: PendingLiteral[], types: Map<string, 
 
   // Serialize each literal
   for (const lit of sorted) {
-    const ref = serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs)
-    literalRefs.set(lit.id, ref)
+    try {
+      literalRefs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs))
+    } catch (e) {
+      // Laying a literal out takes for granted that it passed the checker. In
+      // a module that didn't (the editor asks for metadata as it is typed), a
+      // literal with an element of the wrong type has no layout: it is left
+      // without an address, and the others keep theirs.
+      if (!options.tolerant) throw e
+    }
   }
 
   return { dataBuilder, literalRefs }

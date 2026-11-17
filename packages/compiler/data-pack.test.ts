@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  buildDataSection,
   layoutLiterals,
   type LiteralValue,
   type QualifiedLiteral,
   DataSectionBuilder,
 } from './data-pack'
+import { typecheck } from './checker'
 import { array, primitive, type ArraySize } from './types'
 import { parse } from './parser'
 
@@ -302,5 +304,20 @@ describe('layoutLiterals', () => {
       // Total size is just 6 bytes
       expect(result.totalSize).toBe(6)
     })
+  })
+})
+
+describe('buildDataSection', () => {
+  // A module the checker rejects: the second literal has a float for an i32.
+  const check = typecheck(parse('data ok = [1, 2]\ndata bad: *[2]i32 = [1, 2.5]').module!)
+
+  test('a literal that cannot be laid out stops the build', () => {
+    expect(check.errors.map(e => e.message)).toEqual(['cannot assign float(2.5) to i32'])
+    expect(() => buildDataSection(check.literals, check.types)).toThrow('Cannot serialize float literal')
+  })
+
+  test('tolerant, it is left out and the others are laid out', () => {
+    const { literalRefs } = buildDataSection(check.literals, check.types, { tolerant: true })
+    expect([...literalRefs.values()]).toEqual([{ ptr: 8, len: 8 }])
   })
 })
