@@ -2953,7 +2953,9 @@ class CheckContext {
           const inner = unwrap(innerType).kind
           const counted = expected.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
+            // A tuple is never laid out apart behind a pointer element: as
+            // for a field or a let, (1, 2) is not a *Pt.
+            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
             if (this.isDataLiteralExpr(elem) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
@@ -2978,7 +2980,9 @@ class CheckContext {
       // pointer to framed arrays: codegen fills in an element that is known
       // only at run time, but not what is inside one of them.
       const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
-      const apart = !tableRow(expected) && framings <= 1 && (arrType.element.kind === 'slice' || arrType.element.kind === 'array')
+      const element = arrType.element
+      const apart = !tableRow(expected) && framings <= 1 &&
+        (element.kind === 'slice' || element.kind === 'array' || (element.kind === 'pointer' && element.pointee.kind === 'array'))
       if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
         for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           let inner = ungrouped(element)
@@ -3139,9 +3143,13 @@ class CheckContext {
         return
       }
     }
-    // The rows: fixed arrays, laid out in place or apart.
+    // The rows: fixed arrays, laid out in place or apart, or the literals an
+    // array of pointers points at.
     const r = row && unwrap(row)
-    if (!r || r.kind !== 'array' || !r.sizes?.every((s) => typeof s === 'number') || (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr')) return
+    if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr') return
+    const rows = r?.kind === 'array' ? r.sizes?.every((s) => typeof s === 'number')
+      : r?.kind === 'pointer' && r.pointee.kind === 'array'
+    if (!r || !rows) return
     for (const element of e.kind === 'ArrayExpr' ? e.elements : [e.value]) this.checkLiteralCount(element, r, prefix)
   }
 

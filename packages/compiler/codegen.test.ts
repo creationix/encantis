@@ -2896,6 +2896,33 @@ describe('values of literals laid out in memory', () => {
     expect([two(3, 4), packed(5)]).toEqual([342, 51657])
   })
 
+  test('an element of an array of pointers given a literal is the address of that literal', async () => {
+    // Each was laid out in place, as if the type were *[2][2]i32: pa[1][0]
+    // read 167772160, and a run-time element was stored past the cell.
+    const f = await run(`
+      data ones: *[3]i32 = [1, 1, 1]
+      data pa: *[2]*[2]i32 = [[1, 2], [3, 4]]
+      data pn: *[2]*[3]i32 = [ones, [7, 1 + 1, 9]]
+      data ps: *[2][*]u8 = ["ab", "cd"]
+      data pm: *[2]*mut [2]i32 = [[1, 2], [1, 2]]
+      export func a() -> i32 => pa[0][1] * 10 + pa[1][0]
+      export func b() -> i32 => pn[0][2] * 100 + pn[1][1] * 10 + pn[1][2]
+      export func c() -> u8 => ps[1][1]
+      export func d() -> i32 {
+        pm[0][0] = 9
+        return pm[1][0] * 10 + pa[0][0]
+      }
+      export func e(x: *[2]i32) -> i32 {
+        let p: *[3]*[2]u8 = ["AB", [7; 2], "CD"]
+        let q: *[2]*[2]i32 = [[5, 6], x]
+        return (p[2][1] as i32) * 1000 + (p[1][0] as i32) * 100 + q[0][1] * 10 + q[1][0]
+      }
+      export func pa1() -> *[2]i32 => pa[1]
+    `)
+    const pa1 = f.pa1() as number
+    expect([f.a(), f.b(), f.c(), f.d(), f.e(pa1)]).toEqual([23, 129, 100, 11, 68000 + 700 + 60 + 3])
+  })
+
   test('a parameter or a binding named like data is not that data', async () => {
     // The values of a literal are worked out at the end of the function,
     // when its names are out of scope: these read as the module's data.

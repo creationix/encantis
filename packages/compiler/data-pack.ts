@@ -805,14 +805,15 @@ function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataS
     const count = lit.kind === 'ArrayExpr' ? lit.elements.length
       : lit.kind === 'RepeatExpr' ? getRepeatCount(lit, builder)
       : lit.kind === 'LiteralExpr' && lit.value.kind === 'string' ? lit.value.bytes.length : 0
+    // A literal given for a mutable pointer or slice is a copy of its own.
     if (t.kind === 'slice') {
-      const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
+      const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder, undefined, t.mutable)
       return bytesOf(concatBytes([serializeI32(ref.ptr), serializeI32(count)]))
     }
     if (t.kind === 'pointer' && t.pointee.kind === 'array') {
       // A many-pointer has no count of its own: the literal's.
       const target = t.pointee.sizes === null ? { ...t.pointee, sizes: [count] } : t.pointee
-      return bytesOf(serializeI32(serializeLiteral(lit, target, builder).ptr))
+      return bytesOf(serializeI32(serializeLiteral(lit, target, builder, undefined, t.mutable).ptr))
     }
   }
   return buildElementBytes(expr, fieldType, [], builder)
@@ -829,6 +830,18 @@ function buildElementBytes(
   // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
   if (expr.kind === 'AnnotationExpr') {
     return buildElementBytes(expr.expr, elementType, framings, builder)
+  }
+
+  // An element that is a pointer to an array, given as a literal
+  // (*[2]*[3]i32 = [[1, 2, 3], [4, 5, 6]], *[2][*]u8 = ["ab", "cd"]): the
+  // literal is laid out apart, and the element is its address, as a field's.
+  const pointer = unwrap(elementType)
+  let lit = ungroup(expr)
+  while (lit.kind === 'AnnotationExpr') lit = ungroup(lit.expr)
+  const laidOut = (lit.kind === 'LiteralExpr' && lit.value.kind === 'string') || lit.kind === 'ArrayExpr' || lit.kind === 'RepeatExpr'
+  if (pointer.kind === 'pointer' && pointer.pointee.kind === 'array' && laidOut) {
+    const address = buildFieldBytes(lit, elementType, builder)
+    return framings.length === 0 ? address : applyFramings(address, framings, 4)
   }
 
   if (expr.kind === 'LiteralExpr') {

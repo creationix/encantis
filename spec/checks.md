@@ -795,6 +795,30 @@ cannot assign a string literal to *[2][2]u8 — a string is bytes ([]u8); write 
 cannot assign a string of 4 bytes to *mut [4][]u8
 ```
 
+An element of an array of pointers given a literal is the address of that literal, laid out apart: it has the count its pointer says, its values are constants, and a tuple is not a pointer to a struct.
+
+```ents
+type Pt = (x: i32, y: i32)
+data ones: *[2]i32 = [1, 1]
+data a: *[2]*[2]i32 = [[1, 2], ones]
+data b: *[2][*]u8 = ["ab", "cde"]
+data c: *[2]*[2]i32 = [[1, 2, 3], [4, 5]]
+data d: *[2]*[2]u8 = ["abc", "de"]
+data e: *[1]*Pt = [(1, 2)]
+
+func f(x: i32) -> i32 {
+  let p: *[2]*[2]i32 = [[x, 2], ones]
+  return p[0][0]
+}
+```
+
+```errors
+cannot assign 3 elements to *[2]i32
+cannot assign a string of 3 bytes to *[2]u8
+cannot assign (int(1), int(2)) to *Pt
+an element of *[2]*[2]i32 is laid out at compile time: its values must be constants
+```
+
 `memcpy`, `memset` and `memzero` write their destination, as a write through an index does: it is a `*mut` pointer.
 
 ```ents
