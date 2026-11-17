@@ -3230,6 +3230,22 @@ describe('the variables of a for, an if let or a match arm', () => {
     expect(errs('test "t" {\n let i: u32 = 4\n for i in 3 { }\n}')).toEqual([loop('i', 'a variable in scope')])
   })
 
+  test('a let that takes its names from fields has a name of its own too', () => {
+    const P = 'type P = (x: u32, y: u32)\n'
+    const taken = (name: string) => `'${name}' is already declared in this scope`
+    // In a loop of its name it took over the loop's counter: the loop ran once.
+    expect(errs(`${P}func f(p: P) -> u32 {\n let t: u32 = 0\n for x in 3 {\n let (x:, y:) = p\n t += y\n }\n return t\n}`)).toEqual([taken('x')])
+    expect(errs(`${P}data cells = [7:u32, 8]\nfunc f(p: P, i: u32) -> u32 {\n if let v = cells[i] {\n let (x: v, y:) = p\n return v + y\n }\n return 0\n}`))
+      .toEqual([taken('v')])
+    expect(errs(`${P}func f(p: P, x: u32) -> u32 {\n let (x:, y:) = p\n return x + y\n}`)).toEqual([taken('x')])
+    expect(errs(`${P}func f(p: P) -> u32 {\n let y: u32 = 1\n let (x:, y:) = p\n return x + y\n}`)).toEqual([taken('y')])
+    // Its names are free after a loop of them, and in another function.
+    expect(errs(`${P}func f(p: P) -> u32 {\n let t: u32 = 0\n for x in 3 { t += x }\n let (x:, y: k) = p\n return t + x + k\n}\nfunc g(p: P) -> u32 {\n let (x:, y:) = p\n return x\n}`))
+      .toEqual([])
+    // Checked again as an operand of a builtin, it is the same declaration.
+    expect(errs(`${P}func f(p: P, z: i64, c: bool) -> i64 => max(if c {\n let (x:, y:) = p\n 5\n } else { 2 }, z)`)).toEqual([])
+  })
+
   test('a let keeps its rules: in a loop body it is seen to the end of the function', () => {
     expect(errs('func f() -> u32 {\n for i in 3 {\n let last = i\n }\n return last\n}')).toEqual([])
     expect(errs('func f() {\n for i in 3 {\n let x = i\n }\n let x = 2\n}')).toEqual(["'x' is already declared in this scope"])

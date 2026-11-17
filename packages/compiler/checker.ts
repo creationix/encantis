@@ -621,8 +621,9 @@ class CheckContext {
   // checked again once its type is settled, statements and all: a `let` in
   // one of its branches is then the same declaration, not a second one.
   // A look (see peek) declares in a scope of its own, and is no first time.
-  // The same goes for the variables of a `for`, an `if let` or a match arm.
-  declared = new TrialSet<AST.Pattern | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm>(this.trial)
+  // The same goes for the variables of a `for`, an `if let` or a match arm,
+  // and for a named element of a tuple pattern, `(x:)` or `(x: a)`.
+  declared = new TrialSet<AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm>(this.trial)
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -2450,6 +2451,12 @@ class CheckContext {
             }
             // binding is null for shorthand (x:) - use field name as variable name
             const varName = element.binding ?? element.field
+            // Its name is its own, as a plain let's is: taking a variable's
+            // would change that variable (a loop's counter, say).
+            if (this.lookup(varName) && !this.declared.has(element)) {
+              this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
+            }
+            this.declared.add(element)
             this.letScope().symbols.set(varName, { kind: 'local', type: tupleField.type })
             this.recordDefinition(varName, pattern.span.start)
           } else {
