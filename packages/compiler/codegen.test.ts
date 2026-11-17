@@ -2663,3 +2663,24 @@ describe('members named like a primitive type', () => {
     expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
   })
 })
+
+describe('literals', () => {
+  test('-0.0 is minus zero, written as a literal, a def, a global, data or a pattern', async () => {
+    const { lit, single, viaDef, inGlobal, inData, pattern } = await run(`
+      def z = -0.0
+      global g: f64 = -0.0
+      data d: *[1]f64 = [-0.0]
+      export func lit() -> f64 => 1.0 / -0.0
+      export func single() -> f32 => 1.0:f32 / -0.0:f32
+      export func viaDef() -> f64 => 1.0 / z
+      export func inGlobal() -> f64 => 1.0 / g
+      export func inData() -> f64 => 1.0 / d[0]
+      export func pattern(x: f64) -> i32 => match x {
+        -0.0 => 1
+        _ => 0
+      }
+    `)
+    expect([lit(), single(), viaDef(), inGlobal(), inData()]).toEqual(Array(5).fill(-Infinity))
+    expect(pattern(0)).toBe(1)
+  })
+})

@@ -346,7 +346,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${lit.value})`
+      return `(${wt}.const ${numberText(lit.value)})`
     }
 
     case 'bool':
@@ -365,6 +365,11 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       return `(i32.const 0)`
     }
   }
+}
+
+// A number as WAT writes it. -0 is a float of its own: `${-0}` is "0".
+function numberText(value: number | bigint): string {
+  return Object.is(value, -0) ? '-0' : `${value}`
 }
 
 // A literal that lies in the data section, as the slice over all of it.
@@ -404,7 +409,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${val.value})`
+        return `(${wt}.const ${numberText(val.value)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -2118,7 +2123,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${p.value.value})`
+              ? `(${wt}.const ${numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
