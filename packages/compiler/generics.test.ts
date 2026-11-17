@@ -422,6 +422,28 @@ export func b(k: u32, x: u64) -> u64 => max(match k {
     expect(instancesOf(source)).toEqual(['max<u32>', 'max<u64>'])
   })
 
+  test('a let of one name in two arguments that are both looked at is declared twice', () => {
+    // A look declares in a scope of its own and takes back what it recorded,
+    // also that the let has declared its local: the two lets then meet in one
+    // scope when the arguments are checked. (A let that is checked a second
+    // time is no second declaration: an operand of a builtin is.)
+    const FIRST = 'func first(comptime A: type, comptime B: type, a: A, b: B) -> A => a\n'
+    const call = (second: string) => `${FIRST}export func f(c: bool, x: i64, y: i32) -> i64 => first(if c {
+  let t = x
+  t
+} else { 2 }, if c {
+  let ${second} = y
+  ${second}
+} else { 3 })`
+    expect(errorsOf(call('t'))).toEqual(["'t' is already declared in this scope"])
+    expect(errorsOf(call('u'))).toEqual([])
+    // The operand of the builtin min is checked twice inside the look, and twice after it.
+    expect(errorsOf(`${MAX}export func f(c: bool, x: i64) -> i64 => max(min(if c {
+  let t = 1
+  5
+} else { 2 }, x), x)`)).toEqual([])
+  })
+
   test('the look at the argument that decides leaves nothing in the tables kept by node', () => {
     // The argument is inferred once to find T and then checked against it.
     // What the first pass recorded for its nodes (a type, a widening, an `if`
