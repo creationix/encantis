@@ -59,6 +59,9 @@ export interface CodegenContext {
   // Calls the checker resolved to something else: the written call → what
   // to compile in its place (see TypeCheckResult.calls)
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // Which element of a tuple gives each field, where that is not the one at
+  // the field's place (see TypeCheckResult.fieldOrder)
+  fieldOrder: TypeCheckResult['fieldOrder']
   // The name a function that shares its name is known by (see
   // TypeCheckResult.funcNames)
   funcNames: TypeCheckResult['funcNames']
@@ -92,6 +95,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     namedReturnLocals: [],
     dataSectionSize,
     calls: checkResult.calls,
+    fieldOrder: checkResult.fieldOrder,
     funcNames: checkResult.funcNames,
   }
 }
@@ -1908,6 +1912,9 @@ function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, re
   return current
 }
 
+// A tuple's values, field after field. Its elements are computed in the order
+// they are written; where they give the fields in another order (by name, see
+// TypeCheckResult.fieldOrder), each value still goes to its field.
 function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   // Flatten tuple elements
   const parts = expr.elements.map((elem) => {
@@ -1915,7 +1922,51 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
     const value = argValue(elem)
     return value ? exprToWat(value, ctx) : ''
   })
+  const order = ctx.fieldOrder.get(expr)
+  if (order) return inFieldOrder(expr, parts, order, ctx)
   return parts.filter(Boolean).join(' ')
+}
+
+// The values of a tuple's elements, `parts` as written, put in the order of
+// the fields: `order` gives the element of each field. An element that is free
+// to move is computed at its field's place: nothing that runs before or after
+// it can tell (a constant, a local that no other element sets, arithmetic of
+// those that cannot trap). The others are computed in the order written: an
+// element that comes after its field's place waits there in scratch locals,
+// set before an element written after it runs. An order that needs no wait is
+// the same instructions as the elements written in the fields' order.
+function inFieldOrder(expr: AST.TupleExpr, parts: string[], order: number[], ctx: CodegenContext): string {
+  const free = parts.map((wat, i) =>
+    isDroppable(wat) && !readsGlobal(wat) && !parts.some((other, j) => j !== i && setsLocalOf(other, wat)))
+  const waiting = new Map<number, string[]>()
+  const computed = new Set<number>()
+  const out: string[] = []
+  for (const element of order) {
+    // The elements written before this one that are not free go first, in
+    // the order written, each into scratch locals of its own.
+    for (let earlier = 0; earlier < element && !free[element]; earlier++) {
+      if (free[earlier] || computed.has(earlier)) continue
+      const value = argValue(expr.elements[earlier])
+      const type = value && valueType(value, ctx)
+      if (!type) throw new Error(`Missing type for element ${earlier} of the tuple at offset ${expr.span.start}`)
+      const locals = typeToWasm(type).map((wasmType) => scratchLocal(ctx, wasmType))
+      out.push(setLocals(locals, parts[earlier]))
+      waiting.set(earlier, locals)
+      computed.add(earlier)
+    }
+    const locals = waiting.get(element)
+    out.push(locals ? locals.map((local) => `(local.get ${local})`).join(' ') : parts[element])
+    computed.add(element)
+  }
+  return out.filter(Boolean).join(' ')
+}
+
+// Sets `locals`, one for each wasm value of `wat`, to its values.
+function setLocals(locals: string[], wat: string): string {
+  if (locals.length === 1) return `(local.set ${locals[0]} ${wat})`
+  const values = trySplitMultiValue(wat, locals.length)
+  if (values) return locals.map((local, i) => `(local.set ${local} ${values[i]})`).join(' ')
+  return [wat, ...[...locals].reverse().map((local) => `(local.set ${local})`)].join(' ')
 }
 
 // Whether `wat` is one parenthesized expression, not several side by side.
@@ -3159,7 +3210,10 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, {
+    calls: checkResult.calls,
+    fieldOrder: checkResult.fieldOrder,
+  })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
 
@@ -3630,14 +3684,19 @@ export function programToWat(
   const allLiterals: import('./checker').PendingLiteral[] = []
   const allTypes = new Map<string, import('./types').ResolvedType>()
   const allCalls: TypeCheckResult['calls'] = new Map()
+  const allFieldOrders: TypeCheckResult['fieldOrder'] = new Map()
 
   // Collect all literals and types for a unified data section
   for (const [path, result] of checkResults) {
     allLiterals.push(...result.literals)
     for (const [k, v] of result.types) allTypes.set(k, v)
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
+    for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
+  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, {
+    calls: allCalls,
+    fieldOrder: allFieldOrders,
+  })
   for (const [, loaded] of modules) {
     const result = checkResults.get(loaded.path)
     if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)

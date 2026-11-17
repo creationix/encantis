@@ -544,7 +544,7 @@ let p = (x:, y:)             // equivalent to (x: x, y: y)
 
 <!-- spec:begin compile -->
 
-An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix. The struct is built from its fields in the order the type declares them, and that is the order their values are computed in, whatever the order they are written in:
+An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix:
 
 ```ents
 type Point = (x:f32, y:f32)
@@ -570,6 +570,25 @@ func h() -> f32 => Point(y: 1.0, 2.0).x
 ```errors
 Point: field 'x' is given twice
 Point: field 'y' is given twice
+```
+
+The values are computed in the order they are written, and then each goes to its field: `Point(y: f(), x: g())` calls `f` before `g`. Where the fields are written in the order the type declares them, that is all there is to it. Where they are not, a value that something written after it could change or tell apart (a call, a read of memory or of a global, anything that can trap) is computed in its turn and waits in a local until its field's place comes; a constant or a local is computed at its field's place, as nothing can tell the difference:
+
+```ents
+type Point = (x:i32, y:i32)
+
+global seen: i32 = 0
+
+func tick(v: i32) -> i32 {
+  seen = seen * 10 + v
+  return v
+}
+
+test "values in the order written, fields by name" {
+  let p = Point(y: tick(1), x: tick(2))
+  assert seen == 12
+  assert p.x == 2
+}
 ```
 
 Only a constructor takes fields by name. A tuple literal becomes a struct field by field, by position, as any tuple does ([9.2](#structural-coercion)), whatever its elements are named: as a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 2.0. To give the fields in another order, construct the struct:

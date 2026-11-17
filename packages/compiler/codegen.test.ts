@@ -2845,14 +2845,105 @@ describe('arguments by place and by name', () => {
     expect(x.dat()).toBe(5678)
   })
 
-  test('the fields of a named constructor are computed in the order of the type', () => {
-    const wat = modWat(`
+  test('the values of a constructor are computed in the order they are written', async () => {
+    const x = await run(`
       type Pt = (q: i32, r: i32)
+      func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+      global seen: i32 = 0
+      func tick(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      export func plain() -> i32 {
+        seen = 0
+        let p = Pt(r: tick(1), q: tick(2))
+        return seen * 100 + p.q * 10 + p.r
+      }
+      export func generic() -> i32 {
+        seen = 0
+        let p = Pair(i32, i32)(second: tick(1), first: tick(2))
+        return seen * 100 + p.first * 10 + p.second
+      }
+      export func mixed() -> i32 {
+        seen = 0
+        let p = Pt(tick(2), r: tick(1))
+        return seen * 100 + p.q * 10 + p.r
+      }
+      data cell = mut [Pt(0, 0), Pt(5, 6)]
+      export func stored() -> i32 {
+        seen = 0
+        cell[0] = Pt(r: tick(1), q: tick(2))
+        return seen * 100 + cell[0].q * 10 + cell[0].r
+      }
+      export func read() -> i32 {
+        let p: *mut Pt = &cell[1]
+        let v = Pt(r: p.q, q: put(p))
+        return v.q * 10 + v.r
+      }
+      func put(p: *mut Pt) -> i32 {
+        p.q = 7
+        return 8
+      }
+    `)
+    expect(x.plain()).toBe(1221)
+    expect(x.generic()).toBe(1221)
+    expect(x.mixed()).toBe(2121)
+    expect(x.stored()).toBe(1221)
+    // The load is written first: it reads 5, before the call writes 7.
+    expect(x.read()).toBe(85)
+  })
+
+  test('the fields in the order of the type, or values free to move, wait in no scratch local', () => {
+    const body = (src: string) => bodyOf(`
+      type Pt = (q: i32, r: i32)
+      global g: i32 = 0
       func one() -> i32 => 1
       func two() -> i32 => 2
-      export func f() -> i32 => Pt(r: two(), q: one()).r
+      func f(k: i32, p: *Pt) -> Pt => ${src}
+    `, 'f').join(' ')
+    // In the order of the type, by name or not: what the fields are written as.
+    expect(body('Pt(q: one(), r: two())')).toBe(body('Pt(one(), two())'))
+    // A constant or a local goes to its place as it is.
+    expect(body('Pt(r: k + 1, q: two())')).toBe(body('Pt(two(), k + 1)'))
+    expect(body('Pt(r: one(), q: 3)')).toBe(body('Pt(3, one())'))
+    // A call, a load or a global read written before what comes first waits.
+    expect(body('Pt(r: one(), q: two())')).toBe(
+      '(local.set $__tmp_0 (call $one)) (call $two) (local.get $__tmp_0)')
+    expect(body('Pt(r: p.q, q: two())')).toBe(
+      '(local.set $__tmp_0 (i32.load (local.get $p))) (call $two) (local.get $__tmp_0)')
+    expect(body('Pt(r: g, q: two())')).toBe('(local.set $__tmp_0 (global.get $g)) (call $two) (local.get $__tmp_0)')
+  })
+
+  test('a value of several wasm values waits in as many scratch locals', async () => {
+    const x = await run(`
+      type Wide = (a: u128, b: u8)
+      type Pp = (p: (u32, u32), q: u32)
+      global seen: u32 = 0
+      func two() -> u32 {
+        seen = seen * 10 + 2
+        return 2
+      }
+      func big() -> u128 {
+        seen = seen * 10 + 3
+        return 7
+      }
+      func pair() -> (u32, u32) {
+        seen = seen * 10 + 4
+        return (5, 6)
+      }
+      export func wide() -> u32 {
+        seen = 0
+        let w = Wide(b: two() as u8, a: big())
+        return seen * 100 + (w.a as u32) * 10 + (w.b as u32)
+      }
+      export func pp() -> u32 {
+        seen = 0
+        let w = Pp(q: two(), p: pair())
+        return seen * 1000 + w.p.0 * 100 + w.p.1 * 10 + w.q
+      }
     `)
-    expect(wat).toContain('(call $one) (call $two)')
+    expect(x.wide()).toBe(2372)
+    expect(x.pp()).toBe(24562)
   })
 })
 

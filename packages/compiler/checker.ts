@@ -221,6 +221,12 @@ export interface TypeCheckResult {
   // method call x.f(a), the call f(x, a); for a call of a function that
   // shares its name, the call of the one that was meant
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // Which element of a tuple gives each field of the struct it becomes, in
+  // the order of the fields, where that is not the element at the field's
+  // place: for the tuple a constructor with names among its arguments is
+  // compiled as. Its elements are computed in the order they are written,
+  // and each value goes to its field.
+  fieldOrder: Map<AST.TupleExpr, number[]>
   // The name a function is known by, in `symbols` and in the output, where
   // that is not the name it was declared with: one that shares its name with
   // a function declared before it has a name of its own (hash:''u8).
@@ -327,6 +333,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     literals: ctx.pendingLiterals,
     instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
     calls: ctx.calls,
+    fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
   }
 }
@@ -657,6 +664,7 @@ class CheckContext {
   instanceQueue: Instance[] = []
   currentInstance: Instance | null = null
   calls = new TrialMap<AST.CallExpr, AST.CallExpr | AST.TupleExpr>(this.trial)
+  fieldOrder = new TrialMap<AST.TupleExpr, number[]>(this.trial)
   // How many literals were registered when the second pass came to each
   // generic, which is where a function written in its place would add its own
   literalSlots = new Map<AST.FuncDecl, number>()
@@ -3505,12 +3513,10 @@ class CheckContext {
     const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
     const struct = unwrap(calleeType)
     if (namesType && struct.kind === 'tuple') {
-      const given = this.checkConstructorArgs(expr, struct, (expr.callee as AST.IdentExpr).name)
-      // With names among the arguments, it compiles as the fields' values
-      // in the order of the type, as a generic type's constructor does.
-      if (expr.args.some((a) => a.name !== null) && given.every((args) => args.length === 1)) {
-        this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-      }
+      const given = this.checkFieldArgs(expr.args, expr.span.start, struct, (expr.callee as AST.IdentExpr).name)
+      // With names among the arguments, it compiles as the tuple of its
+      // arguments, each going to its field, as a generic type's does.
+      if (expr.args.some((a) => a.name !== null)) this.constructAsTuple(expr, given)
       return calleeType
     }
 
@@ -3537,14 +3543,14 @@ class CheckContext {
   // The arguments of a constructor, each against the field it is for: an
   // argument with a name is for the field of that name, and one without is
   // for the field at its place. Gives the arguments each field was given, in
-  // the order of the fields.
-  private checkConstructorArgs(expr: AST.CallExpr, struct: TupleRT, shown: string): AST.Arg[][] {
+  // the order of the fields. `at` is where a count that is not the struct's
+  // is reported.
+  private checkFieldArgs(args: AST.Arg[], at: number, struct: TupleRT, shown: string): AST.Arg[][] {
     const before = this.errorsReported
-    const args = expr.args
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
       this.error(
-        expr.span.start,
+        at,
         `${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}`,
       )
     }
@@ -3571,10 +3577,28 @@ class CheckContext {
     return fields
   }
 
+  // A constructor compiles as the tuple of its arguments as written: where
+  // each field is given once, the element that gives it is recorded when it
+  // is not the one at its place (fieldOrder). The elements are computed in
+  // the order they are written, and each value goes to its field.
+  private recordFieldOrder(tuple: AST.TupleExpr, given: AST.Arg[][]): void {
+    const order = given.every((args) => args.length === 1) ? given.map(([arg]) => tuple.elements.indexOf(arg)) : null
+    // A literal checked again, against another type, is what the last check says.
+    if (order && order.some((element, field) => element !== field)) this.fieldOrder.set(tuple, order)
+    else this.fieldOrder.delete(tuple)
+  }
+
+  private constructAsTuple(expr: AST.CallExpr, given: AST.Arg[][]): void {
+    if (!given.every((args) => args.length === 1)) return
+    const tuple: AST.TupleExpr = { kind: 'TupleExpr', elements: expr.args, span: expr.span }
+    this.calls.set(expr, tuple)
+    this.recordFieldOrder(tuple, given)
+  }
+
   // Vec(u32)(p, 0, cap), or T(a, b) in an instance: a value of the type the
   // callee is, built from its fields by position or by name. It compiles as
-  // the fields' values in the order of the type, which is what the same
-  // struct written out as a literal compiles as.
+  // the tuple of its arguments, each going to its field, which is what the
+  // same struct written out as a literal compiles as.
   private inferConstructor(expr: AST.CallExpr, built: AST.Type): ResolvedType {
     const fail = (message?: string): ResolvedType => {
       if (message) this.error(expr.span.start, message)
@@ -3592,10 +3616,7 @@ class CheckContext {
     if (struct.kind !== 'tuple') {
       return fail(`${typeToString(type)} is not a struct or tuple type: it has no constructor; to convert a number write x as T`)
     }
-    const given = this.checkConstructorArgs(expr, struct, typeToString(type))
-    if (given.every((args) => args.length === 1)) {
-      this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-    }
+    this.constructAsTuple(expr, this.checkFieldArgs(expr.args, expr.span.start, struct, typeToString(type)))
     return type
   }
 
