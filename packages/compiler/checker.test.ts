@@ -1410,6 +1410,22 @@ describe('indexes not known to be in range', () => {
       'writing to an element of a slice needs its index checked: use if let on its address (&s[i])',
     ])
     expect(errs('if let p = &s[i] { p.* = t }', 's: []mut []u8, i: u32, t: []u8')).toEqual([])
+    // An element that has no optional type is written the same way: the
+    // message is about the write, which no ?? can resolve.
+    const slice = 'writing to an element of a slice needs its index checked: use if let on its address (&s[i])'
+    expect(errs('s[0] = 1\ns[i] = 2\ns[i] += 3', 's: []mut u8, i: u32')).toEqual([slice, slice, slice])
+    expect(errs('b[i] = 1\nb[i] |= 2', 'b: *mut [16]u8, i: u32')).toEqual([
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
+    expect(errs('z[0] = 1', 'z: *mut [!]u8')).toEqual([
+      'writing to an element of *mut [!]u8 needs its index checked: its length is only found at run time, by a scan',
+    ])
+    // Only the element written to: the row it is in is read.
+    expect(errs('m[i][0] = 1', 'm: *mut [2][3]u8, i: u32')).toEqual([
+      "runtime index on *[2][3]u8 requires 'if let' or '??' (rows are not optional)",
+    ])
+    expect(errs('if let p = &s[i] { p.* = 1 }\nb[i & 15] = 1', 's: []mut u8, b: *mut [16]u8, i: u32')).toEqual([])
   })
 
   test("a slice's length is only known at run time: a constant index is not proven either", () => {
@@ -1417,7 +1433,7 @@ describe('indexes not known to be in range', () => {
       `index ${k} on ${type} requires 'if let' or '??': a slice's length is only known at run time (${why})`
     expect(errs('let a = s[0]', 's: []u8')).toEqual([constant(0, '[]u8', 'no optional type for u8')])
     expect(errs('let a = rows[1][0]', 'rows: [][2]i32')).toEqual([constant(1, '[][2]i32', 'rows are not optional')])
-    expect(errs('s[0] = 1', 's: []mut u8')).toEqual([constant(0, '[]u8', 'no optional type for u8')])
+    expect(errs('s[0] = 1', 's: []mut u8')).toEqual(['writing to an element of a slice needs its index checked: use if let on its address (&s[i])'])
     expect(letType('names[0]')).toBe('?[]u8')
     expect(errs('let a = s[0] ?? 0\nif let b = s[2] { }\nlet c = s.ptr[0]', 's: []u8')).toEqual([])
   })

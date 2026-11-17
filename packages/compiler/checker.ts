@@ -621,6 +621,9 @@ class CheckContext {
   // Indexes read as an optional because they aren't known to be in range
   // (see TypeCheckResult.unproven).
   unproven = new TrialSet<AST.IndexExpr>(this.trial)
+  // The element an assignment writes to, while its target is inferred: an
+  // index into it that isn't known to be in range is reported as a write.
+  writingTo: AST.IndexExpr | null = null
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -2039,7 +2042,9 @@ class CheckContext {
         }
         let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
+          this.writingTo = stmt.target.kind === 'IndexExpr' ? stmt.target : null
           targetType = this.inferExpr(stmt.target)
+          this.writingTo = null
         }
         // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
         // so there is no place behind it to store to. The place is p.u32[0].
@@ -2056,10 +2061,7 @@ class CheckContext {
         // (4.7): one that isn't is read as an optional, which is no place to
         // store to. Its address is the element written through a check.
         if (stmt.target.kind === 'IndexExpr' && this.unproven.has(stmt.target)) {
-          const container = this.exprTypes.get(stmt.target.object)
-          this.error(stmt.target.index.span.start, container && unwrap(container).kind === 'slice'
-            ? `writing to an element of a slice needs its index checked: use if let on its address (&s[i])`
-            : `writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])`)
+          this.unprovenWrite(stmt.target)
           if (targetType) targetType = unwrapOptional(unwrap(targetType))
         }
         this.checkMutability(stmt.target, stmt.span.start)
@@ -4880,6 +4882,17 @@ class CheckContext {
     return type
   }
 
+  // A write to an element whose index isn't known to be in range, whatever
+  // the element is (4.7): the element is written through its address.
+  private unprovenWrite(target: AST.IndexExpr): void {
+    const container = this.exprTypes.get(target.object)
+    this.error(target.index.span.start, container && unwrap(container).kind === 'slice'
+      ? `writing to an element of a slice needs its index checked: use if let on its address (&s[i])`
+      : container && framedArray(container)
+      ? `writing to an element of ${typeToString(container)} needs its index checked: its length is only found at run time, by a scan`
+      : `writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])`)
+  }
+
   // An index into a null-terminated *[!]T (or [!]T): its length is only
   // found at run time, by a scan for the zero element at its end, so no index
   // is known to be in range, a constant one either, as on a slice.
@@ -4929,7 +4942,8 @@ class CheckContext {
         this.unproven.add(expr)
         return optionalOf(elem)
       }
-      if (!this.insideIfLetCondition) {
+      if (this.writingTo === expr) this.unprovenWrite(expr)
+      else if (!this.insideIfLetCondition) {
         this.error(expr.index.span.start, `${problem} requires 'if let' or '??'${why} (${noOptional(elem)})`)
       }
       return row ?? elem

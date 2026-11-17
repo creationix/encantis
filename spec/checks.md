@@ -627,7 +627,7 @@ func e(r: Row, m: *mut Row) {
 cannot write through const pointer
 cannot write through const pointer
 cannot write through const pointer
-index 0 on []Row requires 'if let' or '??': a slice's length is only known at run time
+writing to an element of a slice needs its index checked: use if let on its address (&s[i])
 cannot write through const slice
 ```
 
@@ -801,8 +801,8 @@ func b(x: u32) { buf[x & ~15] = 2 }
 ```
 
 ```errors
-runtime index on *[16]u8 requires 'if let' or '??'
-runtime index on *[16]u8 requires 'if let' or '??'
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
 ```
 
 A shift takes its count modulo the width it's done in, 32 bits for a `u32` or anything narrower. So `x >> 32` is `x`, not 0, and bounds nothing, while `x >> 60` shifts by 28. A constant with a shift inside it has the value the shift gives it: `65535 >> 32` is 65535 as a `u32`, and 16 is no index into 16 elements.
@@ -895,9 +895,9 @@ func d(x: u32) { if x < 12 || x == 50 { buf[x] = 1 } }
 
 ```errors
 index type u32#13 may exceed *[12]u8 bounds
-runtime index on *[12]u8 requires 'if let' or '??'
-runtime index on *[12]u8 requires 'if let' or '??'
-runtime index on *[12]u8 requires 'if let' or '??'
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
 ```
 
 For an index that can't be proven, `&items[i]` is an optional pointer, so the check is written out.
