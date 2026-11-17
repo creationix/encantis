@@ -177,19 +177,87 @@ test "find" {
     const call = built.hints[`${line}:${lines[line].indexOf('max(a, b)')}`]
     expect(call.symbol).toBe(max)
     expect(built.types[call.type].type).toBe('(a:u32,b:u32)->u32')
-    // No parameter or local of a generic is a symbol: found by name, it would
-    // be shown for the same name in another function.
+    // The parameters and locals of a generic are symbols as they are in its
+    // first instance, with the uses inside the generic and no others: found
+    // by name, they would be those of the same name in another function.
     const swap = lines.findIndex(l => l.startsWith('func swap('))
     const inSwap = built.symbols.filter(s => Number(s.def.split(':')[0]) >= swap && Number(s.def.split(':')[0]) <= swap + 4)
-    expect(inSwap.map(s => s.name)).toEqual(['swap'])
+    expect(inSwap.map(s => `${s.name}: ${built.types[s.type].type}`)).toEqual(['swap: (comptime T: type, a: *mut T, b: *mut T)->()', 'a: *mut u32', 'b: *mut u32', 'tmp: u32'])
+    for (const s of inSwap.slice(1)) {
+      expect(s.refs.length).toBeGreaterThan(0)
+      for (const ref of s.refs) {
+        const line = Number(ref.split(':')[0])
+        expect(line > swap && line <= swap + 4).toBe(true)
+      }
+    }
   })
 
-  test('of a generic only the name has a hint: its body has no types until it is instantiated', () => {
-    const inDeclaration = Object.keys(meta().hints).filter(key => {
+  test('the body of a generic has the hints of its first instance', () => {
+    // find is first asked for by the test, for u32: the bodies of instances
+    // are come to after everything else, contains<u8> among them.
+    const hints = metaHints(source)
+    const inFind = Object.entries(hints).filter(([key]) => {
       const line = Number(key.split(':')[0])
-      return line >= 1 && line <= 7
+      return line >= 1 && line <= 6
     })
-    expect(inDeclaration).toEqual(['1:5', '7:5'])
+    expect(inFind.map(([key, hint]) => `${key} ${hint.type}`)).toEqual([
+      '1:28 []u32', '1:37 u32', '2:6 u32', '2:14 []u32', '3:11 u32', '3:18 u32', '3:23 u32', '5:9 []u32', '5:12 u32',
+      '1:5 (comptime T: type, xs: []T, x: T)->u32',
+    ])
+    // A call in it is the instance that instance calls.
+    expect(hints['7:58'].type).toBe('(xs:[]u8,x:u8)->u32')
+  })
+
+  test('a generic nothing has called has a hint at its name and none inside', () => {
+    const lonely = 'func keep(comptime T: type, a: T) -> T {\n  let b = a\n  return b\n}\nexport func f() { }'
+    const result = parse(lonely)
+    const built = buildMeta(result.module!, lonely)
+    expect(Object.keys(built.hints)).toEqual(['0:5', '4:12'])
+    expect(built.symbols.map(s => s.name)).toEqual(['keep', 'f'])
+  })
+})
+
+describe('method calls and functions that share a name', () => {
+  const source = `func hash(k: u32) -> u32 => k
+func hash(k: []u8) -> u32 => k.len
+func slot(comptime K: type, k: K, n: u32) -> u32 {
+  let h = k.hash()
+  return hash(k) % n + h.min(n)
+}
+export func f(xs: []u8) -> u32 => xs.slot(4) + hash(7:u32)`
+
+  function meta(): MetaOutput {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return buildMeta(result.module!, source)
+  }
+
+  test('each function of a shared name is a symbol under that name, with its own type and uses', () => {
+    const built = meta()
+    const hashes = built.symbols.filter(s => s.name === 'hash')
+    expect(hashes.map(s => `${built.types[s.type].type} ${s.def}`)).toEqual(['(k:u32)->u32 0:5', '(k:[]u8)->u32 1:5'])
+    expect(hashes[0].refs).toContain('6:47')
+    expect(hashes[1].refs).not.toContain('6:47')
+    expect(built.symbols.map(s => s.name).filter(name => name.includes(':'))).toEqual([])
+  })
+
+  test('a call shows the function it means', () => {
+    const built = meta()
+    const at = (key: string) => `${built.types[built.hints[key].type].type} @${built.symbols[built.hints[key].symbol ?? -1]?.def}`
+    expect(at('6:47')).toBe('(k:u32)->u32 @0:5')
+    // In the generic, as its first instance calls it: for []u8.
+    expect(at('4:9')).toBe('(k:[]u8)->u32 @1:5')
+  })
+
+  test('the name of a method has the hint of the function called', () => {
+    const built = meta()
+    const at = (key: string) => `${built.types[built.hints[key].type].type} @${built.symbols[built.hints[key].symbol ?? -1]?.def}`
+    expect(at('6:37')).toBe('(k:[]u8,n:u32)->u32 @2:5')
+    expect(at('3:12')).toBe('(k:[]u8)->u32 @1:5')
+    // A builtin called that way has the builtin's.
+    expect(at('4:25')).toBe('(a:i32,b:i32)->i32 @undefined')
+    // The receiver keeps its own.
+    expect(at('6:34')).toBe('[]u8 @6:14')
   })
 })
 

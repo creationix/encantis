@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, type TypeCheckResult } from './checker'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
@@ -157,6 +157,12 @@ class MetaBuilder {
   private symbolIndexByName = new Map<string, number>()
   private hints: Record<string, MetaHint> = {}
   private literalMap: Map<number, DataRef> = new Map()
+  // While the body of a generic is gone through: the copies of its nodes in
+  // its first instance, and how far that instance's offsets lie from the
+  // generic's. What a name in the body is depends on the instance, and the
+  // first one is the one that is shown.
+  private copies: Map<object, object> | null = null
+  private shift = 0
 
   constructor(
     private module: AST.Module,
@@ -271,11 +277,12 @@ class MetaBuilder {
     for (const item of decl.items) {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
-        const sym = this.checkResult.symbols.get(name)
+        const known = this.checkResult.funcNames.get(item.item) ?? name
+        const sym = this.checkResult.symbols.get(known)
         if (sym && sym.kind === 'func') {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
-          this.addSymbol(name, 'func', sym.type, offset)
+          this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known)
         }
       }
     }
@@ -332,24 +339,39 @@ class MetaBuilder {
 
   private collectFunc(decl: AST.FuncDecl): void {
     if (decl.ident) {
-      const sym = this.checkResult.symbols.get(decl.ident)
+      const known = this.checkResult.funcNames.get(decl) ?? decl.ident
+      const sym = this.checkResult.symbols.get(known)
       if (sym?.kind === 'generic') {
         // A generic has no type of its own. It is listed with the signature it
         // was written with, so that its name is found where a function's is:
         // at its declaration and at its calls, where the hint carries the
-        // signature of the instance. Its parameters and body get no hints yet:
-        // what they are depends on the instance.
+        // signature of the instance.
         const { input, output } = decl.signature
         const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
         const written = `${this.source.slice(input.span.start, input.span.end)}->${returns}`
-        this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        const symbolIndex = this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        // What its parameters and the names in its body are depends on the
+        // instance: they are shown as they are in the first one. A generic
+        // nothing has called yet has none, and no hints inside it.
+        const first = this.checkResult.instances.find((inst) => inst.of === decl)
+        if (sym.decl !== decl || !first) return
+        this.copies = instanceNodes(decl, first.decl)
+        this.shift = first.decl.span.start - decl.span.start
+        this.collectFuncBody(decl, symbolIndex)
+        if (decl.body.kind === 'Block') {
+          this.generateHintsForBlock(decl.body)
+        } else {
+          this.generateHintsForExpr(decl.body.expr)
+        }
+        this.copies = null
+        this.shift = 0
         return
       }
       if (!sym || sym.kind !== 'func') return
 
       // Find the function name offset (after "func" keyword)
       const offset = this.findFuncIdentOffset(decl)
-      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline)
+      const symbolIndex = this.addSymbol(decl.ident, 'func', sym.type, offset, undefined, decl.inline, known)
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
@@ -404,7 +426,7 @@ class MetaBuilder {
     if (decl.signature.output.kind === 'CompositeType') {
       for (const ret of decl.signature.output.fields) {
         if (ret.ident) {
-          const type = this.checkResult.types.get(typeKey(ret.span.start, ret.kind))
+          const type = this.bindingType(ret.span.start, ret.kind)
           if (type) {
             const symbolIndex = this.addSymbol(ret.ident, 'return', type, ret.span.start)
             const typeIndex = this.typeRegistry.register(type)
@@ -420,7 +442,7 @@ class MetaBuilder {
       for (const param of decl.signature.input.fields) {
         if (param.ident) {
           const isInOut = returnNames.has(param.ident)
-          const type = this.checkResult.types.get(typeKey(param.span.start, param.kind))
+          const type = this.bindingType(param.span.start, param.kind)
           if (type) {
             let symbolIndex: number | undefined
             if (isInOut) {
@@ -455,14 +477,14 @@ class MetaBuilder {
       // Collect for loop binding variables
       if (stmt.kind === 'ForStmt') {
         // The value binding (e.g., 'col' in 'for col in 0..4')
-        const valueType = this.checkResult.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
+        const valueType = this.bindingType(stmt.binding.span.start, stmt.binding.kind)
         if (valueType) {
           this.addSymbol(stmt.binding.value, 'local', valueType, stmt.binding.span.start)
         }
         // The optional index binding (e.g., 'i' in 'for i, col in items')
         if (stmt.binding.index) {
           // Index is always u32/usize - use same type lookup for now
-          const indexType = this.checkResult.types.get(typeKey(stmt.binding.span.start, 'ForBindingIndex'))
+          const indexType = this.bindingType(stmt.binding.span.start, 'ForBindingIndex')
           if (indexType) {
             this.addSymbol(stmt.binding.index, 'local', indexType, stmt.binding.span.start)
           }
@@ -503,13 +525,13 @@ class MetaBuilder {
 
   private collectLocal(pattern: AST.Pattern): void {
     if (pattern.kind === 'IdentPattern') {
-      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      const type = this.bindingType(pattern.span.start, pattern.kind)
       if (type) {
         this.addSymbol(pattern.name, 'local', type, pattern.span.start)
       }
     } else if (pattern.kind === 'TuplePattern') {
       // Get the tuple type for the whole pattern and unwrap named types
-      const rawType = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      const rawType = this.bindingType(pattern.span.start, pattern.kind)
       if (!rawType) return
       const tupleType = unwrap(rawType)
       if (tupleType.kind !== 'tuple') return
@@ -596,8 +618,7 @@ class MetaBuilder {
   private findDataInfoForExpr(expr: AST.Expr, type: ResolvedType): string | undefined {
     // Try the expression itself
     const tryId = (e: AST.Expr): string | undefined => {
-      const id = (e as { dataId?: number }).dataId ?? e.span.start
-      const entry = this.literalMap.get(id)
+      const entry = this.literalMap.get(this.literalId(e))
       if (entry) return this.formatDataRef(entry, type)
       return undefined
     }
@@ -641,6 +662,30 @@ class MetaBuilder {
     return decl.pattern.span.start
   }
 
+  // The type the checker recorded for a binding (a parameter, a let, a loop
+  // variable); in a generic's body, for its copy in the first instance.
+  private bindingType(offset: number, kind: string): ResolvedType | undefined {
+    return this.checkResult.types.get(typeKey(offset, kind))
+      ?? (this.copies ? this.checkResult.types.get(typeKey(offset + this.shift, kind)) : undefined)
+  }
+
+  // The node the checker's tables hold: in a generic's body, its copy.
+  private checked<T extends object>(node: T): T {
+    return (this.copies?.get(node) as T | undefined) ?? node
+  }
+
+  private exprType(expr: AST.Expr): ResolvedType | undefined {
+    return this.checkResult.exprTypes.get(this.checked(expr))
+  }
+
+  // Where the data of a literal is listed
+  private literalId(expr: AST.Expr & { dataId?: number }): number {
+    const literal = this.checked(expr)
+    return literal.dataId ?? literal.span.start
+  }
+
+  // `known`: the name the checker knows the symbol by, where a function
+  // shares its name with another (see TypeCheckResult.funcNames)
   private addSymbol(
     name: string,
     kind: MetaSymbol['kind'],
@@ -648,6 +693,7 @@ class MetaBuilder {
     offset: number,
     value?: string,
     inline?: boolean,
+    known = name,
   ): number {
     const typeIndex = typeof type === 'string' ? this.typeRegistry.registerText(type) : this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
@@ -660,7 +706,9 @@ class MetaBuilder {
     }
 
     // Get references - use checker's recorded definition offset, not the display offset
-    const checkerDefOffset = this.checkResult.symbolDefOffsets.get(name)
+    // A name a generic declares is no name of the module: the checker holds
+    // its uses by where it is declared.
+    const checkerDefOffset = this.copies ? offset : this.checkResult.symbolDefOffsets.get(known)
     const refs = checkerDefOffset !== undefined
       ? this.checkResult.references.get(checkerDefOffset) ?? []
       : []
@@ -679,7 +727,7 @@ class MetaBuilder {
 
     const index = this.symbols.length
     this.symbols.push(symbol)
-    this.symbolIndexByName.set(name, index)
+    this.symbolIndexByName.set(known, index)
 
     return index
   }
@@ -739,7 +787,7 @@ class MetaBuilder {
         this.collectLocal(item.pattern)
       }
       if (item.kind === 'ForStmt') {
-        const valueType = this.checkResult.types.get(typeKey(item.binding.span.start, item.binding.kind))
+        const valueType = this.bindingType(item.binding.span.start, item.binding.kind)
         if (valueType) {
           this.addSymbol(item.binding.value, 'local', valueType, item.binding.span.start)
         }
@@ -776,7 +824,7 @@ class MetaBuilder {
     for (const item of decl.items) {
       if (item.item.kind === 'ImportFunc') {
         const name = item.item.ident ?? item.name
-        const symbolIndex = this.symbolIndexByName.get(name)
+        const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(item.item) ?? name)
         if (symbolIndex !== undefined) {
           const offset = this.findImportFuncOffset(item, name)
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
@@ -788,7 +836,7 @@ class MetaBuilder {
   private generateHintsForFunc(decl: AST.FuncDecl): void {
     // Handle named functions
     if (decl.ident) {
-      const symbolIndex = this.symbolIndexByName.get(decl.ident)
+      const symbolIndex = this.symbolIndexByName.get(this.checkResult.funcNames.get(decl) ?? decl.ident)
       if (symbolIndex !== undefined) {
         // Hint for function name
         const offset = this.findFuncIdentOffset(decl)
@@ -870,7 +918,7 @@ class MetaBuilder {
 
   private generateHintsForLetPattern(pattern: AST.Pattern, value: AST.Expr | null): void {
     if (pattern.kind === 'IdentPattern') {
-      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      const type = this.bindingType(pattern.span.start, pattern.kind)
       if (type) {
         const typeIndex = this.typeRegistry.register(type)
         const symbolIndex = this.symbolIndexByName.get(pattern.name)
@@ -887,7 +935,7 @@ class MetaBuilder {
 
   private generateHintsForPattern(pattern: AST.Pattern): void {
     if (pattern.kind === 'IdentPattern') {
-      const type = this.checkResult.types.get(typeKey(pattern.span.start, pattern.kind))
+      const type = this.bindingType(pattern.span.start, pattern.kind)
       if (type) {
         const typeIndex = this.typeRegistry.register(type)
         const symbolIndex = this.symbolIndexByName.get(pattern.name)
@@ -930,7 +978,7 @@ class MetaBuilder {
   }
 
   private generateHintsForExpr(expr: AST.Expr): void {
-    const type = this.checkResult.exprTypes.get(expr)
+    const type = this.exprType(expr)
 
     switch (expr.kind) {
       case 'IdentExpr': {
@@ -955,7 +1003,7 @@ class MetaBuilder {
 
           let dataInfo: string | undefined
           if (!isDefRef) {
-            const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
+            const entry = this.literalMap.get(this.literalId(expr))
             if (entry) {
               dataInfo = this.formatDataRef(entry, type)
             }
@@ -965,12 +1013,13 @@ class MetaBuilder {
         break
       }
 
-      case 'CallExpr':
-        this.generateHintsForExpr(expr.callee)
+      case 'CallExpr': {
+        if (!this.generateHintsForCallee(expr)) this.generateHintsForExpr(expr.callee)
         for (const arg of expr.args) {
           if (arg.value) this.generateHintsForExpr(arg.value)
         }
         break
+      }
 
       case 'BinaryExpr':
         this.generateHintsForExpr(expr.left)
@@ -993,7 +1042,7 @@ class MetaBuilder {
             const memberOffset = expr.span.start + dotIdx + 1 // +1 to skip the dot
             // Compute compile-time value for .len and .wid on indexed types
             let comptimeValue: string | undefined
-            const objType = this.checkResult.exprTypes.get(expr.object)
+            const objType = this.exprType(expr.object)
             if (objType) {
               // Get the array/slice type (either directly or through pointer)
               const arrayType = (objType.kind === 'array' || objType.kind === 'slice') ? objType
@@ -1093,7 +1142,7 @@ class MetaBuilder {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
           let dataInfo: string | undefined
-          const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
+          const entry = this.literalMap.get(this.literalId(expr))
           if (entry && type) {
             dataInfo = this.formatDataRef(entry, type)
           }
@@ -1111,7 +1160,7 @@ class MetaBuilder {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
           let dataInfo: string | undefined
-          const entry = this.literalMap.get(expr.dataId ?? expr.span.start)
+          const entry = this.literalMap.get(this.literalId(expr))
           if (entry) {
             dataInfo = this.formatDataRef(entry, type)
           }
@@ -1120,7 +1169,7 @@ class MetaBuilder {
         // Recurse into value expression (e.g., 0:u8)
         this.generateHintsForExpr(expr.value)
         // Generate hint for the count (e.g., 1024)
-        const countType = this.checkResult.exprTypes.get(expr.count)
+        const countType = this.exprType(expr.count)
         if (countType) {
           const typeIndex = this.typeRegistry.register(countType)
           const len = this.lineMap.spanLength(expr.count.span.start, expr.count.span.end)
@@ -1135,7 +1184,7 @@ class MetaBuilder {
 
       case 'IfExpr':
         if (expr.pattern && expr.pattern.kind === 'binding' && expr.condition.kind === 'IndexExpr') {
-          const elemType = this.checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
+          const elemType = this.bindingType(expr.condition.span.start, 'IfLetBinding')
           if (elemType && this.source) {
             const src = this.source.slice(expr.span.start, expr.condition.span.end)
             const letIdx = src.indexOf('let ')
@@ -1202,6 +1251,35 @@ class MetaBuilder {
         break
       }
     }
+  }
+
+  // The hint for the function a call names, where the checker found the call
+  // to mean another than the one written: x.f(a), which is the call f(x, a),
+  // and a call of a function that shares its name. The hint is at the name
+  // and carries the function that is called. False where the call is as
+  // written.
+  private generateHintsForCallee(expr: AST.CallExpr): boolean {
+    const callee = expr.callee
+    const meant = this.checkResult.calls.get(this.checked(expr))
+    if (meant?.kind !== 'CallExpr' || meant.callee.kind !== 'IdentExpr') return false
+    const method = callee.kind === 'MemberExpr' && callee.member.kind === 'field' ? callee.member.name : null
+    if (method === null && callee.kind !== 'IdentExpr') return false
+    const name = method ?? (callee as AST.IdentExpr).name
+    // The function of the module that ends up called: f(x, a) may itself
+    // stand for one of several functions f. An instance is no symbol; its
+    // generic is.
+    let last = meant
+    for (let next = this.checkResult.calls.get(last); next?.kind === 'CallExpr'; next = this.checkResult.calls.get(last)) last = next
+    const called = last.callee.kind === 'IdentExpr' ? last.callee.name : name
+    const symbolIndex = this.symbolIndexByName.get(called) ?? this.symbolIndexByName.get(name)
+    if (method !== null) this.generateHintsForExpr((callee as AST.MemberExpr).object)
+    // The checker typed the callee it resolved: f of f(x, a), or the name as written.
+    const type = this.checkResult.exprTypes.get(method !== null ? meant.callee : this.checked(callee)) ?? BUILTIN_SIGNATURES[name]
+    if (type) {
+      const offset = method !== null ? callee.span.end - name.length : callee.span.start
+      this.addHint(offset, name.length, this.typeRegistry.register(type), symbolIndex)
+    }
+    return true
   }
 
   private generateHintsForTypeExpr(type: AST.Type): void {

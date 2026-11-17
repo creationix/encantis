@@ -6346,6 +6346,31 @@ function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Typ
   return out
 }
 
+// Each node of a generic's declaration with its copy in one instance. What
+// the checker recorded by node is the instance's; the editor asks about the
+// generic's own nodes, and finds the answer of an instance through this. The
+// copy is cloneAst's: the same shape, save that the comptime parameters are
+// gone from its parameter list.
+export function instanceNodes(of: AST.FuncDecl, decl: AST.FuncDecl): Map<object, object> {
+  const copies = new Map<object, object>()
+  const pair = (node: unknown, copy: unknown): void => {
+    if (Array.isArray(node) && Array.isArray(copy)) {
+      const kept = node.length === copy.length ? node : node.filter((n) => !(n as AST.Field).comptime)
+      kept.forEach((n, i) => {
+        pair(n, copy[i])
+      })
+      return
+    }
+    if (node === null || copy === null || typeof node !== 'object' || typeof copy !== 'object' || node instanceof Uint8Array) return
+    copies.set(node, copy)
+    for (const [key, value] of Object.entries(node)) {
+      if (key !== 'span') pair(value, (copy as Record<string, unknown>)[key])
+    }
+  }
+  pair(of, decl)
+  return copies
+}
+
 function editDistance(a: string, b: string): number {
   if (a.length === 0) return b.length
   if (b.length === 0) return a.length

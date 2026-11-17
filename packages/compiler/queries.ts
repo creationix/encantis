@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, isGenericDecl, localNames } from './checker'
+import { typeKey, typecheck, isGenericDecl, localNames, declaredName } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -125,6 +125,30 @@ function identExprType(checkResult: TypeCheckResult, offset: number): ResolvedTy
   return undefined
 }
 
+// What a parameter, a local or a use of one at an offset is: by the binding
+// declared there, or by the identifier used there.
+function localType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  return checkResult.types.get(typeKey(offset, 'IdentPattern'))
+    ?? identExprType(checkResult, offset)
+    ?? checkResult.types.get(typeKey(offset, 'Field'))
+}
+
+// How far the offsets of a generic's first instance lie from the generic's
+// own. What a name in a generic's body is depends on the instance; the first
+// one is the one that is shown. Undefined while nothing has called it.
+function firstInstanceShift(checkResult: TypeCheckResult, generic: AST.FuncDecl): number | undefined {
+  const first = checkResult.instances.find((inst) => inst.of === generic)
+  return first && first.decl.span.start - generic.span.start
+}
+
+// The function a call at this name means, as the checker typed its callee:
+// the instance of a generic, the one meant of functions that share a name,
+// and for x.f(a) the function f.
+function calledType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  const type = identExprType(checkResult, offset)
+  return type?.kind === 'func' ? type : undefined
+}
+
 export function hover(
   source: string,
   module: AST.Module,
@@ -138,10 +162,11 @@ export function hover(
   const sym = checkResult.symbols.get(name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
-    // the one that call uses, as the type of the callee.
-    if (sym.kind === 'generic') {
-      const instance = identExprType(checkResult, wordStart(source, offset))
-      if (instance) return { name, type: typeToString(instance), kind: sym.kind }
+    // the one that call uses, as the type of the callee. It did the same for
+    // the function that a call of a shared name means.
+    if (sym.kind === 'generic' || sym.kind === 'func') {
+      const called = calledType(checkResult, wordStart(source, offset))
+      if (called) return { name, type: typeToString(called), kind: sym.kind }
     }
     const result: HoverResult = {
       name,
@@ -157,9 +182,10 @@ export function hover(
   }
 
   // Check type map for the identifier at this offset (params, locals, let bindings)
-  const type = checkResult.types.get(typeKey(offset, 'IdentPattern'))
-    ?? identExprType(checkResult, offset)
-    ?? checkResult.types.get(typeKey(offset, 'Field'))
+  // Inside a generic, as it is in the generic's first instance.
+  const generic = genericAt(module, offset)
+  const shift = generic && firstInstanceShift(checkResult, generic)
+  const type = localType(checkResult, offset) ?? (shift ? localType(checkResult, offset + shift) : undefined)
   if (type) {
     return {
       name,
@@ -176,7 +202,7 @@ export function hover(
         const refSym = checkResult.symbols.get(symName)
         if (refSym) {
           return {
-            name: symName,
+            name: declaredName(symName),
             type: symbolTypeString(refSym, source),
             kind: refSym.kind,
           }
@@ -244,7 +270,7 @@ export function documentSymbols(
     switch (decl.kind) {
       case 'FuncDecl':
         if (decl.ident) {
-          const sym = checkResult.symbols.get(decl.ident)
+          const sym = checkResult.symbols.get(checkResult.funcNames.get(decl) ?? decl.ident)
           symbols.push({
             name: decl.ident,
             kind: 'func',
@@ -306,7 +332,7 @@ export function documentSymbols(
       case 'ExportDecl': {
         const item = decl.item
         if (item.kind === 'FuncDecl' && item.ident) {
-          const sym = checkResult.symbols.get(item.ident)
+          const sym = checkResult.symbols.get(checkResult.funcNames.get(item) ?? item.ident)
           symbols.push({
             name: item.ident,
             kind: 'func',
@@ -355,8 +381,10 @@ export function signatureHelp(
 
   const sym = checkResult.symbols.get(name)
   // A generic has the signature of the instance this call uses, which the
-  // checker recorded as the type of the callee.
-  const ft = sym?.kind === 'generic' ? identExprType(checkResult, wordStart(source, offset)) : sym?.kind === 'func' ? sym.type : null
+  // checker recorded as the type of the callee; of functions that share a
+  // name, the call uses the one recorded there.
+  const called = sym?.kind === 'generic' || sym?.kind === 'func' ? calledType(checkResult, wordStart(source, offset)) : undefined
+  const ft = called ?? (sym?.kind === 'func' ? sym.type : null)
   if (ft?.kind !== 'func') return null
 
   return {
