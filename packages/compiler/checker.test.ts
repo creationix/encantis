@@ -3016,6 +3016,13 @@ describe('types too large to write out', () => {
     expect(errs(`${D}func Big(comptime T: type) -> type => (x: ${nest(18, 'T')})\nfunc f(p: *Big(u8)) -> u32 => 1`)).toEqual([large('Big(u8)')])
   })
 
+  test('a type made deep by its names is counted however deep it is', () => {
+    // 3000 types in a ring through pointers: each is written out through all
+    // the others before it comes round, 12000 parts and 9000 levels deep.
+    const ring = Array.from({ length: 3000 }, (_, i) => `type T${i} = (n: ?*T${(i + 1) % 3000}, v: u32)`).join('\n')
+    expect(errs(`${ring}\nfunc f(t: *T0) -> u32 => if let n = t.n { n.v } else { t.v }`)).toEqual([])
+  })
+
   test('a type written in place is one error where it is written, as a whole', () => {
     // *(a: D14, b: D14) has 65536 parts, *(a: D15, b: D15) 131072
     expect(errs(`${doubling(15)}func f(p: *(a: D14, b: D14)) -> u32 => 1`)).toEqual([])

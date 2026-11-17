@@ -1377,43 +1377,62 @@ export const MAX_TYPE_PARTS = 1 << 16
 // it stands. A type that refers to itself is cut where it comes round, as
 // canonicalKey cuts it. `counted` holds what is known already, so a type that
 // names the same type many times is counted in a time of its own size.
-export function typeParts(t: ResolvedType, counted: Map<ResolvedType, number> = new Map(), open: Set<ResolvedType> = new Set()): number {
-  const known = counted.get(t)
-  if (known !== undefined) return known
-  if (open.has(t)) return 1
-  open.add(t)
-  const sum = (types: ResolvedType[]) => types.reduce((n, type) => n + typeParts(type, counted, open), 1)
-  let n: number
+export function typeParts(root: ResolvedType, counted: Map<ResolvedType, number> = new Map(), open: Set<ResolvedType> = new Set()): number {
+  // A walk with a stack of its own: a type can be deeper than the call stack,
+  // through names that each add a level (type T0 = (n: ?*T1), ...).
+  type Frame = { t: ResolvedType; parts: readonly ResolvedType[]; next: number; n: number }
+  const stack: Frame[] = []
+  // The count of a type known already, or one cut where it comes round, or
+  // null where it is to be counted from its parts (pushed)
+  const enter = (t: ResolvedType): number | null => {
+    const known = counted.get(t)
+    if (known !== undefined) return known
+    if (open.has(t)) return 1
+    open.add(t)
+    const [parts, own] = partsOf(t)
+    stack.push({ t, parts, next: 0, n: own })
+    return null
+  }
+  const first = enter(root)
+  if (first !== null) return first
+  for (;;) {
+    const frame = stack[stack.length - 1]
+    if (frame.next < frame.parts.length) {
+      const n = enter(frame.parts[frame.next++])
+      if (n !== null) frame.n += n
+      continue
+    }
+    stack.pop()
+    open.delete(frame.t)
+    counted.set(frame.t, frame.n)
+    if (stack.length === 0) return frame.n
+    stack[stack.length - 1].n += frame.n
+  }
+}
+
+// The types a type is made of where it stands, and what it counts for itself:
+// a name or a resolved reference is the type it names, and counts nothing.
+function partsOf(t: ResolvedType): [readonly ResolvedType[], number] {
   switch (t.kind) {
     case 'named':
-      n = typeParts(t.type, counted, open)
-      break
+      return [[t.type], 0]
     case 'forward_ref':
-      n = t.target ? typeParts(t.target, counted, open) : 1
-      break
+      return t.target ? [[t.target], 0] : [[], 1]
     case 'pointer':
-      n = sum([t.pointee])
-      break
+      return [[t.pointee], 1]
     case 'slice':
     case 'array':
     case 'comptime_array':
-      n = sum([t.element])
-      break
+      return [[t.element], 1]
     case 'tuple':
-      n = sum(t.fields.map((f) => f.type))
-      break
+      return [t.fields.map((f) => f.type), 1]
     case 'func':
-      n = sum([...t.params, ...t.returns].map((f) => f.type))
-      break
+      return [[...t.params, ...t.returns].map((f) => f.type), 1]
     case 'comptime_list':
-      n = sum(t.elements)
-      break
+      return [t.elements, 1]
     default:
-      n = 1
+      return [[], 1]
   }
-  open.delete(t)
-  counted.set(t, n)
-  return n
 }
 
 // === Instance keys ===

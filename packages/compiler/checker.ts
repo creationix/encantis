@@ -697,6 +697,9 @@ class CheckContext {
   typeDeclaredAt = new Map<string, number>()
   // The types too large to write out, as they were declared (see limitTypeParts)
   tooLargeTypes = new Map<string, ResolvedType>()
+  // Set where a type was declared that others named before: they may have
+  // grown, and are counted again (recountGrownTypes)
+  typesGrew = false
   // What each `type` of the module is declared as, as written: whether a
   // name stands for a function type is asked before any type is resolved.
   typeBodies = new Map<string, AST.Type>()
@@ -806,6 +809,7 @@ class CheckContext {
     for (const decl of module.decls) {
       if (decl.kind === 'TypeDecl') this.collectDeclaration(decl)
     }
+    this.recountGrownTypes()
     this.reportTooLargeTypes()
     for (const decl of module.decls) {
       if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
@@ -1120,8 +1124,19 @@ class CheckContext {
     this.pendingTypeNames.delete(name)
     // What named it before is now that type, also inside its own body
     for (const ref of refs) ref.target = resolved === RECOVERY ? RECOVERY : named(name, resolved)
-    // Those it completes may have grown with it.
-    this.limitTypeParts(refs.length > 0 ? [...this.typeDeclaredAt.keys()] : [name])
+    // Those it completes may have grown with it: they are counted again
+    // before a generic type is applied, which writes its arguments out, and
+    // once all are declared. Counting them all at every type would take a
+    // time that grows with the square of the number of types.
+    if (refs.length > 0) this.typesGrew = true
+    this.limitTypeParts([name])
+  }
+
+  // Count the types of the module again, where some may have grown since
+  private recountGrownTypes(): void {
+    if (!this.typesGrew) return
+    this.typesGrew = false
+    this.limitTypeParts([...this.typeDeclaredAt.keys()])
   }
 
   // A type too large to write out (MAX_TYPE_PARTS) is the recovery type from
@@ -2748,6 +2763,7 @@ class CheckContext {
       }
 
       case 'TypeApply':
+        this.recountGrownTypes()
         return this.applyTypeFunc(type)
 
       case 'BoundType':
