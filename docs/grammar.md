@@ -31,7 +31,7 @@ UserId
 
 Identifiers can contain letters, digits, underscores, and hyphens.
 
-Keywords are not identifiers. `comptime` is one of them: it marks the compile-time parameters of a generic function and cannot name a function, a variable or a parameter.
+Keywords are not identifiers. `comptime` is one of them: it marks the compile-time parameters of a generic function or a generic type and cannot name a function, a variable or a parameter.
 
 ---
 
