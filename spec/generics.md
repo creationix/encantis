@@ -2344,7 +2344,7 @@ test "builtins with a receiver" {
 
 ### Rejected
 
-A value is not passed for a pointer: no address is taken of the receiver. The message is the same for a generic and for a plain function.
+A value is not passed for a pointer: no address is taken of the receiver. The message is the same for a generic, with its type arguments left out or written, and for a plain function.
 
 ```ents
 type Pt = (q: i32, r: i32)
@@ -2354,10 +2354,12 @@ func push(comptime T: type, v: *mut Vec(T), x: T) { }
 func norm(p: *Pt) -> i32 => p.q + p.r
 
 func f(v: Vec(u32)) { v.push(7) }
-func g(p: Pt) -> i32 => p.norm()
+func g(v: Vec(u32)) { v.push(u32, 7) }
+func h(p: Pt) -> i32 => p.norm()
 ```
 
 ```errors
+push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 norm takes *Pt first; the receiver is a Pt, which is held in registers and has no address
 ```

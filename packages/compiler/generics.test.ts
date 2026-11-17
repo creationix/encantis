@@ -3843,6 +3843,14 @@ export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid
     expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(7) }`)).toEqual([
       'push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address',
     ])
+    // The same with the type argument written after the receiver.
+    expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(u32, 7) }`)).toEqual([
+      'push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address',
+    ])
+    // A value of another type is an argument that does not fit, as in push(u8, v, 7).
+    expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(u8, 7) }`)).toEqual([
+      'argument 2: cannot assign Vec(u32) to *mut Vec(u8)',
+    ])
     expect(errorsOf(`type Pt = (q: i32, r: i32)
 func norm(p: *Pt) -> i32 => p.q + p.r
 export func f(p: Pt) -> i32 => p.norm()`)).toEqual([

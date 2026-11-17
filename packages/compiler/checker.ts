@@ -3435,7 +3435,7 @@ class CheckContext {
         return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)
       }
       // A value has no address, and none is taken for it.
-      const pointer = sym ? this.pointerWanted(sym, name, expr.args.length + 1, type) : null
+      const pointer = sym ? this.pointerWanted(sym, name, expr.args, type) : null
       if (pointer) {
         this.recordReference(name, at)
         return fail(`${name} takes ${pointer} first; the receiver is a ${typeToString(type)}, which is held in registers and has no address`)
@@ -3448,7 +3448,7 @@ class CheckContext {
 
   // The pointer type a function takes as its first argument, where the
   // receiver of a method call is a value of what that pointer points to.
-  private pointerWanted(sym: Symbol, name: string, argCount: number, receiver: ResolvedType): string | null {
+  private pointerWanted(sym: Symbol, name: string, args: AST.Arg[], receiver: ResolvedType): string | null {
     if (unwrap(receiver).kind === 'pointer') return null
     const pointsTo = (type: ResolvedType): boolean => {
       const u = unwrap(type)
@@ -3460,20 +3460,33 @@ class CheckContext {
       return first && pointsTo(first) ? typeToString(first) : null
     }
     if (sym.kind !== 'generic' || !sym.valid) return null
-    // The receiver decides the type parameters as it would behind a pointer.
     const params = genericParams(sym.decl)
     const first = params.find((p) => !p.comptime)
-    if (!first || first.type.kind !== 'PointerType' || argCount === params.length) return null
+    if (!first || first.type.kind !== 'PointerType') return null
     const typeParams = params.filter(isTypeParam).map((p) => p.ident as string)
     const expand = (applied: AST.TypeApply) => sym.owner.expandTypeApply(applied)
     const bound = new Map<string, ResolvedType>()
-    matchType(first.type.pointee, receiver, typeParams, bound, false, expand)
+    // A type that resolves without a word, or null: this only asks.
+    const quietly = (owner: CheckContext, resolve: () => ResolvedType) =>
+      owner.attempt(null, () => {
+        const reported = owner.errorsReported
+        const type = resolve()
+        return owner.errorsReported === reported ? type : null
+      })
+    if (args.length + 1 === params.length) {
+      // The type arguments are written, after the receiver.
+      params.filter((p) => p !== first).forEach((p, i) => {
+        const value = args[i].value
+        const written = isTypeParam(p) && value ? typeOfArg(value) : null
+        const type = written && quietly(this, () => this.resolveType(written))
+        if (type) bound.set(p.ident as string, type)
+      })
+    } else {
+      // The receiver decides them as it would behind the pointer.
+      matchType(first.type.pointee, receiver, typeParams, bound, false, expand)
+    }
     if (mentionsUnbound(first.type, typeParams, bound, expand)) return null
-    const wanted = sym.owner.attempt(null, () => {
-      const reported = sym.owner.errorsReported
-      const type = sym.owner.resolveBound(first.type, bound)
-      return sym.owner.errorsReported === reported ? type : null
-    })
+    const wanted = quietly(sym.owner, () => sym.owner.resolveBound(first.type, bound))
     return wanted && pointsTo(wanted) ? typeToString(wanted) : null
   }
 
