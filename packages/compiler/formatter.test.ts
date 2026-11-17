@@ -164,6 +164,16 @@ describe('formatter', () => {
   // comptime is a word of the language, not a name. No valid program has a
   // parenthesis or a bracket right after it, but a line being typed may, and
   // there it is not drawn up to it the way the name of a called function is.
+  // A literal in single quotes is codepoints, not a string, and stays as it
+  // is written: its quotes, its characters and its escapes.
+  test('a literal in single quotes is kept as written', () => {
+    const source = "def tab = '\\t'\nfunc f(c:u8)->bool=>c=='a'||c==   '\\''||c=='é'||c=='\\u{e9}'\nfunc g()->i32{\n  let (o,k)='o k'\n  return o -'\\x30'\n}\n"
+    const once = formatEncantis(source)
+    expect(once).toBe("def tab = '\\t'\nfunc f(c:u8) -> bool => c == 'a' || c == '\\'' || c == 'é' || c == '\\u{e9}'\nfunc g() -> i32 {\n  let (o, k) = 'o k'\n  return o - '\\x30'\n}\n")
+    expect(formatEncantis(once)).toBe(once)
+    expect(shape(once)).toEqual(shape(source))
+  })
+
   test('comptime is spaced as a keyword', () => {
     expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
     expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')

@@ -89,17 +89,49 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 
 ```ents
 "hello"           // UTF-8 string literal
-"line1\nline2"    // escape sequences: \n \t \r \\\ \"
-'also a string'   // single quotes work too
+"line1\nline2"    // escape sequences: \n \t \r \\ \' \"
+"\xE9"            // \xHH is the byte HH: one byte
+"\u{e9}"          // \u{H..} is a character by its codepoint: its UTF-8 bytes, two here
 x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
 b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
+A string is written in double quotes; single quotes hold codepoints ([Codepoint Literals](#codepoint-literals)). The `x` and `b` prefixes take double quotes only. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
 
-There is no character literal: `'a'` is a string of one byte, in memory like any other. It is not a byte to compare, compute with, assign or pass: with `c: u8`, `c == 'a'`, `c - 'a'`, `let b: u8 = 'a'` and `match c { 'a' => ... }` are compile errors. Write the byte as a number (`c == 97`).
+A string is never a character: next to a number, given for one or matched against one it is an error, which shows how the character is written (`'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`).
+
+#### Codepoint Literals
+
+Single quotes hold codepoints, not a string. Each character between them is one codepoint (a Unicode scalar value, never a byte of its UTF-8 encoding), and each codepoint is exactly the integer literal of its value, as if the number were written in its place:
+
+```ents
+'a'               // 97
+'é'               // 233: a u8 holds it, as it holds 233
+'ā'               // 257: too big for a u8, as 257 is
+'\n'              // 10; also \t \r \\ \' \" (and ' needs no escape in "don't")
+'\x7F'            // 127: \xHH is the codepoint HH
+'\u{1F600}'       // 128512: \u{H..} is the codepoint H..
+'ok'              // the tuple (111, 107)
+```
+
+One codepoint is the value itself, as a parenthesised value is (`'a'` is `(97)`, which is `97`), so it compares, computes, assigns, passes and matches as its number does. With `c: u8`:
+
+```ents
+def newline = '\n'
+
+func is_lower(c: u8) -> bool => c >= 'a' && c <= 'z'
+func digit(c: u8) -> u8 => c - '0'
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+```
+
+Several codepoints are the tuple of them, values in registers like any tuple: `let (x, y) = 'ok'` binds 111 and 107, and `'RIFF'` passes for a `(u8, u8, u8, u8)` as `(82, 73, 70, 70)` does. A tuple is not an array, so `'abc'` is no `[3]u8`.
+
+A single-quoted literal is never a string, nor an address: where a pointer or a slice is wanted it is an error that shows the string (`cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")`). `''` holds no codepoint and is an error, as is an escape that names no character (`\u{D800}` to `\u{DFFF}`, past `\u{10FFFF}`).
 
 #### Template Literals
 
@@ -1888,11 +1920,11 @@ let msg:[]u8 = match status & 3 {
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number or a bool; a string, `'a'` included, is not one ([1.5](#string-literals)):
+Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number, a codepoint (`'a'`, [1.5](#codepoint-literals)) or a bool. A string is not one, and no tuple pattern is compared yet, `'ok'` (the tuple `(111, 107)`) included: match one field at a time.
 
 ```ents
 match c {
-  97, 101, 105, 111, 117 => true   // the bytes of a, e, i, o, u
+  'a', 'e', 'i', 'o', 'u' => true   // 97, 101, 105, 111, 117
   _ => false
 }
 ```
@@ -1979,6 +2011,8 @@ The compiler enforces exhaustive matching when matching an enum — all variants
 
 #### Struct and Tuple Patterns
 
+> **Status: Not yet implemented** — `match` compares numbers, codepoints and bools; a tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`).
+
 Pattern matching works on structs and tuples too, not just enums:
 
 ```ents
@@ -1993,7 +2027,7 @@ func describe_point(p:Point) -> []u8 {
   }
 }
 
-// Anonymous tuple patterns work too
+// Anonymous tuple patterns too (not yet: the compiler refuses a tuple pattern)
 func check_pair(pair:(i32, i32)) -> bool {
   match pair {
     (0, 0) => true
@@ -2007,7 +2041,7 @@ The convention distinguishes patterns by case:
 
 - **Uppercase** (`Point`, `RGB`) — type constructor or variant
 - **lowercase** (`x`, `y`) — binding (introduces a variable)
-- **literals** (`0`, `"hello"`) — exact match
+- **literals** (`0`, `'a'`, `true`) — exact match
 - **`_`** — wildcard (match anything, don't bind)
 
 ### 6.4 If-Let Bindings

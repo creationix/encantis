@@ -999,6 +999,12 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
+        // A single-quoted literal shows the codepoint it is.
+        if (type && expr.quoted && expr.value.kind === 'int') {
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, expr.value.value.toString())
+          break
+        }
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
@@ -1128,6 +1134,12 @@ class MetaBuilder {
       }
 
       case 'TupleExpr':
+        // 'ok' shows the codepoints it is, (111, 107).
+        if (type && expr.quoted) {
+          const codepoints = expr.elements.map((e) => (e.value?.kind === 'LiteralExpr' && e.value.value.kind === 'int' ? e.value.value.value : '?'))
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, `(${codepoints.join(', ')})`)
+        }
         for (const elem of expr.elements) {
           if (elem.value) {
             this.generateHintsForExpr(elem.value)

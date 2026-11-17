@@ -2686,6 +2686,71 @@ describe('literals', () => {
   })
 })
 
+describe('a literal in single quotes is codepoints', () => {
+  // Each codepoint is the int literal of its value, written there.
+  const quoted = `
+    def newline = '\\n'
+    func take(c: u8) -> u8 => c
+    func tag(t: (u8, u8, u8, u8)) -> u32 => (t.0 as u32) * 1000000 + (t.1 as u32) * 10000 + (t.2 as u32) * 100 + t.3
+    export func is_a(c: u8) -> bool => c == 'a'
+    export func offset(c: u8) -> u8 => c - 'a'
+    export func put() -> u8 {
+      let b: u8 = 'é'
+      return b
+    }
+    export func give() -> u8 => take('\\x7f')
+    export func vowel(c: u8) -> i32 => match c {
+      'a', 'e', 'i', 'o', 'u' => 1
+      '\\u{e9}', '\\'' => 2
+      _ => 0
+    }
+    export func lower(c: u8) -> bool => c >= 'a' && c <= 'z' || c == newline
+    export func pair() -> i32 {
+      let (o, k) = 'ok'
+      return o * 1000 + k
+    }
+    export func riff() -> u32 => tag('RIFF')
+    export func wide() -> u32 => '😀'
+  `
+  const numbers = quoted
+    .replace("'\\n'", '10').replaceAll("'a'", '97').replace("'é'", '233').replace("'\\x7f'", '127')
+    .replace("'e', 'i', 'o', 'u'", '101, 105, 111, 117').replace("'\\u{e9}', '\\''", '233, 39')
+    .replace("'z'", '122').replace("'ok'", '(111, 107)').replace("'RIFF'", '(82, 73, 70, 70)').replace("'😀'", '128512')
+
+  test('compile to what their numbers do', () => {
+    expect(numbers).not.toContain("'")
+    expect(modWat(quoted)).toBe(modWat(numbers))
+  })
+
+  test('compare, compute, assign, pass and match as their numbers', async () => {
+    const f = await run(quoted)
+    expect([f.is_a(97), f.is_a(98), f.offset(100), f.put(), f.give()]).toEqual([1, 0, 3, 233, 127])
+    expect([f.vowel(111), f.vowel(233), f.vowel(39), f.vowel(98)]).toEqual([1, 2, 2, 0])
+    expect([f.lower(109), f.lower(10), f.lower(65)]).toEqual([1, 1, 0])
+    expect([f.pair(), f.riff(), f.wide()]).toEqual([111107, 82737070, 128512])
+  })
+})
+
+describe('an escape in a string', () => {
+  test('\\xHH is that byte, \\u{H..} the UTF-8 bytes of that character', async () => {
+    const { at } = await run(`
+      data s = "\\xE9\\u{e9}\\u{1F600}\\x41"
+      export func at(i: u32#8) -> u8 => s[i]
+    `)
+    expect([0, 1, 2, 3, 4, 5, 6, 7].map((i) => at(i))).toEqual([0xe9, 0xc3, 0xa9, 0xf0, 0x9f, 0x98, 0x80, 0x41])
+  })
+
+  test('so in a template literal', async () => {
+    const { first, len } = await run(`
+      func first-of(t: [][]u8) -> u8 => if let s = t[0] { s[0] ?? 0 } else { 0 }
+      func len-of(t: [][]u8) -> u32 => if let s = t[0] { s.len } else { 0 }
+      export func first() -> u8 => first-of(\`\\xFF\`)
+      export func len() -> u32 => len-of(\`\\xFF\\u{e9}\`)
+    `)
+    expect([first(), len()]).toEqual([0xff, 3])
+  })
+})
+
 describe('a string with no type to meet', () => {
   test('is laid out wherever its value is used', async () => {
     const f = await run(`

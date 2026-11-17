@@ -1267,28 +1267,90 @@ argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8)
 cannot assign a string literal to []u16
 ```
 
-A string in single quotes is a string too, never a character: not a byte to compare, compute with, assign or pass. Next to a pointer it is the address of its bytes.
+A literal in single quotes is codepoints, not a string: `'a'` is the integer 97, exactly as if `97` were written there, and `'ok'` is the tuple `(111, 107)`. Each character is one codepoint, whatever its UTF-8 bytes: `'é'` is 233, which a `u8` holds. So with `c: u8` a codepoint compares, computes, assigns, passes and matches as its number does. A string next to a pointer is the address of its bytes.
 
 ```ents
+def newline = '\n'
+
 func is_a(c: u8) -> bool => c == 'a'
 func is_b(c: u8) -> bool => ('b') != c
 func offset(c: u8) -> u8 => c - 'a'
-func before(c: u32) -> bool => c < "ab"
 func next() -> bool => 'a' + 1 == 98
-func put() { let c: u8 = 'a' }
+func put() -> u8 {
+  let c: u8 = 'a'
+  return c
+}
 func take(c: u8) -> u8 => c
 func give() -> u8 => take('a')
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+func is_e(c: u8) -> bool => c == 'é' || c == '\xE9' || c == '\u{e9}'
+func at_end(c: u8) -> bool => c == newline || c == '\''
+func lower(c: u8) -> bool => c >= 'a' && c <= 'z'
+func pair() -> i32 {
+  let (o, k) = 'ok'
+  return o * 1000 + k
+}
+func tag(t: (u8, u8, u8, u8)) -> u8 => t.0
+func riff() -> u8 => tag('RIFF')
 func same(p: *[2]u8) -> bool => p == "ab"
 ```
 
+A codepoint that does not fit is refused as its number is. A string is never a character, and a single-quoted literal is never a string, nor an address.
+
+```ents
+func latin() -> u8 {
+  let c: u8 = '\u{101}'
+  return c
+}
+func is_a(c: u8) -> bool => c == "a"
+func before(c: u32) -> bool => c < "ab"
+func put() { let c: u8 = "a" }
+func greet(s: []u8) -> u32 => s.len
+func hello() -> u32 => greet('hi')
+func same(p: *[2]u8) -> bool => p == 'ab'
+func first(p: *u8) -> u8 => p.*
+func a() -> u8 => first('a')
+func vowel(c: u8) -> bool => match c {
+  "a" => true
+  _ => false
+}
+func ok(t: (u8, u8)) -> bool => match t {
+  'ok' => true
+  _ => false
+}
+```
+
 ```errors
-'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
-'!=' cannot be applied to a string and u8 — a string is bytes in memory, not a character; write its byte as a number (98)
-'-' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+cannot assign int(257) to u8
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
 '<' cannot be applied to u32 and a string — a string is bytes in memory, not a character
-'+' cannot be applied to a string and int(1) — a string is bytes in memory, not a character; write its byte as a number (97)
-cannot assign *[1]u8 to u8
-argument 1: cannot assign *[1]u8 to u8
+cannot assign *[1]u8 to u8 — a string is bytes in memory, not a character: a character is written in single quotes ('a')
+argument 1: cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")
+'==' cannot be applied to *[2]u8 and 'ab' — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("ab")
+argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a")
+cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
+'ok' is a tuple of codepoints, and match cannot compare a tuple pattern yet: compare one field at a time
+```
+
+Single quotes hold at least one character, and an escape names a character: `\u{D800}` to `\u{DFFF}` are UTF-16 surrogates, and none is past `\u{10FFFF}`.
+
+```ents
+func f() -> u8 => ''
+```
+
+```errors
+'' holds no character: write one or more between single quotes, or "" for an empty string
+```
+
+```ents
+func f() -> u32 => '\u{d800}'
+```
+
+```errors
+\u{d800} is not a character: D800 to DFFF are UTF-16 surrogates, not codepoints
 ```
 
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.

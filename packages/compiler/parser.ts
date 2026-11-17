@@ -3,6 +3,7 @@
 
 import type * as ohm from 'ohm-js'
 import type { Module, Span } from './ast'
+import { LiteralError } from './encantis-actions'
 import { grammar, semantics } from './encantis-grammar'
 
 // Re-export all AST types for consumers
@@ -60,6 +61,16 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
       errors: [],
     }
   } catch (e) {
+    // A literal the grammar accepts but the language does not ('').
+    if (e instanceof LiteralError) {
+      const before = source.slice(0, e.span.start)
+      const line = before.split('\n').length
+      const col = e.span.start - before.lastIndexOf('\n')
+      return {
+        module: null,
+        errors: [{ message: `Line ${line}, col ${col}: ${e.message}`, shortMessage: e.message, span: e.span, expected: [] }],
+      }
+    }
     // Semantic action error (shouldn't happen with correct grammar)
     return {
       module: null,

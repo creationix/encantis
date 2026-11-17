@@ -483,6 +483,8 @@ export interface IdentExpr extends BaseNode {
 export interface LiteralExpr extends BaseNode {
   kind: 'LiteralExpr'
   value: LiteralValue
+  // Written in single quotes ('a'): an int that is a codepoint, never a string.
+  quoted?: true
   mut?: boolean  // mutable data, skip deduplication in data section
   dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }
@@ -543,7 +545,7 @@ export interface MatchArm extends BaseNode {
 
 export type MatchPattern =
   | { kind: 'constructor'; type: string; elements: MatchPatternElement[] }
-  | { kind: 'tuple'; elements: MatchPatternElement[] }
+  | { kind: 'tuple'; elements: MatchPatternElement[]; quoted?: true }
   | { kind: 'variant'; type: string }
   | { kind: 'binding'; name: string }
   | { kind: 'literal'; value: LiteralValue }
@@ -558,6 +560,8 @@ export type MatchPatternElement =
 export interface TupleExpr extends BaseNode {
   kind: 'TupleExpr'
   elements: Arg[]
+  // Written in single quotes ('ok'): a tuple of codepoints, never a string.
+  quoted?: true
   mut?: boolean  // mutable data, skip deduplication in data section
 }
 

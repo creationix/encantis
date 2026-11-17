@@ -2799,6 +2799,21 @@ class CheckContext {
     const inferred = this.inferExprInner(expr, true)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
+    // A single-quoted literal is codepoints, never a string, nor a constant
+    // address. A string is bytes in memory, never a character.
+    const codepoints = quotedCodepoints(expr)
+    if (codepoints && wantsAddress(expected)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(expected)} — ${notAString(codepoints)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+    const bytes = stringBytes(expr)
+    if (bytes && isInteger(expected) && (bytes.length === 1 || oneCharacter(bytes) !== null)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)} — ${notACharacter(bytes)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+
     // Helper to check if sizes include inferred marker
     const hasInferredMarker = (sizes: ArraySize[] | null) => sizes?.includes('_') ?? false
     // Helper to fill in inferred sizes with a concrete number
@@ -4187,7 +4202,7 @@ class CheckContext {
     const fallback = comparison ? primitive('bool') : stripMax(wider ? rightType : leftType)
 
     // A string is bytes in memory, never a character: next to a number its
-    // value would be its address. Quotes of either kind make a string.
+    // value would be its address. A character is written in single quotes.
     const string = (operand: AST.Expr): AST.LiteralExpr | null => {
       let e = ungrouped(operand)
       while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
@@ -4199,10 +4214,18 @@ class CheckContext {
       : null
     if (lone?.value.kind === 'string') {
       const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
-      const bytes = lone.value.bytes
-      const hint = bytes.length === 1 ? `; write its byte as a number (${bytes[0]})` : ''
-      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — a string is bytes in memory, not a character${hint}`)
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notACharacter(lone.value.bytes)}`)
       return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+    }
+    // ...and a single-quoted literal is codepoints, never a string: compared
+    // with an address it would be taken for one.
+    const quoted = comparison && isAddress(right) ? quotedCodepoints(expr.left)
+      : comparison && isAddress(left) ? quotedCodepoints(expr.right)
+      : null
+    if (quoted) {
+      const shown = (operand: AST.Expr, type: ResolvedType) => (quotedCodepoints(operand) ? spellCodepoints(quoted, "'") : typeToString(type))
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notAString(quoted)}`)
+      return primitive('bool')
     }
 
     if (!isScalar(left) || !isScalar(right)) {
@@ -5375,6 +5398,15 @@ class CheckContext {
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
       for (const pattern of arm.patterns) {
+        // Only a number, a bool or _ is compared: a tuple pattern would
+        // never match.
+        if (pattern.kind === 'tuple') {
+          const what = pattern.quoted
+            ? `${spellCodepoints(pattern.elements.map((e) => e.kind === 'positional' && e.pattern.kind === 'literal' && e.pattern.value.kind === 'int' ? Number(e.pattern.value.value) : 0), "'")} is a tuple of codepoints, and `
+            : ''
+          this.error(arm.span.start, `${what}match cannot compare a tuple pattern yet: compare one field at a time`)
+          continue
+        }
         if (pattern.kind !== 'literal') continue
         const value = pattern.value
         const type = value.kind === 'int' ? comptimeInt(value.value)
@@ -5384,7 +5416,8 @@ class CheckContext {
         const comparable = subject.kind === 'primitive' && (byteSize(subject) ?? 16) <= 8
         if (!type || !comparable || !typeAssignable(subject, type)) {
           const shown = type ? typeToString(type) : 'a string'
-          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}`)
+          const hint = value.kind === 'string' && isInteger(subject) ? ` — ${notACharacter(value.bytes)}` : ''
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}`)
         }
       }
     }
@@ -7256,6 +7289,76 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// The codepoints of a literal written in single quotes ('a', 'ok'), seen
+// through parentheses and a type annotation; null for anything else.
+function quotedCodepoints(expr: AST.Expr): number[] | null {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  const value = (lit: AST.Expr | null) =>
+    lit?.kind === 'LiteralExpr' && lit.value.kind === 'int' ? Number(lit.value.value) : Number.NaN
+  if (e.kind === 'LiteralExpr' && e.quoted) return [value(e)]
+  if (e.kind === 'TupleExpr' && e.quoted) return e.elements.map((arg) => value(arg.value))
+  return null
+}
+
+// The bytes of a string literal ("abc", x"61"), seen through parentheses and
+// a type annotation; null for anything else.
+function stringBytes(expr: AST.Expr): Uint8Array | null {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  return e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e.value.bytes : null
+}
+
+// The one character a string's bytes are in UTF-8, or null when they are
+// not exactly one.
+function oneCharacter(bytes: Uint8Array): number | null {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return null
+  }
+  const codepoints = [...text]
+  return codepoints.length === 1 ? codepoints[0].codePointAt(0)! : null
+}
+
+// Codepoints written between quotes, each escaped where it has to be.
+export function spellCodepoints(codepoints: number[], quote: "'" | '"'): string {
+  let out = quote
+  for (const cp of codepoints) {
+    const c = String.fromCodePoint(cp)
+    if (c === quote || c === '\\') out += `\\${c}`
+    else if (c === '\n') out += '\\n'
+    else if (c === '\t') out += '\\t'
+    else if (c === '\r') out += '\\r'
+    else if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) out += `\\u{${cp.toString(16)}}`
+    else out += c
+  }
+  return out + quote
+}
+
+// What a single-quoted literal that meets an address type is told: it is no
+// string, and how the string it looks like is written.
+function notAString(codepoints: number[]): string {
+  return `a single-quoted literal is codepoints, not a string: a string is written with double quotes (${spellCodepoints(codepoints, '"')})`
+}
+
+// What a string that meets a number is told: how the character it looks like
+// is written, or its byte as a number.
+function notACharacter(bytes: Uint8Array): string {
+  const one = oneCharacter(bytes)
+  if (one !== null) return `a string is bytes in memory, not a character: a character is written in single quotes (${spellCodepoints([one], "'")})`
+  if (bytes.length === 1) return `a string is bytes in memory, not a character; write its byte as a number (${bytes[0]})`
+  return 'a string is bytes in memory, not a character'
+}
+
+// Where an address is wanted: a pointer, a slice, a framed array.
+function wantsAddress(type: ResolvedType): boolean {
+  const t = unwrap(type)
+  return t.kind === 'pointer' || t.kind === 'slice' ||
+    (t.kind === 'array' && !!t.sizes?.some((s) => s === '!' || s === '?'))
 }
 
 // An array written out, element by element or as a repeat: passed for a

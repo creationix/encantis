@@ -62,18 +62,29 @@ Keywords are not identifiers. `comptime` is one of them: it marks the compile-ti
 
 ### Strings
 
-**UTF-8 strings:**
+**UTF-8 strings** are double-quoted:
 ```encantis
 "Hello, world!"
-'single quotes work too'
-"escape sequences: \n \t \\ \" \'"
-"\x48\x69"      // hex escapes in UTF-8
+"escape sequences: \n \t \r \\ \" \'"
+"\x48\x69"      // \xHH is the byte HH
+"\u{e9}"        // \u{H..} is the UTF-8 bytes of the character with that codepoint
 ```
 
 **Raw bytes:**
 ```encantis
 x"48 65 6C 6C 6F"              // hex bytes (spaces optional)
 b"SGVsbG8gV29ybGQh"             // base64
+```
+
+### Codepoints
+
+Single quotes hold codepoints, not a string (`codepointLiteral`): each character or escape between them is one codepoint. One codepoint is the integer literal of its value; several are a tuple of them. The escapes are a string's, with `\xHH` the codepoint HH. `''` is an error, and so is a `\u{..}` that names no character (a surrogate, or past `10FFFF`).
+
+```encantis
+'a'             // 97
+'é'             // 233
+'\u{1F600}'     // 128512
+'ok'            // (111, 107)
 ```
 
 ### Booleans
@@ -757,6 +768,8 @@ One consequence: a struct type with named fields is an argument list of named ar
 42                            // Integer
 3.14                          // Float
 "hello"                       // String
+'a'                           // Codepoint: 97
+'ok'                          // Tuple of codepoints: (111, 107)
 true                          // Boolean
 ()                            // Unit
 (1, 2)                        // Tuple
