@@ -7,7 +7,7 @@ data costs = [5:i32, 1, 5, 3, 1, 9]
 
 // Sorts xs in place. `before(a, b)` says a must come before b; elements neither
 // of which must come before the other keep their order (insertion sort).
-func sort(comptime T:type, xs:[]mut T, comptime before:(T, T) -> bool) {
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
   let p = xs.ptr
   for i in xs.len {
     let x = p[i]
@@ -20,15 +20,15 @@ func sort(comptime T:type, xs:[]mut T, comptime before:(T, T) -> bool) {
   }
 }
 
-func twice(comptime T:type, comptime f:(T) -> T, x:T) -> T => f(f(x))
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
 
-func ascending(a:i32, b:i32) -> bool => a < b
-func by_cost_desc(a:i32, b:i32) -> bool => costs.i32[a] > costs.i32[b]
-func longer(a:f64, b:f64) -> bool => a > b
-func inc(x:u32) -> u32 => x + 1
+func ascending(a: i32, b: i32) -> bool => a < b
+func by_cost_desc(a: i32, b: i32) -> bool => costs.i32[a] > costs.i32[b]
+func longer(a: f64, b: f64) -> bool => a > b
+func inc(x: u32) -> u32 => x + 1
 
-export func sort_ids(ids:[]mut i32) { sort(ids, by_cost_desc) }
-export func sort_up(xs:[]mut i32) { sort(i32, xs, ascending) }
+export func sort_ids(ids: []mut i32) { sort(ids, by_cost_desc) }
+export func sort_up(xs: []mut i32) { sort(i32, xs, ascending) }
 
 test "ints sort ascending" {
   let a = space as [*]mut i32
