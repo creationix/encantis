@@ -169,6 +169,8 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
+A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T`.
+
 #### `def` — Compile-Time Constants
 
 `def` binds a name to a compile-time value. It's pure substitution — the value is inlined wherever the name appears. No memory, no pointer.
@@ -416,10 +418,12 @@ func print(msg: []u8)            // read-only: cannot write through msg
 func fill(buf: []mut u8)         // mutable: can write through buf
 
 data buf = mut [0:u8; 1024]
+data text = "hello"
 print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
-fill("hello")                     // ERROR: const literal → mutable param
+fill(text)                        // ERROR: const data → mutable param
+fill("hello")                     // OK: given for []mut u8, the literal is a mutable copy of its own
 ```
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
@@ -917,11 +921,12 @@ data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rom
 
 #### Mutability
 
-By default, data is mutable (wasm linear memory is always writable). Use `mut` on the literal to signal intent and prevent deduplication:
+Data is const unless its literal is `mut` or its declared type is a mutable pointer or slice. Const data may share its bytes with equal literals; mutable data is its own:
 
 ```ents
-data table = [0:u8; 256]            // shared, may be deduplicated
-data buffer = mut [0:u8; 1024]      // unique, never deduplicated
+data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
+data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
+data counts: []mut u32 = [0, 0]     // []mut u32: unique, as if written with mut
 ```
 
 ### 3.3 Variables

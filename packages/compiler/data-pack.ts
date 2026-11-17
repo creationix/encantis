@@ -138,6 +138,9 @@ export class DataSectionBuilder {
   // If skipDedup is true, always allocate new space (for mutable data)
   internBytes(bytes: Uint8Array, skipDedup = false, isOptional = false): DataRef {
     void isOptional // data never starts at 0 (see NULL_PAGE)
+    // Nothing can be written to no bytes: a mutable empty literal needs no
+    // place of its own.
+    if (bytes.length === 0) skipDedup = false
 
     const key = bytesToKey(bytes)
 

@@ -2724,3 +2724,33 @@ describe('a string with no type to meet', () => {
     expect([write(), same()]).toEqual([7, 85])
   })
 })
+
+describe('a literal given for a mutable pointer or slice', () => {
+  test('is a copy of its own, as if written with mut', async () => {
+    const { run: go } = await run(`
+      data c: []i32 = [20, 8]
+      data s: []mut i32 = [20, 8]
+      data u: *mut [_]i32 = [20, 8]
+      data t: *mut [2][2]i32 = [[1, 2], [1, 2]]
+      data cstr = "hi"
+      data str: []mut u8 = "hi"
+      func fill(buf: []mut u8, v: u8) -> []u8 {
+        buf[0] = v
+        return buf
+      }
+      export func run() -> i32 {
+        s[0] = 5
+        u[1] = 7
+        t[0][0] = 9
+        str[0] = 1
+        let a = fill([0:u8; 2], 3)
+        let b = fill([0:u8; 2], 4)
+        let p: *mut [2]i32 = [20, 8]
+        p[0] = 6
+        return c[0] * 1000000 + c[1] * 10000 + t[1][0] * 1000 + (cstr[0] as i32) + (a[0] as i32) * 10 + (b[0] as i32) * 100
+      }
+    `)
+    // c is untouched, t's rows are two, cstr is "h", a and b are two buffers
+    expect(go()).toBe(20081000 + 104 + 30 + 400)
+  })
+})

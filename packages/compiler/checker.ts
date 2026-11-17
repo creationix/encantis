@@ -2850,12 +2850,11 @@ class CheckContext {
         : expected.kind === 'array'
         ? expected
         : (expected.pointee as ArrayRT)
-      // Infer mut from target type — no need for explicit mut on the literal
+      // A literal given where a mutable pointer or slice is wanted is `mut`
+      // without the keyword: a copy of its own, shared with no other data.
       const targetMut = (expected.kind === 'pointer' && expected.mutable) ||
         (expected.kind === 'slice' && expected.mutable)
-      if (targetMut || this.exprHasMut(expr)) {
-        if ('mut' in expr) (expr as { mut?: boolean }).mut = true
-      }
+      if (targetMut) markMut(expr)
       this.addLiteral(expr.span.start, expr, arrType)
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
