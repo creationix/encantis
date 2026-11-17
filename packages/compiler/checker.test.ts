@@ -1497,6 +1497,13 @@ describe('arrays where a pointer is wanted', () => {
     ])
     // A literal is laid out in memory.
     expect(errs(`${prelude}func f() -> i32 => sum([1, 2, 3]) + len([1, 2]) as i32`)).toEqual([])
+    // A [!]T is held as its pointer, but has no length to make a slice with
+    // until it is scanned for: (v.ptr, v.len) is the slice (9.5).
+    expect(errs('func n(s: []u8) -> u32 => s.len\nfunc f(v: [!]u8) -> u32 => n(v)\nfunc g(v: [!]u8) -> u32 {\n  let s: []u8 = v\n  return s.len\n}')).toEqual([
+      'argument 1: cannot assign [!]u8 to []u8',
+      'cannot assign [!]u8 to []u8',
+    ])
+    expect(errs('func m(p: [*]u8) -> u8 => p[1]\nfunc z(p: *[!]u8) -> u32 => p.len\nfunc f(v: [!]u8) -> u32 => m(v) as u32 + z(v)')).toEqual([])
   })
 
   test('the elements of a literal for a *[N]T are its elements, not arrays or strings', () => {

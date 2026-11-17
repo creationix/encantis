@@ -745,8 +745,9 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Fixed array coerces to slice: [N]T → []T
-  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'slice' && !s.sizes?.includes('_')) {
+  // Fixed array coerces to slice: [N]T → []T. A framed one ([!]T, [?]T)
+  // has no length to give it here: (s.ptr, s.len) is the slice (9.5).
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'slice' && !s.sizes?.includes('_') && !s.sizes?.some(isFraming)) {
     const elemResult = typeAssignResult(t.element, s.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
   }
