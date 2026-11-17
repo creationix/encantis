@@ -2781,8 +2781,8 @@ describe('functions that share a name', () => {
   })
 
   test('a global, a def or data that takes the name afterwards is checked without a throw', () => {
-    // Other declarations of one name replace each other, as they always
-    // have. The functions that shared it are no reason to fail on that.
+    // It is refused ('hash' is already declared), and the functions that
+    // shared the name are no reason to fail on that.
     const two = 'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\n'
     for (const taker of ['global hash: u32 = 3', 'def hash = 3', 'data hash = [1:u8, 2]']) {
       expect(() => checkModule(`${two}${taker}\nfunc hash(k: f64) -> u32 => 2\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
@@ -2805,6 +2805,21 @@ describe('functions that share a name', () => {
     expect([...result.symbols.keys()]).toEqual(['hash', "hash:''u8", 'f'])
     // Two imports of one name from the host are two functions of one name in the module.
     expect(errs('import "env" "now" func now() -> u64\nimport "env" "now" func now() -> u64')).toEqual(["'now' is already declared with parameters ()"])
+  })
+
+  test('one global of another source module imported twice is that global, not a second one', () => {
+    expect(errs(`
+      import "./keys" "seed" global seed: u32
+      import "./keys" ( "seed" global seed: u32 )
+      func f() -> u32 => seed
+    `)).toEqual([])
+    // Another global under that name is a second declaration of it.
+    expect(errs(`
+      import "./keys" "seed" global seed: u32
+      import "./keys" "salt" global seed: u32
+      import "env" "now" global now: u64
+      import "env" "now" global now: u64
+    `)).toEqual(["'seed' is already declared", "'now' is already declared"])
   })
 
   test('a function a test declares replaces the one of the module, as it always has', () => {

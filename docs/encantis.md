@@ -1168,6 +1168,8 @@ func size() -> u32 => 4
 'size' is already declared
 ```
 
+A function or a global of another source module imported twice under one name is that one again, not a second declaration.
+
 <!-- spec:end -->
 
 #### Calling Conventions

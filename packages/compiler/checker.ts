@@ -840,7 +840,12 @@ class CheckContext {
         }
         case 'ImportGlobal': {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
+          // Importing a global of another module twice is the same global
+          // again, as it is for a function (declareFunc).
+          const origin = isSource ? `${decl.module}:${item.name}` : undefined
+          if (origin !== undefined && this.globalOrigins.get(item.item.ident) === origin) break
           if (this.takenByAnother(item.item.ident, item.span.start, 'value', inTest)) break
+          if (origin !== undefined && !inTest) this.globalOrigins.set(item.item.ident, origin)
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -900,6 +905,9 @@ class CheckContext {
   // test's function takes over a function of the module, and nothing else),
   // and its own name is no name of the module's.
   private readonly topLevel = new Map<string, 'func' | 'value'>()
+  // The module and the name a global imported from another module is
+  // exported under, by the name it is imported as.
+  private readonly globalOrigins = new Map<string, string>()
   private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
     const first = this.topLevel.get(name)
     if (first === undefined) {
