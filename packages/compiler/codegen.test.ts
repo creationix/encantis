@@ -2684,3 +2684,43 @@ describe('literals', () => {
     expect(pattern(0)).toBe(1)
   })
 })
+
+describe('a string with no type to meet', () => {
+  test('is laid out wherever its value is used', async () => {
+    const f = await run(`
+      data buf = mut [0:u8; 8]
+      export func untyped() -> u8 { let s = "ABCD"
+        return s[0] }
+      export func branch(c: bool) -> u8 { let s = if c { "AB" } else { "CD" }
+        return s[0] }
+      export func arm(c: u32) -> u8 { let s = match c { 0 => "AB" _ => "CD" }
+        return s[0] }
+      export func grouped() -> u8 { let s = ("EF")
+        return s[0] }
+      export func field() -> u8 { let t = ("GH", 1)
+        return t.0[0] }
+      export func index() -> u8 => "LMN"[1]
+      export func ranged() -> u8 { buf[0..4] = "OPQR"
+        return buf[1] }
+      export func deref() -> u8 { let a = "WX".*
+        return a[1] }
+    `)
+    const got = ['untyped', 'branch', 'arm', 'grouped', 'field', 'index', 'ranged', 'deref'].map((name) => f[name](0))
+    expect(got.map((c) => String.fromCharCode(c as number))).toEqual(['A', 'C', 'A', 'E', 'G', 'M', 'P', 'X'])
+  })
+
+  test('mut makes it a writable copy of its own', async () => {
+    const { write, same } = await run(`
+      export func write() -> u8 {
+        let p = mut "UV"
+        p[0] = 7
+        return p[0]
+      }
+      export func same() -> u8 {
+        let q = "UV"
+        return q[0]
+      }
+    `)
+    expect([write(), same()]).toEqual([7, 85])
+  })
+})

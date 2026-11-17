@@ -720,6 +720,25 @@ class CheckContext {
     this.pendingLiterals.push({ id, expr })
   }
 
+  // Strings whose value was inferred with no type to meet (`let s = "ab"`,
+  // the source of `buf[0..2] = "ab"`, a branch of an untyped `if`): a string
+  // is always in memory, so each is laid out as its own bytes at the end of
+  // the function or declaration it is in, unless something laid it out in
+  // the meantime: a type it met, or a literal it is part of.
+  unplaced: AST.LiteralExpr[] = []
+
+  private placeInferredStrings(): void {
+    if (this.unplaced.length === 0) return
+    const parts = new Set<AST.Expr>()
+    for (const { expr } of this.pendingLiterals) literalParts(expr, parts)
+    for (const lit of this.unplaced) {
+      if (lit.dataId !== undefined || parts.has(lit) || lit.value.kind !== 'string') continue
+      lit.dataId = lit.span.start
+      this.addLiteral(lit.span.start, lit, array(primitive('u8'), [lit.value.bytes.length]))
+    }
+    this.unplaced = []
+  }
+
   checkModule(module: AST.Module): void {
     // Pre-pass: register all type names (to allow forward references)
     for (const decl of module.decls) {
@@ -731,6 +750,8 @@ class CheckContext {
     for (const decl of module.decls) {
       this.collectDeclaration(decl)
     }
+
+    this.placeInferredStrings()
 
     // Resolve any forward references in the type cache
     this.resolveForwardRefs()
@@ -744,6 +765,7 @@ class CheckContext {
 
     // The bodies of the instances the module asked for, and of those they ask for
     this.drainInstances()
+    this.placeInferredStrings()
     this.placeInstanceLiterals()
   }
 
@@ -1812,6 +1834,7 @@ class CheckContext {
       }
     }
     this.currentScope = prevScope
+    this.placeInferredStrings()
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -1935,6 +1958,7 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
+    this.placeInferredStrings()
   }
 
   // The type a returned value is checked against: for a single named result
@@ -3032,7 +3056,7 @@ class CheckContext {
     this.coercions.delete(expr)
     switch (expr.kind) {
       case 'LiteralExpr':
-        return this.inferLiteral(expr)
+        return this.inferLiteral(expr, typedByContext)
 
       case 'IdentExpr':
         return this.inferIdent(expr)
@@ -3128,7 +3152,7 @@ class CheckContext {
     }
   }
 
-  inferLiteral(expr: AST.LiteralExpr): ResolvedType {
+  inferLiteral(expr: AST.LiteralExpr, typedByContext = false): ResolvedType {
     switch (expr.value.kind) {
       case 'int':
         return comptimeInt(expr.value.value)
@@ -3138,9 +3162,11 @@ class CheckContext {
 
       case 'string': {
         // String literals have known length at compile time
-        // Default to *[N]u8 - pointer to N-byte array
+        // Default to *[N]u8 - pointer to N-byte array; `mut "ab"` is a
+        // writable copy of its own, a *mut [N]u8.
         const len = expr.value.bytes.length
-        return ptrArray(primitive('u8'), len)
+        if (!typedByContext && expr.dataId === undefined) this.unplaced.push(expr)
+        return pointer(array(primitive('u8'), [len]), false, !!expr.mut)
       }
 
       case 'bool':
@@ -5717,6 +5743,7 @@ class CheckContext {
     const literals = literalMarks(expr, (call) => this.known(call))
     const recorded = this.trial.begin()
     const registered = this.pendingLiterals.length
+    const unplaced = this.unplaced.length
     const warned = this.warnings.length
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
@@ -5725,6 +5752,7 @@ class CheckContext {
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
+    this.unplaced.length = unplaced
     this.trial.rollback(recorded)
     for (const { node, marks } of literals) {
       delete node.mut
@@ -7143,6 +7171,22 @@ function assignsVariable(node: unknown, name: string): boolean {
 }
 
 // Flag a literal as mutable data, so the data section gives it its own bytes.
+// The literals laid out as parts of `expr`: its elements, the value it
+// repeats, the fields of a struct it holds, down to any depth.
+function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
+  const inner = expr.kind === 'ArrayExpr' ? expr.elements
+    : expr.kind === 'RepeatExpr' ? [expr.value]
+    : expr.kind === 'TupleExpr' ? expr.elements.map((e) => e.value)
+    : expr.kind === 'CallExpr' ? expr.args.map((a) => a.value)
+    : expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr' ? [expr.expr]
+    : []
+  for (const part of inner) {
+    if (!part || parts.has(part)) continue
+    parts.add(part)
+    literalParts(part, parts)
+  }
+}
+
 function markMut(expr: AST.Expr): void {
   if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
     ;(expr as { mut?: boolean }).mut = true

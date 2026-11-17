@@ -637,6 +637,42 @@ export func e(i: u32, j: u32#2) -> i32 => at_i32(rows, i, j)
 export func f() -> i32 => sum_i32x2(rows)
 ```
 
+A string with no type to meet is laid out at the end of the function it is in, in an instance as in the same function written by hand; a `mut` one is a copy for each instance.
+
+```ents
+data other = "zz"
+func tag(comptime T: type, x: T) -> u8 {
+  let s = "ab"
+  let t = mut "cd"
+  t[0] = s[1]
+  return t[0]
+}
+export func f() -> u8 => tag(u8, 1) + tag(u32, 2)
+export func g() -> []u8 => "tail"
+
+test "strings in a generic" {
+  assert f() == 196
+}
+```
+
+```ents same-wasm
+data other = "zz"
+func tag_u32(x: u32) -> u8 {
+  let s = "ab"
+  let t = mut "cd"
+  t[0] = s[1]
+  return t[0]
+}
+func tag_u8(x: u8) -> u8 {
+  let s = "ab"
+  let t = mut "cd"
+  t[0] = s[1]
+  return t[0]
+}
+export func f() -> u8 => tag_u8(1) + tag_u32(2)
+export func g() -> []u8 => "tail"
+```
+
 An exported generic. Nothing is exported to the host for it.
 
 ```ents
