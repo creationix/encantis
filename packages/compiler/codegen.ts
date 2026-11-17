@@ -482,6 +482,13 @@ const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/
 const EFFECTS = /\((?:call|call_indirect|local\.set|local\.tee|global\.set|memory\.\w+|block|loop|if|br|br_if|br_table|return|unreachable|[if](?:32|64)\.store(?:8|16|32)?)\b/
 const isRepeatable = (wat: string) => !EFFECTS.test(wat)
 
+// Whether an expression whose value is not needed can be left out: it has no
+// effects and cannot trap. Integer division and remainder trap (by zero, and
+// the one quotient that overflows), and so do a float converted to an integer
+// that cannot hold it and a load from outside memory.
+const TRAPS = /\((?:i(?:32|64)\.(?:div|rem)_[su]|i(?:32|64)\.trunc_f(?:32|64)_[su]|[if](?:32|64)\.load)/
+const isDroppable = (wat: string) => isRepeatable(wat) && !TRAPS.test(wat)
+
 // Whether an expression reads linear memory, or a global.
 const loadsMemory = (wat: string) => /\([if](?:32|64)\.load/.test(wat)
 const readsGlobal = (wat: string) => /\(global\.get\b/.test(wat)
@@ -1191,10 +1198,11 @@ function setRegisters(regs: Registers, value: string): string {
   return [value, ...[...names].reverse().map((n) => `(${set} $${n})`)].join('\n')
 }
 
-// A slice's pointer, from the (ptr, len) pair.
+// A slice's pointer, from the (ptr, len) pair. The length is still computed
+// if it could trap or has effects.
 function slicePointer(slice: string): string {
   const parts = trySplitMultiValue(slice, 2)
-  return parts ? parts[0] : `(block (result i32) ${slice} (drop))`
+  return parts && isDroppable(parts[1]) ? parts[0] : `(block (result i32) ${slice} (drop))`
 }
 
 // Indexing a packed *[N,M]T once gives the address of a row, a *[M]T, and
@@ -1266,21 +1274,23 @@ function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
 }
 
 // Keeps `count` of the values an expression leaves on the stack, from `start`.
-// When the expression is written out value by value and none has effects, the
-// others are just left out. Otherwise it is evaluated whole and the others are
-// dropped; the kept values wait in scratch locals while the ones under them go.
+// When the expression is written out value by value, none has effects and the
+// others cannot trap (Point(7, 1 / n).x still divides), the others are just
+// left out. Otherwise it is evaluated whole and the others are dropped; the
+// kept values wait in scratch locals while the ones under them go.
 function selectValues(wat: string, types: string[], start: number, count: number, ctx: CodegenContext): string {
   const parts = trySplitMultiValue(wat, types.length)
-  if (parts?.every(isRepeatable)) return parts.slice(start, start + count).join(' ')
-  const kept = types.slice(start, start + count)
+  const kept = (i: number) => i >= start && i < start + count
+  if (parts?.every((part, i) => kept(i) ? isRepeatable(part) : isDroppable(part))) return parts.slice(start, start + count).join(' ')
+  const results = types.slice(start, start + count)
   const code = [wat, ...Array(types.length - start - count).fill('(drop)')]
   if (start > 0) {
-    const temps = kept.map((t) => scratchLocal(ctx, t))
+    const temps = results.map((t) => scratchLocal(ctx, t))
     code.push(...[...temps].reverse().map((t) => `(local.set ${t})`))
     code.push(...Array(start).fill('(drop)'))
     code.push(...temps.map((t) => `(local.get ${t})`))
   }
-  return `(block${kept.length > 0 ? ` (result ${kept.join(' ')})` : ''} ${code.join(' ')})`
+  return `(block${results.length > 0 ? ` (result ${results.join(' ')})` : ''} ${code.join(' ')})`
 }
 
 // A member of a struct that is neither in a variable nor in memory but on the
@@ -1326,9 +1336,10 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (addr !== null) return `(i32.load${atOffset(idx * 4)} ${addr})`
         const full = exprToWat(expr.object, ctx)
         const parts = trySplitMultiValue(full, 2)
-        if (parts) return parts[idx]
-        // A slice that comes off the stack (a call, a ?? fallback): drop the
-        // part we don't want. For .len, ptr sits under it, so park len first.
+        if (parts && isDroppable(parts[1 - idx])) return parts[idx]
+        // A slice that comes off the stack (a call, a ?? fallback), or whose
+        // other part has to run: drop the part we don't want. For .len, ptr
+        // sits under it, so park len first.
         if (idx === 0) return `(block (result i32) ${full} (drop))`
         const tmp = `$__len_${expr.span.start}`
         return `(block (result i32) ${full} (local.set ${tmp}) (drop) (local.get ${tmp}))`
@@ -1564,8 +1575,7 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
     const src = exprToWat(value, ctx)
     let srcPtr: string
     if (vu?.kind === 'slice') {
-      const parts = trySplitMultiValue(src, 2)
-      srcPtr = parts ? parts[0] : `(block (result i32) ${src} (drop))`
+      srcPtr = slicePointer(src)
     } else {
       srcPtr = src
     }
@@ -1609,7 +1619,11 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
   } else {
     return null
   }
-  if (!resultType.optional) return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  if (!resultType.optional) {
+    // The length isn't used, but still runs if it could trap or has effects.
+    if (u.kind === 'slice' && !isDroppable(len)) base = `(block (result i32) ${base} ${len} (drop))`
+    return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  }
   const idx = `$__addr_idx_${expr.span.start}`
   const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`

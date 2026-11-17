@@ -1341,6 +1341,40 @@ describe('struct values in registers and on the stack', () => {
     expect(wat).not.toContain('$__tmp')
   })
 
+  test('a part that is left out still runs if it could trap', async () => {
+    const code = `${RECT}
+      type Wide = (a: i64, b: i32)
+      data space = mut [0:u8; 16]
+      export func div(n: i32) -> i32 => Point(7, 1 / n).x
+      export func rem(n: i32) -> i32 => (5 % n, 7).1
+      export func wide(n: i32) -> i32 => Wide(1:i64 / (n as i64), 7).b
+      export func convert(x: f64) -> i32 => Point(7, x as i32).x
+      export func load(p: *i32) -> i32 => Rect(Point(7, 8), Point(p.*, 9)).origin.x
+      export func bound(n: i32) -> i32 {
+        let x = (7, 1 / n).0
+        return x
+      }
+      export func ptr(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8).ptr as u32 - space as u32
+      export func len(n: u32) -> u32 => (((1 / n) as [*]u8, 3):[]u8).len
+      export func index(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8)[0] as u32
+      export func address(n: u32) -> u32 {
+        let p: *u8 = &((space as [*]u8, 1 / n):[]u8)[0]
+        return p.* as u32
+      }
+    `
+    const m = await run(code)
+    expect([m.div(1), m.rem(1), m.wide(1), m.convert(1.5), m.load(8), m.bound(1)]).toEqual([7, 7, 7, 7, 7, 7])
+    expect([m.ptr(1), m.len(1), m.index(1), m.address(1)]).toEqual([0, 3, 0, 0])
+    // Division by zero, a float no i32 holds, a load from outside memory.
+    for (const name of ['div', 'rem', 'wide', 'bound', 'ptr', 'len', 'index', 'address']) expect(() => m[name](0)).toThrow()
+    expect(() => m.convert(1e30)).toThrow()
+    expect(() => m.load(-4)).toThrow()
+    // A part that can't trap and has no effects is still just left out.
+    expect(bodyOf(`${RECT}
+      func f(a: i32, b: i64) -> i32 => Rect(Point(a, a + 1), Point(a * 2, (b >> 1) as i32)).origin.x
+    `, 'f')).toEqual(['(local.get $a)'])
+  })
+
   test('a slice on the stack keeps its own form', () => {
     const wat = modWat(`
       data space = mut [0:u8; 16]
