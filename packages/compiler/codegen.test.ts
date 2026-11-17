@@ -918,6 +918,8 @@ describe('builtin codegen', () => {
           _ => { return 2 }
         }
       }`)
+      // A repeated value: 0.2.1 built this, pasting the operand in twice.
+      declared('func f(a: i32) -> [2]i32 => [max(g(a), 0); 2]')
     })
   })
 
