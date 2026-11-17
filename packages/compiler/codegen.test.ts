@@ -678,6 +678,16 @@ describe('expression codegen', () => {
       expect(wat).toContain('(if (result i64) (local.get $c) (then (i64.const -2147483648)) (else (i64.const 2147483648)))')
     })
 
+    test('tuple branches of constants are emitted field by field in one type', () => {
+      const wat = funcWat(`func f(c: bool, x: i64) -> i64 {
+        let (a, b) = if c { (1, 2) } else { (x, 4) }
+        return a + b
+      }`)
+      expect(wat).toContain('(local $a i64)')
+      expect(wat).toContain('(local $b i32)')
+      expect(wat).toContain('(if (result i64 i32) (local.get $c) (then (i64.const 1) (i32.const 2)) (else (local.get $x) (i32.const 4)))')
+    })
+
     test('an if let used as a value leaves the value of each branch', () => {
       const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
       expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)

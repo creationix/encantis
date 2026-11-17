@@ -90,3 +90,34 @@ test "a match on constant branches compares in the type that holds them" {
   assert subject(false) == 1
   assert subject(true) == 2
 }
+
+// Tuples of constants agree field by field, each field as it would by itself.
+func step(d: i32) -> i32 {
+  let (dx, dy) = match d {
+    0 => (1, 0)
+    1 => (0, 1)
+    _ => (-1, -1)
+  }
+  return dx * 10 + dy
+}
+
+func span(c: bool) -> i64 {
+  let t = if c { (-2147483648, 1) } else { (2147483648, 2) }
+  return t.0 + t.1
+}
+
+// A field that is a value in one branch has that value's type in them all.
+func offset(c: bool, x: i64) -> i64 {
+  let (a, b) = if c { (1, 2) } else { (x, 4) }
+  return a * 10 + b
+}
+
+test "tuple branches agree field by field" {
+  assert step(0) == 10
+  assert step(1) == 1
+  assert step(7) == -11
+  assert span(true) == -2147483647
+  assert span(false) == 2147483650
+  assert offset(true, 9) == 12
+  assert offset(false, 9) == 94
+}

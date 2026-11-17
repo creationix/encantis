@@ -312,6 +312,39 @@ cannot assign int(-1) to u32
 cannot assign int(9007199254740993) to f64
 ```
 
+Branches that are tuples agree field by field. A field that is a constant in every branch takes the default that holds each of them; one that is a value in some branch takes the type the values agree on.
+
+```ents
+func a(d: i32) -> i32 {
+  let (dx, dy) = match d {
+    0 => (1, 0)
+    1 => (0, 1)
+    _ => (-1, -1)
+  }
+  return dx + dy
+}
+
+func b(c: bool, x: i64) -> i64 {
+  let t = if c { (1, 2) } else { (x, 4) }
+  return t.0
+}
+
+func c(c: bool) -> i32 {
+  let t = if c { (-2147483648, 1) } else { (2147483648, 2) }
+  return t.0
+}
+
+func d(c: bool) -> i32 {
+  let t = if c { (1, 2) } else { (3, 4, 5) }
+  return t.0
+}
+```
+
+```errors
+cannot assign i64 to i32
+branches have different types: (int(3), int(4), int(5)) and (int(1), int(2))
+```
+
 An `if let` is a value too, and goes on to `elif` and `else` branches like any `if`.
 
 ```ents

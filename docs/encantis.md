@@ -737,6 +737,19 @@ func pick(c: bool) -> i64 {
 }
 ```
 
+Branches that are tuples agree field by field, each field as it would by itself:
+
+```ents
+func step(d: i32) -> (i32, i32) {
+  let (dx, dy) = match d {
+    0 => (1, 0)
+    1 => (0, 1)
+    _ => (-1, -1)                  // dx and dy are i32s
+  }
+  return (dx, dy)
+}
+```
+
 An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`).
 
 Once a value has a concrete type, normal promotion rules apply:

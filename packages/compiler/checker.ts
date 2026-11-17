@@ -10,6 +10,7 @@ import {
   type ArrayRT,
   type ArraySize,
   type PointerRT,
+  type TupleRT,
   primitive,
   pointer,
   slice,
@@ -3758,10 +3759,7 @@ class CheckContext {
       // Every branch takes the type that holds them all, so they agree on a
       // default when nothing else types them: -2147483648 and 2147483648
       // are an i64 together, whichever comes first.
-      for (const b of valued) {
-        if (type.kind === 'comptime_float') break
-        if (b.type.kind === 'comptime_float' || standsInFor(b.type, type)) type = b.type
-      }
+      type = standIn(valued.map(b => b.type))
       for (const b of valued) {
         const value = bodyValue(b.body)
         if (!value) continue
@@ -3790,6 +3788,20 @@ class CheckContext {
   // widest of them. `odd` is one that doesn't widen to it, when they have no
   // such type.
   private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    // Tuples with constants in them agree field by field, as their fields
+    // would as values by themselves: (1, 0) and (0, n) are an (i32, i32).
+    // A field that is a constant in each takes the default that holds them.
+    const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple')
+    const [first] = tuples
+    const alike = tuples.length === types.length && tuples.every(t =>
+      t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
+    if (alike && tuples.some(holdsConstant)) {
+      const tupleType = tuple(first.fields.map((f, i) => {
+        const of = tuples.map(t => t.fields[i].type)
+        return field(f.name, of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type)
+      }))
+      return { type: tupleType, odd: types.find(t => !typeAssignable(tupleType, t)) }
+    }
     let type = types[0]
     for (const t of types) {
       const constant = isComptimeNumber(unwrap(t))
@@ -4312,6 +4324,22 @@ function magnitude(t: ResolvedType): bigint {
 function standsInFor(a: ResolvedType, b: ResolvedType): boolean {
   if (magnitude(a) !== magnitude(b)) return magnitude(a) > magnitude(b)
   return a.kind === 'comptime_int' && b.kind === 'comptime_int' && a.value > b.value
+}
+
+// The constant that stands in for all of these: a float if any of them is
+// one, or else the integer that stands in for the others.
+function standIn(constants: ResolvedType[]): ResolvedType {
+  let type = constants[0]
+  for (const t of constants) {
+    if (type.kind === 'comptime_float') break
+    if (t.kind === 'comptime_float' || standsInFor(t, type)) type = t
+  }
+  return type
+}
+
+// Whether a type is a constant's, or a tuple's with one among its fields.
+function holdsConstant(t: ResolvedType): boolean {
+  return isComptimeNumber(t) || (t.kind === 'tuple' && t.fields.some(f => holdsConstant(f.type)))
 }
 
 // Whether an integer type's bits can hold a constant, signed or unsigned:

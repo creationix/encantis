@@ -1601,6 +1601,28 @@ describe('values meeting an expected type', () => {
       .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])
   })
 
+  test('branches that are tuples with constants in them agree field by field', () => {
+    // 0.2.1 built these; comparing the tuples whole, (0, 1) wasn't a (1, 0).
+    expect(errs(`func f(d: i32) -> i32 { let (dx, dy) = match d { 0 => (1, 0)\n 1 => (0, 1)\n _ => (-1, -1) }\n return dx + dy }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i32 { let t = if c { (1, 2) } else { (3, 4) }\n return t.1 }`)).toEqual([])
+    expect(errs(`func f(c: bool, x: i32) -> i32 { let t = if c { (x, 2) } else { (3, 4) }\n return t.0 }`)).toEqual([])
+    expect(errs(`func f(c: bool, x: i32) -> i32 { let t = if c { ((1, 2), x) } else { ((3, 4), 5) }\n return t.0.1 }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8) -> i32 { let (a, b) = if let q = p { (1, 2) } else { (3, 4) }\n return a + b }`)).toEqual([])
+    // A field takes the type its values would as branches by themselves.
+    const source = `func f(c: bool, x: i64) { let t = if c { (-2147483648, 1.5, 1) } else { (2147483648, 2, x) } }`
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    expect(typeAt(result, source.indexOf('t ='))).toBe('(i64, f64, i64)')
+    expect(errs(`func f(c: bool) -> i32 { let t = if c { (-2147483648, 1) } else { (2147483648, 2) }\n return t.0 }`)).toEqual(['cannot assign i64 to i32'])
+    // Tuples that aren't alike still don't agree.
+    expect(errs(`func f(c: bool) { let t = if c { (1, 2) } else { (3, 4, 5) } }`))
+      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)) (cast one explicitly)'])
+    expect(errs(`func f(c: bool) { let t = if c { (x: 1, y: 2) } else { (y: 3, x: 4) } }`))
+      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)) (cast one explicitly)'])
+    expect(errs(`func f(c: bool, x: f64) { let t = if c { (x, 2) } else { (3, true) } }`))
+      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool) (cast one explicitly)'])
+  })
+
   test('branches that cannot agree are an error where the value is used', () => {
     expect(errs(`func f(c: bool, a: i32, b: u32) { let v = if c { a } else { b } }`))
       .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])
