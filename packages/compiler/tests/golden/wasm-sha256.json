@@ -72,6 +72,7 @@
   "examples/types/rotations.ents": "5b7367a44dc0911ca5e0604661211df8a25b9c764cd22626895732c911ae1129",
   "examples/types/struct-values.ents": "a328772fdfb0c650250796c961da50ff852ef316ea1159497a6cb3ba8a34a086",
   "examples/types/structs-in-memory.ents": "acda73e8c75fa1439dc3ac2783d72318daee6f9fb23bf8dc8bc1deb6efb875f3",
+  "examples/types/tables.ents": "bb6343630780ddd772268647f80685692a09649d97e35a1f43d86ecd11039b12",
   "examples/types/test-destructuring.ents": "46ffd902a9f3ff931f049333083c405f7c733736d83314848b6092944bf221f4",
   "examples/types/wide-casts.ents": "7af5a66b402c7b92c5e2f8538582da37e8cd0cf246f26ad69d7c53c2a1240aee",
   "examples/types/widening.ents": "98af238ba0e62edf3454dd97decd67dfe1d52b0c78ca40f4786aec837e270920",
