@@ -1,0 +1,83 @@
+// Types that refer to themselves: through a pointer, a slice, or each other.
+// A field that holds the type itself, by value, would have no size; behind a
+// pointer it is an address.
+
+type Node = (next: ?*Node, v: u32)
+type Link = Node                             // another name for the same type
+type Tree = (kids: []Tree, v: u32)
+type Even = (odd: ?*Odd, v: u32)
+type Odd = (even: ?*Even, v: u32)
+
+data cells = mut [0:u8; 256]
+
+func at(k: u32) -> *mut Node => (cells as u32 + k * 8) as *mut Node
+
+export func sum(h: ?*Node) -> u32 {
+  let total: u32 = 0
+  let p = h
+  while true {
+    if let n = p {
+      total += n.v
+      p = n.next
+    } else {
+      return total
+    }
+  }
+  return total
+}
+
+// Three links down, each one a ?*Node again
+export func third(h: *Link) -> u32 {
+  if let a = h.next {
+    if let b = a.next { return b.v }
+  }
+  return 0
+}
+
+export func depth(t: Tree) -> u32 {
+  let deepest: u32 = 0
+  for k in t.kids {
+    let d = depth(k)
+    if d > deepest { deepest = d }
+  }
+  return deepest + 1
+}
+
+export func hop(e: *Even) -> u32 {
+  if let o = e.odd {
+    if let f = o.even { return f.v }
+  }
+  return 0
+}
+
+test "a list of three, linked" {
+  let a = at(0)
+  let b = at(1)
+  let c = at(2)
+  a.* = Node(b, 1)
+  b.* = Node(c, 2)
+  c.* = Node(0 as ?*Node, 3)
+  assert sum(a) == 6
+  assert sum(a.next) == 5
+  assert third(a) == 3
+  let l: *Link = b
+  assert sum(l) == 5
+}
+
+test "a tree of slices" {
+  let none: []Tree = []
+  let leaves: []Tree = [Tree(none, 1), Tree(none, 2)]
+  let mid: []Tree = [Tree(leaves, 3)]
+  assert depth(Tree(mid, 4)) == 3
+  assert depth(Tree(leaves, 5)) == 2
+}
+
+test "two types that point to each other" {
+  let e1 = (cells as u32 + 128) as *mut Even
+  let o1 = (cells as u32 + 136) as *mut Odd
+  let e2 = (cells as u32 + 144) as *mut Even
+  e2.* = Even(0 as ?*Odd, 7)
+  o1.* = Odd(e2, 5)
+  e1.* = Even(o1, 3)
+  assert hop(e1) == 7
+}

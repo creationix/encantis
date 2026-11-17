@@ -59,6 +59,7 @@
   "examples/types/if-let-values.ents": "e2ae28e2d9c728ff0df15d8bae39b88dbc5bc1b0cc5306c0bf0ea09150a8a998",
   "examples/types/integers.ents": "9faa89893df3a444352ba5565786bf17e912a38509db08826406e1975f07005d",
   "examples/types/language-features.ents": "0ea4228b80c524453f5f75c7b290fad1d8aaf94ada3680853178bc1dc754170b",
+  "examples/types/linked-list.ents": "53c00213573ea2a112b718c1b2d3e730a13f2c6586e96bae00ba1fce0dae48ea",
   "examples/types/match-subject.ents": "d77634691d02ee8b90005f51f1c1880564a22c33c4fb071e974bd06064975a39",
   "examples/types/named-results.ents": "cb7e0ea1eb0033619c553ed78273ac31e070e7c468b0196269514d5cf9b6241a",
   "examples/types/narrowing-casts.ents": "f9d8790d471cb5def6704a9667696ea54df9495731d1a341446ed6bc827762de",

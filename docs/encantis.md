@@ -548,6 +548,45 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
 
 `p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
 
+#### Types That Refer to Themselves
+
+A type can refer to itself, or to a type declared after it, through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (next: ?*Node, v: u32)
+type Tree = (kids: []Tree, v: u32)
+
+export func third(h: *Node) -> u32 {
+  if let a = h.next {
+    if let b = a.next { return b.v }
+  }
+  return 0
+}
+
+export func depth(t: Tree) -> u32 {
+  let deepest: u32 = 0
+  for k in t.kids {
+    let d = depth(k)
+    if d > deepest { deepest = d }
+  }
+  return deepest + 1
+}
+```
+
+A type that holds itself as a value, in a field or an array, would have no size:
+
+```ents
+type Node = (next: Node, v: u32)
+```
+
+```errors
+type 'Node' contains itself: a type can only refer to itself through a pointer or a slice
+```
+
+<!-- spec:end -->
+
 A struct type can take type parameters: `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)` declares a generic type, `Vec(u32)` is the struct it gives for `u32`, and `Vec(u32)(p, 0, cap)` constructs one like any constructor ([8.5](#85-generic-types)).
 
 ### 2.9 Enum Types (Algebraic Data Types)
@@ -2494,14 +2533,22 @@ test "one vector for each element type" {
 }
 ```
 
-A generic type that refers to itself, directly or through another generic type, is not supported: a type function has no conditions, so applying it would never end.
+A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
 
 ```ents
 func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+
+export func second(l: *List(u32)) -> u32 => if let n = l.next { n.head } else { 0 }
+```
+
+It cannot apply itself to a type made of its parameters: a type function has no conditions, so each level would be a new type and applying it would never end.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: ?*List(*T))
 ```
 
 ```errors
-generic type 'List' refers to itself
+generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end
 ```
 
 Generic types that hold one another in a chain are not that, however long the chain. The compiler stops at 1000 levels, with `generic types are nested more than 1000 deep in 'G0(u8)'` at the application that was written.
@@ -2611,7 +2658,7 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
 | A generic type with a parameter that is not `comptime X: type`, or with none | `generic type 'Vec' takes comptime type parameters only, as (comptime T: type)` |
-| A generic type that refers to itself | `generic type 'List' refers to itself` |
+| A generic type that refers to itself with a type made of its parameters, `List(*T)` in `List(T)` | `generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end` |
 | A generic type declared inside a `test` block | `a generic type is declared at module level, not inside a test` |
 | A generic type that shares its name with a `type` or another generic type | `'Vec' is already declared: a generic type's name is unique in its module` |
 | A generic type without its arguments, or with the wrong number | `'Vec' is a generic type: write Vec(T)`; `Vec expects 1 type argument, got 2` |

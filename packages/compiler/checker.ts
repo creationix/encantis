@@ -6,6 +6,7 @@ import { argValue, ungroupedType } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
+  type ForwardRefRT,
   type ResolvedField,
   type ArrayRT,
   type ArraySize,
@@ -36,6 +37,7 @@ import {
   comptimeIntFits,
   typeAssignable,
   unwrap,
+  unwrapToCut,
   isFloat,
   isInteger,
   isSigned,
@@ -87,7 +89,17 @@ export type Symbol =
   // body with the parameters replaced, in the module that declares it, once
   // for each way its arguments were written (`cache`). The result is the body
   // itself under the name it was applied by, as any type alias is.
-  | { kind: 'typefunc'; decl: AST.TypeFuncDecl; owner: CheckContext; cache: Map<string, ResolvedType>; valid: boolean }
+  | {
+      kind: 'typefunc'
+      decl: AST.TypeFuncDecl
+      owner: CheckContext
+      cache: Map<string, ResolvedType>
+      valid: boolean
+      // The applications being resolved, by the key of the cache: one that
+      // comes round again while its body is resolved is that type, referred
+      // to by itself.
+      applying?: Map<string, ForwardRefRT[]>
+    }
 
 // One generic function with its comptime arguments fixed: a copy of the
 // declaration with the parameters substituted, collected, checked and compiled
@@ -405,7 +417,8 @@ export function concretizeType(
   options: TypecheckOptions = DEFAULT_OPTIONS,
 ): ResolvedType {
   const opts = { ...DEFAULT_OPTIONS, ...options }
-  const u = unwrap(t)
+  // A type that refers to itself is concrete where it refers to itself.
+  const u = unwrapToCut(t)
 
   switch (u.kind) {
     case 'comptime_int': {
@@ -487,7 +500,7 @@ export function concretizeType(
  * Check if a type is fully concrete (no comptime types).
  */
 export function isConcreteType(t: ResolvedType): boolean {
-  const u = unwrap(t)
+  const u = unwrapToCut(t)
 
   switch (u.kind) {
     case 'comptime_int':
@@ -631,6 +644,9 @@ class CheckContext {
 
   // Track type names that are being defined (for recursive type detection)
   pendingTypeNames = new Set<string>()
+  // The forward references made to each of them, which get their target
+  // when it is defined
+  forwardRefs = new Map<string, ForwardRefRT[]>()
   // What each `type` of the module is declared as, as written: whether a
   // name stands for a function type is asked before any type is resolved.
   typeBodies = new Map<string, AST.Type>()
@@ -1019,12 +1035,21 @@ class CheckContext {
     }
     // Types with @ prefix are unique/nominal, others are structural aliases
     const unique = name.startsWith('@')
-    const resolved = this.resolveType(decl.type)
+    let resolved = this.resolveType(decl.type)
+    // A type that holds itself, not through a pointer or a slice, has no size.
+    const refs = this.forwardRefs.get(name) ?? []
+    if (refs.length > 0 && containsByValue(resolved, refs)) {
+      this.error(decl.span.start, `type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      resolved = RECOVERY
+    }
     this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
     this.recordDefinition(name, decl.ident.span.start)
     // Remove from pending since it's now defined
     this.pendingTypeNames.delete(name)
+    // What named it before is now that type, also inside its own body
+    for (const ref of refs) ref.target = resolved === RECOVERY ? RECOVERY : named(name, resolved)
+    this.forwardRefs.delete(name)
   }
 
   // Resolve forward references in all collected types
@@ -1049,6 +1074,9 @@ class CheckContext {
   resolveForwardRefsInType(t: ResolvedType): ResolvedType {
     switch (t.kind) {
       case 'forward_ref': {
+        // One that has its target is resolved, also where it refers to the
+        // type it is in.
+        if (t.target) return t
         const sym = this.moduleScope.symbols.get(t.name)
         if (sym && sym.kind === 'type') {
           // Return a named reference to the type (don't inline to avoid infinite recursion)
@@ -2559,7 +2587,9 @@ class CheckContext {
         }
         // Check if this is a forward reference to a type being defined
         if (this.pendingTypeNames.has(type.name)) {
-          return forwardRef(type.name)
+          const ref = forwardRef(type.name)
+          this.forwardRefs.set(type.name, [...(this.forwardRefs.get(type.name) ?? []), ref])
+          return ref
         }
         const similar = this.findSimilar(type.name)
         const hint = similar ? ` — did you mean '${similar}'?` : ''
@@ -5340,9 +5370,11 @@ class CheckContext {
       const applied = typeApplications(decl.body).find((t) => names.has(t.name))
       if (applied) reject(applied.span.start, `a type parameter cannot be applied`)
     }
-    // A type function has no conditions, so one whose body applies it again,
-    // directly or through another, never comes to an end. (Through a `type`
-    // it does: that is a forward reference, as in any recursive type.)
+    // A generic type may refer to itself, directly or through another, as
+    // any type may: List(T) holding a ?*List(T) is List(T) again, which is
+    // the type being resolved. A type function has no conditions, though, so
+    // one that applies itself to a type its parameters are part of, List(*T),
+    // would make a new type at every level and never come to an end.
     for (const sym of this.typeFuncs) {
       if (!sym.valid) continue
       const reaches = (from: Symbol & { kind: 'typefunc' }, seen: Set<Symbol>): (Symbol & { kind: 'typefunc' })[] | null => {
@@ -5358,11 +5390,19 @@ class CheckContext {
       }
       const round = reaches(sym, new Set())
       if (!round) continue
-      const first = typeApplications(sym.decl.body).find((applied) => {
-        const next = this.moduleScope.symbols.get(applied.name)
-        return next === sym || (next?.kind === 'typefunc' && round.includes(next))
-      })
-      this.error((first ?? sym.decl).span.start, `generic type '${sym.decl.ident}' refers to itself`)
+      // An argument that is a parameter, or has none in it, is one of finitely
+      // many types: the round comes back to an application already made.
+      const grows = (member: Symbol & { kind: 'typefunc' }) => {
+        const params = member.decl.params.map((p) => p.ident as string)
+        return typeApplications(member.decl.body).find((applied) => {
+          const next = this.moduleScope.symbols.get(applied.name)
+          if (next !== sym && !(next?.kind === 'typefunc' && round.includes(next))) return false
+          return applied.args.some((arg) => arg.kind !== 'TypeRef' && typeUses(arg).some((t) => t.kind === 'TypeRef' && params.includes(t.name)))
+        })
+      }
+      const growing = round.map((member) => grows(member)).find((applied) => applied)
+      if (!growing) continue
+      this.error(growing.span.start, `generic type '${sym.decl.ident}' refers to itself with a type argument that grows, ${typeText(growing)}: applying it would never end`)
       // One error for the whole round: the others on it are part of the same mistake.
       for (const member of round) member.valid = false
     }
@@ -5421,6 +5461,14 @@ class CheckContext {
     const key = `${args.map((a) => canonicalKey(a)).join('|')} ${shown}`
     const cached = settled ? sym.cache.get(key) : undefined
     if (cached) return cached
+    // The same application again, inside its own body: the type it makes,
+    // which is what it is once the body is resolved.
+    const applying = sym.applying?.get(key)
+    if (applying) {
+      const ref = forwardRef(shown)
+      applying.push(ref)
+      return ref
+    }
     if (owner.applyDepth >= MAX_APPLY_DEPTH) {
       owner.applyTooDeep = true
       return RECOVERY
@@ -5431,8 +5479,21 @@ class CheckContext {
       return to && { kind: 'BoundType', name: param, type: to, span: { start: 0, end: 0 } }
     }) as AST.Type
     owner.applyDepth++
+    const refs: ForwardRefRT[] = []
+    sym.applying ??= new Map()
+    sym.applying.set(key, refs)
     const resolved = named(shown, owner.resolveType(body))
+    sym.applying.delete(key)
     owner.applyDepth--
+    // Holding itself, not through a pointer or a slice, it has no size. That
+    // is so whatever its arguments are: one error, where it is declared.
+    if (refs.length > 0 && containsByValue(resolved.type, refs)) {
+      for (const ref of refs) ref.target = RECOVERY
+      if (sym.valid) owner.error(sym.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      sym.valid = false
+      return RECOVERY
+    }
+    for (const ref of refs) ref.target = resolved
     // Nothing of a type that was cut short is a type. The error is one, at
     // the application that was written: the declarations it went through are
     // each as they should be.
@@ -6375,7 +6436,7 @@ function unresolved(type: ResolvedType): boolean {
 // Whether a value of this type can decide a type parameter. An untyped literal
 // (7, 0.5, [1, 2, 3]) has no type of its own: it takes the one it is used as.
 function hasOwnType(type: ResolvedType): boolean {
-  const t = unwrap(type)
+  const t = unwrapToCut(type)
   switch (t.kind) {
     case 'comptime_int':
     case 'comptime_float':
@@ -6449,6 +6510,27 @@ function withoutRanges(type: ResolvedType): ResolvedType {
   return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
 }
 
+// Whether a type holds one of these forward references as a value: as itself,
+// a field, an element of an array, at any depth, through the types it names.
+// Behind a pointer or a slice it holds an address, not the value.
+function containsByValue(type: ResolvedType, refs: readonly ResolvedType[], seen = new Set<ResolvedType>()): boolean {
+  if (refs.includes(type)) return true
+  if (seen.has(type)) return false
+  seen.add(type)
+  switch (type.kind) {
+    case 'named':
+      return containsByValue(type.type, refs, seen)
+    case 'forward_ref':
+      return type.target !== undefined && containsByValue(type.target, refs, seen)
+    case 'tuple':
+      return type.fields.some((f) => containsByValue(f.type, refs, seen))
+    case 'array':
+      return containsByValue(type.element, refs, seen)
+    default:
+      return false
+  }
+}
+
 // The name of a type that is referred to but not resolved yet, if there is
 // one. A type that refers to itself keeps a forward reference inside its own
 // alias; that one is resolved.
@@ -6462,7 +6544,7 @@ function unresolvedName(type: ResolvedType, inside: readonly string[] = []): str
   }
   switch (type.kind) {
     case 'forward_ref':
-      return inside.includes(type.name) ? null : type.name
+      return type.target || inside.includes(type.name) ? null : type.name
     case 'named':
       return inside.includes(type.name) ? null : unresolvedName(type.type, [...inside, type.name])
     case 'pointer':
@@ -6486,8 +6568,9 @@ function mentionsUnbound(
   typeParams: readonly string[],
   bound: ReadonlyMap<string, ResolvedType>,
   expand?: ExpandTypeApply,
+  expanding: readonly string[] = [],
 ): boolean {
-  const inner = (t: AST.Type) => mentionsUnbound(t, typeParams, bound, expand)
+  const inner = (t: AST.Type) => mentionsUnbound(t, typeParams, bound, expand, expanding)
   switch (type.kind) {
     case 'TypeRef':
       return typeParams.includes(type.name) && !bound.has(type.name)
@@ -6501,9 +6584,10 @@ function mentionsUnbound(
       return inner(type.input) || inner(type.output)
     case 'TypeApply': {
       // Seen through, where the generic type is known: Tagged(T) mentions T
-      // only if a field of Tagged is made of it.
-      const body = expand?.(type)
-      return body ? inner(body) : type.args.some(inner)
+      // only if a field of Tagged is made of it. Inside its own body a
+      // generic type that refers to itself is read by its arguments.
+      const body = expanding.includes(type.name) ? null : expand?.(type)
+      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, type.name]) : type.args.some(inner)
     }
     default:
       return false
@@ -6525,6 +6609,7 @@ function matchType(
   bound: Map<string, ResolvedType>,
   value = true,
   expand?: ExpandTypeApply,
+  expanding: readonly string[] = [],
 ): void {
   const u = unwrap(actual)
   switch (pattern.kind) {
@@ -6540,7 +6625,7 @@ function matchType(
       // points to is an array of unknown length, which is no type by itself.
       // Only [*]T matches it.
       if (u.kind === 'pointer' && !(u.pointee.kind === 'array' && u.pointee.sizes === null)) {
-        matchType(pattern.pointee, u.pointee, typeParams, bound, false, expand)
+        matchType(pattern.pointee, u.pointee, typeParams, bound, false, expand, expanding)
       }
       return
     case 'IndexedType': {
@@ -6548,15 +6633,15 @@ function matchType(
         u.kind === 'slice' || u.kind === 'array' ? u.element
         : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
         : null
-      if (element) matchType(pattern.element, element, typeParams, bound, false, expand)
+      if (element) matchType(pattern.element, element, typeParams, bound, false, expand, expanding)
       return
     }
     case 'CompositeType':
       if (ungroupedType(pattern) !== pattern) {
-        matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand)
+        matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand, expanding)
       } else if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
         pattern.fields.forEach((f, i) => {
-          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand)
+          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand, expanding)
         })
       }
       return
@@ -6568,7 +6653,7 @@ function matchType(
         const types = written.kind === 'CompositeType' ? written.fields.map((f) => f.type) : [written]
         if (types.length !== fields.length) return
         types.forEach((t, i) => {
-          matchType(t, fields[i].type, typeParams, bound, false, expand)
+          matchType(t, fields[i].type, typeParams, bound, false, expand, expanding)
         })
       }
       side(pattern.input, u.params)
@@ -6578,8 +6663,10 @@ function matchType(
     case 'TypeApply': {
       // A generic type is seen through: its body is laid over the argument,
       // however the argument's type was written.
-      const body = expand?.(pattern)
-      if (body) matchType(body, actual, typeParams, bound, value, expand)
+      // Inside its own body, a generic type that refers to itself has bound
+      // all it can already.
+      const body = expanding.includes(pattern.name) ? null : expand?.(pattern)
+      if (body) matchType(body, actual, typeParams, bound, value, expand, [...expanding, pattern.name])
       return
     }
     default:

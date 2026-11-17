@@ -163,11 +163,16 @@ export interface NamedRT {
   type: ResolvedType // The underlying resolved type
 }
 
-// Forward reference - placeholder for recursive type definitions
-// These are resolved after all types are collected
+// Forward reference - a type named before it is resolved: one declared further
+// down, or one that refers to itself. `target` is set once the type is
+// resolved, and unwrap() follows it. A type that refers to itself is a cycle
+// that always passes through one of these, so a walk that goes into what a
+// pointer points to stops here (unwrapToCut) or remembers where it has been
+// (typeEquals, typeAssignResult, canonicalKey).
 export interface ForwardRefRT {
   kind: 'forward_ref'
   name: string // The type name being referenced
+  target?: ResolvedType
 }
 
 // Field in a tuple/struct or function signature
@@ -447,11 +452,15 @@ function sizesCompatible(target: ArraySize[] | null, source: ArraySize[] | null)
   return sizesEqual(target, source)
 }
 
-export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
+export function typeEquals(a: ResolvedType, b: ResolvedType, assumed?: Assumed): boolean {
+  if (a === b) return true
   // Aliases are transparent on either side, at any depth (e.g. the pointee of
   // [*]mut Slot): compare the underlying types.
-  if (a.kind === 'named') return typeEquals(a.type, b)
-  if (b.kind === 'named') return typeEquals(a, b.type)
+  if (a.kind === 'named') return typeEquals(a.type, b, assumed)
+  if (b.kind === 'named') return typeEquals(a, b.type, assumed)
+  const followed = followRefs(a, b, assumed)
+  if (followed === 'assumed') return true
+  if (followed) return typeEquals(followed.a, followed.b, followed.assumed)
   if (a.kind !== b.kind) return false
 
   switch (a.kind) {
@@ -460,23 +469,23 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
 
     case 'pointer': {
       const bPtr = b as PointerRT
-      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && !!a.optional === !!bPtr.optional && typeEquals(a.pointee, bPtr.pointee)
+      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && !!a.optional === !!bPtr.optional && typeEquals(a.pointee, bPtr.pointee, assumed)
     }
 
     case 'slice': {
       const bSlice = b as SliceRT
-      return !!a.mutable === !!bSlice.mutable && !!a.optional === !!bSlice.optional && typeEquals(a.element, bSlice.element)
+      return !!a.mutable === !!bSlice.mutable && !!a.optional === !!bSlice.optional && typeEquals(a.element, bSlice.element, assumed)
     }
 
     case 'array': {
       const bArr = b as ArrayRT
-      return sizesEqual(a.sizes, bArr.sizes) && typeEquals(a.element, bArr.element)
+      return sizesEqual(a.sizes, bArr.sizes) && typeEquals(a.element, bArr.element, assumed)
     }
 
     case 'tuple': {
       const bTuple = b as TupleRT
       if (a.fields.length !== bTuple.fields.length) return false
-      return a.fields.every((f, i) => fieldEquals(f, bTuple.fields[i]))
+      return a.fields.every((f, i) => fieldEquals(f, bTuple.fields[i], assumed))
     }
 
     case 'func': {
@@ -484,8 +493,8 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       if (a.params.length !== bFunc.params.length) return false
       if (a.returns.length !== bFunc.returns.length) return false
       return (
-        a.params.every((p, i) => fieldEquals(p, bFunc.params[i])) &&
-        a.returns.every((r, i) => fieldEquals(r, bFunc.returns[i]))
+        a.params.every((p, i) => fieldEquals(p, bFunc.params[i], assumed)) &&
+        a.returns.every((r, i) => fieldEquals(r, bFunc.returns[i], assumed))
       )
     }
 
@@ -501,12 +510,12 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
     case 'comptime_list': {
       const bList = b as ComptimeListRT
       if (a.elements.length !== bList.elements.length) return false
-      return a.elements.every((e, i) => typeEquals(e, bList.elements[i]))
+      return a.elements.every((e, i) => typeEquals(e, bList.elements[i], assumed))
     }
 
     case 'comptime_array': {
       const bArr = b as ComptimeArrayRT
-      return a.count === bArr.count && typeEquals(a.element, bArr.element)
+      return a.count === bArr.count && typeEquals(a.element, bArr.element, assumed)
     }
 
     case 'forward_ref':
@@ -515,8 +524,8 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
   }
 }
 
-function fieldEquals(a: ResolvedField, b: ResolvedField): boolean {
-  return a.name === b.name && typeEquals(a.type, b.type)
+function fieldEquals(a: ResolvedField, b: ResolvedField, assumed?: Assumed): boolean {
+  return a.name === b.name && typeEquals(a.type, b.type, assumed)
 }
 
 // === Type Assignability ===
@@ -546,9 +555,31 @@ function mutCompatible(targetMut: boolean | undefined, sourceMut: boolean | unde
   return true
 }
 
+// Whether unwrap() goes through a forward reference on its way
+function throughRef(t: ResolvedType): boolean {
+  while (t.kind === 'named') t = t.type
+  return t.kind === 'forward_ref' && t.target !== undefined
+}
+
+// The pairs of types whose assignability is being decided, where one of them
+// is a type that refers to itself. Coming round to one again, it holds: what
+// is still to be compared on the way is compared elsewhere.
+const assigning: (readonly [ResolvedType, ResolvedType])[] = []
+
 // Check if source type can be assigned to target type
 // Returns lossiness and reinterpretability
 export function typeAssignResult(target: ResolvedType, source: ResolvedType): AssignResult {
+  if (!throughRef(target) && !throughRef(source)) return assignResult(target, source)
+  if (assigning.some(([t, s]) => t === target && s === source)) return lossless(true)
+  assigning.push([target, source])
+  try {
+    return assignResult(target, source)
+  } finally {
+    assigning.pop()
+  }
+}
+
+function assignResult(target: ResolvedType, source: ResolvedType): AssignResult {
   const t = unwrap(target)
   const s = unwrap(source)
 
@@ -998,7 +1029,30 @@ function fieldToString(f: ResolvedField, opts?: { compact?: boolean }): string {
 
 // Unwrap named types to get the underlying type
 export function unwrap(t: ResolvedType): ResolvedType {
-  return t.kind === 'named' ? unwrap(t.type) : t
+  while (t.kind === 'named' || (t.kind === 'forward_ref' && t.target)) {
+    t = t.kind === 'named' ? t.type : (t.target as ResolvedType)
+  }
+  return t
+}
+
+// unwrap(), stopping at a forward reference: what a walk over the parts of a
+// type uses, where going on into a type that refers to itself would never end.
+export function unwrapToCut(t: ResolvedType): ResolvedType {
+  while (t.kind === 'named') t = t.type
+  return t
+}
+
+// What a forward reference's walk goes on to, once it is resolved. The pair
+// of types being compared is remembered first, so that a comparison that
+// comes round to it again holds: two types that refer to themselves are equal
+// when nothing on the way round tells them apart.
+type Assumed = readonly (readonly [ResolvedType, ResolvedType])[]
+function followRefs(a: ResolvedType, b: ResolvedType, assumed: Assumed | undefined): { a: ResolvedType; b: ResolvedType; assumed: Assumed } | 'assumed' | null {
+  const through = (t: ResolvedType) => (t.kind === 'forward_ref' && t.target ? t.target : t)
+  const [na, nb] = [through(a), through(b)]
+  if (na === a && nb === b) return null
+  if (assumed?.some(([x, y]) => x === a && y === b)) return 'assumed'
+  return { a: na, b: nb, assumed: [...(assumed ?? []), [a, b]] }
 }
 
 export function isInteger(t: ResolvedType): boolean {
@@ -1295,7 +1349,10 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
     case 'forward_ref': {
       const back = open.find((o) => o.name === t.name)
       if (back) return `@${back.depth}`
-      return t.kind === 'named' ? canonicalKey(t.type, [...open, { name: t.name, depth }], depth) : `@${t.name}`
+      // A resolved forward reference is the type it names: its target is
+      // that type under its name.
+      if (t.kind === 'forward_ref') return t.target ? canonicalKey(t.target, open, depth) : `@${t.name}`
+      return canonicalKey(t.type, [...open, { name: t.name, depth }], depth)
     }
     case 'primitive':
       return t.max !== undefined ? `${t.name}#${t.max}` : t.name

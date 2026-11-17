@@ -2771,6 +2771,66 @@ type Later = (x: u32)`
     await wasmOfSource(source)
   })
 
+  test('may refer to itself through a pointer or a slice, and costs what the type written out does', async () => {
+    const generic = `func Node(comptime T: type) -> type => (next: ?*Node(T), v: T)
+func Tree(comptime T: type) -> type => (kids: []Tree(T), v: T)
+func Even(comptime T: type) -> type => (odd: ?*Odd(T), v: T)
+func Odd(comptime T: type) -> type => (even: ?*Even(T), v: T)
+func sum(comptime T: type, h: ?*Node(T)) -> T {
+  let total: T = 0
+  let p = h
+  while true {
+    if let n = p {
+      total += n.v
+      p = n.next
+    } else {
+      return total
+    }
+  }
+  return total
+}
+export func a(h: *Node(u32)) -> u32 => sum(h) + sum(h.next)
+export func b(h: *Node(u8)) -> u8 => if let n = h.next { if let m = n.next { m.v } else { 0 } } else { 0 }
+export func c(t: Tree(i64)) -> i64 => if let k = t.kids[0] { if let l = k.kids[0] { l.v } else { k.v } } else { t.v }
+export func d(e: *Even(u16)) -> u16 => if let o = e.odd { if let f = o.even { f.v } else { o.v } } else { e.v }
+`
+    const byHand = `type Node32 = (next: ?*Node32, v: u32)
+type Node8 = (next: ?*Node8, v: u8)
+type Tree64 = (kids: []Tree64, v: i64)
+type Even16 = (odd: ?*Odd16, v: u16)
+type Odd16 = (even: ?*Even16, v: u16)
+func sum(h: ?*Node32) -> u32 {
+  let total: u32 = 0
+  let p = h
+  while true {
+    if let n = p {
+      total += n.v
+      p = n.next
+    } else {
+      return total
+    }
+  }
+  return total
+}
+export func a(h: *Node32) -> u32 => sum(h) + sum(h.next)
+export func b(h: *Node8) -> u8 => if let n = h.next { if let m = n.next { m.v } else { 0 } } else { 0 }
+export func c(t: Tree64) -> i64 => if let k = t.kids[0] { if let l = k.kids[0] { l.v } else { k.v } } else { t.v }
+export func d(e: *Even16) -> u16 => if let o = e.odd { if let f = o.even { f.v } else { o.v } } else { e.v }
+`
+    await expectSameWasm(generic, byHand)
+  })
+
+  test('a generic function takes a type that refers to itself under any of its names as one type', () => {
+    const source = `type Node = (next: ?*Node, v: u32)
+type Link = Node
+func List(comptime T: type) -> type => (next: ?*List(T), v: T)
+func first(comptime T: type, n: *T) -> *T => n
+export func f(a: *Node, b: *Link, c: *List(u32)) -> u32 => first(a).v + first(b).v + first(c).v
+`
+    // Named by the type, cut where it comes round to itself
+    expect(instancesOf(source)).toEqual(['first<<next:?*@0|v:u32>>'])
+  })
+
   test('sizeof follows the type arguments in each instance', async () => {
     const source = `${VEC}${PAIR}func size(comptime T: type) -> u32 => sizeof(Vec(T)) + sizeof(Pair(T, bool)) * 100
 export func a() -> u32 => size(u8)
@@ -2817,14 +2877,19 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
     ['a name that is no type, applied', `${VEC}func f(v: *Vex(u32)) -> u32 => 0`, ["unknown generic type 'Vex' — did you mean 'Vec'?"]],
     ['an argument that is not a concrete type', `${VEC}func f(v: *Vec(int(5))) -> u32 => 0`, ["type argument T of 'Vec' must be a concrete type"]],
     [
-      'a generic type that refers to itself',
-      'func List(comptime T: type) -> type => (head: T, next: ?*List(T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
-      ["generic type 'List' refers to itself"],
+      'a generic type that refers to itself with an argument that grows',
+      'func List(comptime T: type) -> type => (head: T, next: ?*List(*T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
+      ["generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end"],
     ],
     [
-      'generic types that refer to each other',
-      'func A(comptime T: type) -> type => (x: T, b: *B(T))\nfunc B(comptime T: type) -> type => (y: T, a: *A(T))\nfunc f(a: *A(u32), b: *B(u8)) -> u32 => 0',
-      ["generic type 'A' refers to itself"],
+      'generic types that refer to each other with an argument that grows',
+      'func A(comptime T: type) -> type => (x: T, b: *B([]T))\nfunc B(comptime T: type) -> type => (y: T, a: *A(T))\nfunc f(a: *A(u32), b: *B(u8)) -> u32 => 0',
+      ["generic type 'A' refers to itself with a type argument that grows, B([]T): applying it would never end"],
+    ],
+    [
+      'a generic type that holds itself, not through a pointer',
+      'func List(comptime T: type) -> type => (head: T, next: List(T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
+      ["generic type 'List' contains itself: a type can only refer to itself through a pointer or a slice"],
     ],
     ['no parameters', 'func Vec() -> type => u32\nfunc f(v: Vec(u32)) -> u32 => 0', ["generic type 'Vec' takes comptime type parameters only, as (comptime T: type)"]],
     [
@@ -2907,7 +2972,7 @@ func c() -> u32 {
   test('nor where a `type` names it', () => {
     const source = `${VEC}type V = Vec(u32, u8)
 type L = List(u32)
-func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+func List(comptime T: type) -> type => (head: T, next: ?*List(*T))
 func f(v: *V) -> u32 => v.len
 func g(v: V, vs: []V) -> u32 => v.len + vs[0].cap
 func h(l: *L) -> u32 => l.head
@@ -2915,7 +2980,10 @@ func k() -> u32 {
   let v: V = (0 as [*]mut u32, 1, 2)
   return v.len
 }`
-    expect(errorsOf(source)).toEqual(["generic type 'List' refers to itself", 'Vec expects 1 type argument, got 2'])
+    expect(errorsOf(source)).toEqual([
+      "generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end",
+      'Vec expects 1 type argument, got 2',
+    ])
   })
 
   // An instance would repeat such an error for each set of type arguments,

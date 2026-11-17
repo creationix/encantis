@@ -2824,3 +2824,37 @@ describe('calling a function value', () => {
     expect(errs('import "env" "now" func now() -> u64\nfunc f() -> u64 => now()')).toEqual([])
   })
 })
+
+describe('types that refer to themselves', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const holds = (name: string) => `type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`
+
+  test('through a pointer or a slice, a field is the type again, at any depth', () => {
+    const node = 'type Node = (next: ?*Node, v: u32)\n'
+    expect(errs(`${node}func f(h: *Node) -> ?*Node => h.next`)).toEqual([])
+    expect(errs(`${node}func f(h: *Node) -> u32 => if let a = h.next { if let b = a.next { if let c = b.next { c.v } else { 0 } } else { 0 } } else { 0 }`)).toEqual([])
+    expect(errs(`${node}func f(h: *Node, p: ?*Node) -> bool {\n  let q: ?*Node = h.next\n  return q == p\n}`)).toEqual([])
+    expect(errs('type Tree = (kids: []Tree, v: u32)\nfunc f(t: Tree) -> u32 => if let k = t.kids[0] { if let l = k.kids[1] { l.v } else { 0 } } else { 0 }')).toEqual([])
+    expect(errs('type Tree = (kids: [*]Tree, n: u32)\nfunc f(t: *Tree) -> u32 => t.kids[0].kids[1].n')).toEqual([])
+    // Through each other, and through another name for it
+    expect(errs('type A = (b: ?*B, v: u32)\ntype B = (a: ?*A, w: u32)\nfunc f(a: *A) -> u32 => if let b = a.b { if let c = b.a { c.v } else { 0 } } else { 0 }')).toEqual([])
+    expect(errs(`${node}type Link = Node\nfunc f(h: *Link) -> ?*Link => h.next\nfunc g(h: *Node) -> ?*Node => f(h)`)).toEqual([])
+  })
+
+  test('two types that refer to themselves are one type when nothing on the way round tells them apart', () => {
+    const two = 'type A = (next: ?*A, v: u32)\ntype B = (next: ?*B, v: u32)\ntype C = (next: ?*C, v: u16)\n'
+    expect(errs(`${two}func f(a: *A) -> *B => a`)).toEqual([])
+    expect(errs(`${two}func f(a: *A) -> *C => a`)).toEqual(['cannot assign *A to *C'])
+    expect(errs('type A = (kids: []A, v: u32)\ntype B = (kids: []B, v: u64)\nfunc f(a: []A) -> []B => a')).toEqual(['cannot assign []A to []B'])
+  })
+
+  test('holding itself, not through a pointer or a slice, it has no size', () => {
+    expect(errs('type N = (a: N, v: u32)\nfunc f(n: *N) -> u32 => n.v')).toEqual([holds('N')])
+    expect(errs('type N = (a: [2]N, v: u32)\nfunc f(n: *N) -> u32 => n.v')).toEqual([holds('N')])
+    expect(errs('type L = L\nfunc f(n: L) -> u32 => 1')).toEqual([holds('L')])
+    // Said where the round is closed
+    expect(errs('type A = (b: B, v: u32)\ntype B = (a: ?*A, w: A)\nfunc f(a: A, b: B) -> u32 => a.v')).toEqual([holds('B')])
+    expect(errs('type A = B\ntype B = A\nfunc f(n: A) -> u32 => 1')).toEqual([holds('B')])
+    expect(errs('func L(comptime T: type) -> type => (head: T, rest: ?*T)\ntype Knot = L(Knot)\nfunc f(p: *Knot) -> u32 => sizeof(Knot)')).toEqual([holds('Knot')])
+  })
+})
