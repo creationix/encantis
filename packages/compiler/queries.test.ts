@@ -203,6 +203,21 @@ export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
     })
   }
 
+  for (const [what, program] of [['never instantiated', `global x: u32 = 0\n${id}`], ['instantiated', `global x: u32 = 0\n${id}${user}`]]) {
+    test(`hover on a generic's own name is not that of a module name spelled the same (${what})`, () => {
+      // By name, the parameter x was shown as the global x. A generic's own
+      // names have no hover: what they are depends on the instance.
+      const { source, module, check } = setup(program)
+      expect(hover(source, module, check, program.indexOf('x: T'))).toBeNull()
+      expect(hover(source, module, check, program.indexOf('=> x\n') + 3)).toBeNull()
+      expect(hover(source, module, check, program.indexOf('T: type'))).toBeNull()
+      expect(hover(source, module, check, program.indexOf('-> T') + 3)).toBeNull()
+      // The global is still itself, and the generic its own name.
+      expect(hover(source, module, check, program.indexOf('x: u32'))).toEqual({ name: 'x', type: 'u32', kind: 'global' })
+      expect(hover(source, module, check, program.indexOf('id('))?.kind).toBe('generic')
+    })
+  }
+
   test('with no instance to go by, a name in a generic\'s body is not guessed', () => {
     const { source, module, check } = setup(helper + id)
     for (const at of [(helper + id).indexOf('x: T'), (helper + id).indexOf('=> x\n') + 3]) {

@@ -5403,6 +5403,18 @@ export function localNames(decl: AST.FuncDecl): Set<string> {
   return namesIn(decl).locals
 }
 
+// The generic function around `offset` that declares `name` for itself: a
+// parameter, a type parameter, a result or a local. Such a name is in no
+// table of names, so looked up by name alone it would be taken for whatever
+// else is spelled the same: a global, another function's local, a builtin.
+export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | null {
+  for (const decl of module.decls) {
+    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
+    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return localNames(fn).has(name) ? fn : null
+  }
+  return null
+}
+
 // The names a declaration refers to, with where, and the names it declares.
 function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[]; locals: Set<string> } {
   const names: { name: string; offset: number }[] = []
