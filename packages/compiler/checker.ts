@@ -3292,14 +3292,14 @@ class CheckContext {
           }
         }
       }
-      if (expected.kind === 'pointer' || expected.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
+      if (shape.kind === 'pointer' || shape.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
       // So are the literals among the elements of a slice of slices, or of a
       // pointer to framed arrays: codegen fills in an element that is known
       // only at run time, but not what is inside one of them.
       const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
-      const of = arrType.element
+      const of = unwrap(arrType.element)
       const apart = !tableRow(expected) && framings <= 1 &&
-        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && of.pointee.kind === 'array'))
+        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && unwrap(of.pointee).kind === 'array'))
       if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
         for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           let inner = ungrouped(element)
@@ -3434,8 +3434,10 @@ class CheckContext {
     const e = ungrouped(expr)
     const string = e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e.value.bytes.length : null
     if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr' && string === null) return
+    // A name, for the type or for what it points to, is the type it names.
     const t = unwrap(type)
-    const array = t.kind === 'pointer' && t.pointee.kind === 'array' ? t.pointee : t.kind === 'array' ? t : null
+    const pointee = t.kind === 'pointer' ? unwrap(t.pointee) : null
+    const array = pointee?.kind === 'array' ? pointee : t.kind === 'array' ? t : null
     const fixed = array?.sizes && array.sizes.length > 0 && array.sizes.every((s) => typeof s === 'number') ? array.sizes as number[] : null
     const row = t.kind === 'slice' ? t.element
       : array && fixed && fixed.length > 1 ? { kind: 'array' as const, element: array.element, sizes: fixed.slice(1) }
@@ -3465,7 +3467,7 @@ class CheckContext {
     const r = row && unwrap(row)
     if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr') return
     const rows = r?.kind === 'array' ? r.sizes?.every((s) => typeof s === 'number')
-      : r?.kind === 'pointer' && r.pointee.kind === 'array'
+      : r?.kind === 'pointer' && unwrap(r.pointee).kind === 'array'
     if (!r || !rows) return
     for (const element of e.kind === 'ArrayExpr' ? e.elements : [e.value]) this.checkLiteralCount(element, r, prefix)
   }

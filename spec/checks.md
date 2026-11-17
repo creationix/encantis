@@ -795,6 +795,37 @@ cannot assign a string literal to *[2][2]u8 — a string is bytes ([]u8); write 
 cannot assign a string of 4 bytes to *mut [4][]u8
 ```
 
+So does a type given by its name: a name for the pointer, for the array it points to, or for an element of a literal laid out apart is the type it names.
+
+```ents
+type Three = [3]i32
+type Triple = *[3]i32
+type Row = []i32
+type Pair = *[2]i32
+
+data a: *Three = [1, 2]
+data b: Triple = [1, 2, 3, 4]
+data c: *Three = "ab"
+
+func first(p: *Three) -> i32 => p[0]
+func short() -> i32 => first([1, 2])
+
+func rows(x: i32) -> i32 {
+  let s: []Row = [[x, 2], [3]]
+  let t: *[2]Pair = [[x, 2], [3, 4]]
+  return 0
+}
+```
+
+```errors
+cannot assign 2 elements to *Three
+cannot assign 4 elements to Triple
+cannot assign a string of 2 bytes to *Three
+argument 1: cannot assign 2 elements to *Three
+an element of []Row is laid out at compile time: its values must be constants
+an element of *[2]Pair is laid out at compile time: its values must be constants
+```
+
 An element of an array of pointers given a literal is the address of that literal, laid out apart: it has the count its pointer says, its values are constants, and a tuple is not a pointer to a struct.
 
 ```ents
