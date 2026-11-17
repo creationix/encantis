@@ -698,7 +698,7 @@ Point(x:, y:)                 // Shorthand (x=x, y=y)
 
 **Type arguments.** A call of a generic function may pass a type where the parameter is `comptime T: type`:
 
-[Grammar: `Arg` type case, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
+[Grammar: `Arg` type and funcType cases, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
 
 ```encantis
 max(u32, a, b)                // u32 is an identifier, read as a type by its position

@@ -300,6 +300,45 @@ describe('parser', () => {
       })
     })
 
+    // An argument is tried as an expression before it is tried as a function
+    // type, which is what keeps parsing as fast as it was. These are the forms
+    // where the order of the alternatives decides what is read.
+    test('trying an expression first does not change what is a type', () => {
+      // An array type applied to a parenthesised type is not a called array literal.
+      expect(firstArg('first([](i32, i32), ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'IndexedType' } })
+      expect(firstArg('first([4](q: i32, r: i32), ps)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'IndexedType', size: 4 } })
+      // A function type whose input alone reads as an expression, or as a type argument
+      expect(firstArg('apply((a: i32) -> i32, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'FuncType' } })
+      // A prefix type takes the whole function type: a slice of functions
+      expect(firstArg('apply([]u8 -> u32, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'IndexedType', element: { kind: 'FuncType' } } })
+      expect(firstArg('apply(Pt -> Pt, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'FuncType' } })
+      expect(firstArg('apply((u32) -> (u32) -> u32, f)')).toMatchObject({ kind: 'TypeExpr', type: { kind: 'FuncType' } })
+      expect(firstArg('f((x), y)')).toMatchObject({ kind: 'TupleExpr' })
+    })
+
+    test('a function type is tried only after an expression', async () => {
+      // Tried first, every argument and every element of a tuple was parsed as
+      // a type before it was parsed as what it is, and a file without one
+      // generic took a quarter longer to parse (a third, for one full of
+      // tuples). The order is all there is to pin: a timing would not be stable.
+      const grammar = await Bun.file(new URL('./encantis-grammar.ohm', import.meta.url)).text()
+      const rule = grammar.slice(grammar.indexOf('\n  Arg = '), grammar.indexOf('\n  TypeLit = '))
+      expect([...rule.matchAll(/-- (\w+)/g)].map(m => m[1])).toEqual([
+        'named', 'shorthand', 'type', 'positional', 'funcType', 'unfinished',
+      ])
+    })
+
+    test('an argument that is neither is reported where it goes wrong', () => {
+      const error = (source: string) => parse(source, { startRule: 'Expr' }).errors.map(e => e.message.split('\n')[0])
+      expect(error('f(a b)')).toEqual(['Line 1, col 5:'])
+      expect(error('f([]u8 x)')).toEqual(['Line 1, col 8:'])
+      // A struct type with named fields cannot be written in place: its field
+      // types are not expressions, and it is not followed by ->.
+      const struct = parse('size((at: Pt, n: u8))', { startRule: 'Expr' }).errors
+      expect(struct).toHaveLength(1)
+      expect(struct[0].message).toEndWith('Expected "->"')
+    })
+
     test('a named argument still takes a value, not a type', () => {
       expect(parse('f(x: T)', { startRule: 'Expr' }).errors).toHaveLength(1)
     })

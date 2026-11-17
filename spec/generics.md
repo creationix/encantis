@@ -783,6 +783,19 @@ func f(x: u32) -> u32 => max(u32, x)
 'u32' is a type; a type can only be passed for a comptime parameter
 ```
 
+A struct type with named fields, written in place as a type argument. Its field types are not expressions and it is not a function type, so it does not parse; give the type a name with `type` and pass the name.
+
+```ents
+type Pt = (q: i32, r: i32)
+func size(comptime T: type) -> u32 => sizeof(T)
+
+export func f() -> u32 => size((at: Pt, n: u8))
+```
+
+```errors
+Expected "->"
+```
+
 An argument that has no value.
 
 ```ents

@@ -28,6 +28,12 @@ function span(node: ohm.Node): Span {
   }
 }
 
+// A type written as a call argument
+function typeArg(type: ohm.Node): AST.Arg {
+  const value: AST.TypeExpr = { kind: 'TypeExpr', type: type.toAST(), span: span(type) }
+  return { kind: 'Arg', name: null, value, span: span(type) }
+}
+
 function funcSignature(input: ohm.Node, outputOpt: ohm.IterationNode, at: Span): AST.FuncSignature {
   const inputAST = input.toAST()
   // If return is omitted, default to void (empty composite type)
@@ -1694,29 +1700,23 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   Arg_type(type, _lookahead) {
-    return {
-      kind: 'Arg',
-      name: null,
-      value: { kind: 'TypeExpr', type: type.toAST(), span: span(type) } as AST.TypeExpr,
-      span: span(type),
-    } as AST.Arg
+    return typeArg(type)
   },
 
-  TypeLit_func(type) {
+  Arg_funcType(type, _lookahead) {
+    return typeArg(type)
+  },
+
+  TypeLit(_lookahead, type) {
     return type.toAST()
   },
 
-  TypeLit_base(_lookahead, type) {
-    return type.toAST()
+  Arg_positional(expr, _lookahead) {
+    return { kind: 'Arg', name: null, value: expr.toAST(), span: span(expr) } as AST.Arg
   },
 
-  Arg_positional(expr) {
-    return {
-      kind: 'Arg',
-      name: null,
-      value: expr.toAST(),
-      span: span(this),
-    } as AST.Arg
+  Arg_unfinished(expr) {
+    return { kind: 'Arg', name: null, value: expr.toAST(), span: span(expr) } as AST.Arg
   },
 
   // ============================================================================
