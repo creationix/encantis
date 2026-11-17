@@ -2646,6 +2646,18 @@ export func f(a: Vec(u8)) -> u32 {
 }`)).toEqual(['cannot assign *Vec(u8) to *Vec(u32)'])
   })
 
+  // Vec(Meters) and Vec(u32) are one type. Each is still shown with the
+  // argument its reader wrote, whichever of the two was applied first.
+  test('an applied type reads as it was written', () => {
+    expect(errorsOf(`${VEC}type Meters = u32
+func f(a: *Vec(u32), b: *Vec(Meters)) -> u32 {
+  let same: *Vec(Meters) = a
+  let x: *Vec(u8) = a
+  let y: *Vec(u8) = b
+  return same.len + x.len + y.len
+}`)).toEqual(['cannot assign *Vec(u32) to *Vec(u8)', 'cannot assign *Vec(Meters) to *Vec(u8)'])
+  })
+
   test('is written wherever a type is: parameter, result, field, cast, sizeof, let, another generic type, type argument', async () => {
     const source = `${VEC}${PAIR}func Table(comptime K: type, comptime V: type) -> type => (keys: Vec(K), rows: [*]mut Pair(K, Vec(V)), n: u32)
 type Named = (name: Vec(u8), id: u32)
