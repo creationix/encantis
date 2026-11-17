@@ -1988,6 +1988,23 @@ func f(xs: []mut i32) { sort(xs, inc) }
 'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
 ```
 
+The parameter's type by a name for a function type: a `type`, declared before or after, or an applied generic type.
+
+```ents
+func pick(a: i32, b: i32, comptime before: Cmp) -> i32 => if before(a, b) { a } else { b }
+func twice(comptime T: type, comptime f: Fn(T), x: T) -> T => f(f(x))
+type Cmp = (i32, i32) -> bool
+func Fn(comptime T: type) -> type => (T) -> T
+
+func lt(a: i32, b: i32) -> bool => a < b
+func inc(x: u32) -> u32 => x + 1
+
+test "a named function type" {
+  assert pick(3, 9, lt) == 3
+  assert twice(inc, 5) == 7
+}
+```
+
 A function that lists a struct's fields as its results is one that returns the struct; results without the fields' names are not.
 
 ```ents

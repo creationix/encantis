@@ -610,6 +610,9 @@ class CheckContext {
 
   // Track type names that are being defined (for recursive type detection)
   pendingTypeNames = new Set<string>()
+  // What each `type` of the module is declared as, as written: whether a
+  // name stands for a function type is asked before any type is resolved.
+  typeBodies = new Map<string, AST.Type>()
 
   // Reference tracking
   references = new Map<number, number[]>() // defOffset → refOffsets
@@ -694,6 +697,7 @@ class CheckContext {
   preRegisterTypes(decl: AST.Declaration): void {
     if (decl.kind === 'TypeDecl') {
       this.pendingTypeNames.add(decl.ident.name)
+      if (!this.typeBodies.has(decl.ident.name)) this.typeBodies.set(decl.ident.name, decl.type)
     }
     // A generic type needs nothing resolved to be declared, so every
     // signature of the module can apply it, wherever it stands.
@@ -4517,6 +4521,19 @@ class CheckContext {
     this.recordDefinition(decl.ident, decl.span.start)
   }
 
+  // Whether a type as written is a function type: one written out, or a name
+  // for one, a `type` or an applied generic type. A name is the type it names
+  // here as anywhere, and this is asked while types are still unresolved.
+  private namesFuncType(type: AST.Type, seen = new Set<string>()): boolean {
+    if (type.kind === 'FuncType') return true
+    if (type.kind !== 'TypeRef' && type.kind !== 'TypeApply') return false
+    if (seen.has(type.name)) return false
+    seen.add(type.name)
+    const sym = this.moduleScope.symbols.get(type.name)
+    const body = type.kind === 'TypeRef' ? this.typeBodies.get(type.name) : sym?.kind === 'typefunc' ? sym.decl.body : undefined
+    return body !== undefined && this.namesFuncType(body, seen)
+  }
+
   // What a generic is checked for where it is declared. The rest of it waits
   // for an instance, where its types are known.
   private checkGenericDecl(decl: AST.FuncDecl): boolean {
@@ -4536,7 +4553,7 @@ class CheckContext {
       if (p.type.kind !== 'TypeType') {
         // A comptime parameter of a function type is given a function.
         if (!p.comptime) continue
-        if (p.type.kind !== 'FuncType') {
+        if (!this.namesFuncType(p.type)) {
           reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type' or a function type`)
         } else if (params.some((other) => other !== p && other.ident === p.ident)) {
           // In the instance it is a function of that name, which the other
@@ -5116,7 +5133,8 @@ class CheckContext {
         return to && { kind: 'BoundType', name, type: to, span: { start: 0, end: 0 } }
       }) as AST.Type,
     )
-    return type.kind === 'func' && this.errorsReported === before ? type : null
+    const declared = unwrap(type)
+    return declared.kind === 'func' && this.errorsReported === before ? declared : null
   }
 
   // Inside an instance a comptime function parameter is the function it was

@@ -3053,6 +3053,33 @@ export func f(xs: []mut i32) { ${call} }`
     })
   }
 
+  // A name is the type it names here as anywhere: whether the parameter is a
+  // function parameter is not a matter of how its type is spelled.
+  test('its type may be a name for a function type: a `type`, or an applied generic type', async () => {
+    const source = (fn: string, cmp: string) => `func twice(comptime T: type, comptime f: ${fn}, x: T) -> T => f(f(x))
+func thrice(comptime T: type, comptime f: ${fn}, x: T) -> T => f(twice(f, x))
+func pick(a: i32, b: i32, comptime before: ${cmp}) -> i32 => if before(a, b) { a } else { b }
+func Fn(comptime T: type) -> type => (T) -> T
+type Cmp = Less
+type Less = (i32, i32) -> bool
+func inc(x: u32) -> u32 => x + 1
+func lt(a: i32, b: i32) -> bool => a < b
+func gt(a: i32, b: i32) -> bool => a > b
+export func a() -> u32 => twice(inc, 5) + thrice(inc, 1)
+export func b(x: i32, y: i32) -> i32 => pick(x, y, lt) - pick(x, y, gt)
+`
+    await expectSameWasm(source('Fn(T)', 'Cmp'), source('(T) -> T', '(i32, i32) -> bool'))
+    expect(instancesOf(source('Fn(T)', 'Cmp'))).toEqual(['pick<gt>', 'pick<lt>', 'thrice<u32|inc>', 'twice<u32|inc>'])
+    expect(errorsOf(`${source('Fn(T)', 'Cmp')}func c(x: i32) -> i32 => pick(x, x, inc)`)).toEqual([
+      "'inc' is (u32) -> u32, but 'pick' needs before: (i32, i32) -> bool",
+    ])
+    // A name for any other type is still a value parameter.
+    expect(errorsOf(`type Meters = u32\n${PAIR}func f(comptime T: type, comptime n: Meters, comptime p: Pair(T, T)) -> u32 => 0`)).toEqual([
+      "comptime value parameters are not supported yet: 'n' must be 'type' or a function type",
+      "comptime value parameters are not supported yet: 'p' must be 'type' or a function type",
+    ])
+  })
+
   // The hand-written fold calls add_f64 and assigns what it returns to an
   // Acc: the generic one takes the function the same way. What could not be
   // assigned there, results without the fields' names, is not taken here.
