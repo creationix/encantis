@@ -88,3 +88,122 @@ test "a match statement draws its subject once per turn" {
   assert count_ones(5) == 2
   assert calls == 5
 }
+
+// A subject that is several values (a slice, a tuple, a wide integer) or none
+// can only meet `_`. It is evaluated once all the same.
+func fresh() -> []u8 {
+  calls += 1
+  let all: []u8 = digits
+  return all
+}
+
+func two() -> (u8, u8) => (next(), next())
+
+func nothing() {
+  calls += 1
+}
+
+func any_slice(s: []u8) -> i32 => match s { _ => 1 }
+
+func any_fresh() -> i32 => match fresh() { _ => 2 }
+
+func any_two() -> i32 => match two() { _ => 3 }
+
+func any_wide(x: u128) -> i32 => match x + 1 { _ => 4 }
+
+func any_nothing() -> i32 => match nothing() { _ => 5 }
+
+test "a subject of several values, or none, is evaluated once" {
+  reset()
+  assert any_slice(digits) == 1
+  assert calls == 0
+  assert any_fresh() == 2
+  assert calls == 1
+  assert any_two() == 3
+  assert calls == 3
+  assert any_wide(7) == 4
+  assert any_nothing() == 5
+  assert calls == 4
+}
+
+// As a statement.
+func drain() -> u32 {
+  match fresh() {
+    _ => { cursor += 2 }
+  }
+  return cursor
+}
+
+test "a match statement on a slice" {
+  reset()
+  assert drain() == 2
+  assert calls == 1
+}
+
+// A tuple read from memory is several values too: each field is loaded, once.
+data pairs = mut [(1:u8, 2:u64), (3:u8, 4:u64)]
+
+func stored(at: u32) -> u32 {
+  calls += 1
+  return at
+}
+
+func any_element() -> i32 => match pairs[stored(1)] ?? (0, 0) { _ => 6 }
+
+func any_behind(pair: *(u8, u64)) -> i32 => match pair.* { _ => 7 }
+
+test "a subject of several values loaded from memory" {
+  reset()
+  assert any_element() == 6
+  assert calls == 1
+  assert any_behind(&pairs[0]) == 7
+}
+
+// A constant subject has no type of its own: it is compared in its default
+// type, i32 or i64 by its size, f64 for a float.
+def level = 1
+def far = 5000000000
+def half = 0.5
+
+func by_literal() -> i32 => match 1 {
+  1 => 2
+  _ => 3
+}
+
+func by_def() -> i32 => match level {
+  1 => 2
+  _ => 3
+}
+
+func by_len(items: [3]u8) -> i32 => match items.len {
+  3 => 2
+  _ => 3
+}
+
+func by_i64() -> i32 => match far {
+  1 => 1
+  5000000000 => 2
+  _ => 3
+}
+
+func by_f64() -> i32 => match half * 3 {
+  1 => 1
+  1.5 => 2
+  _ => 3
+}
+
+func by_choice(c: bool) -> i32 => match if c { level } else { 7 } {
+  1 => 2
+  7 => 4
+  _ => 3
+}
+
+test "a constant subject is compared in its default type" {
+  assert by_literal() == 2
+  assert by_def() == 2
+  assert by_len([1, 2, 3]) == 2
+  assert by_i64() == 2
+  assert by_f64() == 2
+  assert by_choice(true) == 2
+  assert by_choice(false) == 4
+}

@@ -577,6 +577,14 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('local.get $r')
     })
 
+    test('an expression body passes a call\'s values on as the named results', () => {
+      const wat = funcWat(`func f(n: u32) -> (q: u32, r: u32) => pair(n)
+        func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)`)
+      expect(wat).toContain('(result i32 i32)')
+      expect(wat).toContain('(call $pair (local.get $n))')
+      expect(wat).not.toContain('local.get $q')
+    })
+
     test('a match evaluates a computed subject once, into a scratch local', () => {
       const wat = funcWat(`func f(a: i64, b: i64) -> i32 => match a * b {
         6 => 1
@@ -595,6 +603,35 @@ describe('expression codegen', () => {
       }`)
       expect(wat).toContain('(i32.eq (local.get $k) (i32.const 6))')
       expect(wat).not.toContain('__match_')
+    })
+
+    test('a match on a subject of several values keeps it in no local', () => {
+      const wat = funcWat('func f(s: []u8) -> i32 => match s { _ => 1 }')
+      expect(wat).not.toContain('__match_')
+      expect(wat).not.toContain('local.get $s_ptr')
+    })
+
+    test('a match evaluates a subject of several values once, and drops them', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() -> (i32, i64) => (1, 2)`)
+      expect(wat).toContain('(call $g)\n(drop)\n(drop)\n(i32.const 1)')
+      expect(wat).not.toContain('__match_')
+    })
+
+    test('a match evaluates a subject with no value', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() {}`)
+      expect(wat).toContain('(call $g)\n(i32.const 1)')
+      expect(wat).not.toContain('(drop)')
+    })
+
+    test('a match loads a subject of several values from memory, and drops them all', () => {
+      // A tuple behind a pointer is one load for each field: as many values as are dropped.
+      const behind = funcWat('func f(p: *(u32, u32)) -> i32 => match p.* { _ => 5 }')
+      expect(behind).toContain('(i32.load (local.get $p)) (i32.load offset=4 (local.get $p))\n(drop)\n(drop)\n(i32.const 5)')
+      const element = funcWat('func f(s: [](u32, u64)) -> i32 => match s[0] { _ => 5 }')
+      expect(element).toContain('(i64.load offset=4 (local.get $__tmp_0))\n(drop)\n(drop)\n(i32.const 5)')
+      expect(behind + element).not.toContain('__match_')
     })
 
     test('a match arm block gives its value', () => {
@@ -643,10 +680,41 @@ describe('expression codegen', () => {
       expect(wat).toContain('else')
     })
 
+    test('constant branches are all emitted in the type that holds each of them', () => {
+      const wat = funcWat(`func f(c: bool) -> i64 {
+        let v = if c { -2147483648 } else { 2147483648 }
+        return v
+      }`)
+      expect(wat).toContain('(local $v i64)')
+      expect(wat).toContain('(if (result i64) (local.get $c) (then (i64.const -2147483648)) (else (i64.const 2147483648)))')
+    })
+
+    test('tuple branches of constants are emitted field by field in one type', () => {
+      const wat = funcWat(`func f(c: bool, x: i64) -> i64 {
+        let (a, b) = if c { (1, 2) } else { (x, 4) }
+        return a + b
+      }`)
+      expect(wat).toContain('(local $a i64)')
+      expect(wat).toContain('(local $b i32)')
+      expect(wat).toContain('(if (result i64 i32) (local.get $c) (then (i64.const 1) (i32.const 2)) (else (local.get $x) (i32.const 4)))')
+    })
+
+    test('a tuple literal in parentheses takes the expected type field by field', () => {
+      const wat = funcWat('func f(n: u8) -> (i64, u32) => ((n, 300))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $n)) (i32.const 300)')
+    })
+
     test('an if let used as a value leaves the value of each branch', () => {
       const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
       expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)
       expect(wat).not.toContain('(drop)')
+    })
+
+    test('an if let widens each branch to the type its value is used as', () => {
+      const wat = funcWat('func f(p: ?*u8, a: i32, b: u32) -> i64 => if let q = p { a } else { b }')
+      expect(wat).toContain('(if (result i64)')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $a))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $b))')
     })
 
     test('an if let keeps its elif branches', () => {
@@ -968,6 +1036,111 @@ describe('structs in memory', () => {
     ])
   })
 
+  test('the address is the one the target named before the value was computed', async () => {
+    // A value that assigns on its way (an if with statements) can move the
+    // pointer the target names: every part still goes where it pointed.
+    const { whole, field, slice, index } = await run(`
+      type Point = (x: i32, y: i32)
+      type P3 = (x: i32, y: i32, z: i32)
+      data cells: *mut [2]Point = [Point(0, 0), Point(0, 0)]
+      data threes: *mut [2]P3 = [P3(0, 0, 0), P3(0, 0, 0)]
+      data names: *mut [2][]u8 = ["", ""]
+      data three: *[1]i32 = [3]
+      export func whole(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        let q: *mut Point = &cells[1]
+        p.* = if c {
+          p = q
+          Point(1, 2)
+        } else { Point(3, 4) }
+        return cells[0].x * 1000 + cells[0].y * 100 + cells[1].x * 10 + cells[1].y
+      }
+      export func field(c: bool) -> i32 {
+        let p: *mut P3 = &threes[0]
+        let q: *mut P3 = &threes[1]
+        p.* = P3(if c {
+          p = q
+          1
+        } else { 4 }, 2, three[0])
+        return threes[0].x * 100 + threes[0].y * 10 + threes[0].z + threes[1].x + threes[1].y + threes[1].z
+      }
+      export func slice(c: bool) -> u32 {
+        let p: *mut []u8 = &names[0]
+        let q: *mut []u8 = &names[1]
+        p.* = if c {
+          p = q
+          "abc"
+        } else { "de" }
+        return names[0].len * 10 + names[1].len
+      }
+      export func index(c: bool) -> u32 {
+        let i: u32#2 = 0
+        names[i] = if c {
+          i = 1
+          "abcd"
+        } else { "de" }
+        return names[0].len * 10 + names[1].len
+      }
+    `)
+    expect([whole(1), field(1), slice(1), index(1)]).toEqual([1200, 123, 30, 40])
+  })
+
+  test('a later part that writes memory runs before any part is stored', async () => {
+    // The value is computed whole first: what a part of it stores on its way
+    // is overwritten by the assignment, not the other way round.
+    const { struct, three, slice, array, fill } = await run(`
+      type Point = (x: i32, y: i32)
+      type P3 = (x: i32, y: i32, z: i32)
+      data cells: *mut [1]Point = [Point(0, 0)]
+      data threes: *mut [1]P3 = [P3(0, 0, 0)]
+      data names: *mut [1][]u8 = [""]
+      data pairs: *mut [1][2]i32 = [[0, 0]]
+      data bytes: *[3]u8 = "abc"
+      export func struct(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        p.* = Point(1, if c {
+          p.x = 9
+          2
+        } else { 2 })
+        return p.x * 10 + p.y
+      }
+      export func three(c: bool) -> i32 {
+        let p: *mut P3 = &threes[0]
+        p.* = P3(1, 2, if c {
+          p.x = 8
+          p.y = 9
+          3
+        } else { 3 })
+        return p.x * 100 + p.y * 10 + p.z
+      }
+      export func slice(c: bool) -> u32 {
+        let p: *mut []u8 = &names[0]
+        p.* = (bytes as [*]u8, if c {
+          p.* = "zzzzzzz"
+          3
+        } else { 3 })
+        return p.len * 10 + (if p.ptr as u32 == bytes as u32 { 1 } else { 0 })
+      }
+      export func array(c: bool) -> i32 {
+        let p: *mut [2]i32 = &pairs[0]
+        p.* = [1, if c {
+          p.*[0] = 9
+          2
+        } else { 2 }]
+        return p.*[0] * 10 + p.*[1]
+      }
+      export func fill(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        p.* = Point(1, if c {
+          memset(cells, 7, 4)
+          2
+        } else { 2 })
+        return p.x * 10 + p.y
+      }
+    `)
+    expect([struct(1), three(1), slice(1), array(1), fill(1)]).toEqual([12, 123, 31, 12, 12])
+  })
+
   test('a copy over a place that overlaps its source arrives whole', async () => {
     const { spots, slices } = await run(`${SPOT}
       export func spots() -> i32 {
@@ -1234,6 +1407,40 @@ describe('struct values in registers and on the stack', () => {
       func f(a: i32, b: i32) -> i32 => Rect(Point(a, b), Point(b, a)).size.x
     `, 'f')).toEqual(['(local.get $b)'])
     expect(wat).not.toContain('$__tmp')
+  })
+
+  test('a part that is left out still runs if it could trap', async () => {
+    const code = `${RECT}
+      type Wide = (a: i64, b: i32)
+      data space = mut [0:u8; 16]
+      export func div(n: i32) -> i32 => Point(7, 1 / n).x
+      export func rem(n: i32) -> i32 => (5 % n, 7).1
+      export func wide(n: i32) -> i32 => Wide(1:i64 / (n as i64), 7).b
+      export func convert(x: f64) -> i32 => Point(7, x as i32).x
+      export func load(p: *i32) -> i32 => Rect(Point(7, 8), Point(p.*, 9)).origin.x
+      export func bound(n: i32) -> i32 {
+        let x = (7, 1 / n).0
+        return x
+      }
+      export func ptr(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8).ptr as u32 - space as u32
+      export func len(n: u32) -> u32 => (((1 / n) as [*]u8, 3):[]u8).len
+      export func index(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8)[0] as u32
+      export func address(n: u32) -> u32 {
+        let p: *u8 = &((space as [*]u8, 1 / n):[]u8)[0]
+        return p.* as u32
+      }
+    `
+    const m = await run(code)
+    expect([m.div(1), m.rem(1), m.wide(1), m.convert(1.5), m.load(8), m.bound(1)]).toEqual([7, 7, 7, 7, 7, 7])
+    expect([m.ptr(1), m.len(1), m.index(1), m.address(1)]).toEqual([0, 3, 0, 0])
+    // Division by zero, a float no i32 holds, a load from outside memory.
+    for (const name of ['div', 'rem', 'wide', 'bound', 'ptr', 'len', 'index', 'address']) expect(() => m[name](0)).toThrow()
+    expect(() => m.convert(1e30)).toThrow()
+    expect(() => m.load(-4)).toThrow()
+    // A part that can't trap and has no effects is still just left out.
+    expect(bodyOf(`${RECT}
+      func f(a: i32, b: i64) -> i32 => Rect(Point(a, a + 1), Point(a * 2, (b >> 1) as i32)).origin.x
+    `, 'f')).toEqual(['(local.get $a)'])
   })
 
   test('a slice on the stack keeps its own form', () => {
@@ -1541,6 +1748,26 @@ describe('structs in data arrays', () => {
     expect(f(8)).toBe(888)
   })
 
+  test('(x) is x: a literal in parentheses is laid out as the literal', async () => {
+    const { elems, fields, whole, nested } = await run(`
+      type Point = (x: i32, y: i32)
+      type Row = (s: []i32, name: []u8, at: Point, tag: u8)
+      data points: *[2]Point = [(Point(1, 2)), ((3, 4))]
+      data rows: *[1]Row = [(Row(([4, 5, 6]), ("ab"), ((7, 8)), (9)))]
+      data xs: []i32 = ([4, 5, 6])
+      data k: i32 = (5)
+      data names: [][]u8 = [("ab"), ("cde")]
+      export func elems() -> i32 => points[0].x * 1000 + points[0].y * 100 + points[1].x * 10 + points[1].y
+      export func fields() -> u32 {
+        let r = rows[0]
+        return r.s.len * 10000 + (r.s[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
+      }
+      export func whole() -> u32 => xs.len * 100 + (xs[2] as u32) * 10 + (k.* as u32)
+      export func nested() -> u32 => names.len * 100 + names[0].len * 10 + names[1].len
+    `)
+    expect([elems(), fields(), whole(), nested()]).toEqual([1234, 35289, 365, 223])
+  })
+
   test('slice and fixed-array fields', async () => {
     const code = `
       type Named = (name: []u8, at: (x: i8, y: i8), dims: [3]u16, last: u8)
@@ -1586,6 +1813,85 @@ describe('structs in data arrays', () => {
     expect(modWat(code).match(/i32\.store/g)?.length).toBe(2)
     const { corner } = await run(code)
     expect(corner(7)).toBe(5247)
+  })
+
+  test('a slice given as (ptr, len) is laid out as that pointer and length', async () => {
+    // A pair of constants is data, like any tuple of constants: it read back
+    // as (0, 0), in a struct and as an element of an array of slices.
+    const { field, local, slices, mixed } = await run(`
+      type Row = (s: []i32, tag: u8)
+      type Outer = (row: Row, name: ?[]u8)
+      data rows: *[2]Row = [((64, 3), 7), Row((0, 4), 8)]
+      data outer: Outer = (((128, 5), 6), ("abc", 2))
+      data lists: [][]i32 = [(64, 3), [1, 2], ((128, 4))]
+      export func field() -> u32 {
+        let name = outer.name ?? "?"
+        let both = (rows[0].s.ptr as u32) * 100000 + rows[0].s.len * 10000 + rows[1].s.len * 1000 + (rows[1].tag as u32) * 100
+        return both + outer.row.s.len * 10 + name.len
+      }
+      export func local() -> u32 {
+        let two: []Row = [((64, 3), 7), Row((0, 4), 8)]
+        return two[0].s.len * 1000 + (two[0].tag as u32) * 100 + two[1].s.len * 10 + (two[1].tag as u32)
+      }
+      export func slices() -> u32 => (lists[0].ptr as u32) * 1000 + lists[0].len * 100 + lists[1].len * 10 + lists[2].len
+      export func mixed(p: [*]i32, n: u32) -> u32 {
+        let three: [][]i32 = [(p, n), (64, 2), [7, 8, 9]]
+        return three[0].len * 100 + three[1].len * 10 + three[2].len
+      }
+    `)
+    expect([field(), local(), slices(), mixed(0, 5)]).toEqual([6434852, 3748, 64324, 523])
+  })
+
+  test('a repeat literal of a runtime value is stored when it is reached', async () => {
+    // [v; N] is data only when v is: these read back zeros.
+    const code = `
+      type Row = (v: [3]i32, tag: i32)
+      type Named = (s: []i32, tag: i32)
+      global calls: i32 = 0
+      func next() -> i32 {
+        calls += 1
+        return calls
+      }
+      func sum(s: []i32) -> i32 => s[0] * 100 + s[1] * 10 + s[2]
+      func read(r: Row) -> i32 => r.v[0] * 1000 + r.v[1] * 100 + r.v[2] * 10 + r.tag
+      export func field(n: i32) -> i32 {
+        let rows: *[1]Row = [Row([n + 1; 3], 7)]
+        return read(rows[0])
+      }
+      export func mutable(n: i32) -> i32 {
+        let rows: *mut [1]Row = mut [Row([n; 3], 7)]
+        return read(rows[0])
+      }
+      export func slice(n: i32) -> i32 {
+        let rows: []Named = [(([n; 3]), 7)]
+        return sum(rows[0].s) * 10 + rows[0].tag
+      }
+      export func whole(n: i32) -> i32 {
+        let xs: *[3]i32 = [n + 1; 3]
+        let last = xs[2]
+        let rows: *[2]Row = [Row([n; 3], n); 2]
+        let both = rows[1].v[2] * 100 + rows[1].tag * 10 + rows[0].tag
+        return sum([n; 3]) * 10000 + last * 1000 + both
+      }
+      export func each() -> i32 {
+        // The value is computed for every slot, as in a repeat that is a value.
+        let rows: *[1]Row = [Row([next(); 3], 0)]
+        let value: [3]i32 = [next(); 3]
+        return read(rows[0]) + value[0] * 100 + value[1] * 10 + value[2]
+      }
+      export func fixed() -> i32 {
+        let rows: *[1]Row = [Row([4; 3], 7)]
+        return read(rows[0])
+      }
+    `
+    const { field, mutable, slice, whole, each, fixed } = await run(code)
+    expect([field(1), mutable(2), slice(2), whole(2), each(), fixed()]).toEqual([2227, 2227, 2227, 2223222, 1230 + 456, 4447])
+    // A repeat of constants stays in the data section, with no stores.
+    expect(modWat(`
+      type Row = (v: [3]i32, tag: i32)
+      func fixed() -> *[1]Row => [Row([4; 3], 7)]
+      func zeros() -> []u8 => [0; 16]
+    `)).not.toContain('store')
   })
 
   test("a runtime struct's literal fields take the fields' types", async () => {
@@ -1819,6 +2125,8 @@ describe('builtin codegen', () => {
           _ => { return 2 }
         }
       }`)
+      // A repeated value: 0.2.1 built this, pasting the operand in twice.
+      declared('func f(a: i32) -> [2]i32 => [max(g(a), 0); 2]')
     })
   })
 
@@ -1899,6 +2207,29 @@ describe('builtin codegen', () => {
       expect(wat).toContain('(data (i32.const 24) "abcd")')
       expect(wat).toContain('(data (i32.const 28) "wxyz")')
       expect(wat).toContain('(then (i32.const 24)) (else (i32.const 28))')
+    })
+
+    test('and one in a branch of an if let operand', () => {
+      const wat = modWat(`
+        data buf = mut [0:u8; 16]
+        func f(s: []u8, i: u32, c: bool) { memcpy(buf, if let b = s[i] { "abcd" } elif c { "mnop" } else { "wxyz" }, 4) }
+      `)
+      expect(wat).toContain('(data (i32.const 24) "abcd")')
+      expect(wat).toContain('(data (i32.const 28) "mnop")')
+      expect(wat).toContain('(data (i32.const 32) "wxyz")')
+      expect(wat).toContain('(i32.const 24)) (else (if (result i32) (local.get $c) (then (i32.const 28)) (else (i32.const 32))))')
+    })
+
+    test('and one in parentheses', () => {
+      const wat = modWat(`
+        data buf = mut [0:u8; 16]
+        func f(c: bool) {
+          memcpy(buf, ("abcd"), 4)
+          memcpy(buf, (if c { "mnop" } else { "wxyz" }), 4)
+        }
+      `)
+      expect(wat).toContain('(memory.copy (i32.const 8) (i32.const 24) (i32.const 4))')
+      expect(wat).toContain('(then (i32.const 28)) (else (i32.const 32))')
     })
 
     test('abs of a small integer stays in its type', () => {
