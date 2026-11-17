@@ -135,3 +135,21 @@ test "a shift count is taken modulo the width" {
   assert !whole_byte(200)
   assert last() == 10
 }
+
+// A constant is worked out in its type, step by step, as the program does it.
+// As a u32, 0 - 1 is 4294967295: ~0 >> 28 is 15, and so is (0 - 1) % 16.
+export func low_bits(x: u32) -> u32 {
+  pairs[x & (~0 >> 28)] = 11
+  return x & (~0 >> 28)
+}
+export func wrapped() -> u8 {
+  pairs[(0 - 1) % 16] = 12
+  return pairs[15]
+}
+export func sixteenth() -> u32 => (0 - 1) / 268435455
+test "a constant divides and shifts as its type holds it" {
+  assert low_bits(0xFFFFFFF3) == 3
+  assert (pairs[3] ?? 0) == 11
+  assert wrapped() == 12
+  assert sixteenth() == 16
+}

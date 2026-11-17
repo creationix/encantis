@@ -1474,6 +1474,34 @@ describe('operand types', () => {
       .toEqual(['index type u32#16 may exceed *[1]u8 bounds (max index 15 >= 1) — narrow the index range to fit'])
   })
 
+  test('a constant is divided and shifted right as its type holds its operands', () => {
+    const index = (expr: string) => errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) -> u8 => t[${expr}]`)
+    const past = ['index 16 out of bounds for *[16]u8']
+    // As a u32, 0 - 1 is 4294967295: that is what is divided, not -1.
+    expect(index('(0 - 1) / 268435455')).toEqual(past)
+    expect(index('(1 - 2) % 20 + 1')).toEqual(past)
+    expect(index('(~0 >> 28) + 1')).toEqual(past)
+    expect(index('~0 / 268435455')).toEqual(past)
+    expect(index('(0 - 1) / 268435456')).toEqual([])
+    expect(index('(0 - 1) % 16')).toEqual([])
+    expect(index('~0 >> 28')).toEqual([])
+    // A range comes from the same value.
+    const over = ['index type u32#17 may exceed *[16]u8 bounds (max index 16 >= 16) — narrow the index range to fit']
+    expect(index('x & ((0 - 1) / 268435455)')).toEqual(over)
+    expect(index('x % ((0 - 1) / 268435455 + 1)')).toEqual(over)
+    expect(index('x & (~0 >> 28)')).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) { if x < (0 - 1) / 268435455 + 1 { t[x] = 1 } }`)).toEqual(over)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..((0 - 1) / 268435455 + 1)] = 1 }`)).toEqual(['range 0..17 is out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, (1 - 2) / 4 + 16) }`)).toEqual(['memset length 1073741839 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\ndef k = (0 - 1) / 268435455\nfunc f() { t[k] = 1 }`)).toEqual(past)
+    // In a narrower type too: as a u8, 0 - 1 is 255.
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(b: u8) -> u8 => t[b & ((0 - 1) / 15)]`))
+      .toEqual(['index type u8#18 may exceed *[16]u8 bounds (max index 17 >= 16) — narrow the index range to fit'])
+    // A signed type holds -1 as it is: -64 / 4 + 17 is 1.
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(x: i32) -> i32 { let i: i32 = (0 - 64) / 4 + 17\n return i }`)).toEqual([])
+    expect(index('(0 - 64) / 4 + 17')).toEqual([])
+  })
+
   test('pointer arithmetic takes 32-bit integers', () => {
     expect(errs(`func f(p: [*]u8, n: u32, q: [*]u8) -> bool => p + n < q`)).toEqual([])
     expect(errs(`func f(p: [*]u8, n: i64) { let q = p + n }`)).toEqual(["'+' cannot be applied to [*]u8 and i64"])

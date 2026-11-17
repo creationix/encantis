@@ -728,6 +728,8 @@ func big() -> i64 {
 func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
 ```
 
+Each step of a constant expression is then computed in that type, as it would be for values, and what the compiler proves from a constant (an index in bounds, a range) it proves from that value. As a `u32`, `0 - 1` is 4294967295, so `(0 - 1) / 4` is 1073741823, not 0, and `~0 >> 28` is 15.
+
 The branches of an `if` or `match` that are all constants make a constant too. Where nothing else types it, it takes the default that holds every branch, and each branch has to be a value of the type it ends up with:
 
 ```ents

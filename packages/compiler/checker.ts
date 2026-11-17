@@ -1113,12 +1113,22 @@ class CheckContext {
       if (left?.kind === 'int' && right?.kind === 'int') {
         const l = left.value
         const r = right.value
+        // A sum or a product comes out the same whether its operands have
+        // wrapped or not; a quotient, a remainder or a right shift doesn't.
+        // They take each operand as its type holds it, once it has one:
+        // (0 - 1) / 4 as a u32 divides 4294967295, as the program will.
+        const held = (operand: AST.Expr, value: bigint): bigint => {
+          const type = this.exprTypes.get(operand)
+          const constant = type ? constantIn({ kind: 'int', value }, type) : null
+          return constant?.kind === 'int' ? constant.value : value
+        }
+        const divisor = held(expr.right, r)
         switch (expr.op) {
           case '+': return { kind: 'int', value: l + r }
           case '-': return { kind: 'int', value: l - r }
           case '*': return { kind: 'int', value: l * r }
-          case '/': return r !== 0n ? { kind: 'int', value: l / r } : null
-          case '%': return r !== 0n ? { kind: 'int', value: l % r } : null
+          case '/': return divisor !== 0n ? { kind: 'int', value: held(expr.left, l) / divisor } : null
+          case '%': return divisor !== 0n ? { kind: 'int', value: held(expr.left, l) % divisor } : null
           case '&': return { kind: 'int', value: l & r }
           case '|': return { kind: 'int', value: l | r }
           case '^': return { kind: 'int', value: l ^ r }
@@ -1132,7 +1142,7 @@ class CheckContext {
             const width = shiftWidth(this.exprTypes.get(expr))
             const count = width ? r & BigInt(width - 1) : r
             if (count < 0n || count > 512n) return null
-            return { kind: 'int', value: expr.op === '<<' ? l << count : l >> count }
+            return { kind: 'int', value: expr.op === '<<' ? l << count : held(expr.left, l) >> count }
           }
         }
       }

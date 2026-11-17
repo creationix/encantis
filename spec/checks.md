@@ -606,6 +606,26 @@ index type u32#65536 may exceed *[16]u8 bounds
 index 16 out of bounds for *[16]u8
 ```
 
+A constant is worked out in the type it takes, step by step, as the program does it. As a `u32`, `0 - 1` is 4294967295, and that is what a division, a remainder or a right shift is given: `(0 - 1) / 268435455` is 16, `~0 >> 28` is 15.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a() { buf[(0 - 1) / 268435455] = 1 }
+func b(x: u32) { buf[x & ((0 - 1) / 268435455)] = 2 }
+func c() { buf[(1 - 2) % 20 + 1] = 3 }
+func d(x: u32) { buf[x & (~0 >> 28)] = 4 }
+func e() { buf[(0 - 1) % 16] = 5 }
+func f() { memset(buf, 0, (1 - 2) / 4 + 16) }
+```
+
+```errors
+index 16 out of bounds for *[16]u8
+index type u32#17 may exceed *[16]u8 bounds
+index 16 out of bounds for *[16]u8
+memset length 1073741839 exceeds buffer size 16 bytes
+```
+
 A comparison with a constant narrows the variable where it holds: inside the branch, in later branches of the same `if`, and after an exit that the comparison guards.
 
 ```ents
