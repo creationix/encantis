@@ -536,6 +536,107 @@ export func f(xs: []u8) -> u8 {
 }
 ```
 
+A table works the same in a generic. Matched against `*[2][3]i32`, `*[2][3]T` binds `T` to `i32` and `*[2]R` binds `R` to `[3]i32`; either way the parameter is a table, each element a pointer to its row, and the instance is the function written out for it.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]u8 = mut [[0; 3]; 2]
+
+func cell(comptime T: type, m: *[2][3]T, i: u32#2, j: u32#3) -> T => m[i][j]
+func put(comptime T: type, m: *mut [2][3]T, i: u32#2, j: u32#3, v: T) {
+  m[i][j] = v
+}
+func row(comptime R: type, m: *[2]R, i: u32) -> *R => if let r = m[i] { r } else { m[0] }
+func cells(comptime R: type, m: *[2]R) -> u32 {
+  let n: u32 = 0
+  for r in m {
+    n += r.len
+  }
+  return n * m.wid
+}
+
+export func a(i: u32#2, j: u32#3) -> i32 => cell(i32, grid, i, j)
+export func b(i: u32#2, j: u32#3, v: u8) {
+  put(board, i, j, v)
+}
+export func c(i: u32) -> *[3]i32 => row(grid, i)
+export func d() -> u32 => cells(grid)
+
+test "a table in a generic" {
+  b(1, 2, 9)
+  assert board[1][2] == 9
+  assert a(1, 2) == 5
+  assert c(1)[0] == 3
+  assert c(7) == grid[0]
+  assert d() == 24
+}
+```
+
+```ents same-wasm
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]u8 = mut [[0; 3]; 2]
+
+func cell_i32(m: *[2][3]i32, i: u32#2, j: u32#3) -> i32 => m[i][j]
+func put_u8(m: *mut [2][3]u8, i: u32#2, j: u32#3, v: u8) {
+  m[i][j] = v
+}
+func row_i32x3(m: *[2][3]i32, i: u32) -> *[3]i32 => if let r = m[i] { r } else { m[0] }
+func cells_i32x3(m: *[2][3]i32) -> u32 {
+  let n: u32 = 0
+  for r in m {
+    n += r.len
+  }
+  return n * m.wid
+}
+
+export func a(i: u32#2, j: u32#3) -> i32 => cell_i32(grid, i, j)
+export func b(i: u32#2, j: u32#3, v: u8) {
+  put_u8(board, i, j, v)
+}
+export func c(i: u32) -> *[3]i32 => row_i32x3(grid, i)
+export func d() -> u32 => cells_i32x3(grid)
+```
+
+So does a slice of rows: `[]R` with `R = [2]i32` is a `[][2]i32`, whose elements are row pointers.
+
+```ents
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+
+func at(comptime T: type, s: [][2]T, i: u32, j: u32#2) -> T => if let r = s[i] { r[j] } else { 0 }
+func sum(comptime R: type, s: []R) -> i32 {
+  let t = 0
+  for r in s {
+    t += r[0] * r[1]
+  }
+  return t
+}
+
+export func e(i: u32, j: u32#2) -> i32 => at(rows, i, j)
+export func f() -> i32 => sum(rows)
+
+test "a slice of rows in a generic" {
+  assert e(2, 1) == 6
+  assert e(3, 0) == 0
+  assert f() == 49
+}
+```
+
+```ents same-wasm
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+
+func at_i32(s: [][2]i32, i: u32, j: u32#2) -> i32 => if let r = s[i] { r[j] } else { 0 }
+func sum_i32x2(s: [][2]i32) -> i32 {
+  let t = 0
+  for r in s {
+    t += r[0] * r[1]
+  }
+  return t
+}
+
+export func e(i: u32, j: u32#2) -> i32 => at_i32(rows, i, j)
+export func f() -> i32 => sum_i32x2(rows)
+```
+
 An exported generic. Nothing is exported to the host for it.
 
 ```ents
@@ -2427,6 +2528,20 @@ func h(p: Pt) -> i32 => p.norm()
 push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 norm takes *Pt first; the receiver is a Pt, which is held in registers and has no address
+```
+
+An array written out is no such value: passed for a pointer it is laid out in memory, as it is when it is written as the first argument. A table written out is laid out when the program is compiled, so a row known only at run time is what is wrong with it, said as it is of the argument.
+
+```ents
+func tsum(m: *[2][3]i32) -> i32 => m[1][2]
+
+func f(x: i32) -> i32 => [[x, 2, 3], [4, 5, 6]].tsum()
+func g(x: i32) -> i32 => [[1, 2, 3], [x; 3]].tsum()
+```
+
+```errors
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
 ```
 
 Nor is a pointer followed for a value: the receiver is an argument like any other.
