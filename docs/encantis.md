@@ -277,7 +277,7 @@ for i in 4 {                    // i: u32#4
 
 **Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
 
-**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
+**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). The count is the one the shift takes (§4.2): `x >> 32` on a `u32` is `x`, with no range, and `x >> 60` is `x >> 28`. A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
 
 **Narrowing:** Comparing an unsigned variable with a constant narrows its range wherever the comparison is known to hold:
 
@@ -728,6 +728,32 @@ func big() -> i64 {
 func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
 ```
 
+Each step of a constant expression is then computed in that type, as it would be for values, and what the compiler proves from a constant (an index in bounds, a range) it proves from that value. As a `u32`, `0 - 1` is 4294967295, so `(0 - 1) / 4` is 1073741823, not 0, and `~0 >> 28` is 15.
+
+The branches of an `if` or `match` that are all constants make a constant too. Where nothing else types it, it takes the default that holds every branch, and each branch has to be a value of the type it ends up with:
+
+```ents
+func pick(c: bool) -> i64 {
+  let v = if c { -2147483648 } else { 2147483648 }   // an i64: 2147483648 isn't an i32
+  return v
+}
+```
+
+Branches that are tuples agree field by field, each field as it would by itself:
+
+```ents
+func step(d: i32) -> (i32, i32) {
+  let (dx, dy) = match d {
+    0 => (1, 0)
+    1 => (0, 1)
+    _ => (-1, -1)                  // dx and dy are i32s
+  }
+  return (dx, dy)
+}
+```
+
+An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`). Nor have branches of which one is negative and another past an `i64`: `if c { -1 } else { 18446744073709551615 }` needs a type that holds both.
+
 Once a value has a concrete type, normal promotion rules apply:
 
 ```ents
@@ -913,6 +939,8 @@ func halves(n: u16) -> (hi: u64, lo: f64) {
 func swapped(n: u32) -> (lo: u32, hi: u32) {
   split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
 }
+
+func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
 ```
 
 #### Calling Conventions
@@ -1064,7 +1092,7 @@ func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
 func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
 ```
 
-The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
+The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used: the count modulo the width the value is shifted in, which is 32 bits for a value of 32 bits or fewer and the value's own width otherwise. So `x << 32` on a `u32` is `x`, and on a `u8` too, while `x << 8` on a `u8` is 0. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
 
 A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
 
@@ -1546,7 +1574,7 @@ match value {
 }
 ```
 
-Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). A constant subject (`1`, a `def`, a fixed array's `len`) is compared in its default type. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
 
 ```ents
 let result = match code {

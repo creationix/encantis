@@ -575,6 +575,14 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('local.get $r')
     })
 
+    test('an expression body passes a call\'s values on as the named results', () => {
+      const wat = funcWat(`func f(n: u32) -> (q: u32, r: u32) => pair(n)
+        func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)`)
+      expect(wat).toContain('(result i32 i32)')
+      expect(wat).toContain('(call $pair (local.get $n))')
+      expect(wat).not.toContain('local.get $q')
+    })
+
     test('a match evaluates a computed subject once, into a scratch local', () => {
       const wat = funcWat(`func f(a: i64, b: i64) -> i32 => match a * b {
         6 => 1
@@ -593,6 +601,26 @@ describe('expression codegen', () => {
       }`)
       expect(wat).toContain('(i32.eq (local.get $k) (i32.const 6))')
       expect(wat).not.toContain('__match_')
+    })
+
+    test('a match on a subject of several values keeps it in no local', () => {
+      const wat = funcWat('func f(s: []u8) -> i32 => match s { _ => 1 }')
+      expect(wat).not.toContain('__match_')
+      expect(wat).not.toContain('local.get $s_ptr')
+    })
+
+    test('a match evaluates a subject of several values once, and drops them', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() -> (i32, i64) => (1, 2)`)
+      expect(wat).toContain('(call $g)\n(drop)\n(drop)\n(i32.const 1)')
+      expect(wat).not.toContain('__match_')
+    })
+
+    test('a match evaluates a subject with no value', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() {}`)
+      expect(wat).toContain('(call $g)\n(i32.const 1)')
+      expect(wat).not.toContain('(drop)')
     })
 
     test('a match arm block gives its value', () => {
@@ -641,10 +669,41 @@ describe('expression codegen', () => {
       expect(wat).toContain('else')
     })
 
+    test('constant branches are all emitted in the type that holds each of them', () => {
+      const wat = funcWat(`func f(c: bool) -> i64 {
+        let v = if c { -2147483648 } else { 2147483648 }
+        return v
+      }`)
+      expect(wat).toContain('(local $v i64)')
+      expect(wat).toContain('(if (result i64) (local.get $c) (then (i64.const -2147483648)) (else (i64.const 2147483648)))')
+    })
+
+    test('tuple branches of constants are emitted field by field in one type', () => {
+      const wat = funcWat(`func f(c: bool, x: i64) -> i64 {
+        let (a, b) = if c { (1, 2) } else { (x, 4) }
+        return a + b
+      }`)
+      expect(wat).toContain('(local $a i64)')
+      expect(wat).toContain('(local $b i32)')
+      expect(wat).toContain('(if (result i64 i32) (local.get $c) (then (i64.const 1) (i32.const 2)) (else (local.get $x) (i32.const 4)))')
+    })
+
+    test('a tuple literal in parentheses takes the expected type field by field', () => {
+      const wat = funcWat('func f(n: u8) -> (i64, u32) => ((n, 300))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $n)) (i32.const 300)')
+    })
+
     test('an if let used as a value leaves the value of each branch', () => {
       const wat = funcWat('func f(s: []u8, i: u32, d: i32) -> i32 => if let b = s[i] { b } else { d }')
       expect(wat).toMatch(/\(if \(result i32\) \(i32\.lt_u [^\n]*\(then \(local\.set \$b \(i32\.load8_u [^\n]*\n\(local\.get \$b\)\) \(else \(local\.get \$d\)\)\)/)
       expect(wat).not.toContain('(drop)')
+    })
+
+    test('an if let widens each branch to the type its value is used as', () => {
+      const wat = funcWat('func f(p: ?*u8, a: i32, b: u32) -> i64 => if let q = p { a } else { b }')
+      expect(wat).toContain('(if (result i64)')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $a))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $b))')
     })
 
     test('an if let keeps its elif branches', () => {
