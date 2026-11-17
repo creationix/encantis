@@ -6831,9 +6831,11 @@ function mentionsUnbound(
     case 'TypeApply': {
       // Seen through, where the generic type is known: Tagged(T) mentions T
       // only if a field of Tagged is made of it. Inside its own body a
-      // generic type that refers to itself is read by its arguments.
-      const body = expanding.includes(type.name) ? null : expand?.(type)
-      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, type.name]) : type.args.some(inner)
+      // generic type that refers to itself, the same application again, is
+      // read by its arguments; Vec(T) inside Vec(Vec(T)) is another one.
+      const applied = typeText(type)
+      const body = expanding.includes(applied) ? null : expand?.(type)
+      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, applied]) : type.args.some(inner)
     }
     default:
       return false
@@ -6909,10 +6911,12 @@ function matchType(
     case 'TypeApply': {
       // A generic type is seen through: its body is laid over the argument,
       // however the argument's type was written.
-      // Inside its own body, a generic type that refers to itself has bound
-      // all it can already.
-      const body = expanding.includes(pattern.name) ? null : expand?.(pattern)
-      if (body) matchType(body, actual, typeParams, bound, value, expand, [...expanding, pattern.name])
+      // Inside its own body, a generic type that refers to itself, the same
+      // application again, has bound all it can already; Vec(T) inside
+      // Vec(Vec(T)) is another one, and binds T.
+      const applied = typeText(pattern)
+      const body = expanding.includes(applied) ? null : expand?.(pattern)
+      if (body) matchType(body, actual, typeParams, bound, value, expand, [...expanding, applied])
       return
     }
     default:

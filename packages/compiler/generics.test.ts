@@ -2831,6 +2831,18 @@ export func f(a: *Node, b: *Link, c: *List(u32)) -> u32 => first(a).v + first(b)
     expect(instancesOf(source)).toEqual(['first<<next:?*@0|v:u32>>'])
   })
 
+  test('one generic type applied inside its own application is seen through to T, where a type that refers to itself stops', () => {
+    const source = `${VEC}func Id(comptime T: type) -> type => T
+func List(comptime T: type) -> type => (next: ?*List(T), v: T)
+func same(comptime T: type, x: Id(Id(T))) -> Id(T) => x
+func deep(comptime T: type, v: *Vec(Vec(T))) -> T => v.ptr[0].ptr[0]
+func head(comptime T: type, l: *List(List(T))) -> T => l.v.v
+export func a(x: u64) -> u64 => same(x)
+export func b(v: *Vec(Vec(i64))) -> i64 => deep(v)
+export func c(l: *List(List(u8))) -> u8 => head(l)`
+    expect(instancesOf(source)).toEqual(['deep<i64>', 'head<u8>', 'same<u64>'])
+  })
+
   test('sizeof follows the type arguments in each instance', async () => {
     const source = `${VEC}${PAIR}func size(comptime T: type) -> u32 => sizeof(Vec(T)) + sizeof(Pair(T, bool)) * 100
 export func a() -> u32 => size(u8)
