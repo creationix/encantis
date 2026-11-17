@@ -31,6 +31,8 @@ export interface CodegenContext {
   // Implicit widenings from the checker: expression → the wider type its
   // value is used as
   coercions: Map<AST.Expr, ResolvedType>
+  // The checker's value for each constant in a global's initializer
+  constants: Map<AST.Expr, ComptimeValue>
   // Symbol table from checker
   symbols: Map<string, CheckSymbol>
   // Local variable names → WASM local names (handles flattening)
@@ -63,6 +65,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
     coercions: checkResult.coercions,
+    constants: checkResult.constants,
     symbols: checkResult.symbols,
     locals: new Map(),
     params: new Map(),
@@ -223,8 +226,16 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 // === Expression Codegen ===
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
-  return wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
+  const wat = wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
+  // A constant in a global's initializer has to be a constant instruction.
+  // Where it isn't one as written (1 + 1, an integer widened to a float),
+  // the checker has worked out its value.
+  const constant = ctx.constants.get(expr)
+  const type = constant && !CONSTANT.test(wat) && valueType(expr, ctx)
+  return (constant && type && constantToWat(constant, type)) || wat
 }
+
+const CONSTANT = /^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/
 
 // Every implicit widening happens here: the checker says which expressions
 // meet a wider type (as an operand, an argument, an initializer, a branch).
@@ -3276,24 +3287,24 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
     throw new Error(`Missing type for global '${name}' at offset ${decl.span.start}`)
   }
   const wasmTypes = typeToWasm(type)
-  let init = decl.value
+  // The initializer is one constant instruction for each wasm value: exprToWat
+  // emits the checker's value for each constant in it.
+  const init = decl.value
     ? withSliceLength(exprToWat(decl.value, ctx), decl.value, type, ctx)
     : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
-  // A global's initializer is one constant instruction for each wasm value.
-  // Where the expression isn't one as written (1 + 1, an integer widened to a
-  // float), the checker has worked out its value.
-  const sym = ctx.symbols.get(name)
-  if (sym?.kind === 'global' && sym.init && !/^\((?:[if](?:32|64)\.const|ref\.func) [^\s()]+\)$/.test(init)) {
-    init = constantToWat(sym.init, type) ?? init
-  }
   const inits = trySplitMultiValue(init, wasmTypes.length)
   if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
 
   return globalNames(name, type, ctx).map((n, i) => `  (global $${n} (mut ${wasmTypes[i]}) ${inits[i]})`).join('\n')
 }
 
-// A constant's value as an instruction of a type held in one wasm value.
+// A constant's value as an instruction of a type held in one wasm value, or
+// as the i64 parts of a wide integer, least significant first.
 function constantToWat(value: ComptimeValue, type: ResolvedType): string | null {
+  const wide = wideIntParts(type)
+  if (wide > 0 && value.kind === 'int') {
+    return Array.from({ length: wide }, (_, i) => `(i64.const ${BigInt.asIntN(64, value.value >> BigInt(i * 64))})`).join(' ')
+  }
   if (typeToWasm(type).length !== 1) return null
   const wt = typeToWasmSingle(type)
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`

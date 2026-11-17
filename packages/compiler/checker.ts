@@ -62,8 +62,7 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean }
-  // init: the value of the initializer, when it's a constant expression
-  | { kind: 'global'; type: ResolvedType; init?: ComptimeValue }
+  | { kind: 'global'; type: ResolvedType }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
@@ -110,6 +109,9 @@ export interface TypeCheckResult {
   // (an i32 operand of an i64 addition, an f32 argument for an f64 parameter).
   // Its entry in exprTypes stays the type it's computed in.
   coercions: Map<AST.Expr, ResolvedType>
+  // The value of each constant in a global's initializer: the whole of it, or
+  // one for each part of a tuple, struct or array of constants.
+  constants: Map<AST.Expr, ComptimeValue>
   // Symbol table (module scope)
   symbols: Map<string, Symbol>
   // Type errors
@@ -215,6 +217,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     types: ctx.types,
     exprTypes: ctx.exprTypes,
     coercions: ctx.coercions,
+    constants: ctx.constants,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
     warnings: ctx.warnings,
@@ -420,6 +423,7 @@ class CheckContext {
   types = new Map<string, ResolvedType>()
   exprTypes = new Map<AST.Expr, ResolvedType>()
   coercions = new Map<AST.Expr, ResolvedType>()
+  constants = new Map<AST.Expr, ComptimeValue>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
@@ -1196,27 +1200,26 @@ class CheckContext {
       type = primitive('i32')
     }
 
-    const init = decl.value ? this.globalInitializer(decl.value) : undefined
-    this.moduleScope.symbols.set(name, init ? { kind: 'global', type, init } : { kind: 'global', type })
+    if (decl.value && !this.isConstantInitializer(decl.value)) {
+      this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
+    }
+    this.moduleScope.symbols.set(name, { kind: 'global', type })
     this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
     this.recordDefinition(name, decl.pattern.span.start)
   }
 
   // A wasm global starts as a constant, so its initializer has to be one: a
   // number or bool the compiler can work out, the address of data or of a
-  // function, or a tuple or struct of those. A number's value goes to
-  // codegen, which emits it when the expression as written would need an
-  // instruction (1 + 1, a literal that widens).
-  private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
-    const value = this.evalComptimeExpr(expr)
-    if (!value && !this.isConstantInitializer(expr)) {
-      this.error(expr.span.start, 'global initializer must be a compile-time constant')
-    }
-    return value ?? undefined
-  }
-
+  // function, or a tuple, struct or array of those, which is one wasm global
+  // for each. Each value goes to codegen, which emits it where the
+  // expression as written would need an instruction (1 + 1, a literal that
+  // widens).
   private isConstantInitializer(expr: AST.Expr): boolean {
-    if (this.evalComptimeExpr(expr)) return true
+    const value = this.evalComptimeExpr(expr)
+    if (value) {
+      this.constants.set(expr, value)
+      return true
+    }
     switch (expr.kind) {
       case 'AnnotationExpr':
       case 'GroupExpr':
@@ -1229,8 +1232,14 @@ class CheckContext {
           && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
       case 'IdentExpr':
         return this.lookup(expr.name)?.kind === 'func'
+      case 'ArrayExpr':
+      case 'RepeatExpr':
+        // An array behind a pointer or a slice lives in the data section,
+        // like a string. One held in registers is its elements.
+        if (expr.dataId !== undefined) return true
+        return (expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]).every(e => this.isConstantInitializer(e))
       default:
-        // A string or an array literal lives in the data section.
+        // A string lives in the data section.
         return this.isDataLiteralExpr(expr)
     }
   }

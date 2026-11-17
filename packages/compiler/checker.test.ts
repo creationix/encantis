@@ -1022,14 +1022,14 @@ describe('globals', () => {
       global name: [*]u8 = "name"
     `)
     expect(result.errors).toEqual([])
-    const init = (name: string) => {
-      const sym = result.symbols.get(name)
-      return sym?.kind === 'global' ? sym.init : undefined
-    }
-    expect(init('size')).toEqual({ kind: 'int', value: 262144n })
-    expect(init('ratio')).toEqual({ kind: 'float', value: 1.5 })
-    expect(init('count')).toEqual({ kind: 'int', value: 3n })
-    expect(init('mask')).toEqual({ kind: 'int', value: -16n })
+    // The values go to codegen by initializer, in the order written.
+    expect([...result.constants.values()].slice(0, 5)).toEqual([
+      { kind: 'int', value: 262144n },
+      { kind: 'float', value: 1.5 },
+      { kind: 'int', value: 3n },
+      { kind: 'int', value: 5n },
+      { kind: 'int', value: -16n },
+    ])
   })
 
   test('an initializer that has to be computed at run time is an error', () => {
@@ -1046,6 +1046,18 @@ describe('globals', () => {
     expect(errs(`${size}global size: Size = Size(3, 4)\nglobal span: (i32, i32) = (1 + 2, 4)\nglobal view: []u8 = (0, 0)`)).toEqual([])
     expect(errs(`${size}func one() -> i32 => 1\nglobal size: Size = Size(one(), 4)`)).toEqual([message])
     expect(errs(`global a: i32 = 1\nglobal pair: (i32, i32) = (a, 2)`)).toEqual([message])
+  })
+
+  test('each part of a tuple, struct or array of constants has its value', () => {
+    const result = checkModule(`
+      type Size = (w: i32, h: f64)
+      global size: Size = Size(1 + 2, 4:i32)
+      global span: (i64, u128) = (1 << 40, 5)
+      global row: [2]i32 = [2 * 3, 7]
+    `)
+    expect(result.errors).toEqual([])
+    expect([...result.constants.values()].map(v => v.kind === 'int' && v.value)).toEqual([3n, 4n, 1n << 40n, 5n, 6n, 7n])
+    expect(errs(`func one() -> i32 => 1\nglobal row: [2]i32 = [one(), 2]`)).toEqual(['global initializer must be a compile-time constant'])
   })
 
   test('a global keeps its pointer annotation over a literal initializer', () => {

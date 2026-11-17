@@ -362,6 +362,24 @@ global mask: u8 = ~0 << 4
 global base: [*]u8 = table
 ```
 
+A global can be a slice, a struct, an array or a wide integer. Each of its parts starts as a constant.
+
+```ents
+type Size = (w: i32, h: f64)
+
+global order: []i32 = (0, 0)
+global size: Size = Size(3, 2 + 2)
+global row: [2]i64 = [1 << 40, 5:i32]
+global total: u128 = 1 << 100
+
+func f(s: []i32) -> u32 {
+  order = s
+  size.h += 1
+  total += 1
+  return order.len
+}
+```
+
 A value that only exists at run time can't start one: assign it in a function.
 
 ```ents
@@ -500,25 +518,6 @@ func f(p: [*]Lane, q: [*][]i32, n: u32) -> u32 {
   let all: [][]i32 = (q, n)
   rows = all
   return lanes.len + rows.len
-}
-```
-
-## Globals
-
-A global can be a slice, a struct or a wide integer.
-
-```ents
-type Size = (w: i32, h: i32)
-
-global order: []i32 = (0, 0)
-global size: Size = Size(3, 4)
-global total: u128 = 0
-
-func f(s: []i32) -> u32 {
-  order = s
-  size.h += 1
-  total += 1
-  return order.len
 }
 ```
 

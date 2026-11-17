@@ -44,6 +44,7 @@ function exprWat(code: string): string {
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
     coercions: checkResult.coercions,
+    constants: checkResult.constants,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -81,6 +82,7 @@ function stmtWat(code: string): string {
     types: checkResult.types,
     exprTypes: checkResult.exprTypes,
     coercions: checkResult.coercions,
+    constants: checkResult.constants,
     symbols: checkResult.symbols,
     locals: new Map<string, string[]>(),
     params: new Map<string, string[]>(),
@@ -1367,6 +1369,26 @@ describe('globals of several wasm values', () => {
     expect(wat).toContain('(global $count (mut i32) (i32.const 7))')
   })
 
+  test('each part starts as one constant, whatever expression gives it', () => {
+    const wat = modWat(`
+      type Size = (w: u8, h: f64)
+      def page = 64 * 1024
+      data table = [1:u8, 2, 3]
+      global size: Size = Size(200 + 55, 5:i32)
+      global span: (i64, f32) = (4 * page, 1 / 4.0)
+      global view: []u8 = (table, 1 + 2)
+      global row: [2]i32 = [~0 << 4, page]
+      global big: u128 = 1 << 100
+      global low: i128 = -(1 << 70) + 4
+    `)
+    expect(wat).toContain('(global $size_w (mut i32) (i32.const 255))\n  (global $size_h (mut f64) (f64.const 5))')
+    expect(wat).toContain('(global $span_0 (mut i64) (i64.const 262144))\n  (global $span_1 (mut f32) (f32.const 0.25))')
+    expect(wat).toMatch(/\(global \$view_ptr \(mut i32\) \(i32\.const \d+\)\)\n {2}\(global \$view_len \(mut i32\) \(i32\.const 3\)\)/)
+    expect(wat).toContain('(global $row_0 (mut i32) (i32.const -16))\n  (global $row_1 (mut i32) (i32.const 65536))')
+    expect(wat).toContain('(global $big_0 (mut i64) (i64.const 0))\n  (global $big_1 (mut i64) (i64.const 68719476736))')
+    expect(wat).toContain('(global $low_0 (mut i64) (i64.const 4))\n  (global $low_1 (mut i64) (i64.const -64))')
+  })
+
   test('a slice global starts as a string or a data array', () => {
     const wat = modWat(`
       data buf = mut [0:u8; 16]
@@ -1434,6 +1456,17 @@ describe('globals of several wasm values', () => {
       }
     `)
     expect(f()).toBe(2 + 3 + 30 + 100 + 6000 + 40)
+  })
+
+  test('globals of constant expressions run', async () => {
+    const { f } = await run(`
+      type In = (x: i32, y: f32)
+      type Out = (tag: u8, pos: In, w: i64, big: u128)
+      global o: Out = Out(w: 1 << 33, tag: 1 + 1, pos: In(y: 1, x: 2 * 3), big: 1 << 100)
+      global row: [3]f64 = [1 + 1, 5:i32, 0.5]
+      export func f() -> f64 => f64(o.tag) * 100.0 + f64(o.pos.x) * 10.0 + o.pos.y + f64(o.w) + f64((o.big >> 98) as u64) + row[0] + row[1] + row[2]
+    `)
+    expect(f()).toBe(200 + 60 + 1 + 2 ** 33 + 4 + 7.5)
   })
 })
 

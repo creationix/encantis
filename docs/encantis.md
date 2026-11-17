@@ -894,8 +894,6 @@ func keep(list:[]i32) -> u32 {
 }
 ```
 
-A global's initializer has to be constant: literals, a constructor or tuple of them, or a string or `data` array for a slice.
-
 Type annotations are optional when the type can be inferred from the initializer:
 
 ```ents
@@ -904,7 +902,7 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
-A global's initializer is a compile-time constant: a literal, an expression of literals and defs, or the address of a `data` block. The compiler works out its value, so it can be written as it's meant:
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, or the address of a `data` block. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
 
 ```ents
 def page = 64 * 1024
@@ -912,6 +910,7 @@ def page = 64 * 1024
 global limit: u32 = 4 * page     // 262144
 global ratio: f64 = 2 / 3.0
 global mask: u32 = ~0 << 12
+global span: (u32, f64) = (4 * page, 1 / 4.0)
 ```
 
 A value that needs a call or another global isn't one: assign it in a function.
