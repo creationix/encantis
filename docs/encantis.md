@@ -2595,7 +2595,7 @@ Comptime function parameters are always written, also in the inferred form: `sor
 
 The parameter's type is a function type, written out or named: with `type Cmp = (i32, i32) -> bool`, `comptime before: Cmp` is the same parameter, and so is one typed by an applied generic type whose body is a function type.
 
-The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside. A function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
+The function's signature can decide a type parameter like any other argument, and it has to be exactly the type the parameter declares, with the names of parameters left aside. Exact, for now: a function that a value of the declared type could be converted to is not taken, so one that takes a `u64` where the parameter says `u32`, or returns a `u8` where it says `u32`, is an error (accepting what is assignable may come later). The one relaxation: a function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
 
 ```ents
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
@@ -2618,6 +2618,20 @@ func f(xs: []mut i32) { sort(xs, inc) }
 
 ```errors
 'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
+```
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func widen(x: u64) -> u32 => x as u32
+func narrow(x: u32) -> u8 => x as u8
+
+func a(x: u32) -> u32 => twice(u32, widen, x)
+func b(x: u32) -> u32 => twice(u32, narrow, x)
+```
+
+```errors
+'widen' is (u64) -> u32, but 'twice' needs f: (u32) -> u32
+'narrow' is (u32) -> u8, but 'twice' needs f: (u32) -> u32
 ```
 
 Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
