@@ -222,7 +222,8 @@ export function hover(
   // all while nothing has called the generic.
   const generic = genericDeclaring(module, wordStart(source, offset), name)
   if (generic) {
-    const shift = firstInstanceShift(checkResult, generic)
+    // A generic type has no instance to show its own names by.
+    const shift = generic.kind === 'FuncDecl' ? firstInstanceShift(checkResult, generic) : undefined
     const type = shift ? localType(checkResult, offset + shift) : undefined
     return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }

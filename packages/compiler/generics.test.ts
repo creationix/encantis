@@ -4342,6 +4342,413 @@ export func f(xs: []u32, a: u32, b: u32) -> u32 => xs.ptr[1..3].total() + (a + 1
   })
 })
 
+// What the review of the branches below changed, met inside generic code that
+// uses generic types, constructors on them and comptime function parameters.
+// Each program is also the module written by hand.
+describe('a value in parentheses, a repeat, a match, an if let and a store, with generic types', () => {
+  const POINT = 'func Pt(comptime T: type) -> type => (x: T, y: T)\nfunc Box(comptime T: type) -> type => (v: T)\n'
+
+  test('a constructor in parentheses is the struct it builds, and fills named results in order', async () => {
+    const generic = `data room = mut [0:u8; 64]
+${POINT}func mk(comptime T: type, a: T, b: T) -> Pt(T) {
+  let p = (Pt(T)(a, b))
+  return ((p))
+}
+func second(comptime T: type, a: T, b: T) -> T => (Pt(T)(a, b)).y
+func first(comptime P: type, a: i32, b: i32) -> i32 {
+  let p: P = (P(a, b))
+  return p.x
+}
+func put(comptime T: type, at: *mut Box(T), x: T) { at.* = (Box(T)(x)) }
+func two(comptime T: type, a: T, b: T) -> (lo: T, hi: T) => (Pt(T)(y: a, x: b))
+export func f(a: i32, b: i32) -> i32 {
+  let p = mk(a, b)
+  put(room as *mut Box(i32), second(a, b) + first(Pt(i32), a, b))
+  let (lo, hi) = two(a, b)
+  return p.x * 10000 + p.y * 1000 + (room as *Box(i32)).v * 100 + lo * 10 + hi
+}
+`
+    const byHand = `data room = mut [0:u8; 64]
+type Pt = (x: i32, y: i32)
+type Box = (v: i32)
+func mk(a: i32, b: i32) -> Pt {
+  let p = (Pt(a, b))
+  return ((p))
+}
+func second(a: i32, b: i32) -> i32 => (Pt(a, b)).y
+func first(a: i32, b: i32) -> i32 {
+  let p: Pt = (Pt(a, b))
+  return p.x
+}
+func put(at: *mut Box, x: i32) { at.* = (Box(x)) }
+func two(a: i32, b: i32) -> (lo: i32, hi: i32) => (Pt(y: a, x: b))
+export func f(a: i32, b: i32) -> i32 {
+  let p = mk(a, b)
+  put(room as *mut Box, second(a, b) + first(a, b))
+  let (lo, hi) = two(a, b)
+  return p.x * 10000 + p.y * 1000 + (room as *Box).v * 100 + lo * 10 + hi
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    // mk: (3, 4); stored: 4 + 3; two: x = 4 fills lo, y = 3 fills hi.
+    expect(f(3, 4)).toBe(34743)
+  })
+
+  test('the type that is called, in parentheses, is the tuple of one element a type in parentheses is', () => {
+    // As for a type argument (see 'a type in parentheses is the tuple of one
+    // element'): it is the value in parentheses that is the value inside.
+    expect(errorsOf(`${POINT}export func f(a: i32, b: i32) -> i32 => (Pt(i32))(a, b).x`)[0]).toBe('(Pt(i32)) expects 1 field, got 2')
+    expect(errorsOf(`${POINT}export func f(a: i32) -> i32 => (Box(i32))(Box(i32)(a)).0.v`)).toEqual([])
+  })
+
+  test('a repeat literal of constructors stores what is only known when the program runs', async () => {
+    const generic = `${POINT}func fill(comptime T: type, a: T, b: T) -> T {
+  let d: *[3]Pt(T) = [Pt(T)(a, b); 3]
+  return d[2].y
+}
+func wide(comptime T: type, n: i32) -> T {
+  let d: *[2]Box(T) = [Box(T)(n); 2]
+  return d[1].v
+}
+func rep(comptime T: type, v: T) -> T {
+  let d: []T = [(v); 2]
+  return d[1] ?? v
+}
+export func f(a: u8, b: u8, n: i32) -> i64 {
+  let p = rep((Pt(i32)(n, n + 1)))
+  return wide(i64, n) * 1000 + (fill(a, b) as i64) * 100 + (p.x * 10 + p.y) as i64
+}
+`
+    const byHand = `type Pt8 = (x: u8, y: u8)
+type Pt32 = (x: i32, y: i32)
+type Box = (v: i64)
+func fill(a: u8, b: u8) -> u8 {
+  let d: *[3]Pt8 = [Pt8(a, b); 3]
+  return d[2].y
+}
+func wide(n: i32) -> i64 {
+  let d: *[2]Box = [Box(n); 2]
+  return d[1].v
+}
+func rep(v: Pt32) -> Pt32 {
+  let d: []Pt32 = [(v); 2]
+  return d[1] ?? v
+}
+export func f(a: u8, b: u8, n: i32) -> i64 {
+  let p = rep((Pt32(n, n + 1)))
+  return wide(n) * 1000 + (fill(a, b) as i64) * 100 + (p.x * 10 + p.y) as i64
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    expect(f(5, 6, 2)).toBe(2000n + 600n + 23n)
+    expect(f(5, 6, -2)).toBe(-2000n + 600n - 21n)
+    // The repeated value is an element of the instance's literal.
+    const bad = (body: string) => errorsOf(`${POINT}func bad(comptime T: type, n: i32) -> u32 {\n  ${body}\n  return d.len\n}\nexport func f(n: i32) -> u32 => bad(i64, n)`)
+    expect(bad('let d: []Box(T) = [Box(T)(true); 3]')).toEqual(['field v: cannot assign bool to i64, in bad(T = i64)'])
+    expect(bad('let d: []Box(T) = [n; 3]')).toEqual(['cannot assign i32 to Box(i64), in bad(T = i64)'])
+    expect(bad('let d: []Box(T) = [Box(T)(n); 3]')).toEqual([])
+  })
+
+  test('a slice field takes a (ptr, len) pair in a constructor, in a function and in data', async () => {
+    const generic = `data room = mut [7:u8; 16]
+func Named(comptime T: type) -> type => (name: []u8, value: T)
+data table = [Named(u16)(("abc", 2), 513), Named(u16)("xyz", 7), (Named(u16)(name: ("q", 1), value: 9))]
+func wrap(comptime T: type, p: [*]u8, n: u32, x: T) -> Named(T) => (Named(T)(((p, n)), x))
+export func f(i: u32, n: u32) -> u32 {
+  let t = (table as [*]Named(u16))[i]
+  let w = wrap(room as [*]u8, n, 5:u8)
+  return t.name.len * 100000 + (t.name[0] ?? 0) as u32 * 100 + t.value as u32 * 1000000 + w.name.len * 10 + w.value as u32
+}
+`
+    const byHand = `data room = mut [7:u8; 16]
+type Named = (name: []u8, value: u16)
+type Named8 = (name: []u8, value: u8)
+data table = [Named(("abc", 2), 513), Named("xyz", 7), (Named(name: ("q", 1), value: 9))]
+func wrap(p: [*]u8, n: u32, x: u8) -> Named8 => (Named8(((p, n)), x))
+export func f(i: u32, n: u32) -> u32 {
+  let t = (table as [*]Named)[i]
+  let w = wrap(room as [*]u8, n, 5:u8)
+  return t.name.len * 100000 + (t.name[0] ?? 0) as u32 * 100 + t.value as u32 * 1000000 + w.name.len * 10 + w.value as u32
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    expect(f(0, 3)).toBe(513000000 + 200000 + 9700 + 35)
+    expect(f(1, 3)).toBe(7000000 + 300000 + 12000 + 35)
+    expect(f(2, 4)).toBe(9000000 + 100000 + 11300 + 45)
+    // A tuple that is no pair is no slice, and neither is a constructor.
+    expect(errorsOf(`func Pr(comptime A: type, comptime B: type) -> type => (a: A, b: B)
+func bad(comptime T: type, p: [*]T, n: u32) -> []T => Pr([*]T, u32)(p, n)
+export func f(p: [*]u8) -> u32 => bad(p, 1).len`)).toEqual(['cannot assign Pr([*]u8, u32) to []u8, in bad(T = u8)'])
+  })
+
+  const VEC_AT = `data room = mut [0:u8; 256]
+global calls: u32 = 0
+${VEC}${PAIR}func bump() -> u32 {
+  calls += 1
+  return calls
+}
+func make(comptime T: type, at: u32, len: u32) -> *mut Vec(T) {
+  let v = ((room as u32) + at) as *mut Vec(T)
+  v.* = Vec(T)(((room as u32) + at + 16) as [*]mut T, len, 8)
+  return v
+}
+`
+  const VEC_AT_BY_HAND = `data room = mut [0:u8; 256]
+global calls: u32 = 0
+type Vec = (ptr: [*]mut u16, len: u32, cap: u32)
+type Pair = (first: u16, second: u32)
+func bump() -> u32 {
+  calls += 1
+  return calls
+}
+func make(at: u32, len: u32) -> *mut Vec {
+  let v = ((room as u32) + at) as *mut Vec
+  v.* = Vec(((room as u32) + at + 16) as [*]mut u16, len, 8)
+  return v
+}
+`
+
+  test('a match on a field of a Vec(T), and on a subject of several values', async () => {
+    const generic = `${VEC_AT}func kind(comptime T: type, v: *Vec(T)) -> u32 => match v.len {
+  0 => 10
+  1, 2 => 20
+  _ => 30
+}
+func whole(comptime T: type, v: *Vec(T)) -> u32 => match v.* { _ => 5 }
+func built(comptime T: type, x: T) -> u32 => match Pair(T, u32)(x, bump()) { _ => calls }
+func mark(comptime T: type, v: *mut Vec(T), x: T) -> T {
+  v.ptr[(match bump() { 2 => 1:u32, _ => 2 }) & 3] = x
+  let d: *[2]T = [(match v.len { 0 => x, _ => v.ptr[1] }); 2]
+  return d[1]
+}
+export func f(n: u32, x: u16) -> u32 {
+  let v = make(u16, 0, n)
+  return kind(v) * 10000 + whole(v) * 1000 + built(x) * 100 + mark(v, x) as u32
+}
+`
+    const byHand = `${VEC_AT_BY_HAND}func kind(v: *Vec) -> u32 => match v.len {
+  0 => 10
+  1, 2 => 20
+  _ => 30
+}
+func whole(v: *Vec) -> u32 => match v.* { _ => 5 }
+func built(x: u16) -> u32 => match Pair(x, bump()) { _ => calls }
+func mark(v: *mut Vec, x: u16) -> u16 {
+  v.ptr[(match bump() { 2 => 1:u32, _ => 2 }) & 3] = x
+  let d: *[2]u16 = [(match v.len { 0 => x, _ => v.ptr[1] }); 2]
+  return d[1]
+}
+export func f(n: u32, x: u16) -> u32 {
+  let v = make(0, n)
+  return kind(v) * 10000 + whole(v) * 1000 + built(x) * 100 + mark(v, x) as u32
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    // The call in the constructor that is matched runs once, and the one in
+    // the index once more: the element stored is the one read back.
+    expect(f(3, 77)).toBe(300000 + 5000 + 100 + 77)
+    expect((await run(generic)).f(0, 9)).toBe(100000 + 5000 + 100 + 9)
+  })
+
+  test('an if let over an optional applied type meets the type that is wanted', async () => {
+    const generic = `data bytes = mut [0:u8; 8]
+${VEC_AT}func head(comptime T: type, v: ?*Vec(T), zero: T) -> Pair(T, u32) {
+  let p: Pair(T, u32) = if let w = v { (w.ptr[0], w.len) } else { (zero, 0) }
+  return p
+}
+func count(comptime T: type, v: ?*Vec(T), small: i8, big: u32) -> i64 {
+  let n: i64 = if let w = v { w.len } elif big == 0 { small } else { big }
+  return n
+}
+func stamp(comptime T: type, v: ?*Vec(T)) -> u8 {
+  memcpy(bytes, if let w = v { "ABCD" } else { ("abcd") }, 4)
+  return bytes[1]
+}
+export func f(some: bool, x: u16, big: u32) -> i64 {
+  let made = make(u16, 0, 3)
+  made.ptr[0] = x
+  let v: ?*Vec(u16) = if some { made } else { 0 }
+  let p = head(v, 9)
+  return count(v, -1, big) * 1000000 + (p.first as u32 * 1000 + p.second * 100 + stamp(v) as u32) as i64
+}
+`
+    const byHand = `data bytes = mut [0:u8; 8]
+${VEC_AT_BY_HAND}func head(v: ?*Vec, zero: u16) -> Pair {
+  let p: Pair = if let w = v { (w.ptr[0], w.len) } else { (zero, 0) }
+  return p
+}
+func count(v: ?*Vec, small: i8, big: u32) -> i64 {
+  let n: i64 = if let w = v { w.len } elif big == 0 { small } else { big }
+  return n
+}
+func stamp(v: ?*Vec) -> u8 {
+  memcpy(bytes, if let w = v { "ABCD" } else { ("abcd") }, 4)
+  return bytes[1]
+}
+export func f(some: bool, x: u16, big: u32) -> i64 {
+  let made = make(0, 3)
+  made.ptr[0] = x
+  let v: ?*Vec = if some { made } else { 0 }
+  let p = head(v, 9)
+  return count(v, -1, big) * 1000000 + (p.first as u32 * 1000 + p.second * 100 + stamp(v) as u32) as i64
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    expect(f(1, 7, 5)).toBe(3000000n + 7000n + 300n + 66n)
+    expect(f(0, 7, 4000000000)).toBe(4000000000000000n + 9000n + 98n)
+    expect(f(0, 7, 0)).toBe(-1000000n + 9000n + 98n)
+    expect(errorsOf(`${VEC}func bad(comptime T: type, v: ?*Vec(T), f: f64) -> u32 {
+  let n: u32 = if let w = v { w.len } else { f }
+  return n
+}
+export func f(v: ?*Vec(u8)) -> u32 => bad(v, 0.5)`)).toEqual(['cannot assign f64 to u32, in bad(T = u8)'])
+  })
+
+  test('a Vec(T) stored through its pointer is computed whole, and goes where the target pointed', async () => {
+    const generic = `${VEC_AT}func later(comptime T: type, v: *mut Vec(T), c: bool) -> u32 {
+  v.* = Vec(T)(0 as [*]mut T, 1, if c {
+    v.len = 8
+    v.ptr = 64 as [*]mut T
+    2
+  } else { 2 })
+  return (v.ptr as u32) * 100 + v.len * 10 + v.cap
+}
+func grown(comptime T: type, v: *mut Vec(T), comptime grow: (*mut Vec(T)) -> u32) -> u32 {
+  v.* = Vec(T)(0 as [*]mut T, 1, grow(v))
+  return (v.ptr as u32) * 100 + v.len * 10 + v.cap
+}
+func double(v: *mut Vec(u16)) -> u32 {
+  v.len = 9
+  v.ptr = 32 as [*]mut u16
+  return 4
+}
+func moved(comptime T: type, p: *mut Vec(T), q: *mut Vec(T), c: bool) -> u32 {
+  let cur = p
+  cur.* = if c {
+    cur = q
+    Vec(T)(0 as [*]mut T, 1, 2)
+  } else { Vec(T)(0 as [*]mut T, 3, 4) }
+  return p.len * 1000 + p.cap * 100 + q.len * 10 + q.cap
+}
+export func f(c: bool) -> u32 => later(make(u16, 0, 0), c) * 1000000 + grown(make(u16, 64, 0), double) * 10000 + moved(make(u16, 128, 0), make(u16, 192, 0), c)
+`
+    const byHand = `${VEC_AT_BY_HAND}func later(v: *mut Vec, c: bool) -> u32 {
+  v.* = Vec(0 as [*]mut u16, 1, if c {
+    v.len = 8
+    v.ptr = 64 as [*]mut u16
+    2
+  } else { 2 })
+  return (v.ptr as u32) * 100 + v.len * 10 + v.cap
+}
+func grown(v: *mut Vec) -> u32 {
+  v.* = Vec(0 as [*]mut u16, 1, double(v))
+  return (v.ptr as u32) * 100 + v.len * 10 + v.cap
+}
+func double(v: *mut Vec) -> u32 {
+  v.len = 9
+  v.ptr = 32 as [*]mut u16
+  return 4
+}
+func moved(p: *mut Vec, q: *mut Vec, c: bool) -> u32 {
+  let cur = p
+  cur.* = if c {
+    cur = q
+    Vec(0 as [*]mut u16, 1, 2)
+  } else { Vec(0 as [*]mut u16, 3, 4) }
+  return p.len * 1000 + p.cap * 100 + q.len * 10 + q.cap
+}
+export func f(c: bool) -> u32 => later(make(0, 0), c) * 1000000 + grown(make(64, 0)) * 10000 + moved(make(128, 0), make(192, 0), c)
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    // What a later field wrote on its way is overwritten by the store, and
+    // the store goes to the Vec the target named before the value moved it.
+    expect(f(1)).toBe(12 * 1000000 + 14 * 10000 + 1208)
+    expect(f(0)).toBe(12 * 1000000 + 14 * 10000 + 3408)
+  })
+
+  test('a comparator given at compile time runs once in the subject of a match', async () => {
+    const generic = `global calls: u32 = 0
+${PAIR}func order(a: i32, b: i32) -> i32 {
+  calls += 1
+  return if a < b { -1 } elif a > b { 1 } else { 0 }
+}
+func pick(comptime T: type, comptime cmp: (T, T) -> i32, a: T, b: T) -> T => match cmp(a, b) {
+  -1 => b
+  1 => a
+  _ => a
+}
+func both(comptime T: type, comptime cmp: (T, T) -> i32, a: T, b: T) -> Pair(T, i32) {
+  let lo = a
+  let d: i32 = 0
+  set (lo, d) = ((match cmp(a, b) { 1 => b, _ => a }), max(match cmp(a, b) { 1 => 5, _ => 6 }, 2))
+  return Pair(T, i32)(lo, d)
+}
+export func f(a: i32, b: i32) -> i32 {
+  let p = both(order, a, b)
+  return pick(order, a, b) * 1000 + p.first * 100 + p.second * 10 + calls as i32
+}
+`
+    const byHand = `global calls: u32 = 0
+type Pair = (first: i32, second: i32)
+func order(a: i32, b: i32) -> i32 {
+  calls += 1
+  return if a < b { -1 } elif a > b { 1 } else { 0 }
+}
+func pick(a: i32, b: i32) -> i32 => match order(a, b) {
+  -1 => b
+  1 => a
+  _ => a
+}
+func both(a: i32, b: i32) -> Pair {
+  let lo = a
+  let d: i32 = 0
+  set (lo, d) = ((match order(a, b) { 1 => b, _ => a }), max(match order(a, b) { 1 => 5, _ => 6 }, 2))
+  return Pair(lo, d)
+}
+export func f(a: i32, b: i32) -> i32 {
+  let p = both(a, b)
+  return pick(a, b) * 1000 + p.first * 100 + p.second * 10 + calls as i32
+}
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).f(3, 4)).toBe(4000 + 300 + 60 + 3)
+    expect((await run(generic)).f(4, 3)).toBe(4000 + 300 + 50 + 3)
+    expect(errorsOf(`func inc(x: u32) -> u32 => x + 1
+func bad(comptime T: type, comptime f: (T) -> T, x: T) -> T => match f(x) {
+  1.5 => x
+  _ => x
+}
+export func g(x: u32) -> u32 => bad(inc, x)`)).toEqual(['cannot match u32 against float(1.5), in bad(T = u32, f = inc)'])
+  })
+
+  test('a field of a constructor is selected: a part beside it that could trap still runs', async () => {
+    const generic = `${PAIR}func Buf(comptime T: type) -> type => (items: []T, used: u32)
+func first(comptime T: type, x: T, n: u32) -> T => Pair(T, u32)(x, 100 / n).first
+func head(comptime P: type, x: i32, n: i32) -> i32 => (P(x, x % n)).first
+func used(comptime T: type, p: [*]T, n: u32) -> u32 => Buf(T)((p, 8 / n), 1).used
+export func f(x: f64, n: u32) -> f64 => first(x, n) + (head(Pair(i32, i32), 7, n as i32) + used(8 as [*]u16, n) as i32) as f64
+`
+    const byHand = `type PairF = (first: f64, second: u32)
+type PairI = (first: i32, second: i32)
+type Buf = (items: []u16, used: u32)
+func first(x: f64, n: u32) -> f64 => PairF(x, 100 / n).first
+func head(x: i32, n: i32) -> i32 => (PairI(x, x % n)).first
+func used(p: [*]u16, n: u32) -> u32 => Buf((p, 8 / n), 1).used
+export func f(x: f64, n: u32) -> f64 => first(x, n) + (head(7, n as i32) + used(8 as [*]u16, n) as i32) as f64
+`
+    await expectSameWasm(generic, byHand)
+    const { f } = await run(generic)
+    expect(f(1.5, 4)).toBe(9.5)
+    expect(() => f(1.5, 0)).toThrow()
+  })
+})
+
 describe('examples/generics', () => {
   const dir = join(import.meta.dir, '../../examples/generics')
 

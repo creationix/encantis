@@ -241,6 +241,13 @@ describe('parser', () => {
       expect(n).toMatchObject({ comptime: true, ident: 'n', type: { kind: 'PrimitiveType', name: 'u32' } })
     })
 
+    test('a comptime function parameter says where its name stands, as a type parameter does', () => {
+      const source = 'func twice(comptime T: type, comptime /* f, the step */ f: (T) -> T, x: T) -> T => f(f(x))'
+      const [, f] = paramsOf(source)
+      expect(f.span.start).toBe(source.indexOf('comptime /*'))
+      expect(f.identSpan).toEqual({ start: source.indexOf('f: (T)'), end: source.indexOf('f: (T)') + 1 })
+    })
+
     test('the two near misses parse, for the checker to explain', () => {
       const [lower] = paramsOf('func f(comptime t: type) -> u32 => 0')
       expect(lower).toMatchObject({ comptime: true, ident: 't', type: { kind: 'TypeType' } })

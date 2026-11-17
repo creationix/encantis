@@ -5289,6 +5289,18 @@ class CheckContext {
   // type it names. That is all "structural" takes.
 
   private collectTypeFunc(decl: AST.TypeFuncDecl): void {
+    // A type parameter is in no applied type: the body is resolved with the
+    // argument in the place of every use. Where it is declared and used is
+    // read off the declaration, as for a generic function's, for the editor
+    // to find.
+    const used = typeUses(decl.body)
+    for (const param of decl.params) {
+      if (!isTypeParam(param) || !param.identSpan) continue
+      const declared = param.identSpan.start
+      const uses = used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+      this.references.set(declared, uses)
+      for (const use of uses) this.symbolRefs.set(use, declared)
+    }
     if (this.moduleScope.symbols.has(decl.ident)) {
       this.error(decl.span.start, `'${decl.ident}' is already declared: a generic type's name is unique in its module`)
       return
@@ -5865,8 +5877,7 @@ class CheckContext {
       scope.symbols.set(name, { kind: 'func', type: value.type, inline: value.inline, alias: value.name })
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.
-      const at = this.source?.indexOf(name, param.span.start + 'comptime'.length) ?? -1
-      if (at >= 0 && at < param.span.end) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + at)
+      if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start)
     })
   }
 
@@ -6670,9 +6681,15 @@ export function localNames(decl: AST.FuncDecl): Set<string> {
 // parameter, a type parameter, a result or a local. Such a name is in no
 // table of names, so looked up by name alone it would be taken for whatever
 // else is spelled the same: a global, another function's local, a builtin.
-export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | null {
-  const fn = genericAround(module, offset)
-  return fn && localNames(fn).has(name) ? fn : null
+// A generic type declares its type parameters and the fields of its body.
+export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | AST.TypeFuncDecl | null {
+  for (const decl of module.decls) {
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl
+    if (offset < item.span.start || offset >= item.span.end) continue
+    if (item.kind === 'FuncDecl' && isGenericDecl(item)) return localNames(item).has(name) ? item : null
+    if (item.kind === 'TypeFuncDecl') return fieldNames([item.params, item.body]).has(name) ? item : null
+  }
+  return null
 }
 
 // The generic function whose declaration `offset` lies in
@@ -6682,6 +6699,19 @@ export function genericAround(module: AST.Module, offset: number): AST.FuncDecl 
     if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return fn
   }
   return null
+}
+
+// The names of the fields written under an AST node, at any depth: the
+// parameters of a generic type, and the fields of the struct it is.
+function fieldNames(node: unknown, found = new Set<string>()): Set<string> {
+  if (Array.isArray(node)) {
+    for (const n of node) fieldNames(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as { kind?: string; ident?: unknown }
+    if (n.kind === 'Field' && typeof n.ident === 'string') found.add(n.ident)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') fieldNames(value, found)
+  }
+  return found
 }
 
 // The names a declaration refers to, with where, and the names it declares.

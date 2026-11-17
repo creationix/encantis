@@ -79,6 +79,35 @@ func twice(n: u32) -> u32 => n * 2
     })
   }
 
+  test('a generic type\'s own names are not the module\'s or a builtin\'s', () => {
+    // Its type parameter and its fields: by name, the fields were shown as
+    // the builtins min and max and as the global len.
+    const source = `global len: u32 = 7
+func Range(comptime T: type) -> type => (min: T, max: T, len: u32)
+export func f(r: Range(u8)) -> u32 => r.len + len
+`
+    const hover = hoverIn(source)
+    const at = (text: string) => source.indexOf(text, source.indexOf('func Range'))
+    expect(hover(at('T: type'))).toBeNull()
+    expect(hover(at('min: T') + 5)).toBeNull()
+    expect(hover(at('min: T'))).toBeNull()
+    expect(hover(at('max: T'))).toBeNull()
+    expect(hover(at('len: u32'))).toBeNull()
+    // The generic type is still shown by its name, where it is declared and
+    // where it is applied, and the global outside it.
+    expect(hover(at('Range(comptime'))).toContain('Range')
+    expect(hover(at('Range(u8)'))).toContain('Range')
+    expect(hover(source.indexOf('+ len') + 2)).toContain('global len:u32')
+  })
+
+  test('a type parameter of a generic type is not a type of the module with its name', () => {
+    const source = 'type T = u64\nfunc Box(comptime T: type) -> type => (v: T)\n'
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf('T: type'))).toBeNull()
+    expect(hover(source.indexOf('v: T') + 3)).toBeNull()
+    expect(hover(source.indexOf('T = u64'))).toContain('u64')
+  })
+
   test('a type parameter is not a type of the module with its name', () => {
     // The checker reports the clash; the editor still must not answer for the wrong T.
     const source = 'type T = u64\nfunc id(comptime T: type, x: T) -> T => x\n'
