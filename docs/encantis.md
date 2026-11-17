@@ -1130,6 +1130,20 @@ export name 'hash' is used twice: give one an explicit name, as in export "hash_
 
 Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function, as it always has; a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
 
+Nothing but functions shares a name. A global, `def`, `data` or import has its name to itself in its module, and a function cannot take the name of one:
+
+```ents
+global count: u32 = 0
+global count: u64 = 0
+def size = 4
+func size() -> u32 => 4
+```
+
+```errors
+'count' is already declared
+'size' is already declared
+```
+
 <!-- spec:end -->
 
 #### Calling Conventions
@@ -1168,7 +1182,7 @@ func g(x: f64) -> f64 => sqrt(v: x)
 
 #### Function Types and Pointers
 
-> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
+> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. A function's name is no number either: cast to a number or an address, or compared, it is a compile error (`cannot cast func() -> u32 to u32: 'f' is a function, which has no run-time value yet`). To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
 
 Function names are first-class values with types corresponding to their signatures. At runtime, function values are opaque indices into WebAssembly's function table.
 

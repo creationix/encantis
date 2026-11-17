@@ -2877,3 +2877,72 @@ describe('arguments by place and by name', () => {
     `)).toEqual(['cannot call non-function type: Pt', 'cannot call non-function type: (q: i32, r: i32)'])
   })
 })
+
+describe('a name declared twice at the top of a module', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('is one thing: only functions share a name', () => {
+    const twice = (name: string) => `'${name}' is already declared`
+    expect(errs(`
+      global x: i32 = 1
+      global x: i64 = 2
+      export global y: i32 = 1
+      global y: i32 = 2
+      def d = 1
+      global d: i32 = 2
+      global e: i32 = 2
+      def e = 1
+      data b = [1, 2]
+      global b: i32 = 2
+      import "m" "g" global g: i32
+      global g: i32 = 1
+      func f() -> i32 => 1
+      global f: i32 = 3
+      global h: i32 = 3
+      func h() -> i32 => 1
+      def k = 4
+      import "m" "k" func k() -> i32
+    `)).toEqual(['x', 'y', 'd', 'e', 'b', 'g', 'f', 'h', 'k'].map(twice))
+    // Functions share a name where their parameters differ.
+    expect(errs(`
+      func f(a: u32) -> u32 => a
+      func f(a: u64) -> u32 => 1
+      import "m" "f" func f(a: f64) -> u32
+    `)).toEqual([])
+  })
+
+  test('the first declaration is the one the name stands for', () => {
+    expect(errs(`
+      global x: i64 = 1
+      global x: f64 = 2.5
+      func f() -> i64 => x
+    `)).toEqual(["'x' is already declared"])
+  })
+})
+
+describe('a function named where a value is', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const none = "'f' is a function, which has no run-time value yet"
+
+  test('is no number to cast or to compare', () => {
+    expect(errs(`
+      func f() -> i32 => 1
+      func a() -> i64 => f as i64
+      func b() -> u32 => u32(f)
+      func c(p: *u8) -> bool => f == p
+      func d() -> bool => (f) != f
+    `)).toEqual([
+      `cannot cast func() -> i32 to i64: ${none}`,
+      `cannot cast func() -> i32 to u32: ${none}`,
+      `'==' cannot be applied to func() -> i32 and *u8: ${none}`,
+      `'!=' cannot be applied to func() -> i32 and func() -> i32: ${none}`,
+    ])
+  })
+
+  test('while a function value held in a parameter still is one', () => {
+    expect(errs(`
+      func a(g: (i32) -> i32, h: (i32) -> i32) -> bool => g == h
+      func b(g: (i32) -> i32) -> u32 => g as u32
+    `)).toEqual([])
+  })
+})

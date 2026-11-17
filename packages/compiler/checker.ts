@@ -811,6 +811,7 @@ class CheckContext {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
+          if (!inTest && this.takenByAnother(name, item.span.start, 'func')) break
           if (isGenericSignature(item.item.signature)) {
             this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
             break
@@ -838,6 +839,7 @@ class CheckContext {
         }
         case 'ImportGlobal': {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
+          if (!inTest && this.takenByAnother(item.item.ident, item.span.start, 'value')) break
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -877,12 +879,31 @@ class CheckContext {
 
   // A generic function's name is unique in its module: a declaration that
   // would take the name over is an error and is left out. (Functions that are
-  // not generic share a name, see declareFunc; other declarations of one name
-  // replace each other silently, as they always have.)
+  // not generic share a name, see declareFunc; any other two declarations of
+  // one name are refused by takenByAnother.)
   private takenByGeneric(name: string, offset: number): boolean {
     if (this.moduleScope.symbols.get(name)?.kind !== 'generic') return false
     this.error(offset, `'${name}' is already declared: a generic function's name is unique in its module`)
     this.contested.add(name)
+    return true
+  }
+
+  // Each name the module declares at its top level is one thing: a global,
+  // def, data or import of the name of another declaration of the module is
+  // an error and is left out, and so is a function of the name of anything
+  // but another function. Functions share a name with each other where
+  // their parameters differ (see declareFunc). Without this the later
+  // declaration replaced the earlier one in some uses and not in others: two
+  // globals of one name were two wasm globals of one name.
+  private readonly topLevel = new Map<string, 'func' | 'value'>()
+  private takenByAnother(name: string, offset: number, kind: 'func' | 'value'): boolean {
+    const first = this.topLevel.get(name)
+    if (first === undefined) {
+      this.topLevel.set(name, kind)
+      return false
+    }
+    if (first === 'func' && kind === 'func') return false
+    this.error(offset, `'${name}' is already declared`)
     return true
   }
 
@@ -893,6 +914,7 @@ class CheckContext {
     }
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (!inTest && this.takenByAnother(decl.ident, decl.span.start, 'func')) return
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
   }
@@ -1088,6 +1110,7 @@ class CheckContext {
 
   collectDef(decl: AST.DefDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     // Defs are comptime - infer type from literal value or use LHS type annotation
     const inferredType = this.inferExpr(decl.value)
 
@@ -1122,6 +1145,7 @@ class CheckContext {
 
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     const inferredType = this.inferExpr(decl.value)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
@@ -1655,6 +1679,7 @@ class CheckContext {
       return
     }
     if (this.takenByGeneric(name, decl.span.start)) return
+    if (this.takenByAnother(name, decl.span.start, 'value')) return
 
     let type: ResolvedType
     if (decl.type) {
@@ -3141,7 +3166,7 @@ class CheckContext {
         // Explicit cast - always returns the target type (may generate conversion code)
         const from = this.inferExpr(expr.expr)
         const to = this.resolveType(expr.type)
-        const problem = castProblem(from, to)
+        const problem = this.castProblemOf(expr.expr, from, to)
         if (problem) this.error(expr.span.start, problem)
         return to
       }
@@ -3355,7 +3380,7 @@ class CheckContext {
         if (args.length !== 1) {
           this.error(expr.span.start, `type cast '${expr.callee.name}' expects 1 argument, got ${args.length}`)
         } else {
-          const problem = castProblem(this.inferExpr(args[0].value), to)
+          const problem = this.castProblemOf(args[0].value, this.inferExpr(args[0].value), to)
           if (problem) this.error(expr.span.start, problem)
         }
         return to
@@ -4246,6 +4271,13 @@ class CheckContext {
   // An operator with a pointer operand works on addresses, which are 32 bits:
   // the other operand is a pointer too, or an integer no wider than that.
   private checkAddressOperands(expr: AST.BinaryExpr, leftType: ResolvedType, rightType: ResolvedType): void {
+    // A function value held in a variable is a number of its own to compare
+    // (f == g); a function's name has none.
+    const named = this.functionNamed(expr.left) ?? this.functionNamed(expr.right)
+    if (named) {
+      this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
+      return
+    }
     const check = (operand: AST.Expr, type: ResolvedType): boolean => {
       const t = unwrap(type)
       if (t.kind === 'pointer' || t.kind === 'func') return true
@@ -4260,6 +4292,26 @@ class CheckContext {
     if (!leftOk || !rightOk) {
       this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
     }
+  }
+
+  // The name of the function `expr` is, where a function is named in place
+  // of a value. A function has no run-time value yet (3.4): what it compiles
+  // to is a wasm funcref, which is no number and no address.
+  private functionNamed(expr: AST.Expr): string | null {
+    const named = ungrouped(expr)
+    if (named.kind !== 'IdentExpr') return null
+    const sym = this.lookup(named.name)
+    return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
+  }
+
+  // What is wrong with a cast, if anything. A function's name cast to a
+  // number or an address (f as u32) has no value to cast.
+  private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
+    const named = this.functionNamed(operand)
+    if (named && unwrap(to).kind !== 'func') {
+      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
+    }
+    return castProblem(from, to)
   }
 
   private checkCondition(expr: AST.Expr): void {
