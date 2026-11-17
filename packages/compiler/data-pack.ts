@@ -682,11 +682,12 @@ export function serializeLiteral(
   childRefs?: Map<number, DataRef>,
   mutable = false,
 ): DataRef {
-  const skipDedup = mutable || isMutExpr(expr) || hasRuntimePart(expr, builder)
+  const writable = mutable || isMutExpr(expr)
+  const skipDedup = writable || hasRuntimePart(expr, builder)
   if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
-    return serializeSeparate(expr, targetType, builder, skipDedup, childRefs)
+    return serializeSeparate(expr, targetType, builder, skipDedup, childRefs, writable)
   }
 }
 
@@ -942,6 +943,7 @@ function serializeSeparate(
   builder: DataSectionBuilder,
   skipDedup: boolean,
   refsMap?: Map<number, DataRef>,
+  writable = skipDedup,
 ): DataRef {
   // [row; n] is n rows, each laid out like a row written out.
   const elements = expr.kind === 'RepeatExpr' ? Array<AST.Expr>(getRepeatCount(expr, builder)).fill(expr.value)
@@ -965,7 +967,7 @@ function serializeSeparate(
   // The rows of a mutable table, or of a mutable pointer to framed arrays, are
   // written through it, and the elements of a slice of mutable slices through
   // themselves: each is its own, shared with no other data.
-  const mutableChildren = elem.kind === 'slice' ? elem.mutable : skipDedup
+  const mutableChildren = elem.kind === 'slice' ? elem.mutable : writable
   for (const element of elements) {
     const child = ungroup(element)
     if (isSerializableExpr(child)) {
