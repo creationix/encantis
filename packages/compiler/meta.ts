@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, type TypeCheckResult } from './checker'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
@@ -496,24 +496,12 @@ class MetaBuilder {
     }
   }
 
-  // The names of `for i, v in xs`, each where it stands: the index first,
-  // the value last (alone, the value is the whole binding).
-  private forNames(binding: AST.ForBinding): { name: string; offset: number }[] {
-    const value = { name: binding.value, offset: binding.index === null ? binding.span.start : binding.span.end - binding.value.length }
-    return binding.index === null ? [value] : [{ name: binding.index, offset: binding.span.start }, value]
-  }
-
+  // Each name of a for, where it stands
   private collectForBinding(binding: AST.ForBinding): void {
-    for (const { name, offset } of this.forNames(binding)) {
+    for (const { name, offset } of forNames(binding)) {
       const type = this.bindingType(offset, 'Binding')
       if (type) this.addSymbol(name, 'local', type, offset)
     }
-  }
-
-  // Where the variable of a named part of a tuple pattern stands: last in
-  // `x: a`; in `x:` the field's name is the variable's.
-  private namedOffset(element: AST.PatternElement & { kind: 'named' }): number {
-    return element.binding === null ? element.span.start : element.span.end - element.binding.length
   }
 
   private collectLocalsFromExpr(expr: AST.Expr): void {
@@ -559,7 +547,7 @@ class MetaBuilder {
 
           // The variable name is either the binding or the field name (for shorthand)
           const varName = element.binding ?? element.field
-          this.addSymbol(varName, 'local', tupleField.type, this.namedOffset(element))
+          this.addSymbol(varName, 'local', tupleField.type, namedPartAt(element))
         } else if (element.kind === 'positional') {
           // For positional, recurse into the nested pattern
           this.collectLocal(element.pattern)
@@ -895,8 +883,8 @@ class MetaBuilder {
         if (stmt.body.kind === 'Block') this.generateHintsForBlock(stmt.body)
         break
       case 'ForStmt': {
-        // Generate hints for the binding variables
-        for (const { name, offset } of this.forNames(stmt.binding)) {
+        // Generate hints for the binding variables, in the order they are written
+        for (const { name, offset } of forNames(stmt.binding).sort((a, b) => a.offset - b.offset)) {
           const symbolIndex = this.symbolIndexByDef.get(offset)
           if (symbolIndex !== undefined) this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
@@ -949,7 +937,7 @@ class MetaBuilder {
         if (element.kind === 'named') {
           // The hint is on the variable's name: the binding, or the field's
           // name in the shorthand
-          const offset = this.namedOffset(element)
+          const offset = namedPartAt(element)
           const symbolIndex = this.symbolIndexByDef.get(offset)
           if (symbolIndex === undefined) continue
           this.addHint(offset, (element.binding ?? element.field).length, this.symbols[symbolIndex].type, symbolIndex)

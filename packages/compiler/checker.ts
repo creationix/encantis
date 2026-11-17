@@ -2082,17 +2082,11 @@ class CheckContext {
         // defined where it stands: in `for i, v in xs` the index comes first
         // and the value last.
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
-        const { binding } = stmt
-        const value: Symbol = { kind: 'local', type: elemType }
-        const valueAt = binding.index === null ? binding.span.start : binding.span.end - binding.value.length
-        this.currentScope.symbols.set(binding.value, value)
-        this.types.set(typeKey(valueAt, 'Binding'), elemType)
-        this.recordDefinition(binding.value, valueAt, value)
-        if (binding.index !== null) {
-          const index: Symbol = { kind: 'local', type: primitive('u32') }
-          this.currentScope.symbols.set(binding.index, index)
-          this.types.set(typeKey(binding.span.start, 'Binding'), index.type)
-          this.recordDefinition(binding.index, binding.span.start, index)
+        for (const { name, offset, index } of forNames(stmt.binding)) {
+          const sym: Symbol = { kind: 'local', type: index ? primitive('u32') : elemType }
+          this.currentScope.symbols.set(name, sym)
+          this.types.set(typeKey(offset, 'Binding'), sym.type)
+          this.recordDefinition(name, offset, sym)
         }
         this.checkLoopBody(stmt.body)
         break
@@ -2297,9 +2291,7 @@ class CheckContext {
             const varName = element.binding ?? element.field
             const sym: Symbol = { kind: 'local', type: tupleField.type }
             this.currentScope.symbols.set(varName, sym)
-            // The variable is defined where its name stands: last in `x: a`,
-            // and in `x:` the field's name is the variable's
-            const at = element.binding === null ? element.span.start : element.span.end - element.binding.length
+            const at = namedPartAt(element)
             this.types.set(typeKey(at, 'Binding'), tupleField.type)
             this.recordDefinition(varName, at, sym)
           } else {
@@ -6797,6 +6789,22 @@ export function fieldNamedAt(module: AST.Module, offset: number): boolean {
     return false
   }
   return visit(module.decls)
+}
+
+// The names of `for i, v in xs`, each where it stands: the index first and
+// the value last; alone, the value is the whole binding. They are listed
+// value first, the order they are bound in (`for i, i in xs` leaves the
+// index in scope).
+export function forNames(binding: AST.ForBinding): { name: string; offset: number; index: boolean }[] {
+  const { span, value, index } = binding
+  if (index === null) return [{ name: value, offset: span.start, index: false }]
+  return [{ name: value, offset: span.end - value.length, index: false }, { name: index, offset: span.start, index: true }]
+}
+
+// Where the variable of a named part of a tuple pattern stands: last in
+// `x: a`; in `x:` the field's name is the variable's.
+export function namedPartAt(element: AST.PatternElement & { kind: 'named' }): number {
+  return element.binding === null ? element.span.start : element.span.end - element.binding.length
 }
 
 // The generic function whose declaration `offset` lies in
