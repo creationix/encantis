@@ -2036,6 +2036,26 @@ describe('indexes not known to be in range', () => {
     expect(modWat(code)).toContain('(if (result i32 i32) (i32.lt_u (local.get $i) (i32.const 3))')
   })
 
+  test('an index whose range may pass N is checked at run time', async () => {
+    const { cell, byte, row } = await run(`
+      data numbers: *[2]i32 = [7, 8]
+      data cells: *mut [2]*i32 = mut [0, 0]
+      data bytes: *[2]u8 = [5, 6]
+      data packed: *[2x2]i32 = [[1, 2], [3, 4]]
+      export func cell(j: u32#3) -> i32 {
+        cells[0] = numbers.ptr as *i32
+        cells[1] = (numbers.ptr + 4) as *i32
+        let p = cells[j]
+        return if let q = p { q.* } else { -1 }
+      }
+      export func byte(j: u32#3) -> u32 => (bytes[j] ?? 9) as u32 * 10 + (if let b = bytes[j] { b as u32 } else { 9 })
+      export func row(j: u32#3) -> i32 => if let r = packed[j] { r[1] } else { -1 }
+    `)
+    expect([cell(0), cell(1), cell(2)]).toEqual([7, 8, -1])
+    expect([byte(0), byte(1), byte(2)]).toEqual([55, 66, 99])
+    expect([row(0), row(1), row(2)]).toEqual([2, 4, -1])
+  })
+
   test('the row of a packed *[NxM]T is checked against N by if let and ??', async () => {
     const { row, cell } = await run(`
       data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]

@@ -1485,6 +1485,17 @@ describe('indexes not known to be in range', () => {
     ])
     expect(errs('if let r = packed[i] { let a = r[0] }\nlet b = (packed[i] ?? packed[0])[1]', 'i: u32')).toEqual([])
   })
+
+  test('a range that may pass N proves nothing: the index is checked as one with no range', () => {
+    // An element that can be none is an optional, as for a u32 index.
+    expect(letType('ps[j]', 'j: u32#3')).toBe('?*i32')
+    // One that can't is resolved where it is taken, if let and ?? checking it.
+    expect(errs('let a = bytes[j] ?? 0\nif let b = bytes[j] { }\nif let r = packed[k] { }', 'j: u32#5, k: u32#3')).toEqual([])
+    // Elsewhere the range was what was meant to prove it.
+    expect(errs('let a = bytes[j]', 'j: u32#5')).toEqual([
+      'index type u32#5 may exceed *[4]u8 bounds (max index 4 >= 4) — narrow the index range to fit',
+    ])
+  })
 })
 
 describe('arrays where a pointer is wanted', () => {

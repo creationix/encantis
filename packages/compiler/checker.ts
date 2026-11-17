@@ -5017,12 +5017,13 @@ class CheckContext {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
               const idxType = this.exprTypes.get(expr.index)
-              if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
-                const canBeOptional = !packed && (elem.kind === 'pointer' || elem.kind === 'slice')
-                const hint = canBeOptional
-                  ? ` — narrow the index range or use 'if let'/'??' for bounds checking`
-                  : ` — narrow the index range to fit`
-                this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed ${shown} bounds (max index ${idxType.max - 1} >= ${n})${hint}`)
+              // A range that may pass N proves nothing, so the index is
+              // checked as one with no range is: an optional element, or
+              // one resolved by if let or ??. Elsewhere the range is what
+              // was meant to prove it, and is reported.
+              const canBeOptional = !packed && !row && (elem.kind === 'pointer' || elem.kind === 'slice')
+              if (idxType?.kind === 'primitive' && idxType.max !== undefined && !canBeOptional && !this.insideIfLetCondition) {
+                this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed ${shown} bounds (max index ${idxType.max - 1} >= ${n}) — narrow the index range to fit`)
               } else {
                 return packed ? notOptional(`runtime index on ${shown}`) : unproven(elem, `runtime index on ${shown}`)
               }
