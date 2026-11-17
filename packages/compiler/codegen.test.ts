@@ -2883,6 +2883,24 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(x.cell()).toBe(5)
   })
 
+  test('of a literal in parentheses is a cell holding it', async () => {
+    const x = await run(`
+      func get(p: *i32) -> i32 => p.*
+      func pair(p: *(i32, i32)) -> i32 => p.0 * 10 + p.1
+      export func expected() -> i32 => get(&(8))
+      export func typed() -> i32 => get(&(6:i32)) + get(&(1):i32)
+      export func inferred() -> i32 {
+        let p = &(9)
+        return p.*
+      }
+      export func tuple() -> i32 => pair(&((1, 2)))
+    `)
+    expect(x.expected()).toBe(8)
+    expect(x.typed()).toBe(7)
+    expect(x.inferred()).toBe(9)
+    expect(x.tuple()).toBe(12)
+  })
+
   test('of a row of a many-pointer table is where its row pointer is', async () => {
     const x = await run(`
       data rows: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]

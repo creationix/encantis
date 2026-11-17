@@ -2728,9 +2728,7 @@ class CheckContext {
     // or many-pointer), and then against the pointer type. `&x` of a
     // variable held in registers is no address, nor is `&list[k]` the
     // element's value.
-    const refOperand = expr.kind === 'UnaryExpr' && expr.op === '&'
-      ? (expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand)
-      : null
+    const refOperand = expr.kind === 'UnaryExpr' && expr.op === '&' ? addressedLiteral(expr.operand) : null
     const isLiteral = refOperand !== null && (refOperand.kind === 'LiteralExpr' || refOperand.kind === 'ArrayExpr' ||
       refOperand.kind === 'RepeatExpr' || refOperand.kind === 'TupleExpr')
     if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && expected.kind === 'pointer') {
@@ -4586,7 +4584,7 @@ class CheckContext {
         }
         // Address-of on a value: anonymous data section allocation
         const innerExpr = expr.operand
-        const litExpr = innerExpr.kind === 'AnnotationExpr' ? innerExpr.expr : innerExpr
+        const litExpr = addressedLiteral(innerExpr)
         if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
             litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr') {
           const dataId = litExpr.span.start
@@ -7254,6 +7252,13 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// What `&` takes the address of, through parentheses and a type annotation:
+// `&(8)` and `&(8:i32)` lay out the literal 8, as `&8` does.
+export function addressedLiteral(operand: AST.Expr): AST.Expr {
+  const inner = ungrouped(operand)
+  return inner.kind === 'AnnotationExpr' ? ungrouped(inner.expr) : inner
 }
 
 // An array written out, element by element or as a repeat: passed for a

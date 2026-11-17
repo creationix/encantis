@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -867,7 +867,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         return operand
       }
       // Anonymous data allocation: look up data section ref
-      const innerExpr = expr.operand.kind === 'AnnotationExpr' ? (expr.operand as AST.AnnotationExpr).expr : expr.operand
+      const innerExpr = addressedLiteral(expr.operand)
       const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
       const ref = ctx.literalRefs.get(dataId)
       if (ref) {
