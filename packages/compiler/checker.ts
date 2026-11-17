@@ -2106,6 +2106,13 @@ class CheckContext {
       return expected
     }
 
+    // ...and into those of an if let, where the binding is in scope.
+    if (expr.kind === 'IfExpr' && expr.pattern && expr.else_) {
+      const type = this.inferIfLet(expr, expected)
+      this.exprTypes.set(expr, type)
+      return type
+    }
+
     // Bidirectional: propagate expected type into match-expression arms
     if (expr.kind === 'MatchExpr') {
       this.checkMatchSubject(expr)
@@ -3785,13 +3792,21 @@ class CheckContext {
     return { type, odd: types.find(t => !typeAssignable(type, t)) }
   }
 
-  inferIfLet(expr: AST.IfExpr): ResolvedType {
+  // expected: the type the value is used as, when the context gives one.
+  // Each branch is then checked against it, as in a plain if; without one
+  // the branches settle on a type between them.
+  inferIfLet(expr: AST.IfExpr, expected?: ResolvedType): ResolvedType {
     const pattern = expr.pattern
     if (!pattern || pattern.kind !== 'binding') {
       this.error(expr.span.start, 'if let only supports simple bindings')
       return VOID
     }
     const valueUsed = !this.statementExprs.has(expr)
+    const branches: Branch[] = []
+    const branch = (body: AST.FuncBody) => {
+      if (expected) this.checkBodyAgainst(body, expected)
+      else branches.push({ body, type: this.inferBody(body, valueUsed) })
+    }
 
     // Infer the condition — allow runtime indexing for primitive elements
     this.insideIfLetCondition = true
@@ -3816,18 +3831,16 @@ class CheckContext {
     this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
     this.recordDefinition(pattern.name, expr.condition.span.start)
-    const branches: Branch[] = [{ body: expr.thenBranch, type: this.inferBody(expr.thenBranch, valueUsed) }]
+    branch(expr.thenBranch)
     this.currentScope = prevScope
 
     for (const elif of expr.elifs) {
       this.checkElifCondition(elif)
-      branches.push({ body: elif.thenBranch, type: this.inferBody(elif.thenBranch, valueUsed) })
+      branch(elif.thenBranch)
     }
-    if (expr.else_) {
-      branches.push({ body: expr.else_, type: this.inferBody(expr.else_, valueUsed) })
-    }
+    if (expr.else_) branch(expr.else_)
     if (!expr.else_) return VOID
-    return this.unifyBranches(branches, valueUsed)
+    return expected ?? this.unifyBranches(branches, valueUsed)
   }
 
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {

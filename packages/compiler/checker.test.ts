@@ -1586,6 +1586,21 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(c: bool, n: u32) -> u32 => n & (if c { ~7 } else { 255 })`)).toEqual([])
   })
 
+  test('the branches of an if let are checked against the type the value is used as', () => {
+    // An i32 and a u32 have no type between them, but each widens to the i64 wanted.
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 => if let q = p { a } else { b }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 { let v: i64 = if let q = p { a } else { b }\n return v }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8, c: bool, a: i32, b: u32) -> i64 => if let q = p { q.* } elif c { a } else { b }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8) -> u8 => if let q = p { 1 } else { 300 }`)).toEqual(['cannot assign int(300) to u8'])
+    expect(errs(`func f(p: ?*u8, x: f64) -> i64 => if let q = p { q.* } else { x }`)).toEqual(['cannot assign f64 to i64'])
+    expect(errs(`func f(p: ?*u8, a: i32) -> i64 => if let q = p { a } else { }`)).toEqual(['this branch has no value: expected i64'])
+    // The binding is the then branch's alone.
+    expect(errs(`func f(p: ?*u8, b: u32) -> i64 => if let q = p { 1 } else { q.* }`)[0]).toContain("unknown identifier 'q'")
+    // With no type wanted, the branches still have to agree between them.
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 { let v = if let q = p { a } else { b }\n return v }`))
+      .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])
+  })
+
   test('branches that cannot agree are an error where the value is used', () => {
     expect(errs(`func f(c: bool, a: i32, b: u32) { let v = if c { a } else { b } }`))
       .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])

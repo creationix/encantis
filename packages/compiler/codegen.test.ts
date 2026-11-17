@@ -676,6 +676,13 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('(drop)')
     })
 
+    test('an if let widens each branch to the type its value is used as', () => {
+      const wat = funcWat('func f(p: ?*u8, a: i32, b: u32) -> i64 => if let q = p { a } else { b }')
+      expect(wat).toContain('(if (result i64)')
+      expect(wat).toContain('(i64.extend_i32_s (local.get $a))')
+      expect(wat).toContain('(i64.extend_i32_u (local.get $b))')
+    })
+
     test('an if let keeps its elif branches', () => {
       const wat = funcWat(`func f(s: []u8, i: u32, c: bool) -> i32 {
         if let b = s[i] { return 1 } elif c { return 2 } else { return 3 }

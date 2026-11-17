@@ -318,6 +318,25 @@ func a(i: u32) -> i32 {
 func b(s: []u8, i: u32, wide: i64) -> i64 => if let x = s[i] { x } elif i == 0 { 0 } else { wide }
 ```
 
+Its branches meet a declared type like any other `if`'s: each widens to it, even where they have no type between them. The binding stays the first branch's.
+
+```ents
+func a(p: ?*u8, n: i32, u: u32) -> i64 => if let q = p { n } else { u }
+
+func b(p: ?*u8, n: i32, u: u32) -> i64 {
+  let v = if let q = p { n } else { u }
+  return v
+}
+
+func c(p: ?*u8, u: u32) -> i64 => if let q = p { 1 } else { q.* }
+```
+
+```errors
+branches have different types: u32 and i32
+unknown identifier 'q'
+cannot dereference non-pointer type
+```
+
 The elements of an array literal settle on a type the same way: each widens to the declared element type, or, without one, to the widest of them.
 
 ```ents
