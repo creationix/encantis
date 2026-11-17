@@ -138,7 +138,7 @@ export function hover(
   const sym = checkResult.symbols.get(name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
-    // the one that call uses, at the start of the callee's name.
+    // the one that call uses, as the type of the callee.
     if (sym.kind === 'generic') {
       const instance = identExprType(checkResult, wordStart(source, offset))
       if (instance) return { name, type: typeToString(instance), kind: sym.kind }
@@ -333,7 +333,7 @@ export function signatureHelp(
 
   const sym = checkResult.symbols.get(name)
   // A generic has the signature of the instance this call uses, which the
-  // checker recorded at the callee's name.
+  // checker recorded as the type of the callee.
   const ft = sym?.kind === 'generic' ? identExprType(checkResult, wordStart(source, offset)) : sym?.kind === 'func' ? sym.type : null
   if (ft?.kind !== 'func') return null
 

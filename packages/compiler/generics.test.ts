@@ -7,10 +7,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parse } from './parser'
-import { typecheck, typecheckProgram, type TypecheckOptions } from './checker'
+import { INSTANCE_STRIDE, typecheck, typecheckProgram, type TypecheckOptions } from './checker'
 import { programToWat, programToWatWithTests } from './codegen'
 import { loadModule } from './loader'
 import { compileToWasm, wasmOfSource, wasmOfWat, watOfSource } from './test-utils'
+import { typeToString } from './types'
 
 function check(source: string, options?: TypecheckOptions) {
   const parsed = parse(source)
@@ -400,6 +401,28 @@ export func b(k: u32, x: u64) -> u64 => max(match k {
 }, 7)`
     expect(errorsOf(source)).toEqual([])
     expect(instancesOf(source)).toEqual(['max<u32>', 'max<u64>'])
+  })
+
+  test('the look at the argument that decides leaves nothing in the tables kept by node', () => {
+    // The argument is inferred once to find T and then checked against it.
+    // What the first pass recorded for its nodes (a type, a widening, an `if`
+    // marked as a statement) must not outlive it: with T written, nothing
+    // looks first, and both calls have to end up with the same tables.
+    const tables = (call: string) => {
+      const result = check(`${MAX}export func f(c: bool, a: u64, b: u32, y: u64) -> u64 => ${call}`)
+      expect(result.errors).toEqual([])
+      const list = (table: Map<{ kind: string }, Parameters<typeof typeToString>[0]>) =>
+        [...table].map(([node, type]) => `${node.kind} ${typeToString(type)}`).sort()
+      return { types: list(result.exprTypes), coercions: list(result.coercions), bindings: result.types.size }
+    }
+    const argument = `if c {
+  let t = a + b
+  if t > 9 { t } else { a + b }
+} else { max(a, b) }`
+    const inferred = tables(`max(${argument}, y)`)
+    expect(inferred).toEqual(tables(`max(u64, ${argument}, y)`))
+    // b is widened where it meets a: three times in the argument, never more.
+    expect(inferred.coercions.filter(entry => entry === 'IdentExpr u64')).toEqual(Array(3).fill('IdentExpr u64'))
   })
 
   test('nested inferred calls are not inferred again at each level', () => {
@@ -996,6 +1019,115 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 })
 
+// The checker keeps the type of an expression, its implicit conversion and
+// the call a generic call compiles to by AST node. An instance has its own
+// because its nodes are its own: a node two instances shared would give both
+// one type and one conversion.
+describe('the nodes of an instance', () => {
+  const source = `def limit = 10
+type Pt = (q: i32, r: i32)
+func pick(comptime T: type, c: bool, a: T, b: T) -> T => if c { a } else { b }
+func busy(comptime T: type, xs: []T, x: T, n: u32) -> T {
+  let p: Pt = (q: 1, r: 2)
+  let q = Pt(q: p.q, r: 2)
+  let text = "abc"
+  let total: u32 = n + limit + sizeof(T) + text.len + (q.r as u32)
+  let best = x
+  for i, v in xs {
+    best = pick(v > best, v, best)
+    best = match i {
+      0 => best
+      _ => pick(T, total > 0.5 as u32, best, v)
+    }
+  }
+  return best
+}
+export func a(xs: []u32) -> u32 => busy(xs, 1, 2)
+export func b(xs: []u64) -> u64 => busy(u64, xs, 1, 2)`
+
+  // Every object of a syntax tree. The bytes of a string are data, and what
+  // a bound type parameter holds is a resolved type: neither is a node.
+  function nodesOf(root: unknown, found = new Set<object>()): Set<object> {
+    if (root === null || typeof root !== 'object' || root instanceof Uint8Array || found.has(root)) return found
+    found.add(root)
+    for (const [key, value] of Object.entries(root)) {
+      if ((root as { kind?: string }).kind === 'BoundType' && key === 'type') continue
+      nodesOf(value, found)
+    }
+    return found
+  }
+
+  const result = check(source)
+  const trees = (name: string) => result.instances.filter(i => i.of.ident === name)
+  const instance = (name: string) => {
+    const found = result.instances.find(i => i.decl.ident === name)
+    if (!found) throw new Error(`no instance ${name}`)
+    return found.decl
+  }
+  // The node of an instance that was copied from this place in the source
+  const at = (decl: object, kind: string, text: string) => {
+    const offset = source.indexOf(text)
+    const found = [...nodesOf(decl)].filter((n) => {
+      const node = n as { kind?: string; span?: { start: number } }
+      return node.kind === kind && node.span !== undefined && node.span.start % INSTANCE_STRIDE === offset
+    })
+    expect(found.length).toBe(1)
+    return found[0] as Parameters<typeof result.exprTypes.get>[0]
+  }
+
+  test('are its own: none is shared with the generic or with another instance', () => {
+    expect(result.errors).toEqual([])
+    expect(result.instances.map(i => i.decl.ident).sort()).toEqual(['busy<u32>', 'busy<u64>', 'pick<u32>', 'pick<u64>'])
+    for (const name of ['busy', 'pick']) {
+      const [first, second] = trees(name)
+      const sets = [nodesOf(first.of), nodesOf(first.decl), nodesOf(second.decl)]
+      expect(sets[0].size).toBeGreaterThan(20)
+      for (const [i, set] of sets.entries()) {
+        for (const other of sets.slice(i + 1)) {
+          expect([...set].filter(node => other.has(node))).toEqual([])
+        }
+      }
+    }
+  })
+
+  test('the generic itself is never given a type: only its copies are checked', () => {
+    for (const { of } of result.instances) {
+      const typed = [...nodesOf(of)].filter(node => result.exprTypes.has(node as never) || result.coercions.has(node as never))
+      expect(typed).toEqual([])
+    }
+  })
+
+  test('each instance has the type of an expression as its own type argument makes it', () => {
+    const typeIn = (name: string, kind: string, text: string) => {
+      const type = result.exprTypes.get(at(instance(name), kind, text))
+      return type?.kind === 'primitive' ? type.name : type?.kind
+    }
+    expect(typeIn('busy<u32>', 'IdentExpr', 'v > best')).toBe('u32')
+    expect(typeIn('busy<u64>', 'IdentExpr', 'v > best')).toBe('u64')
+    expect(typeIn('busy<u32>', 'CallExpr', 'pick(T, total')).toBe('u32')
+    expect(typeIn('busy<u64>', 'CallExpr', 'pick(T, total')).toBe('u64')
+    // What does not depend on T is typed the same in each, on separate nodes.
+    expect(typeIn('busy<u32>', 'BinaryExpr', 'v > best')).toBe('bool')
+    expect(typeIn('busy<u64>', 'BinaryExpr', 'v > best')).toBe('bool')
+  })
+
+  test('each call in an instance is lowered to the call of that instance\'s own callee', () => {
+    const lowered = (name: string, text: string) => {
+      const call = result.calls.get(at(instance(name), 'CallExpr', text) as never)
+      return call?.callee.kind === 'IdentExpr' ? call.callee.name : undefined
+    }
+    expect(lowered('busy<u32>', 'pick(v > best')).toBe('pick<u32>')
+    expect(lowered('busy<u64>', 'pick(v > best')).toBe('pick<u64>')
+    expect(lowered('busy<u32>', 'pick(T, total')).toBe('pick<u32>')
+    expect(lowered('busy<u64>', 'pick(T, total')).toBe('pick<u64>')
+    // The lowered call is compiled with the argument nodes that were checked.
+    const written = at(instance('busy<u64>'), 'CallExpr', 'pick(T, total') as unknown as { args: object[] }
+    const plain = result.calls.get(written as never) as unknown as { args: object[] }
+    expect(plain.args).toEqual(written.args.slice(1))
+    for (const [i, arg] of plain.args.entries()) expect(arg).toBe(written.args[i + 1])
+  })
+})
+
 describe('the editor', () => {
   // The TextMate grammar is a file nothing else reads: a word missing from it
   // shows as a plain name in the editor and in every highlighted code block.
@@ -1078,7 +1210,9 @@ func unused_plain(a: u32) -> u32 => a`
   test('the callee of a call holds the signature of its instance', () => {
     const result = check(source)
     const at = source.indexOf('count(xs, 7)')
-    const type = result.types.get(`${at}:IdentExpr`)
+    const callee = [...result.exprTypes.keys()].filter(e => e.kind === 'IdentExpr' && e.span.start === at)
+    expect(callee.length).toBe(1)
+    const type = result.exprTypes.get(callee[0])
     expect(type?.kind).toBe('func')
     if (type?.kind !== 'func') return
     expect(type.params.map(p => p.name)).toEqual(['xs', 'x'])

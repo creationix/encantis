@@ -5218,7 +5218,9 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[
 // type name that `subst` knows replaced by what it returns. This is the whole
 // of instantiation: the copy is ordinary source as far as the rest of the
 // compiler can tell. It is always made from the declaration as parsed, never
-// from another copy, so no offset is moved twice.
+// from another copy, so no offset is moved twice. Every node of the copy is a
+// new object (only the bytes of a string are shared): the types and
+// conversions the checker records by node are then the copy's alone.
 function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.BoundType | undefined): unknown {
   if (Array.isArray(node)) return node.map((n) => cloneAst(n, delta, subst))
   if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return node
