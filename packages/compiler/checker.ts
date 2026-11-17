@@ -47,6 +47,7 @@ import {
   isFixedSizes,
   isValueArray,
   tableRow,
+  framedArray,
   totalElements,
   optionalOf,
   isOptional,
@@ -2901,8 +2902,10 @@ class CheckContext {
         }
       }
       // The rows of a table are laid out apart from it, at compile time: a
-      // row or a cell known only at run time has no place to be stored.
-      if (tableRow(expected) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+      // row or a cell known only at run time has no place to be stored. A
+      // framed or packed row is held as its pointer, which can be.
+      const row = tableRow(expected)
+      if (row && isValueArray(row.pointee as ArrayRT) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
         for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           if (!this.isConstantInitializer(row)) {
             this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
@@ -4483,6 +4486,17 @@ class CheckContext {
     }
   }
 
+  // .len of a *[!]T is found by a scan; a *[?]T's length prefix is not read
+  // yet.
+  private lengthRead(expr: AST.MemberExpr, objType: ResolvedType): void {
+    this.scannable(expr.span.start, objType)
+    const u = unwrap(objType)
+    const array = u.kind === 'pointer' ? unwrap(u.pointee) : u
+    if (array.kind === 'array' && array.sizes?.[0] === '?') {
+      this.error(expr.span.start, `.len of ${typeToString(objType)} is not supported yet: its length prefix is not read`)
+    }
+  }
+
   // An optional pointer or slice may be none: it is resolved with if let or
   // ?? before it is indexed, dereferenced or read through (reference 2.5,
   // Optional Types). Reports what was done with it, and gives the type it
@@ -4560,6 +4574,7 @@ class CheckContext {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(objType)} - length is unknown`)
               return primitive('u32')
             }
+            this.lengthRead(expr, objType)
             // N, also of a packed [NxM]T: the number of its rows
             const n = objType.sizes[0]
             return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
@@ -4581,6 +4596,7 @@ class CheckContext {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(arrayType)} - length is unknown`)
               return primitive('u32')
             }
+            this.lengthRead(expr, objType)
             // N, also of a packed *[NxM]T: the number of its rows (2.5)
             const n = arrayType.sizes[0]
             return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
@@ -4853,6 +4869,31 @@ class CheckContext {
     return type
   }
 
+  // An index into a null-terminated *[!]T (or [!]T): its length is only
+  // found at run time, by a scan for the zero element at its end, so no index
+  // is known to be in range, a constant one either, as on a slice.
+  private framedIndex(expr: AST.IndexExpr, objType: ResolvedType, unproven: (elem: ResolvedType, problem: string, why?: string) => ResolvedType): ResolvedType {
+    const framed = framedArray(objType) as ArrayRT
+    this.scannable(expr.span.start, objType)
+    const shown = typeToString(pointer(framed))
+    const idx = this.evalComptimeExpr(expr.index)
+    return idx?.kind === 'int'
+      ? unproven(framed.element, `index ${idx.value} on ${shown}`, `: its length is only found at run time, by a scan`)
+      : unproven(framed.element, `runtime index on ${shown}`)
+  }
+
+  // The length of a *[!]T is the number of elements before the first one
+  // whose bytes are all zero: a scan reads each element as one integer, so
+  // it has to be 1, 2, 4 or 8 bytes wide.
+  private scannable(offset: number, objType: ResolvedType): void {
+    const framed = framedArray(objType)
+    if (!framed) return
+    const element = tableRow(objType) ?? framed.element
+    const width = byteSize(element)
+    if (width === 1 || width === 2 || width === 4 || width === 8) return
+    this.error(offset, `cannot find the length of ${typeToString(pointer(framed))}: the scan for its zero end needs elements of 1, 2, 4 or 8 bytes`)
+  }
+
   inferIndex(expr: AST.IndexExpr): ResolvedType {
     // if let and ?? resolve the index they are given, not one it is taken
     // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
@@ -4899,6 +4940,12 @@ class CheckContext {
     }
 
     if (objType.kind === 'array') {
+      // A [!]T is held as its pointer, and indexed as a *[!]T is.
+      if (framedArray(objType)) return this.framedIndex(expr, objType, unproven)
+      if (objType.sizes?.[0] === '?') {
+        this.error(expr.span.start, `indexing ${typeToString(objType)} is not supported yet: its length prefix is not read`)
+        return objType.element
+      }
       // Multi-dimensional: [N,M]T indexed once returns *[M]T
       if (objType.sizes && objType.sizes.length > 1) {
         const remainingDims = objType.sizes.slice(1)
@@ -4953,6 +5000,10 @@ class CheckContext {
           } else if (idx.value < 0n || idx.value >= BigInt(n)) {
             this.error(expr.index.span.start, `index ${idx.value} out of bounds for ${shown}`)
           }
+        } else if (framedArray(objType)) {
+          return this.framedIndex(expr, objType, unproven)
+        } else if (sizes?.[0] === '?') {
+          this.error(expr.span.start, `indexing ${typeToString(objType)} is not supported yet: its length prefix is not read`)
         }
         return packed ? elem : row ?? elem
       }
@@ -4963,12 +5014,28 @@ class CheckContext {
     return primitive('i32')
   }
 
+  // if let and ?? on an index check it against a length: a many-pointer
+  // ([*]T) and a pointer to one T have none, and their index is never
+  // checked. The element itself may still be an optional, which is checked.
+  private checksSomething(expr: AST.Expr, what: string): void {
+    if (expr.kind !== 'IndexExpr') return
+    const objType = this.exprTypes.get(expr.object)
+    const u = objType && unwrap(objType)
+    if (u?.kind !== 'pointer' || u.optional) return
+    const pointee = unwrap(u.pointee)
+    if (pointee.kind === 'array' && pointee.sizes !== null) return
+    const element = pointee.kind === 'array' ? pointee.element : pointee
+    if (isOptional(unwrap(element))) return
+    this.error(expr.span.start, `${what} has nothing to check here: ${typeToString(u)} has no length, so its index is never checked — index it directly`)
+  }
+
   inferCoalesce(expr: AST.CoalesceExpr): ResolvedType {
     // Infer the left expression — allow runtime indexing for primitive elements
     this.insideIfLetCondition = true
     const leftType = this.inferExpr(expr.expr)
     this.insideIfLetCondition = false
 
+    this.checksSomething(expr.expr, '??')
     // Determine the unwrapped type
     let elemType: ResolvedType
     if (isOptional(leftType)) {
@@ -5187,6 +5254,7 @@ class CheckContext {
     const condType = this.inferExpr(expr.condition)
     this.insideIfLetCondition = false
 
+    this.checksSomething(expr.condition, 'if let')
     // Determine the unwrapped type
     let elemType: ResolvedType
     if (isOptional(condType)) {

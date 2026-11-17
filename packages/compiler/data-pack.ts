@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
+import { byteSize, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -739,9 +739,9 @@ function serializeSeparate(
   const innerType: ArrayRT = elem.kind === 'slice'
     ? { kind: 'array', element: elem.element, sizes: ['_'] }
     : elem as ArrayRT
-  // A many-pointer to fixed arrays ([*][M]T) is a table like *[N][M]T: its
-  // elements are row pointers, not (ptr, len) pairs.
-  const rows = elem.kind === 'array' && isValueArray(elem)
+  // A many-pointer to arrays ([*][M]T, [*][!]T) is a table like *[N][M]T:
+  // its elements are row pointers, not (ptr, len) pairs.
+  const rows = isRowArray(elem)
   const childRefs: DataRef[] = []
   // The elements given as (ptr, len): what they hold is what was written.
   const pairs = new Set<DataRef>()

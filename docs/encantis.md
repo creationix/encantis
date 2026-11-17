@@ -349,6 +349,10 @@ All pointers are `u32` (wasm 32-bit address space). Every pointer type starts wi
 
 `.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`. A packed `*[NxM]T` counts its rows (`.len` is N, as `p[i]` takes a row) but measures an element (`.wid` is `sizeof(T)`), so its size is `p.len * M * p.wid`.
 
+A `*[!]T` ends at its first element whose bytes are all zero (the terminator the literal is laid out with), so `.len` reads elements until it finds it; the scan reads each element as one integer, so `T` must be 1, 2, 4 or 8 bytes wide. Its length known only at run time, an index into a `*[!]T` is checked as one into a slice is ([4.7](#47-bounds-checked-indexing)): `z[i] ?? 0`, `if let x = z[1]`, each scanning for the length. A `[!]T` written without the `*` is held as the same pointer, and reads the same way.
+
+> **Status: a `*[?]T` (a length prefix in LEB128, then the elements) is laid out but not read yet:** indexing one and `.len` are compile errors (`indexing *[?]u8 is not supported yet: its length prefix is not read`).
+
 ```ents
 let p: *u8 = ...
 let v = p.*          // dereference single pointer
@@ -434,7 +438,7 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 *[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
 
-The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table. Rows that are framed or packed are laid out on their own too: an element of `*[N][!]T` is a `*[!]T`, and one of `*[N][AxB]T` a `*[AxB]T` (so `m[i][j][k]` is cell `k` of row `j` of block `i`); a `*[!][M]T` is a table whose row pointers end with a null one.
 
 ```ents
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
@@ -455,7 +459,7 @@ In a table:
 - `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
 - `&m[i]` is the address of the row pointer: a `**[M]T`, or `*mut *mut [M]T` in a mutable table (optional, as in [4.7](#element-addresses-and-writes), when `i` isn't proven).
 - `m.*` is an error: the rows lie apart, so there is no `[N][M]T` to load or store whole.
-- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants. With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
+- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants (a framed or packed row is held as its pointer, so a variable can stand for one). With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
 
 ### 2.6 Slices
 
@@ -1555,7 +1559,7 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
 }
 ```
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out.
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. `if let` and `??` have nothing to check on its index, and are errors there (`if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly`), unless its elements are optionals themselves.
 
 ### 4.8 Slice/Range Syntax
 

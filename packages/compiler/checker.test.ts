@@ -1422,6 +1422,29 @@ describe('indexes not known to be in range', () => {
     expect(errs('let a = s[0] ?? 0\nif let b = s[2] { }\nlet c = s.ptr[0]', 's: []u8')).toEqual([])
   })
 
+  test('a *[!]T is indexed like a slice, its length found by a scan; what has no length is not checked', () => {
+    const scan = "its length is only found at run time, by a scan"
+    expect(errs('let a = z[i]', 'z: *[!]i32, i: u32')).toEqual(["runtime index on *[!]i32 requires 'if let' or '??' (no optional type for i32)"])
+    expect(errs('let a = z[1]', 'z: *[!]i32')).toEqual([`index 1 on *[!]i32 requires 'if let' or '??': ${scan} (no optional type for i32)`])
+    expect(errs('let a = z[1] ?? 0\nlet n = z.len\nif let b = z[i] { }', 'z: *[!]i32, i: u32')).toEqual([])
+    expect(errs('let r = m[0][1] ?? 0\nlet s = m[i]', 'm: *[2][!]u8, i: u32')).toEqual([
+      "runtime index on *[2][!]u8 requires 'if let' or '??' (rows are not optional)",
+    ])
+    expect(errs('let n = s.len', 's: *[!]Pt')).toEqual([])
+    expect(errs('let n = s.len', 's: *[!](i32, i32, i32)')).toEqual([
+      'cannot find the length of *[!](i32, i32, i32): the scan for its zero end needs elements of 1, 2, 4 or 8 bytes',
+    ])
+    expect(errs('let a = p[0]\nlet n = p.len', 'p: *[?]u8')).toEqual([
+      'indexing *[?]u8 is not supported yet: its length prefix is not read',
+      '.len of *[?]u8 is not supported yet: its length prefix is not read',
+    ])
+    const nothing = (what: string, type: string) => `${what} has nothing to check here: ${type} has no length, so its index is never checked — index it directly`
+    expect(errs('let a = mp[i] ?? 0\nif let b = mp[i] { }', 'mp: [*]i32, i: u32')).toEqual([nothing('??', '[*]i32'), nothing('if let', '[*]i32')])
+    expect(errs('if let r = many[i] { }', 'many: [*][2]i32, i: u32')).toEqual([nothing('if let', '[*][2]i32')])
+    // A many-pointer's element that is an optional is still checked.
+    expect(errs('if let p = mp[i] { }', 'mp: [*]?*i32, i: u32')).toEqual([])
+  })
+
   test('the row index of a packed *[NxM]T is checked against N', () => {
     expect(errs('let a = packed[i][j]', 'i: u32#2, j: u32#3')).toEqual([])
     expect(errs('let a = packed[2][0]')).toEqual(['index 2 out of bounds for *[2x3]i32'])

@@ -1394,6 +1394,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1438,6 +1439,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1559,6 +1561,9 @@ function checkedIndexToWat(expr: AST.IndexExpr, type: ResolvedType, ctx: Codegen
   } else if (u?.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
     base = keep(obj)
     len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u && RT.framedArray(u)) {
+    base = keep(obj)
+    len = keep(scannedLength(base, u, ctx))
   } else {
     throw new Error(`Cannot check this index at offset ${expr.span.start}`)
   }
@@ -1704,6 +1709,24 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
 
+// The length of a null-terminated *[!]T (or [!]T): how many elements come
+// before the first one whose bytes are all zero, as the data packer ends it.
+// Each element is read as one integer of its width (the checker allows 1, 2,
+// 4 or 8 bytes); a row of a table is its pointer. `ptr` is evaluated once.
+function scannedLength(ptr: string, objType: ResolvedType, ctx: CodegenContext): string {
+  const framed = RT.framedArray(objType)
+  if (!framed) throw new Error(`no length to scan for in ${RT.typeToString(objType)}`)
+  const width = byteSize(RT.tableRow(objType) ?? framed.element)
+  const load = width === 1 ? 'i32.load8_u' : width === 2 ? 'i32.load16_u' : width === 4 ? 'i32.load' : width === 8 ? 'i64.load' : null
+  if (!load) throw new Error(`cannot scan for the end of ${RT.typeToString(objType)}`)
+  const zero = width === 8 ? 'i64.eqz' : 'i32.eqz'
+  const at = scratchLocal(ctx, 'i32')
+  const n = scratchLocal(ctx, 'i32')
+  const label = `$__scan${at.slice(1)}`
+  const element = width === 1 ? `(i32.add (local.get ${at}) (local.get ${n}))` : `(i32.add (local.get ${at}) (i32.mul (local.get ${n}) (i32.const ${width})))`
+  return `(block (result i32) (local.set ${at} ${ptr}) (local.set ${n} (i32.const 0)) (block ${label} (loop ${label}_next (br_if ${label} (${zero} (${load} ${element}))) (local.set ${n} (i32.add (local.get ${n}) (i32.const 1))) (br ${label}_next))) (local.get ${n}))`
+}
+
 function evalComptimeIndex(expr: AST.Expr): number | null {
   if (expr.kind === 'LiteralExpr' && expr.value.kind === 'int') {
     return Number(expr.value.value)
@@ -1773,7 +1796,12 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
     // N, also of a packed *[NxM]T, whose rows are counted the same way
     if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
       parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+    } else if (RT.framedArray(objType)) {
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     }
+  } else if (objType && RT.framedArray(objType)) {
+    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
   }
 
   const elemSize = byteSize(elemType) ?? 1
@@ -1838,9 +1866,14 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
       // N, also of a packed *[NxM]T, whose rows are counted the same way
       if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
         parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+      } else if (RT.framedArray(objType)) {
+        parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
       } else {
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
       }
+    } else if (objType && RT.framedArray(objType)) {
+      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     } else {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       parts.push(`(local.set $${lenLocal} (i32.const 0))`)

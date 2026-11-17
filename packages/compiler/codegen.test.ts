@@ -1876,6 +1876,29 @@ describe('tables', () => {
     expect(distinct()).toBe(7)
   })
 
+  test('rows that are framed or packed are row pointers too, and a *[!]T is checked against its scanned length', async () => {
+    const { row, name, cell, lens, wide, framed } = await run(`
+      data m: *[2][!]u8 = ["ab", "cde"]
+      data names: [][!]u8 = ["alice", "bob"]
+      data k: *[2][2x2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+      data t: *[!][2]i32 = [[7, 1], [3, 4]]
+      data z: *[!]i32 = [7, 1, 3]
+      data w: *[!]u64 = [7, 1, 3]
+      export func row(i: u32, j: u32) -> u32 => if let r = m[i] { (r[j] ?? 0) as u32 + r.len * 1000 } else { 9 }
+      export func name(i: u32) -> u32 => if let r = names[i] { r.len } else { 99 }
+      export func cell(i: u32#2, j: u32#2, l: u32#2) -> i32 => k[i][j][l]
+      export func lens() -> u32 => t.len * 100 + z.len * 10 + w.len
+      export func wide(i: u32) -> u64 => w[i] ?? 0
+      export func framed(i: u32) -> i32 => if let r = t[i] { r[0] * 10 + r[1] } else { -1 }
+    `)
+    expect([row(0, 0), row(0, 1), row(0, 2), row(1, 2), row(2, 0)]).toEqual([2097, 2098, 2000, 3101, 9])
+    expect([name(0), name(1), name(2)]).toEqual([5, 3, 99])
+    expect([cell(0, 0, 0), cell(1, 0, 1), cell(1, 1, 1)]).toEqual([1, 6, 8])
+    expect(lens()).toBe(233)
+    expect([wide(0), wide(2), wide(3)]).toEqual([7n, 3n, 0n])
+    expect([framed(0), framed(1), framed(2)]).toEqual([71, 34, -1])
+  })
+
   test('len of a packed block is its rows, and wid of a slice the width of an element', async () => {
     const { lens, size } = await run(`
       data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]

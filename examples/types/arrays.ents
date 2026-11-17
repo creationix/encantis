@@ -111,8 +111,9 @@ test "slices" {
 }
 
 test "null-terminated" {
-  assert as-cstr[0] == 104:u8  // 'h'
-  assert as-cstr[12] == 0:u8   // null terminator
+  assert (as-cstr[0] ?? 0) == 104:u8  // 'h'
+  assert as-cstr.len == 12             // scans for the null terminator
+  assert as-cstr.ptr[12] == 0:u8       // which a [*]u8 reads unchecked
 }
 
 test "multi-dimensional" {
