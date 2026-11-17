@@ -546,6 +546,8 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
 
 `p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
 
+A struct type can take type parameters: `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)` declares a generic type, `Vec(u32)` is the struct it gives for `u32`, and `Vec(u32)(p, 0, cap)` constructs one like any constructor ([8.5](#85-generic-types)).
+
 ### 2.9 Enum Types (Algebraic Data Types)
 
 > **Status: Design only** — enums are parsed but not yet type-checked or compiled.
@@ -1915,7 +1917,7 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ## 8. Generics
 
-A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time.
+A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, and a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call.
 
 The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
 
@@ -1948,7 +1950,7 @@ Rules:
 
 1. Comptime parameters may appear anywhere in the parameter list; by convention type parameters come first. A parameter's type may mention any type parameter of the same function.
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level. Every parameter of such a function has a name.
-3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an ordinary argument, or exported to the host. It can only be called. Its name is unique in its module.
+3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host. It can only be called. Its name is unique in its module.
 4. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before. A generic function that is never called is only parsed, and nothing is emitted for it.
 
 `comptime` is a reserved word.
@@ -2019,6 +2021,8 @@ test "inferred calls" {
    | `*T` | `[*]X` | no match: what a many-pointer points to is not a type by itself. `[*]T` matches it |
    | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped, also from the values a tuple argument is made of) |
    | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
+   | `*Vec(T)` | a pointer to a struct of `Vec`'s shape | `T` from the field that is made of it ([8.5](#85-generic-types)) |
+   | `(T) -> T` | a function, `inc` | `T` from its parameter, or else its result |
 
    Type aliases are transparent, as everywhere.
 3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide.
@@ -2089,17 +2093,24 @@ export func f(a: Pt, b: Pt) -> Pt => add(neg(a), b)
 
 The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.
 
+The command line also prints the call that first asked for the instance and, where that call is itself in an instance, the call that asked for that one, four of them at most. The editor shows them as the error's related locations.
+
+```text
+shapes.ents:2:51: '>' cannot be applied to Pt and Pt, in max(T = Pt)
+  required from shapes.ents:4:38
+```
+
 ### 8.4 Instances
 
 An *instance* is one generic function with all its comptime arguments fixed.
 
-- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
 - **Once.** An instance is one function in the output however many calls use it.
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
-- **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter or for a generic that is not used. No function tables and no indirect calls are involved.
+- **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations, or sooner when one call has led to 1000 instances or to type arguments many times the size of its own. A type argument written in ordinary code may be of any size.
-- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
 func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
@@ -2124,40 +2135,257 @@ func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
 ```
 
-### 8.5 Not in This Version
+### 8.5 Generic Types
+
+A generic type is a function from types to a type. It is declared with `func`, an upper-case name, the result `type`, and a type after `=>`:
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
+
+export func a(v: *Vec(u32)) -> u32 => last(v)
+export func b(v: *(ptr: [*]mut f64, len: u32, cap: u32)) -> f64 => last(v)
+export func c(p: Pair(u8, u64)) -> Pair(u64, u8) => swapped(p)
+export func d() -> u32 => sizeof(Vec(u8)) + sizeof(Pair(u8, u64))     // 12 + 9
+
+test "a pair is swapped, and sizes follow the arguments" {
+  let p = c(Pair(u8, u64)(1, 2))
+  assert p.first == 2
+  assert p.second == 1
+  assert d() == 21
+}
+```
+
+Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a parameter, a result, a field, a cast, `sizeof(Vec(T))`, a `let` annotation, another generic type's body, a type argument. There is no space between the name and the parenthesis. All parameters of a generic type are type parameters and all are always written: `Vec` alone is not a type.
+
+A generic type is declared at module level, before or after its uses, and its name is unique among the types of its module. Nothing of it exists at run time: one that is never applied is only parsed, and `export func Vec(comptime T: type) -> type => ...` is accepted and gives the host nothing.
+
+**`Vec(u32)` is an alias with parameters.** It *is* the type `(ptr: [*]mut u32, len: u32, cap: u32)`, not a new, distinct type; this is the rule every type name already follows. A value built as a plain struct with those fields is a `Vec(u32)`; two generic types with the same body are interchangeable and functions instantiated for them share one copy; `Vec(u8)` and `Vec(u32)` differ because their bodies differ, and the error says so with the names:
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(a: *Vec(u8)) -> u32 {
+  let b: *Vec(u32) = a
+  return b.len
+}
+```
+
+```errors
+cannot assign *Vec(u8) to *Vec(u32)
+```
+
+**Inference sees through a generic type** by matching its body: given a `*Vec(u32)`, the parameter `v: *Vec(T)` is laid over `*(ptr: [*]mut u32, len: u32, cap: u32)` and `T = u32` falls out, however the argument's type was written (function `b` above). A type parameter that the body never uses cannot be inferred and must be written at the call:
+
+```ents
+func Tagged(comptime T: type) -> type => (id: u32)
+func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
+
+func f(t: Tagged(u8)) -> u32 => tag(t)
+```
+
+```errors
+cannot infer T for 'tag': 'Tagged(T)' does not use T in its fields; write the type argument
+```
+
+**Building a value.** A type that is called constructs a value of it. `Vec(T)(p, 0, cap)` constructs like `Point(1, 2)`, by position or by name; a struct literal where the type is known works as for any struct. `T(a, b)` also constructs when `T` is a type parameter that turns out to be a struct or tuple; a generic body that converts numbers writes `x as T`.
+
+```ents
+func make(comptime T: type, x: i32) -> T => T(x)
+
+export func f() -> u32 => make(u32, 1)
+```
+
+```errors
+u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T, in make(T = u32)
+```
+
+**Size and layout.** `sizeof(T)` and `sizeof(Vec(T))` are constants in each instance. A struct's size is the sum of its fields' sizes: fields are packed in declaration order with no padding ([9.6](#96-structs-and-slices-in-memory)). `sizeof((bool, u32, []u32))` is 13.
+
+**Where a container's header lives.** A `Vec(u32)` in a local is three wasm locals and has no address. A function that changes a container takes a pointer to it, so the header lives in memory and the program holds a pointer: `vec(u32, 16)` returns `*mut Vec(u32)`.
+
+```ents
+data space = mut [0:u8; 1024]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  p = (space as u32) + top
+  top += n
+}
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
+  return v
+}
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+test "one vector for each element type" {
+  let v = vec(u64, 4)
+  push(v, 1 << 40)
+  push(u64, v, 7)
+  assert v.len == 2
+  assert get(v, 0) == 1 << 40
+  let names = vec([]u8, 2)
+  push(names, "tau")
+  assert get(names, 0).len == 3
+}
+```
+
+A generic type that refers to itself, directly or through another generic type, is not supported: a type function has no conditions, so applying it would never end.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+```
+
+```errors
+generic type 'List' refers to itself
+```
+
+### 8.6 Comptime Function Parameters
+
+A **function parameter**, `comptime before: (T, T) -> bool`, is given the name of a function. Inside the generic, `before(a, b)` is a direct call of that function. This is how a sort takes its comparator without a function pointer:
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+func ascending(a: i32, b: i32) -> bool => a < b
+func descending(a: i32, b: i32) -> bool => a > b
+
+export func up(xs: []mut i32) { sort(xs, ascending) }
+export func down(xs: []mut i32) { sort(xs, descending) }
+```
+
+`up` and `down` call two different copies of `sort`; one contains `call $ascending`, the other `call $descending`. The module is the one with the two sorts written out:
+
+```ents same-wasm
+func sort_ascending(xs: []mut i32) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && ascending(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+func sort_descending(xs: []mut i32) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && descending(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+
+func ascending(a: i32, b: i32) -> bool => a < b
+func descending(a: i32, b: i32) -> bool => a > b
+
+export func up(xs: []mut i32) { sort_ascending(xs) }
+export func down(xs: []mut i32) { sort_descending(xs) }
+```
+
+Comptime function parameters are always written, also in the inferred form: `sort(xs, ascending)` is the inferred form of `sort(i32, xs, ascending)`. The argument is the name of a function of the module (declared at module level or imported; not a generic, not an expression, not a function a `test` declares), or a comptime function parameter of the enclosing generic passed on. Two instances are the same when the functions are the same function.
+
+The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside:
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func inc(x: u32) -> u32 => x + 1
+
+export func a() -> u32 => twice(inc, 5)          // T = u32, from inc; the 5 is a u32
+
+test "the function decides T" {
+  assert a() == 7
+  assert twice(u32, inc, 0) == 2
+}
+```
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+func inc(x: u32) -> u32 => x + 1
+
+func f(xs: []mut i32) { sort(xs, inc) }
+```
+
+```errors
+'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
+```
+
+Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
+
+### 8.7 Not in This Version
 
 Each of these is rejected with an error that says so, so the syntax stays free for a later version.
 
 | Not supported | What the compiler says |
 |---|---|
-| A comptime function parameter, `comptime before: (T, T) -> bool` | `comptime parameter 'before' must be a type parameter: comptime function parameters are not supported yet` |
-| A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type'` |
-| Constructing with a type parameter, `T(a, b)` | `T(...) on a type parameter is not supported yet` |
+| A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type' or a function type` |
 | A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
 | A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
 | Importing a generic function from another source module | `generic functions cannot be imported yet` |
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
+| A generic type with a parameter that is not `comptime X: type`, or with none | `generic type 'Vec' takes comptime type parameters only, as (comptime T: type)` |
+| A generic type that refers to itself | `generic type 'List' refers to itself` |
+| A generic type declared inside a `test` block | `a generic type is declared at module level, not inside a test` |
+| A generic type that shares its name with a `type` or another generic type | `'Vec' is already declared: a generic type's name is unique in its module` |
+| A generic type without its arguments, or with the wrong number | `'Vec' is a generic type: write Vec(T)`; `Vec expects 1 type argument, got 2` |
+| A type that is not generic, applied | `'Point' is not a generic type` |
+| A type parameter that is applied, `T(u32)` as a type | `a type parameter cannot be applied` |
+| A constructor on a type that is not a struct or tuple | `u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T` |
+| A comptime function argument that is not the name of a function | `argument 3 of 'sort' must be the name of a function: before is a comptime function parameter` |
+| A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
-Also not in this version: generic types (a type that takes type parameters), method-call syntax, writing some type parameters and inferring others, inference from the expected result type, inference through a function type (for `f: (T) -> T` the argument `inc` does not decide `T`; write the type argument), and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
+Also not in this version: method-call syntax, generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
 
-One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name with `type` and pass the name.
+One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
 <!-- spec:end -->
 
-### 8.6 How This Is Compile-Time Evaluation
+### 8.8 How This Is Compile-Time Evaluation
 
-Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type.
+Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type or a function.
 
 | Bound at compile time | Module level | Parameter | Later |
 |---|---|---|---|
 | a type | `type Pt = (q: i32, r: i32)` | `comptime T: type` | |
-| a function | `func f(...)` | | `comptime before: (T, T) -> bool` |
+| a function | `func f(...)` | `comptime before: (T, T) -> bool` | |
 | a number, bool | `def n = 64` | | `comptime n: u32`; `[n]T` |
-| a type computed from types | | | a function from types to a type |
+| a type computed from types | | `func Vec(comptime T: type) -> type => ...` | block bodies, conditions |
 | a value computed from values | `def bytes = n * 8` | | `comptime func`, tables |
 
-A call with comptime arguments is evaluated as far as its comptime parameters go: the result is a specialised function, and what is left for run time is the call of it.
+A call with comptime arguments is evaluated as far as its comptime parameters go: for a generic type completely (the result is a type and nothing is left for run time), for a generic function partially (the result is a specialised function, and what is left for run time is the call of it).
 
 ---
 
@@ -2578,15 +2806,9 @@ let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 
 ### Comptime Evaluation
 
-Generic functions take types at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more, in this order:
+Generic functions and generic types take types and functions at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more, in this order:
 
 ```text
-// Generic types: a function from types to a type
-func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
-
-// Comptime function parameters: a comparator without a function pointer
-func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { ... }
-
 // Comptime value parameters, and array sizes that depend on them
 func zeros(comptime n: u32) -> [n]u8 => ...
 
@@ -2602,9 +2824,9 @@ comptime func generate_table() -> *[256]u8 {
 def crc_table = generate_table()
 ```
 
-Comptime function parameters and comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed, and neither is an array size that names a parameter (`[n]u8`). Compile-time control flow (a comptime `if` that picks a type or a branch) comes after them.
+Comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed, and neither is an array size that names a parameter (`[n]u8`). Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body) comes after them.
 
-**Why:** Generic types make containers reusable (`Vec(u32)`, `Map(K, V)`). Compile-time function parameters and values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
+**Why:** Compile-time values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
 
 ### Module System
 

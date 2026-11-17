@@ -1,6 +1,6 @@
 # Generics
 
-Generic functions: a function with a compile-time type parameter, compiled once for each type it is used with. The rules are the "Generics" chapter of [`docs/encantis.md`](../docs/encantis.md), whose own examples are run as tests too. This file holds the cases that are too detailed for the reference: how the new forms parse, programs at the edges of what is accepted, and one case for every error.
+Generic functions: a function with a compile-time type parameter, compiled once for each type it is used with. Generic types, a type with type parameters, and comptime function parameters have their own sections at the end. The rules are the "Generics" chapter of [`docs/encantis.md`](../docs/encantis.md), whose own examples are run as tests too. This file holds the cases that are too detailed for the reference: how the new forms parse, programs at the edges of what is accepted, and one case for every error.
 
 The accepted modules of this file are also compiled and validated (see [`README.md`](README.md)), so nothing is listed here as accepted that does not build.
 
@@ -1016,6 +1016,1017 @@ export func f() -> u32 => deep(u8, 1)
 
 ```errors
 type arguments grow without end while instantiating 'deep'
+```
+
+## Generic types
+
+A generic type is declared like a function whose result is `type` and whose body is a type. It is a declaration of its own kind, with its parameters and its body.
+
+```ents FuncDecl
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)
+```
+
+```json ast
+{
+  "kind": "TypeFuncDecl",
+  "ident": "Vec",
+  "params": [
+    {
+      "kind": "Field",
+      "comptime": true,
+      "ident": "T",
+      "type": {
+        "kind": "TypeType"
+      }
+    }
+  ],
+  "body": {
+    "kind": "CompositeType",
+    "fields": [
+      {
+        "kind": "Field",
+        "ident": "ptr",
+        "type": {
+          "kind": "IndexedType",
+          "element": {
+            "kind": "TypeRef",
+            "name": "T"
+          },
+          "size": null,
+          "specifiers": [],
+          "mutable": true,
+          "manyPointer": true
+        }
+      },
+      {
+        "kind": "Field",
+        "ident": "len",
+        "type": {
+          "kind": "PrimitiveType",
+          "name": "u32"
+        }
+      }
+    ]
+  }
+}
+```
+
+Applied, it is a type: a name and its arguments.
+
+```ents Type
+Vec(u32)
+```
+
+```json ast
+{
+  "kind": "TypeApply",
+  "name": "Vec",
+  "args": [
+    {
+      "kind": "PrimitiveType",
+      "name": "u32"
+    }
+  ]
+}
+```
+
+An argument is any type, another application included, and the application stands wherever a type does: behind a pointer, as the element of a slice, of a many-pointer or of an array, in a struct, on either side of a function type.
+
+```ents Type
+*mut Vec(T)
+```
+
+```json ast
+{
+  "kind": "PointerType",
+  "pointee": {
+    "kind": "TypeApply",
+    "name": "Vec",
+    "args": [
+      {
+        "kind": "TypeRef",
+        "name": "T"
+      }
+    ]
+  },
+  "mutable": true
+}
+```
+
+```ents Type
+?*Vec(u8)
+```
+
+```json ast
+{
+  "kind": "PointerType",
+  "pointee": {
+    "kind": "TypeApply",
+    "name": "Vec",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      }
+    ]
+  },
+  "optional": true
+}
+```
+
+```ents Type
+[]Vec(u8)
+```
+
+```json ast
+{
+  "kind": "IndexedType",
+  "element": {
+    "kind": "TypeApply",
+    "name": "Vec",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      }
+    ]
+  },
+  "size": null,
+  "specifiers": []
+}
+```
+
+```ents Type
+[*]mut Pair(u8, u16)
+```
+
+```json ast
+{
+  "kind": "IndexedType",
+  "element": {
+    "kind": "TypeApply",
+    "name": "Pair",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      },
+      {
+        "kind": "PrimitiveType",
+        "name": "u16"
+      }
+    ]
+  },
+  "size": null,
+  "specifiers": [],
+  "mutable": true,
+  "manyPointer": true
+}
+```
+
+```ents Type
+[4]Pair(u8, u16)
+```
+
+```json ast
+{
+  "kind": "IndexedType",
+  "element": {
+    "kind": "TypeApply",
+    "name": "Pair",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      },
+      {
+        "kind": "PrimitiveType",
+        "name": "u16"
+      }
+    ]
+  },
+  "size": 4,
+  "specifiers": []
+}
+```
+
+```ents Type
+Map(K, Vec(V))
+```
+
+```json ast
+{
+  "kind": "TypeApply",
+  "name": "Map",
+  "args": [
+    {
+      "kind": "TypeRef",
+      "name": "K"
+    },
+    {
+      "kind": "TypeApply",
+      "name": "Vec",
+      "args": [
+        {
+          "kind": "TypeRef",
+          "name": "V"
+        }
+      ]
+    }
+  ]
+}
+```
+
+```ents Type
+(first: Vec(u8), second: u32)
+```
+
+```json ast
+{
+  "kind": "CompositeType",
+  "fields": [
+    {
+      "kind": "Field",
+      "ident": "first",
+      "type": {
+        "kind": "TypeApply",
+        "name": "Vec",
+        "args": [
+          {
+            "kind": "PrimitiveType",
+            "name": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "Field",
+      "ident": "second",
+      "type": {
+        "kind": "PrimitiveType",
+        "name": "u32"
+      }
+    }
+  ]
+}
+```
+
+```ents Type
+Vec(u8) -> Pair(u8, u8)
+```
+
+```json ast
+{
+  "kind": "FuncType",
+  "input": {
+    "kind": "TypeApply",
+    "name": "Vec",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      }
+    ]
+  },
+  "output": {
+    "kind": "TypeApply",
+    "name": "Pair",
+    "args": [
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      },
+      {
+        "kind": "PrimitiveType",
+        "name": "u8"
+      }
+    ]
+  }
+}
+```
+
+There is no space between the name and the parenthesis: a type can end a line, and the next line can start with a parenthesis.
+
+```ents
+func f(v: Vec (u32)) -> u32 => 0
+```
+
+```errors
+Expected
+```
+
+As a call argument it is an expression, a call inside the call, which the checker reads as a type where the parameter is one. So is the type that is called to construct a value.
+
+```ents Expr
+first(Vec(u32), Pair(A, B)(1, 2))
+```
+
+```json ast
+{
+  "kind": "CallExpr",
+  "callee": {
+    "kind": "IdentExpr",
+    "name": "first"
+  },
+  "args": [
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "CallExpr",
+        "callee": {
+          "kind": "IdentExpr",
+          "name": "Vec"
+        },
+        "args": [
+          {
+            "kind": "Arg",
+            "name": null,
+            "value": {
+              "kind": "IdentExpr",
+              "name": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "CallExpr",
+        "callee": {
+          "kind": "CallExpr",
+          "callee": {
+            "kind": "IdentExpr",
+            "name": "Pair"
+          },
+          "args": [
+            {
+              "kind": "Arg",
+              "name": null,
+              "value": {
+                "kind": "TypeExpr",
+                "type": {
+                  "kind": "TypeRef",
+                  "name": "A"
+                }
+              }
+            },
+            {
+              "kind": "Arg",
+              "name": null,
+              "value": {
+                "kind": "TypeExpr",
+                "type": {
+                  "kind": "TypeRef",
+                  "name": "B"
+                }
+              }
+            }
+          ]
+        },
+        "args": [
+          {
+            "kind": "Arg",
+            "name": null,
+            "value": {
+              "kind": "LiteralExpr",
+              "value": {
+                "kind": "int",
+                "value": "1",
+                "radix": 10
+              }
+            }
+          },
+          {
+            "kind": "Arg",
+            "name": null,
+            "value": {
+              "kind": "LiteralExpr",
+              "value": {
+                "kind": "int",
+                "value": "2",
+                "radix": 10
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Accepted
+
+A generic type is its body. A struct written out with the same fields, another generic type with the same body and a `type` that names either are the same type, and a generic instantiated for them is one function.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func Stack(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+type Bytes = Vec(u8)
+
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+
+export func a(v: *Vec(u8)) -> u8 => last(v)
+export func b(v: *Stack(u8)) -> u8 => last(v)
+export func c(v: *Bytes) -> u8 => last(v)
+export func d(v: *(ptr: [*]mut u8, len: u32, cap: u32)) -> u8 => last(u8, v)
+```
+
+```ents same-wasm
+type Bytes = (ptr: [*]mut u8, len: u32, cap: u32)
+
+func last_u8(v: *Bytes) -> u8 => v.ptr[v.len - 1]
+
+export func a(v: *Bytes) -> u8 => last_u8(v)
+export func b(v: *Bytes) -> u8 => last_u8(v)
+export func c(v: *Bytes) -> u8 => last_u8(v)
+export func d(v: *Bytes) -> u8 => last_u8(v)
+```
+
+Declared after its uses, and applied in the body of another.
+
+```ents
+export func f(m: *Map(u8, f64), i: u32) -> f64 => m.vals[i].second
+
+func Map(comptime K: type, comptime V: type) -> type => (keys: [*]mut K, vals: [*]mut Pair(K, V), n: u32)
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+```
+
+A type may refer to itself through a `type`, as any type may. The generic type applies nothing here.
+
+```ents
+type Node = Link(u32)
+func Link(comptime T: type) -> type => (head: T, next: ?*Node)
+
+export func second(n: *Node) -> u32 => if let m = n.next { m.head } else { 0 }
+```
+
+Type parameters are found through a generic type by its body, at any depth, and through two at once.
+
+```ents
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+func Map(comptime K: type, comptime V: type) -> type => (keys: [*]mut K, vals: [*]mut Pair(K, V), n: u32)
+
+func val(comptime K: type, comptime V: type, m: *Map(K, V), i: u32) -> V => m.vals[i].second
+func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
+
+export func a(m: *Map(u8, f64)) -> f64 => val(m, 2)
+export func b(p: (first: i32, second: f32)) -> f32 => swapped(swapped(swapped(p))).first
+
+test "swapped three times is swapped once" {
+  assert b((first: 1, second: 2.5)) == 2.5
+}
+```
+
+A type that is called constructs a value: by position, by name in any order, with `T(...)` where `T` is a struct or a tuple in the instance, and with a tuple of types.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+type Pt = (q: i32, r: i32)
+
+func make(comptime T: type, x: i32) -> T => T(x, x + 1)
+func named(comptime T: type, x: i32) -> T => T(r: x, q: x + 1)
+func empty(comptime T: type) -> Vec(T) => Vec(T)(cap: 4, ptr: 0 as [*]mut T, len: 0)
+func three(comptime T: type, x: T) -> (T, T, T) => (T, T, T)(x, x, x)
+
+test "constructors" {
+  assert make(Pt, 10).r == 11
+  assert make((i32, i32), 20).0 == 20
+  assert named(Pt, 10).q == 11
+  assert empty(u8).cap == 4
+  assert three(7:u32).2 == 7
+}
+```
+
+In a data literal and in a global's initializer it is data, as the constructor of a `type` is.
+
+```ents
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+
+global origin: Pair(i32, f64) = Pair(i32, f64)(1, 2.5)
+data table = [Pair(u8, u16)(1, 2), Pair(u8, u16)(3, 4)]
+
+test "data" {
+  assert origin.second == 2.5
+  assert (table as [*]Pair(u8, u16))[1].second == 4
+}
+```
+
+A struct type with named fields cannot be written in place as a type argument when its field types are not expressions. A generic type names it, also where it mentions a type parameter of the generic the call is in, which a `type` cannot.
+
+```ents
+func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)
+type Pt = (q: i32, r: i32)
+
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+func id(comptime T: type, v: T) -> T => v
+func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).at
+
+export func a(c: bool, n: []u8, p: Pt) -> u32 => pick(Named([]u8, Pt), c, (name: n, at: p), (name: n, at: p)).name.len
+export func b() -> u32 => wrap(7:u64)
+```
+
+An exported generic type gives the host nothing, and one that is never applied is only parsed.
+
+```ents
+export func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func Unused(comptime T: type) -> type => (t: T, n: Nope)
+
+export func f(a: u32) -> u32 => a + 1
+```
+
+```ents same-wasm
+export func f(a: u32) -> u32 => a + 1
+```
+
+### Rejected where it is declared
+
+Each of these is one mistake and one error.
+
+A parameter that is not a comptime type parameter, and no parameters at all.
+
+```ents
+func Vec(comptime T: type, n: u32) -> type => (T, u32)
+
+func f(v: Vec(u32)) -> u32 => 0
+```
+
+```errors
+generic type 'Vec' takes comptime type parameters only, as (comptime T: type)
+```
+
+```ents
+func Unit() -> type => u32
+```
+
+```errors
+generic type 'Unit' takes comptime type parameters only, as (comptime T: type)
+```
+
+A block body. The body of a generic type is one type.
+
+```ents
+func Vec(comptime T: type) -> type { }
+```
+
+```errors
+Expected "=>"
+```
+
+A generic type that applies itself, and two that apply each other: one error for the round.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+
+func f(a: *List(u32), b: *List(u8)) -> u32 => 0
+```
+
+```errors
+generic type 'List' refers to itself
+```
+
+```ents
+func A(comptime T: type) -> type => (x: T, b: *B(T))
+func B(comptime T: type) -> type => (y: T, a: *A(T))
+
+func f(a: *A(u32), b: *B(u8)) -> u32 => 0
+```
+
+```errors
+generic type 'A' refers to itself
+```
+
+A type parameter that is applied, in a generic type and in a generic function.
+
+```ents
+func Bad(comptime F: type) -> type => (x: F(u32))
+```
+
+```errors
+a type parameter cannot be applied
+```
+
+```ents
+func bad(comptime F: type, x: F(u32)) -> u32 => 0
+
+func f() -> u32 => bad(u32, 1)
+```
+
+```errors
+a type parameter cannot be applied
+```
+
+A type parameter declared twice, or named like a type of the module.
+
+```ents
+func Two(comptime A: type, comptime A: type) -> type => (A, A)
+```
+
+```errors
+type parameter 'A' is declared twice
+```
+
+```ents
+type Pt = (q: i32, r: i32)
+func Two(comptime Pt: type) -> type => (Pt, Pt)
+```
+
+```errors
+type parameter 'Pt' has the name of a type declared in this module
+```
+
+A name that a `type` or another generic type has.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+type Vec = (a: u32)
+
+func f(v: *Vec(u32), w: Vec) -> u32 => v.len
+```
+
+```errors
+'Vec' is already declared: a generic type's name is unique in its module
+```
+
+Inside a test.
+
+```ents
+test "t" {
+  func Two(comptime T: type) -> type => (T, T)
+  let v: Two(u32) = (1, 2)
+  assert v.0 == 1
+}
+```
+
+```errors
+a generic type is declared at module level, not inside a test
+```
+
+### Rejected where it is applied
+
+Without its arguments.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(v: *Vec) -> u32 => 0
+```
+
+```errors
+'Vec' is a generic type: write Vec(T)
+```
+
+With the wrong number of them.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(v: *Vec(u32, u8)) -> u32 => 0
+```
+
+```errors
+Vec expects 1 type argument, got 2
+```
+
+A type that is not generic, and a name that is no type.
+
+```ents
+type Point = (x: i32, y: i32)
+
+func f(v: *Point(u32)) -> u32 => 0
+```
+
+```errors
+'Point' is not a generic type
+```
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(v: *Vex(u32)) -> u32 => 0
+```
+
+```errors
+unknown generic type 'Vex' — did you mean 'Vec'?
+```
+
+An argument that is not a concrete type.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(v: *Vec(int(5))) -> u32 => 0
+```
+
+```errors
+type argument T of 'Vec' must be a concrete type
+```
+
+Different arguments are different types.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(a: *Vec(u8)) -> u32 {
+  let b: *Vec(u32) = a
+  return b.len
+}
+```
+
+```errors
+cannot assign *Vec(u8) to *Vec(u32)
+```
+
+A type parameter that the generic type has no field of cannot be found through it.
+
+```ents
+func Tagged(comptime T: type) -> type => (id: u32)
+func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
+
+func f(t: Tagged(u8)) -> u32 => tag(t)
+```
+
+```errors
+cannot infer T for 'tag': 'Tagged(T)' does not use T in its fields; write the type argument
+```
+
+Where a value is expected: applied, it is a type; called without its type arguments, it is not yet one.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f() -> u32 {
+  let v = Vec(u32)
+  return 0
+}
+```
+
+```errors
+'Vec(u32)' is a type; a type can only be passed for a comptime parameter
+```
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(p: [*]mut u32) -> u32 {
+  let v = Vec(p, 0, 4)
+  return 0
+}
+```
+
+```errors
+'Vec' is a generic type: write Vec(T)
+```
+
+The arguments of a constructor are checked as those of any constructor, and a field is given once.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(p: [*]mut u32) -> u32 => Vec(u32)(p, 0).len
+```
+
+```errors
+Vec(u32) expects 3 fields, got 2
+```
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func f(p: [*]mut u32) -> u32 => Vec(u32)(ptr: p, len: 0, ptr: p).len
+```
+
+```errors
+Vec(u32): field 'ptr' is given twice
+```
+
+## Comptime function parameters
+
+A comptime parameter of a function type is a field with `comptime` set, like a type parameter.
+
+```ents FuncDecl
+func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+```
+
+```json ast
+{
+  "kind": "FuncDecl",
+  "inline": false,
+  "ident": "apply",
+  "signature": {
+    "kind": "FuncSignature",
+    "input": {
+      "kind": "CompositeType",
+      "fields": [
+        {
+          "kind": "Field",
+          "comptime": true,
+          "ident": "f",
+          "type": {
+            "kind": "FuncType",
+            "input": {
+              "kind": "CompositeType",
+              "fields": [
+                {
+                  "kind": "Field",
+                  "ident": null,
+                  "type": {
+                    "kind": "PrimitiveType",
+                    "name": "u32"
+                  }
+                }
+              ]
+            },
+            "output": {
+              "kind": "PrimitiveType",
+              "name": "u32"
+            }
+          }
+        },
+        {
+          "kind": "Field",
+          "ident": "x",
+          "type": {
+            "kind": "PrimitiveType",
+            "name": "u32"
+          }
+        }
+      ]
+    },
+    "output": {
+      "kind": "PrimitiveType",
+      "name": "u32"
+    }
+  },
+  "body": {
+    "kind": "ArrowBody",
+    "expr": {
+      "kind": "CallExpr",
+      "callee": {
+        "kind": "IdentExpr",
+        "name": "f"
+      },
+      "args": [
+        {
+          "kind": "Arg",
+          "name": null,
+          "value": {
+            "kind": "IdentExpr",
+            "name": "x"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### Accepted
+
+A call of the parameter is a direct call of the function it was given. Each function makes its own instance, and the module is the one with the copies written out.
+
+```ents
+func apply(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func inc(x: u32) -> u32 => x + 1
+func dec(x: u32) -> u32 => x - 1
+
+export func up(x: u32) -> u32 => apply(inc, x)
+export func down(x: u32) -> u32 => apply(u32, dec, x)
+
+test "twice" {
+  assert up(5) == 7
+  assert down(5) == 3
+}
+```
+
+```ents same-wasm
+func apply_dec(x: u32) -> u32 => dec(dec(x))
+func apply_inc(x: u32) -> u32 => inc(inc(x))
+func inc(x: u32) -> u32 => x + 1
+func dec(x: u32) -> u32 => x - 1
+
+export func up(x: u32) -> u32 => apply_inc(x)
+export func down(x: u32) -> u32 => apply_dec(x)
+```
+
+Passed on to another generic, by its parameter's name.
+
+```ents
+func each(comptime T: type, xs: []T, comptime f: (T) -> T) -> T => f(xs.ptr[0])
+func both(comptime T: type, xs: []T, comptime g: (T) -> T) -> T => each(xs, g) + each(T, xs, g)
+func inc(x: u32) -> u32 => x + 1
+
+data nums = [10:u32, 20]
+
+test "passed on" {
+  assert both(nums, inc) == 22
+}
+```
+
+An imported function, and a generic with no type parameter at all.
+
+```ents
+import "env" "before" func before(a: i32, b: i32) -> bool
+
+func first(comptime cmp: (i32, i32) -> bool, a: i32, b: i32) -> i32 => if cmp(a, b) { a } else { b }
+
+export func f(a: i32, b: i32) -> i32 => first(before, a, b)
+```
+
+### Rejected
+
+An argument that is not the name of a function: a value, an expression, a generic.
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+
+func f(xs: []mut i32) { sort(i32, xs, 5) }
+```
+
+```errors
+argument 3 of 'sort' must be the name of a function: before is a comptime function parameter
+```
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+func less(comptime T: type, a: T, b: T) -> bool => a < b
+
+func f(xs: []mut i32) { sort(xs, less) }
+```
+
+```errors
+argument 2 of 'sort' must be the name of a function: before is a comptime function parameter
+```
+
+A function of another signature.
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+func inc(x: u32) -> u32 => x + 1
+
+func f(xs: []mut i32) { sort(xs, inc) }
+```
+
+```errors
+'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
+```
+
+A function that a test declares is no function of the module.
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }
+data space = mut [0:u8; 64]
+
+test "t" {
+  func by_low_bits(a: i32, b: i32) -> bool => (a & 7) < (b & 7)
+  sort((space as [*]mut i32)[0..4], by_low_bits)
+}
+```
+
+```errors
+argument 2 of 'sort' must be a function declared at module level: 'by_low_bits' is declared inside a test
+```
+
+The parameter used as a value.
+
+```ents
+func keep(comptime T: type, x: T, comptime f: (T) -> T) -> T {
+  let g = f
+  return f(x)
+}
+func inc(x: u32) -> u32 => x + 1
+
+export func a() -> u32 => keep(1:u32, inc)
+```
+
+```errors
+'f' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter, in keep(T = u32, f = inc)
+```
+
+A parameter of the same name.
+
+```ents
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool, before: u32) { }
+```
+
+```errors
+parameter 'before' is declared twice
+```
+
+Too few arguments for a generic that has no type parameter to leave out.
+
+```ents
+func apply(comptime f: (u32) -> u32, x: u32) -> u32 => f(x)
+func inc(x: u32) -> u32 => x + 1
+
+func g() -> u32 => apply(inc)
+```
+
+```errors
+'apply' expects 2 arguments, got 1
 ```
 
 <!-- spec:end -->
