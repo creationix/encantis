@@ -505,6 +505,32 @@ cannot write through const pointer
 cannot write through const slice
 ```
 
+A type pun (`p.u32`) is the pointer itself, seen as a pointer to `u32` values: it loads nothing, so there is no place behind it to assign to. Its element is the place.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(p: [*]mut u8) -> u32 {
+  p.u32[0] = 0x01020304
+  buf.u16[1] = 7
+  return p.u32[0]
+}
+```
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(p: [*]mut u8) { p.u32 = 0x01020304 }
+func b(s: []mut u8) { s.f64 += 1.5 }
+func c() { buf.u16 = 7 }
+```
+
+```errors
+cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value
+cannot assign to .f64: it is the pointer as [*]mut f64
+cannot assign to .u16: it is the pointer as [*]mut u16
+```
+
 ## Structs in array literals
 
 An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.

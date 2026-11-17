@@ -156,6 +156,50 @@ test "find" {
   })
 })
 
+describe('a module with errors', () => {
+  const meta = (source: string): MetaOutput => {
+    const result = parse(source)
+    if (result.errors.length > 0) throw new Error(result.errors.map(e => e.message).join(', '))
+    return buildMeta(result.module!, source)
+  }
+  const addressOf = (out: MetaOutput, name: string) => out.symbols.find(s => s.name === name)?.value
+
+  test('a data literal with an element of the wrong type has no address, the others keep theirs', () => {
+    const out = meta(`
+type Pt = (q: i32, r: Pt)
+data ok = [1, 2]
+data dp = [Pt(1, 2), Pt(3, 4)]
+export func a() -> u32 => 1`)
+    expect(out.errors?.map(e => e.message)).toEqual([
+      'field r: cannot assign int(2) to Pt',
+      'field r: cannot assign int(4) to Pt',
+    ])
+    expect(addressOf(out, 'ok')).toBe('0x8')
+    expect(addressOf(out, 'dp')).toBeUndefined()
+    expect(out.symbols.map(s => s.name)).toEqual(['Pt', 'ok', 'dp', 'a'])
+  })
+
+  // Each of these is rejected by the checker with a literal that can't be laid out.
+  const rejected: [string, string][] = [
+    ['an integer for a bool field', 'type P = (q: i32, r: bool)\ndata dp: []P = [(1, 1)]'],
+    ['a float for an integer field', 'type P = (q: i32, r: i32)\ndata dp: []P = [(1, 2.5)]'],
+    ['a float for a pointer field', 'type P = (q: i32, r: *i32)\ndata dp: []P = [(1, 2.5)]'],
+    ['an integer for a struct field', 'type In = (a: u8, b: u16)\ntype P = (q: i32, r: In)\ndata dp: []P = [(1, 2)]'],
+    ['an integer for an array field', 'type P = (q: i32, r: [2]i32)\ndata dp: []P = [(1, 2)]'],
+    ['an integer for a function field', 'type P = (q: i32, r: (i32) -> i32)\ndata dp: []P = [(1, 2)]'],
+    ['a float in an array of integers', 'data dp: *[2]i32 = [1, 2.5]'],
+    ['a float in an array inside a struct', 'type P = (q: i32, r: []u8)\ndata dp: []P = [(1, [1.5, 2])]'],
+    ['a float in a slice of integers in a function', 'func f() -> u32 {\n  let s: []u32 = [1.5, 2.5]\n  return s.len\n}'],
+  ]
+  for (const [name, source] of rejected) {
+    test(`${name} is reported, not thrown`, () => {
+      const out = meta(`data ok = [1, 2]\n${source}`)
+      expect(out.errors?.length).toBeGreaterThan(0)
+      expect(addressOf(out, 'ok')).toBe('0x8')
+    })
+  }
+})
+
 describe('meta.json generation', () => {
   const glob = new Glob('*.ents')
   const fixturesDir = new URL('./__fixtures__/analyser-vectors', import.meta.url)
