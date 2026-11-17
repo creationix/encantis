@@ -5732,9 +5732,10 @@ class CheckContext {
       }
     }
     for (const [candidate] of this.moduleScope.symbols) {
-      // Not a name that could have been meant: an instance's, or one the
-      // code being checked cannot see.
-      if (candidate.includes('<') || !this.lookup(candidate)) continue
+      // Not a name that could have been meant: an instance's, the one a
+      // function that shares its name is known by, or one the code being
+      // checked cannot see.
+      if (candidate.includes('<') || candidate.includes(':') || !this.lookup(candidate)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist

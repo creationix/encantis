@@ -2225,6 +2225,12 @@ describe('functions that share a name', () => {
     expect(result.warnings.map(w => w.offset)).toEqual([src.indexOf('func hash(k: u64'), src.indexOf('func hash(k: []'), src.indexOf('func hash(a:')])
   })
 
+  test('a misspelt name is not answered with the name a function is known by', () => {
+    // hash:u64 is one edit from hash_u64, and nothing a program can write.
+    expect(errs(`${HASH}\nfunc f(x: u64) -> u32 => hash_u64(x)`)[0]).toBe("unknown identifier 'hash_u64'")
+    expect(errs(`${HASH}\nfunc f(x: u64) -> u32 => hasj(x)`)[0]).toBe("unknown identifier 'hasj' — did you mean 'hash'?")
+  })
+
   test('two with the same parameter types are an error at the second', () => {
     const src = 'func hash(k: u32) -> u32 => k\nfunc hash(n: u32) -> u64 => 1'
     const result = checkModule(src)

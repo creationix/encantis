@@ -2162,3 +2162,26 @@ describe('functions that share a name, in the output', () => {
     expect(funcToWat(module.decls[1] as AST.FuncDecl, checkResult)).toStartWith('(func $size:u64 (param $a i64) (result i32)')
   })
 })
+
+describe('members named like a primitive type', () => {
+  test('a field whose name starts like one is read and written as any field', () => {
+    const wat = modWat(`
+      type S = (u32s: u32, boolish: bool, i8_le: u8)
+      export func f(s: *mut S, v: S) -> u32 {
+        s.u32s = 7
+        s.i8_le += 1
+        return s.u32s + v.u32s
+      }
+    `)
+    expect(wat).toContain('(i32.store (local.get $s) (i32.const 7))')
+    expect(wat).toContain('(i32.add (i32.load (local.get $s)) (local.get $v_u32s))')
+  })
+
+  test('a function of such a name is called as a method, and the type pun is still the pun', () => {
+    const wat = modWat(`
+      func u32s(n: u32) -> u32 => n * 4
+      export func f(n: u32, p: *u8) -> u32 => n.u32s() + p.u32[0]
+    `)
+    expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
+  })
+})
