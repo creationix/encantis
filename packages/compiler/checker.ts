@@ -2265,6 +2265,19 @@ class CheckContext {
       return expected
     }
 
+    // No other tuple is a slice. (x) is x, and meets the type as x does.
+    if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
+      const only = expr.elements.length === 1 && !expr.elements[0].name ? expr.elements[0].value : null
+      if (only) {
+        const type = this.checkExpr(only, expected, errorContext)
+        this.exprTypes.set(expr, type)
+        return type
+      }
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
     const isFramedArray = expected.kind === 'array' && expected.sizes?.some(s => s === '!' || s === '?')
     if (
