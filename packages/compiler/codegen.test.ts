@@ -1072,6 +1072,18 @@ describe('builtin codegen', () => {
       expect(wat).toContain('(i32.const 24)) (else (if (result i32) (local.get $c) (then (i32.const 28)) (else (i32.const 32))))')
     })
 
+    test('and one in parentheses', () => {
+      const wat = modWat(`
+        data buf = mut [0:u8; 16]
+        func f(c: bool) {
+          memcpy(buf, ("abcd"), 4)
+          memcpy(buf, (if c { "mnop" } else { "wxyz" }), 4)
+        }
+      `)
+      expect(wat).toContain('(memory.copy (i32.const 8) (i32.const 24) (i32.const 4))')
+      expect(wat).toContain('(then (i32.const 28)) (else (i32.const 32))')
+    })
+
     test('abs of a small integer stays in its type', () => {
       expect(body('func f(a: i8) -> i8 => abs(a)'))
         .toBe('(select (local.get $a) (i32.shr_s (i32.shl (i32.sub (i32.const 0) (local.get $a)) (i32.const 24)) (i32.const 24)) (i32.ge_s (local.get $a) (i32.const 0)))')

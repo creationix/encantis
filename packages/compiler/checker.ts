@@ -1352,8 +1352,11 @@ class CheckContext {
       }
       // A string literal gets its bytes in the data section when it's checked
       // against the type it's used at, as the argument of a function is. So
-      // does one in an arm of an `if` or a `match`.
-      if (expr.kind === 'LiteralExpr' || expr.kind === 'IfExpr' || expr.kind === 'MatchExpr') this.checkExpr(expr, type)
+      // does one in an arm of an `if` or a `match`. Parentheses around the
+      // operand change nothing.
+      let value = expr
+      for (let inner = groupedExpr(value); inner; inner = groupedExpr(value)) value = inner
+      if (value.kind === 'LiteralExpr' || value.kind === 'IfExpr' || value.kind === 'MatchExpr') this.checkExpr(value, type)
       return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
