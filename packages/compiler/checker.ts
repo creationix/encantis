@@ -1205,15 +1205,7 @@ class CheckContext {
 
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
-    // With a declared type the literal is checked against it below, which
-    // tells it whether it has to be mut.
-    if (decl.type) this.mutLiterals++
-    let inferredType: ResolvedType
-    try {
-      inferredType = this.inferExpr(decl.value)
-    } finally {
-      if (decl.type) this.mutLiterals--
-    }
+    const inferredType = this.inferExpr(decl.value)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
     // Use span-based key for data inside test blocks to avoid name collisions
@@ -3265,10 +3257,7 @@ class CheckContext {
   // typedByContext: the expression is about to meet an expected type.
   inferExprInner(expr: AST.Expr, typedByContext = false): ResolvedType {
     // What a `mut` literal holds is writable with it (see requireMutLiteral).
-    // Nor is a literal about to meet a type told before it meets it: the
-    // check that follows says what it holds is constant, if it is.
-    const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr'
-    if (literal && (typedByContext || writtenMut(expr))) {
+    if (expr.kind !== 'LiteralExpr' && writtenMut(expr)) {
       this.mutLiterals++
       try {
         return this.inferExprOf(expr, typedByContext)
@@ -7394,7 +7383,7 @@ function oneCharacter(bytes: Uint8Array): number | null {
 }
 
 // Codepoints written between quotes, each escaped where it has to be.
-export function spellCodepoints(codepoints: number[], quote: "'" | '"'): string {
+function spellCodepoints(codepoints: number[], quote: "'" | '"'): string {
   let out = quote
   for (const cp of codepoints) {
     const c = String.fromCodePoint(cp)
@@ -7411,12 +7400,20 @@ export function spellCodepoints(codepoints: number[], quote: "'" | '"'): string 
 // A literal written out again, for an error that shows how to write it: in
 // full when it is short, else as its brackets or quotes around an ellipsis.
 function writtenLiteral(expr: AST.Expr, typeOf: (e: AST.Expr) => ResolvedType | undefined): string {
-  const text = (e: AST.Expr | null): string => {
+  const text = (e: AST.Expr | null): string => (e && writtenMut(e) && e.kind !== 'AnnotationExpr' ? `mut ${bare(e)}` : bare(e))
+  const bare = (e: AST.Expr | null): string => {
     if (!e) return '...'
     switch (e.kind) {
       case 'LiteralExpr': {
         const v = e.value
-        if (v.kind === 'string') return spellCodepoints([...new TextDecoder().decode(v.bytes)].map((c) => c.codePointAt(0)!), '"')
+        if (v.kind === 'string') {
+          try {
+            const chars = [...new TextDecoder('utf-8', { fatal: true }).decode(v.bytes)]
+            return spellCodepoints(chars.map((c) => c.codePointAt(0)!), '"')
+          } catch {
+            return `x"${[...v.bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}"`
+          }
+        }
         if (v.kind === 'int' && e.quoted) return spellCodepoints([Number(v.value)], "'")
         if (v.kind === 'int' && v.radix === 16) return `${v.value < 0n ? '-' : ''}0x${(v.value < 0n ? -v.value : v.value).toString(16)}`
         return String(v.value)

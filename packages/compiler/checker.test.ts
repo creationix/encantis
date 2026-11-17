@@ -1384,15 +1384,23 @@ describe('a literal for a mutable pointer or slice', () => {
     expect(errs('data s: *mut [3]u8 = mut "a\\n\\""')).toEqual([])
     expect(errs('data s: *mut [3]u8 = "a\\n\\""')).toEqual([constant('"a\\n\\""', '*mut [3]u8')])
     expect(errs('data s: []mut u16 = [0xff; 4]')).toEqual([constant('[0xff; 4]', '[]mut u16')])
+    expect(errs('data s: []mut u8 = x"ff 00"')).toEqual([constant('x"ff00"', '[]mut u8')])
     // A long one is shown by its brackets.
     expect(errs('data s: []mut u16 = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]')).toEqual([constant('[...]', '[]mut u16')])
   })
 
-  test('mut covers what the literal lays out apart, and only one error is reported for it', () => {
+  test('mut covers what the literal lays out apart', () => {
     const source = 'type B = (bytes: []mut u8, n: u32)\n'
     expect(errs(`${source}data bs: *mut [2]B = mut [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([])
-    expect(errs(`${source}data bs: *mut [2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([constant('[([0:u8; 2], 0), B("ab", 1)]', '*mut [2]B')])
-    expect(errs(`${source}data bs: *[2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([constant('[0:u8; 2]', '[]mut u8'), `field bytes: ${constant('"ab"', '[]mut u8')}`])
+    expect(errs('data ts: *mut [2][2]i32 = [mut [1, 2], [3, 4]]')).toEqual([constant('[mut [1, 2], [3, 4]]', '*mut [2][2]i32')])
+    // A constructor's arguments are checked before the literal it is in
+    // meets its type: the one keyword is the fix for both.
+    expect(errs(`${source}data bs: *mut [2]B = [([0:u8; 2], 0), B("ab", 1)]`))
+      .toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[([0:u8; 2], 0), B("ab", 1)]', '*mut [2]B')])
+    // In a value, a constructor's fields are what is checked.
+    expect(errs(`${source}func f() -> u32 {\n  let a: [2]B = [B("cd", 1), B(mut "ef", 2)]\n  let t: (B, u32) = (B("gh", 1), 2)\n  return 0\n}`))
+      .toEqual([`field bytes: ${constant('"cd"', '[]mut u8')}`, `field bytes: ${constant('"gh"', '[]mut u8')}`])
+    expect(errs(`${source}data bs: *[2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[0:u8; 2]', '[]mut u8')])
     // Nothing else wrong with it, or the other error is the one.
     expect(errs('data s: []mut u32 = "abcd"')).toEqual([expect.stringContaining('cannot assign a string literal to []mut u32')])
   })
