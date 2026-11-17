@@ -625,6 +625,15 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('(drop)')
     })
 
+    test('a match loads a subject of several values from memory, and drops them all', () => {
+      // A tuple behind a pointer is one load for each field: as many values as are dropped.
+      const behind = funcWat('func f(p: *(u32, u32)) -> i32 => match p.* { _ => 5 }')
+      expect(behind).toContain('(i32.load (local.get $p)) (i32.load offset=4 (local.get $p))\n(drop)\n(drop)\n(i32.const 5)')
+      const element = funcWat('func f(s: [](u32, u64)) -> i32 => match s[0] { _ => 5 }')
+      expect(element).toContain('(i64.load offset=4 (local.get $__tmp_0))\n(drop)\n(drop)\n(i32.const 5)')
+      expect(behind + element).not.toContain('__match_')
+    })
+
     test('a match arm block gives its value', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         0 => { let x = k + 1\n x * 2 }
