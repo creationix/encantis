@@ -1910,6 +1910,27 @@ describe('builtins', () => {
     expect(types('', 'max(1, 5000000000)')).toEqual(['i64', 'i64'])
   })
 
+  test('with only literals the default type is the one the options give', () => {
+    const typed = (call: string, options: { defaultInt?: 'i32' | 'i64'; defaultFloat?: 'f32' | 'f64' }) => {
+      const src = `func f() { let r = ${call} }`
+      const result = typecheck(parse(src).module!, options)
+      expect(result.errors.map(e => e.message)).toEqual([])
+      return typeAt(result, src.indexOf(call), 'BuiltinCall')
+    }
+    expect(typed('sqrt(2.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('copysign(5.0, -1.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2.5)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2)', { defaultInt: 'i64' })).toBe('i64')
+    expect(typed('abs(-5)', { defaultInt: 'i64', defaultFloat: 'f32' })).toBe('i64')
+    expect(typed('max(1, 2)', { defaultFloat: 'f32' })).toBe('i32')
+    // Too big for an i32, they are an i64 whichever is the default.
+    expect(typed('max(1, 5000000000)', { defaultInt: 'i32' })).toBe('i64')
+    // The result is of that type too: an f32 where an f32 is wanted.
+    const result = typecheck(parse('func f() -> f32 => sqrt(2.0)').module!, { defaultFloat: 'f32' })
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(errs('func f() -> f32 => sqrt(2.0)')).toEqual(['cannot assign f64 to f32'])
+  })
+
   test('typed operands meet at the wider type', () => {
     expect(types('a: i32, b: i64', 'max(a, b)')).toEqual(['i64', 'i64'])
     expect(types('a: i64, b: i32', 'max(a, b)')).toEqual(['i64', 'i64'])

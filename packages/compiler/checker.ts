@@ -2859,7 +2859,12 @@ class CheckContext {
         this.error(args[0].value.span.start, `${name} requires ${wanted}, got ${typeToString(floatLiteral)}`)
         return fallback
       }
-      common = floatLiteral || kind === 'float' ? primitive('f64') : this.unifyTypes(types)
+      // The default type is the configured one (TypecheckOptions). Integers
+      // too big for an i32 are an i64 whichever that is.
+      const sized = this.unifyTypes(types)
+      common = floatLiteral || kind === 'float' ? concretizeType(comptimeFloat(0), this.options)
+        : typeEquals(sized, primitive('i32')) ? concretizeType(comptimeInt(0n), this.options)
+        : sized
     }
     for (const [i, type] of types.entries()) {
       if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
