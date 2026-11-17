@@ -1320,6 +1320,16 @@ describe('tables', () => {
     expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
   })
 
+  test('len of a packed *[NxM]T is N, its rows; wid of a slice is the width of an element', () => {
+    const value = (expr: string, params = '') => errs(`let n: u32#1 = ${expr}`, params)
+    // A constant has to fit a ranged type, which pins it down.
+    expect(value('p.len', 'p: *[2x3]i32')).toEqual(['cannot assign int(2) to u32#1'])
+    expect(value('v.len', 'v: [2x3]i32')).toEqual(['cannot assign int(2) to u32#1'])
+    expect(value('s.wid', 's: []u64')).toEqual(['cannot assign int(8) to u32#1'])
+    expect(value('rows.wid', 'rows: []mut [3]i32')).toEqual(['cannot assign int(4) to u32#1'])
+    expect(value('q.wid', 'q: *[]u16')).toEqual(['cannot assign int(2) to u32#1'])
+  })
+
   test('len and wid are constants', () => {
     // A constant has to fit a ranged type, which pins it down: n < 3, w < 5.
     expect(errs('let n: u32#3 = grid.len\nlet w: u32#5 = grid.wid\nlet c: u32#5 = cube.wid\nlet r: u32#4 = grid[0].len')).toEqual([])

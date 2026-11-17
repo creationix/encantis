@@ -4524,7 +4524,12 @@ class CheckContext {
             if (f) return f.type
           }
         }
-        // Slice built-in fields: .ptr, .len
+        // Slice built-in fields: .ptr, .len, and .wid, the width of an
+        // element (a row pointer's in a table), known at compile time
+        const width = (slice: ResolvedType & { kind: 'slice' }): ResolvedType => {
+          const ws = byteSize(tableRow(slice) ?? slice.element)
+          return ws !== null ? comptimeInt(BigInt(ws)) : primitive('u32')
+        }
         if (objType.kind === 'slice') {
           if (expr.member.name === 'ptr') {
             return manyPointer(objType.element, objType.mutable)
@@ -4532,6 +4537,7 @@ class CheckContext {
           if (expr.member.name === 'len') {
             return primitive('u32')
           }
+          if (expr.member.name === 'wid') return width(objType)
         }
         // Auto-deref: pointer to slice allows .ptr/.len access
         if (objType.kind === 'pointer' && objType.pointee.kind === 'slice') {
@@ -4542,6 +4548,7 @@ class CheckContext {
           if (expr.member.name === 'len') {
             return primitive('u32')
           }
+          if (expr.member.name === 'wid') return width(sliceType)
         }
         // Array type built-in fields: .ptr, .len, .wid
         if (objType.kind === 'array') {
@@ -4553,9 +4560,9 @@ class CheckContext {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(objType)} - length is unknown`)
               return primitive('u32')
             }
-            const total = totalElements(objType.sizes)
-            if (total !== null) return comptimeInt(BigInt(total))
-            return primitive('u32')
+            // N, also of a packed [NxM]T: the number of its rows
+            const n = objType.sizes[0]
+            return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
           }
           if (expr.member.name === 'wid') {
             const ws = byteSize(objType.element)
@@ -4574,9 +4581,9 @@ class CheckContext {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(arrayType)} - length is unknown`)
               return primitive('u32')
             }
-            const total = totalElements(arrayType.sizes)
-            if (total !== null) return comptimeInt(BigInt(total))
-            return primitive('u32')
+            // N, also of a packed *[NxM]T: the number of its rows (2.5)
+            const n = arrayType.sizes[0]
+            return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
           }
           if (expr.member.name === 'wid') {
             const ws = byteSize(tableRow(objType) ?? arrayType.element)
@@ -6345,7 +6352,7 @@ function hasMember(type: ResolvedType, name: string): boolean {
   const struct = u.kind === 'pointer' ? unwrap(u.pointee) : u
   if (struct.kind === 'tuple' && struct.fields.some((f) => f.name === name)) return true
   const held = type.kind === 'pointer' ? type.pointee : type
-  if (held.kind === 'slice') return name === 'ptr' || name === 'len'
+  if (held.kind === 'slice') return name === 'ptr' || name === 'len' || name === 'wid'
   // A many-pointer has no length: `len` is no member of it.
   return held.kind === 'array' && (name === 'ptr' || name === 'wid' || (name === 'len' && held.sizes !== null))
 }

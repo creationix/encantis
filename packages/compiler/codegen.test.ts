@@ -1876,6 +1876,18 @@ describe('tables', () => {
     expect(distinct()).toBe(7)
   })
 
+  test('len of a packed block is its rows, and wid of a slice the width of an element', async () => {
+    const { lens, size } = await run(`
+      data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+      data words: []u64 = [1, 2, 3]
+      data rows: [][3]i32 = [[1, 2, 3], [4, 5, 6]]
+      export func lens() -> u32 => m.len * 1000 + words.wid * 100 + rows.wid * 10 + (if m.len == 2 { 1 } else { 0 })
+      export func size(s: []u64) -> u32 => s.len * s.wid
+    `)
+    expect(lens()).toBe(2841)
+    expect(size(0, 5)).toBe(40)
+  })
+
   test('len, wid, sizeof, loops, lets, arguments and ranges', async () => {
     const { lens, loops, pass, addr, range, copy } = await run(`${TABLES}
       data board: *mut [2][3]i32 = mut [[0; 3]; 2]

@@ -347,7 +347,7 @@ All pointers are `u32` (wasm 32-bit address space). Every pointer type starts wi
 | `[*]T`     | many-pointer (no bounds)         | N/A             | `sizeof(T)`         | `[i]` (unchecked)                |
 | `[]T`      | slice (fat pointer)              | runtime         | `sizeof(T)`         | `[i]`                            |
 
-`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`.
+`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`. A packed `*[NxM]T` counts its rows (`.len` is N, as `p[i]` takes a row) but measures an element (`.wid` is `sizeof(T)`), so its size is `p.len * M * p.wid`.
 
 ```ents
 let p: *u8 = ...

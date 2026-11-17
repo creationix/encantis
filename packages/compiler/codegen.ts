@@ -1417,7 +1417,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         return `(i32.load offset=4 ${exprToWat(expr.object, ctx)})`
       }
       if (member.name === 'wid') {
-        const elemSize = byteSize(sliceType.element)
+        const elemSize = byteSize(RT.tableRow(sliceType) ?? sliceType.element)
         if (elemSize === null) {
           throw new Error(`Cannot determine element size for ${sliceType.element.kind}`)
         }

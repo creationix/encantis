@@ -3933,8 +3933,16 @@ export func c(b: *Box) -> u32 => b.n + n(b)`
 func ptr(xs: *[4]u8) -> u32 => 8
 func wid(xs: []u8) -> u32 => 9
 data four = [1:u8, 2, 3, 4]
-export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid() + len(xs) + ptr(four)`
-    expect(compiled(source)).toEqual(['wid/1'])
+export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid + len(xs) + ptr(four) + wid(xs)`
+    expect(compiled(source)).toEqual([])
+    // .wid of a slice is the width of an element (reference 2.5), so a call of
+    // it is the field, as for any member.
+    expect(errorsOf(`func wid(xs: []u8) -> u32 => 9\nfunc f(xs: []u8) -> u32 => xs.wid()`)).toEqual([
+      "cannot call non-function type: int(1) ('wid' is a field here, and a field wins over the function 'wid': write wid(...))",
+    ])
+    expect(errorsOf(`func wid(xs: [][3]i32) -> u32 => 9\nfunc f(rows: [][3]i32) -> u32 => rows.wid()`)).toEqual([
+      "cannot call non-function type: int(4) ('wid' is a field here, and a field wins over the function 'wid': write wid(...))",
+    ])
   })
 
   test('a many-pointer has no length, so len is a function it can be the receiver of', () => {
