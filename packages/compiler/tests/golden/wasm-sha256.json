@@ -84,6 +84,8 @@
   "packages/compiler/tests/fixtures/modular/cycle-b.ents": "does not compile",
   "packages/compiler/tests/fixtures/modular/data-main.ents": "does not compile",
   "packages/compiler/tests/fixtures/modular/data-util.ents": "does not compile",
+  "packages/compiler/tests/fixtures/modular/lit-main.ents": "ccbafb53d78d697280b746d1714c32aef0f3d80e637321366f920b2d857e0d47",
+  "packages/compiler/tests/fixtures/modular/lit-util.ents": "e87b9a6f8c2ed3418344b03423c02cc4a5c7dc433da2247e8537027d6eca0a43",
   "packages/compiler/tests/fixtures/modular/main.ents": "d892001469fa3163cf57fbe14b45ce62d6206c62b281cc09c7f33b67dc8564ae",
   "packages/compiler/tests/fixtures/modular/mem-conflict.ents": "does not compile",
   "packages/compiler/tests/fixtures/modular/mem-util.ents": "b88c5174c4e07c0fe920f4de39eb9afa01255b093ade044eb63c75ebe3828bc1",

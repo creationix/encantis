@@ -18,7 +18,7 @@ import {
   totalElements,
 } from './types'
 import * as RT from './types'
-import { dataToWat, buildDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
+import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
@@ -3528,20 +3528,23 @@ export function programToWat(
 ): string {
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
-  const allLiterals: import('./checker').PendingLiteral[] = []
-  const allTypes = new Map<string, import('./types').ResolvedType>()
   const allCalls: TypeCheckResult['calls'] = new Map()
 
-  // Collect all literals and types for a unified data section
+  // One data section for the literals of all modules. A literal is known by
+  // its offset in its own module's source, so each module has its own map
+  // into the section: two modules with a literal at the same offset (or two
+  // instances at the same private offset) must not read each other's data.
+  const sources: { path: string; result: TypeCheckResult }[] = []
   for (const [path, result] of checkResults) {
-    allLiterals.push(...result.literals)
-    for (const [k, v] of result.types) allTypes.set(k, v)
+    sources.push({ path, result })
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
-  for (const [, loaded] of modules) {
-    const result = checkResults.get(loaded.path)
-    if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls })
+  const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
+  const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (result) labelDataEntries(loaded.module, result, dataBuilder, refsOf(path))
   }
   const dataSection = dataBuilder.result()
 
@@ -3629,7 +3632,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
@@ -3694,7 +3697,7 @@ export function programToWat(
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
-      parts.push(funcToWat(fn, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
+      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
     }
   }
 
@@ -3703,7 +3706,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'GlobalDecl') {
         parts.push(globalToWat(decl, ctx))
@@ -3719,7 +3722,7 @@ export function programToWat(
   if (entryModule) {
     const entryNameMap = buildFullNameMap(entryPath)
     const entryResult = checkResults.get(entryPath)!
-    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap, dataSection.totalSize)
+    const ctx = createContext(entryResult, refsOf(entryPath), entryNameMap, dataSection.totalSize)
     for (const decl of entryModule.module.decls) {
       if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl' && !isGenericExport(decl)) {
         parts.push(exportToWat(decl, ctx))
@@ -3735,10 +3738,10 @@ export function programToWat(
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
       const testNameMap = buildFullNameMap(testFilePath)
-      const ctx = createContext(testResult, globalLiteralRefs, testNameMap, dataSection.totalSize)
+      const ctx = createContext(testResult, refsOf(testFilePath), testNameMap, dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, '', ctx, testResult, globalLiteralRefs, testNameMap, parts)
+        emitTestDecl(decl, '', ctx, testResult, refsOf(testFilePath), testNameMap, parts)
       }
     }
   }

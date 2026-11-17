@@ -1,0 +1,6 @@
+// Its literals stand at the offsets of lit-main.ents's: xxxxxxxxxxxxxxxxxxxx
+data ubuf = mut [0:u8; 4]
+export func ustamp() -> u8 { memcpy(ubuf, "abcd", 4)
+  return ubuf[0] }
+func upick(comptime T: type, x: T) -> []u8 => "util"
+export func uword() -> u8 => upick(u8, 1)[0] ?? 0

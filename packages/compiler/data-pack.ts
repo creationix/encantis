@@ -1138,6 +1138,20 @@ export interface DataSectionResult {
   literalRefs: Map<number, DataRef>  // AST offset → DataRef
 }
 
+// The literals of one module, with the types its checker gave them. A
+// literal is known by where it is in its module's source (in an instance of a
+// generic, a private offset of that module), so the same id in two modules is
+// two literals.
+export interface LiteralSource {
+  literals: PendingLiteral[]
+  types: Map<string, ResolvedType>
+}
+
+interface DataSectionOptions {
+  tolerant?: boolean
+  calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
+}
+
 /**
  * Build the data section from pending literals collected during type checking.
  * Serialization types are looked up from the types map at typeKey(id, 'DataTarget').
@@ -1145,20 +1159,34 @@ export interface DataSectionResult {
 export function buildDataSection(
   literals: PendingLiteral[],
   types: Map<string, ResolvedType>,
-  options: { tolerant?: boolean; calls?: ReadonlyMap<AST.CallExpr, AST.Expr> } = {},
+  options: DataSectionOptions = {},
 ): DataSectionResult {
+  const { dataBuilder, literalRefs } = buildProgramDataSection([{ literals, types }], options)
+  return { dataBuilder, literalRefs: literalRefs[0] }
+}
+
+/**
+ * One data section for the literals of several modules. Each module gets its
+ * own map from its literal ids to their places in the section, in the order
+ * of `sources`: ids are only unique within a module.
+ */
+export function buildProgramDataSection(
+  sources: LiteralSource[],
+  options: DataSectionOptions = {},
+): { dataBuilder: DataSectionBuilder; literalRefs: Map<number, DataRef>[] } {
   const dataBuilder = new DataSectionBuilder()
   dataBuilder.built = options.calls
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)
-  const literalRefs = new Map<number, DataRef>()
+  const literalRefs = sources.map(() => new Map<number, DataRef>())
 
-  // Resolve serialization types from the types map
-  const withTypes = literals.map(lit => ({
+  // Resolve serialization types from each module's types map
+  const withTypes = sources.flatMap((source, i) => source.literals.map(lit => ({
     ...lit,
-    type: types.get(typeKey(lit.id, 'DataTarget')) as ArrayRT,
-  })).filter(lit => lit.type)
+    refs: literalRefs[i],
+    type: source.types.get(typeKey(lit.id, 'DataTarget')) as ArrayRT,
+  }))).filter(lit => lit.type)
 
   // Sort by priority for better deduplication
   // Priority: more specifiers > fixed-size > slices
@@ -1169,7 +1197,7 @@ export function buildDataSection(
   // Serialize each literal
   for (const lit of sorted) {
     try {
-      literalRefs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs))
+      lit.refs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, lit.refs))
     } catch (e) {
       // Laying a literal out takes for granted that it passed the checker. In
       // a module that didn't (the editor asks for metadata as it is typed), a
