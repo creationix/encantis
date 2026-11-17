@@ -708,7 +708,7 @@ access_suffix   = "." digit+                            -- tuple index
                 | "." ident                             -- field, or the name of a method
 ```
 
-A member is a type-punned access only when its whole name is a primitive type's: `p.u32`, `p.u8[4]` and `p.u32-1` (the pun, minus one) are; `s.boolish`, `p.i8_le` and `v.u32s()` name a field or a method. The name ends at the first character that is not a letter, a digit or `_`.
+A member is a type-punned access only when its whole name is a primitive type's: `p.u32`, `p.u8[4]` and `p.u32-1` (the pun, minus one) are; `s.boolish`, `p.i8_le` and `v.u32s()` name a field or a method. The name ends at the first character that is not a letter, a digit or `_`. A hyphen ends it too, although an identifier may hold one, so that `p.u32-1` stays a subtraction: a field or a function named `u32-count` cannot be reached as a member (`x.u32-count` is `x.u32 - count`); call the function as `u32-count(x)`.
 
 ### Indexing
 

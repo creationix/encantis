@@ -410,6 +410,9 @@ describe('parser', () => {
       expect(expr('p.u32')).toMatchObject(pun('u32'))
       expect(expr('p.u8[4]')).toMatchObject({ kind: 'IndexExpr', object: pun('u8') })
       expect(expr('p.u32-1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
+      // A hyphen ends the name too, though a name may hold one: a member
+      // called u32-count is out of reach (docs/grammar.md says so).
+      expect(expr('p.u32-count')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32'), right: { kind: 'IdentExpr', name: 'count' } })
       expect(expr('p.u32.u8')).toMatchObject({ kind: 'MemberExpr', object: pun('u32'), member: { kind: 'type' } })
       expect(expr('p. u32')).toMatchObject(pun('u32'))
     })

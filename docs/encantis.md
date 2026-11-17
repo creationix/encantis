@@ -1042,7 +1042,21 @@ no function 'hash' accepts (f64)
 'hash' is ambiguous for (int(5))
 ```
 
-`hash(5:u64)` says which. What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
+`hash(5:u64)` says which. A literal has no type of its own, so a call with one among its arguments is never an exact match, whatever its other arguments are. Where the functions differ in the width or kind of their numbers, the other arguments can usually be passed to more than one of them, and the literal has to say what it is:
+
+```ents
+func gt(a: u32, b: u32) -> bool => a > b
+func gt(a: f64, b: f64) -> bool => a > b
+
+func f(x: u32) -> bool => gt(x, 10)
+func g(x: u32) -> bool => gt(x, 10:u32)
+```
+
+```errors
+'gt' is ambiguous for (u32, int(10))
+```
+
+What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 
 ```ents
 func hash(k: u32) -> u32 => k
@@ -1395,7 +1409,7 @@ ptr.([]u8)
 
 > **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
-A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)).
+A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)). The one exception is a name that goes on with a hyphen: `p.u32-1` is the view minus one, so `x.u32-count` is `x.u32 - count` and never a member called `u32-count`.
 
 ### 4.7 Bounds-Checked Indexing
 
