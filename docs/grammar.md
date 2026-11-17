@@ -708,7 +708,7 @@ access_suffix   = "." digit+                            -- tuple index
                 | "." ident                             -- field, or the name of a method
 ```
 
-A member is a type-punned access only when its whole name is a primitive type's: `p.u32`, `p.u8[4]` and `p.u32-1` (the pun, minus one) are; `s.boolish`, `p.i8_le` and `v.u32s()` name a field or a method. The name ends at the first character that is not a letter, a digit or `_`. A hyphen ends it too, although an identifier may hold one, so that `p.u32-1` stays a subtraction: a field or a function named `u32-count` cannot be reached as a member (`x.u32-count` is `x.u32 - count`); call the function as `u32-count(x)`.
+The name after the dot is a whole identifier, by the same rule as everywhere else: letters, digits, `_` and `-`. A member is a type-punned access only when that whole name is a primitive type's: `p.u32` and `p.u8[4]` are; `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count` and `p.u32-1` name a field or a method (`u32-count`, `u32-1`). A subtraction needs spaces, `p.u32 - 1`, as it does after a name (`n-1` is one identifier), and the formatter prints every binary `-` with spaces, so the two read differently. Where a member such as `u32-1` does not exist but the part before a hyphen does, the error says `for a subtraction write \`p.u32 - 1\``.
 
 ### Indexing
 

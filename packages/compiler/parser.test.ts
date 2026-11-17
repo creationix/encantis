@@ -416,12 +416,18 @@ describe('parser', () => {
       const pun = (name: string) => ({ kind: 'MemberExpr', member: { kind: 'type', type: { kind: 'PrimitiveType', name } } })
       expect(expr('p.u32')).toMatchObject(pun('u32'))
       expect(expr('p.u8[4]')).toMatchObject({ kind: 'IndexExpr', object: pun('u8') })
-      expect(expr('p.u32-1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
-      // A hyphen ends the name too, though a name may hold one: a member
-      // called u32-count is out of reach (docs/grammar.md says so).
-      expect(expr('p.u32-count')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32'), right: { kind: 'IdentExpr', name: 'count' } })
+      expect(expr('p.u32 - 1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
       expect(expr('p.u32.u8')).toMatchObject({ kind: 'MemberExpr', object: pun('u32'), member: { kind: 'type' } })
       expect(expr('p. u32')).toMatchObject(pun('u32'))
+    })
+
+    test('a name with a hyphen is one member, as it is one identifier anywhere', () => {
+      // docs/grammar.md: the name after a dot follows the identifier rule.
+      expect(expr('x.u32-count')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'u32-count' } })
+      expect(expr('p.u32-1')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'u32-1' } })
+      expect(expr('p.bool-ish')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'bool-ish' } })
+      expect(expr('v.u32-count()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', member: { kind: 'field', name: 'u32-count' } } })
+      expect(expr('s.len-1')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'len-1' } })
     })
 
     test('a type pun does not take the next line for the rest of its name', () => {
@@ -441,6 +447,7 @@ describe('parser', () => {
       }
       expect(target('p.u32s = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32s' } } })
       expect(target('p.u32 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'type' } } })
+      expect(target('p.u32-1 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32-1' } } })
     })
 
     test('a literal with its type written is a receiver only in parentheses', () => {
@@ -455,8 +462,9 @@ describe('parser', () => {
       const rule = patterns.find((p) => p.name === 'punctuation.accessor.typepun.encantis')
       const pun = (source: string) => (rule ? new RegExp(rule.match).exec(source)?.[0] ?? null : 'no rule')
       expect(pun('p.u32')).toBe('.u32')
-      expect(pun('p.u32-1')).toBe('.u32')
-      expect(pun('p.u32-count')).toBe('.u32')
+      expect(pun('p.u32 - 1')).toBe('.u32')
+      expect(pun('p.u32-1')).toBeNull()
+      expect(pun('p.u32-count')).toBeNull()
       expect(pun('s.boolish')).toBeNull()
       expect(pun('v.u32s()')).toBeNull()
       expect(pun('p.i8_le')).toBeNull()

@@ -4460,7 +4460,7 @@ class CheckContext {
             return primitive('u32')
           }
         }
-        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
+        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}${this.subtractionHint(expr.object, expr.member.name, objType)}`)
         return primitive('i32')
       }
 
@@ -4529,6 +4529,38 @@ class CheckContext {
         return punType
       }
     }
+  }
+
+  // A member's name is a whole identifier, hyphens included, so `p.u32-1`
+  // asks for a member called u32-1. Where a part of the name before a hyphen
+  // is a member (a field, .len, or a type pun), a subtraction was likely
+  // meant, and the hint shows it written with spaces.
+  private subtractionHint(object: AST.Expr, name: string, type: ResolvedType): string {
+    for (let at = name.lastIndexOf('-'); at > 0; at = name.lastIndexOf('-', at - 1)) {
+      const head = name.slice(0, at)
+      const rest = name.slice(at + 1)
+      if (rest === '' || !(PRIMITIVE_NAMES.has(head) || hasMember(type, head))) continue
+      const text = this.textOf(object)
+      return `: for a subtraction write \`${text === null ? '' : text}.${head} - ${rest}\``
+    }
+    return ''
+  }
+
+  // The source of an expression as written, where the checker has the source
+  // (an instance's offsets are the generic's plus a multiple of the stride);
+  // otherwise a name, or a chain of fields on one.
+  private textOf(expr: AST.Expr): string | null {
+    if (this.source) {
+      const start = expr.span.start % INSTANCE_STRIDE
+      const end = expr.span.end - (expr.span.start - start)
+      return this.source.slice(start, end)
+    }
+    if (expr.kind === 'IdentExpr') return expr.name
+    if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
+      const object = this.textOf(expr.object)
+      return object === null ? null : `${object}.${expr.member.name}`
+    }
+    return null
   }
 
   // items[start..end] is a []T over the same memory. On a *[N]T, constant

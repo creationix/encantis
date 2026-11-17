@@ -26,7 +26,7 @@ merge-round64   // hyphenated
 my_var_2        // underscores and digits
 ```
 
-Hyphens in identifiers are idiomatic for constants and helper functions.
+Hyphens in identifiers are idiomatic for constants and helper functions. A name holds its hyphens wherever it stands, after a dot too (`x.u32-count` is the member `u32-count`), so a subtraction is written with spaces: `n - 1`. The formatter prints every binary `-` that way.
 
 ### 1.3 Type Identifiers
 
@@ -1433,7 +1433,21 @@ ptr.([]u8)
 
 > **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
-A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)). The one exception is a name that goes on with a hyphen: `p.u32-1` is the view minus one, so `x.u32-count` is `x.u32 - count` and never a member called `u32-count`.
+A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included (§1.2), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
+
+<!-- spec:begin compile -->
+
+```ents
+func f(p: *u8) {
+  let q = p.u32-1
+}
+```
+
+```errors
+no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
+```
+
+<!-- spec:end -->
 
 ### 4.7 Bounds-Checked Indexing
 

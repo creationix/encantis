@@ -2250,7 +2250,7 @@ v.push(u32, 7)
 }
 ```
 
-A member whose name only starts like a primitive type is a field or a method. The whole name is still a type pun, and what follows it is not part of it.
+A member whose name only starts like a primitive type is a field or a method. A member's name is a whole identifier, hyphens included, so `p.u32-1` is a member called `u32-1`; only a name that is a primitive type's and nothing more is a type pun. A subtraction is written with spaces, as the formatter prints it.
 
 ```ents Expr
 v.u32s()
@@ -2276,6 +2276,24 @@ v.u32s()
 
 ```ents Expr
 p.u32-1
+```
+
+```json ast
+{
+  "kind": "MemberExpr",
+  "object": {
+    "kind": "IdentExpr",
+    "name": "p"
+  },
+  "member": {
+    "kind": "field",
+    "name": "u32-1"
+  }
+}
+```
+
+```ents Expr
+p.u32 - 1
 ```
 
 ```json ast

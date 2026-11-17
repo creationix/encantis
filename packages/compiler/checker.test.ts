@@ -2273,6 +2273,46 @@ describe('struct constructors', () => {
   })
 })
 
+// The name after a dot is a whole identifier, hyphens included, as it is
+// everywhere else (reference 1.2, 4.6).
+describe('members whose name holds a hyphen', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+
+  test('a field named like a type pun and a hyphen is reached as a member', () => {
+    const src = `
+      type S = (u32-count: u32, bool-ish: bool)
+      func f(x: S, p: *S) -> u32 => if x.bool-ish { x.u32-count } else { p.u32-count }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const at = src.indexOf('x.u32-count')
+    const member = [...result.exprTypes].find(([e]) => e.kind === 'MemberExpr' && e.span.start === at)
+    expect(member && typeToString(member[1])).toBe('u32')
+  })
+
+  test('a member that is not there, where a subtraction was likely meant, says how to write one', () => {
+    expect(errs(`func f(p: *u8) {
+  let q = p.u32-1
+}`)).toEqual(["no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`"])
+    expect(errs(`func f(s: []u8) {
+  let n = s.len-1
+}`)).toEqual(["no field 'len-1' on type []u8: for a subtraction write `s.len - 1`"])
+    // The longest part before a hyphen that is a member is the one meant.
+    expect(errs(`type S = (a: u32, a-b: u32)
+func f(x: S) {
+  let n = x.a-b-c
+}`))
+      .toEqual(["no field 'a-b-c' on type S: for a subtraction write `x.a-b - c`"])
+    // Nothing before a hyphen is a member: nothing to suggest.
+    expect(errs(`type S = (a: u32)
+func f(x: S) {
+  let n = x.zz-1
+}`)).toEqual(["no field 'zz-1' on type S"])
+    // An assignment to one is the same mistake.
+    expect(errs(`func f(p: *mut u8) { p.u32-1 = 3 }`)).toEqual(["no field 'u32-1' on type *mut u8: for a subtraction write `p.u32 - 1`"])
+  })
+})
+
 // A struct, a tuple, a slice and an array have no operators: the types a
 // generic's type argument can be and its body cannot assume operators for.
 describe('operands of operators', () => {
