@@ -2013,6 +2013,23 @@ describe('builtins', () => {
     expect(errs(`func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })`)).toEqual(['cannot assign f64 to f32'])
   })
 
+  test('a let in a branch of an operand is declared once, however often the operand is checked', () => {
+    // A constant operand is checked again against the type of the others,
+    // and a pointer operand of memcpy against its own.
+    expect(errs(`func f(x: u64, c: bool) -> u64 => mul_hi(if c { let k = 1\n 5 } else { 2 }, x)`)).toEqual([])
+    expect(errs(`func f(x: i64, k: i32) -> i64 => max(match k {\n 0 => { let one = 1\n 5 }\n _ => 2\n }, x)`)).toEqual([])
+    expect(errs(`func f(x: f32, c: bool) -> f32 => copysign(if c { let k = 1\n 5.0 } else { 2.0 }, x)`)).toEqual([])
+    expect(errs(`
+      data buf = mut [0:u8; 8]
+      func f(c: bool) { memcpy(buf, if c { let k = 1\n "ABCD" } else { "abcd" }, 4) }
+    `)).toEqual([])
+    // A second let of the name is still one too many.
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let k = 1\n let k = 2\n 5 } else { 2 }, x)`))
+      .toEqual(["'k' is already declared in this scope"])
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let x = 1\n 5 } else { 2 }, x)`))
+      .toEqual(["'x' is already declared in this scope"])
+  })
+
   test('an if or a match operand takes the range away', () => {
     // The range of one arm is not the range of the others.
     expect(types('i: u32#4, j: u32#4, c: bool', 'max(i, if c { j } else { 9 })')).toEqual(['u32', 'u32'])

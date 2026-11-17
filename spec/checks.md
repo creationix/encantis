@@ -970,6 +970,15 @@ func stepped(x: i64, k: i32) -> i64 => max(x, match k {
 func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
 ```
 
+An arm can have statements before its value. A `let` among them is declared once, also where the operand is checked a second time to give its constants the other operand's type.
+
+```ents
+func floored(x: i64, strict: bool) -> i64 => max(x, if strict {
+  let margin = 3
+  5
+} else { 2 })
+```
+
 ```ents
 func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })
 ```

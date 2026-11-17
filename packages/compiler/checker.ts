@@ -426,6 +426,10 @@ class CheckContext {
   // The constant each branch of an if or match of constants is by itself.
   // The branches share one type, and each has to be a value of it.
   branchConstants = new Map<AST.Expr, ResolvedType>()
+  // The patterns that have declared their local. An operand of a builtin is
+  // checked again once its type is settled, statements and all: a `let` in
+  // one of its branches is then the same declaration, not a second one.
+  declared = new WeakSet<AST.Pattern>()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -1762,9 +1766,10 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
-        if (existing) {
+        if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
+        this.declared.add(pattern)
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
