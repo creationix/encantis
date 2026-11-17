@@ -1832,6 +1832,54 @@ describe('tables', () => {
 })
 
 describe('structs in data arrays', () => {
+  test('of a type declared further down, through a chain of names, are laid out as that type', async () => {
+    const { pair, short, real, repeat } = await run(`
+      data pairs: *[2]Pair = [(1, 2), Pair(3, -4)]
+      data reals: *[2]Real = [1.5, 2.5]
+      type Pair = (first: Byte, second: Short)
+      type Byte = u8
+      type Short = Small
+      type Small = i16
+      type Real = Wide
+      type Wide = f64
+      export func pair() -> i32 => pairs[1].second * 10 + pairs[0].first
+      export func short() -> i32 {
+        let s: []Short = [5, 6, 7]
+        return s[2] ?? 0
+      }
+      export func real() -> f64 => reals[1]
+      export func repeat() -> i32 {
+        let r: *[3]Short = [-2:Short; 3]
+        return r[2]
+      }
+    `)
+    expect([pair(), short(), real(), repeat()]).toEqual([-39, 7, 2.5, -2])
+  })
+
+  test('of a type that refers to itself are laid out as that type, at any depth', async () => {
+    const { total, names, inner } = await run(`
+      type Dir = (name: []u8, subs: []Dir, size: Size)
+      type Size = u32
+      func List(comptime T: type) -> type => (items: []List(T), v: T)
+      data root: *[1]Dir = [(name: "root", subs: [(name: "bin", subs: [], size: 3), (name: "etc", subs: [(name: "x", subs: [], size: 1)], size: 2)], size: 9)]
+      data lists: *[1]List(i16) = [(items: [(items: [], v: -7)], v: 5)]
+      func sizes(d: Dir) -> u32 {
+        let t: u32 = d.size
+        for s in d.subs { t += sizes(s) }
+        return t
+      }
+      func letters(d: Dir) -> u32 {
+        let t: u32 = d.name.len
+        for s in d.subs { t += letters(s) }
+        return t
+      }
+      export func total() -> u32 => sizes(root[0])
+      export func names() -> u32 => letters(root[0])
+      export func inner() -> i32 => if let i = lists[0].items[0] { i.v } else { 0 }
+    `)
+    expect([total(), names(), inner()]).toEqual([15, 11, -7])
+  })
+
   test('constant tuples and constructors are laid out in the data section', () => {
     const wat = modWat(`
       type Point = (x: i32, y: i32)

@@ -2749,7 +2749,7 @@ describe('functions that share a name', () => {
       'bump takes *mut Box first; the receiver is a Box, which is held in registers and has no address',
     ])
     expect(called('func f(a: Later) -> i32 => a.x\nfunc f(a: Other) -> i32 => a.y\ntype Later = (x: i32)\ntype Other = (y: i32)',
-      'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:@Other'])
+      'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:<y:i32>'])
   })
 
   test('a generic function cannot share its name', () => {
@@ -2930,5 +2930,154 @@ describe('calling a function value', () => {
   test('a function named directly is called as before', () => {
     expect(errs('func inc(a: u32) -> u32 => a + 1\nfunc f(x: u32) -> u32 => inc(inc(x))')).toEqual([])
     expect(errs('import "env" "now" func now() -> u64\nfunc f() -> u64 => now()')).toEqual([])
+  })
+})
+
+describe('types that refer to themselves', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const holds = (name: string) => `type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`
+
+  test('through a pointer or a slice, a field is the type again, at any depth', () => {
+    const node = 'type Node = (next: ?*Node, v: u32)\n'
+    expect(errs(`${node}func f(h: *Node) -> ?*Node => h.next`)).toEqual([])
+    expect(errs(`${node}func f(h: *Node) -> u32 => if let a = h.next { if let b = a.next { if let c = b.next { c.v } else { 0 } } else { 0 } } else { 0 }`)).toEqual([])
+    expect(errs(`${node}func f(h: *Node, p: ?*Node) -> bool {\n  let q: ?*Node = h.next\n  return q == p\n}`)).toEqual([])
+    expect(errs('type Tree = (kids: []Tree, v: u32)\nfunc f(t: Tree) -> u32 => if let k = t.kids[0] { if let l = k.kids[1] { l.v } else { 0 } } else { 0 }')).toEqual([])
+    expect(errs('type Tree = (kids: [*]Tree, n: u32)\nfunc f(t: *Tree) -> u32 => t.kids[0].kids[1].n')).toEqual([])
+    // Through each other, and through another name for it
+    expect(errs('type A = (b: ?*B, v: u32)\ntype B = (a: ?*A, w: u32)\nfunc f(a: *A) -> u32 => if let b = a.b { if let c = b.a { c.v } else { 0 } } else { 0 }')).toEqual([])
+    expect(errs(`${node}type Link = Node\nfunc f(h: *Link) -> ?*Link => h.next\nfunc g(h: *Node) -> ?*Node => f(h)`)).toEqual([])
+  })
+
+  test('two types that refer to themselves are one type when nothing on the way round tells them apart', () => {
+    const two = 'type A = (next: ?*A, v: u32)\ntype B = (next: ?*B, v: u32)\ntype C = (next: ?*C, v: u16)\n'
+    expect(errs(`${two}func f(a: *A) -> *B => a`)).toEqual([])
+    expect(errs(`${two}func f(a: *A) -> *C => a`)).toEqual(['cannot assign *A to *C'])
+    expect(errs('type A = (kids: []A, v: u32)\ntype B = (kids: []B, v: u64)\nfunc f(a: []A) -> []B => a')).toEqual(['cannot assign []A to []B'])
+  })
+
+  test('holding itself, not through a pointer or a slice, it has no size', () => {
+    expect(errs('type N = (a: N, v: u32)\nfunc f(n: *N) -> u32 => n.v')).toEqual([holds('N')])
+    expect(errs('type N = (a: [2]N, v: u32)\nfunc f(n: *N) -> u32 => n.v')).toEqual([holds('N')])
+    expect(errs('type L = L\nfunc f(n: L) -> u32 => 1')).toEqual([holds('L')])
+    // Said where the round is closed
+    expect(errs('type A = (b: B, v: u32)\ntype B = (a: ?*A, w: A)\nfunc f(a: A, b: B) -> u32 => a.v')).toEqual([holds('B')])
+    expect(errs('type A = B\ntype B = A\nfunc f(n: A) -> u32 => 1')).toEqual([holds('B')])
+    expect(errs('func L(comptime T: type) -> type => (head: T, rest: ?*T)\ntype Knot = L(Knot)\nfunc f(p: *Knot) -> u32 => sizeof(Knot)')).toEqual([holds('Knot')])
+  })
+})
+
+describe('types declared further down', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('a chain of names resolves in whatever order it is declared', () => {
+    const chain = 'type A = B\ntype B = C\ntype C = u32\n'
+    expect(errs(`${chain}func f(a: A) -> u32 => a + 1\nfunc g(x: u32) -> A => x\nfunc h() -> u32 => sizeof(A)`)).toEqual([])
+    expect(errs(`${chain}func f(a: A, b: B) -> bool => a == b`)).toEqual([])
+    // Through the fields of structs
+    const fields = 'type S = (t: T, v: A)\ntype T = (u: U, w: B)\ntype U = (x: C)\n'
+    expect(errs(`${fields}${chain}func f(s: S) -> u32 => s.t.u.x + s.t.w + s.v\nfunc g() -> u32 => sizeof(S)`)).toEqual([])
+    expect(errs(`${fields}${chain}func f(s: *S) -> u32 => s.t.u.x\nfunc g(x: (t: (u: (x: u32), w: u32), v: u32)) -> S => x`)).toEqual([])
+  })
+
+  test('a global, a def or a data that names a type declared below it is checked against that type', () => {
+    expect(errs('global one: Byte = 1\nglobal origin: (first: Byte, second: u16) = (1, 2)\ntype Byte = u8\nfunc f() -> u32 => origin.second + one')).toEqual([])
+    expect(errs('global origin: P = P(1, 2)\ntype P = (first: Byte, second: u16)\ntype Byte = u8\nfunc f() -> u32 => origin.second')).toEqual([])
+    expect(errs('data table = [P(3, 4)]\ndef four: Byte = 4\ntype P = (first: Byte, second: u16)\ntype Byte = u8\nfunc f() -> u32 => (table as *P).second + four')).toEqual([])
+    // And refused where it does not fit, as it is above
+    expect(errs('global one: Byte = 300\ntype Byte = u8')).toEqual(['cannot assign int(300) to Byte'])
+  })
+})
+
+describe('types too large to write out', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const large = (name: string) => `type '${name}' is too large: written out in full it has more than 65536 parts`
+  // D(k) = (a: D(k - 1), b: D(k - 1)) has 2^(k + 1) - 1 parts: D15 is the largest under the limit.
+  const doubling = (n: number, order: 'up' | 'down' = 'up') => {
+    const decls = ['type D0 = u8', ...Array.from({ length: n }, (_, i) => `type D${i + 1} = (a: D${i}, b: D${i})`)]
+    return `${(order === 'up' ? decls : decls.reverse()).join('\n')}\n`
+  }
+
+  test('is one error, where the first type too large is declared, in whatever order', () => {
+    expect(errs(`${doubling(15)}func f(p: *D15) -> u8 => p.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a`)).toEqual([])
+    expect(errs(`${doubling(16)}func f(p: *D16) -> u32 => 1`)).toEqual([large('D16')])
+    expect(errs(`${doubling(40)}func first(comptime T: type, p: *T) -> *T => p\nfunc f(p: *D40) -> u32 => sizeof(D40)\nfunc g(d: D40, p: *D40) -> *D40 => first(p)`)).toEqual([large('D16')])
+    expect(errs(`${doubling(40, 'down')}func f(p: *D40) -> u32 => sizeof(D40)`)).toEqual([large('D16')])
+    // Through pointers too: the pointers are written out with what they point to
+    expect(errs(`type P0 = u8\n${Array.from({ length: 30 }, (_, i) => `type P${i + 1} = (p: *P${i}, q: *P${i})`).join('\n')}\nfunc f(p: *P30) -> u32 => 1`)).toEqual([large('P15')])
+  })
+
+  test('a generic type that doubles is one error where it is applied', () => {
+    const D = 'func D(comptime T: type) -> type => (a: T, b: T)\n'
+    const nest = (n: number, inner: string) => `${'D('.repeat(n)}${inner}${')'.repeat(n)}`
+    expect(errs(`${D}func f(p: *${nest(15, 'u8')}) -> u32 => 1`)).toEqual([])
+    expect(errs(`${D}func f(p: *${nest(40, 'u8')}) -> u32 => 1`)).toEqual([large(nest(16, 'u8'))])
+    // Inside the body of another, said where that one is applied
+    expect(errs(`${D}func Big(comptime T: type) -> type => (x: ${nest(18, 'T')})\nfunc f(p: *Big(u8)) -> u32 => 1`)).toEqual([large('Big(u8)')])
+  })
+
+  test('a type made deep by its names is counted however deep it is', () => {
+    // 3000 types in a ring through pointers: each is written out through all
+    // the others before it comes round, 12000 parts and 9000 levels deep.
+    const ring = Array.from({ length: 3000 }, (_, i) => `type T${i} = (n: ?*T${(i + 1) % 3000}, v: u32)`).join('\n')
+    expect(errs(`${ring}\nfunc f(t: *T0) -> u32 => if let n = t.n { n.v } else { t.v }`)).toEqual([])
+  })
+
+  test('a type written in place is one error where it is written, as a whole', () => {
+    // *(a: D14, b: D14) has 65536 parts, *(a: D15, b: D15) 131072
+    expect(errs(`${doubling(15)}func f(p: *(a: D14, b: D14)) -> u32 => 1`)).toEqual([])
+    expect(errs(`${doubling(15)}func f(p: *(a: D15, b: D15)) -> u32 => 1`)).toEqual([large('*(a: D15, b: D15)')])
+    const many = Array.from({ length: 300 }, (_, i) => `f${i}: D15`).join(', ')
+    expect(errs(`${doubling(15)}func f(p: *D15) -> u32 {\n  let q = p as *(${many})\n  return 1\n}`)).toEqual([large(`*(${many})`)])
+    // As a type argument, and inside a generic, once for each instance it is in
+    expect(errs(`${doubling(15)}func id(comptime T: type, p: *T) -> u32 => 1\nfunc f(p: *D15) -> u32 => id((D15, D15), p)`)).toEqual([large('(D15, D15)')])
+    expect(errs(`${doubling(15)}func g(comptime T: type, x: T) -> u32 {\n  let q = 0 as *(a: T, b: T)\n  return 1\n}\nfunc f(d: *D15) -> u32 => g(D15, d.*)`)).toEqual([`${large('*(a: D15, b: D15)')}, in g(T = D15)`])
+  })
+})
+
+describe('a name for a pointer, a slice, an array or an optional', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const names = `type P = *mut u16
+type S = []f64
+type A = [4]i8
+type M = [*]u32
+type O = ?*i32
+type PP = *mut P
+type PA = *mut [3]u8
+type E = []P
+`
+
+  test('is the type it names: dereferenced, measured, indexed and unwrapped', () => {
+    expect(errs(`${names}func a(p: P) -> u16 => p.*
+func b(s: S) -> f64 => s.ptr[0]
+func c(s: S) -> u32 => s.len
+func d(x: A) -> i8 => x[2]
+func e(m: M, i: u32) -> u32 => m[i]
+func f(p: O) -> i32 => if let q = p { q.* } else { 4 }
+func g(p: PP, q: P) { p.* = q }
+func h(p: PA) -> u32 => p.len + p[2] + p.wid
+func i(p: O, q: *i32) -> i32 => (p ?? q).*
+func j(e: E, i: u32) -> u16 => if let p = e[i] { p.* } else { 0 }
+func k(s: S) -> f64 {
+  let t: f64 = 0.0
+  for v in s { t += v }
+  return t
+}`)).toEqual([])
+  })
+
+  test('lays out a literal, in data or in place, and makes a pointer to it a slice', () => {
+    // A data declared with the name, or a literal given for it after a colon
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
+    // A pointer to a name for an array, whatever names the pointer
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\nfunc f() -> []u16 {\n  let q: *B = [1, 2, 3]\n  let r: PB = q\n  let m: [*]u16 = r\n  let s: []u16 = r\n  return q\n}`)).toEqual([])
+    // Not as writable as a slice that is: the same refusal as written out
+    expect(errs(`${names}type B = [3]u16\nfunc f(q: *B) -> []mut u16 => q`)).toEqual(['cannot assign *B to []mut u16'])
+  })
+
+  test('and what cannot be done with the type cannot be done with the name', () => {
+    expect(errs(`${names}func a(s: S) -> f64 => s.*`)).toEqual(['cannot use .* on S - use [0] to access the first element'])
+    expect(errs(`${names}func a(x: A, i: u32) -> i8 => x[i]`)).toEqual(['dynamic index on value type [4]i8 — use a pointer or slice for dynamic access'])
+    expect(errs(`${names}func a(m: M) -> u32 => m.len`)).toEqual(['cannot get .len on unbounded array [*]u32 - length is unknown'])
+    expect(errs(`${names}func a(p: P) -> u32 => p[0..2].len`)).toEqual(['cannot take a range of *mut u16: use a slice or a pointer to an array'])
   })
 })

@@ -89,14 +89,18 @@ describe('calling a generic function', () => {
     expect(instancesOf(`${MAX}export func f(a: f64, b: f64) -> f64 => max(a, b)`)).toEqual(['max<f64>'])
   })
 
-  test('a type in parentheses is the tuple of one element it is after a colon', () => {
+  test('a type in parentheses is the type inside, as an argument, after a colon and after an arrow', () => {
     const id = 'func id(comptime T: type, a: T) -> T => a\n'
-    // After `->` parentheses list the results, so one result that is a tuple
-    // of one element is written ((u32)).
-    expect(instancesOf(`${id}export func f(a: (u32)) -> ((u32)) => id((u32), a)`)).toEqual(['id<<u32>>'])
-    expect(errorsOf(`${id}func f(a: u32) -> u32 => id((u32), a)`)).toEqual([
-      'argument 2: cannot assign u32 to (u32)',
-      'cannot assign (u32) to u32',
+    // After `->` parentheses list the results: ((u32)) is the one result
+    // (u32), which is u32.
+    expect(instancesOf(`${id}export func f(a: (u32)) -> ((u32)) => id((u32), a)`)).toEqual(['id<u32>'])
+    expect(instancesOf(`${id}export func f(a: u32) -> u32 => id(((u32)), a) + id(a)`)).toEqual(['id<u32>'])
+    // Inferred from a parameter written in parentheses, as from one without.
+    expect(instancesOf(`func id(comptime T: type, a: (T)) -> T => a\nexport func f(a: u32) -> u32 => id(a)`)).toEqual(['id<u32>'])
+    // A name makes it a struct of one field.
+    expect(errorsOf(`${id}func f(a: u32) -> u32 => id((v: u32), a)`)).toEqual([
+      'argument 2: cannot assign u32 to (v: u32)',
+      'cannot assign (v: u32) to u32',
     ])
   })
 
@@ -106,12 +110,12 @@ describe('calling a generic function', () => {
     const source = `func id(comptime T: type, a: T) -> T => a
 func back(comptime T: type, a: T) -> T { return a }
 func none(comptime T: type, a: T) -> T { return }
-export func f(a: (u32)) -> ((u32)) => back((u32), id(a))
+export func f(a: (u32, u8)) -> ((u32, u8)) => back((u32, u8), id(a))
 export func g(q: i32, r: i32) -> i32 {
   let p = back((q: i32, r: i32), id((q: i32, r: i32), (q: q, r: r)))
   return p.q + p.r
 }`
-    expect(instancesOf(source)).toEqual(['back<<q:i32|r:i32>>', 'back<<u32>>', 'id<<q:i32|r:i32>>', 'id<<u32>>'])
+    expect(instancesOf(source)).toEqual(['back<<q:i32|r:i32>>', 'back<<u32|u8>>', 'id<<q:i32|r:i32>>', 'id<<u32|u8>>'])
     const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
     expect((instance.exports.g as (q: number, r: number) => number)(3, 4)).toBe(7)
     // Not a function with the named results q and r, which a bare return hands back.
@@ -730,15 +734,15 @@ export func f() -> u32 => limit`)).toEqual(notConstant)
   // constants. A type argument declared further down is not resolved yet
   // there; instantiated all the same, the instance would be made for the
   // name alone and its errors would be about that.
-  test('a type argument has to be declared before a call that is inferred during collection', () => {
+  test('a type argument may be declared after a call that is inferred during collection', () => {
+    // The types of a module are collected before its globals and defs, so
+    // the type is no part of what is wrong, wherever it is declared.
     const pick = 'func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\n'
-    const late = "type argument T of 'pick' uses type 'Late' before it is declared"
     expect(errorsOf(`${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q
-type Late = (q: i32, r: i32)`)).toEqual([late, 'global initializer must be a compile-time constant'])
+type Late = (q: i32, r: i32)`)).toEqual(['global initializer must be a compile-time constant'])
     expect(errorsOf(`${pick}def d = pick(Late, true, (1, 2), (3, 4)).q
 type Late = (q: i32, r: i32)
-export func f() -> i32 => d`)).toEqual([late, 'def value must be a compile-time constant'])
-    // Declared first, the type is no part of what is wrong.
+export func f() -> i32 => d`)).toEqual(['def value must be a compile-time constant'])
     expect(errorsOf(`type Late = (q: i32, r: i32)
 ${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q`)).toEqual(['global initializer must be a compile-time constant'])
   })
@@ -2767,6 +2771,78 @@ type Later = (x: u32)`
     await wasmOfSource(source)
   })
 
+  test('may refer to itself through a pointer or a slice, and costs what the type written out does', async () => {
+    const generic = `func Node(comptime T: type) -> type => (next: ?*Node(T), v: T)
+func Tree(comptime T: type) -> type => (kids: []Tree(T), v: T)
+func Even(comptime T: type) -> type => (odd: ?*Odd(T), v: T)
+func Odd(comptime T: type) -> type => (even: ?*Even(T), v: T)
+func sum(comptime T: type, h: ?*Node(T)) -> T {
+  let total: T = 0
+  let p = h
+  while true {
+    if let n = p {
+      total += n.v
+      p = n.next
+    } else {
+      return total
+    }
+  }
+  return total
+}
+export func a(h: *Node(u32)) -> u32 => sum(h) + sum(h.next)
+export func b(h: *Node(u8)) -> u8 => if let n = h.next { if let m = n.next { m.v } else { 0 } } else { 0 }
+export func c(t: Tree(i64)) -> i64 => if let k = t.kids[0] { if let l = k.kids[0] { l.v } else { k.v } } else { t.v }
+export func d(e: *Even(u16)) -> u16 => if let o = e.odd { if let f = o.even { f.v } else { o.v } } else { e.v }
+`
+    const byHand = `type Node32 = (next: ?*Node32, v: u32)
+type Node8 = (next: ?*Node8, v: u8)
+type Tree64 = (kids: []Tree64, v: i64)
+type Even16 = (odd: ?*Odd16, v: u16)
+type Odd16 = (even: ?*Even16, v: u16)
+func sum(h: ?*Node32) -> u32 {
+  let total: u32 = 0
+  let p = h
+  while true {
+    if let n = p {
+      total += n.v
+      p = n.next
+    } else {
+      return total
+    }
+  }
+  return total
+}
+export func a(h: *Node32) -> u32 => sum(h) + sum(h.next)
+export func b(h: *Node8) -> u8 => if let n = h.next { if let m = n.next { m.v } else { 0 } } else { 0 }
+export func c(t: Tree64) -> i64 => if let k = t.kids[0] { if let l = k.kids[0] { l.v } else { k.v } } else { t.v }
+export func d(e: *Even16) -> u16 => if let o = e.odd { if let f = o.even { f.v } else { o.v } } else { e.v }
+`
+    await expectSameWasm(generic, byHand)
+  })
+
+  test('a generic function takes a type that refers to itself under any of its names as one type', () => {
+    const source = `type Node = (next: ?*Node, v: u32)
+type Link = Node
+func List(comptime T: type) -> type => (next: ?*List(T), v: T)
+func first(comptime T: type, n: *T) -> *T => n
+export func f(a: *Node, b: *Link, c: *List(u32)) -> u32 => first(a).v + first(b).v + first(c).v
+`
+    // Named by the type, cut where it comes round to itself
+    expect(instancesOf(source)).toEqual(['first<<next:?*@0|v:u32>>'])
+  })
+
+  test('one generic type applied inside its own application is seen through to T, where a type that refers to itself stops', () => {
+    const source = `${VEC}func Id(comptime T: type) -> type => T
+func List(comptime T: type) -> type => (next: ?*List(T), v: T)
+func same(comptime T: type, x: Id(Id(T))) -> Id(T) => x
+func deep(comptime T: type, v: *Vec(Vec(T))) -> T => v.ptr[0].ptr[0]
+func head(comptime T: type, l: *List(List(T))) -> T => l.v.v
+export func a(x: u64) -> u64 => same(x)
+export func b(v: *Vec(Vec(i64))) -> i64 => deep(v)
+export func c(l: *List(List(u8))) -> u8 => head(l)`
+    expect(instancesOf(source)).toEqual(['deep<i64>', 'head<u8>', 'same<u64>'])
+  })
+
   test('sizeof follows the type arguments in each instance', async () => {
     const source = `${VEC}${PAIR}func size(comptime T: type) -> u32 => sizeof(Vec(T)) + sizeof(Pair(T, bool)) * 100
 export func a() -> u32 => size(u8)
@@ -2813,14 +2889,19 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
     ['a name that is no type, applied', `${VEC}func f(v: *Vex(u32)) -> u32 => 0`, ["unknown generic type 'Vex' — did you mean 'Vec'?"]],
     ['an argument that is not a concrete type', `${VEC}func f(v: *Vec(int(5))) -> u32 => 0`, ["type argument T of 'Vec' must be a concrete type"]],
     [
-      'a generic type that refers to itself',
-      'func List(comptime T: type) -> type => (head: T, next: ?*List(T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
-      ["generic type 'List' refers to itself"],
+      'a generic type that refers to itself with an argument that grows',
+      'func List(comptime T: type) -> type => (head: T, next: ?*List(*T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
+      ["generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end"],
     ],
     [
-      'generic types that refer to each other',
-      'func A(comptime T: type) -> type => (x: T, b: *B(T))\nfunc B(comptime T: type) -> type => (y: T, a: *A(T))\nfunc f(a: *A(u32), b: *B(u8)) -> u32 => 0',
-      ["generic type 'A' refers to itself"],
+      'generic types that refer to each other with an argument that grows',
+      'func A(comptime T: type) -> type => (x: T, b: *B([]T))\nfunc B(comptime T: type) -> type => (y: T, a: *A(T))\nfunc f(a: *A(u32), b: *B(u8)) -> u32 => 0',
+      ["generic type 'A' refers to itself with a type argument that grows, B([]T): applying it would never end"],
+    ],
+    [
+      'a generic type that holds itself, not through a pointer',
+      'func List(comptime T: type) -> type => (head: T, next: List(T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
+      ["generic type 'List' contains itself: a type can only refer to itself through a pointer or a slice"],
     ],
     ['no parameters', 'func Vec() -> type => u32\nfunc f(v: Vec(u32)) -> u32 => 0', ["generic type 'Vec' takes comptime type parameters only, as (comptime T: type)"]],
     [
@@ -2903,7 +2984,7 @@ func c() -> u32 {
   test('nor where a `type` names it', () => {
     const source = `${VEC}type V = Vec(u32, u8)
 type L = List(u32)
-func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+func List(comptime T: type) -> type => (head: T, next: ?*List(*T))
 func f(v: *V) -> u32 => v.len
 func g(v: V, vs: []V) -> u32 => v.len + vs[0].cap
 func h(l: *L) -> u32 => l.head
@@ -2911,7 +2992,10 @@ func k() -> u32 {
   let v: V = (0 as [*]mut u32, 1, 2)
   return v.len
 }`
-    expect(errorsOf(source)).toEqual(["generic type 'List' refers to itself", 'Vec expects 1 type argument, got 2'])
+    expect(errorsOf(source)).toEqual([
+      "generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end",
+      'Vec expects 1 type argument, got 2',
+    ])
   })
 
   // An instance would repeat such an error for each set of type arguments,
@@ -4427,11 +4511,21 @@ export func f(a: i32, b: i32) -> i32 {
     expect(f(3, 4)).toBe(34743)
   })
 
-  test('the type that is called, in parentheses, is the tuple of one element a type in parentheses is', () => {
-    // As for a type argument (see 'a type in parentheses is the tuple of one
-    // element'): it is the value in parentheses that is the value inside.
-    expect(errorsOf(`${POINT}export func f(a: i32, b: i32) -> i32 => (Pt(i32))(a, b).x`)[0]).toBe('(Pt(i32)) expects 1 field, got 2')
-    expect(errorsOf(`${POINT}export func f(a: i32) -> i32 => (Box(i32))(Box(i32)(a)).0.v`)).toEqual([])
+  test('the type that is called, in parentheses, is the type inside', async () => {
+    // As for a type argument (see 'a type in parentheses is the type
+    // inside'), and as a value in parentheses is the value inside.
+    const generic = `${POINT}type Q = (x: i32, y: i32)
+export func f(a: i32, b: i32) -> i32 => (Pt(i32))(a, b).x * 100 + ((Q))(a, b).y * 10 + (Box(i32))(a).v
+`
+    const byHand = `type Pt = (x: i32, y: i32)
+type Box = (v: i32)
+export func f(a: i32, b: i32) -> i32 => Pt(a, b).x * 100 + Pt(a, b).y * 10 + Box(a).v
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).f(3, 4)).toBe(343)
+    expect(errorsOf(`${POINT}export func f(a: i32) -> i32 => (Box(i32))(Box(i32)(a)).v`)).toEqual([
+      'field v: cannot assign Box(i32) to i32',
+    ])
   })
 
   test('a repeat literal of constructors stores what is only known when the program runs', async () => {

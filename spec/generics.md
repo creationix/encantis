@@ -1565,6 +1565,59 @@ func Link(comptime T: type) -> type => (head: T, next: ?*Node)
 export func second(n: *Node) -> u32 => if let m = n.next { m.head } else { 0 }
 ```
 
+So may a generic type itself, directly or through another, through a pointer or a slice: inside its body the same application is the type being made. It costs what the type written out does.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+func Even(comptime T: type) -> type => (odd: []Odd(T), v: T)
+func Odd(comptime T: type) -> type => (even: ?*Even(T), v: T)
+
+export func third(l: *List(u16)) -> u16 => if let a = l.next { if let b = a.next { b.head } else { 0 } } else { 0 }
+export func hop(e: Even(u8)) -> u8 => if let o = e.odd[0] { if let f = o.even { f.v } else { o.v } } else { e.v }
+```
+
+```ents same-wasm
+type List16 = (head: u16, next: ?*List16)
+type Even8 = (odd: []Odd8, v: u8)
+type Odd8 = (even: ?*Even8, v: u8)
+
+export func third(l: *List16) -> u16 => if let a = l.next { if let b = a.next { b.head } else { 0 } } else { 0 }
+export func hop(e: Even8) -> u8 => if let o = e.odd[0] { if let f = o.even { f.v } else { o.v } } else { e.v }
+```
+
+A generic type whose body is a pointer, a slice, an array or an optional is that type, as a `type` that names one is: `.*`, `.len`, indexing, `if let` and `??` see through it.
+
+```ents
+func Ref(comptime T: type) -> type => *mut T
+func Sl(comptime T: type) -> type => []T
+func Four(comptime T: type) -> type => [4]T
+func Maybe(comptime T: type) -> type => ?*T
+
+func swap(comptime T: type, a: Ref(T), b: Ref(T)) {
+  let t = a.*
+  a.* = b.*
+  b.* = t
+}
+func last(comptime T: type, s: Sl(T)) -> T => s[s.len - 1] ?? 0
+export func f(a: Ref(u32), b: Ref(u32), s: Sl(i16), x: Four(u8), o: Maybe(u64)) -> u64 {
+  swap(a, b)
+  return a.* as u64 + last(s) as u64 + x[3] as u64 + (if let q = o { q.* } else { 0 })
+}
+```
+
+```ents same-wasm
+func swap(a: *mut u32, b: *mut u32) {
+  let t = a.*
+  a.* = b.*
+  b.* = t
+}
+func last(s: []i16) -> i16 => s[s.len - 1] ?? 0
+export func f(a: *mut u32, b: *mut u32, s: []i16, x: [4]u8, o: ?*u64) -> u64 {
+  swap(a, b)
+  return a.* as u64 + last(s) as u64 + x[3] as u64 + (if let q = o { q.* } else { 0 })
+}
+```
+
 Type parameters are found through a generic type by its body, at any depth, and through two at once.
 
 ```ents
@@ -1677,27 +1730,39 @@ func Vec(comptime T: type) -> type { }
 Expected "=>"
 ```
 
-A generic type that applies itself, and two that apply each other: one error for the round.
+A generic type that applies itself, or two that apply each other, to a type made of their parameters: one error for the round. Applying them would make a new type at every level.
 
 ```ents
-func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+func List(comptime T: type) -> type => (head: T, next: ?*List(*T))
 
 func f(a: *List(u32), b: *List(u8)) -> u32 => 0
 ```
 
 ```errors
-generic type 'List' refers to itself
+generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end
 ```
 
 ```ents
-func A(comptime T: type) -> type => (x: T, b: *B(T))
+func A(comptime T: type) -> type => (x: T, b: *B([]T))
 func B(comptime T: type) -> type => (y: T, a: *A(T))
 
 func f(a: *A(u32), b: *B(u8)) -> u32 => 0
 ```
 
 ```errors
-generic type 'A' refers to itself
+generic type 'A' refers to itself with a type argument that grows, B([]T): applying it would never end
+```
+
+One that holds itself, not through a pointer or a slice, has no size, whatever its arguments are: one error, where it is declared.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: List(T))
+
+func f(a: *List(u32), b: *List(u8)) -> u32 => 0
+```
+
+```errors
+generic type 'List' contains itself: a type can only refer to itself through a pointer or a slice
 ```
 
 A type parameter that is applied, in a generic type and in a generic function.

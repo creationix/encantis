@@ -773,6 +773,110 @@ cannot assign (int(1), int(2), int(3)) to []i32
 cannot assign () to []i32
 ```
 
+So is an element of a literal of slices: a value in parentheses is that value, and a many-pointer has no length to be one.
+
+```ents
+data room = mut [0:u8; 64]
+
+func f() -> u32 {
+  let xs: [][]u8 = [(room as [*]u8)]
+  let ys: [][]mut u8 = [((room as [*]mut u8)), room]
+  return xs.len + ys.len
+}
+```
+
+```errors
+cannot assign [*]u8 to []u8
+cannot assign [*]mut u8 to []mut u8
+```
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+
+func total(xs: [][]u8) -> u32 {
+  let n: u32 = 0
+  for x in xs { n += x.len }
+  return n
+}
+
+test "values in parentheses among slices" {
+  let s: []u8 = more
+  let xs: [][]u8 = [(text), ("ab"), (s), ((text as [*]u8, 2))]
+  assert total(xs) == 3 + 2 + 5 + 2
+}
+```
+
+<!-- spec:end -->
+
+## Slices from a pointer to an array
+
+A `*[N]T` is a `[]T` of length `N` wherever it meets one: an argument, an initializer, an assignment, a returned value, an expression body, a branch, a field of a struct or tuple literal, and under a name for the slice type.
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+type S = []u8
+type Holder = (s: []u8, n: u32)
+
+global g: []u8 = text
+
+func ret() -> []u8 { return text }
+func arrow() -> []u8 => text
+func pick(c: bool) -> []u8 => if c { text } else { more }
+func arm(k: u32) -> []u8 => match k { 0 => text, _ => more }
+func built() -> Holder => Holder(text, 1)
+func literal() -> Holder => (s: more, n: 2)
+func pair() -> ([]u8, u32) => (text, 3)
+func named() -> u32 {
+  let s: S = "abcd"
+  s = more
+  return s.len
+}
+func fields() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h = Holder(t.s, t.n)
+  return h.s.len
+}
+
+test "each has the length of its array" {
+  assert g.len == 3
+  assert ret().len == 3
+  assert arrow().len == 3
+  assert pick(false).len == 5
+  assert arm(0).len == 3
+  assert built().s.len == 3
+  assert literal().s.len == 5
+  let (p, n) = pair()
+  assert p.len == 3
+  assert named() == 5
+  assert fields() == 3
+}
+```
+
+<!-- spec:end -->
+
+A struct or tuple that is already a value holds a pointer, one wasm value where the slice is two: it is not converted as a whole. Built from its fields, as a literal is, each field converts (`fields` above).
+
+```ents
+data text = "abc"
+type Holder = (s: []u8, n: u32)
+
+func f() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h: Holder = t
+  return h.s.len
+}
+```
+
+```errors
+cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.
@@ -1591,4 +1695,35 @@ func apply(f: (u32) -> u32, x: f64) -> u32 => f(x)
 ```errors
 calling a function value is not supported yet
 argument 1: cannot assign f64 to u32
+```
+
+## Types in parentheses
+
+One type without a name in parentheses is that type, wherever it is written: there is no tuple of one element.
+
+```ents
+type W = (u32)
+type Q = (x: i32, y: i32)
+
+func id(comptime T: type, a: T) -> T => a
+func twice(a: (u32)) -> ((u32)) => a * 2
+func f(a: W, b: u32) -> u32 {
+  let c: (u32) = twice(a) + id((u32), b)
+  return c as (u32)
+}
+func g(a: i32, b: i32) -> i32 => (Q)(a, b).y
+```
+
+A name makes a struct of one field, which is not the type of its field.
+
+```ents
+func h(a: f64) -> f64 {
+  let s: (v: f64) = a
+  return s
+}
+```
+
+```errors
+cannot assign f64 to (v: f64)
+cannot assign (v: f64) to f64
 ```

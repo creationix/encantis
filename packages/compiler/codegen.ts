@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { argValue } from './ast'
+import { argValue, ungroupedType } from './ast'
 import { typeKey, isGenericDecl, INSTANCE_STRIDE, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
@@ -1083,36 +1083,12 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     }
   }
 
-  // Get callee type for param coercions
-  const calleeSym = ctx.symbols.get(funcName)
-  const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null
-
-  // Generate argument expressions with array→slice coercion
-  const args = expr.args.map((arg, i) => {
-    let wat: string
-    if (arg.value) {
-      wat = exprToWat(arg.value, ctx)
-    } else if (arg.name) {
-      wat = identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
-    } else {
-      return ''
-    }
-    // Coerce array → slice: emit ptr + compile-time length
-    if (paramTypes && i < paramTypes.length) {
-      const paramType = paramTypes[i].type
-      const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
-      const argType = lookupExprType(argExpr, ctx)
-      const innerArray = argType?.kind === 'array' ? argType
-        : (argType?.kind === 'pointer' && argType.pointee.kind === 'array') ? argType.pointee
-        : null
-      if (innerArray && paramType.kind === 'slice') {
-        const len = totalElements(innerArray.sizes)
-        if (len !== null) {
-          return `${wat} (i32.const ${len})`
-        }
-      }
-    }
-    return wat
+  // The arguments, each converted to its parameter's type where the checker
+  // says (a pointer to an array to a slice, a widening)
+  const args = expr.args.map((arg) => {
+    if (arg.value) return exprToWat(arg.value, ctx)
+    if (arg.name) return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    return ''
   }).filter(Boolean).join(' ')
 
   const watName = ctx.nameMap.get(funcName) ?? funcName
@@ -1891,6 +1867,11 @@ function extendToI64(wat: string, signed: boolean): string {
 }
 
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
+  // A pointer to an array into a slice: the length the array has
+  if (unwrap(toType).kind === 'slice') {
+    const len = RT.arrayLength(fromType)
+    return len === null ? inner : `${inner} (i32.const ${len})`
+  }
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
 
@@ -2253,29 +2234,18 @@ function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx:
   return sets.join('\n')
 }
 
-// *[N]T into a slice: add the compile-time length, as call arguments do.
-function withSliceLength(value: string, valueExpr: AST.Expr, target: ResolvedType, ctx: CodegenContext): string {
-  if (unwrap(target).kind !== 'slice') return value
-  valueExpr = ungroup(valueExpr)
-  const valueType = lookupExprType(valueExpr, ctx)
-  const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
-  const len = array ? totalElements(array.sizes) : null
-  return len === null ? value : `${value} (i32.const ${len})`
-}
-
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
   if (!stmt.value) return '' // Declaration only, no initialization
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    let value = exprToWat(stmt.value, ctx)
+    const value = exprToWat(stmt.value, ctx)
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
     }
-    value = withSliceLength(value, stmt.value, type, ctx)
     const wasmTypes = typeToWasm(type)
 
     if (wasmTypes.length === 1) {
@@ -2380,8 +2350,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     return assign(result)
   }
 
-  if (!placeType) return assignLvalue(stmt.target, value, ctx)
-  return assignLvalue(stmt.target, withSliceLength(value, stmt.value, placeType, ctx), ctx)
+  return assignLvalue(stmt.target, value, ctx)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -3386,7 +3355,7 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   // The initializer is one constant instruction for each wasm value: exprToWat
   // emits the checker's value for each constant in it.
   const init = decl.value
-    ? withSliceLength(exprToWat(decl.value, ctx), decl.value, type, ctx)
+    ? exprToWat(decl.value, ctx)
     : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
   const inits = trySplitMultiValue(init, wasmTypes.length)
   if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
@@ -3476,6 +3445,8 @@ function resolveAstType(type: AST.Type): ResolvedType {
       return { kind: 'array', element, sizes }
     }
     case 'CompositeType':
+      // (u32) is u32
+      if (ungroupedType(type) !== type) return resolveAstType(ungroupedType(type))
       return {
         kind: 'tuple',
         fields: type.fields.map((f) => ({

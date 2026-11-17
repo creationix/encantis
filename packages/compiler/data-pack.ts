@@ -588,9 +588,10 @@ function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataS
       const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
       return concatBytes([serializeI32(ref.ptr), serializeI32(count)])
     }
-    if (t.kind === 'pointer' && t.pointee.kind === 'array') {
+    const pointee = t.kind === 'pointer' ? unwrap(t.pointee) : null
+    if (pointee?.kind === 'array') {
       // A many-pointer has no count of its own: the literal's.
-      const target = t.pointee.sizes === null ? { ...t.pointee, sizes: [count] } : t.pointee
+      const target = pointee.sizes === null ? { ...pointee, sizes: [count] } : pointee
       return serializeI32(serializeLiteral(lit, target, builder).ptr)
     }
   }
@@ -609,11 +610,14 @@ function buildElementBytes(
   if (expr.kind === 'AnnotationExpr') {
     return buildElementBytes(expr.expr, elementType, framings, builder)
   }
+  // A name, or a reference to a type declared further down (also where a
+  // type refers to itself), is laid out as the type it names.
+  elementType = unwrap(elementType)
 
   if (expr.kind === 'LiteralExpr') {
     // If elementType is a slice, we need to unwrap it to get the actual element type
     // for serialization. This happens when a literal is used where a slice is expected.
-    const actualType = elementType.kind === 'slice' ? elementType.element : elementType
+    const actualType = elementType.kind === 'slice' ? unwrap(elementType.element) : elementType
     const rawBytes = literalToBytes(expr, actualType)
     if (framings.length === 0) {
       return rawBytes
@@ -704,7 +708,8 @@ function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSection
 // What the elements of an array literal are, for a target that is a slice or a
 // fixed array ([N]T, as a field of a struct); anything else is the leaf type
 // of merged brackets, which nested literals share.
-function arrayElementType(type: ResolvedType): ResolvedType {
+function arrayElementType(written: ResolvedType): ResolvedType {
+  const type = unwrap(written)
   if (type.kind === 'slice') return type.element
   if (type.kind === 'array' && isValueArray(type)) return type.element
   return type
@@ -713,7 +718,8 @@ function arrayElementType(type: ResolvedType): ResolvedType {
 // How many elements a literal has, from the reference to it. A reference
 // counts bytes, except for a literal that is an array of pointers to its own
 // literals (separate brackets), where it already counts elements.
-export function literalLength(ref: DataRef, element: ResolvedType): number {
+export function literalLength(ref: DataRef, written: ResolvedType): number {
+  const element = unwrap(written)
   if (element.kind === 'array' || element.kind === 'slice') return ref.len
   const size = byteSize(element)
   return size ? ref.len / size : ref.len
@@ -819,8 +825,9 @@ function encodePointerArray(
 }
 
 // Convert a literal expression to raw bytes based on element type
-function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8Array {
+function literalToBytes(expr: AST.LiteralExpr, written: ResolvedType): Uint8Array {
   const lit = expr.value
+  const elementType = unwrap(written)
 
   if (lit.kind === 'string') {
     return lit.bytes
@@ -903,7 +910,8 @@ function applyFraming(
 }
 
 // Get the byte size of an element type (for null terminators)
-function getElementSize(type: ResolvedType): number {
+function getElementSize(written: ResolvedType): number {
+  const type = unwrap(written)
   if (type.kind === 'primitive') {
     switch (type.name) {
       case 'i8':

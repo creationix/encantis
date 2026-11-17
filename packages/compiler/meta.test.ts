@@ -270,18 +270,20 @@ describe('a module with errors', () => {
   const addressOf = (out: MetaOutput, name: string) => out.symbols.find(s => s.name === name)?.value
 
   test('a data literal with an element of the wrong type has no address, the others keep theirs', () => {
+    // (A Pt that held a Pt is no type at all: see checker.test.ts.)
     const out = meta(`
-type Pt = (q: i32, r: Pt)
+type In = (a: u8, b: u8)
+type Pt = (q: i32, r: In)
 data ok = [1, 2]
 data dp = [Pt(1, 2), Pt(3, 4)]
 export func a() -> u32 => 1`)
     expect(out.errors?.map(e => e.message)).toEqual([
-      'field r: cannot assign int(2) to Pt',
-      'field r: cannot assign int(4) to Pt',
+      'field r: cannot assign int(2) to In',
+      'field r: cannot assign int(4) to In',
     ])
     expect(addressOf(out, 'ok')).toBe('0x8')
     expect(addressOf(out, 'dp')).toBeUndefined()
-    expect(out.symbols.map(s => s.name)).toEqual(['Pt', 'ok', 'dp', 'a'])
+    expect(out.symbols.map(s => s.name)).toEqual(['In', 'Pt', 'ok', 'dp', 'a'])
   })
 
   // Each of these is rejected by the checker with a literal that can't be laid out.

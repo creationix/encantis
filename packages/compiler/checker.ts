@@ -2,10 +2,11 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue } from './ast'
+import { argValue, ungroupedType } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
+  type ForwardRefRT,
   type ResolvedField,
   type ArrayRT,
   type ArraySize,
@@ -32,10 +33,14 @@ import {
   typeToString,
   typeEquals,
   canonicalKey,
+  arrayLength,
+  typeParts,
+  MAX_TYPE_PARTS,
   watSafe,
   comptimeIntFits,
   typeAssignable,
   unwrap,
+  unwrapToCut,
   isFloat,
   isInteger,
   isSigned,
@@ -88,7 +93,17 @@ export type Symbol =
   // body with the parameters replaced, in the module that declares it, once
   // for each way its arguments were written (`cache`). The result is the body
   // itself under the name it was applied by, as any type alias is.
-  | { kind: 'typefunc'; decl: AST.TypeFuncDecl; owner: CheckContext; cache: Map<string, ResolvedType>; valid: boolean }
+  | {
+      kind: 'typefunc'
+      decl: AST.TypeFuncDecl
+      owner: CheckContext
+      cache: Map<string, ResolvedType>
+      valid: boolean
+      // The applications being resolved, by the key of the cache: one that
+      // comes round again while its body is resolved is that type, referred
+      // to by itself.
+      applying?: Map<string, ForwardRefRT[]>
+    }
 
 // One generic function with its comptime arguments fixed: a copy of the
 // declaration with the parameters substituted, collected, checked and compiled
@@ -405,9 +420,52 @@ export function concretizeType(
   t: ResolvedType,
   options: TypecheckOptions = DEFAULT_OPTIONS,
 ): ResolvedType {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
-  const u = unwrap(t)
+  return concretizeParts(t, { ...DEFAULT_OPTIONS, ...options }, new Map(), new Set())
+}
 
+// concretizeType, once for each part of a type: a part that the type holds in
+// several places is made once, so a type that names a type many times is
+// made in a time of its own size (see typeParts). `open` holds the types
+// being made, outermost first.
+function concretizeParts(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
+  const known = made.get(t)
+  if (known) return known
+  const result = concretizeOnce(t, opts, made, open)
+  made.set(t, result)
+  return result
+}
+
+// What a name, or a reference to a type declared further down, stands for:
+// the type it names, as unwrap() has it, except where that is a type being
+// made. A type that refers to itself comes round to itself through a forward
+// reference, and is concrete where it does: that reference is kept.
+function throughNames(t: ResolvedType, open: ReadonlySet<ResolvedType>): ResolvedType {
+  for (;;) {
+    if (t.kind === 'named') t = t.type
+    else if (t.kind === 'forward_ref' && t.target && !open.has(unwrap(t.target))) t = t.target
+    else return t
+  }
+}
+
+// A reference to a type declared further down, behind a pointer or a slice,
+// is concrete as it is: it names a declared type, and it is where a type can
+// refer to itself. Going on into it would walk every type it leads to.
+function behindPointer(t: ResolvedType): boolean {
+  return unwrapToCut(t).kind === 'forward_ref'
+}
+
+function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
+  const u = throughNames(t, open)
+  if (u.kind === 'forward_ref') return u
+  open.add(u)
+  try {
+    return concretizeKind(u, opts, made, open)
+  } finally {
+    open.delete(u)
+  }
+}
+
+function concretizeKind(u: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
   switch (u.kind) {
     case 'comptime_int': {
       const val = u.value
@@ -430,7 +488,7 @@ export function concretizeType(
     case 'comptime_list': {
       // Comptime lists become *[_]T with concretized element type (pointer to inferred-size array)
       const elemType = u.elements.length > 0
-        ? concretizeType(u.elements[0], opts)
+        ? concretizeParts(u.elements[0], opts, made, open)
         : primitive(opts.defaultInt)
       return pointer(array(elemType, ['_']))
     }
@@ -440,24 +498,24 @@ export function concretizeType(
         ...u,
         fields: u.fields.map((f) => ({
           ...f,
-          type: concretizeType(f.type, opts),
+          type: concretizeParts(f.type, opts, made, open),
         })),
       }
 
     case 'slice':
-      return slice(concretizeType(u.element, opts), u.mutable, u.optional)
+      return behindPointer(u.element) ? u : slice(concretizeParts(u.element, opts, made, open), u.mutable, u.optional)
 
     case 'array': {
       // Concretize element type
-      const elemType = concretizeType(u.element, opts)
+      const elemType = concretizeParts(u.element, opts, made, open)
       // Comptime arrays [_]T stay as [_]T after concretization
       return array(elemType, u.sizes)
     }
 
     case 'pointer':
-      return {
+      return behindPointer(u.pointee) ? u : {
         ...u,
-        pointee: concretizeType(u.pointee, opts),
+        pointee: concretizeParts(u.pointee, opts, made, open),
       }
 
     case 'func':
@@ -465,18 +523,18 @@ export function concretizeType(
         ...u,
         params: u.params.map((p) => ({
           ...p,
-          type: concretizeType(p.type, opts),
+          type: concretizeParts(p.type, opts, made, open),
         })),
         returns: u.returns.map((r) => ({
           ...r,
-          type: concretizeType(r.type, opts),
+          type: concretizeParts(r.type, opts, made, open),
         })),
       }
 
     case 'named':
       return {
         ...u,
-        type: concretizeType(u.type, opts),
+        type: concretizeParts(u.type, opts, made, open),
       }
 
     default:
@@ -488,7 +546,7 @@ export function concretizeType(
  * Check if a type is fully concrete (no comptime types).
  */
 export function isConcreteType(t: ResolvedType): boolean {
-  const u = unwrap(t)
+  const u = unwrapToCut(t)
 
   switch (u.kind) {
     case 'comptime_int':
@@ -632,6 +690,16 @@ class CheckContext {
 
   // Track type names that are being defined (for recursive type detection)
   pendingTypeNames = new Set<string>()
+  // The forward references made to each of them, which get their target
+  // when it is defined
+  forwardRefs = new Map<string, ForwardRefRT[]>()
+  // Where each `type` of the module is declared, in the order they are
+  typeDeclaredAt = new Map<string, number>()
+  // The types too large to write out, as they were declared (see limitTypeParts)
+  tooLargeTypes = new Map<string, ResolvedType>()
+  // Set where a type was declared that others named before: they may have
+  // grown, and are counted again (recountGrownTypes)
+  typesGrew = false
   // What each `type` of the module is declared as, as written: whether a
   // name stands for a function type is asked before any type is resolved.
   typeBodies = new Map<string, AST.Type>()
@@ -680,6 +748,13 @@ class CheckContext {
   applyDepth = 0
   // Set where that depth ran out, until the application that began it reports it
   applyTooDeep = false
+  // Set where an application inside another's body made a type too large to
+  // write out (MAX_TYPE_PARTS), until the application that began it reports it
+  applyTooLarge = false
+  // Set while a type written in place is resolved, and while the body of a
+  // `type` is: a written type is measured once, as a whole (resolveType)
+  resolvingType = false
+  declaringType = false
   // What an inferred call found for its type parameters, or null when it
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
@@ -727,9 +802,17 @@ class CheckContext {
     }
     this.checkTypeFuncs()
 
-    // First pass: collect all type aliases, function signatures, globals, defs
+    // First pass: collect all type aliases, function signatures, globals, defs.
+    // The types come first: nothing in a type is a value, and any other
+    // declaration can name a type declared below it, also in an initializer
+    // that is checked where it is collected.
     for (const decl of module.decls) {
-      this.collectDeclaration(decl)
+      if (decl.kind === 'TypeDecl') this.collectDeclaration(decl)
+    }
+    this.recountGrownTypes()
+    this.reportTooLargeTypes()
+    for (const decl of module.decls) {
+      if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
     }
 
     // Resolve any forward references in the type cache
@@ -1020,12 +1103,73 @@ class CheckContext {
     }
     // Types with @ prefix are unique/nominal, others are structural aliases
     const unique = name.startsWith('@')
-    const resolved = this.resolveType(decl.type)
+    this.declaringType = true
+    let resolved: ResolvedType
+    try {
+      resolved = this.resolveType(decl.type)
+    } finally {
+      this.declaringType = false
+    }
+    // A type that holds itself, not through a pointer or a slice, has no size.
+    const refs = this.forwardRefs.get(name) ?? []
+    if (refs.length > 0 && containsByValue(resolved, refs)) {
+      this.error(decl.span.start, `type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      resolved = RECOVERY
+    }
     this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
     this.recordDefinition(name, decl.ident.span.start)
+    this.typeDeclaredAt.set(name, decl.span.start)
     // Remove from pending since it's now defined
     this.pendingTypeNames.delete(name)
+    // What named it before is now that type, also inside its own body
+    for (const ref of refs) ref.target = resolved === RECOVERY ? RECOVERY : named(name, resolved)
+    // Those it completes may have grown with it: they are counted again
+    // before a generic type is applied, which writes its arguments out, and
+    // once all are declared. Counting them all at every type would take a
+    // time that grows with the square of the number of types.
+    if (refs.length > 0) this.typesGrew = true
+    this.limitTypeParts([name])
+  }
+
+  // Count the types of the module again, where some may have grown since
+  private recountGrownTypes(): void {
+    if (!this.typesGrew) return
+    this.typesGrew = false
+    this.limitTypeParts([...this.typeDeclaredAt.keys()])
+  }
+
+  // A type too large to write out (MAX_TYPE_PARTS) is the recovery type from
+  // the moment it is, also where it was named before it was declared, so that
+  // nothing writes it out. Some of a type can still be to come: what it is
+  // made of so far is counted, and if that is too much the whole is. A type
+  // made of one too large is too large.
+  private limitTypeParts(names: string[]): void {
+    const counted = new Map<ResolvedType, number>()
+    const over = names.filter((name) => {
+      const sym = this.moduleScope.symbols.get(name)
+      if (sym?.kind !== 'type' || sym.type === RECOVERY) return false
+      return typeNamesIn(sym.type).some((part) => this.tooLargeTypes.has(part)) || typeParts(sym.type, counted) > MAX_TYPE_PARTS
+    })
+    for (const name of over) {
+      const sym = this.moduleScope.symbols.get(name) as Symbol & { kind: 'type' }
+      this.tooLargeTypes.set(name, sym.type)
+      this.moduleScope.symbols.set(name, { ...sym, type: RECOVERY })
+      this.typeCache.set(name, RECOVERY)
+      for (const ref of this.forwardRefs.get(name) ?? []) ref.target = RECOVERY
+    }
+  }
+
+  // Once every type is declared: a type too large is an error where it is
+  // declared. Types that hold such a type are too large as well, and are no
+  // part of the mistake: each is said where a too large type is made of types
+  // that are not.
+  private reportTooLargeTypes(): void {
+    for (const [name, type] of this.tooLargeTypes) {
+      if (!typeNamesIn(type).some((part) => part !== name && this.tooLargeTypes.has(part))) {
+        this.error(this.typeDeclaredAt.get(name) ?? 0, tooLarge(name))
+      }
+    }
   }
 
   // Resolve forward references in all collected types
@@ -1047,9 +1191,23 @@ class CheckContext {
   }
 
   // Recursively replace forward references with actual types
-  resolveForwardRefsInType(t: ResolvedType): ResolvedType {
+  // Each part once: a part that the type holds in several places is resolved
+  // once, so a type that names a type many times is resolved in a time of its
+  // own size (see typeParts).
+  resolveForwardRefsInType(t: ResolvedType, made = new Map<ResolvedType, ResolvedType>()): ResolvedType {
+    const known = made.get(t)
+    if (known) return known
+    const result = this.resolveForwardRefsOnce(t, made)
+    made.set(t, result)
+    return result
+  }
+
+  private resolveForwardRefsOnce(t: ResolvedType, made: Map<ResolvedType, ResolvedType>): ResolvedType {
     switch (t.kind) {
       case 'forward_ref': {
+        // One that has its target is resolved, also where it refers to the
+        // type it is in.
+        if (t.target) return t
         const sym = this.moduleScope.symbols.get(t.name)
         if (sym && sym.kind === 'type') {
           // Return a named reference to the type (don't inline to avoid infinite recursion)
@@ -1060,25 +1218,25 @@ class CheckContext {
       }
 
       case 'pointer':
-        return pointer(this.resolveForwardRefsInType(t.pointee), t.boundary, t.mutable, t.optional)
+        return pointer(this.resolveForwardRefsInType(t.pointee, made), t.boundary, t.mutable, t.optional)
 
       case 'array':
-        return array(this.resolveForwardRefsInType(t.element), t.sizes)
+        return array(this.resolveForwardRefsInType(t.element, made), t.sizes)
 
       case 'slice':
-        return slice(this.resolveForwardRefsInType(t.element), t.mutable, t.optional)
+        return slice(this.resolveForwardRefsInType(t.element, made), t.mutable, t.optional)
 
       case 'tuple':
-        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type))))
+        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type, made))))
 
       case 'func':
         return func(
-          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type))),
-          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type)))
+          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type, made))),
+          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type, made)))
         )
 
       case 'named':
-        return named(t.name, this.resolveForwardRefsInType(t.type))
+        return named(t.name, this.resolveForwardRefsInType(t.type, made))
 
       default:
         // Primitives, void, comptime types don't contain nested types
@@ -1151,14 +1309,15 @@ class CheckContext {
     if (dataLiteral) {
       // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
-      if (isMut && ptrType.kind === 'pointer') {
-        ptrType = pointer(ptrType.pointee, ptrType.boundary, true)
-      } else if (isMut && ptrType.kind === 'slice') {
-        ptrType = slice(ptrType.element, true)
+      const shape = unwrap(ptrType)
+      if (isMut && shape.kind === 'pointer') {
+        ptrType = pointer(shape.pointee, shape.boundary, true)
+      } else if (isMut && shape.kind === 'slice') {
+        ptrType = slice(shape.element, true)
       }
       // Use checkExpr to propagate element types and register the data literal
       // checkExpr's data literal path handles pendingLiterals, dataId, and element checking
-      if (ptrType.kind === 'pointer' || ptrType.kind === 'slice') {
+      if (unwrap(ptrType).kind === 'pointer' || unwrap(ptrType).kind === 'slice') {
         this.checkExpr(dataLiteral.expr, ptrType)
       } else {
         // Rare case: bare array type — register manually
@@ -1218,22 +1377,24 @@ class CheckContext {
     indexedType: ArrayRT
     ptrType: ResolvedType
   } | null {
-    // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
+    // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8. A name for
+    // a pointer, a slice or an array is the type it names (2.11).
     if (expr.kind === 'AnnotationExpr') {
       const innerExpr = ungrouped(expr.expr)
+      const annotated = unwrap(inferredType)
       if (this.isDataLiteralExpr(innerExpr)) {
-        if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
-          return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
+        if (annotated.kind === 'pointer' && unwrap(annotated.pointee).kind === 'array') {
+          return { expr: innerExpr, indexedType: unwrap(annotated.pointee) as ArrayRT, ptrType: inferredType }
         }
-        if (inferredType.kind === 'slice') {
+        if (annotated.kind === 'slice') {
           const litSize = this.getLiteralSize(innerExpr)
           if (typeof litSize === 'number') {
-            const arrType = array(inferredType.element, [litSize])
+            const arrType = array(annotated.element, [litSize])
             return { expr: innerExpr, indexedType: arrType, ptrType: pointer(arrType) }
           }
         }
-        if (inferredType.kind === 'array') {
-          return { expr: innerExpr, indexedType: inferredType, ptrType: pointer(inferredType) }
+        if (annotated.kind === 'array') {
+          return { expr: innerExpr, indexedType: annotated, ptrType: pointer(annotated) }
         }
       }
     }
@@ -1241,9 +1402,12 @@ class CheckContext {
     // Handle type annotation on LHS: def x:*[_]u32 = [0;12]
     // The expr is a bare literal and declaredType is the pointer type
     if (declaredType && this.isDataLiteralExpr(expr)) {
+      // The type a name stands for (2.11); the data is still of the name.
+      const declared = unwrap(declaredType)
+      const pointee = declared.kind === 'pointer' ? unwrap(declared.pointee) : null
       // Handle explicit pointer type *[_]u32
-      if (declaredType.kind === 'pointer' && declaredType.pointee.kind === 'array') {
-        let sizes = declaredType.pointee.sizes
+      if (pointee?.kind === 'array') {
+        let sizes = pointee.sizes
         // If sizes includes '_' (inferred), fill it in from literal
         if (sizes && sizes.includes('_')) {
           const literalSize = this.getLiteralSize(expr)
@@ -1252,7 +1416,7 @@ class CheckContext {
           }
         }
         const arrayType: ArrayRT = {
-          ...declaredType.pointee,
+          ...pointee,
           sizes,
         }
         return {
@@ -1262,15 +1426,15 @@ class CheckContext {
         }
       }
       // Handle array type [N]T - reserves memory, type stays as array
-      if (declaredType.kind === 'array') {
-        let sizes = declaredType.sizes
+      if (declared.kind === 'array') {
+        let sizes = declared.sizes
         if (sizes && sizes.includes('_')) {
           const literalSize = this.getLiteralSize(expr)
           if (typeof literalSize === 'number') {
             sizes = sizes.map(s => s === '_' ? literalSize : s)
           }
         }
-        const arrayType: ArrayRT = { ...declaredType, sizes }
+        const arrayType: ArrayRT = { ...declared, sizes }
         return {
           expr,
           indexedType: arrayType,
@@ -1278,12 +1442,12 @@ class CheckContext {
         }
       }
       // Handle slice type []T - array literal coerces to slice
-      if (declaredType.kind === 'slice') {
+      if (declared.kind === 'slice') {
         const literalSize = this.getLiteralSize(expr)
         const sizes: ArraySize[] = typeof literalSize === 'number' ? [literalSize] : ['_']
         const arrayType: ArrayRT = {
           kind: 'array',
-          element: declaredType.element,
+          element: declared.element,
           sizes,
         }
         return {
@@ -1895,7 +2059,9 @@ class CheckContext {
     const prevScope = this.currentScope
     const prevReturnType = this.currentReturnType
     this.currentScope = funcScope
-    const results = this.resolveType(decl.signature.output)
+    // `-> (u32)` lists one result, as `-> (q: i32, r: i32)` lists two.
+    const output = decl.signature.output
+    const results = output.kind === 'CompositeType' ? tuple(this.typeToFields(output)) : this.resolveType(output)
     // What follows `->` is a list of results only where it is written in
     // parentheses. An instance's `-> T` is one result, also when T is bound
     // to a tuple or a struct: it is held as the list of that one, so that
@@ -1903,7 +2069,6 @@ class CheckContext {
     const oneTuple = decl.signature.output.kind === 'BoundType' && results.kind === 'tuple'
     this.currentReturnType = oneTuple ? tuple([field(null, results)]) : results
     if (decl.body.kind === 'Block') {
-      const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
       // With named results, a trailing expression with a value supplies them.
       this.checkBody(decl.body, named)
@@ -2479,6 +2644,27 @@ class CheckContext {
   // === Type Resolution ===
 
   resolveType(type: AST.Type): ResolvedType {
+    // A type written in place, in a signature, a cast or after a colon, is
+    // held to the size a declared type is (MAX_TYPE_PARTS), as a whole. The
+    // body of a `type` is counted where it is declared, and a generic type
+    // where it is applied: each with what it is made of resolved.
+    if (this.resolvingType || this.declaringType || this.applyDepth > 0) return this.resolveTypeParts(type)
+    this.resolvingType = true
+    let resolved: ResolvedType
+    try {
+      resolved = this.resolveTypeParts(type)
+    } finally {
+      this.resolvingType = false
+    }
+    if (resolved !== RECOVERY && typeParts(resolved) > MAX_TYPE_PARTS) {
+      this.error(type.span.start, tooLarge(typeText(type)))
+      return RECOVERY
+    }
+    return resolved
+  }
+
+  // resolveType, for each part of a type written in place
+  private resolveTypeParts(type: AST.Type): ResolvedType {
     switch (type.kind) {
       case 'PrimitiveType':
         return primitive(type.name, type.max)
@@ -2526,6 +2712,9 @@ class CheckContext {
       }
 
       case 'CompositeType': {
+        // (u32) is u32: parentheses around one type only group it.
+        const inner = ungroupedType(type)
+        if (inner !== type) return this.resolveType(inner)
         const fields = type.fields.map((f) =>
           field(f.ident, this.resolveType(f.type)),
         )
@@ -2556,7 +2745,9 @@ class CheckContext {
         }
         // Check if this is a forward reference to a type being defined
         if (this.pendingTypeNames.has(type.name)) {
-          return forwardRef(type.name)
+          const ref = forwardRef(type.name)
+          this.forwardRefs.set(type.name, [...(this.forwardRefs.get(type.name) ?? []), ref])
+          return ref
         }
         const similar = this.findSimilar(type.name)
         const hint = similar ? ` — did you mean '${similar}'?` : ''
@@ -2572,6 +2763,7 @@ class CheckContext {
       }
 
       case 'TypeApply':
+        this.recountGrownTypes()
         return this.applyTypeFunc(type)
 
       case 'BoundType':
@@ -2633,21 +2825,28 @@ class CheckContext {
       return type
     }
 
+    // A name for a pointer, a slice or an array is the type it names: what
+    // the value has to be is read off that. (It is still recorded, and said,
+    // by the name.)
+    const shape = unwrap(expected)
+    // And what a pointer points to, under its name as well: *A for A = [3]u16
+    const pointee = shape.kind === 'pointer' ? unwrap(shape.pointee) : null
+
     // Bidirectional: propagate expected type through & (ref) expressions
-    if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
+    if (expr.kind === 'UnaryExpr' && expr.op === '&' && shape.kind === 'pointer') {
       const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
       const isLiteral = operand.kind === 'LiteralExpr' || operand.kind === 'ArrayExpr' ||
         operand.kind === 'RepeatExpr' || operand.kind === 'TupleExpr'
-      if (isLiteral && expected.mutable) markMut(operand)
-      this.checkExpr(expr.operand, expected.pointee)
+      if (isLiteral && shape.mutable) markMut(operand)
+      this.checkExpr(expr.operand, shape.pointee)
       if (isLiteral) {
         // Give the literal its own cell in the data section, as inferExpr does.
         if (operand.kind !== 'TupleExpr') {
           (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
         }
-        this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
+        this.addLiteral(operand.span.start, operand, { kind: 'array', element: shape.pointee, sizes: [1] })
       }
-      const result = pointer(expected.pointee, false, expected.mutable)
+      const result = pointer(shape.pointee, false, shape.mutable)
       this.exprTypes.set(expr, result)
       return result
     }
@@ -2703,11 +2902,11 @@ class CheckContext {
     }
 
     // Handle comptime_list against array types - propagate element type down
-    if (inferred.kind === 'comptime_list' && expected.kind === 'array') {
+    if (inferred.kind === 'comptime_list' && shape.kind === 'array') {
       // If expected has inferred size, fill it in from the literal length
-      let resolvedExpected = expected
-      if (hasInferredMarker(expected.sizes) && expr.kind === 'ArrayExpr') {
-        resolvedExpected = array(expected.element, fillInferredSize(expected.sizes, expr.elements.length))
+      let resolvedExpected = shape
+      if (hasInferredMarker(shape.sizes) && expr.kind === 'ArrayExpr') {
+        resolvedExpected = array(shape.element, fillInferredSize(shape.sizes, expr.elements.length))
       }
       // Check each element against the inner element type
       if (expr.kind === 'ArrayExpr') {
@@ -2736,13 +2935,13 @@ class CheckContext {
     if (
       inferred.kind === 'array' &&
       hasInferredMarker(inferred.sizes) &&
-      expected.kind === 'array' &&
-      !hasInferredMarker(expected.sizes)
+      shape.kind === 'array' &&
+      !hasInferredMarker(shape.sizes)
     ) {
       // If expected has inferred size, fill it in from the literal length
-      let resolvedExpected = expected
-      if (hasInferredMarker(expected.sizes) && expr.kind === 'ArrayExpr') {
-        resolvedExpected = array(expected.element, fillInferredSize(expected.sizes, expr.elements.length))
+      let resolvedExpected = shape
+      if (hasInferredMarker(shape.sizes) && expr.kind === 'ArrayExpr') {
+        resolvedExpected = array(shape.element, fillInferredSize(shape.sizes, expr.elements.length))
       }
       if (expr.kind === 'ArrayExpr') {
         // Peel sizes to get the element type for checking
@@ -2761,16 +2960,16 @@ class CheckContext {
 
     // Handle pointer-to-array with inferred size: *[_]T
     if (
-      expected.kind === 'pointer' &&
-      expected.pointee.kind === 'array' &&
-      hasInferredMarker(expected.pointee.sizes) &&
+      shape.kind === 'pointer' &&
+      pointee?.kind === 'array' &&
+      hasInferredMarker(pointee.sizes) &&
       (inferred.kind === 'array' && hasInferredMarker(inferred.sizes)) &&
       expr.kind === 'ArrayExpr'
     ) {
       // Fill in the size from the literal
       const resolvedPointee = array(
-        expected.pointee.element,
-        fillInferredSize(expected.pointee.sizes, expr.elements.length),
+        pointee.element,
+        fillInferredSize(pointee.sizes, expr.elements.length),
       )
       const resolvedExpected = pointer(resolvedPointee)
       // Check elements
@@ -2786,13 +2985,13 @@ class CheckContext {
 
     // (ptr, len) against a slice is that slice, built from its two parts: a
     // value like any other tuple, with nothing to lay out in the data section.
-    if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && expected.kind === 'slice') {
+    if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && shape.kind === 'slice') {
       // Its parts are checked like any value that meets a type: a pointer to
       // the slice's elements, as writable as the slice, and a length that an
       // i32 holds (an i64 or a float would be the wrong wasm value).
       const [ptr, len] = expr.elements.map(argValue)
       const ptrType = ptr && this.exprTypes.get(ptr)
-      if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(expected.element, expected.mutable), 'slice pointer: ')
+      if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(shape.element, shape.mutable), 'slice pointer: ')
       const lenType = len && this.exprTypes.get(len)
       if (len && lenType) {
         const type = unwrap(lenType)
@@ -2806,29 +3005,29 @@ class CheckContext {
     }
 
     // No other tuple is a slice.
-    if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
+    if (expr.kind === 'TupleExpr' && shape.kind === 'slice') {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
       this.exprTypes.set(expr, expected)
       return expected
     }
 
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
-    const isFramedArray = expected.kind === 'array' && expected.sizes?.some(s => s === '!' || s === '?')
+    const isFramedArray = shape.kind === 'array' && shape.sizes?.some(s => s === '!' || s === '?')
     if (
       this.isDataLiteralExpr(expr) &&
-      (expected.kind === 'pointer' && expected.pointee.kind === 'array' ||
-       expected.kind === 'slice' ||
+      (pointee?.kind === 'array' ||
+       shape.kind === 'slice' ||
        isFramedArray)
     ) {
       const litSize = this.getLiteralSize(expr)
-      const arrType: ArrayRT = expected.kind === 'slice'
-        ? array(expected.element, [typeof litSize === 'number' ? litSize : 0])
-        : expected.kind === 'array'
-        ? expected
-        : (expected.pointee as ArrayRT)
+      const arrType: ArrayRT = shape.kind === 'slice'
+        ? array(shape.element, [typeof litSize === 'number' ? litSize : 0])
+        : shape.kind === 'array'
+        ? shape
+        : (pointee as ArrayRT)
       // Infer mut from target type — no need for explicit mut on the literal
-      const targetMut = (expected.kind === 'pointer' && expected.mutable) ||
-        (expected.kind === 'slice' && expected.mutable)
+      const targetMut = (shape.kind === 'pointer' && shape.mutable) ||
+        (shape.kind === 'slice' && shape.mutable)
       if (targetMut || this.exprHasMut(expr)) {
         if ('mut' in expr) (expr as { mut?: boolean }).mut = true
       }
@@ -2839,18 +3038,20 @@ class CheckContext {
       if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
       // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
-        const innerType = expected.kind === 'slice' ? expected.element
-          : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
+        const innerType = shape.kind === 'slice' ? shape.element
+          : pointee?.kind === 'array' ? this.peelArraySize(pointee)
           : null
         if (innerType) {
           // A tuple that is a struct element is checked field by field, like
           // any struct value: its literals take their fields' types. One that
           // is a slice element is its (ptr, len), checked as any slice value.
           const inner = unwrap(innerType).kind
-          const counted = expected.kind === 'slice' ? countedElement(innerType) : null
+          const counted = shape.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
             const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
-            if (this.isDataLiteralExpr(elem) && !asValue) {
+            // (x) is x: a value in parentheses is checked as that value, and
+            // only a literal is laid out as one.
+            if (this.isDataLiteralExpr(ungrouped(elem)) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
@@ -2877,15 +3078,15 @@ class CheckContext {
     // Handle array with inferred size against array with known size (e.g., RepeatExpr)
     // [_]T with initializer [value; N] should fill in size from N
     if (
-      expected.kind === 'array' &&
-      hasInferredMarker(expected.sizes) &&
+      shape.kind === 'array' &&
+      hasInferredMarker(shape.sizes) &&
       inferred.kind === 'array' &&
       isFixedSizes(inferred.sizes)
     ) {
       // Fill in the inferred size from the value's known size
       const inferredTotal = totalElements(inferred.sizes)
       if (inferredTotal !== null) {
-        const resolved = array(expected.element, fillInferredSize(expected.sizes, inferredTotal))
+        const resolved = array(shape.element, fillInferredSize(shape.sizes, inferredTotal))
         this.exprTypes.set(expr, resolved)
         return resolved
       }
@@ -2912,9 +3113,9 @@ class CheckContext {
     // Exception: when expected has 'inferred' size, use the resolved type with actual length
     const isComptimeLiteral = inferred.kind === 'comptime_int' || inferred.kind === 'comptime_float' ||
       (inferred.kind === 'array' && (hasInferredMarker(inferred.sizes) || isFixedSizes(inferred.sizes)))
-    const expectedHasInferredSize = expected.kind === 'array' && hasInferredMarker(expected.sizes)
+    const expectedHasInferredSize = shape.kind === 'array' && hasInferredMarker(shape.sizes)
     const compatible = typeAssignable(expected, inferred)
-    const recordType = expected.kind === 'named' ? expected
+    const recordType = expected.kind === 'named' && !(shape.kind === 'slice' && unwrap(inferred).kind === 'pointer') ? expected
       : (isComptimeLiteral && !expectedHasInferredSize && compatible ? expected : inferred)
     this.exprTypes.set(expr, recordType)
 
@@ -4238,6 +4439,10 @@ class CheckContext {
         this.exprTypes.set(expr, actual)
         this.coercions.set(expr, expected)
       }
+    } else if (to.kind === 'slice' && arrayLength(from) !== null) {
+      // A pointer to an array is a slice of its length, wherever it meets
+      // one: an argument, an initializer, a returned value, a branch, a field.
+      this.coercions.set(expr, expected)
     } else if (grouped && from.kind === 'tuple' && to.kind === 'tuple') {
       // (e) is e: a tuple in parentheses is converted as it is without them.
       this.coerce(grouped, actual, expected, prefix)
@@ -4455,18 +4660,19 @@ class CheckContext {
             if (f) return f.type
           }
         }
-        // Slice built-in fields: .ptr, .len
-        if (objType.kind === 'slice') {
+        // Slice built-in fields: .ptr, .len. A name for a slice, a pointer
+        // or an array is the type it names: seen through here, as anywhere.
+        const sliceType = unwrappedType.kind === 'pointer' ? unwrap(unwrappedType.pointee) : unwrappedType
+        if (unwrappedType.kind === 'slice') {
           if (expr.member.name === 'ptr') {
-            return manyPointer(objType.element, objType.mutable)
+            return manyPointer(unwrappedType.element, unwrappedType.mutable)
           }
           if (expr.member.name === 'len') {
             return primitive('u32')
           }
         }
         // Auto-deref: pointer to slice allows .ptr/.len access
-        if (objType.kind === 'pointer' && objType.pointee.kind === 'slice') {
-          const sliceType = objType.pointee
+        if (unwrappedType.kind === 'pointer' && sliceType.kind === 'slice') {
           if (expr.member.name === 'ptr') {
             return manyPointer(sliceType.element)
           }
@@ -4475,28 +4681,28 @@ class CheckContext {
           }
         }
         // Array type built-in fields: .ptr, .len, .wid
-        if (objType.kind === 'array') {
+        if (unwrappedType.kind === 'array') {
           if (expr.member.name === 'ptr') {
-            return manyPointer(objType.element)
+            return manyPointer(unwrappedType.element)
           }
           if (expr.member.name === 'len') {
-            if (objType.sizes === null) {
+            if (unwrappedType.sizes === null) {
               this.error(expr.span.start, `cannot get .len on unbounded array ${typeToString(objType)} - length is unknown`)
               return primitive('u32')
             }
-            const total = totalElements(objType.sizes)
+            const total = totalElements(unwrappedType.sizes)
             if (total !== null) return comptimeInt(BigInt(total))
             return primitive('u32')
           }
           if (expr.member.name === 'wid') {
-            const ws = byteSize(objType.element)
+            const ws = byteSize(unwrappedType.element)
             if (ws !== null) return comptimeInt(BigInt(ws))
             return primitive('u32')
           }
         }
         // Pointer-to-array type built-in fields: .ptr, .len, .wid
-        if (objType.kind === 'pointer' && objType.pointee.kind === 'array') {
-          const arrayType = objType.pointee
+        if (unwrappedType.kind === 'pointer' && sliceType.kind === 'array') {
+          const arrayType = sliceType
           if (expr.member.name === 'ptr') {
             return manyPointer(arrayType.element)
           }
@@ -4544,17 +4750,17 @@ class CheckContext {
       case 'deref': {
         // Pointer dereference: p.* - only valid for basic pointers *T
         // Many-pointers [*]T and slices []T should use [0] syntax instead
-        if (objType.kind === 'pointer') {
+        if (unwrappedType.kind === 'pointer') {
           // A table is row pointers, not the rows: there is no [N][M]T in
           // memory to load or store whole.
-          if (tableRow(objType)) {
+          if (tableRow(unwrappedType)) {
             this.error(expr.span.start, `cannot use .* on ${typeToString(objType)}: a table holds pointers to rows that lie apart — load one row with [i].*`)
           }
-          return objType.pointee
+          return unwrappedType.pointee
         }
-        if (objType.kind === 'array' || objType.kind === 'slice') {
+        if (unwrappedType.kind === 'array' || unwrappedType.kind === 'slice') {
           this.error(expr.span.start, `cannot use .* on ${typeToString(objType)} - use [0] to access the first element`)
-          return objType.element
+          return unwrappedType.element
         }
         this.error(expr.span.start, `cannot dereference non-pointer type ${typeToString(objType)}`)
         return primitive('i32')
@@ -4566,18 +4772,18 @@ class CheckContext {
         const punType = this.resolveType(expr.member.type)
 
         // For slice types: []u8.u32 → [*]u32 (preserves slice mutability)
-        if (objType.kind === 'slice') {
-          return manyPointer(punType, objType.mutable)
+        if (unwrappedType.kind === 'slice') {
+          return manyPointer(punType, unwrappedType.mutable)
         }
 
         // For array or comptime_array: [N]u8.u32 → [*]u32
-        if (objType.kind === 'array' || objType.kind === 'comptime_array') {
+        if (unwrappedType.kind === 'array' || unwrappedType.kind === 'comptime_array') {
           return manyPointer(punType)
         }
 
         // For pointer types: preserve mutability through type pun
-        if (objType.kind === 'pointer') {
-          return manyPointer(punType, objType.mutable)
+        if (unwrappedType.kind === 'pointer') {
+          return manyPointer(punType, unwrappedType.mutable)
         }
 
         // Default: just return the punned type
@@ -4782,10 +4988,12 @@ class CheckContext {
     // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
     const resolvable = this.insideIfLetCondition
     this.insideIfLetCondition = false
-    const objType = this.inferExpr(expr.object)
+    const indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
     this.inferIndexValue(expr.index)
-    if (unresolved(objType)) return RECOVERY
+    if (unresolved(indexed)) return RECOVERY
+    // A name for a slice, an array or a pointer is the type it names
+    const objType = unwrap(indexed)
 
     // An element of a table is its row pointer. A row has no optional type:
     // like a value element, an index not known to be in range is resolved
@@ -4798,7 +5006,7 @@ class CheckContext {
       if (idx === null || idx.kind !== 'int') {
         // Runtime index: return optional if element can be optional, error otherwise
         const elem = objType.element
-        if (elem.kind === 'pointer' || elem.kind === 'slice') {
+        if (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice') {
           return optionalOf(elem)
         }
         if (!this.insideIfLetCondition) {
@@ -4833,8 +5041,9 @@ class CheckContext {
 
     if (objType.kind === 'pointer') {
       // If pointing to an array type (e.g., *[12]u32 or *[12,16]u32)
-      if (objType.pointee.kind === 'array') {
-        const arrayType = objType.pointee
+      const pointee = unwrap(objType.pointee)
+      if (pointee.kind === 'array') {
+        const arrayType = pointee
         // Multi-dimensional: *[N,M]T indexed once returns *[M]T
         if (arrayType.sizes && arrayType.sizes.length > 1) {
           const remainingDims = arrayType.sizes.slice(1)
@@ -4850,14 +5059,14 @@ class CheckContext {
               const idxType = this.exprTypes.get(expr.index)
               if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
                 const elem = arrayType.element
-                const canBeOptional = elem.kind === 'pointer' || elem.kind === 'slice'
+                const canBeOptional = unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice'
                 const hint = canBeOptional
                   ? ` — narrow the index range or use 'if let'/'??' for bounds checking`
                   : ` — narrow the index range to fit`
                 this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed *[${n}]${typeToString(elem)} bounds (max index ${idxType.max - 1} >= ${n})${hint}`)
               } else {
                 const elem = arrayType.element
-                if (elem.kind === 'pointer' || elem.kind === 'slice') {
+                if (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice') {
                   return optionalOf(elem)
                 }
                 if (!this.insideIfLetCondition) {
@@ -4874,7 +5083,7 @@ class CheckContext {
       return objType.pointee
     }
 
-    this.error(expr.span.start, `cannot index type ${typeToString(objType)} — indexing requires an array, slice, or pointer type`)
+    this.error(expr.span.start, `cannot index type ${typeToString(indexed)} — indexing requires an array, slice, or pointer type`)
     return primitive('i32')
   }
 
@@ -5371,9 +5580,11 @@ class CheckContext {
       const applied = typeApplications(decl.body).find((t) => names.has(t.name))
       if (applied) reject(applied.span.start, `a type parameter cannot be applied`)
     }
-    // A type function has no conditions, so one whose body applies it again,
-    // directly or through another, never comes to an end. (Through a `type`
-    // it does: that is a forward reference, as in any recursive type.)
+    // A generic type may refer to itself, directly or through another, as
+    // any type may: List(T) holding a ?*List(T) is List(T) again, which is
+    // the type being resolved. A type function has no conditions, though, so
+    // one that applies itself to a type its parameters are part of, List(*T),
+    // would make a new type at every level and never come to an end.
     for (const sym of this.typeFuncs) {
       if (!sym.valid) continue
       const reaches = (from: Symbol & { kind: 'typefunc' }, seen: Set<Symbol>): (Symbol & { kind: 'typefunc' })[] | null => {
@@ -5389,11 +5600,19 @@ class CheckContext {
       }
       const round = reaches(sym, new Set())
       if (!round) continue
-      const first = typeApplications(sym.decl.body).find((applied) => {
-        const next = this.moduleScope.symbols.get(applied.name)
-        return next === sym || (next?.kind === 'typefunc' && round.includes(next))
-      })
-      this.error((first ?? sym.decl).span.start, `generic type '${sym.decl.ident}' refers to itself`)
+      // An argument that is a parameter, or has none in it, is one of finitely
+      // many types: the round comes back to an application already made.
+      const grows = (member: Symbol & { kind: 'typefunc' }) => {
+        const params = member.decl.params.map((p) => p.ident as string)
+        return typeApplications(member.decl.body).find((applied) => {
+          const next = this.moduleScope.symbols.get(applied.name)
+          if (next !== sym && !(next?.kind === 'typefunc' && round.includes(next))) return false
+          return applied.args.some((arg) => arg.kind !== 'TypeRef' && typeUses(arg).some((t) => t.kind === 'TypeRef' && params.includes(t.name)))
+        })
+      }
+      const growing = round.map((member) => grows(member)).find((applied) => applied)
+      if (!growing) continue
+      this.error(growing.span.start, `generic type '${sym.decl.ident}' refers to itself with a type argument that grows, ${typeText(growing)}: applying it would never end`)
       // One error for the whole round: the others on it are part of the same mistake.
       for (const member of round) member.valid = false
     }
@@ -5452,6 +5671,14 @@ class CheckContext {
     const key = `${args.map((a) => canonicalKey(a)).join('|')} ${shown}`
     const cached = settled ? sym.cache.get(key) : undefined
     if (cached) return cached
+    // The same application again, inside its own body: the type it makes,
+    // which is what it is once the body is resolved.
+    const applying = sym.applying?.get(key)
+    if (applying) {
+      const ref = forwardRef(shown)
+      applying.push(ref)
+      return ref
+    }
     if (owner.applyDepth >= MAX_APPLY_DEPTH) {
       owner.applyTooDeep = true
       return RECOVERY
@@ -5462,8 +5689,21 @@ class CheckContext {
       return to && { kind: 'BoundType', name: param, type: to, span: { start: 0, end: 0 } }
     }) as AST.Type
     owner.applyDepth++
+    const refs: ForwardRefRT[] = []
+    sym.applying ??= new Map()
+    sym.applying.set(key, refs)
     const resolved = named(shown, owner.resolveType(body))
+    sym.applying.delete(key)
     owner.applyDepth--
+    // Holding itself, not through a pointer or a slice, it has no size. That
+    // is so whatever its arguments are: one error, where it is declared.
+    if (refs.length > 0 && containsByValue(resolved.type, refs)) {
+      for (const ref of refs) ref.target = RECOVERY
+      if (sym.valid) owner.error(sym.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      sym.valid = false
+      return RECOVERY
+    }
+    for (const ref of refs) ref.target = resolved
     // Nothing of a type that was cut short is a type. The error is one, at
     // the application that was written: the declarations it went through are
     // each as they should be.
@@ -5472,6 +5712,13 @@ class CheckContext {
         owner.applyTooDeep = false
         this.error(at, `generic types are nested more than ${MAX_APPLY_DEPTH} deep in '${shown}'`)
       }
+      return RECOVERY
+    }
+    // Applied to a type, a generic type can double it (D(T) = (a: T, b: T)),
+    // and each application is a key made of its arguments written out.
+    if (owner.applyTooLarge || typeParts(resolved) > MAX_TYPE_PARTS) {
+      owner.applyTooLarge = owner.applyDepth > 0
+      if (owner.applyDepth === 0) this.error(at, tooLarge(shown))
       return RECOVERY
     }
     if (settled) sym.cache.set(key, resolved)
@@ -5557,10 +5804,10 @@ class CheckContext {
       for (const [param, type] of found) bound.set(param, type)
     }
 
-    // A type declared further down is not known yet while declarations are
-    // still being collected. A call in a global's initializer or a def's
-    // value is inferred there, before it is rejected for not being a
-    // constant: its instance would be keyed by the name, not by the type.
+    // A type that is not resolved yet would key the instance by its name,
+    // not by the type. The types of a module are collected before anything
+    // else is, so a call in a global's initializer or a def's value, which is
+    // inferred while declarations are collected, finds them all.
     for (const p of typeParams) {
       const pending = unresolvedName(bound.get(p) as ResolvedType)
       if (pending) {
@@ -6286,6 +6533,9 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
         : null
     case 'TupleExpr': {
       if (expr.elements.length === 0) return null
+      // (u32) is u32, as a type in parentheses is anywhere.
+      const only = expr.elements[0]
+      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value) : null
       const fields: AST.Field[] = []
       for (const el of expr.elements) {
         const type = el.value ? typeOfArg(el.value) : null
@@ -6403,7 +6653,7 @@ function unresolved(type: ResolvedType): boolean {
 // Whether a value of this type can decide a type parameter. An untyped literal
 // (7, 0.5, [1, 2, 3]) has no type of its own: it takes the one it is used as.
 function hasOwnType(type: ResolvedType): boolean {
-  const t = unwrap(type)
+  const t = unwrapToCut(type)
   switch (t.kind) {
     case 'comptime_int':
     case 'comptime_float':
@@ -6477,6 +6727,56 @@ function withoutRanges(type: ResolvedType): ResolvedType {
   return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
 }
 
+// The error for a type too large to write out
+function tooLarge(name: string): string {
+  return `type '${name}' is too large: written out in full it has more than ${MAX_TYPE_PARTS} parts`
+}
+
+// The names a type is made of where it stands, not those they are made of
+function typeNamesIn(type: ResolvedType, found: string[] = []): string[] {
+  switch (type.kind) {
+    case 'named':
+    case 'forward_ref':
+      found.push(type.name)
+      break
+    case 'pointer':
+      typeNamesIn(type.pointee, found)
+      break
+    case 'slice':
+    case 'array':
+      typeNamesIn(type.element, found)
+      break
+    case 'tuple':
+      for (const f of type.fields) typeNamesIn(f.type, found)
+      break
+    case 'func':
+      for (const f of [...type.params, ...type.returns]) typeNamesIn(f.type, found)
+      break
+  }
+  return found
+}
+
+// Whether a type holds one of these forward references as a value: as itself,
+// a field, an element of an array, at any depth, through the types it names.
+// Behind a pointer or a slice it holds an address, not the value.
+function containsByValue(type: ResolvedType, refs: readonly ResolvedType[], seen = new Set<ResolvedType>()): boolean {
+  if (refs.includes(type)) return true
+  if (seen.has(type)) return false
+  seen.add(type)
+  switch (type.kind) {
+    case 'named':
+      return containsByValue(type.type, refs, seen)
+    case 'forward_ref':
+      return type.target !== undefined && containsByValue(type.target, refs, seen)
+    case 'tuple':
+      return type.fields.some((f) => containsByValue(f.type, refs, seen))
+    case 'array':
+      return containsByValue(type.element, refs, seen)
+    default:
+      return false
+  }
+}
+
 // The name of a type that is referred to but not resolved yet, if there is
 // one. A type that refers to itself keeps a forward reference inside its own
 // alias; that one is resolved.
@@ -6490,7 +6790,7 @@ function unresolvedName(type: ResolvedType, inside: readonly string[] = []): str
   }
   switch (type.kind) {
     case 'forward_ref':
-      return inside.includes(type.name) ? null : type.name
+      return type.target || inside.includes(type.name) ? null : type.name
     case 'named':
       return inside.includes(type.name) ? null : unresolvedName(type.type, [...inside, type.name])
     case 'pointer':
@@ -6514,8 +6814,9 @@ function mentionsUnbound(
   typeParams: readonly string[],
   bound: ReadonlyMap<string, ResolvedType>,
   expand?: ExpandTypeApply,
+  expanding: readonly string[] = [],
 ): boolean {
-  const inner = (t: AST.Type) => mentionsUnbound(t, typeParams, bound, expand)
+  const inner = (t: AST.Type) => mentionsUnbound(t, typeParams, bound, expand, expanding)
   switch (type.kind) {
     case 'TypeRef':
       return typeParams.includes(type.name) && !bound.has(type.name)
@@ -6529,9 +6830,12 @@ function mentionsUnbound(
       return inner(type.input) || inner(type.output)
     case 'TypeApply': {
       // Seen through, where the generic type is known: Tagged(T) mentions T
-      // only if a field of Tagged is made of it.
-      const body = expand?.(type)
-      return body ? inner(body) : type.args.some(inner)
+      // only if a field of Tagged is made of it. Inside its own body a
+      // generic type that refers to itself, the same application again, is
+      // read by its arguments; Vec(T) inside Vec(Vec(T)) is another one.
+      const applied = typeText(type)
+      const body = expanding.includes(applied) ? null : expand?.(type)
+      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, applied]) : type.args.some(inner)
     }
     default:
       return false
@@ -6553,6 +6857,7 @@ function matchType(
   bound: Map<string, ResolvedType>,
   value = true,
   expand?: ExpandTypeApply,
+  expanding: readonly string[] = [],
 ): void {
   const u = unwrap(actual)
   switch (pattern.kind) {
@@ -6568,7 +6873,7 @@ function matchType(
       // points to is an array of unknown length, which is no type by itself.
       // Only [*]T matches it.
       if (u.kind === 'pointer' && !(u.pointee.kind === 'array' && u.pointee.sizes === null)) {
-        matchType(pattern.pointee, u.pointee, typeParams, bound, false, expand)
+        matchType(pattern.pointee, u.pointee, typeParams, bound, false, expand, expanding)
       }
       return
     case 'IndexedType': {
@@ -6576,13 +6881,15 @@ function matchType(
         u.kind === 'slice' || u.kind === 'array' ? u.element
         : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
         : null
-      if (element) matchType(pattern.element, element, typeParams, bound, false, expand)
+      if (element) matchType(pattern.element, element, typeParams, bound, false, expand, expanding)
       return
     }
     case 'CompositeType':
-      if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
+      if (ungroupedType(pattern) !== pattern) {
+        matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand, expanding)
+      } else if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
         pattern.fields.forEach((f, i) => {
-          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand)
+          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand, expanding)
         })
       }
       return
@@ -6594,7 +6901,7 @@ function matchType(
         const types = written.kind === 'CompositeType' ? written.fields.map((f) => f.type) : [written]
         if (types.length !== fields.length) return
         types.forEach((t, i) => {
-          matchType(t, fields[i].type, typeParams, bound, false, expand)
+          matchType(t, fields[i].type, typeParams, bound, false, expand, expanding)
         })
       }
       side(pattern.input, u.params)
@@ -6604,8 +6911,12 @@ function matchType(
     case 'TypeApply': {
       // A generic type is seen through: its body is laid over the argument,
       // however the argument's type was written.
-      const body = expand?.(pattern)
-      if (body) matchType(body, actual, typeParams, bound, value, expand)
+      // Inside its own body, a generic type that refers to itself, the same
+      // application again, has bound all it can already; Vec(T) inside
+      // Vec(Vec(T)) is another one, and binds T.
+      const applied = typeText(pattern)
+      const body = expanding.includes(applied) ? null : expand?.(pattern)
+      if (body) matchType(body, actual, typeParams, bound, value, expand, [...expanding, applied])
       return
     }
     default:
@@ -7032,6 +7343,8 @@ function representation(t: ResolvedType & { kind: 'primitive' }): string {
 function sameRepresentation(from: ResolvedType, to: ResolvedType): boolean {
   const a = unwrap(from)
   const b = unwrap(to)
+  // A slice is two values, a pointer to an array one
+  if ((a.kind === 'slice') !== (b.kind === 'slice')) return false
   if (a.kind === 'primitive' && b.kind === 'primitive') return representation(a) === representation(b)
   if (a.kind === 'tuple' && b.kind === 'tuple') {
     return a.fields.every((f, i) => b.fields[i] !== undefined && sameRepresentation(f.type, b.fields[i].type))

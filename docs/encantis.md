@@ -44,6 +44,22 @@ func distance(a:Point, b:Point) -> f32   // Point is a type
 let point = Point(1.0, 2.0)              // point is a variable, Point is a constructor
 ```
 
+A type can be named anywhere in its module, above its declaration as well as below it: in another type, a signature, a global's or a `data`'s type and initializer. The types of a module are resolved before anything else in it, so names that lead to one another resolve in whatever order they are declared.
+
+<!-- spec:begin compile -->
+
+```ents
+global origin: Pair = (1, 2)
+data corners: *[2]Pair = [(3, 4), (5, 6)]
+type Pair = (first: Coord, second: Coord)
+type Coord = Size
+type Size = u32
+
+export func far() -> Size => origin.first + origin.second + corners[1].second
+```
+
+<!-- spec:end -->
+
 The type parameters of a generic function are type identifiers too: in `func max(comptime T: type, a: T, b: T)`, `T` is a type inside the function (see [8. Generics](#8-generics)).
 
 ### 1.4 Reserved Keywords
@@ -190,7 +206,7 @@ data count = mut 5:i32              // count: *mut i32 (mutable)
 data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 ```
 
-`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` at call sites.
+`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5).
 
 The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
 
@@ -481,7 +497,7 @@ data key = x"9d61b19deffd5a60"          // key: *[8]u8 (const)
 data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, unique)
 ```
 
-The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` at call sites.
+The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` wherever one is expected (9.5).
 
 ### 2.7 Tuple Types
 
@@ -495,6 +511,8 @@ Standard tuple semantics:
 - `()` is void (0-tuple)
 - `(x)` is grouping, not a tuple — the type is just `x`
 - `(x, y, ...)` is a tuple (2+ elements)
+
+Grouping holds wherever a type is written: after a colon, in a `type` declaration, in a cast, as a type argument, and as the type a constructor call names, so `x: (u32)` takes a `u32` and `(Point)(1.0, 2.0)` is `Point(1.0, 2.0)`. A field with a name makes a struct of one field: `(v: f64)`. After `->` the parentheses list the results: `-> (u32)` is one `u32`, `-> (q: i32, r: i32)` two named results, and `-> ((q: i32, r: i32))` one result that is a struct.
 
 Tuples compile to multiple wasm values — no memory, no pointers. Access elements by position or name:
 
@@ -569,6 +587,45 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
 ```
 
 `p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
+
+#### Types That Refer to Themselves
+
+A type can refer to itself through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (next: ?*Node, v: u32)
+type Tree = (kids: []Tree, v: u32)
+
+export func third(h: *Node) -> u32 {
+  if let a = h.next {
+    if let b = a.next { return b.v }
+  }
+  return 0
+}
+
+export func depth(t: Tree) -> u32 {
+  let deepest: u32 = 0
+  for k in t.kids {
+    let d = depth(k)
+    if d > deepest { deepest = d }
+  }
+  return deepest + 1
+}
+```
+
+A type that holds itself as a value, in a field or an array, would have no size:
+
+```ents
+type Node = (next: Node, v: u32)
+```
+
+```errors
+type 'Node' contains itself: a type can only refer to itself through a pointer or a slice
+```
+
+<!-- spec:end -->
 
 A struct type can take type parameters: `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)` declares a generic type, `Vec(u32)` is the struct it gives for `u32`, and `Vec(u32)(p, 0, cap)` constructs one like any constructor ([8.5](#85-generic-types)).
 
@@ -859,6 +916,81 @@ Casts are required for:
 
 A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
 
+### 2.11 Type Names
+
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+
+<!-- spec:begin compile -->
+
+```ents
+type P = *mut u32
+type S = []u16
+type O = ?*u32
+type A = [3]u16
+
+data cells = mut [0:u32; 4]
+data shorts = [1:u16, 2, 3]
+data list: S = [4, 5, 6]
+
+func bump(p: P) -> u32 {
+  p.* += 1
+  return p.*
+}
+func last(s: S) -> u16 => s[s.len - 1] ?? 0
+func read(o: O) -> u32 => if let q = o { q.* } else { 0 }
+
+test "names are the types they name" {
+  let p = cells as P
+  assert bump(p) == 1
+  let s: S = shorts
+  assert last(s) == 3
+  assert read(p) == 1
+  assert read(0 as O) == 0
+  assert last(list) == 6
+  let q: *A = [7, 8, 9]
+  assert last(q) == 9
+}
+```
+
+<!-- spec:end -->
+
+### 2.12 Limits
+
+A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
+
+<!-- spec:begin compile -->
+
+```ents
+type D0 = u8
+type D1 = (a: D0, b: D0)
+type D2 = (a: D1, b: D1)
+type D3 = (a: D2, b: D2)
+type D4 = (a: D3, b: D3)
+type D5 = (a: D4, b: D4)
+type D6 = (a: D5, b: D5)
+type D7 = (a: D6, b: D6)
+type D8 = (a: D7, b: D7)
+type D9 = (a: D8, b: D8)
+type D10 = (a: D9, b: D9)
+type D11 = (a: D10, b: D10)
+type D12 = (a: D11, b: D11)
+type D13 = (a: D12, b: D12)
+type D14 = (a: D13, b: D13)
+type D15 = (a: D14, b: D14)
+type D16 = (a: D15, b: D15)
+type D17 = (a: D16, b: D16)
+
+func f(p: *D17) -> u8 => p.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a
+```
+
+```errors
+type 'D16' is too large: written out in full it has more than 65536 parts
+```
+
+<!-- spec:end -->
+
+Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 256 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 256 deep`, before it is parsed.
+
 ---
 
 ## 3. Declarations
@@ -897,7 +1029,7 @@ data origin = (0.0, 0.0)            // origin: *(f64, f64)
 data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
 ```
 
-The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:
+The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5). Annotate the LHS to force a specific type:
 
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
@@ -2518,14 +2650,22 @@ test "one vector for each element type" {
 }
 ```
 
-A generic type that refers to itself, directly or through another generic type, is not supported: a type function has no conditions, so applying it would never end.
+A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
 
 ```ents
 func List(comptime T: type) -> type => (head: T, next: ?*List(T))
+
+export func second(l: *List(u32)) -> u32 => if let n = l.next { n.head } else { 0 }
+```
+
+It cannot apply itself to a type made of its parameters: a type function has no conditions, so each level would be a new type and applying it would never end.
+
+```ents
+func List(comptime T: type) -> type => (head: T, next: ?*List(*T))
 ```
 
 ```errors
-generic type 'List' refers to itself
+generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end
 ```
 
 Generic types that hold one another in a chain are not that, however long the chain. The compiler stops at 1000 levels, with `generic types are nested more than 1000 deep in 'G0(u8)'` at the application that was written.
@@ -2635,7 +2775,7 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
 | A generic type with a parameter that is not `comptime X: type`, or with none | `generic type 'Vec' takes comptime type parameters only, as (comptime T: type)` |
-| A generic type that refers to itself | `generic type 'List' refers to itself` |
+| A generic type that refers to itself with a type made of its parameters, `List(*T)` in `List(T)` | `generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end` |
 | A generic type declared inside a `test` block | `a generic type is declared at module level, not inside a test` |
 | A generic type that shares its name with a `type` or another generic type | `'Vec' is already declared: a generic type's name is unique in its module` |
 | A generic type without its arguments, or with the wrong number | `'Vec' is a generic type: write Vec(T)`; `Vec expects 1 type argument, got 2` |
@@ -2650,7 +2790,7 @@ Also not in this version: generics across source modules, a generic type with a 
 
 One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
-Two limits are older than generics and are met through them. A name for a pointer, slice, array or optional type (a `type`, and so a generic type with such a body) is passed, stored, matched and measured as the type it names, but `.*`, `.ptr`, `.len`, indexing and `if let` do not see through the name yet: give a generic type a struct or tuple as its body, and write such a type out where its value is used. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
+A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
 <!-- spec:end -->
 
@@ -2830,6 +2970,8 @@ let slice:[]u8 = (ptr, 64)     // OK: provide length
 let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
+
+`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
 ### 9.6 Structs and Slices in Memory
 

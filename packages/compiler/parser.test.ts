@@ -463,3 +463,32 @@ describe('parser', () => {
     })
   })
 })
+
+describe('how deep source may nest', () => {
+  const nested = (source: string) => parse(source).errors.map((e) => ({ at: e.span.start, message: e.shortMessage }))
+  const deep = (at: number) => [{ at, message: 'nested more than 256 deep' }]
+  const fn = 'export func f(a: i32) -> i32 => '
+
+  test('256 levels of brackets or prefixes parse, and one more is an error where it goes deeper', () => {
+    expect(nested(`${fn}${'('.repeat(256)}a${')'.repeat(256)}`)).toEqual([])
+    expect(nested(`${fn}${'('.repeat(257)}a${')'.repeat(257)}`)).toEqual(deep(fn.length + 256))
+    // A prefix lasts until its operand, also one before a bracket
+    expect(nested(`${fn}${'- '.repeat(256)}a`)).toEqual([])
+    expect(nested(`${fn}${'-('.repeat(129)}a${')'.repeat(129)}`)).toEqual(deep(fn.length + 256))
+    const slices = `export func f(p: ${'[]'.repeat(257)}u8) -> u32 => 1`
+    // The 256th [] is one level deeper than the parentheses around it
+    expect(nested(slices)).toEqual(deep(slices.indexOf('[]') + 255 * 2))
+    const applied = `func V(comptime T: type) -> type => (p: [*]mut T)\nexport func f(p: *${'V('.repeat(300)}u8${')'.repeat(300)}) -> u32 => 1`
+    expect(nested(applied)[0].message).toBe('nested more than 256 deep')
+    // Inside a template literal's ${ }
+    expect(nested(`${fn}\`x\${${'('.repeat(256)}a${')'.repeat(256)}}y\``)[0].message).toBe('nested more than 256 deep')
+  })
+
+  test('what follows one another does not nest', () => {
+    expect(nested(`${fn}${Array(3000).fill('a').join(' + ')}`)).toEqual([])
+    expect(nested(`${fn}${Array(300).fill('(a)').join(' - ')}`)).toEqual([])
+    expect(nested(`export func f(p: [*][300]u8) -> u8 => p${'[0]'.repeat(300)}`.replace('[*][300]u8', '[*]u8'))).toEqual([])
+    expect(nested(`${'func g() {}\n'.repeat(300)}`)).toEqual([])
+    expect(nested(`${fn}${'"(((" + '.repeat(300)}a // ${'('.repeat(300)}\n`)).toEqual([])
+  })
+})
