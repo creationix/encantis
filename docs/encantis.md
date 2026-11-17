@@ -1766,6 +1766,8 @@ loop {                   // infinite loop
 }
 ```
 
+A counted loop's count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` (a `u32#N` for a constant `N`) that counts up from 0 while it is below the count, so a negative count runs the loop zero times.
+
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 
 The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.

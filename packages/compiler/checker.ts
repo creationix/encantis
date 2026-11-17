@@ -2093,6 +2093,9 @@ class CheckContext {
         } else if (iterableType.kind !== 'primitive') {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+        } else if (!isInteger(iterableType) || (byteSize(iterableType) ?? 8) > 4) {
+          // The loop variable is a u32 compared with the count.
+          this.error(stmt.iterable.span.start, `a loop count must be an integer of at most 32 bits, not ${typeToString(iterableType)}`)
         }
         // Record the binding types and add them to scope
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)

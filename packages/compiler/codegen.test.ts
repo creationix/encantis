@@ -936,6 +936,89 @@ const SPOT = `
   func pair() -> []i32 => ((space as [*]i32), 2:u32)
 `
 
+describe('counted loops', () => {
+  test('a negative signed count runs the loop zero times', async () => {
+    const { count, small, unsigned } = await run(`
+      export func count(n: i32) -> i32 {
+        let t = 0
+        for i in n {
+          t += 1
+          break when t > 1000
+        }
+        return t
+      }
+      export func small(n: i8) -> i32 {
+        let t = 0
+        for i in n { t += 1 }
+        return t
+      }
+      export func unsigned(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          t += 1
+          break when t > 1000
+        }
+        return t
+      }
+    `)
+    expect([count(3), count(0), count(-1), count(-2147483648), count(2147483647)]).toEqual([3, 0, 0, 0, 1001])
+    expect([small(5), small(-3)]).toEqual([5, 0])
+    // An unsigned count of 2^32 - 1 is that many.
+    expect([unsigned(3), unsigned(0), unsigned(-1)]).toEqual([3, 0, 1001])
+  })
+
+  test('the count is evaluated once, before the loop', async () => {
+    const code = `
+      global calls: i32 = 0
+      global limit: u32 = 3
+      func next() -> u32 {
+        calls += 1
+        return 4
+      }
+      export func call() -> i32 {
+        calls = 0
+        let t = 0
+        for i in next() { t += 1 }
+        return calls * 100 + t
+      }
+      export func local(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          n = 0
+          t += 1
+        }
+        return t
+      }
+      export func shadow(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          t += 1
+          for n in 1 { t += 0 }
+        }
+        return t
+      }
+      export func glob() -> u32 {
+        limit = 3
+        let t: u32 = 0
+        for i in limit {
+          limit = 1
+          t += 1
+        }
+        return t
+      }
+      export func steady(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n { t += i }
+        return t
+      }
+    `
+    const { call, local, shadow, glob, steady } = await run(code)
+    expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
+    // A variable the body doesn't change is read where it is compared.
+    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
+  })
+})
+
 describe('structs in memory', () => {
   test('a struct is stored one field at a time, at its offset, through one address', () => {
     const body = bodyOf(`${SPOT}

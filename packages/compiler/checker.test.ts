@@ -1907,6 +1907,14 @@ describe('operand types', () => {
     expect(ranged('u256', 1, 256)).toEqual(['cannot assign u256 to u256#1'])
   })
 
+  test('a loop count is an integer of at most 32 bits', () => {
+    const loop = (type: string) => errs(`func f(n: ${type}) -> u32 {\n  let t: u32 = 0\n  for i in n { t += i }\n  return t\n}`)
+    for (const type of ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u32#9']) expect(loop(type)).toEqual([])
+    for (const type of ['i64', 'u64', 'u128', 'f32', 'f64', 'bool']) {
+      expect(loop(type)).toEqual([`a loop count must be an integer of at most 32 bits, not ${type}`])
+    }
+  })
+
   test('a compound assignment keeps a range only where x = x op v would', () => {
     // x op= v is x = x op v: the result goes back into x, so it has to fit
     // x's range, or an index the range proved would pass the end.

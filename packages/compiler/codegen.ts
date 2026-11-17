@@ -2529,6 +2529,37 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
   )`
 }
 
+// Whether anything in a subtree may give the variable `name` a new value: an
+// assignment to it, or a declaration of that name, which shares the variable's
+// wasm local (a let, a loop or if-let binding, a pattern).
+function mayChange(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) return node.some((n) => mayChange(n, name))
+  if (!node || typeof node !== 'object') return false
+  const n = node as Record<string, unknown> & { kind?: string; target?: { kind?: string; name?: string } }
+  if (n.kind === 'AssignmentStmt' && n.target?.kind === 'IdentExpr' && n.target.name === name) return true
+  if (n.kind !== 'IdentExpr' && ['name', 'binding', 'field', 'value', 'index'].some((k) => n[k] === name)) return true
+  return Object.entries(n).some(([k, v]) => k !== 'span' && typeof v === 'object' && mayChange(v, name))
+}
+
+// Whether a loop count read as one register (a local, or a global) is still
+// the count where the loop compares with it: nothing in the body may change
+// the variable it is read from (a slice's length is part of the slice), and
+// for a global, the body calls nothing that could.
+function steadyRead(count: AST.Expr, wat: string, body: AST.FuncBody): boolean {
+  let root = ungroup(count)
+  while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
+  if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
+  return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
+}
+
+function makesCall(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(makesCall)
+  if (!node || typeof node !== 'object') return false
+  if ((node as { kind?: string }).kind === 'CallExpr') return true
+  return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
+}
+
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   const valueName = stmt.binding.value
   const indexName = stmt.binding.index
@@ -2543,11 +2574,20 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
     // The body sits in its own $continue block so that continue still reaches
-    // the increment.
-    return `(local.set $${valueName} (i32.const 0))
+    // the increment. The count is evaluated once, before the loop: a constant,
+    // or a variable the body doesn't change, is read where it is compared.
+    // A signed count is compared signed, so a negative one runs the loop zero
+    // times; value counts up from 0 and stops at the count, so it never
+    // reaches the values where the two comparisons differ.
+    const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
+    const steady = constant !== null || steadyRead(stmt.iterable, iterWat, stmt.body)
+    const count = steady ? iterWat : scratchLocal(ctx, 'i32')
+    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
+    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
 (block $break
     (loop $next
-      (br_if $break (i32.ge_u (local.get $${valueName}) ${iterWat}))
+      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
       (block $continue
         ${body}
       )
