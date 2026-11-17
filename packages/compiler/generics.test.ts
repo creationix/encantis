@@ -2066,6 +2066,242 @@ export func e(v: u64) -> u64 {
     expect(scratch('spread<i64>')).toEqual(scratch('spread<i32>'))
     expect(scratch('pick<u32>').length).toBeGreaterThan(0)
   })
+
+  // The argument that decides T is looked at once and then checked: what the
+  // look recorded for an inner call and its conversions must be gone, and
+  // what the check records must be there, at every level of nesting.
+  test('calls nested in the argument that decides, each with an argument that is widened', async () => {
+    const generic = `func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func min2(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }
+func mid(comptime T: type, a: T, b: T, c: T) -> T => max(min2(a, b), min2(max(a, b), c))
+export func f(a: u64, b: u32, c: u16) -> u64 => max(max(a, b), c)
+export func g(a: u32, c: u16) -> u32 => max(max(a, c), c)
+export func h(a: u64, b: u32, c: u8) -> u64 => mid(a + b, b, c)
+export func i(a: i16, b: i8) -> i32 => mid(i32, a, b, a + b)
+export func j(a: u32, b: u16) -> u64 => max(a, b)
+`
+    const byHand = `func max_i32(a: i32, b: i32) -> i32 => if a > b { a } else { b }
+func max_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+func max_u64(a: u64, b: u64) -> u64 => if a > b { a } else { b }
+func min2_i32(a: i32, b: i32) -> i32 => if a < b { a } else { b }
+func min2_u64(a: u64, b: u64) -> u64 => if a < b { a } else { b }
+func mid_i32(a: i32, b: i32, c: i32) -> i32 => max_i32(min2_i32(a, b), min2_i32(max_i32(a, b), c))
+func mid_u64(a: u64, b: u64, c: u64) -> u64 => max_u64(min2_u64(a, b), min2_u64(max_u64(a, b), c))
+export func f(a: u64, b: u32, c: u16) -> u64 => max_u64(max_u64(a, b), c)
+export func g(a: u32, c: u16) -> u32 => max_u32(max_u32(a, c), c)
+export func h(a: u64, b: u32, c: u8) -> u64 => mid_u64(a + b, b, c)
+export func i(a: i16, b: i8) -> i32 => mid_i32(a, b, a + b)
+export func j(a: u32, b: u16) -> u64 => max_u32(a, b)
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    // b is a u32: all its bits set is 4294967295, not -1.
+    expect(exports.f(1n, -1, 3)).toBe(4294967295n)
+    expect(exports.g(5, 9)).toBe(9)
+    expect(exports.h(10n, 4, 7)).toBe(7n)
+    expect(exports.i(-3, 5)).toBe(2)
+    expect(exports.j(7, 9)).toBe(9n)
+  })
+
+  // One body, read with three type arguments: a let that widens its value
+  // for one of them and not for another, a compound assignment through a
+  // pointer, and a match whose subject is kept in a scratch local of the
+  // instance's own wasm type.
+  test('one body widens, assigns and matches differently in each instance', async () => {
+    const generic = `data nums8 = [1:u8, 2, 3]
+data nums64 = [1:u64, 2, 3]
+data numsf = [1.5:f64, 2.5]
+data cell = mut [0:u8; 16]
+func accum(comptime T: type, xs: []T, seed: u8) -> T {
+  let total: T = seed
+  for x in xs { total += x }
+  return total + seed
+}
+func bump(comptime T: type, p: *mut T, by: u8) -> T {
+  p.* += by
+  p.* *= by
+  return p.*
+}
+func kind(comptime T: type, x: T, y: T) -> i32 => match x + y {
+  0 => 0
+  7 => 1
+  _ => 2
+}
+export func a(s: u8) -> u8 => accum(nums8, s)
+export func b(s: u8) -> u64 => accum(nums64, s)
+export func c(s: u8) -> f64 => accum(numsf, s)
+export func d(by: u8) -> u64 => bump(cell as *mut u64, by) + bump(cell as *mut u8, by) + bump(cell as *mut u16, by)
+export func e(x: u64, y: u8) -> i32 => kind(x, y) + kind(y, y) + kind(i64, y, 3)
+`
+    const byHand = `data nums8 = [1:u8, 2, 3]
+data nums64 = [1:u64, 2, 3]
+data numsf = [1.5:f64, 2.5]
+data cell = mut [0:u8; 16]
+func accum_f64(xs: []f64, seed: u8) -> f64 {
+  let total: f64 = seed
+  for x in xs { total += x }
+  return total + seed
+}
+func accum_u64(xs: []u64, seed: u8) -> u64 {
+  let total: u64 = seed
+  for x in xs { total += x }
+  return total + seed
+}
+func accum_u8(xs: []u8, seed: u8) -> u8 {
+  let total: u8 = seed
+  for x in xs { total += x }
+  return total + seed
+}
+func bump_u16(p: *mut u16, by: u8) -> u16 {
+  p.* += by
+  p.* *= by
+  return p.*
+}
+func bump_u64(p: *mut u64, by: u8) -> u64 {
+  p.* += by
+  p.* *= by
+  return p.*
+}
+func bump_u8(p: *mut u8, by: u8) -> u8 {
+  p.* += by
+  p.* *= by
+  return p.*
+}
+func kind_i64(x: i64, y: i64) -> i32 => match x + y {
+  0 => 0
+  7 => 1
+  _ => 2
+}
+func kind_u64(x: u64, y: u64) -> i32 => match x + y {
+  0 => 0
+  7 => 1
+  _ => 2
+}
+func kind_u8(x: u8, y: u8) -> i32 => match x + y {
+  0 => 0
+  7 => 1
+  _ => 2
+}
+export func a(s: u8) -> u8 => accum_u8(nums8, s)
+export func b(s: u8) -> u64 => accum_u64(nums64, s)
+export func c(s: u8) -> f64 => accum_f64(numsf, s)
+export func d(by: u8) -> u64 => bump_u64(cell as *mut u64, by) + bump_u8(cell as *mut u8, by) + bump_u16(cell as *mut u16, by)
+export func e(x: u64, y: u8) -> i32 => kind_u64(x, y) + kind_u8(y, y) + kind_i64(y, 3)
+`
+    await expectSameWasm(generic, byHand)
+    const exports = await run(generic)
+    expect(exports.a(1)).toBe(8)
+    expect(exports.b(2)).toBe(10n)
+    expect(exports.c(1)).toBe(6)
+    // 3 squared as a u64; its low byte, 9, plus 3 times 3 as a u8; that
+    // byte, 36, plus 3 times 3 as a u16.
+    expect(exports.d(3)).toBe(162n)
+    expect(exports.e(4n, 3)).toBe(5)
+    expect(exports.e(0n, 0)).toBe(2)
+    const wat = watOfSource(generic)
+    expect(funcWat(wat, 'accum<u64>')).toContain('(local.set $total (i64.extend_i32_u (local.get $seed)))')
+    expect(funcWat(wat, 'accum<f64>')).toContain('(local.set $total (f64.convert_i32_u (local.get $seed)))')
+    expect(funcWat(wat, 'accum<u8>')).toContain('(local.set $total (local.get $seed))')
+    const subject = (name: string) => funcWat(wat, name).match(/\(local \$__match_\d+ (i32|i64)\)/)?.[1]
+    expect([subject('kind<u8>'), subject('kind<u64>'), subject('kind<i64>')]).toEqual(['i32', 'i64', 'i64'])
+  })
+
+  // The parser puts a def's value where the def is named. In an instance
+  // those nodes are copies too, at the offsets of the def's own text moved
+  // into the instance's range; the strings of an instance are laid out
+  // among the module's data where the generic stands.
+  test("a module's defs in a generic's body, and a struct with a bool through memory", async () => {
+    const generic = `def limit = 10
+def wide: u64 = 1 << 40
+def cells = sizeof(u64) * 2 + 1
+def half = 0.5
+type Flag = (on: bool, n: u16, w: u64)
+data space = mut [0:u8; 128]
+data before = "before"
+func clamp(comptime T: type, x: T) -> T => if x > limit { limit } else { x }
+func stretch(comptime T: type, x: T) -> u64 => wide + x * cells
+func name(comptime T: type, x: T) -> []u8 {
+  let tag: []u8 = "tag"
+  if x > limit { return "large" }
+  return tag
+}
+func flip(comptime T: type, p: *mut T, f: Flag) -> Flag {
+  let q = p as *mut Flag
+  let old = q.*
+  q.* = (on: !f.on, n: f.n + limit, w: wide)
+  return old
+}
+func scaled(comptime T: type, x: T) -> f64 => x * half + limit
+data after = "after"
+export func a(x: u8, y: u64, z: i32) -> u64 => clamp(x) + clamp(y) + (clamp(z) as u64)
+export func b(x: u8, y: u32) -> u64 => stretch(x) + stretch(y)
+export func c(x: u16, y: i64) -> u32 => name(x).len + name(y).len + before.len + after.len
+export func d(f: Flag) -> u64 {
+  let was = flip(space as *mut Flag, f)
+  let now = flip(space as *mut u64, was)
+  return if now.on { now.w } else { now.n as u64 }
+}
+export func e(x: f32, y: u16) -> f64 => scaled(x) + scaled(y)
+`
+    const byHand = `def limit = 10
+def wide: u64 = 1 << 40
+def cells = sizeof(u64) * 2 + 1
+def half = 0.5
+type Flag = (on: bool, n: u16, w: u64)
+data space = mut [0:u8; 128]
+data before = "before"
+func clamp_i32(x: i32) -> i32 => if x > limit { limit } else { x }
+func clamp_u64(x: u64) -> u64 => if x > limit { limit } else { x }
+func clamp_u8(x: u8) -> u8 => if x > limit { limit } else { x }
+func stretch_u32(x: u32) -> u64 => wide + x * cells
+func stretch_u8(x: u8) -> u64 => wide + x * cells
+func name_i64(x: i64) -> []u8 {
+  let tag: []u8 = "tag"
+  if x > limit { return "large" }
+  return tag
+}
+func name_u16(x: u16) -> []u8 {
+  let tag: []u8 = "tag"
+  if x > limit { return "large" }
+  return tag
+}
+func flip_flag(p: *mut Flag, f: Flag) -> Flag {
+  let q = p as *mut Flag
+  let old = q.*
+  q.* = (on: !f.on, n: f.n + limit, w: wide)
+  return old
+}
+func flip_u64(p: *mut u64, f: Flag) -> Flag {
+  let q = p as *mut Flag
+  let old = q.*
+  q.* = (on: !f.on, n: f.n + limit, w: wide)
+  return old
+}
+func scaled_f32(x: f32) -> f64 => x * half + limit
+func scaled_u16(x: u16) -> f64 => x * half + limit
+data after = "after"
+export func a(x: u8, y: u64, z: i32) -> u64 => clamp_u8(x) + clamp_u64(y) + (clamp_i32(z) as u64)
+export func b(x: u8, y: u32) -> u64 => stretch_u8(x) + stretch_u32(y)
+export func c(x: u16, y: i64) -> u32 => name_u16(x).len + name_i64(y).len + before.len + after.len
+export func d(f: Flag) -> u64 {
+  let was = flip_flag(space as *mut Flag, f)
+  let now = flip_u64(space as *mut u64, was)
+  return if now.on { now.w } else { now.n as u64 }
+}
+export func e(x: f32, y: u16) -> f64 => scaled_f32(x) + scaled_u16(y)
+`
+    await expectSameWasm(generic, byHand)
+    expect((await run(generic)).a(200, 3n, 50)).toBe(23n)
+    // Twice 1 << 40, and 17 cells times 2 and times 3.
+    expect((await run(generic)).b(2, 3)).toBe(2199023255637n)
+    expect((await run(generic)).c(5, 5n)).toBe(17)
+    expect((await run(generic)).c(50, 50n)).toBe(21)
+    // The second flip reads back what the first stored: on is the opposite
+    // of what came in, n is 5 + 10.
+    expect((await run(generic)).d(0, 5, 9n)).toBe(1099511627776n)
+    expect((await run(generic)).d(1, 5, 9n)).toBe(15n)
+    expect((await run(generic)).e(3, 4)).toBe(23.5)
+  })
 })
 
 describe('compiling generics', () => {
