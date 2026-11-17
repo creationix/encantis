@@ -636,13 +636,9 @@ test "group" {
     assert apply(u8, 21) == 42
   }
 }`
-    expect(errorsOf(source)).toEqual([
-      "unknown identifier 'twice', in apply(T = u8)",
-      'cannot call non-function type: i32, in apply(T = u8)',
-    ])
+    expect(errorsOf(source)).toEqual(["no function 'twice' accepts (u32), in apply(T = u8)"])
     expect(errorsOf(source.replace('twice(a as u32) as T', 'a\nfunc g(comptime T: type, a: T) { probe(1) }\nexport func h() { g(u8, 1) }'))).toEqual([
-      "unknown identifier 'probe', in g(T = u8)",
-      'cannot call non-function type: i32, in g(T = u8)',
+      "no function 'probe' accepts (int(1)), in g(T = u8)",
     ])
     // A function of the module that a test declares again is still the module's.
     const shadowed = `func twice(a: u32) -> u32 => a + a
@@ -3271,6 +3267,46 @@ export func run() -> i32 {
   })
 })
 
+describe('functions that share a name in a program of two modules', () => {
+  test('each is exported under a name of its own and imported under the shared one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-overloads-'))
+    try {
+      await writeFile(join(dir, 'keys.ents'), `export func hash(k: u32) -> u32 => k * 3
+export "hash_bytes" func hash(k: []u8) -> u32 => k.len
+func hash(k: u64) -> u32 => 7
+export func both(k: u64) -> u32 => k.hash() + hash(1:u32)
+`)
+      const entry = join(dir, 'main.ents')
+      await writeFile(entry, `import "./keys" (
+  "hash" func hash(k: u32) -> u32
+  "hash_bytes" func hash(k: []u8) -> u32
+  "both" func both(k: u64) -> u32
+)
+func hash(k: f64) -> u32 => 100
+func bucket(comptime K: type, k: K) -> u32 => k.hash()
+export func run(s: []u8) -> u32 => bucket(5:u32) + bucket(s) * 10 + bucket(1.5:f64) + both(0) * 1000
+`)
+      const load = await loadModule(entry)
+      const check = typecheckProgram(load.modules, entry, { includeTests: false })
+      expect(check.errors).toEqual([])
+      const wat = programToWat(load.modules, check.results, entry)
+      expectPlainWasm(wat)
+      expect(funcs(wat)).toEqual([
+        'hash:f64', "bucket<''u8>", 'bucket<f64>', 'bucket<u32>', 'run',
+        'keys$hash', "keys$hash:''u8", 'keys$hash:u64', 'keys$both',
+      ])
+      expect(funcWat(wat, "bucket<''u8>")).toContain("(call $keys$hash:''u8 ")
+      expect(funcWat(wat, 'bucket<u32>')).toContain('(call $keys$hash ')
+      expect(funcWat(wat, 'bucket<f64>')).toContain('(call $hash:f64 ')
+      expect(funcWat(wat, 'keys$both')).toContain('(call $keys$hash:u64 ')
+      const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfWat(wat)))
+      expect((instance.exports.run as (ptr: number, len: number) => number)(0, 4)).toBe(15 + 40 + 100 + 10000)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+})
+
 describe('where an instance was required from', () => {
   test('an error in an instance carries the call that first asked for the instance', () => {
     const source = `type Pt = (q: i32, r: i32)
@@ -3653,6 +3689,419 @@ describe('zero cost, generic types and comptime function parameters', () => {
 func first(comptime T: type, v: *Vec(Pair(T, Slot(T)))) -> T => v.ptr[0].first
 `
     await expectSameWasm(unused + DOC_BY_HAND, DOC_BY_HAND)
+  })
+})
+
+// The stage 2 pair with every call that has a receiver written as a method
+// call. The hand-written side is ZC2_BY_HAND itself.
+const ZC2_METHODS = ZC2_GENERIC
+  .replace('push(v, i as u64)', 'v.push(i as u64)')
+  .replace('sort(items(v), ascending)', 'v.items().sort(ascending)')
+  .replace('sort(u64, items(v), descending)', 'v.items().sort(u64, descending)')
+  .replace('push([]u8, w, a)', 'w.push([]u8, a)')
+  .replace('push(w, b)', 'w.push(b)')
+  .replace('sort(items(w), shorter)', 'w.items().sort(shorter)')
+
+// Two key types in one module: each instance calls the hash and the eq of its
+// own key type, which the hand-written side names apart.
+const OVERLOADS_GENERIC = `func hash(k: u32) -> u32 => k * 0x45d9f3b
+func hash(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ (w as u32)) * 0x01000193
+  }
+}
+func eq(a: u32, b: u32) -> bool => a == b
+func eq(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+func bucket(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n
+func same(comptime K: type, a: K, b: K) -> bool => hash(a) == hash(b) && a.eq(b)
+
+export func f(a: []u8, b: []u8) -> u32 => if same(a, b) { bucket(a, 16) } else { bucket(7:u32, 3) }
+export func g(a: u32, b: u32) -> bool => same(u32, a, b)
+`
+
+const OVERLOADS_BY_HAND = `func hash_u32(k: u32) -> u32 => k * 0x45d9f3b
+func hash_bytes(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ (w as u32)) * 0x01000193
+  }
+}
+func eq_u32(a: u32, b: u32) -> bool => a == b
+func eq_bytes(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+func bucket_bytes(k: []u8, n: u32) -> u32 => hash_bytes(k) % n
+func bucket_u32(k: u32, n: u32) -> u32 => hash_u32(k) % n
+func same_bytes(a: []u8, b: []u8) -> bool => hash_bytes(a) == hash_bytes(b) && eq_bytes(a, b)
+func same_u32(a: u32, b: u32) -> bool => hash_u32(a) == hash_u32(b) && eq_u32(a, b)
+
+export func f(a: []u8, b: []u8) -> u32 => if same_bytes(a, b) { bucket_bytes(a, 16) } else { bucket_u32(7:u32, 3) }
+export func g(a: u32, b: u32) -> bool => same_u32(a, b)
+`
+
+describe('method-call syntax', () => {
+  const PUSH = `${VEC}func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
+`
+  const DOUBLE = 'func double(n: u32) -> u32 => n * 2\n'
+  // What each call written with a receiver compiles as: the callee and how many arguments it is given
+  const compiled = (source: string) => {
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const final = (call: (typeof result.calls extends Map<infer K, unknown> ? K : never)): string => {
+      const next = result.calls.get(call)
+      if (next?.kind === 'CallExpr') return final(next)
+      return `${call.callee.kind === 'IdentExpr' ? call.callee.name : '?'}/${call.args.length}`
+    }
+    return [...result.calls.keys()].filter(c => c.callee.kind === 'MemberExpr').map(final)
+  }
+
+  test('x.f(a) is f(x, a) where x has no member f', () => {
+    expect(compiled(`${DOUBLE}func add(a: u32, b: u32) -> u32 => a + b
+export func f(x: u32) -> u32 => x.double() + x.add(3)`)).toEqual(['double/1', 'add/2'])
+  })
+
+  test('for a generic the receiver is the first argument that is not a comptime one, and decides its type', () => {
+    expect(compiled(`${PUSH}export func f(v: *mut Vec(u8)) -> u8 {
+  v.push(7)
+  return v.get(0)
+}`)).toEqual(['push<u8>/2', 'get<u8>/2'])
+  })
+
+  test('type arguments written after the receiver are the explicit form', () => {
+    const source = `${PUSH}export func f(v: *mut Vec(u8), w: *mut Vec(u64)) -> u8 {
+  v.push(u8, 9)
+  w.push(u64, 9)
+  return v.get(u8, 0)
+}`
+    expect(compiled(source)).toEqual(['push<u8>/2', 'push<u64>/2', 'get<u8>/2'])
+    // As in push(u64, v, 9), the written type is what the receiver is checked against.
+    expect(errorsOf(source.replace('w.push(u64, 9)', 'v.push(u64, 9)'))).toEqual(['argument 2: cannot assign *mut Vec(u8) to *mut Vec(u64)'])
+  })
+
+  test('a comptime function parameter is written in either form, wherever it is declared', () => {
+    const sort = `func first(comptime T: type, comptime before: (T, T) -> bool, xs: []T) -> T => if before(xs.ptr[0], xs.ptr[1]) { xs.ptr[0] } else { xs.ptr[1] }
+func less(a: u8, b: u8) -> bool => a < b
+`
+    expect(compiled(`${sort}export func f(xs: []u8) -> u8 => xs.first(less) + xs.first(u8, less)`)).toEqual(['first<u8|less>/1', 'first<u8|less>/1'])
+  })
+
+  test('calls chain from left to right', () => {
+    const source = `${PUSH}${DOUBLE}func total(xs: []u32) -> (s: u32) {
+  for x in xs { s += x }
+}
+export func f(v: *Vec(u32)) -> u32 => v.items().total().double()`
+    expect(compiled(source)).toEqual(['double/1', 'total/1', 'items<u32>/1'])
+    expect(funcWat(watOfSource(source), 'f')).toContain('(call $double (call $total (call $items<u32> (local.get $v))))')
+  })
+
+  test('a field wins over a function of the same name', async () => {
+    const source = `type Box = (size: u32, n: u32)
+func size(b: Box) -> u32 => 99
+func n(b: *Box) -> u32 => 98
+export func a(b: Box) -> u32 => b.size
+export func b(b: Box) -> u32 => size(b)
+export func c(b: *Box) -> u32 => b.n + n(b)`
+    expect(compiled(source)).toEqual([])
+    const { a, b } = await run(source)
+    expect(a(5, 6)).toBe(5)
+    expect(b(5, 6)).toBe(99)
+    // Called, the field is still the field, and the error says what was likely meant.
+    expect(errorsOf(`${source}\nexport func d(b: Box) -> u32 => b.size()`)).toEqual([
+      "cannot call non-function type: u32 ('size' is a field here, and a field wins over the function 'size': write size(...))",
+    ])
+  })
+
+  test('what a slice and an array have built in are members too', () => {
+    const source = `func len(xs: []u8) -> u32 => 7
+func ptr(xs: *[4]u8) -> u32 => 8
+func wid(xs: []u8) -> u32 => 9
+data four = [1:u8, 2, 3, 4]
+export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid() + len(xs) + ptr(four)`
+    expect(compiled(source)).toEqual(['wid/1'])
+  })
+
+  test('the receiver is passed as written: no address is taken of a value', () => {
+    expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(7) }`)).toEqual([
+      'push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address',
+    ])
+    expect(errorsOf(`type Pt = (q: i32, r: i32)
+func norm(p: *Pt) -> i32 => p.q + p.r
+export func f(p: Pt) -> i32 => p.norm()`)).toEqual([
+      'norm takes *Pt first; the receiver is a Pt, which is held in registers and has no address',
+    ])
+  })
+
+  test('nor is a pointer followed for a value', () => {
+    expect(errorsOf(`type Pt = (q: i32, r: i32)
+func norm(p: Pt) -> i32 => p.q + p.r
+export func f(p: *Pt) -> i32 => p.norm()`)).toEqual(['argument 1: cannot assign *Pt to Pt'])
+    // p.* is the value.
+    expect(compiled(`type Pt = (q: i32, r: i32)
+func norm(p: Pt) -> i32 => p.q + p.r
+export func f(p: *Pt) -> i32 => p.*.norm()`)).toEqual(['norm/1'])
+  })
+
+  test('the receiver gets the conversions any argument gets', async () => {
+    const source = `func wide(n: u64) -> u64 => n + 1
+func count(xs: []u8) -> u32 => xs.len
+func first(p: *u32) -> u32 => p.*
+data four = [1:u8, 2, 3, 4]
+export func a(x: u8) -> u64 => x.wide()
+export func b() -> u32 => four.count() + "ab".count()
+export func c(p: *mut u32) -> u32 => p.first()`
+    expect(compiled(source)).toEqual(['wide/1', 'count/1', 'count/1', 'first/1'])
+    const { a, b } = await run(source)
+    expect(a(255)).toBe(256n)
+    expect(b()).toBe(6)
+  })
+
+  test('a builtin is called the same way, unless the program declares the name', async () => {
+    const source = `export func a(x: f64) -> f64 => x.sqrt().max(1.5)
+export func b(x: i32, y: i32) -> u8 => x.min(y).abs().clz()`
+    const { a, b } = await run(source)
+    expect(a(16)).toBe(4)
+    expect(a(1)).toBe(1.5)
+    expect(b(-3, 5)).toBe(30)
+    expect(watOfSource(source)).toContain('(f64.max (f64.sqrt (local.get $x)) (f64.const 1.5))')
+    expect(compiled(`func abs(x: i32) -> i32 => 1\nexport func a(x: i32) -> i32 => x.abs()`)).toEqual(['abs/1'])
+  })
+
+  test('each builtin of a chain keeps the type it computes in', async () => {
+    // The calls of a chain all start where the chain does; what is recorded
+    // for a builtin by place must not be shared between them.
+    const { f } = await run('export func f(x: i64, y: u8) -> u8 => x.clz().max(y)')
+    expect(f(1n, 3)).toBe(63)
+    expect(f(-1n, 3)).toBe(3)
+  })
+
+  test('a comptime function parameter is called the same way inside the generic', () => {
+    expect(instancesOf(`func pick(comptime T: type, a: T, b: T, comptime before: (T, T) -> bool) -> T => if a.before(b) { a } else { b }
+func less(a: i32, b: i32) -> bool => a < b
+export func f(a: i32, b: i32) -> i32 => a.pick(b, less)`)).toEqual(['pick<i32|less>'])
+  })
+
+  test('with neither a member nor a function of the name, one error says both', () => {
+    expect(errorsOf(`type Pt = (q: i32, r: i32)\nexport func f(p: Pt, x: u32) -> u32 => p.area(x, 2)`)).toEqual([
+      "no field 'area' on type Pt, and no function 'area' accepts (Pt, u32, int(2))",
+    ])
+    expect(errorsOf(`${DOUBLE}export func f(x: u32) -> u32 => x.dubble().double()`)).toEqual([
+      "no field 'dubble' on type u32, and no function 'dubble' accepts (u32)",
+    ])
+    // A variable of the name is no function to call it by.
+    expect(errorsOf('export func f(x: u32, g: u32) -> u32 => x.g()')).toEqual(["no field 'g' on type u32, and no function 'g' accepts (u32)"])
+  })
+
+  test('a receiver with an error of its own is that error alone', () => {
+    expect(errorsOf(`${DOUBLE}export func f() -> u32 => nope.double().double()`)).toEqual(["unknown identifier 'nope'"])
+    expect(errorsOf(`${DOUBLE}export func f(p: (q: u32)) -> u32 => p.r.double()`)).toEqual(["no field 'r' on type (q: u32)"])
+  })
+
+  test('the errors of the call are those of f(x, a), at the name of the method', () => {
+    const source = `${DOUBLE}export func f(x: u32, y: f64) -> u32 => x.double(1) + y.double()`
+    expect(check(source).errors.map(place)).toEqual([
+      { offset: source.indexOf('double(1)'), message: "'double' expected 1 argument, got 2" },
+      { offset: source.indexOf('y.double'), message: 'argument 1: cannot assign f64 to u32' },
+    ])
+    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => x.max()`)).toEqual([
+      "'max' expects 2 arguments, or 3 with its type argument written; got 1",
+    ])
+    expect(errorsOf(`${ZERO}export func f(x: u32) -> u32 => x.zero()`)).toEqual(["argument 1 of 'zero' must be a type: T is a type parameter"])
+  })
+
+  test('an error in an instance is required from the method, not from where its chain starts', () => {
+    const source = `type Pt = (q: i32, r: i32)
+${MAX}func id(comptime T: type, a: T) -> T => a
+export func f(a: Pt, b: Pt) -> Pt => a.id().max(b)`
+    expect(check(source).errors).toEqual([{
+      offset: source.indexOf('a > b'),
+      message: `${noOperator('>', 'Pt')}, in max(T = Pt)`,
+      notes: [{ offset: source.indexOf('max(b)'), message: 'required from' }],
+    }])
+  })
+
+  test('a long chain is checked in a time that grows with its length', () => {
+    const chain = (calls: number, receiver: string) => `func inc(n: u32) -> u32 => n + 1
+${MAX}export func f(x: u32) -> u32 => ${receiver}${'.inc().max(x)'.repeat(calls)}`
+    expect(errorsOf(chain(60, 'x'))).toEqual([])
+    expect(errorsOf(chain(60, 'nope'))).toEqual(["unknown identifier 'nope'"])
+  })
+
+  test('the method is used, and found from its name in the call', () => {
+    const source = `${DOUBLE}${PUSH}export func f(v: *mut Vec(u32), x: u32) -> u32 {
+  v.push(x.double())
+  return v.get(0)
+}`
+    const result = check(source)
+    expect(result.warnings.map(w => w.message)).toEqual(["'items' is never used"])
+    const at = source.indexOf('double()')
+    expect(result.symbolRefs.get(at)).toBe(source.indexOf('func double'))
+    expect(result.symbolRefs.get(source.indexOf('push(x'))).toBe(source.indexOf('func push'))
+    // What the editor shows there: the function as this call uses it.
+    const callee = [...result.exprTypes].find(([e]) => e.kind === 'IdentExpr' && e.span.start === source.indexOf('push(x'))
+    expect(callee && typeToString(callee[1])).toStartWith('func(v: *mut (ptr: [*]mut u32, ')
+  })
+
+  test('a method only a generic nobody calls uses is still used', () => {
+    // Which of the two it would be is known only in an instance: both count.
+    const result = check(`func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+func bucket(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n`)
+    expect(result.warnings.map(w => w.message)).toEqual(["'bucket' is never used"])
+  })
+})
+
+describe('what a generic body calls is required of its type arguments', () => {
+  const INDEX_OF = `func index_of(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, e in xs {
+    return i when eq(e, x)
+  }
+  return xs.len
+}
+`
+  const PT = 'type Pt = (q: i32, r: i32)\nfunc eq(a: Pt, b: Pt) -> bool => a.q == b.q && a.r == b.r\n'
+
+  test('each instance calls the function for its own type, directly', () => {
+    const source = `${PT}func eq(a: u32, b: u32) -> bool => a == b
+${INDEX_OF}export func f(xs: []u32, ps: []Pt, p: Pt) -> u32 => index_of(xs, 3) + ps.index_of(p)`
+    const wat = watOfSource(source)
+    expectPlainWasm(wat)
+    expect(funcs(wat)).toEqual(['eq', 'eq:u32|u32', 'index_of<<q:i32|r:i32>>', 'index_of<u32>', 'f'])
+    expect(funcWat(wat, 'index_of<u32>')).toContain('(call $eq:u32|u32 ')
+    expect(funcWat(wat, 'index_of<<q:i32|r:i32>>')).toContain('(call $eq ')
+  })
+
+  test('a type the function does not take is one error, with the instance named', () => {
+    const source = `${PT}${INDEX_OF}export func f(xs: []u32) -> u32 => index_of(xs, 3)`
+    expect(check(source).errors).toEqual([{
+      offset: source.indexOf('eq(e, x)'),
+      message: "no function 'eq' accepts (u32, u32), in index_of(T = u32)",
+      notes: [{ offset: source.indexOf('index_of(xs, 3)'), message: 'required from' }],
+    }])
+  })
+
+  test('so is a function that is not there at all', () => {
+    expect(errorsOf(`${INDEX_OF}export func f(xs: []u32) -> u32 => index_of(xs, 3)`)).toEqual([
+      "no function 'eq' accepts (u32, u32), in index_of(T = u32)",
+    ])
+    expect(errorsOf(`func bucket(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n
+export func f(x: f64) -> u32 => bucket(x, 4)`)).toEqual([
+      "no field 'hash' on type f64, and no function 'hash' accepts (f64), in bucket(K = f64)",
+    ])
+  })
+
+  test('it is said once for the instance, however many calls ask for it', () => {
+    const source = `func hash(k: u32) -> u32 => k
+func hash(k: []u8) -> u32 => k.len
+func same(comptime K: type, a: K, b: K) -> bool => hash(a) == hash(b) && a.hash() == b.hash()
+export func f(a: f64, b: f64) -> bool => same(a, b)
+export func g(a: bool, b: bool) -> bool => same(a, b)`
+    expect(check(source).errors.map(place)).toEqual([
+      { offset: source.indexOf('hash(a)'), message: "no function 'hash' accepts (f64), in same(K = f64)" },
+      { offset: source.indexOf('hash(a)'), message: "no function 'hash' accepts (bool), in same(K = bool)" },
+    ])
+  })
+
+  test('each missing function is an error of its own', () => {
+    expect(errorsOf(`${OVERLOADS_GENERIC}export func h(a: f64, b: f64) -> bool => same(a, b)`)).toEqual([
+      "no function 'hash' accepts (f64), in same(K = f64)",
+      "no function 'eq' accepts (f64, f64), in same(K = f64)",
+    ])
+  })
+
+  test('a call with the wrong number of arguments is no requirement: it reads as in any function', () => {
+    expect(errorsOf(`func eq(a: u32, b: u32) -> bool => a == b
+${INDEX_OF.replace('eq(e, x)', 'eq(e)')}export func f(xs: []u32) -> u32 => index_of(xs, 3)`)).toEqual([
+      "'eq' expected 2 arguments, got 1, in index_of(T = u32)",
+    ])
+  })
+
+  test('an argument is converted as for any call of the function', async () => {
+    const source = `func wide(n: u64) -> u64 => n + 1
+func step(comptime T: type, x: T) -> u64 => wide(x) + x.wide()
+export func f(x: u8) -> u64 => step(x) + step(x as u64)`
+    const { f } = await run(source)
+    expect(f(4)).toBe(20n)
+  })
+
+  test('a function value is not called in an instance either', () => {
+    expect(errorsOf(`func apply(comptime T: type, f: (T) -> T, x: T) -> T => f(x)
+func inc(a: u32) -> u32 => a + 1
+export func g(x: u32) -> u32 => apply(inc, x)`)).toEqual([
+      'calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called, in apply(T = u32)',
+    ])
+  })
+
+  test('a function that shares its name is not given for a comptime function parameter', () => {
+    const source = `func pick(comptime T: type, a: T, b: T, comptime before: (T, T) -> bool) -> T => if before(a, b) { a } else { b }
+func less(a: i32, b: i32) -> bool => a < b
+func less(a: f64, b: f64) -> bool => a < b
+export func f(a: i32, b: i32) -> i32 => pick(a, b, less)`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      "argument 3 of 'pick' must be the name of a function: before is a comptime function parameter ('less' has several overloads)",
+    ])
+    expect(result.warnings).toEqual([])
+  })
+})
+
+describe('zero cost, method calls and functions that share a name', () => {
+  test('the stage 2 program written with method calls is the same module written by hand', async () => {
+    expect(ZC2_METHODS).not.toBe(ZC2_GENERIC)
+    expect(ZC2_METHODS.match(/\.(push|items|sort)\(/g)).toHaveLength(9)
+    expect(await expectSameWasm(ZC2_METHODS, ZC2_BY_HAND)).toHaveLength(1318)
+  })
+
+  test('x.f(a) and f(x, a) are the same code', async () => {
+    const plain = await wasmOfSource(ZC2_GENERIC)
+    expect(Buffer.from(await wasmOfSource(ZC2_METHODS)).equals(Buffer.from(plain))).toBe(true)
+    // Scratch locals are named after the place that needs them, so the text
+    // differs there and the bytes do not.
+    const methods = `func double(n: u32) -> u32 => n * 2
+func total(xs: []u32) -> (s: u32) {
+  for x in xs { s += x }
+}
+export func f(xs: []u32, a: u32, b: u32) -> u32 => xs.ptr[1..3].total() + (a + 1).min(b).double() + xs.total().double().double()`
+    const calls = methods.replace(/=> xs\.ptr.*$/, '=> total(xs.ptr[1..3]) + double(min(a + 1, b)) + double(double(total(xs)))')
+    expect(calls).not.toBe(methods)
+    await expectSameWasm(methods, calls)
+  })
+
+  test('each instance calling the function for its own key type is the module written by hand', async () => {
+    expect(await expectSameWasm(OVERLOADS_GENERIC, OVERLOADS_BY_HAND)).toHaveLength(361)
+    expect(funcs(watOfSource(OVERLOADS_GENERIC))).toEqual([
+      'hash', "hash:''u8", 'eq', "eq:''u8|''u8", "bucket<''u8>", 'bucket<u32>', "same<''u8>", 'same<u32>', 'f', 'g',
+    ])
+  })
+
+  test('a function that shares its name and that nothing calls is still one function, as written by hand', async () => {
+    await expectSameWasm(
+      'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\nexport func f(x: u64) -> u32 => x.hash()',
+      'func hash_u32(k: u32) -> u32 => k\nfunc hash_u64(k: u64) -> u32 => 1\nexport func f(x: u64) -> u32 => hash_u64(x)',
+    )
+  })
+
+  test('an exported function that shares its name is exported under the name it is given', async () => {
+    const source = 'export func hash(k: u32) -> u32 => k\nexport "hash_wide" func hash(k: u64) -> u32 => 1'
+    const { hash, hash_wide } = await run(source)
+    expect(hash(7)).toBe(7)
+    expect(hash_wide(7n)).toBe(1)
+    await expectSameWasm(source, 'export func hash(k: u32) -> u32 => k\nexport func hash_wide(k: u64) -> u32 => 1')
   })
 })
 

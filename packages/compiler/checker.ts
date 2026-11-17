@@ -216,8 +216,14 @@ export interface TypeCheckResult {
   // What to compile in place of a call as written: for a call of a generic,
   // the plain call of its instance; for a call of a comptime function
   // parameter, the call of the function it stands for; for a type that is
-  // called (Vec(u32)(p, 0, cap), T(a, b)), the struct of its arguments
+  // called (Vec(u32)(p, 0, cap), T(a, b)), the struct of its arguments; for a
+  // method call x.f(a), the call f(x, a); for a call of a function that
+  // shares its name, the call of the one that was meant
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // The name a function is known by, in `symbols` and in the output, where
+  // that is not the name it was declared with: one that shares its name with
+  // a function declared before it has a name of its own (hash:''u8).
+  funcNames: Map<AST.FuncDecl | AST.ImportFunc, string>
 }
 
 // === Concretization Options ===
@@ -290,7 +296,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
   for (const decl of module.decls) {
     if (decl.kind === 'ExportDecl') {
       const item = decl.item
-      if (item.kind === 'FuncDecl' && item.ident) exportedNames.add(item.ident)
+      if (item.kind === 'FuncDecl' && item.ident) exportedNames.add(ctx.funcNames.get(item) ?? item.ident)
       if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') exportedNames.add(item.pattern.name)
       if (item.kind === 'MemoryDecl') exportedNames.add('memory')
     }
@@ -301,7 +307,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     if (refs && refs.length === 0) {
       const sym = ctx.moduleScope.symbols.get(name)
       if (sym && (sym.kind === 'func' || sym.kind === 'generic' || sym.kind === 'def' || sym.kind === 'global')) {
-        ctx.warnings.push({ offset: defOffset, message: `'${name}' is never used` })
+        ctx.warnings.push({ offset: defOffset, message: `'${declaredName(name)}' is never used` })
       }
     }
   }
@@ -320,19 +326,20 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     literals: ctx.pendingLiterals,
     instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
     calls: ctx.calls,
+    funcNames: ctx.funcNames,
   }
 }
 
 /** @deprecated Use typecheck() instead */
 export const check = typecheck
 
-function getExportedSymbols(module: AST.Module, symbols: Map<string, Symbol>): Map<string, Symbol> {
+function getExportedSymbols(module: AST.Module, { symbols, funcNames }: TypeCheckResult): Map<string, Symbol> {
   const exports = new Map<string, Symbol>()
   for (const decl of module.decls) {
     if (decl.kind !== 'ExportDecl') continue
     const item = decl.item
     if (item.kind === 'FuncDecl' && item.ident) {
-      const sym = symbols.get(item.ident)
+      const sym = symbols.get(funcNames.get(item) ?? item.ident)
       if (sym) exports.set(decl.name, sym)
     } else if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') {
       const sym = symbols.get(item.pattern.name)
@@ -378,7 +385,7 @@ export function typecheckProgram(
     const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
     results.set(path, result)
     allErrors.push(...result.errors)
-    moduleExports.set(path, getExportedSymbols(loaded.module, result.symbols))
+    moduleExports.set(path, getExportedSymbols(loaded.module, result))
   }
 
   visit(entryPath)
@@ -662,6 +669,19 @@ class CheckContext {
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
   inferred = new Map<AST.CallExpr, Map<string, ResolvedType> | null>()
+  // Functions that share a name. The first one declared is known by the name
+  // itself and each later one by a name of its own, made of the name and its
+  // parameter types (hash:''u8). `overloads` gives the names a shared name
+  // stands for, in the order they were declared.
+  overloads = new Map<string, string[]>()
+  funcNames = new Map<AST.FuncDecl | AST.ImportFunc, string>()
+  // What a call was found to mean, for the same reason `inferred` is kept:
+  // which function of a shared name (null when none), and for x.f(a) the
+  // call f(x, a) it stands for, or that f is a member of x, or that it failed.
+  picked = new Map<AST.CallExpr, string | null>()
+  methodCalls = new Map<AST.CallExpr, AST.CallExpr | 'member' | 'failed'>()
+  // The scopes that hold what a look at an expression declares (see untraced)
+  lookScopes = new WeakSet<Scope>()
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
@@ -682,6 +702,8 @@ class CheckContext {
 
     // Resolve any forward references in the type cache
     this.resolveForwardRefs()
+    this.checkOverloads()
+    this.checkExportNames(module)
 
     // Second pass: check function bodies and expressions
     for (const decl of module.decls) {
@@ -740,7 +762,7 @@ class CheckContext {
     }
   }
 
-  collectImport(decl: AST.ImportDecl): void {
+  collectImport(decl: AST.ImportDecl, inTest = false): void {
     const isSource = isSourceImport(decl.module)
     let depExports: Map<string, Symbol> | undefined
     if (isSource && this.filePath && this.moduleExports) {
@@ -775,12 +797,11 @@ class CheckContext {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' in '${decl.module}' is not a function` })
               break
             }
-            this.moduleScope.symbols.set(name, { kind: 'func', type: exported.type, inline: exported.inline })
+            this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest)
           } else {
             const sig = this.resolveSignature(item.item.signature)
-            this.moduleScope.symbols.set(name, { kind: 'func', type: sig, inline: false })
+            this.declareFunc(item.item, name, { kind: 'func', type: sig, inline: false }, inTest)
           }
-          this.recordDefinition(name, item.item.span.start)
           break
         }
         case 'ImportGlobal': {
@@ -823,8 +844,9 @@ class CheckContext {
   }
 
   // A generic function's name is unique in its module: a declaration that
-  // would take the name over is an error and is left out. (Other declarations
-  // of one name replace each other silently, as they always have.)
+  // would take the name over is an error and is left out. (Functions that are
+  // not generic share a name, see declareFunc; other declarations of one name
+  // replace each other silently, as they always have.)
   private takenByGeneric(name: string, offset: number): boolean {
     if (this.moduleScope.symbols.get(name)?.kind !== 'generic') return false
     this.error(offset, `'${name}' is already declared: a generic function's name is unique in its module`)
@@ -832,7 +854,7 @@ class CheckContext {
     return true
   }
 
-  collectFunc(decl: AST.FuncDecl): void {
+  collectFunc(decl: AST.FuncDecl, inTest = false): void {
     if (isGenericDecl(decl)) {
       this.collectGeneric(decl)
       return
@@ -840,14 +862,77 @@ class CheckContext {
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
     const sig = this.resolveSignature(decl.signature)
-    this.moduleScope.symbols.set(decl.ident, {
-      kind: 'func',
-      type: sig,
-      inline: decl.inline,
-    })
+    this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
+  }
+
+  // Enters a function of the module, declared or imported, under its name.
+  // Where a function of that name is there already and the two differ in
+  // their parameter types, they share the name: the new one is known by a
+  // name of its own, and a call says which is meant by its arguments. A
+  // function a test declares replaces the module's of that name, as any
+  // declaration replaces what is not a function.
+  private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean): void {
+    let known = name
+    if (!inTest && this.moduleScope.symbols.get(name)?.kind === 'func') {
+      const members = this.overloads.get(name) ?? [name]
+      const key = paramsKey(sym.type)
+      if (members.some((m) => paramsKey((this.moduleScope.symbols.get(m) as Symbol & { kind: 'func' }).type) === key)) {
+        this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(sym.type)})`)
+        return
+      }
+      known = keyedName(`${name}:`, key, '', (taken) => this.moduleScope.symbols.has(taken))
+      this.overloads.set(name, [...members, known])
+      this.funcNames.set(decl, known)
+    }
+    this.moduleScope.symbols.set(known, sym)
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
-    this.recordDefinition(decl.ident, decl.span.start)
+    this.recordDefinition(known, decl.span.start)
+  }
+
+  // A parameter type that names a type declared further down is known only
+  // now: two functions of one name that were told apart by it may turn out to
+  // take the same types.
+  private checkOverloads(): void {
+    for (const [name, members] of this.overloads) {
+      const seen = new Set<string>()
+      const distinct = members.filter((member) => {
+        const sym = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
+        const key = paramsKey(sym.type)
+        if (!seen.has(key)) {
+          seen.add(key)
+          return true
+        }
+        this.error(this.symbolDefOffsets.get(member) ?? 0, `'${name}' is already declared with parameters (${paramsText(sym.type)})`)
+        return false
+      })
+      this.overloads.set(name, distinct)
+    }
+  }
+
+  // Two exports of one name would be one name for two things, in the module
+  // the host sees and for a module that imports by it.
+  private checkExportNames(module: AST.Module): void {
+    const used = new Set<string>()
+    for (const decl of module.decls) {
+      if (decl.kind !== 'ExportDecl') continue
+      const item = decl.item
+      // A generic's export emits nothing, and its name is unique already.
+      if (item.kind === 'TypeFuncDecl' || (item.kind === 'FuncDecl' && isGenericDecl(item))) continue
+      if (!used.has(decl.name)) {
+        used.add(decl.name)
+        continue
+      }
+      let example = `export "${decl.name}_2" memory`
+      if (item.kind === 'FuncDecl') {
+        const first = item.signature.input.kind === 'CompositeType' ? item.signature.input.fields[0]?.type : undefined
+        const hint = first?.kind === 'PrimitiveType' ? first.name : '2'
+        example = `export "${decl.name}_${hint}" func ${item.ident ?? ''}(...)`
+      } else if (item.kind === 'GlobalDecl') {
+        example = `export "${decl.name}_2" global ${item.pattern.kind === 'IdentPattern' ? item.pattern.name : '...'}`
+      }
+      this.error(decl.span.start, `export name '${decl.name}' is used twice: give one an explicit name, as in ${example}`)
+    }
   }
 
   collectTypeDecl(decl: AST.TypeDecl): void {
@@ -1572,7 +1657,7 @@ class CheckContext {
           break
         case 'ImportDecl': {
           const known = new Set(this.moduleScope.symbols.keys())
-          this.collectImport(item)
+          this.collectImport(item, true)
           for (const name of this.moduleScope.symbols.keys()) if (!known.has(name)) this.testOnly.add(name)
           break
         }
@@ -1588,7 +1673,7 @@ class CheckContext {
             break
           }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
-          this.collectFunc(item)
+          this.collectFunc(item, true)
           if (item.ident) {
             const declared = this.moduleScope.symbols.get(item.ident)
             if (declared?.kind === 'func') this.testDeclared.add(declared)
@@ -2960,19 +3045,42 @@ class CheckContext {
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
+    // x.f(a) is the call f(x, a) where x has no member f.
+    if (expr.callee.kind === 'MemberExpr' && expr.callee.member.kind === 'field') {
+      const result = this.inferMethodCall(expr, expr.callee.object, expr.callee.member.name)
+      if (result) return result
+    }
     // A generic comes before the builtins, so that a generic named max or min
     // is the one that is called.
-    let aliased: (Symbol & { kind: 'func' }) | null = null
+    // `named`: the function the callee stands for, where its name alone does
+    // not say which that is.
+    let named: (Symbol & { kind: 'func' }) | null = null
     if (expr.callee.kind === 'IdentExpr') {
-      const sym = this.lookup(expr.callee.name)
-      if (sym?.kind === 'generic') return this.inferGenericCall(expr, sym, expr.callee.name)
+      const name = expr.callee.name
+      const sym = this.lookup(name)
+      if (sym?.kind === 'generic') return this.inferGenericCall(expr, sym, name)
       if (sym?.kind === 'typefunc') return this.typeAsValue(expr, sym)
-      // A comptime function parameter, in an instance, is the function it
-      // was given: the call compiles as a direct call of that one.
       if (sym?.kind === 'func' && sym.alias) {
-        aliased = sym
+        // A comptime function parameter, in an instance, is the function it
+        // was given: the call compiles as a direct call of that one.
+        named = sym
         this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: sym.alias } })
-        this.recordReference(expr.callee.name, expr.callee.span.start)
+        this.recordReference(name, expr.callee.span.start)
+      } else if (sym?.kind === 'func' && sym === this.moduleScope.symbols.get(name)) {
+        // Of functions that share the name, the arguments say which is
+        // meant. In an instance a call of the one function of a name is
+        // asked the same question: what the body calls is what it requires
+        // of its type arguments, and a type the function does not take is
+        // one error, not one for each argument.
+        const members = this.overloads.get(name) ?? [name]
+        const argCount = expr.args.filter((a) => a.value).length
+        if (members.length > 1 || (this.currentInstance && argCount === sym.type.params.length)) {
+          const member = this.pickOverload(expr, name, members)
+          if (member === null) return RECOVERY
+          named = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
+          if (member !== name) this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: member } })
+          this.recordReference(member, expr.callee.span.start)
+        }
       }
     }
     // A type that is called constructs a value of it: Vec(u32)(p, 0, cap),
@@ -3001,12 +3109,31 @@ class CheckContext {
         }
         return to
       }
+
+      // In an instance, a name that is nothing at all is a function the type
+      // arguments were required to bring and did not.
+      if (this.currentInstance && !this.lookup(expr.callee.name)) {
+        const types = expr.args.flatMap((a) => (a.value ? [this.shownArg(a.value, (value) => this.inferExpr(value))] : []))
+        this.requirement(expr.span.start, `no function '${expr.callee.name}' accepts (${types.join(', ')})`)
+        return RECOVERY
+      }
     }
 
-    const calleeType = aliased ? aliased.type : this.inferExpr(expr.callee)
-    if (aliased) this.exprTypes.set(expr.callee, calleeType)
+    const calleeType = named ? named.type : this.inferExpr(expr.callee)
+    if (named) this.exprTypes.set(expr.callee, calleeType)
 
     if (calleeType.kind === 'func') {
+      // Only a function that is named can be called: the call compiles to
+      // a direct call of it. A function held in a variable, a field or a
+      // parameter would need an indirect call, which nothing emits.
+      const direct = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'func'
+      if (!direct) {
+        this.error(
+          expr.span.start,
+          `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: ${signatureText(calleeType)}), can be called`,
+        )
+      }
+
       // Check argument count
       const argCount = expr.args.filter((a) => a.value).length
       if (argCount !== calleeType.params.length) {
@@ -3052,6 +3179,21 @@ class CheckContext {
     }
 
     if (calleeType === RECOVERY) return RECOVERY
+    // x.f(a) where f is a field of x that cannot be called, and a function f
+    // is there: the field won, and the function was likely meant.
+    const field = expr.callee.kind === 'MemberExpr' && expr.callee.member.kind === 'field' ? expr.callee.member.name : null
+    const hidden = field === null ? undefined : this.lookup(field)
+    if (field !== null && (hidden?.kind === 'func' || hidden?.kind === 'generic')) {
+      this.recordReference(field, expr.callee.span.end - field.length)
+      this.error(
+        expr.span.start,
+        `cannot call non-function type: ${typeToString(calleeType)} ('${field}' is a field here, and a field wins over the function '${field}': write ${field}(...))`,
+      )
+      for (const arg of expr.args) {
+        if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+      }
+      return RECOVERY
+    }
     this.error(expr.span.start, `cannot call non-function type: ${typeToString(calleeType)}`)
     return primitive('i32')
   }
@@ -3136,6 +3278,174 @@ class CheckContext {
       }
     }
     return RECOVERY
+  }
+
+  // Reports what a call asks for and nothing provides. In an instance that
+  // is something its body requires of the type arguments, and it is said
+  // once for the instance, however many of its calls ask for it.
+  private requirement(offset: number, message: string): void {
+    if (this.currentInstance) {
+      const said = this.atSource(offset, message).message
+      if (this.errors.some((e) => e.message === said)) {
+        this.errorsReported++
+        return
+      }
+    }
+    this.error(offset, message)
+  }
+
+  // An argument as a message about its call lists it: by its type, or, where
+  // a type was written for a comptime parameter, by that type.
+  private shownArg(arg: AST.Expr, typeOf: (arg: AST.Expr) => ResolvedType): string {
+    const written = typeOfArg(arg)
+    return written ? typeText(written) : typeToString(typeOf(arg))
+  }
+
+  // Which of the functions that share a name a call means: the one whose
+  // parameter types are the argument types, or else the only one the
+  // arguments can be passed to. Null, with the error reported, when there is
+  // none or more than one.
+  private pickOverload(expr: AST.CallExpr, name: string, members: readonly string[]): string | null {
+    const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
+    const fail = (message?: string): null => {
+      this.picked.set(expr, null)
+      if (message) this.requirement(expr.span.start, message)
+      // A call that failed is still a use of what it tried to call.
+      for (const member of members) this.recordReference(member, expr.callee.span.start)
+      for (const arg of args) this.inferExpr(arg)
+      return null
+    }
+    const known = this.picked.get(expr)
+    if (known) return known
+    if (known === null) return fail()
+
+    // An argument with an error of its own is nothing to choose by: the type
+    // it was given is a guess.
+    const reported = this.errorsReported
+    const types = args.map((arg) => this.peek(arg))
+    if (this.errorsReported > reported || types.some(unresolved)) return fail()
+
+    const candidates = members.flatMap((member) => {
+      const sym = this.moduleScope.symbols.get(member)
+      return sym?.kind === 'func' && sym.type.params.length === args.length ? [{ member, params: sym.type.params }] : []
+    })
+    // The type of a value that is only known to lie in a range (a loop
+    // counter that is a u32#12) is its type without the range, unless a
+    // parameter asks for that very range.
+    const key = (type: ResolvedType) => (hasOwnType(type) ? canonicalKey(type) : null)
+    const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
+    let found = candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i])))
+    if (found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
+    if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
+    if (found.length !== 1) {
+      const shown = args.map((arg, i) => this.shownArg(arg, () => types[i])).join(', ')
+      return fail(found.length === 0 ? `no function '${name}' accepts (${shown})` : `'${name}' is ambiguous for (${shown})`)
+    }
+    this.picked.set(expr, found[0].member)
+    return found[0].member
+  }
+
+  // Whether an argument can be passed for a parameter of this type: it is
+  // checked as the argument of a call is, and nothing of the check stays.
+  private fits(arg: AST.Expr, type: ResolvedType): boolean {
+    return this.attempt(arg, () => {
+      const reported = this.errorsReported
+      this.checkExpr(arg, type)
+      return this.errorsReported === reported
+    })
+  }
+
+  // x.f(a, b) where x has no member f is the call f(x, a, b): the receiver is
+  // the first argument that is not a comptime one, passed as it is written.
+  // Gives the type of that call, or null where f is a member of x and the
+  // call is one of that member's value.
+  private inferMethodCall(expr: AST.CallExpr, receiver: AST.Expr, name: string): ResolvedType | null {
+    const fail = (message?: string): ResolvedType => {
+      this.methodCalls.set(expr, 'failed')
+      if (message) this.requirement(expr.callee.span.start, message)
+      this.inferExpr(receiver)
+      for (const arg of expr.args) {
+        if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+      }
+      return RECOVERY
+    }
+    let call = this.methodCalls.get(expr)
+    if (call === 'member') return null
+    if (call === 'failed') return fail()
+    if (!call) {
+      // Members win, so the receiver's type is needed before anything else.
+      // With an error of its own there is no saying what it has.
+      const reported = this.errorsReported
+      const type = this.peek(receiver)
+      if (unresolved(type) || this.errorsReported > reported) return fail()
+      if (hasMember(type, name)) {
+        this.methodCalls.set(expr, 'member')
+        return null
+      }
+
+      // The call is written out with the method's name where it stands, so
+      // that what is said about the callee is said there, and so that each
+      // call of a chain, which all start where the chain does, has a place
+      // of its own.
+      const at = expr.callee.span.end - name.length
+      const callee: AST.IdentExpr = { kind: 'IdentExpr', name, span: { start: at, end: expr.callee.span.end } }
+      const self: AST.Arg = { kind: 'Arg', name: null, value: receiver, span: receiver.span }
+      const sym = this.lookup(name)
+      const slot = sym?.kind === 'generic' ? receiverSlot(sym.decl, expr.args.length + 1) : 0
+      call = {
+        kind: 'CallExpr',
+        callee,
+        args: [...expr.args.slice(0, slot), self, ...expr.args.slice(slot)],
+        span: { start: at, end: expr.span.end },
+      }
+      const callable = sym?.kind === 'generic' || sym?.kind === 'func'
+        // A builtin, unless something of the program has the name
+        || (!sym && this.attempt(call, () => this.inferBuiltin(call as AST.CallExpr, name) !== null))
+      if (!callable) {
+        const types = [typeToString(type), ...expr.args.flatMap((a) => (a.value ? [this.shownArg(a.value, (value) => this.peek(value))] : []))]
+        return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)
+      }
+      // A value has no address, and none is taken for it.
+      const pointer = sym ? this.pointerWanted(sym, name, expr.args.length + 1, type) : null
+      if (pointer) {
+        this.recordReference(name, at)
+        return fail(`${name} takes ${pointer} first; the receiver is a ${typeToString(type)}, which is held in registers and has no address`)
+      }
+      this.methodCalls.set(expr, call)
+    }
+    this.calls.set(expr, call)
+    return this.inferExpr(call)
+  }
+
+  // The pointer type a function takes as its first argument, where the
+  // receiver of a method call is a value of what that pointer points to.
+  private pointerWanted(sym: Symbol, name: string, argCount: number, receiver: ResolvedType): string | null {
+    if (unwrap(receiver).kind === 'pointer') return null
+    const pointsTo = (type: ResolvedType): boolean => {
+      const u = unwrap(type)
+      return u.kind === 'pointer' && typeAssignable(u.pointee, receiver)
+    }
+    if (sym.kind === 'func') {
+      // Of functions that share the name, another may take the value.
+      const first = this.overloads.has(name) ? undefined : sym.type.params[0]?.type
+      return first && pointsTo(first) ? typeToString(first) : null
+    }
+    if (sym.kind !== 'generic' || !sym.valid) return null
+    // The receiver decides the type parameters as it would behind a pointer.
+    const params = genericParams(sym.decl)
+    const first = params.find((p) => !p.comptime)
+    if (!first || first.type.kind !== 'PointerType' || argCount === params.length) return null
+    const typeParams = params.filter(isTypeParam).map((p) => p.ident as string)
+    const expand = (applied: AST.TypeApply) => sym.owner.expandTypeApply(applied)
+    const bound = new Map<string, ResolvedType>()
+    matchType(first.type.pointee, receiver, typeParams, bound, false, expand)
+    if (mentionsUnbound(first.type, typeParams, bound, expand)) return null
+    const wanted = sym.owner.attempt(null, () => {
+      const reported = sym.owner.errorsReported
+      const type = sym.owner.resolveBound(first.type, bound)
+      return sym.owner.errorsReported === reported ? type : null
+    })
+    return wanted && pointsTo(wanted) ? typeToString(wanted) : null
   }
 
   // Handle builtin functions: memset, memcpy, zero
@@ -4984,13 +5294,19 @@ class CheckContext {
   // writable cell, and the call would no longer compile to what the same call
   // of a hand-written function does. Errors stay: the check repeats them.
   private peek(expr: AST.Expr): ResolvedType {
+    return this.untraced(expr, () => this.inferExpr(expr))
+  }
+
+  // Runs a look at `expr` and takes back what it recorded. Errors stay.
+  private untraced<T>(expr: AST.Expr | null, look: () => T): T {
     const literals = literalMarks(expr)
     const recorded = this.trial.begin()
     const registered = this.pendingLiterals.length
     const warned = this.warnings.length
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
-    const type = this.inferExpr(expr)
+    this.lookScopes.add(this.currentScope)
+    const found = look()
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
@@ -5000,7 +5316,18 @@ class CheckContext {
       delete node.dataId
       Object.assign(node, marks)
     }
-    return type
+    return found
+  }
+
+  // A look whose errors go too: it asks whether something would check, where
+  // a no is an answer and not yet a mistake.
+  attempt<T>(expr: AST.Expr | null, look: () => T): T {
+    const errors = this.errors.length
+    const reported = this.errorsReported
+    const found = this.untraced(expr, look)
+    this.errors.length = errors
+    this.errorsReported = reported
+    return found
   }
 
   // The one place a comptime argument is evaluated. A type argument is read as
@@ -5013,6 +5340,13 @@ class CheckContext {
       const target = arg.kind === 'IdentExpr' ? this.lookup(arg.name) : undefined
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
         this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
+        return null
+      }
+      // Functions that share the name are told apart by the arguments of a
+      // call, and here there are none.
+      if (this.overloads.has(arg.name) && target === this.moduleScope.symbols.get(arg.name)) {
+        for (const member of this.overloads.get(arg.name) ?? []) this.recordReference(member, arg.span.start)
+        this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter ('${arg.name}' has several overloads)`)
         return null
       }
       this.recordReference(arg.name, arg.span.start)
@@ -5128,14 +5462,19 @@ class CheckContext {
   // not resolve; the declaration then has the error.
   comptimeParamType(param: AST.Field, bound: ReadonlyMap<string, ResolvedType>): FuncRT | null {
     const before = this.errorsReported
-    const type = this.resolveType(
-      cloneAst(param.type, 0, (name) => {
+    const type = this.resolveBound(param.type, bound)
+    const declared = unwrap(type)
+    return declared.kind === 'func' && this.errorsReported === before ? declared : null
+  }
+
+  // A type as a generic's declaration writes it, with these type arguments
+  resolveBound(type: AST.Type, bound: ReadonlyMap<string, ResolvedType>): ResolvedType {
+    return this.resolveType(
+      cloneAst(type, 0, (name) => {
         const to = bound.get(name)
         return to && { kind: 'BoundType', name, type: to, span: { start: 0, end: 0 } }
       }) as AST.Type,
     )
-    const declared = unwrap(type)
-    return declared.kind === 'func' && this.errorsReported === before ? declared : null
   }
 
   // Inside an instance a comptime function parameter is the function it was
@@ -5182,7 +5521,10 @@ class CheckContext {
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
     for (const { name, offset } of names) {
-      if (!locals.has(name) && this.moduleScope.symbols.has(name)) this.recordReference(name, offset)
+      if (locals.has(name) || !this.moduleScope.symbols.has(name)) continue
+      // Which of the functions that share a name a call means is known only
+      // in an instance: all of them count as used.
+      for (const known of this.overloads.get(name) ?? [name]) this.recordReference(known, offset)
     }
   }
 
@@ -5345,7 +5687,11 @@ class CheckContext {
   private findSimilar(name: string): string | null {
     let best: string | null = null
     let bestDist = 3
-    for (const [candidate] of this.currentScope.symbols) {
+    // What a look at an expression declares goes into a scope of its own,
+    // which is no reason to suggest another name than the check will.
+    let local = this.currentScope
+    while (local.parent && this.lookScopes.has(local)) local = local.parent
+    for (const [candidate] of local.symbols) {
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
@@ -5457,6 +5803,29 @@ function genericParams(decl: AST.FuncDecl): AST.Field[] {
 
 function isTypeParam(param: AST.Field): boolean {
   return param.comptime === true && param.type.kind === 'TypeType'
+}
+
+// Where the receiver of a method call stands among the arguments of the call
+// it is written for: it is the first argument that is not a comptime one.
+// With every type parameter written, v.push(u32, 7), those come before it as
+// they do in push(u32, v, 7); a comptime function parameter is written in
+// either form.
+function receiverSlot(decl: AST.FuncDecl, argCount: number): number {
+  const params = genericParams(decl)
+  const written = argCount === params.length ? params : params.filter((p) => !isTypeParam(p))
+  return Math.max(0, written.findIndex((p) => !p.comptime))
+}
+
+// Whether `x.name` is a member of a value of this type, as inferMember finds
+// one: a field of a struct, also through one pointer, or what a slice, an
+// array or a pointer to one has built in.
+function hasMember(type: ResolvedType, name: string): boolean {
+  const u = unwrap(type)
+  const struct = u.kind === 'pointer' ? unwrap(u.pointee) : u
+  if (struct.kind === 'tuple' && struct.fields.some((f) => f.name === name)) return true
+  const held = type.kind === 'pointer' ? type.pointee : type
+  if (held.kind === 'slice') return name === 'ptr' || name === 'len'
+  return held.kind === 'array' && (name === 'ptr' || name === 'len' || name === 'wid')
 }
 
 // A call argument read as a type, by its syntax alone: what could be written
@@ -5839,22 +6208,47 @@ function literalMarks(node: unknown, found: { node: LiteralMarks; marks: Literal
 }
 
 // The name of an instance, as a symbol and in WAT: the generic's name and the
-// key of its arguments. The key of a large struct type runs to kilobytes, so a
-// long one is cut and told apart by a hash of the whole.
+// key of its arguments.
 function instanceName(generic: string, key: string, taken: (name: string) => boolean): string {
-  if (key.length <= MAX_NAME_KEY) return `${generic}<${key}>`
+  return keyedName(`${generic}<`, key, '>', taken)
+}
+
+// A name made of a prefix, a key of types and a suffix: an instance's
+// (max<u32>), and that of a function that shares its name (hash:''u8). The
+// key of a large struct type runs to kilobytes, so a long one is cut and told
+// apart by a hash of the whole.
+function keyedName(prefix: string, key: string, suffix: string, taken: (name: string) => boolean): string {
+  if (key.length <= MAX_NAME_KEY) return `${prefix}${key}${suffix}`
   // FNV-1a, 32 bits from each end of the key
   const hash = (text: string) => {
     let h = 0x811c9dc5
     for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
     return (h >>> 0).toString(16).padStart(8, '0')
   }
-  const short = `${generic}<${key.slice(0, MAX_NAME_KEY / 2)}~${hash(key)}${hash([...key].reverse().join(''))}`
+  const short = `${prefix}${key.slice(0, MAX_NAME_KEY / 2)}~${hash(key)}${hash([...key].reverse().join(''))}`
   // Two keys with one hash would be one name: number them apart.
   for (let n = 1; ; n++) {
-    const name = n === 1 ? `${short}>` : `${short}~${n}>`
+    const name = n === 1 ? `${short}${suffix}` : `${short}~${n}${suffix}`
     if (!taken(name)) return name
   }
+}
+
+// The parameter types of a function as one key: two functions may share a
+// name when theirs differ. A type that is no type of a value (int(5), written
+// out as a parameter's) has no canonical key and is told apart as it reads.
+function paramsKey(type: FuncRT): string {
+  return type.params.map((p) => watSafe(hasOwnType(p.type) ? canonicalKey(p.type) : typeToString(p.type))).join('|')
+}
+
+function paramsText(type: FuncRT): string {
+  return type.params.map((p) => typeToString(p.type)).join(', ')
+}
+
+// The name a function was declared with, from the name it is known by: a
+// function that shares its name is known by the name and its parameter types.
+export function declaredName(name: string): string {
+  const cut = name.indexOf(':')
+  return cut < 0 ? name : name.slice(0, cut)
 }
 
 // A number literal as it would be written, for a message
@@ -5892,6 +6286,14 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[
       case 'TypeApply':
         if (n.span) names.push({ name: n.name as string, offset: n.span.start })
         break
+      case 'CallExpr': {
+        // x.f(a) may be a call of the function f.
+        const callee = n.callee as AST.Expr
+        if (callee.kind === 'MemberExpr' && callee.member.kind === 'field') {
+          names.push({ name: callee.member.name, offset: callee.span.end - callee.member.name.length })
+        }
+        break
+      }
       case 'Field':
         declares(n.ident)
         break
