@@ -2563,15 +2563,25 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 }
 
 // Whether anything in a subtree may give the variable `name` a new value: an
-// assignment to it, or a declaration of that name, which shares the variable's
-// wasm local (a let, a loop or if-let binding, a pattern).
+// assignment to it or to a part of it (p.n = 0 changes the p_n local a count
+// p.n is read from), or a declaration of that name, which shares the
+// variable's wasm local (a let, a loop or if-let binding, a pattern).
 function mayChange(node: unknown, name: string): boolean {
   if (Array.isArray(node)) return node.some((n) => mayChange(n, name))
   if (!node || typeof node !== 'object') return false
-  const n = node as Record<string, unknown> & { kind?: string; target?: { kind?: string; name?: string } }
-  if (n.kind === 'AssignmentStmt' && n.target?.kind === 'IdentExpr' && n.target.name === name) return true
+  const n = node as Record<string, unknown> & { kind?: string; target?: AST.LValue }
+  if (n.kind === 'AssignmentStmt' && n.target && assignedRoot(n.target) === name) return true
   if (n.kind !== 'IdentExpr' && ['name', 'binding', 'field', 'value', 'index'].some((k) => n[k] === name)) return true
   return Object.entries(n).some(([k, v]) => k !== 'span' && typeof v === 'object' && mayChange(v, name))
+}
+
+// The variable an assignment target is part of: p for p, p.n, p.v[0].
+function assignedRoot(target: AST.LValue): string | null {
+  let t: AST.LValue | AST.Expr = target
+  while (t.kind === 'MemberExpr' || t.kind === 'IndexExpr' || t.kind === 'SliceExpr' || t.kind === 'GroupExpr') {
+    t = t.kind === 'GroupExpr' ? t.expr : t.object
+  }
+  return t.kind === 'IdentExpr' ? t.name : null
 }
 
 // Whether a loop count read as one register (a local, or a global) is still

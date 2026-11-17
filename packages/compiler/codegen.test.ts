@@ -1011,9 +1011,31 @@ describe('counted loops', () => {
         for i in n { t += i }
         return t
       }
+      type Lim = (n: u32, m: u32)
+      global glim: Lim = (n: 4, m: 0)
+      export func field(n: u32) -> u32 {
+        let p: Lim = (n: n, m: 0)
+        let t: u32 = 0
+        for i in p.n {
+          p.n = 1
+          t += 1
+        }
+        return t
+      }
+      export func gfield() -> u32 {
+        glim = (n: 4, m: 0)
+        let t: u32 = 0
+        for i in glim.n {
+          glim.n = 1
+          t += 1
+        }
+        return t
+      }
     `
-    const { call, local, shadow, glob, steady } = await run(code)
+    const { call, local, shadow, glob, steady, field, gfield } = await run(code)
     expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
+    // Assigning a field of the variable the count is read from changes it too.
+    expect([field(5), gfield()]).toEqual([5, 4])
     // A variable the body doesn't change is read where it is compared.
     expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
   })
