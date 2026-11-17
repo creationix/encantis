@@ -111,6 +111,9 @@ export interface Field extends BaseNode {
   // function is instantiated and absent from the instance's signature. Absent,
   // not false, on every other field.
   comptime?: true
+  // Where the name of a type parameter stands: the field begins at the
+  // keyword before it. Any other field begins with its name.
+  identSpan?: Span
 }
 
 export type FuncBody = Block | ArrowBody

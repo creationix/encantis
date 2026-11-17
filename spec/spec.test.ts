@@ -84,7 +84,7 @@ function stripSpans(node: unknown): unknown {
   if (node && typeof node === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(node)) {
-      if (k === 'span' || v === undefined) continue
+      if (k === 'span' || k === 'identSpan' || v === undefined) continue
       out[k] = typeof v === 'bigint' ? v.toString() : stripSpans(v)
     }
     return out
@@ -99,6 +99,11 @@ function hasSourceImport(module: AST.Module): boolean {
 
 const update = !!process.env.UPDATE_SPEC
 const dir = import.meta.dir
+
+// A spec file is read line by line, and a checkout may have CRLF line ends
+// (git on Windows): a fence with a word after its language was not seen as
+// one, and its closing fence then opened a block that swallowed the markers.
+const readText = async (path: string) => (await readFile(path, 'utf8')).replace(/\r\n/g, '\n')
 const specFiles = (await readdir(dir)).filter(f => f.endsWith('.md') && f !== 'README.md').sort()
 const specs = [
   ...specFiles.map(file => ({ name: file, path: join(dir, file), regionsOnly: false })),
@@ -175,7 +180,7 @@ function casesOf(section: Section): { block: Block; expectations: Block[] }[] {
 }
 
 for (const { name: file, path, regionsOnly } of specs) {
-  const md = await readFile(path, 'utf8')
+  const md = await readText(path)
   const rewrites: Rewrite[] = []
 
   // A file whose markers are wrong is one failing test that says where.
@@ -270,7 +275,7 @@ describe('the spec runner', () => {
   })
 
   test('the reference has its Generics chapter in a compile region', async () => {
-    const md = await readFile(join(dir, '../docs/encantis.md'), 'utf8')
+    const md = await readText(join(dir, '../docs/encantis.md'))
     const all = cases(md)
     const chapter = md.slice(md.indexOf('\n## 8. Generics'), md.indexOf('\n### 8.6 '))
     const sources = [...chapter.matchAll(/^```ents(?! same-wasm)/gm)].length

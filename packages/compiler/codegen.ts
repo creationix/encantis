@@ -498,12 +498,32 @@ const isSimple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/
 const EFFECTS = /\((?:call|call_indirect|local\.set|local\.tee|global\.set|memory\.\w+|block|loop|if|br|br_if|br_table|return|unreachable|[if](?:32|64)\.store(?:8|16|32)?)\b/
 const isRepeatable = (wat: string) => !EFFECTS.test(wat)
 
+// Whether an expression whose value is not needed can be left out: it has no
+// effects and cannot trap. Integer division and remainder trap (by zero, and
+// the one quotient that overflows), and so do a float converted to an integer
+// that cannot hold it and a load from outside memory.
+const TRAPS = /\((?:i(?:32|64)\.(?:div|rem)_[su]|i(?:32|64)\.trunc_f(?:32|64)_[su]|[if](?:32|64)\.load)/
+const isDroppable = (wat: string) => isRepeatable(wat) && !TRAPS.test(wat)
+
 // Whether an expression reads linear memory, or a global.
 const loadsMemory = (wat: string) => /\([if](?:32|64)\.load/.test(wat)
 const readsGlobal = (wat: string) => /\(global\.get\b/.test(wat)
 
 // Whether an expression reads memory, or could through a call.
 const readsMemory = (wat: string) => loadsMemory(wat) || /\((?:call|call_indirect)\b/.test(wat)
+
+// Whether an expression writes memory, or could through a call.
+const writesMemory = (wat: string) => /\((?:call|call_indirect|memory\.(?:copy|fill)|[if](?:32|64)\.store(?:8|16|32)?)\b/.test(wat)
+
+// Whether `wat` sets a local that `address` reads: an if or a block that is a
+// value can assign on its way to it (p.* = if c { p = q ... }), and then the
+// address is another one after the value than before it.
+function setsLocalOf(wat: string, address: string): boolean {
+  for (const [, name] of address.matchAll(/\(local\.get (\$[\w-]+)\)/g)) {
+    if (wat.includes(`(local.set ${name} `) || wat.includes(`(local.set ${name})`) || wat.includes(`(local.tee ${name} `)) return true
+  }
+  return false
+}
 
 // The load and store instructions for one scalar. Integers narrower than a
 // word, and bool (one byte), take their own width in memory and an i32 on the
@@ -587,9 +607,15 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // integer is also the exception to the rule: it is one scalar, stored limb by
 // limb in order, so a copy over a place that partly overlaps it is not whole.
 //
-// The address is evaluated once, as for loads. A slice or wide integer repeats
-// an address that nothing between its uses can change: one that reads no
-// memory, has no effects, and reads no global while the value has effects.
+// What a later part writes counts as much as what it reads: a store it makes
+// on its way (p.* = Point(1, if c { p.x = 9 ... })) belongs to the value, so it
+// comes before every store of the assignment, not between two of them.
+//
+// The address is evaluated once, as for loads, and before the value: it is the
+// place the target named when the assignment began. A local or a constant is
+// repeated instead, and a slice or wide integer repeats an address that reads
+// no memory, has no effects, and reads no global while the value has effects;
+// but only when the value sets no local the address reads.
 function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext): string {
   const nw = wideIntParts(type)
   const u = unwrap(type)
@@ -601,8 +627,9 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
   const values = trySplitMultiValue(value, parts.length)
   if (nw > 0 && !values) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
 
-  const repeat = isSimple(ptr) ||
-    ((nw > 0 || u.kind === 'slice') && isRepeatable(ptr) && !loadsMemory(ptr) && !(readsGlobal(ptr) && !isRepeatable(value)))
+  const repeat = (isSimple(ptr) ||
+    ((nw > 0 || u.kind === 'slice') && isRepeatable(ptr) && !loadsMemory(ptr) && !(readsGlobal(ptr) && !isRepeatable(value)))) &&
+    !setsLocalOf(value, ptr)
   let first = ptr
   let rest = ptr
   if (!repeat) {
@@ -616,7 +643,7 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
   const store = (i: number, operands: string) => `(${storeOp(parts[i].type)}${offset(i)}${operands})`
 
   if (values) {
-    if (nw > 0 || !values.slice(1).some(readsMemory)) {
+    if (nw > 0 || !values.slice(1).some((v) => readsMemory(v) || writesMemory(v))) {
       return parts.map((_, i) => store(i, ` ${at(i)} ${values[i]}`)).join('\n')
     }
     return [
@@ -1195,10 +1222,11 @@ function setRegisters(regs: Registers, value: string): string {
   return [value, ...[...names].reverse().map((n) => `(${set} $${n})`)].join('\n')
 }
 
-// A slice's pointer, from the (ptr, len) pair.
+// A slice's pointer, from the (ptr, len) pair. The length is still computed
+// if it could trap or has effects.
 function slicePointer(slice: string): string {
   const parts = trySplitMultiValue(slice, 2)
-  return parts ? parts[0] : `(block (result i32) ${slice} (drop))`
+  return parts && isDroppable(parts[1]) ? parts[0] : `(block (result i32) ${slice} (drop))`
 }
 
 // Indexing a packed *[N,M]T once gives the address of a row, a *[M]T, and
@@ -1270,21 +1298,23 @@ function lvalueAddressOf(expr: AST.Expr, ctx: CodegenContext): string | null {
 }
 
 // Keeps `count` of the values an expression leaves on the stack, from `start`.
-// When the expression is written out value by value and none has effects, the
-// others are just left out. Otherwise it is evaluated whole and the others are
-// dropped; the kept values wait in scratch locals while the ones under them go.
+// When the expression is written out value by value, none has effects and the
+// others cannot trap (Point(7, 1 / n).x still divides), the others are just
+// left out. Otherwise it is evaluated whole and the others are dropped; the
+// kept values wait in scratch locals while the ones under them go.
 function selectValues(wat: string, types: string[], start: number, count: number, ctx: CodegenContext): string {
   const parts = trySplitMultiValue(wat, types.length)
-  if (parts?.every(isRepeatable)) return parts.slice(start, start + count).join(' ')
-  const kept = types.slice(start, start + count)
+  const kept = (i: number) => i >= start && i < start + count
+  if (parts?.every((part, i) => kept(i) ? isRepeatable(part) : isDroppable(part))) return parts.slice(start, start + count).join(' ')
+  const results = types.slice(start, start + count)
   const code = [wat, ...Array(types.length - start - count).fill('(drop)')]
   if (start > 0) {
-    const temps = kept.map((t) => scratchLocal(ctx, t))
+    const temps = results.map((t) => scratchLocal(ctx, t))
     code.push(...[...temps].reverse().map((t) => `(local.set ${t})`))
     code.push(...Array(start).fill('(drop)'))
     code.push(...temps.map((t) => `(local.get ${t})`))
   }
-  return `(block${kept.length > 0 ? ` (result ${kept.join(' ')})` : ''} ${code.join(' ')})`
+  return `(block${results.length > 0 ? ` (result ${results.join(' ')})` : ''} ${code.join(' ')})`
 }
 
 // A member of a struct that is neither in a variable nor in memory but on the
@@ -1330,9 +1360,10 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (addr !== null) return `(i32.load${atOffset(idx * 4)} ${addr})`
         const full = exprToWat(expr.object, ctx)
         const parts = trySplitMultiValue(full, 2)
-        if (parts) return parts[idx]
-        // A slice that comes off the stack (a call, a ?? fallback): drop the
-        // part we don't want. For .len, ptr sits under it, so park len first.
+        if (parts && isDroppable(parts[1 - idx])) return parts[idx]
+        // A slice that comes off the stack (a call, a ?? fallback), or whose
+        // other part has to run: drop the part we don't want. For .len, ptr
+        // sits under it, so park len first.
         if (idx === 0) return `(block (result i32) ${full} (drop))`
         const tmp = `$__len_${scratchId(expr.span.start)}`
         return `(block (result i32) ${full} (local.set ${tmp}) (drop) (local.get ${tmp}))`
@@ -1568,8 +1599,7 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
     const src = exprToWat(value, ctx)
     let srcPtr: string
     if (vu?.kind === 'slice') {
-      const parts = trySplitMultiValue(src, 2)
-      srcPtr = parts ? parts[0] : `(block (result i32) ${src} (drop))`
+      srcPtr = slicePointer(src)
     } else {
       srcPtr = src
     }
@@ -1613,7 +1643,11 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
   } else {
     return null
   }
-  if (!resultType.optional) return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  if (!resultType.optional) {
+    // The length isn't used, but still runs if it could trap or has effects.
+    if (u.kind === 'slice' && !isDroppable(len)) base = `(block (result i32) ${base} ${len} (drop))`
+    return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
+  }
   const idx = `$__addr_idx_${scratchId(expr.span.start)}`
   const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
@@ -1946,7 +1980,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   return expr.elements.map(e => exprToWat(e, ctx)).join(' ')
 }
 
-function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
+function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
   const type = lookupExprType(expr, ctx)
   if (!type) return ''
   // Get the element type to determine stride
@@ -1957,10 +1991,14 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
   const elemSize = byteSize(elemType) ?? 0
   if (elemSize === 0) return ''
 
+  // A repeat literal has its value in every slot, computed once per slot as
+  // it is for a repeat that is a value.
+  const elements = expr.kind === 'ArrayExpr' ? expr.elements
+    : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
   const parts: string[] = []
   const u = unwrap(elemType)
-  for (let i = 0; i < expr.elements.length; i++) {
-    const elem = expr.elements[i]
+  for (let i = 0; i < elements.length; i++) {
+    const elem = elements[i]
     if (isRuntimeExpr(elem, ctx.calls)) {
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
@@ -1999,9 +2037,11 @@ function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean 
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
-// that points at it): runtime when one of its elements is.
+// that points at it): runtime when one of its elements is, or the value it
+// repeats.
 function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
   if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
+  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value, calls)
   return isRuntimeExpr(expr, calls)
 }
 
@@ -2010,10 +2050,12 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
   const ref = ctx.literalRefs.get(id)
   if (ref) {
     const type = lookupExprType(expr, ctx)
+    // A value only known when the program runs is stored into every slot.
+    const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
-      return literalSliceToWat(ref, type)
+      return `${stores}${literalSliceToWat(ref, type)}`
     }
-    return `(i32.const ${ref.ptr})`
+    return `${stores}(i32.const ${ref.ptr})`
   }
   // Value repeat literal: emit element N times
   const countVal = evalComptimeIndex(expr.count)
@@ -2026,17 +2068,25 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   let subject = exprToWat(expr.subject, ctx)
+  const subjectType = lookupExprType(expr.subject, ctx)
+  const subjectTypes = subjectType ? typeToWasm(subjectType) : ['i32']
   // Each arm's test reads the subject again. Anything but a plain read (a
   // call, arithmetic) is evaluated once, into a scratch local.
   let setup = ''
-  if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
+  if (subjectTypes.length !== 1) {
+    // A slice, a tuple, nothing at all: only `_` takes a subject that isn't
+    // one wasm value, so no arm reads it and it needs no local. It is still
+    // evaluated, for what it does, unless all it does is read.
+    if (!/^(?:\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)\s*)*$/.test(subject)) {
+      setup = `${[subject, ...subjectTypes.map(() => '(drop)')].join('\n')}\n`
+    }
+  } else if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
     const local = `$__match_${scratchId(expr.span.start)}`
     setup = `(local.set ${local} ${subject})\n`
     subject = `(local.get ${local})`
   }
   // Patterns are compared in the subject's type.
-  const subjectType = lookupExprType(expr.subject, ctx)
-  const wt = subjectType ? typeToWasmSingle(subjectType) : 'i32'
+  const wt = subjectTypes[0] ?? 'i32'
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
@@ -2913,6 +2963,11 @@ function collectLocals(
         locals.push({ name: '__slot_len', type: 'i32' })
         ctx.locals.set('__slot_len', ['__slot_len'])
       }
+    }
+    // A repeated value is compiled once per copy, with whatever scratch locals
+    // it needs.
+    if (expr.kind === 'RepeatExpr') {
+      visitExpr(expr.value)
     }
     if (expr.kind === 'MatchExpr') {
       // Where the subject is kept when it's more than a plain read.

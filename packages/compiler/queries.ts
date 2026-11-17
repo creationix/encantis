@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, isGenericDecl, localNames, declaredName } from './checker'
+import { typeKey, typecheck, declaredName, genericDeclaring } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -68,15 +68,6 @@ function wordStart(source: string, offset: number): number {
   return start
 }
 
-// The generic function whose declaration contains `offset`, if one does
-function genericAt(module: AST.Module, offset: number): AST.FuncDecl | null {
-  for (const decl of module.decls) {
-    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
-    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return fn
-  }
-  return null
-}
-
 // Where the name at `offset` is defined: exactly, when the checker recorded
 // this position as a use or as a definition; by name otherwise, which finds
 // the names of the module. A generic's own parameters and locals are never
@@ -92,8 +83,7 @@ function definitionOf(
   const start = wordStart(source, offset)
   const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
   if (exact !== undefined) return exact
-  const generic = genericAt(module, start)
-  if (generic && localNames(generic).has(name)) {
+  if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
   }
   return checkResult.symbolDefOffsets.get(name)
@@ -158,6 +148,16 @@ export function hover(
   const name = identAtOffset(source, offset)
   if (!name) return null
 
+  // A generic's own names come before the module's. What one of them is
+  // depends on the instance: it is shown as it is in the first one, and not at
+  // all while nothing has called the generic.
+  const generic = genericDeclaring(module, wordStart(source, offset), name)
+  if (generic) {
+    const shift = firstInstanceShift(checkResult, generic)
+    const type = shift ? localType(checkResult, offset + shift) : undefined
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+  }
+
   // Check module-scope symbols first
   const sym = checkResult.symbols.get(name)
   if (sym) {
@@ -182,10 +182,7 @@ export function hover(
   }
 
   // Check type map for the identifier at this offset (params, locals, let bindings)
-  // Inside a generic, as it is in the generic's first instance.
-  const generic = genericAt(module, offset)
-  const shift = generic && firstInstanceShift(checkResult, generic)
-  const type = localType(checkResult, offset) ?? (shift ? localType(checkResult, offset + shift) : undefined)
+  const type = localType(checkResult, offset)
   if (type) {
     return {
       name,

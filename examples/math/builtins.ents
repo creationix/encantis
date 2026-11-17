@@ -307,11 +307,18 @@ data quad = mut [1:u32, 2, 3, 4]
 
 func stamp(upper: bool) { memcpy(bytes, if upper { "ABCD" } else { "abcd" }, 4) }
 
+// The source is chosen by whether `at` is an index of `text`.
+func stamp_found(text: []u8, at: u32) { memcpy(bytes, if let found = text[at] { "ABCD" } else { "abcd" }, 4) }
+
 test "memcpy, memset and memzero" {
   stamp(true)
   assert bytes[3] == 68
   stamp(false)
   assert bytes[3] == 100
+  stamp_found("xy", 1)
+  assert bytes[1] == 66
+  stamp_found("xy", 2)
+  assert bytes[1] == 98
   memcpy(bytes, "abcdefgh", 8)
   assert bytes[0] == 97
   assert bytes[7] == 104

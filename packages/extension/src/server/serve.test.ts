@@ -1,0 +1,90 @@
+// The language server's hover, driven through a connection that only keeps
+// the handlers the server registers.
+
+import { describe, expect, test } from 'bun:test'
+import type { Connection, Hover, MarkupContent } from 'vscode-languageserver/lib/common/api'
+import { startServer } from './serve'
+
+type Handler = (params: unknown) => unknown
+
+// Opens `text` as a document and returns what hovering at an offset shows.
+function hoverIn(text: string): (offset: number) => string | null {
+  const handlers = new Map<string, Handler>()
+  const connection = new Proxy({}, {
+    get(_target, name: string) {
+      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'sendDiagnostics' || name === 'listen') return () => {}
+      return (handler: Handler) => {
+        handlers.set(name, handler)
+        return { dispose() {} }
+      }
+    },
+  }) as Connection
+  startServer(connection)
+  const uri = 'file:///hover.ents'
+  handlers.get('onDidOpenTextDocument')?.({ textDocument: { uri, languageId: 'encantis', version: 1, text } })
+  return (offset) => {
+    const before = text.slice(0, offset)
+    const position = { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 }
+    const hover = handlers.get('onHover')?.({ textDocument: { uri }, position }) as Hover | null
+    return hover ? (hover.contents as MarkupContent).value : null
+  }
+}
+
+describe('hover', () => {
+  test('a name of the module is shown where it is declared and where it is used', () => {
+    const source = 'global x: u32 = 0\nexport func f(n: u32) -> u32 => n + x\n'
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf('x:'))).toContain('global x:u32')
+    expect(hover(source.indexOf('+ x') + 2)).toContain('global x:u32')
+    expect(hover(source.indexOf('n +'))).toContain('n:u32')
+  })
+
+  // A generic's parameters and body are shown as its first instance has them,
+  // and not at all while nothing has called it. By name alone, one of its own
+  // names was shown as whatever else is spelled the same.
+  const generic = `global x: u32 = 0
+func id(comptime T: type, x: T, max: T) -> T {
+  let sqrt = x
+  return if sqrt > max { sqrt } else { twice(x) }
+}
+func twice(n: u32) -> u32 => n * 2
+`
+  for (const [what, source] of [
+    ['never instantiated', generic],
+    ['instantiated', `${generic}export func f(n: u32) -> u32 => id(n, 9) + x\n`],
+  ]) {
+    test(`a generic's own names are not the module's or a builtin's (${what})`, () => {
+      const hover = hoverIn(source)
+      const at = (text: string) => source.indexOf(text, source.indexOf('func id'))
+      const own = (offset: number, shown: string) => {
+        if (what === 'instantiated') expect(hover(offset)).toContain(shown)
+        else expect(hover(offset)).toBeNull()
+      }
+      // The parameter x and its uses: not the global x.
+      own(at('x: T'), 'input x:u32')
+      own(at('= x') + 2, 'input x:u32')
+      own(at('twice(x)') + 6, 'input x:u32')
+      // A parameter and a local named like builtins.
+      own(at('max: T'), 'input max:u32')
+      own(at('> max') + 2, 'input max:u32')
+      own(at('sqrt = x'), 'let sqrt:u32')
+      // The type parameter.
+      expect(hover(at('T: type'))).toBeNull()
+      expect(hover(at('x: T') + 3)).toBeNull()
+      // What the body names in the module is still found, and so is the
+      // global outside the generic.
+      expect(hover(at('twice(x)'))).toContain('twice')
+      expect(hover(source.indexOf('x: u32'))).toContain('global x:u32')
+    })
+  }
+
+  test('a type parameter is not a type of the module with its name', () => {
+    // The checker reports the clash; the editor still must not answer for the wrong T.
+    const source = 'type T = u64\nfunc id(comptime T: type, x: T) -> T => x\n'
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf('T: type'))).toBeNull()
+    expect(hover(source.indexOf('x: T') + 3)).toBeNull()
+    expect(hover(source.indexOf('T = u64'))).toContain('u64')
+  })
+})

@@ -357,12 +357,17 @@ class MetaBuilder {
         if (sym.decl !== decl || !first) return
         this.copies = instanceNodes(decl, first.decl)
         this.shift = first.decl.span.start - decl.span.start
+        // The generic's own names are found by name while its body is walked,
+        // and not after it: a global spelled like one of its parameters is
+        // still the global.
+        const moduleNames = new Map(this.symbolIndexByName)
         this.collectFuncBody(decl, symbolIndex)
         if (decl.body.kind === 'Block') {
           this.generateHintsForBlock(decl.body)
         } else {
           this.generateHintsForExpr(decl.body.expr)
         }
+        this.symbolIndexByName = moduleNames
         this.copies = null
         this.shift = 0
         return
