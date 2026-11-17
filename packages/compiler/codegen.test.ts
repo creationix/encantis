@@ -1618,6 +1618,22 @@ describe('a slice from an array literal', () => {
     expect(f(5)).toBe(47223)
   })
 
+  test('a string is the slice of its bytes, with a whole length', async () => {
+    const code = `
+      data names: [][]u8 = ["ab", "cde", ""]
+      func take(s: []u8) -> u32 => s.len
+      export func f() -> u32 {
+        let signed: []i8 = "abc"
+        let joined: []u8 = ["ab", "c"]
+        return take("abcd") + signed.len * 10 + joined.len * 100 + names[1].len * 1000 + names.len * 10000
+      }
+    `
+    // Every length the literals give is a whole number.
+    expect(modWat(code)).not.toMatch(/\(i32\.const [^)]*\./)
+    const { f } = await run(code)
+    expect(f()).toBe(33334)
+  })
+
   test('data, arguments and nested slices count elements too', async () => {
     const { f } = await run(`
       data lists: [][]i32 = [[1, 2], [3]]
