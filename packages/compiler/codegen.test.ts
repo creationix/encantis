@@ -1036,14 +1036,19 @@ describe('counted loops', () => {
         for n in n { t += 1 }
         return t
       }
+      export func fill(xs: []mut u8) {
+        for i in xs.len { xs.ptr[i] = 7 }
+      }
     `
     const { call, local, shadow, glob, steady, field, gfield, same } = await run(code)
     expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
     // Assigning a field of the variable the count is read from changes it
     // too, and so does a loop variable that takes its name (and its local).
     expect([field(5), gfield(), same(4)]).toEqual([5, 4, 4])
-    // A variable the body doesn't change is read where it is compared.
+    // A variable the body doesn't change is read where it is compared; a
+    // store through a pointer it holds doesn't change it.
     expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
+    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $xs_len)))')
   })
 })
 

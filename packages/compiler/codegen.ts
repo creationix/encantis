@@ -2575,10 +2575,12 @@ function mayChange(node: unknown, name: string): boolean {
   return Object.entries(n).some(([k, v]) => k !== 'span' && typeof v === 'object' && mayChange(v, name))
 }
 
-// The variable an assignment target is part of: p for p, p.n, p.v[0].
+// The variable whose registers an assignment target is, or is a field of:
+// p for p, p.n, p.a.b. A target with an index or a dereference in it is an
+// element (in memory, or of an array, which no count is read from).
 function assignedRoot(target: AST.LValue): string | null {
   let t: AST.LValue | AST.Expr = target
-  while (t.kind === 'MemberExpr' || t.kind === 'IndexExpr' || t.kind === 'SliceExpr' || t.kind === 'GroupExpr') {
+  while ((t.kind === 'MemberExpr' && t.member.kind === 'field') || t.kind === 'GroupExpr') {
     t = t.kind === 'GroupExpr' ? t.expr : t.object
   }
   return t.kind === 'IdentExpr' ? t.name : null
