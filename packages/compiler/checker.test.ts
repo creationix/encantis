@@ -2691,6 +2691,40 @@ describe('functions that share a name', () => {
     expect([...result.symbols.keys()]).toEqual(['hash'])
   })
 
+  test('a name that several functions share is not one a test can take over', () => {
+    // The test's function stood in for the first of them, for the module's
+    // code too: with tests built, a call of the module's own chose among
+    // other functions than in the build that ships.
+    const shared = `
+      func hash(k: u32) -> u32 => 1
+      func hash(k: u64) -> u32 => 2
+      func bucket(comptime K: type, k: K) -> u32 => hash(k)
+      export func f(k: u32) -> u32 => bucket(k) * 10 + hash(k)
+    `
+    const refused = "'hash' is the name of several functions of the module: a function declared in a test cannot take it over"
+    for (const params of ['k: f32', 'k: u64', 'a: u32, b: u32']) {
+      const result = checkModule(`${shared}
+      test "t" {
+        func hash(${params}) -> u32 => 3
+        assert f(1) == 11
+      }`)
+      expect(result.errors.map(e => e.message)).toEqual([refused])
+      // What the module's code calls is what it calls without the test.
+      expect([...result.symbols.keys()]).toEqual(['hash', 'hash:u64', 'bucket', 'f', 'bucket<u32>'])
+    }
+    // The test's own calls of it say nothing more, and neither does an import.
+    expect(errs(`${shared}
+      test "t" {
+        func hash(k: f32) -> u32 => 3
+        assert hash(1.5) == 3
+      }`)).toEqual([refused])
+    expect(errs(`${shared}
+      test "t" {
+        import "env" "hash" func hash(k: f32) -> u32
+        assert f(1) == 11
+      }`)).toEqual([refused])
+  })
+
   test('a function the program declares takes a builtin\'s name, with every function that shares it', () => {
     const src = `
       type Pt = (q: i32, r: i32)

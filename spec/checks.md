@@ -1449,6 +1449,22 @@ test "its own hash" {
 }
 ```
 
+A name that several functions of the module share cannot be taken over: there is no one function to stand in for, and the module's own calls would choose among other functions in a test build than in the build that ships.
+
+```ents
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+
+test "its own hash" {
+  func hash(k: f64) -> u32 => 2
+  assert hash(1.5) == 2
+}
+```
+
+```errors
+'hash' is the name of several functions of the module: a function declared in a test cannot take it over
+```
+
 ## Calling a function value
 
 A function is called by its name. One held in a parameter, a local, a global or a field has no run-time form yet, and calling it is one error.

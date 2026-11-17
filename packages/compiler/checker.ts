@@ -898,6 +898,11 @@ class CheckContext {
   // and the name it is exported under. Importing one function twice is no
   // second function: the import is the same one again, as it always was.
   private declareFunc(decl: AST.FuncDecl | AST.ImportFunc, name: string, sym: Symbol & { kind: 'func' }, inTest: boolean, origin?: string): void {
+    if (inTest && this.sharedByModule(name, decl.span.start)) {
+      // Its own test goes on calling it by the name, and says nothing more.
+      this.currentScope.symbols.set(name, sym)
+      return
+    }
     let known = name
     if (!inTest && this.moduleScope.symbols.get(name)?.kind === 'func') {
       const members = this.overloads.get(name) ?? [name]
@@ -923,6 +928,17 @@ class CheckContext {
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
     this.recordDefinition(known, decl.span.start)
+  }
+
+  // A test's function takes over the name of the module's function, for the
+  // module's code as well. Where several functions share the name there is
+  // no one function to stand in for: the module's own calls, and those of
+  // its instances, would choose among other functions in a test build than
+  // in the build that ships. Reports that, and says whether it did.
+  private sharedByModule(name: string, offset: number): boolean {
+    if (!this.shared(name)) return false
+    this.error(offset, `'${name}' is the name of several functions of the module: a function declared in a test cannot take it over`)
+    return true
   }
 
   // The type of the function known by this name. Undefined where a global, a
@@ -1755,7 +1771,8 @@ class CheckContext {
           }
           if (item.ident && !this.moduleScope.symbols.has(item.ident)) this.testOnly.add(item.ident)
           this.collectFunc(item, true)
-          if (item.ident) {
+          // Not one that was refused the name: the module's functions keep it.
+          if (item.ident && !this.shared(item.ident)) {
             const declared = this.moduleScope.symbols.get(item.ident)
             if (declared?.kind === 'func') this.testDeclared.add(declared)
           }
