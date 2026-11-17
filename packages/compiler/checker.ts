@@ -2200,6 +2200,20 @@ class CheckContext {
     // (ptr, len) against a slice is that slice, built from its two parts: a
     // value like any other tuple, with nothing to lay out in the data section.
     if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && expected.kind === 'slice') {
+      // Its parts are checked like any value that meets a type: a pointer to
+      // the slice's elements, as writable as the slice, and a length that an
+      // i32 holds (an i64 or a float would be the wrong wasm value).
+      const [ptr, len] = expr.elements.map(argValue)
+      const ptrType = ptr && this.exprTypes.get(ptr)
+      if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(expected.element, expected.mutable), 'slice pointer: ')
+      const lenType = len && this.exprTypes.get(len)
+      if (len && lenType) {
+        const type = unwrap(lenType)
+        if (isComptimeNumber(type)) this.coerce(len, lenType, primitive('u32'), 'slice length: ')
+        else if (type.kind !== 'primitive' || !isInteger(type) || (byteSize(type) ?? 8) > 4) {
+          this.error(len.span.start, `slice length: cannot assign ${typeToString(lenType)} to u32`)
+        }
+      }
       this.exprTypes.set(expr, expected)
       return expected
     }

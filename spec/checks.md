@@ -521,6 +521,22 @@ func f(p: [*]Lane, q: [*][]i32, n: u32) -> u32 {
 }
 ```
 
+Its two parts are checked like any value that meets a type: a pointer to the slice's elements, as writable as the slice, and a length that an i32 holds.
+
+```ents
+func f(p: [*]i32, n: u64) {
+  let a: []mut i32 = (p, 2)
+  let b: []u8 = (p, 2)
+  let c: []i32 = (p, n)
+}
+```
+
+```errors
+slice pointer: cannot assign [*]i32 to [*]mut i32
+slice pointer: cannot assign [*]i32 to [*]u8
+slice length: cannot assign u64 to u32
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

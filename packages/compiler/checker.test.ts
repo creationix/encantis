@@ -1160,6 +1160,17 @@ describe('a slice from a pointer and a length', () => {
     expect(result.errors).toEqual([])
     expect(result.literals).toEqual([])
   })
+
+  test('its parts are a pointer to the elements and a length an i32 holds', () => {
+    const errs = (body: string) =>
+      checkModule(`func f(p: [*]i32, m: [*]mut i32, n: u32, w: u64, b: u8, i: i32) {\n${body}\n}`).errors.map(e => e.message)
+    expect(errs('let s: []i32 = (p, n)\nlet t: []i32 = (m, b)\nlet u: []mut i32 = (m, i)\nlet z: []i32 = (0, 0)')).toEqual([])
+    expect(errs('let s: []mut i32 = (p, n)')).toEqual(['slice pointer: cannot assign [*]i32 to [*]mut i32'])
+    expect(errs('let s: []u8 = (p, n)')).toEqual(['slice pointer: cannot assign [*]i32 to [*]u8'])
+    expect(errs('let s: []i32 = (n, n)')).toEqual(['slice pointer: cannot assign u32 to [*]i32'])
+    expect(errs('let s: []i32 = (p, w)')).toEqual(['slice length: cannot assign u64 to u32'])
+    expect(errs('let s: []i32 = (p, 2.5)')).toEqual(['slice length: cannot assign float(2.5) to u32'])
+  })
 })
 
 describe('defer', () => {
