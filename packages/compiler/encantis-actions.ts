@@ -1188,6 +1188,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       kind: 'named',
       field: field.sourceString,
       binding: binding.sourceString,
+      span: span(this),
     } as AST.PatternElement
   },
 
@@ -1196,6 +1197,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       kind: 'named',
       field: field.sourceString,
       binding: null,
+      span: span(this),
     } as AST.PatternElement
   },
 
@@ -1662,6 +1664,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return {
       kind: 'binding',
       name: ident.sourceString,
+      span: span(this),
     } as AST.MatchPattern
   },
 

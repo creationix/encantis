@@ -46,6 +46,8 @@ encantis rename src/sha512.ents:12:compress --json   # structured for automated 
 
 Returns every location (definition + all references) so you can do a precise rename without regex search-and-replace.
 
+Each parameter, local, loop variable and `if let` binding is its own name, found from where it is defined and from each use: two loops that both use `i`, and a parameter named like a global, are renamed apart. A parameter that is also a named result (`acc` in `func round(acc: u64, v: u64) -> (acc: u64)`) is one name with that result, and a `data` or `def` a test declares is that test's own. Fields are not followed: on a field's name (in a `type`, after a point, or naming an argument as in `Pt(x: 1)`) `definition`, `references` and `rename` find nothing, and `hover` after a point shows the member's type.
+
 ## Compiling and testing
 
 ```bash
@@ -65,7 +67,7 @@ encantis fmt src/sha512.ents          # format in place
 encantis fmt --check src/sha512.ents  # check without modifying (for CI)
 ```
 
-The formatter normalizes indentation and collapses multiple blank lines. This keeps line numbers stable and predictable — important for your line-based queries.
+The formatter normalizes indentation and collapses multiple blank lines, and leaves the text of every literal as written (a string or a template that goes on over lines keeps its spaces and blank lines). This keeps line numbers stable and predictable — important for your line-based queries.
 
 ## Memory reservation pattern
 

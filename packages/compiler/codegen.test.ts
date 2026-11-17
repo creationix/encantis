@@ -1647,6 +1647,20 @@ describe('struct values in registers and on the stack', () => {
   })
 })
 
+describe('what the editor is told adds no memory', () => {
+  // The checker records the type of each name a for, an if let or a named
+  // part of a pattern binds, at the name. A pointer bound only that way is no
+  // reason for the module to have a memory: the value it is taken from never
+  // was one.
+  test('a pointer taken out of a struct by a named part of a pattern', () => {
+    const wat = modWat(`export func f(t: (a: *u8, b: u32)) -> u32 {
+  let (a:, b:) = t
+  return b
+}`)
+    expect(wat).not.toContain('memory')
+  })
+})
+
 describe('bools in memory', () => {
   const FLAGS = `
     data space = mut [0:u8; 16]

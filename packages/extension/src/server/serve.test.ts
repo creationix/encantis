@@ -116,4 +116,35 @@ export func f(r: Range(u8)) -> u32 => r.len + len
     expect(hover(source.indexOf('x: T') + 3)).toBeNull()
     expect(hover(source.indexOf('T = u64'))).toContain('u64')
   })
+
+  // Each name is what it is where it stands. By name, a field of a type was
+  // shown as the global it is spelled like, the binding of an if let had no
+  // hover, the index of a for was shown as its value, and a global's own
+  // declaration as a parameter spelled like it.
+  test('a field, a binding and a parameter named like a global are themselves', () => {
+    const source = `global x: u32 = 7
+type Pt = (x: i32, y: i32)
+export func f(p: Pt, xs: []u32, o: ?*u32) -> u32 {
+  let s = p.x as u32
+  for i, v in xs {
+    s += v * i
+  }
+  if let q = o {
+    s += q.*
+  }
+  return s + x
+}
+export func g(x: u8) -> u8 => x
+`
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf('x: i32'))).toBeNull()
+    expect(hover(source.indexOf('y: i32'))).toBeNull()
+    expect(hover(source.indexOf('p.x') + 2)).toContain('p.x:i32')
+    expect(hover(source.indexOf('i, v'))).toContain('let i:u32')
+    expect(hover(source.indexOf('v in'))).toContain('let v:u32')
+    expect(hover(source.indexOf('q = o'))).toContain('let q:*u32')
+    expect(hover(source.indexOf('x: u32'))).toContain('global x:u32')
+    expect(hover(source.indexOf('+ x') + 2)).toContain('global x:u32')
+    expect(hover(source.indexOf('x: u8'))).toContain('input x:u8')
+  })
 })

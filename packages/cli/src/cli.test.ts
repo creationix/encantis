@@ -56,3 +56,67 @@ describe('check errors on the command line', () => {
     })
   }
 })
+
+// The queries answer for the name where it stands: a local where it is
+// defined, the binding of an if let at its name, each name of a for, and a
+// field as a field. Before, each was looked up by name, and a rename from one
+// edited another (what the query layer answers is tested in the compiler
+// package).
+describe('editor queries on the command line', () => {
+  const PROGRAM = `global x: u32 = 7
+type Pt = (x: i32, y: i32)
+export func f(p: Pt, xs: []u32, o: ?*u32) -> u32 {
+  let s = p.x as u32
+  for i, v in xs {
+    s += v * i
+  }
+  if let q = o {
+    s += q.*
+  }
+  for i in 3 {
+    s += i
+  }
+  return s + x
+}
+`
+  async function query(command: string, line: number, col: number, ...flags: string[]) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = join(dir, 'names.ents')
+      await writeFile(file, PROGRAM)
+      const run = Bun.spawnSync([process.execPath, CLI, command, `${file}:${line}:${col}`, ...flags])
+      return { file, exitCode: run.exitCode, stdout: run.stdout.toString() }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  test('a local defined twice in a function is found from each definition', async () => {
+    const first = await query('references', 5, 7)
+    expect(first.stdout).toBe(`${first.file}:6:14\n`)
+    const second = await query('definition', 12, 10)
+    expect(second.stdout).toBe(`${second.file}:11:7 i\n`)
+  })
+
+  test('renaming the binding of an if let leaves the value it is taken from', async () => {
+    const { file, stdout } = await query('rename', 8, 10, '--json')
+    expect(JSON.parse(stdout)).toEqual({
+      oldName: 'q',
+      locations: [{ file, line: 8, col: 10, length: 1 }, { file, line: 9, col: 10, length: 1 }],
+    })
+  })
+
+  test('the index and the value of a for are renamed apart', async () => {
+    const { file, stdout } = await query('rename', 5, 10)
+    expect(stdout).toBe(`v: 2 locations\n  ${file}:5:10\n  ${file}:6:10\n`)
+    expect((await query('hover', 5, 7)).stdout).toBe('local i: u32\n')
+  })
+
+  test('a field named like a global is not the global', async () => {
+    expect((await query('hover', 2, 12)).stdout).toBe('No info\n')
+    expect((await query('rename', 2, 12)).stdout).toBe('No symbol found\n')
+    expect((await query('hover', 4, 13)).stdout).toBe('field x: i32\n')
+    const global = await query('rename', 1, 8)
+    expect(global.stdout).toBe(`x: 2 locations\n  ${global.file}:1:8\n  ${global.file}:14:14\n`)
+  })
+})

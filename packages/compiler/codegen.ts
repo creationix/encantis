@@ -3461,6 +3461,10 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
   for (const [key, type] of checkResult.types) {
     // The operand of a sizeof is a type the program names, not a value it has.
     if (key.endsWith(':SizeofType')) continue
+    // The type of a name where a for, an if let or a pattern's named part
+    // binds it is there for the editor: the value it is bound to is
+    // recorded where it is.
+    if (key.endsWith(':Binding')) continue
     const u = unwrap(type)
     if (u.kind === 'pointer' || u.kind === 'slice') return true
   }
