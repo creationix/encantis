@@ -2765,6 +2765,20 @@ describe('functions that share a name', () => {
     expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
   })
 
+  test('the name of several functions is no function value', () => {
+    // With no arguments to say which, it was the first one declared: here
+    // the one that does not fit, though the other does.
+    const inc = 'func inc(a: u64) -> u64 => a + 1\nfunc inc(a: u32) -> u32 => a + 1\n'
+    const refused = "'inc' is the name of several functions: it can only be called, where the arguments say which one"
+    expect(errs(`${inc}func ap(g: (u32) -> u32, x: u32) -> u32 => x\nfunc f(x: u32) -> u32 => ap(inc, x)`)).toEqual([refused])
+    const stored = checkModule(`${inc}export func f(x: u32) -> u32 {\n  let g = inc\n  return x\n}`)
+    expect(stored.errors.map(e => e.message)).toEqual([refused])
+    // It is a use of each of them all the same.
+    expect(stored.warnings).toEqual([])
+    // A name that one function has is its value, as before.
+    expect(errs('func inc(a: u32) -> u32 => a + 1\nfunc ap(g: (u32) -> u32, x: u32) -> u32 => x\nfunc f(x: u32) -> u32 => ap(inc, x)')).toEqual([])
+  })
+
   test('a declaration that repeats another is that one error, exported or not', () => {
     // It is no function of the module, so it exports nothing: a name for its
     // export would not help.

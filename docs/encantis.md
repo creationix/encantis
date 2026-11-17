@@ -1053,6 +1053,8 @@ func hash(n: u32) -> u64 => 1
 'hash' is already declared with parameters (u32)
 ```
 
+A name that several functions share says which one only in a call. Anywhere else, as in `let g = hash`, it is an error (`'hash' is the name of several functions: it can only be called, where the arguments say which one`).
+
 Each of the functions is a function of its own in the output, and a call of one is a direct call. In WAT the first one declared keeps the name and each later one carries its parameter types, `$hash:u64`, `$hash:''u8`; the spelling is not part of the language and names do not reach the `.wasm` file. An imported function shares a name in the same way. Every export needs a name of its own:
 
 ```ents

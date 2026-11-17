@@ -3167,6 +3167,14 @@ class CheckContext {
           this.error(expr.span.start, `'${expr.name}' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter`)
           return RECOVERY
         }
+        // Of functions that share the name, the arguments of a call say
+        // which is meant, and a value has none: it would be the first one
+        // declared, whatever was wanted of it.
+        if (this.shared(expr.name) && sym === this.moduleScope.symbols.get(expr.name)) {
+          for (const member of this.overloads.get(expr.name) ?? []) this.recordReference(member, expr.span.start)
+          this.error(expr.span.start, `'${expr.name}' is the name of several functions: it can only be called, where the arguments say which one`)
+          return RECOVERY
+        }
         return sym.type
 
       case 'type':

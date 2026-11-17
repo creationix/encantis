@@ -1465,6 +1465,20 @@ test "its own hash" {
 'hash' is the name of several functions of the module: a function declared in a test cannot take it over
 ```
 
+The name of several functions is no function value: only the arguments of a call say which one is meant.
+
+```ents
+func inc(a: u64) -> u64 => a + 1
+func inc(a: u32) -> u32 => a + 1
+func apply(g: (u32) -> u32, x: u32) -> u32 => x
+
+func f(x: u32) -> u32 => apply(inc, x)
+```
+
+```errors
+'inc' is the name of several functions: it can only be called, where the arguments say which one
+```
+
 ## Calling a function value
 
 A function is called by its name. One held in a parameter, a local, a global or a field has no run-time form yet, and calling it is one error.
