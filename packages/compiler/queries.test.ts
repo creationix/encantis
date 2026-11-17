@@ -121,6 +121,49 @@ describe('hover', () => {
   })
 })
 
+describe('generic types and comptime function parameters', () => {
+  const code = `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  if before(xs.ptr[1], xs.ptr[0]) { xs.ptr[0] = xs.ptr[1] }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+export func f(v: *Vec(u32), xs: []mut i32) -> u32 {
+  sort(xs, ascending)
+  return last(v)
+}`
+  const declared = 'generic type(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)'
+
+  test('hover on a generic type shows its declaration, where it is declared and where it is applied', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('Vec'))).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+    expect(hover(source, module, check, code.indexOf('Vec(T)'))).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+    expect(hover(source, module, check, code.indexOf('Vec(u32)') + 1)).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+  })
+
+  test('a generic type is listed as a type, and is found from where it is applied', () => {
+    const { source, module, check } = setup(code)
+    expect(documentSymbols(source, module, check).map(s => [s.name, s.kind, s.type])).toEqual([
+      ['Vec', 'type', declared],
+      ['last', 'func', 'generic func(comptime T: type, v: *Vec(T)) -> T'],
+      ['sort', 'func', 'generic func(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)'],
+      ['ascending', 'func', 'func(a: i32, b: i32) -> bool'],
+      ['f', 'func', 'func(v: *(ptr: [*]mut u32, len: u32, cap: u32), xs: []mut i32) -> u32'],
+    ])
+    expect(gotoDefinition(source, module, check, code.indexOf('Vec(u32)'))?.location.offset).toBe(0)
+    const references = findReferences(source, module, check, code.indexOf('Vec'))
+    expect(references?.references.map(r => r.offset).sort((a, b) => a - b)).toEqual([code.indexOf('Vec(T)'), code.indexOf('Vec(u32)')])
+  })
+
+  test('a call that gives a function for a comptime parameter shows the instance it uses', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('sort(xs, ascending)'))).toEqual({ name: 'sort', type: 'func(xs: []mut i32)', kind: 'generic' })
+    // The function given is a use of that function.
+    expect(hover(source, module, check, code.indexOf('ascending)'))).toEqual({ name: 'ascending', type: 'func(a: i32, b: i32) -> bool', kind: 'func' })
+    expect(findReferences(source, module, check, code.indexOf('ascending'))?.references.map(r => r.offset)).toEqual([code.indexOf('ascending)')])
+  })
+})
+
 describe('generic functions', () => {
   const code = `func find(comptime T: type, xs: []T, x: T) -> u32 {
   for i, v in xs {

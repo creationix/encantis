@@ -2961,9 +2961,11 @@ class CheckContext {
         this.recordReference(expr.callee.name, expr.callee.span.start)
       }
     }
-    // A type that is called constructs a value of it: Vec(u32)(p, 0, cap), and
-    // T(a, b) in an instance, where T was a type parameter.
-    const built = expr.callee.kind === 'TypeExpr' ? expr.callee.type : expr.callee.kind === 'CallExpr' ? typeOfArg(expr.callee) : null
+    // A type that is called constructs a value of it: Vec(u32)(p, 0, cap),
+    // T(a, b) in an instance, where T was a type parameter, and (T, T)(a, b).
+    const built = expr.callee.kind === 'TypeExpr' ? expr.callee.type
+      : expr.callee.kind === 'CallExpr' || expr.callee.kind === 'TupleExpr' ? typeOfArg(expr.callee)
+      : null
     if (built) return this.inferConstructor(expr, built)
 
     // Check for builtin functions first. A function the program declares takes
@@ -4519,8 +4521,13 @@ class CheckContext {
       const at = p.span.start
       if (p.type.kind !== 'TypeType') {
         // A comptime parameter of a function type is given a function.
-        if (p.comptime && p.type.kind !== 'FuncType') {
+        if (!p.comptime) continue
+        if (p.type.kind !== 'FuncType') {
           reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type' or a function type`)
+        } else if (params.some((other) => other !== p && other.ident === p.ident)) {
+          // In the instance it is a function of that name, which the other
+          // parameter of the name would hide, or be hidden by.
+          reject(at, `parameter '${p.ident}' is declared twice`)
         }
       } else if (!p.comptime) {
         reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
@@ -4729,12 +4736,12 @@ class CheckContext {
     // of it.
     values = pairs.flatMap((p) => (p.param.comptime ? [] : [p.arg]))
 
-    const funcs = new Map<string, ComptimeValue & { kind: 'func' }>()
+    const funcs = new Map<AST.Field, ComptimeValue & { kind: 'func' }>()
     for (const { param, arg, index } of pairs) {
       if (!param.comptime || isTypeParam(param)) continue
       const value = this.evalComptimeArg(name, param, arg, index)
       if (value?.kind !== 'func') return fail()
-      funcs.set(param.ident as string, value)
+      funcs.set(param, value)
     }
 
     const bound = new Map<string, ResolvedType>()
@@ -4770,9 +4777,9 @@ class CheckContext {
     // A function given for a comptime parameter has to be of the type the
     // parameter declares, now that its type parameters are known.
     for (const { param, arg } of pairs) {
-      const given = funcs.get(param.ident as string)
+      const given = funcs.get(param)
       if (!given) continue
-      const wanted = sym.owner.comptimeParamType(sym.decl, param, bound)
+      const wanted = sym.owner.comptimeParamType(param, bound)
       if (!wanted) return fail()
       if (signatureKey(wanted) === null || signatureKey(wanted) !== signatureKey(given.type)) {
         const written = arg.kind === 'IdentExpr' ? arg.name : given.name
@@ -4785,7 +4792,7 @@ class CheckContext {
 
     const args: ComptimeValue[] = params
       .filter((p) => p.comptime)
-      .map((p) => funcs.get(p.ident as string) ?? { kind: 'type', type: bound.get(p.ident as string) as ResolvedType })
+      .map((p) => funcs.get(p) ?? { kind: 'type', type: bound.get(p.ident as string) as ResolvedType })
     const inst = this.instantiate(sym, args, expr.span.start)
     if (!inst) return fail()
 
@@ -4822,7 +4829,7 @@ class CheckContext {
     name: string,
     pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
     typeParams: string[],
-    funcs: ReadonlyMap<string, ComptimeValue & { kind: 'func' }>,
+    funcs: ReadonlyMap<AST.Field, ComptimeValue & { kind: 'func' }>,
     owner: CheckContext,
   ): Map<string, ResolvedType> | null {
     const bound = new Map<string, ResolvedType>()
@@ -4838,7 +4845,7 @@ class CheckContext {
       if (!mentions(param.type, typeParams)) continue
       // The signature of a function given for a comptime parameter decides
       // like any argument's type. Nothing of it is a value the call holds.
-      const given = funcs.get(param.ident as string)
+      const given = funcs.get(param)
       if (given) {
         match(param.type, given.type, bound, false)
         typed.push(param)
@@ -5054,7 +5061,7 @@ class CheckContext {
   // The type a comptime function parameter declares, with the call's type
   // arguments: what the function given for it has to be. Null when it does
   // not resolve; the declaration then has the error.
-  comptimeParamType(of: AST.FuncDecl, param: AST.Field, bound: ReadonlyMap<string, ResolvedType>): FuncRT | null {
+  comptimeParamType(param: AST.Field, bound: ReadonlyMap<string, ResolvedType>): FuncRT | null {
     const before = this.errorsReported
     const type = this.resolveType(
       cloneAst(param.type, 0, (name) => {
