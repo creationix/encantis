@@ -601,6 +601,11 @@ class CheckContext {
   exprTypes = new TrialMap<AST.Expr, ResolvedType>(this.trial)
   coercions = new TrialMap<AST.Expr, ResolvedType>(this.trial)
   constants = new TrialMap<AST.Expr, ComptimeValue>(this.trial)
+  // The symbol each name was read as where it is written. A parameter or a
+  // binding can have the name of a def or of data, and then it is not that
+  // constant: the values of a literal are worked out at the end of the
+  // function, when its names are no longer in scope.
+  readAs = new WeakMap<AST.IdentExpr, Symbol>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new TrialSet<AST.Expr>(this.trial)
@@ -1693,9 +1698,10 @@ class CheckContext {
       }
     }
 
-    // Handle identifier references to other defs
+    // Handle identifier references to other defs, unless the name is read
+    // as a parameter or a binding that has the def's name
     if (expr.kind === 'IdentExpr') {
-      const sym = this.moduleScope.symbols.get(expr.name)
+      const sym = this.readAs.get(expr) ?? this.lookup(expr.name)
       if (sym?.kind === 'def') {
         return sym.value
       }
@@ -3319,6 +3325,7 @@ class CheckContext {
 
     // Record this as a reference to the symbol
     this.recordReference(expr.name, expr.span.start)
+    this.readAs.set(expr, sym)
 
     switch (sym.kind) {
       case 'local':

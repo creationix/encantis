@@ -2855,4 +2855,43 @@ describe('values of literals laid out in memory', () => {
     `)
     expect([two(3, 4), packed(5)]).toEqual([342, 51657])
   })
+
+  test('a parameter or a binding named like data is not that data', async () => {
+    // The values of a literal are worked out at the end of the function,
+    // when its names are out of scope: these read as the module's data.
+    const f = await run(`
+      type R = (p: *[3]i32, n: u32)
+      data ones: *[3]i32 = [1, 1, 1]
+      data twos: *[3]i32 = [2, 2, 2]
+      data many: [][]i32 = [twos, twos]
+      func param(ones: *[3]i32) -> i32 {
+        let a: *[1]*[3]i32 = [ones]
+        let r: *[1]R = [(ones, 1)]
+        return a[0][0] * 10 + r[0].p[1]
+      }
+      func binding(o: ?*[3]i32) -> i32 {
+        if let ones = o {
+          let a: *[1]*[3]i32 = [ones]
+          return a[0][2]
+        }
+        return 0
+      }
+      func slices(ones: []i32) -> u32 {
+        let a: [][]i32 = [ones, ones]
+        return if let r = a[1] { r.len } else { 0 }
+      }
+      export func a() -> i32 => param(twos)
+      export func b() -> i32 => binding(twos)
+      export func c() -> u32 => slices(twos[0..2])
+      export func d() -> i32 {
+        let t: i32 = 0
+        for ones in many {
+          let a: [][]i32 = [ones]
+          t = t + (if let r = a[0] { r[0] ?? 0 } else { 0 })
+        }
+        return t
+      }
+    `)
+    expect([f.a(), f.b(), f.c(), f.d()]).toEqual([22, 2, 2, 4])
+  })
 })
