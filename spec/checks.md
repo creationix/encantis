@@ -1151,6 +1151,49 @@ func f(a: i32) -> i32 {
 a row of *[2][3]i32 is laid out at compile time: its values must be constants
 ```
 
+A table's own bytes are its row pointers, 4 for each row: `memcpy` and `memset` check a length against them, and `memzero` of a table is refused, since it would point every row at address 0. A row is zeroed, or copied, as the array it is.
+
+```ents
+data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+
+func f() {
+  memcpy(board, grid, 24)
+  memzero(board)
+}
+```
+
+```errors
+memcpy length 24 exceeds buffer size 8 bytes
+memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in board { memzero(row) }
+```
+
+<!-- spec:begin compile -->
+
+```ents
+data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data after: *[2]i32 = [77, 88]
+
+func clear() {
+  for row in board { memzero(row) }
+}
+func fill(i: u32#2) {
+  memcpy(board[i], grid[i], 12)
+}
+
+test "rows are zeroed and copied one by one" {
+  clear()
+  assert board[1][2] == 0
+  fill(1)
+  assert board[1][0] == 3
+  assert board[0][0] == 0
+  assert after[0] == 77
+}
+```
+
+<!-- spec:end -->
+
 A name for the array is the array (reference 2.11): with `type Grid = [2][3]i32`, a `*Grid` is a `*[2][3]i32`, a table, and a `*Row` is a `*[3]i32`. They compile to the module written without the names.
 
 <!-- spec:begin compile -->

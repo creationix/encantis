@@ -2014,7 +2014,9 @@ class CheckContext {
 
     const totalCount = totalElements(arrType.sizes)
     if (totalCount === null) return
-    const elemSize = byteSize(arrType.element)
+    // A table's elements are its row pointers (2.5): those are its bytes.
+    const row = tableRow(srcType)
+    const elemSize = byteSize(row ?? arrType.element)
     if (elemSize === null) return
     const bufferSize = totalCount * elemSize
 
@@ -2026,7 +2028,12 @@ class CheckContext {
     }
 
     if (Number(len.value) > bufferSize) {
-      this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`)
+      const advice = ptrExpr.span.start >= INSTANCE_STRIDE ? rowsAdvice(row?.pointee ?? arrType)
+        : `${op === 'memset' ? 'set' : 'copy'} the rows one by one, as the arrays they are`
+      const notes = row
+        ? [{ offset: ptrExpr.span.start, message: `a ${typeToString(srcType)} is a table of ${totalCount} pointers to rows, which lie apart (reference 2.5): ${advice}` }]
+        : undefined
+      this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`, notes)
     }
   }
 
@@ -2236,9 +2243,9 @@ class CheckContext {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
         } else if (iterableType.kind === 'slice') {
-          elemType = tableRow(iterableType) ?? iterableType.element
+          elemType = this.rowOf(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
-          elemType = tableRow(iterableType) ?? pointee.element
+          elemType = this.rowOf(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
@@ -3989,8 +3996,17 @@ class CheckContext {
         }
         const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
         // memzero has no length operand: the destination's type gives it.
-        if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
+        const zeroed = pointeeArray(dest)
+        if (zeroed && zeroed.sizes !== null && byteSize(zeroed) === null) {
           this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
+        } else if (zeroed && tableRow(dest)) {
+          // A table holds pointers to its rows, not their cells (2.5): zeroing
+          // it would point every row at address 0.
+          const value = ungrouped(args[0].value)
+          const table = value.kind === 'IdentExpr' ? value.name : 't'
+          const at = args[0].value.span.start
+          const advice = at >= INSTANCE_STRIDE ? [{ offset: at, message: rowsAdvice(tableRow(dest)?.pointee ?? zeroed) }] : undefined
+          this.error(at, `memzero dest: ${typeToString(dest)} is a table, its elements pointers to rows (reference 2.5): zero each row, for row in ${table} { memzero(row) }`, advice)
         }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
@@ -4434,7 +4450,7 @@ class CheckContext {
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`, this.rowNote(expr.span.start, actual, expected))
       return
     }
     const grouped = groupedExpr(expr)
@@ -4933,6 +4949,32 @@ class CheckContext {
     }
   }
 
+  // The row pointer an element of a table is (tableRow), remembered with the
+  // table it is an element of, for the note an error about it gets.
+  private rowsOf = new WeakMap<ResolvedType, ResolvedType>()
+
+  private rowOf(table: ResolvedType): PointerRT | null {
+    const row = tableRow(table)
+    if (row) this.rowsOf.set(row, table)
+    return row
+  }
+
+  // In an instance, a type parameter that is a fixed array makes [*]T, []T
+  // and *[N]T tables (2.5): an element is a pointer to its row, where the
+  // generic's code wants a T. The note says so and how to have rows instead.
+  private rowNote(offset: number, actual: ResolvedType, expected: ResolvedType): NonNullable<TypeError['notes']> | undefined {
+    if (offset < INSTANCE_STRIDE) return undefined
+    const tableOf = (row: ResolvedType, value: ResolvedType) => {
+      const table = this.rowsOf.get(row)
+      const pointee = pointeeArray(row)
+      return table && pointee && typeEquals(pointee, value) ? { table, pointee } : null
+    }
+    const found = tableOf(actual, expected) ?? tableOf(expected, actual)
+    if (!found) return undefined
+    const message = `in a ${typeToString(found.table)} each element is a pointer to its row (reference 2.5): ${rowsAdvice(found.pointee)}`
+    return [{ offset, message }]
+  }
+
   // The type of &items[i] for a slice or *[N]T: *T when the index is known to
   // be in range, otherwise ?*T (none when out of range, checked at runtime).
   // Returns null for other containers, which keep the usual rules.
@@ -5008,7 +5050,7 @@ class CheckContext {
     // An element of a table is its row pointer. A row has no optional type:
     // like a value element, an index not known to be in range is resolved
     // where it is taken, with if let or ??.
-    const row = tableRow(objType)
+    const row = this.rowOf(indexed)
     const noOptional = (elem: ResolvedType) => row ? 'rows are not optional' : `no optional type for ${typeToString(elem)}`
 
     if (objType.kind === 'slice') {
@@ -6244,14 +6286,17 @@ class CheckContext {
 
   // An offset inside an instance, as the place in the generic's source it was
   // copied from, with the instance named in the message.
-  private atSource(offset: number, message: string): TypeError {
-    if (offset < INSTANCE_STRIDE) return { offset, message }
-    const inst = this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
-    if (!inst) return { offset: offset % INSTANCE_STRIDE, message }
+  private atSource(offset: number, message: string, own: NonNullable<TypeError['notes']> = []): TypeError {
+    const said = own.map((note) => ({ offset: note.offset % INSTANCE_STRIDE, message: note.message }))
+    const inst = offset < INSTANCE_STRIDE ? undefined : this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
+    if (!inst) {
+      const at = offset % INSTANCE_STRIDE
+      return said.length > 0 ? { offset: at, message, notes: said } : { offset: at, message }
+    }
     // The calls the instance exists for: the one that first asked for it,
     // and while that call is inside an instance, the one that asked for that.
-    const notes: NonNullable<TypeError['notes']> = []
-    for (let at = inst.requestedAt; notes.length < MAX_NOTES; ) {
+    const notes: NonNullable<TypeError['notes']> = [...said]
+    for (let at = inst.requestedAt; notes.length < said.length + MAX_NOTES; ) {
       notes.push({ offset: at % INSTANCE_STRIDE, message: 'required from' })
       const outer = this.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
       if (!outer) break
@@ -6401,9 +6446,9 @@ class CheckContext {
     return best
   }
 
-  error(offset: number, message: string): void {
+  error(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
     this.errorsReported++
-    const error = this.atSource(offset, message)
+    const error = this.atSource(offset, message, notes)
     if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
       this.errors.push(error)
     }
@@ -7376,6 +7421,13 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// What to write instead where a type parameter that is a fixed array made a
+// table (2.5): rows in place are a struct's array field, or say pointers.
+function rowsAdvice(row: ResolvedType): string {
+  const text = typeToString(row)
+  return `for packed rows use a struct with an array field, (cells: ${text}), or *${text} for the pointers`
+}
 
 // Whether a value of this type holds a slice in registers: is one, or has one
 // as an element of a fixed array or as a field. (A type that holds itself by
