@@ -5018,6 +5018,28 @@ export func f(x: u8, i: u32) -> u8 => lit(x) + whole(Board(i32)(grid, 0))[0][0] 
   })
 })
 
+describe('method calls on tables', () => {
+  // What is said of a call with a receiver is what is said of the call
+  // written with the receiver as its first argument, at the same place.
+  const said = (source: string) => check(source).errors.map((e) => `${source.slice(e.offset, e.offset + 9)}: ${e.message}`)
+
+  test('a table written out with a row known only at run time is a literal as a receiver too, not a value without an address', () => {
+    const row = 'a row of *[2][3]i32 is laid out at compile time: its values must be constants'
+    const tsum = 'func tsum(m: *[2][3]i32) -> i32 => m[1][2]\n'
+    const g = 'func g(comptime T: type, m: *[2][3]T) -> T => m[1][0]\n'
+    for (const [method, plain] of [
+      [`${tsum}export func a(x: i32) -> i32 => [[x, 2, 3], [4, 5, 6]].tsum()`, `${tsum}export func a(x: i32) -> i32 => tsum([[x, 2, 3], [4, 5, 6]])`],
+      [`${tsum}export func a(x: i32) -> i32 => ([[1, 2, 3], [x, 5, 6]]).tsum()`, `${tsum}export func a(x: i32) -> i32 => tsum(([[1, 2, 3], [x, 5, 6]]))`],
+      [`${tsum}export func a(x: i32) -> i32 => [[x; 3]; 2].tsum()`, `${tsum}export func a(x: i32) -> i32 => tsum([[x; 3]; 2])`],
+      [`${g}export func a(x: i32) -> i32 => [[x, 1, 2], [3, 4, 5]].g(i32)`, `${g}export func a(x: i32) -> i32 => g(i32, [[x, 1, 2], [3, 4, 5]])`],
+    ]) {
+      expect(said(method)).toHaveLength(1)
+      expect(said(method)[0]).toEndWith(`: ${row}`)
+      expect(said(method)).toEqual(said(plain))
+    }
+  })
+})
+
 describe('examples/generics', () => {
   const dir = join(import.meta.dir, '../../examples/generics')
 

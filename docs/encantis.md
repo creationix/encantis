@@ -1660,6 +1660,8 @@ func f(v: Vec(u32)) { v.push(7) }
 push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 ```
 
+An array written out is not such a value: passed for a pointer it is laid out in memory, as it is when it is the first argument, so `[1, 2, 3].sum()` calls `sum(r: *[3]i32)`, and a table written out with a row known only at run time is refused for that row ([2.5](#nesting)).
+
 Otherwise the errors of `x.f(a)` are those of `f(x, a)`, reported at the name of the method and worded for the call as it was written: `x` is the receiver and the arguments are counted after it, as in `'double' expected 0 arguments after the receiver, got 1` for `n.double(1)`. With neither a member nor a function of that name, one error says both. A field that is called is still the field:
 
 ```ents

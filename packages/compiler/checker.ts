@@ -3711,9 +3711,11 @@ class CheckContext {
   // The pointer type a function takes as its first argument, where the
   // receiver of a method call is a value of what that pointer points to.
   // A literal is no such value: passed for a pointer it is data in memory,
-  // as it is when it is written as the first argument.
+  // as it is when it is written as the first argument. An array written out
+  // is one even where it can't be laid out (a row of a table known only at
+  // run time): what is wrong with it is said as it is of the argument.
   private pointerWanted(sym: Symbol, name: string, args: AST.Arg[], value: AST.Expr, receiver: ResolvedType): string | null {
-    if (unwrap(receiver).kind === 'pointer') return null
+    if (unwrap(receiver).kind === 'pointer' || isArrayLiteral(value)) return null
     const pointsTo = (type: ResolvedType): boolean => {
       const u = unwrap(type)
       return u.kind === 'pointer' && typeAssignable(u.pointee, receiver) && !this.fits(value, type)
@@ -7059,6 +7061,13 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// An array written out, element by element or as a repeat: passed for a
+// pointer, it is laid out in memory.
+function isArrayLiteral(expr: AST.Expr): boolean {
+  const inner = ungrouped(expr)
+  return inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr'
 }
 
 // How far from zero a constant integer is.

@@ -2465,6 +2465,20 @@ push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in reg
 norm takes *Pt first; the receiver is a Pt, which is held in registers and has no address
 ```
 
+An array written out is no such value: passed for a pointer it is laid out in memory, as it is when it is written as the first argument. A table written out is laid out when the program is compiled, so a row known only at run time is what is wrong with it, said as it is of the argument.
+
+```ents
+func tsum(m: *[2][3]i32) -> i32 => m[1][2]
+
+func f(x: i32) -> i32 => [[x, 2, 3], [4, 5, 6]].tsum()
+func g(x: i32) -> i32 => [[1, 2, 3], [x; 3]].tsum()
+```
+
+```errors
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+```
+
 Nor is a pointer followed for a value: the receiver is an argument like any other.
 
 ```ents
