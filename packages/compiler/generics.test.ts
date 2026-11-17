@@ -2660,6 +2660,23 @@ export func f(t: *Table(u8, f64), n: Named, a: u32) -> u32 {
     await wasmOfSource(source)
   })
 
+  // The host's function takes and returns the struct's values, as the one
+  // declared with the struct written out does: read off the syntax, the
+  // applied type was no parameter and no result at all.
+  test('in the signature of a host import it is the struct written out', async () => {
+    const use = (vec: string) => `export func go() -> u32 => draw((1, 2), 3) + make(4).second + far(0 as *mut ${vec})`
+    const applied = `import "env" "draw" func draw(p: Pair(u8, u32), n: u32) -> u32
+import "env" "make" func make(n: u32) -> Pair(u8, u32)
+import "env" "far" func far(v: *mut Vec(u8)) -> (u32)
+${VEC}${PAIR}${use('Vec(u8)')}`
+    const written = `import "env" "draw" func draw(p: (first: u8, second: u32), n: u32) -> u32
+import "env" "make" func make(n: u32) -> (first: u8, second: u32)
+import "env" "far" func far(v: *mut (ptr: [*]mut u8, len: u32, cap: u32)) -> (u32)
+${use('(ptr: [*]mut u8, len: u32, cap: u32)')}`
+    await expectSameWasm(applied, written)
+    expect(watOfSource(applied)).toContain('(import "env" "draw" (func $draw (param $p_first i32) (param $p_second i32) (param $n i32) (result i32)))')
+  })
+
   test('may be declared after its uses, and reached through a type that refers to it', async () => {
     // List applies nothing: Node is a forward reference, as in any type that
     // refers to itself.

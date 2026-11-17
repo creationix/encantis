@@ -3236,11 +3236,20 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     // Get function type from signature
     const params: string[] = []
     const results: string[] = []
+    // The types are the checker's, part by part: a type that is a name (a
+    // `type`, an applied generic type) is known only there, and read off the
+    // syntax it would be no value at all.
+    const sym = ctx.symbols.get(name)
+    const checked = (from: 'params' | 'returns', index: number, count: number, ast: AST.Type): ResolvedType => {
+      const fields = sym?.kind === 'func' ? sym.type[from] : []
+      return fields.length === count ? fields[index].type : resolveAstType(ast)
+    }
 
     // Parse input type for params
     if (imp.signature.input.kind === 'CompositeType') {
-      for (const field of imp.signature.input.fields) {
-        const resolved = resolveAstType(field.type)
+      const fields = imp.signature.input.fields
+      for (const [index, field] of fields.entries()) {
+        const resolved = checked('params', index, fields.length, field.type)
         const flattened = flattenType(resolved)
         if (field.ident) {
           if (flattened.length === 1) {
@@ -3260,14 +3269,15 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
 
     // Parse output type for results
     if (imp.signature.output.kind === 'CompositeType') {
-      for (const field of imp.signature.output.fields) {
-        const wasmTypes = typeToWasm(resolveAstType(field.type))
+      const fields = imp.signature.output.fields
+      for (const [index, field] of fields.entries()) {
+        const wasmTypes = typeToWasm(checked('returns', index, fields.length, field.type))
         for (const wt of wasmTypes) {
           results.push(wt)
         }
       }
     } else {
-      const wasmTypes = typeToWasm(resolveAstType(imp.signature.output))
+      const wasmTypes = typeToWasm(checked('returns', 0, 1, imp.signature.output))
       for (const wt of wasmTypes) {
         results.push(wt)
       }
