@@ -14,7 +14,7 @@ data digits = mut [0:u8; 24]
 export func read_all(buf: []mut u8) -> []u8 {
   let total: u32 = 0
   let nread = &0:u32
-  let iov: []mut []mut u8 = [buf]
+  let iov: *mut [1][]mut u8 = [buf]
   // total never passes buf.len, so the ?? fallbacks below never apply.
   loop {
     let free = buf[total..] ?? buf
@@ -30,7 +30,7 @@ export func read_all(buf: []mut u8) -> []u8 {
 export func print(s: []u8) {
   let left = s
   let n = &0:u32
-  let iov: []mut []u8 = [s]
+  let iov: *mut [1][]u8 = [s]
   while left.len > 0 {
     iov[0] = left
     return when fd_write(1, iov, n) != 0

@@ -627,6 +627,7 @@ func e(r: Row, m: *mut Row) {
 cannot write through const pointer
 cannot write through const pointer
 cannot write through const pointer
+index 0 on []Row requires 'if let' or '??': a slice's length is only known at run time
 cannot write through const slice
 ```
 
@@ -959,9 +960,10 @@ index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2)
 ```ents
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
 data rows: [][2]i32 = [[7, 1], [3, 4]]
+data zeros: *[2]i32 = [0, 0]
 
 func a(i: u32, j: u32#3) -> i32 => if let r = grid[i] { r[j] } else { 0 }
-func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? rows[0])[j]
+func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? zeros)[j]
 ```
 
 A write goes through the row pointer, so the table has to be mutable. Assigning to `m[i]` points the row elsewhere; there is no `[N][M]T` in the table to load or store whole.

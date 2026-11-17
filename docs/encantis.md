@@ -105,7 +105,7 @@ Template literals use backticks and `${expr}` interpolation to combine static te
 
 ```ents
 `hello ${name}\n`
-`Error ${msg}: ${errnos[code]}\n`
+`Error ${msg}: ${errnos[code] ?? "unknown"}\n`
 `${x} + ${y} = ${x + y}`
 ```
 
@@ -113,12 +113,12 @@ Template literals produce a **slice of slices** (`[][]u8`) — an array of fragm
 
 ```ents
 // Template literal:
-wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, nwritten)
+wasi_fd_write(stderr, `Error ${msg}: ${errnos[code] ?? "unknown"}\n`, nwritten)
 
 // Equivalent manual construction:
-data err_iovecs:[]mut []u8 = ["Error ", "", ": ", "", "\n"]
+data err_iovecs:*mut [5][]u8 = mut ["Error ", "", ": ", "", "\n"]
 err_iovecs[1] = msg
-err_iovecs[3] = errnos[code]
+err_iovecs[3] = errnos[code] ?? "unknown"
 wasi_fd_write(stderr, err_iovecs, nwritten)
 ```
 
@@ -390,6 +390,8 @@ if let val = p { val.* }         // OK: unwrapped inside if-let
 p ?? default_ptr                 // OK: resolved with fallback
 ```
 
+Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared, with `0` too, and passed where an optional is expected.
+
 **Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
 
 **Data section layout:** To ensure address `0` is never a valid data pointer, the compiler reserves the first 4 bytes of linear memory when any optional types are used and the first data entry would otherwise start at offset 0.
@@ -432,7 +434,7 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 *[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
 
-The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
 
 ```ents
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
@@ -465,9 +467,11 @@ let buf: []mut u8 = get-buf()   // mutable slice
 
 text.ptr        // extract pointer
 text.len        // get length (u32)
-text[i]         // element access (read)
-buf[i] = 0      // element write (only on []mut)
+text[i] ?? 0    // element access (read), checked against text.len
+if let p = &buf[i] { p.* = 0 }   // element write (only on []mut)
 ```
+
+A slice's length is a run-time value, so no index into a slice is known to be in range at compile time, a constant one either: every element read is checked against `.len` and resolved with `if let` or `??` ([4.7](#47-bounds-checked-indexing)), and an element is written through its address.
 
 Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating through a `[]mut` slice affects the underlying memory.
 
@@ -1448,6 +1452,8 @@ let y = table[3]                  // OK: 3 < 4
 let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
 ```
 
+A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index (`u32#4`) proves itself against a `*[N]T` the same way a constant does ([Ranged Integers](#ranged-integers)).
+
 **Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds (the row pointers of a table are the exception, see [Nesting](#nesting)):
 
 ```ents
@@ -1487,7 +1493,9 @@ let msg = strings[idx]            // inferred as ?[]u8
 let resolved = msg ?? "default"   // resolve when needed
 ```
 
-This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check.
+This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check. An optional element is never read through before it is resolved (see [Optional Types](#optional-types)): `names[i][0]` and `names[i].len` are errors, `(names[i] ?? "")[0]` is not.
+
+When the elements are optionals themselves (`[]?*T`), the element of an index that isn't proven is that optional, none when the index is out of range, and `if let` and `??` check both the index and the element.
 
 #### The `??` Operator
 
@@ -1533,7 +1541,7 @@ func score(i: u32, lenient: bool) -> i64 => if let s = scores[i] { s } elif leni
 
 #### Element Addresses and Writes
 
-Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
+Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index into a `*[N]T`), or the write is an error, whatever the element is: `ps[i] = q` with a `*mut [4]*u8` and `i: u32` is refused (`writing to an element needs an index known to be in range`) although `ps[i]` reads as an optional. On a slice no index is proven. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
 
 ```ents
 func put(s: []mut u8, i: u32, v: u8) -> bool {

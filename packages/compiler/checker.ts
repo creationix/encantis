@@ -225,6 +225,10 @@ export interface TypeCheckResult {
   // that is not the name it was declared with: one that shares its name with
   // a function declared before it has a name of its own (hash:''u8).
   funcNames: Map<AST.FuncDecl | AST.ImportFunc, string>
+  // Index expressions whose index isn't known to be in range, on a slice or
+  // a pointer to an array of pointers or slices: their value is an optional,
+  // and codegen checks the index, giving none (0) when it is out of range.
+  unproven: Set<AST.IndexExpr>
 }
 
 // === Concretization Options ===
@@ -328,6 +332,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
     calls: ctx.calls,
     funcNames: ctx.funcNames,
+    unproven: ctx.unproven,
   }
 }
 
@@ -612,6 +617,9 @@ class CheckContext {
   // one of its branches is then the same declaration, not a second one.
   // A look (see peek) declares in a scope of its own, and is no first time.
   declared = new TrialSet<AST.Pattern>(this.trial)
+  // Indexes read as an optional because they aren't known to be in range
+  // (see TypeCheckResult.unproven).
+  unproven = new TrialSet<AST.IndexExpr>(this.trial)
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -2043,6 +2051,16 @@ class CheckContext {
           this.inferExpr(stmt.value)
           break
         }
+        // An element is written only where its index is known to be in range
+        // (4.7): one that isn't is read as an optional, which is no place to
+        // store to. Its address is the element written through a check.
+        if (stmt.target.kind === 'IndexExpr' && this.unproven.has(stmt.target)) {
+          const container = this.exprTypes.get(stmt.target.object)
+          this.error(stmt.target.index.span.start, container && unwrap(container).kind === 'slice'
+            ? `writing to an element of a slice needs its index checked: use if let on its address (&s[i])`
+            : `writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])`)
+          if (targetType) targetType = unwrapOptional(unwrap(targetType))
+        }
         this.checkMutability(stmt.target, stmt.span.start)
         if (targetType && stmt.op === '=') {
           this.checkExpr(stmt.value, targetType)
@@ -2061,7 +2079,7 @@ class CheckContext {
         this.checkLoopBody(stmt.body)
         break
       case 'ForStmt': {
-        const iterableType = unwrap(this.inferExpr(stmt.iterable))
+        const iterableType = unwrap(this.resolvedFirst(stmt.iterable.span.start, this.inferExpr(stmt.iterable), 'iterate over'))
         // Determine element type from iterable
         let elemType: ResolvedType = primitive('u32') // default: unsigned index
         const pointee = iterableType.kind === 'pointer' ? unwrap(iterableType.pointee) : null
@@ -2105,7 +2123,7 @@ class CheckContext {
   // to apply to x's type, and v has to widen to it (x can't widen to v's).
   private checkCompoundAssignment(stmt: AST.AssignmentStmt, targetType: ResolvedType): void {
     const op = stmt.op.slice(0, -1)
-    const target = unwrap(targetType)
+    const target = unwrap(this.resolvedFirst(stmt.span.start, targetType, `use '${stmt.op}' on`))
     if (target.kind !== 'primitive') {
       // p += n moves a pointer: n is an integer that fits an address.
       const valueType = this.inferExpr(stmt.value)
@@ -4181,8 +4199,13 @@ class CheckContext {
       }
       return isInteger(t) && (byteSize(t) ?? 8) <= 4
     }
-    const leftOk = check(expr.left, leftType)
-    const rightOk = check(expr.right, rightType)
+    // Optional pointers compare (with 0 too), but moving one would make a
+    // pointer of none.
+    const moved = !COMPARISON_OPS.has(expr.op)
+    const left = moved ? this.resolvedFirst(expr.span.start, leftType, `use '${expr.op}' on`) : leftType
+    const right = moved ? this.resolvedFirst(expr.span.start, rightType, `use '${expr.op}' on`) : rightType
+    const leftOk = check(expr.left, left)
+    const rightOk = check(expr.right, right)
     if (!leftOk || !rightOk) {
       this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
     }
@@ -4432,9 +4455,27 @@ class CheckContext {
     }
   }
 
+  // An optional pointer or slice may be none: it is resolved with if let or
+  // ?? before it is indexed, dereferenced or read through (reference 2.5,
+  // Optional Types). Reports what was done with it, and gives the type it
+  // has once resolved, so that checking goes on as if it were.
+  private resolvedFirst(offset: number, type: ResolvedType, what: string | (() => string)): ResolvedType {
+    const u = unwrap(type)
+    if (!isOptional(u)) return type
+    const done = typeof what === 'string' ? what : what()
+    this.error(offset, `cannot ${done} ${typeToString(type)}: it may be none — resolve it with 'if let' or '??' first`)
+    return unwrapOptional(u)
+  }
+
   inferMember(expr: AST.MemberExpr): ResolvedType {
-    const objType = this.inferExpr(expr.object)
-    if (unresolved(objType)) return RECOVERY
+    const member = expr.member
+    const what = () => member.kind === 'deref' ? 'dereference'
+      : member.kind === 'field' ? `use .${member.name} on`
+      : member.kind === 'index' ? `use .${member.value} on`
+      : `use .${typeToString(this.resolveType(member.type))} on`
+    const read = this.inferExpr(expr.object)
+    if (unresolved(read)) return RECOVERY
+    const objType = this.resolvedFirst(expr.span.start, read, what)
 
     // Unwrap named types to access underlying structure
     const unwrappedType = unwrap(objType)
@@ -4592,7 +4633,7 @@ class CheckContext {
   // an end. Otherwise the result is ?[]T: none unless start <= end <= length,
   // checked at runtime.
   inferSlice(expr: AST.SliceExpr): ResolvedType {
-    const objType = unwrap(this.inferExpr(expr.object))
+    const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'take a range of'))
     const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
       if (!e) return { value: null, max: null }
       const t = unwrap(this.inferExpr(e))
@@ -4721,7 +4762,7 @@ class CheckContext {
   // be in range, otherwise ?*T (none when out of range, checked at runtime).
   // Returns null for other containers, which keep the usual rules.
   private addressOfIndex(expr: AST.IndexExpr): ResolvedType | null {
-    const objType = unwrap(this.inferExpr(expr.object))
+    const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'index'))
     let elem: ResolvedType
     let mutable: boolean
     let size: number | null
@@ -4782,30 +4823,40 @@ class CheckContext {
     // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
     const resolvable = this.insideIfLetCondition
     this.insideIfLetCondition = false
-    const objType = this.inferExpr(expr.object)
+    const indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
     this.inferIndexValue(expr.index)
-    if (unresolved(objType)) return RECOVERY
+    if (unresolved(indexed)) return RECOVERY
+    const objType = this.resolvedFirst(expr.span.start, indexed, 'index')
 
     // An element of a table is its row pointer. A row has no optional type:
     // like a value element, an index not known to be in range is resolved
     // where it is taken, with if let or ??.
     const row = tableRow(objType)
     const noOptional = (elem: ResolvedType) => row ? 'rows are not optional' : `no optional type for ${typeToString(elem)}`
+    // An index that isn't known to be in range: the element is an optional
+    // when it can be one, checked when it is read; otherwise if let or ??
+    // has to resolve the index where it is taken.
+    const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
+      if (!row && (elem.kind === 'pointer' || elem.kind === 'slice')) {
+        this.unproven.add(expr)
+        return optionalOf(elem)
+      }
+      if (!this.insideIfLetCondition) {
+        this.error(expr.index.span.start, `${problem} requires 'if let' or '??'${why} (${noOptional(elem)})`)
+      }
+      return row ?? elem
+    }
 
     if (objType.kind === 'slice') {
+      // A slice's length is a run-time value, so no index is known to be in
+      // range, a constant one either.
+      const elem = objType.element
       const idx = this.evalComptimeExpr(expr.index)
-      if (idx === null || idx.kind !== 'int') {
-        // Runtime index: return optional if element can be optional, error otherwise
-        const elem = objType.element
-        if (elem.kind === 'pointer' || elem.kind === 'slice') {
-          return optionalOf(elem)
-        }
-        if (!this.insideIfLetCondition) {
-          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
-        }
-      }
-      return row ?? objType.element
+      const shown = `[]${typeToString(elem)}`
+      return idx?.kind === 'int'
+        ? unproven(elem, `index ${idx.value} on ${shown}`, `: a slice's length is only known at run time`)
+        : unproven(elem, `runtime index on ${shown}`)
     }
 
     if (objType.kind === 'comptime_array') {
@@ -4835,41 +4886,40 @@ class CheckContext {
       // If pointing to an array type (e.g., *[12]u32 or *[12,16]u32)
       if (objType.pointee.kind === 'array') {
         const arrayType = objType.pointee
-        // Multi-dimensional: *[N,M]T indexed once returns *[M]T
-        if (arrayType.sizes && arrayType.sizes.length > 1) {
-          const remainingDims = arrayType.sizes.slice(1)
-          return pointer(array(arrayType.element, remainingDims))
+        const sizes = arrayType.sizes
+        // A packed *[NxM]T indexed once is the address of a row, a *[M]T:
+        // nothing is loaded, but the row index is checked against N as any
+        // other, and like a row of a table it has no optional type.
+        const packed = sizes !== null && sizes.length > 1
+        const elem = packed ? pointer(array(arrayType.element, sizes.slice(1)), false, objType.mutable) : arrayType.element
+        const shown = packed ? typeToString(pointer(arrayType)) : `*[${sizes?.[0]}]${typeToString(elem)}`
+        const notOptional = (problem: string): ResolvedType => {
+          if (!this.insideIfLetCondition) this.error(expr.index.span.start, `${problem} requires 'if let' or '??' (rows are not optional)`)
+          return elem
         }
         // Fixed-size pointer array *[N]T: check bounds
-        if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
-          const n = arrayType.sizes[0]
+        if (sizes && typeof sizes[0] === 'number') {
+          const n = sizes[0]
           const idx = this.evalComptimeExpr(expr.index)
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
               const idxType = this.exprTypes.get(expr.index)
               if (idxType?.kind === 'primitive' && idxType.max !== undefined) {
-                const elem = arrayType.element
-                const canBeOptional = elem.kind === 'pointer' || elem.kind === 'slice'
+                const canBeOptional = !packed && (elem.kind === 'pointer' || elem.kind === 'slice')
                 const hint = canBeOptional
                   ? ` — narrow the index range or use 'if let'/'??' for bounds checking`
                   : ` — narrow the index range to fit`
-                this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed *[${n}]${typeToString(elem)} bounds (max index ${idxType.max - 1} >= ${n})${hint}`)
+                this.error(expr.index.span.start, `index type ${typeToString(idxType)} may exceed ${shown} bounds (max index ${idxType.max - 1} >= ${n})${hint}`)
               } else {
-                const elem = arrayType.element
-                if (elem.kind === 'pointer' || elem.kind === 'slice') {
-                  return optionalOf(elem)
-                }
-                if (!this.insideIfLetCondition) {
-                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
-                }
+                return packed ? notOptional(`runtime index on ${shown}`) : unproven(elem, `runtime index on ${shown}`)
               }
             }
           } else if (idx.value < 0n || idx.value >= BigInt(n)) {
-            this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${n}]${typeToString(arrayType.element)}`)
+            this.error(expr.index.span.start, `index ${idx.value} out of bounds for ${shown}`)
           }
         }
-        return row ?? arrayType.element
+        return packed ? elem : row ?? elem
       }
       return objType.pointee
     }

@@ -64,6 +64,9 @@ export interface CodegenContext {
   funcNames: TypeCheckResult['funcNames']
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
+  // Indexes that aren't known to be in range, read as an optional (see
+  // TypeCheckResult.unproven): checked, none when out of range.
+  unproven: Set<AST.IndexExpr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -82,6 +85,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     dataSectionSize,
     calls: checkResult.calls,
     funcNames: checkResult.funcNames,
+    unproven: checkResult.unproven,
   }
 }
 
@@ -1518,9 +1522,52 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   }
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (isRowIndex(expr, ctx)) return elementAddress(expr, ctx)
+  if (ctx.unproven.has(expr)) return checkedIndexToWat(expr, type, ctx)
   const addr = lvalueAddressOf(expr, ctx)
   if (addr === null) throw new Error(`Cannot index this expression at offset ${expr.span.start}`)
   return loadFromMemory(type, addr, ctx)
+}
+
+// xs[i] with an index not known to be in range, on a slice or a *[N]T of
+// pointers or slices: the element, an optional, is none (0) when i is out of
+// range. The container and the index are evaluated once, in that order; parts
+// that are locals or constants are used as they are.
+function checkedIndexToWat(expr: AST.IndexExpr, type: ResolvedType, ctx: CodegenContext): string {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const setup: string[] = []
+  const keep = (wat: string): string => {
+    if (isSimple(wat)) return wat
+    const local = scratchLocal(ctx, 'i32')
+    setup.push(`(local.set ${local} ${wat})`)
+    return `(local.get ${local})`
+  }
+  const obj = exprToWat(expr.object, ctx)
+  let base: string
+  let len: string
+  if (u?.kind === 'slice') {
+    const parts = trySplitMultiValue(obj, 2)
+    if (parts) {
+      base = keep(parts[0])
+      len = keep(parts[1])
+    } else {
+      const [ptr, length] = [scratchLocal(ctx, 'i32'), scratchLocal(ctx, 'i32')]
+      setup.push(obj, `(local.set ${length})`, `(local.set ${ptr})`)
+      base = `(local.get ${ptr})`
+      len = `(local.get ${length})`
+    }
+  } else if (u?.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
+    base = keep(obj)
+    len = `(i32.const ${u.pointee.sizes[0]})`
+  } else {
+    throw new Error(`Cannot check this index at offset ${expr.span.start}`)
+  }
+  const index = keep(exprToWat(expr.index, ctx))
+  const results = typeToWasm(type).join(' ')
+  const { offset } = indexOffset(expr.object, base, index, ctx)
+  const none = typeToWasm(type).map((t) => `(${t}.const 0)`).join(' ')
+  const value = `(if (result ${results}) (i32.lt_u ${index} ${len}) (then ${loadFromMemory(type, offset, ctx)}) (else ${none}))`
+  return setup.length === 0 ? value : `(block (result ${results})\n${setup.join('\n')}\n${value})`
 }
 
 // items[start..end]: (ptr + start * stride, end - start). Parts that are
@@ -1665,6 +1712,17 @@ function evalComptimeIndex(expr: AST.Expr): number | null {
   return null
 }
 
+// Whether the elements an index expression reads are optionals themselves
+// (in a []?*T): then if let and ?? check the element as well as the index,
+// as for any optional, reading it none when the index is out of range.
+function holdsOptionals(expr: AST.IndexExpr, ctx: CodegenContext): boolean {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const pointee = u?.kind === 'pointer' ? unwrap(u.pointee) : null
+  const element = u?.kind === 'slice' ? u.element : pointee?.kind === 'array' ? pointee.element : null
+  return element !== null && RT.isOptional(unwrap(element))
+}
+
 function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
   if (!elemType) throw new Error('Missing element type for coalesce')
@@ -1674,7 +1732,7 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const resultStr = `(result ${resultTypes.join(' ')})`
 
   // Check if this is a bounds-checked index expression
-  if (expr.expr.kind === 'IndexExpr') {
+  if (expr.expr.kind === 'IndexExpr' && !holdsOptionals(expr.expr, ctx)) {
     return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, scratchId(expr.span.start), ctx)
   }
 
@@ -1712,7 +1770,8 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
     parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
     const arrayType = objType.pointee
-    if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+    // N, also of a packed *[NxM]T, whose rows are counted the same way
+    if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
       parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
     }
   }
@@ -1722,7 +1781,9 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const offset = elemSize === 1
     ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
     : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-  const loadVal = loadFromMemory(elemType, offset, ctx)
+  const loadVal = isRowIndex(indexExpr, ctx)
+    ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+    : loadFromMemory(elemType, offset, ctx)
 
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
@@ -1756,7 +1817,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Index expression: bounds check
-  if (expr.condition.kind === 'IndexExpr') {
+  if (expr.condition.kind === 'IndexExpr' && !holdsOptionals(expr.condition, ctx)) {
     const indexExpr = expr.condition
     const uid = scratchId(expr.span.start)
     const idxLocal = `__iflet_idx_${uid}`
@@ -1774,7 +1835,8 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       const arrayType = objType.pointee
-      if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+      // N, also of a packed *[NxM]T, whose rows are counted the same way
+      if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
         parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
       } else {
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
@@ -1789,7 +1851,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const offset = elemSize === 1
       ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
       : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-    const loadVal = loadFromMemory(elemType, offset, ctx)
+    const loadVal = isRowIndex(indexExpr, ctx)
+      ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+      : loadFromMemory(elemType, offset, ctx)
     const bindWat = makeBind(loadVal)
 
     if (elseBody) {

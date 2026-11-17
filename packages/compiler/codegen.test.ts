@@ -136,6 +136,10 @@ function modWat(code: string): string {
     throw new Error('Failed to parse module')
   }
   const checkResult = typecheck(module)
+  // A program the checker refuses has no meaning to compile.
+  if (checkResult.errors.length > 0) {
+    throw new Error(`Check error: ${checkResult.errors.map((e) => e.message).join('; ')}`)
+  }
   return moduleToWat(module, checkResult)
 }
 
@@ -1442,10 +1446,10 @@ describe('struct values in registers and on the stack', () => {
       }
       export func ptr(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8).ptr as u32 - space as u32
       export func len(n: u32) -> u32 => (((1 / n) as [*]u8, 3):[]u8).len
-      export func index(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8)[0] as u32
+      export func index(n: u32) -> u32 => (((space as [*]u8, 1 / n):[]u8)[0] ?? 0) as u32
       export func address(n: u32) -> u32 {
-        let p: *u8 = &((space as [*]u8, 1 / n):[]u8)[0]
-        return p.* as u32
+        if let p = &((space as [*]u8, 1 / n):[]u8)[0] { return p.* as u32 }
+        return 9
       }
     `
     const m = await run(code)
@@ -1466,7 +1470,7 @@ describe('struct values in registers and on the stack', () => {
       data space = mut [0:u8; 16]
       func pair() -> []i32 => ((space as [*]i32), 2:u32)
       func len() -> u32 => pair().len
-      func second() -> i32 => pair()[1]
+      func second() -> i32 => pair().ptr[1]
     `)
     expect(wat).toMatch(/\(block \(result i32\) \(call \$pair\) \(local\.set \$__len_\d+\) \(drop\) \(local\.get \$__len_\d+\)\)/)
     expect(wat).toContain('(i32.load (i32.add (block (result i32) (call $pair) (drop)) (i32.mul (i32.const 1) (i32.const 4))))')
@@ -1815,7 +1819,7 @@ describe('tables', () => {
       }
       export func range() -> i32 {
         let s = grid[1..]
-        return (s.len as i32) * 100 + s[0][2]
+        return (s.len as i32) * 100 + s.ptr[0][2]
       }
       export func copy() -> i32 {
         board[0..2] = grid[0..2]
@@ -1828,6 +1832,58 @@ describe('tables', () => {
     expect([addr(0), addr(1)]).toEqual([1, 4])
     expect(range()).toBe(105)
     expect(copy()).toBe(57)
+  })
+})
+
+describe('indexes not known to be in range', () => {
+  test('an optional element read at an unproven index is none when the index is out of range', async () => {
+    const code = `
+      data names: [][]u8 = ["Alice", "Bob", "Charlie"]
+      data numbers: *[2]i32 = [7, 8]
+      data cells: *mut [2]*i32 = mut [0, 0]
+      export func setup() {
+        cells[0] = numbers.ptr as *i32
+        cells[1] = (numbers.ptr + 4) as *i32
+      }
+      export func len(i: u32) -> u32 {
+        let n = names[i]
+        if let s = n { return s.len }
+        return 99
+      }
+      export func cell(i: u32) -> i32 {
+        let p = cells[i]
+        return if let q = p { q.* } else { -1 }
+      }
+    `
+    const { setup, len, cell } = await run(code)
+    setup()
+    expect([len(0), len(2), len(3), len(-1), len(1000000)]).toEqual([5, 7, 99, 99, 99])
+    expect([cell(0), cell(1), cell(2), cell(-1)]).toEqual([7, 8, -1, -1])
+    expect(modWat(code)).toContain('(if (result i32 i32) (i32.lt_u (local.get $i) (i32.const 3))')
+  })
+
+  test('the row of a packed *[NxM]T is checked against N by if let and ??', async () => {
+    const { row, cell } = await run(`
+      data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+      data zeros: *[3]i32 = [0, 0, 0]
+      export func row(i: u32) -> i32 => if let r = m[i] { r[0] * 10 + r[2] } else { -1 }
+      export func cell(i: u32) -> i32 => (m[i] ?? zeros)[1]
+    `)
+    expect([row(0), row(1), row(2), row(-1)]).toEqual([72, 35, -1, -1])
+    expect([cell(0), cell(1), cell(2)]).toEqual([1, 4, 0])
+  })
+
+  test('if let and ?? on an element that is an optional itself check the element too', async () => {
+    const { setup, bound, fallback } = await run(`
+      data one: *[1]i32 = [7]
+      data ps: *mut [2]?*i32 = mut [0, 0]
+      export func setup() { ps[0] = one.ptr as *i32 }
+      export func bound(i: u32) -> i32 => if let p = ps[i] { p.* } else { -1 }
+      export func fallback(i: u32) -> i32 => (ps[i] ?? one.ptr as *i32).* - 7
+    `)
+    setup()
+    expect([bound(0), bound(1), bound(2), bound(-1)]).toEqual([7, -1, -1, -1])
+    expect([fallback(0), fallback(1), fallback(2)]).toEqual([0, 0, 0])
   })
 })
 
@@ -1885,10 +1941,10 @@ describe('structs in data arrays', () => {
       export func elems() -> i32 => points[0].x * 1000 + points[0].y * 100 + points[1].x * 10 + points[1].y
       export func fields() -> u32 {
         let r = rows[0]
-        return r.s.len * 10000 + (r.s[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
+        return r.s.len * 10000 + (r.s.ptr[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
       }
-      export func whole() -> u32 => xs.len * 100 + (xs[2] as u32) * 10 + (k.* as u32)
-      export func nested() -> u32 => names.len * 100 + names[0].len * 10 + names[1].len
+      export func whole() -> u32 => xs.len * 100 + (xs.ptr[2] as u32) * 10 + (k.* as u32)
+      export func nested() -> u32 => names.len * 100 + names.ptr[0].len * 10 + names.ptr[1].len
     `)
     expect([elems(), fields(), whole(), nested()]).toEqual([1234, 35289, 365, 223])
   })
@@ -1956,12 +2012,12 @@ describe('structs in data arrays', () => {
       }
       export func local() -> u32 {
         let two: []Row = [((64, 3), 7), Row((0, 4), 8)]
-        return two[0].s.len * 1000 + (two[0].tag as u32) * 100 + two[1].s.len * 10 + (two[1].tag as u32)
+        return two.ptr[0].s.len * 1000 + (two.ptr[0].tag as u32) * 100 + two.ptr[1].s.len * 10 + (two.ptr[1].tag as u32)
       }
-      export func slices() -> u32 => (lists[0].ptr as u32) * 1000 + lists[0].len * 100 + lists[1].len * 10 + lists[2].len
+      export func slices() -> u32 => (lists.ptr[0].ptr as u32) * 1000 + lists.ptr[0].len * 100 + lists.ptr[1].len * 10 + lists.ptr[2].len
       export func mixed(p: [*]i32, n: u32) -> u32 {
         let three: [][]i32 = [(p, n), (64, 2), [7, 8, 9]]
-        return three[0].len * 100 + three[1].len * 10 + three[2].len
+        return three.ptr[0].len * 100 + three.ptr[1].len * 10 + three.ptr[2].len
       }
     `)
     expect([field(), local(), slices(), mixed(0, 5)]).toEqual([6434852, 3748, 64324, 523])
@@ -1977,7 +2033,7 @@ describe('structs in data arrays', () => {
         calls += 1
         return calls
       }
-      func sum(s: []i32) -> i32 => s[0] * 100 + s[1] * 10 + s[2]
+      func sum(s: []i32) -> i32 => s.ptr[0] * 100 + s.ptr[1] * 10 + s.ptr[2]
       func read(r: Row) -> i32 => r.v[0] * 1000 + r.v[1] * 100 + r.v[2] * 10 + r.tag
       export func field(n: i32) -> i32 {
         let rows: *[1]Row = [Row([n + 1; 3], 7)]
@@ -1989,7 +2045,7 @@ describe('structs in data arrays', () => {
       }
       export func slice(n: i32) -> i32 {
         let rows: []Named = [(([n; 3]), 7)]
-        return sum(rows[0].s) * 10 + rows[0].tag
+        return sum(rows.ptr[0].s) * 10 + rows.ptr[0].tag
       }
       export func whole(n: i32) -> i32 {
         let xs: *[3]i32 = [n + 1; 3]
@@ -2078,7 +2134,7 @@ describe('a slice from an array literal', () => {
       export func f() -> u32 {
         let signed: []i8 = "abc"
         let joined: []u8 = ["ab", "c"]
-        return take("abcd") + signed.len * 10 + joined.len * 100 + names[1].len * 1000 + names.len * 10000
+        return take("abcd") + signed.len * 10 + joined.len * 100 + names.ptr[1].len * 1000 + names.len * 10000
       }
     `
     // Every length the literals give is a whole number.
@@ -2114,7 +2170,7 @@ describe('a slice from a pointer and a length', () => {
       export func f() -> u32 {
         let nums: []i32 = ([1, 2, 3])
         let named = Named(("ab"), 1)
-        return take(("abcd")) + word.len * 10 + nums.len * 100 + (nums[2] as u32) * 1000 + named.name.len * 10000
+        return take(("abcd")) + word.len * 10 + nums.len * 100 + (nums.ptr[2] as u32) * 1000 + named.name.len * 10000
       }
       export func g(p: [*]u8, n: u32) -> u32 {
         let s: []u8 = ((p, n))
