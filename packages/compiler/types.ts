@@ -252,6 +252,15 @@ export function unwrapOptional(written: ResolvedType): ResolvedType {
   return type
 }
 
+// The array a pointer points to, seen through a name for it (2.11): *A for
+// A = [3]u16 points to a [3]u16, as *[3]u16 does. Null for anything else.
+export function pointeeArray(t: ResolvedType): ArrayRT | null {
+  const u = unwrap(t)
+  if (u.kind !== 'pointer') return null
+  const pointee = unwrap(u.pointee)
+  return pointee.kind === 'array' ? pointee : null
+}
+
 export function array(element: ResolvedType, sizes: ArraySize[] | null): ArrayRT {
   return { kind: 'array', element, sizes }
 }
@@ -303,11 +312,12 @@ export function isValueArray(t: ArrayRT): boolean {
 // null when the type isn't a table. *[NxM]T is one packed block, not a table.
 export function tableRow(t: ResolvedType): PointerRT | null {
   const u = unwrap(t)
+  const pointee = pointeeArray(u)
   let element: ResolvedType
   if (u.kind === 'slice') {
     element = u.element
-  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && (u.pointee.sizes === null || u.pointee.sizes.length === 1)) {
-    element = u.pointee.element
+  } else if (u.kind === 'pointer' && pointee && (pointee.sizes === null || pointee.sizes.length === 1)) {
+    element = pointee.element
   } else {
     return null
   }
@@ -604,9 +614,17 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   }
 }
 
+// A pointer to a name for an array, *A for A = [3]u16, as the pointer to the
+// array it names (2.11): the rules below read what a pointer points to.
+function pointingThroughName(t: ResolvedType): ResolvedType {
+  if (t.kind !== 'pointer' || (t.pointee.kind !== 'named' && t.pointee.kind !== 'forward_ref')) return t
+  const pointee = unwrap(t.pointee)
+  return pointee.kind === 'array' ? { ...t, pointee } : t
+}
+
 function assignResult(target: ResolvedType, source: ResolvedType): AssignResult {
-  const t = unwrap(target)
-  const s = unwrap(source)
+  const t = pointingThroughName(unwrap(target))
+  const s = pointingThroughName(unwrap(source))
 
   // Exact match (after unwrapping aliases)
   if (typeEquals(t, s)) return lossless(true)

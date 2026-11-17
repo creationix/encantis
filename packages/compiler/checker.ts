@@ -41,6 +41,7 @@ import {
   typeAssignable,
   unwrap,
   unwrapToCut,
+  pointeeArray,
   isFloat,
   isInteger,
   isSigned,
@@ -1777,9 +1778,9 @@ class CheckContext {
       const objType = this.exprTypes.get(expr.object)
         ?? (expr.object.kind === 'IdentExpr' ? typeOfSymbol(this.lookup(expr.object.name)) : undefined)
       if (objType) {
-        const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
-          : objType.kind === 'array' ? objType : null
-        if (arrType?.kind === 'array' && arrType.sizes) {
+        const own = unwrap(objType)
+        const arrType = pointeeArray(own) ?? (own.kind === 'array' ? own : null)
+        if (arrType?.sizes) {
           if (expr.member.name === 'len' && arrType.sizes.length === 1 && typeof arrType.sizes[0] === 'number') {
             return { kind: 'int', value: BigInt(arrType.sizes[0]) }
           }
@@ -1982,8 +1983,9 @@ class CheckContext {
   private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
-    if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      if (u.pointee.sizes === null && !allowManyPointer) {
+    const arr = pointeeArray(u)
+    if (arr) {
+      if (arr.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
       // A string literal gets its bytes in the data section when it's checked
@@ -2007,7 +2009,7 @@ class CheckContext {
     const srcType = this.exprTypes.get(srcExpr)
     if (!srcType) return
 
-    const arrType = srcType.kind === 'pointer' && srcType.pointee.kind === 'array' ? srcType.pointee : null
+    const arrType = pointeeArray(srcType)
     if (!arrType?.sizes || !arrType.sizes.every(s => typeof s === 'number')) return
 
     const totalCount = totalElements(arrType.sizes)
@@ -2631,11 +2633,12 @@ class CheckContext {
 
     // Check if all are pointers to fixed arrays with the same element type
     // e.g., *[8]u8, *[5]u8, *[3]u8 → unify to []u8 if sizes differ, keep *[N]u8 if same
-    if (types.every((t) => t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes?.length === 1 && typeof t.pointee.sizes[0] === 'number')) {
-      const ptrs = types as { kind: 'pointer'; pointee: ArrayRT }[]
-      const elemType = ptrs[0].pointee.element
-      if (ptrs.every((p) => typeEquals(p.pointee.element, elemType))) {
-        const sizes = ptrs.map((p) => p.pointee.sizes?.[0] as number)
+    // (a name for the array, *A for A = [3]u8, is the array).
+    const arrays = types.map((t) => pointeeArray(t))
+    if (arrays.every((a) => a?.sizes?.length === 1 && typeof a.sizes[0] === 'number')) {
+      const elemType = (arrays[0] as ArrayRT).element
+      if (arrays.every((a) => typeEquals((a as ArrayRT).element, elemType))) {
+        const sizes = arrays.map((a) => (a as ArrayRT).sizes?.[0] as number)
         if (sizes.every((s) => s === sizes[0])) {
           return this.concretize(types[0])
         }
@@ -3180,8 +3183,9 @@ class CheckContext {
       if (among) this.checkExpr(value, type)
       return
     }
+    const pointee = pointeeArray(t)
     const inner = t.kind === 'slice' ? t.element
-      : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
+      : pointee ? this.peelArraySize(pointee)
       : t.kind === 'array' ? this.peelArraySize(t)
       : type
     const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
@@ -4937,15 +4941,15 @@ class CheckContext {
     let elem: ResolvedType
     let mutable: boolean
     let size: number | null
+    const arr = pointeeArray(objType)
     if (objType.kind === 'slice') {
       elem = objType.element
       mutable = !!objType.mutable
       size = null
-    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' &&
-      objType.pointee.sizes?.length === 1 && typeof objType.pointee.sizes[0] === 'number') {
-      elem = objType.pointee.element
+    } else if (objType.kind === 'pointer' && arr?.sizes?.length === 1 && typeof arr.sizes[0] === 'number') {
+      elem = arr.element
       mutable = !!objType.mutable
-      size = objType.pointee.sizes[0]
+      size = arr.sizes[0]
     } else {
       return null
     }
@@ -6885,8 +6889,7 @@ function matchType(
     case 'IndexedType': {
       const element =
         u.kind === 'slice' || u.kind === 'array' ? u.element
-        : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
-        : null
+        : pointeeArray(u)?.element ?? null
       if (element) matchType(pattern.element, element, typeParams, bound, false, expand, expanding)
       return
     }

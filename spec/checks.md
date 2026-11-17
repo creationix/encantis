@@ -1151,6 +1151,89 @@ func f(a: i32) -> i32 {
 a row of *[2][3]i32 is laid out at compile time: its values must be constants
 ```
 
+A name for the array is the array (reference 2.11): with `type Grid = [2][3]i32`, a `*Grid` is a `*[2][3]i32`, a table, and a `*Row` is a `*[3]i32`. They compile to the module written without the names.
+
+<!-- spec:begin compile -->
+
+```ents
+type Row = [3]i32
+type Grid = [2]Row
+type Tab = *[2]Row
+
+data grid: *Grid = [[1, 2, 3], [4, 5, 6]]
+data tab: Tab = [[0, 1, 2], [3, 4, 5]]
+data spare: *mut Row = mut [0, 0, 0]
+data four: *[4]i32 = [7, 8, 9, 10]
+
+func at(g: *Grid, i: u32, j: u32) -> i32 => if let r = g[i] { r[j] ?? -1 } else { -2 }
+func total(g: *Grid) -> i32 {
+  let n = 0
+  for row in g {
+    for x in row { n += x }
+  }
+  return n
+}
+func second(g: *Grid) -> i32 => (&g[1]).*[0]
+func first(g: *Grid) -> i32 => if let r = g[1] { r[0] } else { 0 }
+func last(r: *Row) -> i32 => r[r.len - 1]
+func count(comptime T: type, s: []T) -> u32 => s.len
+func copy(r: *Row) -> i32 {
+  memcpy(spare, r, 12)
+  return spare[2]
+}
+func lengths(r: *Row) -> u32 {
+  let both = [r, four]
+  return both[0].len + both[1].len
+}
+func rows(t: Tab) -> u32 => t.len + t[1].len
+
+test "a pointer to a name for an array is a pointer to the array" {
+  assert at(grid, 1, 2) == 6
+  assert at(grid, 2, 0) == -2
+  assert total(grid) == 21
+  assert second(grid) == 4
+  assert first(grid) == 4
+  assert last(grid[1]) == 6
+  assert count(grid) == 2
+  assert count(grid[0]) == 3
+  assert copy(grid[1]) == 6
+  assert lengths(grid[0]) == 7
+  assert rows(tab) == 5
+  assert total(tab) == 15
+}
+```
+
+```ents same-wasm
+data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data tab: *[2][3]i32 = [[0, 1, 2], [3, 4, 5]]
+data spare: *mut [3]i32 = mut [0, 0, 0]
+data four: *[4]i32 = [7, 8, 9, 10]
+
+func at(g: *[2][3]i32, i: u32, j: u32) -> i32 => if let r = g[i] { r[j] ?? -1 } else { -2 }
+func total(g: *[2][3]i32) -> i32 {
+  let n = 0
+  for row in g {
+    for x in row { n += x }
+  }
+  return n
+}
+func second(g: *[2][3]i32) -> i32 => (&g[1]).*[0]
+func first(g: *[2][3]i32) -> i32 => if let r = g[1] { r[0] } else { 0 }
+func last(r: *[3]i32) -> i32 => r[r.len - 1]
+func count(comptime T: type, s: []T) -> u32 => s.len
+func copy(r: *[3]i32) -> i32 {
+  memcpy(spare, r, 12)
+  return spare[2]
+}
+func lengths(r: *[3]i32) -> u32 {
+  let both = [r, four]
+  return both[0].len + both[1].len
+}
+func rows(t: *[2][3]i32) -> u32 => t.len + t[1].len
+```
+
+<!-- spec:end -->
+
 ## Ranges
 
 `items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.

@@ -918,7 +918,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). A generic type applied is a name of the same kind (8.5).
 
 <!-- spec:begin compile -->
 
