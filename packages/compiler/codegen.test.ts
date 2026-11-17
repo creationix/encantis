@@ -1755,10 +1755,10 @@ describe('tables', () => {
   test('a row index is checked against N or the slice length, at a stride of 4', async () => {
     const { row, slice } = await run(`${TABLES}
       export func row(i: u32) -> i32 => if let r = grid[i] { r[0] * 10 + r[2] } else { -1 }
-      export func slice(i: u32) -> i32 => (rows[i] ?? grid[1])[1]
+      export func slice(i: u32) -> i32 => (rows[i] ?? cube[1][1])[1]
     `)
     expect([row(0), row(1), row(2), row(-1)]).toEqual([72, 35, -1, -1])
-    expect([slice(0), slice(2), slice(3)]).toEqual([1, 6, 4])
+    expect([slice(0), slice(2), slice(3)]).toEqual([1, 6, 8])
     expect(modWat(`${TABLES}\nexport func f(i: u32#2) -> u32 => grid[i] as u32`)).toMatch(/\(i32\.mul \(local\.get \$i\) \(i32\.const 4\)\)/)
   })
 
