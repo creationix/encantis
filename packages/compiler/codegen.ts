@@ -2925,6 +2925,11 @@ function collectLocals(
         ctx.locals.set('__slot_len', ['__slot_len'])
       }
     }
+    // A repeated value is compiled once per copy, with whatever scratch locals
+    // it needs.
+    if (expr.kind === 'RepeatExpr') {
+      visitExpr(expr.value)
+    }
     if (expr.kind === 'MatchExpr') {
       // Where the subject is kept when it's more than a plain read.
       const subjectType = checkResult.exprTypes.get(expr.subject)
