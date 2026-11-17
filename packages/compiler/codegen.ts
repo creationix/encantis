@@ -1942,7 +1942,7 @@ function arrayToWat(expr: AST.ArrayExpr, ctx: CodegenContext): string {
   return expr.elements.map(e => exprToWat(e, ctx)).join(' ')
 }
 
-function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
+function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: number; len: number }, ctx: CodegenContext): string {
   const type = lookupExprType(expr, ctx)
   if (!type) return ''
   // Get the element type to determine stride
@@ -1953,10 +1953,14 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
   const elemSize = byteSize(elemType) ?? 0
   if (elemSize === 0) return ''
 
+  // A repeat literal has its value in every slot, computed once per slot as
+  // it is for a repeat that is a value.
+  const elements = expr.kind === 'ArrayExpr' ? expr.elements
+    : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
   const parts: string[] = []
   const u = unwrap(elemType)
-  for (let i = 0; i < expr.elements.length; i++) {
-    const elem = expr.elements[i]
+  for (let i = 0; i < elements.length; i++) {
+    const elem = elements[i]
     if (isRuntimeExpr(elem)) {
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
@@ -1992,9 +1996,11 @@ function isRuntimeExpr(expr: AST.Expr): boolean {
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
-// that points at it): runtime when one of its elements is.
+// that points at it): runtime when one of its elements is, or the value it
+// repeats.
 function isRuntimeField(expr: AST.Expr): boolean {
   if (expr.kind === 'ArrayExpr') return expr.elements.some(isRuntimeField)
+  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value)
   return isRuntimeExpr(expr)
 }
 
@@ -2003,10 +2009,12 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
   const ref = ctx.literalRefs.get(id)
   if (ref) {
     const type = lookupExprType(expr, ctx)
+    // A value only known when the program runs is stored into every slot.
+    const stores = emitRuntimeSlots(expr, ref, ctx)
     if (type?.kind === 'slice') {
-      return literalSliceToWat(ref, type)
+      return `${stores}${literalSliceToWat(ref, type)}`
     }
-    return `(i32.const ${ref.ptr})`
+    return `${stores}(i32.const ${ref.ptr})`
   }
   // Value repeat literal: emit element N times
   const countVal = evalComptimeIndex(expr.count)

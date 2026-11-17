@@ -1713,6 +1713,58 @@ describe('structs in data arrays', () => {
     expect(corner(7)).toBe(5247)
   })
 
+  test('a repeat literal of a runtime value is stored when it is reached', async () => {
+    // [v; N] is data only when v is: these read back zeros.
+    const code = `
+      type Row = (v: [3]i32, tag: i32)
+      type Named = (s: []i32, tag: i32)
+      global calls: i32 = 0
+      func next() -> i32 {
+        calls += 1
+        return calls
+      }
+      func sum(s: []i32) -> i32 => s[0] * 100 + s[1] * 10 + s[2]
+      func read(r: Row) -> i32 => r.v[0] * 1000 + r.v[1] * 100 + r.v[2] * 10 + r.tag
+      export func field(n: i32) -> i32 {
+        let rows: *[1]Row = [Row([n + 1; 3], 7)]
+        return read(rows[0])
+      }
+      export func mutable(n: i32) -> i32 {
+        let rows: *mut [1]Row = mut [Row([n; 3], 7)]
+        return read(rows[0])
+      }
+      export func slice(n: i32) -> i32 {
+        let rows: []Named = [(([n; 3]), 7)]
+        return sum(rows[0].s) * 10 + rows[0].tag
+      }
+      export func whole(n: i32) -> i32 {
+        let xs: *[3]i32 = [n + 1; 3]
+        let last = xs[2]
+        let rows: *[2]Row = [Row([n; 3], n); 2]
+        let both = rows[1].v[2] * 100 + rows[1].tag * 10 + rows[0].tag
+        return sum([n; 3]) * 10000 + last * 1000 + both
+      }
+      export func each() -> i32 {
+        // The value is computed for every slot, as in a repeat that is a value.
+        let rows: *[1]Row = [Row([next(); 3], 0)]
+        let value: [3]i32 = [next(); 3]
+        return read(rows[0]) + value[0] * 100 + value[1] * 10 + value[2]
+      }
+      export func fixed() -> i32 {
+        let rows: *[1]Row = [Row([4; 3], 7)]
+        return read(rows[0])
+      }
+    `
+    const { field, mutable, slice, whole, each, fixed } = await run(code)
+    expect([field(1), mutable(2), slice(2), whole(2), each(), fixed()]).toEqual([2227, 2227, 2227, 2223222, 1230 + 456, 4447])
+    // A repeat of constants stays in the data section, with no stores.
+    expect(modWat(`
+      type Row = (v: [3]i32, tag: i32)
+      func fixed() -> *[1]Row => [Row([4; 3], 7)]
+      func zeros() -> []u8 => [0; 16]
+    `)).not.toContain('store')
+  })
+
   test("a runtime struct's literal fields take the fields' types", async () => {
     const { f } = await run(`
       type Mixed = (a: u64, b: u8, c: f32)
