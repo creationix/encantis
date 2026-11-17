@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, isValueArray, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type TupleRT } from './types'
+import { byteSize, isOptional, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -657,6 +657,9 @@ function buildElementBytes(
   const inner = ungroup(expr)
   if (inner !== expr) return buildElementBytes(inner, elementType, framings, builder)
 
+  // A slice written as its two parts, (ptr, len).
+  if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
+
   // A struct written out, as a tuple or a constructor: its fields one after
   // another, as they lie in memory. A field only known when the program runs
   // stays zero here.
@@ -673,6 +676,22 @@ function buildElementBytes(
   const size = byteSize(elementType)
   if (size !== null) return new Uint8Array(size)
   return new Uint8Array(8) // default: ptr + len for slice
+}
+
+// (ptr, len) where a slice is expected is that slice, built from its parts.
+function isSlicePair(expr: AST.Expr): expr is AST.TupleExpr {
+  return expr.kind === 'TupleExpr' && expr.elements.length === 2
+}
+
+// The eight bytes of a slice given as (ptr, len): the address, a number or a
+// literal that is laid out on its own, and the count of elements. A part only
+// known when the program runs stays zero here.
+function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Uint8Array {
+  const [ptr, len] = expr.elements.map((part) => part.value)
+  return concatBytes([
+    ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : new Uint8Array(4),
+    len ? buildElementBytes(len, primitive('u32'), [], builder) : new Uint8Array(4),
+  ])
 }
 
 // What the elements of an array literal are, for a target that is a slice or a
@@ -710,15 +729,22 @@ function serializeSeparate(
     ? { kind: 'array', element: elem.element, sizes: ['_'] }
     : elem as ArrayRT
   const childRefs: DataRef[] = []
+  // The elements given as (ptr, len): what they hold is what was written.
+  const pairs = new Set<DataRef>()
 
   for (const element of expr.elements) {
-    const elem = ungroup(element)
-    if (isSerializableExpr(elem)) {
-      const ref = serializeLiteral(elem, innerType, builder)
+    const child = ungroup(element)
+    if (isSerializableExpr(child)) {
+      const ref = serializeLiteral(child, innerType, builder)
       childRefs.push(ref)
-      if (refsMap && elem.span.start !== 0) {
-        refsMap.set(elem.span.start, ref)
+      if (refsMap && child.span.start !== 0) {
+        refsMap.set(child.span.start, ref)
       }
+    } else if (elem.kind === 'slice' && isSlicePair(child)) {
+      const words = new DataView(slicePairBytes(child, elem, builder).buffer)
+      const ref = { ptr: words.getUint32(0, true), len: words.getUint32(4, true) }
+      childRefs.push(ref)
+      pairs.add(ref)
     } else {
       childRefs.push({ ptr: 0, len: 0 })
     }
@@ -726,7 +752,9 @@ function serializeSeparate(
 
   const isSlice = elem.kind === 'slice' || targetType.sizes === null || (targetType.sizes.length === 0)
   // A (ptr, len) element holds its child's length in elements, not bytes.
-  const elementRefs = isSlice ? childRefs.map((ref) => ({ ptr: ref.ptr, len: literalLength(ref, innerType.element) })) : childRefs
+  const elementRefs = isSlice
+    ? childRefs.map((ref) => pairs.has(ref) ? ref : { ptr: ref.ptr, len: literalLength(ref, innerType.element) })
+    : childRefs
   const pointerBytes = encodePointerArray(elementRefs, getFramings(targetType.sizes), isSlice)
 
   const optional = isOptional(targetType.element)

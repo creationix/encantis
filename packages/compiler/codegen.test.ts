@@ -1713,6 +1713,33 @@ describe('structs in data arrays', () => {
     expect(corner(7)).toBe(5247)
   })
 
+  test('a slice given as (ptr, len) is laid out as that pointer and length', async () => {
+    // A pair of constants is data, like any tuple of constants: it read back
+    // as (0, 0), in a struct and as an element of an array of slices.
+    const { field, local, slices, mixed } = await run(`
+      type Row = (s: []i32, tag: u8)
+      type Outer = (row: Row, name: ?[]u8)
+      data rows: *[2]Row = [((64, 3), 7), Row((0, 4), 8)]
+      data outer: Outer = (((128, 5), 6), ("abc", 2))
+      data lists: [][]i32 = [(64, 3), [1, 2], ((128, 4))]
+      export func field() -> u32 {
+        let name = outer.name ?? "?"
+        let both = (rows[0].s.ptr as u32) * 100000 + rows[0].s.len * 10000 + rows[1].s.len * 1000 + (rows[1].tag as u32) * 100
+        return both + outer.row.s.len * 10 + name.len
+      }
+      export func local() -> u32 {
+        let two: []Row = [((64, 3), 7), Row((0, 4), 8)]
+        return two[0].s.len * 1000 + (two[0].tag as u32) * 100 + two[1].s.len * 10 + (two[1].tag as u32)
+      }
+      export func slices() -> u32 => (lists[0].ptr as u32) * 1000 + lists[0].len * 100 + lists[1].len * 10 + lists[2].len
+      export func mixed(p: [*]i32, n: u32) -> u32 {
+        let three: [][]i32 = [(p, n), (64, 2), [7, 8, 9]]
+        return three[0].len * 100 + three[1].len * 10 + three[2].len
+      }
+    `)
+    expect([field(), local(), slices(), mixed(0, 5)]).toEqual([6434852, 3748, 64324, 523])
+  })
+
   test('a repeat literal of a runtime value is stored when it is reached', async () => {
     // [v; N] is data only when v is: these read back zeros.
     const code = `

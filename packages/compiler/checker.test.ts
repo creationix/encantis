@@ -1363,6 +1363,17 @@ describe('a slice from a pointer and a length', () => {
     ])
   })
 
+  test('an element of an array of slices is checked as a slice too', () => {
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    expect(errs('data lists: [][]i32 = [(64, 3), [1, 2], ((0, 0))]')).toEqual([])
+    expect(errs('data lists: [][]i32 = [(1.5, 2.5)]')).toEqual([
+      'slice pointer: cannot assign float(1.5) to [*]i32',
+      'slice length: cannot assign float(2.5) to u32',
+    ])
+    expect(errs('data lists: [][]i32 = [(0, 3, 4)]')).toEqual(['cannot assign (int(0), int(3), int(4)) to []i32'])
+    expect(errs('func f(n: u64) { let lists: [][]u8 = [("ab", n)] }')).toEqual(['slice length: cannot assign u64 to u32'])
+  })
+
   test('(x) is x: a slice, a string, an array literal or a pair in parentheses is that slice', () => {
     const result = checkModule(`
       global g: []u8 = ("abc")

@@ -2317,11 +2317,13 @@ class CheckContext {
           : null
         if (innerType) {
           // A tuple that is a struct element is checked field by field, like
-          // any struct value: its literals take their fields' types.
-          const structElements = unwrap(innerType).kind === 'tuple'
+          // any struct value: its literals take their fields' types. One that
+          // is a slice element is its (ptr, len), checked as any slice value.
+          const inner = unwrap(innerType).kind
           const counted = expected.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            if (this.isDataLiteralExpr(elem) && !(structElements && elem.kind === 'TupleExpr')) {
+            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
+            if (this.isDataLiteralExpr(elem) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
