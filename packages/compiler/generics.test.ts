@@ -5326,7 +5326,9 @@ describe('examples/generics', () => {
       }
       return source
     }
-    const methods = edit(await Bun.file(join(dir, 'methods.ents')).text(), [
+    // The edits are written with \n: a checkout on Windows has \r\n.
+    const text = async (name: string) => (await Bun.file(join(dir, name)).text()).replaceAll('\r\n', '\n')
+    const methods = edit(await text('methods.ents'), [
       ['  let made = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n  v.*.ptr = made.ptr\n  v.*.len = made.len\n  v.*.cap = made.cap\n',
         '  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)\n'],
       ['.*.', '.'],
@@ -5336,7 +5338,7 @@ describe('examples/generics', () => {
     ])
     expect(methods).not.toContain('.*.')
     expect((await runTestsOfSource(methods)).failed).toEqual([])
-    const set = edit(await Bun.file(join(dir, 'set.ents')).text(), [
+    const set = edit(await text('set.ents'), [
       ['(used: u32, hash: u32, key: K)', '(used: bool, hash: u32, key: K)'],
       ['  s.*.slots = p as [*]mut Slot(K)\n  s.*.mask = size - 1\n  s.*.count = 0\n', '  s.* = Set(K)(p as [*]mut Slot(K), size - 1, 0)\n'],
       ['  s.*.slots[i].used = 1\n  s.*.slots[i].hash = h\n  s.*.slots[i].key = k\n', '  s.*.slots[i] = (true, h, k)\n'],
