@@ -1459,6 +1459,8 @@ func parts(n: i32) -> f64 {
 
 Any other value is already on the stack, and each field has to be held the way its variable is: `set (wide, ratio) = pair()`, where `pair` returns `(i32, f32)`, is an error (`cannot set 'wide' (i64) from a field of type i32`).
 
+`=`, a compound assignment and `set` assign to variables: locals, parameters, named results and globals. A `def`, a `data` block and a function are not variables, and naming one is an error (`cannot assign to 'buf': it is not a variable`, `cannot set 'buf': it is not a variable`).
+
 #### Compound Assignment
 
 Compound assignment combines an operation with assignment. Works with any valid lvalue:

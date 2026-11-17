@@ -2061,6 +2061,14 @@ class CheckContext {
           this.checkRangeAssignment(stmt.target, stmt.op, stmt.value)
           break
         }
+        // Only a variable holds a value that can be replaced: a def or a
+        // data block is a constant, and a function is code.
+        const named = stmt.target.kind === 'IdentExpr' ? this.lookup(stmt.target.name) : undefined
+        if (stmt.target.kind === 'IdentExpr' && named && !isVariable(named)) {
+          this.error(stmt.target.span.start, `cannot assign to '${declaredName(stmt.target.name)}': it is not a variable`)
+          this.inferExpr(stmt.value)
+          break
+        }
         let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
@@ -2268,7 +2276,7 @@ class CheckContext {
   private setTarget(pattern: AST.Pattern, value: AST.Expr | null): ResolvedType | null {
     if (pattern.kind === 'IdentPattern') {
       const sym = this.lookup(pattern.name)
-      if (!sym || sym.kind === 'func' || sym.kind === 'type' || sym.kind === 'generic' || sym.kind === 'typefunc') return null
+      if (!sym || !isVariable(sym)) return null
       return sym.type
     }
     const literal = value ? ungrouped(value) : null
@@ -2304,6 +2312,8 @@ class CheckContext {
         const sym = this.lookup(pattern.name)
         if (!sym) {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
+        } else if (!isVariable(sym)) {
+          this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': it is not a variable`)
         }
         break
       }
@@ -2317,7 +2327,7 @@ class CheckContext {
         // to be held the way the variable is: nothing widens it on the way.
         const fits = (varName: string, fieldType: ResolvedType | undefined) => {
           const sym = this.lookup(varName)
-          if (!sym || !fieldType || sym.kind === 'func' || sym.kind === 'type' || sym.kind === 'generic' || sym.kind === 'typefunc') return
+          if (!sym || !fieldType || !isVariable(sym)) return
           if (!typeAssignable(sym.type, fieldType) || !sameRepresentation(fieldType, sym.type)) {
             this.error(pattern.span.start, `cannot set '${varName}' (${typeToString(sym.type)}) from a field of type ${typeToString(fieldType)}`)
           }
@@ -2328,6 +2338,8 @@ class CheckContext {
             const sym = this.lookup(varName)
             if (!sym) {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
+            } else if (!isVariable(sym)) {
+              this.error(pattern.span.start, `cannot set '${declaredName(varName)}': it is not a variable`)
             }
             fits(varName, unwrappedType.fields.find(f => f.name === element.field)?.type)
           } else {
@@ -7249,6 +7261,11 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   if (expr.kind === 'GroupExpr') return expr.expr
   if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
   return null
+}
+
+// A name that holds a value in registers, which `=` and `set` can replace.
+function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'param' | 'return' | 'global' }> {
+  return sym.kind === 'local' || sym.kind === 'param' || sym.kind === 'return' || sym.kind === 'global'
 }
 
 // `expr` without the parentheses around it, however many there are.

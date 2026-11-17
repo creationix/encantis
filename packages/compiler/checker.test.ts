@@ -3062,6 +3062,47 @@ describe('a name declared twice at the top of a module', () => {
   })
 })
 
+describe('only a variable is assigned', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('by = or by set: a def, a data block or a function is not one', () => {
+    expect(errs(`
+      func f() -> i32 => 1
+      def k = 3
+      data d = [1:u8]
+      data e = [2:u8]
+      func a() {
+        d = e
+        k += 1
+        f = 5
+      }
+      func b(p: i32) {
+        set d = e
+        set (p, k) = (1, 2)
+        set (x: p, y: f) = (x: 1, y: 2)
+      }
+    `)).toEqual([
+      "cannot assign to 'd': it is not a variable",
+      "cannot assign to 'k': it is not a variable",
+      "cannot assign to 'f': it is not a variable",
+      "cannot set 'd': it is not a variable",
+      "cannot set 'k': it is not a variable",
+      "cannot set 'f': it is not a variable",
+    ])
+    // Locals, params, named results and globals are.
+    expect(errs(`
+      global g: i32 = 0
+      func a(p: i32) -> (q: i32) {
+        let v = 0
+        set (g, p, v) = (1, 2, 3)
+        set q = g + p + v
+        g = 4
+        p += 1
+      }
+    `)).toEqual([])
+  })
+})
+
 describe('a function named where a value is', () => {
   const errs = (src: string) => checkModule(src).errors.map(e => e.message)
   const none = "'f' is a function, which has no run-time value yet"
