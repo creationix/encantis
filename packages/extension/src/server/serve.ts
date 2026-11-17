@@ -23,7 +23,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import { buildMeta, type MetaError, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
@@ -271,35 +271,46 @@ export function startServer(connection: Connection): void {
       return m ? m[0].length : Math.max(1, rest.match(/^\S+/)?.[0]?.length ?? 1);
     };
 
+    const rangeAt = (pos: string) => {
+      const [line, col] = pos.split(':').map(Number);
+      return {
+        start: { line, character: col },
+        end: { line, character: col + tokenLen(line, col) },
+      };
+    };
+    // An error inside an instance of a generic is shown with the calls that
+    // asked for the instance.
+    const related = (notes: MetaError['notes']) =>
+      notes && notes.length > 0
+        ? {
+            relatedInformation: notes.map(note => ({
+              location: { uri: textDocument.uri, range: rangeAt(note.pos) },
+              message: note.message,
+            })),
+          }
+        : {};
+
     if (meta.errors) {
       for (const error of meta.errors) {
-        const [line, col] = error.pos.split(':').map(Number);
-        const len = tokenLen(line, col);
         diagnostics.push({
           severity: DiagnosticSeverity.Error,
-          range: {
-            start: { line, character: col },
-            end: { line, character: col + len },
-          },
+          range: rangeAt(error.pos),
           message: error.message,
           source: 'encantis',
+          ...related(error.notes),
         });
       }
     }
     if (meta.warnings) {
       for (const warning of meta.warnings) {
-        const [line, col] = warning.pos.split(':').map(Number);
-        const len = tokenLen(line, col);
         const isUnused = warning.message.includes('is never used');
         diagnostics.push({
           severity: DiagnosticSeverity.Warning,
-          range: {
-            start: { line, character: col },
-            end: { line, character: col + len },
-          },
+          range: rangeAt(warning.pos),
           message: warning.message,
           source: 'encantis',
           ...(isUnused ? { tags: [DiagnosticTag.Unnecessary] } : {}),
+          ...related(warning.notes),
         });
       }
     }

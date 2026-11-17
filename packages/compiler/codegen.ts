@@ -1955,7 +1955,7 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
   const u = unwrap(elemType)
   for (let i = 0; i < expr.elements.length; i++) {
     const elem = expr.elements[i]
-    if (isRuntimeExpr(elem)) {
+    if (isRuntimeExpr(elem, ctx.calls)) {
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
@@ -1974,26 +1974,29 @@ function emitRuntimeSlots(expr: AST.ArrayExpr, ref: { ptr: number; len: number }
   return parts.length > 0 ? parts.join('\n') + '\n' : ''
 }
 
-function isRuntimeExpr(expr: AST.Expr): boolean {
+function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
   if (expr.kind === 'LiteralExpr') return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
-  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr)
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, calls)
+  // A type that is called, Vec(u32)(p, 0, cap), is the struct of its arguments.
+  const built = expr.kind === 'CallExpr' ? calls.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, calls)
   // A struct written out from literals, as a tuple or a constructor, is data
   // too; one runtime field makes the whole struct runtime. A type's name is
   // the identifier that starts with a capital letter.
   const fields = expr.kind === 'TupleExpr' ? expr.elements
     : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
     : null
-  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value))
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, calls))
   return true
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
 // that points at it): runtime when one of its elements is.
-function isRuntimeField(expr: AST.Expr): boolean {
-  if (expr.kind === 'ArrayExpr') return expr.elements.some(isRuntimeField)
-  return isRuntimeExpr(expr)
+function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
+  if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
+  return isRuntimeExpr(expr, calls)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -2897,7 +2900,7 @@ function collectLocals(
       for (const elem of expr.elements) {
         // Any runtime slice element that doesn't split into (ptr, len) parts
         // (a call, a ?? fallback, ...) goes through the scratch local.
-        if (isRuntimeExpr(elem)) needsSlotLocal = true
+        if (isRuntimeExpr(elem, checkResult.calls)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -2991,7 +2994,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types)
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
 
@@ -3445,13 +3448,15 @@ export function programToWat(
   const nameMap = new Map<string, string>()
   const allLiterals: import('./checker').PendingLiteral[] = []
   const allTypes = new Map<string, import('./types').ResolvedType>()
+  const allCalls: TypeCheckResult['calls'] = new Map()
 
   // Collect all literals and types for a unified data section
   for (const [path, result] of checkResults) {
     allLiterals.push(...result.literals)
     for (const [k, v] of result.types) allTypes.set(k, v)
+    for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes)
+  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
   for (const [, loaded] of modules) {
     const result = checkResults.get(loaded.path)
     if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)

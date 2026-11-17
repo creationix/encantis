@@ -265,6 +265,18 @@ export function documentSymbols(
           exported: false,
         })
         break
+      case 'TypeFuncDecl': {
+        const sym = checkResult.symbols.get(decl.ident)
+        symbols.push({
+          name: decl.ident,
+          kind: 'type',
+          type: sym ? symbolTypeString(sym, source) : '',
+          offset: decl.span.start,
+          length: decl.ident.length,
+          exported: false,
+        })
+        break
+      }
       case 'DataDecl':
       case 'DefDecl': {
         const sym = checkResult.symbols.get(decl.ident)
@@ -298,6 +310,16 @@ export function documentSymbols(
           symbols.push({
             name: item.ident,
             kind: 'func',
+            type: sym ? symbolTypeString(sym, source) : '',
+            offset: item.span.start,
+            length: item.ident.length,
+            exported: true,
+          })
+        } else if (item.kind === 'TypeFuncDecl') {
+          const sym = checkResult.symbols.get(item.ident)
+          symbols.push({
+            name: item.ident,
+            kind: 'type',
             type: sym ? symbolTypeString(sym, source) : '',
             offset: item.span.start,
             length: item.ident.length,
@@ -411,8 +433,9 @@ function symbolTypeString(sym: CheckSymbol, source?: string): string {
   }
   // A generic type is a type once it is applied: until then, its declaration.
   if (sym.kind === 'typefunc') {
-    const { decl } = sym
-    return source ? `generic type ${decl.ident}${source.slice(decl.params[0]?.span.start ?? decl.body.span.start, decl.body.span.end)}` : 'generic type'
+    const { start, end } = sym.decl.span
+    const params = source ? source.indexOf('(', start) : -1
+    return params >= 0 && params < end ? `generic type${source?.slice(params, end)}` : 'generic type'
   }
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
