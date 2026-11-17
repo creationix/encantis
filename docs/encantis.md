@@ -1619,6 +1619,39 @@ if let data = entry.dynamic {
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
 
+<!-- spec:begin compile -->
+
+The binding is a variable of its own, seen in the first branch only. It can have the name of a variable outside, of any type, which it hides there and leaves as it was:
+
+```ents
+data cells = [7:u32, 8, 9]
+
+func pick(i: u32) -> u32 {
+  let v: u32 = 5
+  let seen: u32 = 0
+  if let v = cells[i] {
+    seen = v
+  }
+  return v * 100 + seen          // v is 5 again
+}
+
+func scaled(p: ?*u32) -> f64 {
+  let v: f64 = 0.5
+  if let v = p {
+    return v.* as f64
+  }
+  return v
+}
+
+test "an if let binding hides a variable of its name in its branch" {
+  assert pick(1) == 508
+  assert pick(7) == 500
+  assert scaled(0) == 0.5
+}
+```
+
+<!-- spec:end -->
+
 It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
 
 ```ents

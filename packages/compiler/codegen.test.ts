@@ -2862,3 +2862,87 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(errs).toEqual(["'x' has no address: a variable is held in registers", "'p' has no address: a variable is held in registers"])
   })
 })
+
+describe('the wasm names of variables', () => {
+  test('a part of a variable is never another variable', async () => {
+    const x = await run(`
+      type P = (x: i32, y: i32)
+      global g: P = P(1, 2)
+      global g_x: f64 = 2.5
+      export func local() -> f64 {
+        let a_x: f64 = 2.5
+        let a = P(1, 2)
+        return a_x + (a.x as f64)
+      }
+      export func param(s: []u8) -> u32 {
+        let s_ptr = s.ptr
+        s_ptr += 1
+        return (s_ptr as u32) - (s.ptr as u32)
+      }
+      export func field(r: P) -> i32 {
+        let r_y: i32 = 40
+        return r.y + r_y
+      }
+      export func both() -> f64 {
+        g.x += 1
+        return g_x + (g.x as f64)
+      }
+    `)
+    expect(x.local()).toBe(3.5)
+    expect(x.param(0, 3)).toBe(1)
+    expect(x.field(1, 2)).toBe(42)
+    expect(x.both()).toBe(4.5)
+  })
+
+  test('a name goes to the first variable that asks, and another gets it with a prefix', () => {
+    const wat = modWat(`
+      type P = (x: i32, y: i32)
+      global g: P = P(1, 2)
+      global g_x: f64 = 2.5
+      export func f(a_x: f64) -> f64 {
+        let a = P(1, 2)
+        return a_x + (a.x as f64) + g_x
+      }
+    `)
+    expect(wat).toContain('(func $f (param $a_x f64) (result f64)')
+    // All the parts of the variable that asked later, so they read as one.
+    expect(wat).toContain('(local $_1_a_x i32)\n    (local $_1_a_y i32)')
+    expect(wat).toContain('(global $g_x (mut i32) (i32.const 1))')
+    expect(wat).toContain('(global $_1_g_x (mut f64) (f64.const 2.5))')
+  })
+
+  test('an if let binding is a variable of its own, whatever its type', async () => {
+    const x = await run(`
+      data cells = [7:u32, 8, 9]
+      export func other_type(p: ?*u32) -> u32 {
+        let q: f64 = 1.5
+        if let q = p {
+          return q.*
+        }
+        return q as u32
+      }
+      export func same_type(i: u32) -> u32 {
+        let q: u32 = 5
+        let t: u32 = 0
+        if let q = cells[i] {
+          t = q
+        }
+        return q * 100 + t
+      }
+      export func nested(i: u32, j: u32) -> u32 {
+        if let v = cells[i] {
+          if let v = cells[j] {
+            return v
+          }
+          return v + 1000
+        }
+        return 0
+      }
+    `)
+    expect(x.other_type(0)).toBe(1)
+    expect(x.same_type(1)).toBe(508)
+    expect(x.same_type(7)).toBe(500)
+    expect(x.nested(0, 9)).toBe(1007)
+    expect(x.nested(0, 2)).toBe(9)
+  })
+})
