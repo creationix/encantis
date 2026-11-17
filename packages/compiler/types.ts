@@ -1332,6 +1332,14 @@ export function byteSize(t: ResolvedType): number | null {
   }
 }
 
+// The length of the array a pointer points to, where that is known: what a
+// pointer to an array adds to become a slice
+export function arrayLength(type: ResolvedType): number | null {
+  const t = unwrap(type)
+  const array = t.kind === 'pointer' ? unwrap(t.pointee) : null
+  return array?.kind === 'array' && isFixedSizes(array.sizes) ? totalElements(array.sizes) : null
+}
+
 // === Size of a type written out ===
 
 // The most parts a type can have, written out in full: every name replaced by

@@ -773,6 +773,66 @@ cannot assign (int(1), int(2), int(3)) to []i32
 cannot assign () to []i32
 ```
 
+## Slices from a pointer to an array
+
+A `*[N]T` is a `[]T` of length `N` wherever it meets one: an argument, an initializer, an assignment, a returned value, an expression body, a branch, a field of a struct or tuple literal, and under a name for the slice type.
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+type S = []u8
+type Holder = (s: []u8, n: u32)
+
+global g: []u8 = text
+
+func ret() -> []u8 { return text }
+func arrow() -> []u8 => text
+func pick(c: bool) -> []u8 => if c { text } else { more }
+func arm(k: u32) -> []u8 => match k { 0 => text, _ => more }
+func built() -> Holder => Holder(text, 1)
+func literal() -> Holder => (s: more, n: 2)
+func pair() -> ([]u8, u32) => (text, 3)
+func named() -> u32 {
+  let s: S = "abcd"
+  s = more
+  return s.len
+}
+
+test "each has the length of its array" {
+  assert g.len == 3
+  assert ret().len == 3
+  assert arrow().len == 3
+  assert pick(false).len == 5
+  assert arm(0).len == 3
+  assert built().s.len == 3
+  assert literal().s.len == 5
+  let (p, n) = pair()
+  assert p.len == 3
+  assert named() == 5
+}
+```
+
+<!-- spec:end -->
+
+A struct or tuple that is already a value holds a pointer, one wasm value where the slice is two: it is converted field by field, as a literal.
+
+```ents
+data text = "abc"
+type Holder = (s: []u8, n: u32)
+
+func f() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h: Holder = t
+  return h.s.len
+}
+```
+
+```errors
+cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.

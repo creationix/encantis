@@ -33,6 +33,7 @@ import {
   typeToString,
   typeEquals,
   canonicalKey,
+  arrayLength,
   typeParts,
   MAX_TYPE_PARTS,
   watSafe,
@@ -4336,6 +4337,10 @@ class CheckContext {
         this.exprTypes.set(expr, actual)
         this.coercions.set(expr, expected)
       }
+    } else if (to.kind === 'slice' && arrayLength(from) !== null) {
+      // A pointer to an array is a slice of its length, wherever it meets
+      // one: an argument, an initializer, a returned value, a branch, a field.
+      this.coercions.set(expr, expected)
     } else if (grouped && from.kind === 'tuple' && to.kind === 'tuple') {
       // (e) is e: a tuple in parentheses is converted as it is without them.
       this.coerce(grouped, actual, expected, prefix)
@@ -7214,6 +7219,8 @@ function representation(t: ResolvedType & { kind: 'primitive' }): string {
 function sameRepresentation(from: ResolvedType, to: ResolvedType): boolean {
   const a = unwrap(from)
   const b = unwrap(to)
+  // A slice is two values, a pointer to an array one
+  if ((a.kind === 'slice') !== (b.kind === 'slice')) return false
   if (a.kind === 'primitive' && b.kind === 'primitive') return representation(a) === representation(b)
   if (a.kind === 'tuple' && b.kind === 'tuple') {
     return a.fields.every((f, i) => b.fields[i] !== undefined && sameRepresentation(f.type, b.fields[i].type))

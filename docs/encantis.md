@@ -205,7 +205,7 @@ data count = mut 5:i32              // count: *mut i32 (mutable)
 data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 ```
 
-`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` at call sites.
+`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5).
 
 The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
 
@@ -472,7 +472,7 @@ data key = x"9d61b19deffd5a60"          // key: *[8]u8 (const)
 data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, unique)
 ```
 
-The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` at call sites.
+The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` wherever one is expected (9.5).
 
 ### 2.7 Tuple Types
 
@@ -999,7 +999,7 @@ data origin = (0.0, 0.0)            // origin: *(f64, f64)
 data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
 ```
 
-The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:
+The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5). Annotate the LHS to force a specific type:
 
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
@@ -2938,6 +2938,8 @@ let slice:[]u8 = (ptr, 64)     // OK: provide length
 let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
+
+`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is converted field by field.
 
 ### 9.6 Structs and Slices in Memory
 
