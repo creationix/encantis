@@ -891,6 +891,43 @@ Casts are required for:
 
 A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
 
+### 2.11 Limits
+
+A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied; the types made of it say nothing more.
+
+<!-- spec:begin compile -->
+
+```ents
+type D0 = u8
+type D1 = (a: D0, b: D0)
+type D2 = (a: D1, b: D1)
+type D3 = (a: D2, b: D2)
+type D4 = (a: D3, b: D3)
+type D5 = (a: D4, b: D4)
+type D6 = (a: D5, b: D5)
+type D7 = (a: D6, b: D6)
+type D8 = (a: D7, b: D7)
+type D9 = (a: D8, b: D8)
+type D10 = (a: D9, b: D9)
+type D11 = (a: D10, b: D10)
+type D12 = (a: D11, b: D11)
+type D13 = (a: D12, b: D12)
+type D14 = (a: D13, b: D13)
+type D15 = (a: D14, b: D14)
+type D16 = (a: D15, b: D15)
+type D17 = (a: D16, b: D16)
+
+func f(p: *D17) -> u8 => p.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a
+```
+
+```errors
+type 'D16' is too large: written out in full it has more than 65536 parts
+```
+
+<!-- spec:end -->
+
+Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 256 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 256 deep`, before it is parsed.
+
 ---
 
 ## 3. Declarations

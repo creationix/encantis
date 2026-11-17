@@ -33,6 +33,8 @@ import {
   typeToString,
   typeEquals,
   canonicalKey,
+  typeParts,
+  MAX_TYPE_PARTS,
   watSafe,
   comptimeIntFits,
   typeAssignable,
@@ -416,7 +418,21 @@ export function concretizeType(
   t: ResolvedType,
   options: TypecheckOptions = DEFAULT_OPTIONS,
 ): ResolvedType {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
+  return concretizeParts(t, { ...DEFAULT_OPTIONS, ...options }, new Map())
+}
+
+// concretizeType, once for each part of a type: a part that the type holds in
+// several places is made once, so a type that names a type many times is
+// made in a time of its own size (see typeParts).
+function concretizeParts(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>): ResolvedType {
+  const known = made.get(t)
+  if (known) return known
+  const result = concretizeOnce(t, opts, made)
+  made.set(t, result)
+  return result
+}
+
+function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>): ResolvedType {
   // A type that refers to itself is concrete where it refers to itself.
   const u = unwrapToCut(t)
 
@@ -442,7 +458,7 @@ export function concretizeType(
     case 'comptime_list': {
       // Comptime lists become *[_]T with concretized element type (pointer to inferred-size array)
       const elemType = u.elements.length > 0
-        ? concretizeType(u.elements[0], opts)
+        ? concretizeParts(u.elements[0], opts, made)
         : primitive(opts.defaultInt)
       return pointer(array(elemType, ['_']))
     }
@@ -452,16 +468,16 @@ export function concretizeType(
         ...u,
         fields: u.fields.map((f) => ({
           ...f,
-          type: concretizeType(f.type, opts),
+          type: concretizeParts(f.type, opts, made),
         })),
       }
 
     case 'slice':
-      return slice(concretizeType(u.element, opts), u.mutable, u.optional)
+      return slice(concretizeParts(u.element, opts, made), u.mutable, u.optional)
 
     case 'array': {
       // Concretize element type
-      const elemType = concretizeType(u.element, opts)
+      const elemType = concretizeParts(u.element, opts, made)
       // Comptime arrays [_]T stay as [_]T after concretization
       return array(elemType, u.sizes)
     }
@@ -469,7 +485,7 @@ export function concretizeType(
     case 'pointer':
       return {
         ...u,
-        pointee: concretizeType(u.pointee, opts),
+        pointee: concretizeParts(u.pointee, opts, made),
       }
 
     case 'func':
@@ -477,18 +493,18 @@ export function concretizeType(
         ...u,
         params: u.params.map((p) => ({
           ...p,
-          type: concretizeType(p.type, opts),
+          type: concretizeParts(p.type, opts, made),
         })),
         returns: u.returns.map((r) => ({
           ...r,
-          type: concretizeType(r.type, opts),
+          type: concretizeParts(r.type, opts, made),
         })),
       }
 
     case 'named':
       return {
         ...u,
-        type: concretizeType(u.type, opts),
+        type: concretizeParts(u.type, opts, made),
       }
 
     default:
@@ -647,6 +663,10 @@ class CheckContext {
   // The forward references made to each of them, which get their target
   // when it is defined
   forwardRefs = new Map<string, ForwardRefRT[]>()
+  // Where each `type` of the module is declared, in the order they are
+  typeDeclaredAt = new Map<string, number>()
+  // The types too large to write out, as they were declared (see limitTypeParts)
+  tooLargeTypes = new Map<string, ResolvedType>()
   // What each `type` of the module is declared as, as written: whether a
   // name stands for a function type is asked before any type is resolved.
   typeBodies = new Map<string, AST.Type>()
@@ -695,6 +715,9 @@ class CheckContext {
   applyDepth = 0
   // Set where that depth ran out, until the application that began it reports it
   applyTooDeep = false
+  // Set where an application inside another's body made a type too large to
+  // write out (MAX_TYPE_PARTS), until the application that began it reports it
+  applyTooLarge = false
   // What an inferred call found for its type parameters, or null when it
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
@@ -749,6 +772,7 @@ class CheckContext {
     for (const decl of module.decls) {
       if (decl.kind === 'TypeDecl') this.collectDeclaration(decl)
     }
+    this.reportTooLargeTypes()
     for (const decl of module.decls) {
       if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
     }
@@ -1051,11 +1075,46 @@ class CheckContext {
     this.moduleScope.symbols.set(name, { kind: 'type', type: resolved, unique })
     this.typeCache.set(name, resolved)
     this.recordDefinition(name, decl.ident.span.start)
+    this.typeDeclaredAt.set(name, decl.span.start)
     // Remove from pending since it's now defined
     this.pendingTypeNames.delete(name)
     // What named it before is now that type, also inside its own body
     for (const ref of refs) ref.target = resolved === RECOVERY ? RECOVERY : named(name, resolved)
-    this.forwardRefs.delete(name)
+    // Those it completes may have grown with it.
+    this.limitTypeParts(refs.length > 0 ? [...this.typeDeclaredAt.keys()] : [name])
+  }
+
+  // A type too large to write out (MAX_TYPE_PARTS) is the recovery type from
+  // the moment it is, also where it was named before it was declared, so that
+  // nothing writes it out. Some of a type can still be to come: what it is
+  // made of so far is counted, and if that is too much the whole is. A type
+  // made of one too large is too large.
+  private limitTypeParts(names: string[]): void {
+    const counted = new Map<ResolvedType, number>()
+    const over = names.filter((name) => {
+      const sym = this.moduleScope.symbols.get(name)
+      if (sym?.kind !== 'type' || sym.type === RECOVERY) return false
+      return typeNamesIn(sym.type).some((part) => this.tooLargeTypes.has(part)) || typeParts(sym.type, counted) > MAX_TYPE_PARTS
+    })
+    for (const name of over) {
+      const sym = this.moduleScope.symbols.get(name) as Symbol & { kind: 'type' }
+      this.tooLargeTypes.set(name, sym.type)
+      this.moduleScope.symbols.set(name, { ...sym, type: RECOVERY })
+      this.typeCache.set(name, RECOVERY)
+      for (const ref of this.forwardRefs.get(name) ?? []) ref.target = RECOVERY
+    }
+  }
+
+  // Once every type is declared: a type too large is an error where it is
+  // declared. Types that hold such a type are too large as well, and are no
+  // part of the mistake: each is said where a too large type is made of types
+  // that are not.
+  private reportTooLargeTypes(): void {
+    for (const [name, type] of this.tooLargeTypes) {
+      if (!typeNamesIn(type).some((part) => part !== name && this.tooLargeTypes.has(part))) {
+        this.error(this.typeDeclaredAt.get(name) ?? 0, tooLarge(name))
+      }
+    }
   }
 
   // Resolve forward references in all collected types
@@ -1077,7 +1136,18 @@ class CheckContext {
   }
 
   // Recursively replace forward references with actual types
-  resolveForwardRefsInType(t: ResolvedType): ResolvedType {
+  // Each part once: a part that the type holds in several places is resolved
+  // once, so a type that names a type many times is resolved in a time of its
+  // own size (see typeParts).
+  resolveForwardRefsInType(t: ResolvedType, made = new Map<ResolvedType, ResolvedType>()): ResolvedType {
+    const known = made.get(t)
+    if (known) return known
+    const result = this.resolveForwardRefsOnce(t, made)
+    made.set(t, result)
+    return result
+  }
+
+  private resolveForwardRefsOnce(t: ResolvedType, made: Map<ResolvedType, ResolvedType>): ResolvedType {
     switch (t.kind) {
       case 'forward_ref': {
         // One that has its target is resolved, also where it refers to the
@@ -1093,25 +1163,25 @@ class CheckContext {
       }
 
       case 'pointer':
-        return pointer(this.resolveForwardRefsInType(t.pointee), t.boundary, t.mutable, t.optional)
+        return pointer(this.resolveForwardRefsInType(t.pointee, made), t.boundary, t.mutable, t.optional)
 
       case 'array':
-        return array(this.resolveForwardRefsInType(t.element), t.sizes)
+        return array(this.resolveForwardRefsInType(t.element, made), t.sizes)
 
       case 'slice':
-        return slice(this.resolveForwardRefsInType(t.element), t.mutable, t.optional)
+        return slice(this.resolveForwardRefsInType(t.element, made), t.mutable, t.optional)
 
       case 'tuple':
-        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type))))
+        return tuple(t.fields.map(f => field(f.name, this.resolveForwardRefsInType(f.type, made))))
 
       case 'func':
         return func(
-          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type))),
-          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type)))
+          t.params.map(p => field(p.name, this.resolveForwardRefsInType(p.type, made))),
+          t.returns.map(r => field(r.name, this.resolveForwardRefsInType(r.type, made)))
         )
 
       case 'named':
-        return named(t.name, this.resolveForwardRefsInType(t.type))
+        return named(t.name, this.resolveForwardRefsInType(t.type, made))
 
       default:
         // Primitives, void, comptime types don't contain nested types
@@ -5510,6 +5580,13 @@ class CheckContext {
       }
       return RECOVERY
     }
+    // Applied to a type, a generic type can double it (D(T) = (a: T, b: T)),
+    // and each application is a key made of its arguments written out.
+    if (owner.applyTooLarge || typeParts(resolved) > MAX_TYPE_PARTS) {
+      owner.applyTooLarge = owner.applyDepth > 0
+      if (owner.applyDepth === 0) this.error(at, tooLarge(shown))
+      return RECOVERY
+    }
     if (settled) sym.cache.set(key, resolved)
     return resolved
   }
@@ -6514,6 +6591,35 @@ function withoutRanges(type: ResolvedType): ResolvedType {
   if (type.kind !== 'tuple') return type
   const fields = type.fields.map((f) => field(f.name, withoutRanges(f.type)))
   return fields.every((f, i) => f.type === type.fields[i].type) ? type : tuple(fields)
+}
+
+// The error for a type too large to write out
+function tooLarge(name: string): string {
+  return `type '${name}' is too large: written out in full it has more than ${MAX_TYPE_PARTS} parts`
+}
+
+// The names a type is made of where it stands, not those they are made of
+function typeNamesIn(type: ResolvedType, found: string[] = []): string[] {
+  switch (type.kind) {
+    case 'named':
+    case 'forward_ref':
+      found.push(type.name)
+      break
+    case 'pointer':
+      typeNamesIn(type.pointee, found)
+      break
+    case 'slice':
+    case 'array':
+      typeNamesIn(type.element, found)
+      break
+    case 'tuple':
+      for (const f of type.fields) typeNamesIn(f.type, found)
+      break
+    case 'func':
+      for (const f of [...type.params, ...type.returns]) typeNamesIn(f.type, found)
+      break
+  }
+  return found
 }
 
 // Whether a type holds one of these forward references as a value: as itself,

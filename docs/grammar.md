@@ -326,6 +326,8 @@ base_type       = primitive_type
 
 **A generic type applied**, `Vec(u32)`, `Map(K, Vec(V))`, `*mut Vec(T)`, is a type wherever a type is written. There is no space between the name and the parenthesis: a type can end a line, and the next one can start with a parenthesis.
 
+**Nesting.** Brackets (`(`, `[`, `{`, and the `${` of a template literal), and prefixes before what they apply to (`-`, `~`, `!`, `&`, `*`, `?`, `^`, `mut`, `[]`, `[*]`, `[N]`), nest at most 256 deep: a prefix counts until its operand, and one before a bracket as long as the bracket is open. Deeper source is the error `nested more than 256 deep` at the first place it goes deeper, and is not parsed.
+
 ---
 
 ## Types

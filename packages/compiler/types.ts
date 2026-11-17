@@ -1328,6 +1328,58 @@ export function byteSize(t: ResolvedType): number | null {
   }
 }
 
+// === Size of a type written out ===
+
+// The most parts a type can have, written out in full: every name replaced by
+// what it names, each field, element, pointer and number counted where it
+// stands. Names let a type double at every level (type D2 = (a: D1, b: D1)),
+// and what is done with a type written out (an instance key, the registers of
+// a value) would then not fit in memory.
+export const MAX_TYPE_PARTS = 1 << 16
+
+// How many parts a type has, written out in full, counted once for each place
+// it stands. A type that refers to itself is cut where it comes round, as
+// canonicalKey cuts it. `counted` holds what is known already, so a type that
+// names the same type many times is counted in a time of its own size.
+export function typeParts(t: ResolvedType, counted: Map<ResolvedType, number> = new Map(), open: Set<ResolvedType> = new Set()): number {
+  const known = counted.get(t)
+  if (known !== undefined) return known
+  if (open.has(t)) return 1
+  open.add(t)
+  const sum = (types: ResolvedType[]) => types.reduce((n, type) => n + typeParts(type, counted, open), 1)
+  let n: number
+  switch (t.kind) {
+    case 'named':
+      n = typeParts(t.type, counted, open)
+      break
+    case 'forward_ref':
+      n = t.target ? typeParts(t.target, counted, open) : 1
+      break
+    case 'pointer':
+      n = sum([t.pointee])
+      break
+    case 'slice':
+    case 'array':
+    case 'comptime_array':
+      n = sum([t.element])
+      break
+    case 'tuple':
+      n = sum(t.fields.map((f) => f.type))
+      break
+    case 'func':
+      n = sum([...t.params, ...t.returns].map((f) => f.type))
+      break
+    case 'comptime_list':
+      n = sum(t.elements)
+      break
+    default:
+      n = 1
+  }
+  open.delete(t)
+  counted.set(t, n)
+  return n
+}
+
 // === Instance keys ===
 
 // A string that is the same for two types exactly when they are the same type:

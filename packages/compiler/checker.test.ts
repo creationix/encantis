@@ -2880,3 +2880,31 @@ describe('types declared further down', () => {
     expect(errs('global one: Byte = 300\ntype Byte = u8')).toEqual(['cannot assign int(300) to Byte'])
   })
 })
+
+describe('types too large to write out', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const large = (name: string) => `type '${name}' is too large: written out in full it has more than 65536 parts`
+  // D(k) = (a: D(k - 1), b: D(k - 1)) has 2^(k + 1) - 1 parts: D15 is the largest under the limit.
+  const doubling = (n: number, order: 'up' | 'down' = 'up') => {
+    const decls = ['type D0 = u8', ...Array.from({ length: n }, (_, i) => `type D${i + 1} = (a: D${i}, b: D${i})`)]
+    return `${(order === 'up' ? decls : decls.reverse()).join('\n')}\n`
+  }
+
+  test('is one error, where the first type too large is declared, in whatever order', () => {
+    expect(errs(`${doubling(15)}func f(p: *D15) -> u8 => p.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a`)).toEqual([])
+    expect(errs(`${doubling(16)}func f(p: *D16) -> u32 => 1`)).toEqual([large('D16')])
+    expect(errs(`${doubling(40)}func first(comptime T: type, p: *T) -> *T => p\nfunc f(p: *D40) -> u32 => sizeof(D40)\nfunc g(d: D40, p: *D40) -> *D40 => first(p)`)).toEqual([large('D16')])
+    expect(errs(`${doubling(40, 'down')}func f(p: *D40) -> u32 => sizeof(D40)`)).toEqual([large('D16')])
+    // Through pointers too: the pointers are written out with what they point to
+    expect(errs(`type P0 = u8\n${Array.from({ length: 30 }, (_, i) => `type P${i + 1} = (p: *P${i}, q: *P${i})`).join('\n')}\nfunc f(p: *P30) -> u32 => 1`)).toEqual([large('P15')])
+  })
+
+  test('a generic type that doubles is one error where it is applied', () => {
+    const D = 'func D(comptime T: type) -> type => (a: T, b: T)\n'
+    const nest = (n: number, inner: string) => `${'D('.repeat(n)}${inner}${')'.repeat(n)}`
+    expect(errs(`${D}func f(p: *${nest(15, 'u8')}) -> u32 => 1`)).toEqual([])
+    expect(errs(`${D}func f(p: *${nest(40, 'u8')}) -> u32 => 1`)).toEqual([large(nest(16, 'u8'))])
+    // Inside the body of another, said where that one is applied
+    expect(errs(`${D}func Big(comptime T: type) -> type => (x: ${nest(18, 'T')})\nfunc f(p: *Big(u8)) -> u32 => 1`)).toEqual([large('Big(u8)')])
+  })
+})
