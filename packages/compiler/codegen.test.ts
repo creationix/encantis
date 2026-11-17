@@ -2883,6 +2883,29 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(x.cell()).toBe(5)
   })
 
+  test('of a row of a many-pointer table is where its row pointer is', async () => {
+    const x = await run(`
+      data rows: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+      func sum(r: *[3]i32) -> i32 => r[0] + r[1] * 10 + r[2] * 100
+      export func row(i: u32) -> i32 {
+        let q = &(rows as [*][3]i32)[i]
+        return sum(q.*)
+      }
+      export func write(i: u32) -> i32 {
+        let q: *mut *mut [3]i32 = &(rows as [*]mut [3]i32)[i]
+        q.*[0] = 9
+        return sum(rows[1])
+      }
+    `)
+    expect(x.row(1)).toBe(654)
+    expect(x.write(1)).toBe(659)
+    const errs = typecheck(parse(`
+      func sum(r: *[3]i32) -> i32 => r[0]
+      func f(p: [*][3]i32, i: u32) -> i32 => sum(&p[i])
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(['argument 1: cannot assign **[3]i32 to *[3]i32'])
+  })
+
   test('of a variable is none', () => {
     const errs = typecheck(parse(`
       type Pt = (x: i32, y: i32)

@@ -4916,10 +4916,12 @@ class CheckContext {
       size = objType.pointee.sizes[0]
     } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' && objType.pointee.sizes === null) {
       // A many-pointer has no length: its element's address is never
-      // checked, as reading the element is not (4.7).
+      // checked, as reading the element is not (4.7). In a table ([*][M]T)
+      // the element is the row pointer, so &p[i] is a **[M]T.
+      const element = tableRow(objType) ?? objType.pointee.element
       this.inferIndexValue(expr.index)
-      this.exprTypes.set(expr, objType.pointee.element)
-      return pointer(objType.pointee.element, false, !!objType.mutable)
+      this.exprTypes.set(expr, element)
+      return pointer(element, false, !!objType.mutable)
     } else {
       return null
     }

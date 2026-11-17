@@ -1674,7 +1674,7 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
 }
 ```
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected.
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
 
 <!-- spec:begin compile -->
 
