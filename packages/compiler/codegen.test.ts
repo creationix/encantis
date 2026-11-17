@@ -2754,3 +2754,69 @@ describe('a literal given for a mutable pointer or slice', () => {
     expect(go()).toBe(20081000 + 104 + 30 + 400)
   })
 })
+
+describe('values of literals laid out in memory', () => {
+  test('a constant expression in data is its value, in a list, a table or a generic', async () => {
+    const f = await run(`
+      def k = 4
+      data xs: *[3]i32 = [1 + 1, k * 2, -3]
+      data ys: *[4]u32 = [sizeof(u16), k + 1, 1 << 3, ~0]
+      data tt: *[2][2]u32 = [[sizeof(u64), k * 2], [~0, 3]]
+      data fs: *[2]f32 = [1 / 4, k * 0.5]
+      func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+      func gen(comptime T: type) -> u32 {
+        let m: *[2][2]u32 = [[sizeof(T), 1], [2, sizeof(Pair(T, T))]]
+        return m[0][0] * 100 + m[1][1]
+      }
+      export func list() -> i32 => xs[0] * 100 + xs[1] * 10 + xs[2]
+      export func words() -> u32 => ys[0] * 1000 + ys[1] * 100 + ys[2]
+      export func all() -> u32 => ys[3]
+      export func table() -> u32 => tt[0][0] * 100 + tt[0][1] * 10 + tt[1][1]
+      export func ones() -> u32 => tt[1][0]
+      export func floats() -> f32 => fs[0] + fs[1]
+      export func generic() -> u32 => gen(u16) * 1000 + gen(u64)
+    `)
+    expect([f.list(), f.words(), (f.all() as number) >>> 0, f.table(), (f.ones() as number) >>> 0, f.floats(), f.generic()])
+      .toEqual([277, 2508, 0xffffffff, 883, 0xffffffff, 2.25, 204816])
+  })
+
+  test('the name of other data in a field is its address, and for a slice its length', async () => {
+    const f = await run(`
+      type Ref = (p: *[3]i32, k: u32)
+      type View = (s: []i32, k: u32)
+      data ones: *[3]i32 = [1, 1, 1]
+      data twos: *[3]i32 = [2, 2, 2]
+      data refs: *[2]Ref = [(ones, 5), Ref(twos, 6)]
+      data views: *[1]View = [(twos, 7)]
+      data names: [][]i32 = [ones, twos]
+      export func a() -> u32 => (refs[0].p as u32) * 1000 + refs[0].k
+      export func b() -> u32 => (refs[1].p as u32) * 1000 + refs[1].k
+      export func c() -> i32 => refs[1].p[2] * 100 + views[0].s[1] * 10 + (views[0].s.len as i32)
+      export func d() -> u32 => (ones as u32) * 1000 + (twos as u32)
+      export func e() -> i32 => if let s = names[1] { s[0] * 10 + (s.len as i32) } else { 0 }
+      export func local() -> i32 {
+        let r: *[1]Ref = [(twos, 9)]
+        return r[0].p[0] * 10 + (r[0].k as i32)
+      }
+    `)
+    const [ones, twos] = [Math.floor((f.d() as number) / 1000), (f.d() as number) % 1000]
+    expect([f.a(), f.b(), f.c(), f.e(), f.local()]).toEqual([ones * 1000 + 5, twos * 1000 + 6, 223, 23, 29])
+  })
+
+  test('a literal with values only known at run time is a cell of its own', async () => {
+    const { two, packed } = await run(`
+      export func two(x: i32, y: i32) -> i32 {
+        let a: *[2]i32 = [x, 2]
+        let b: *[2]i32 = [y, 2]
+        let c: *[2]i32 = [1 + 1, 2]
+        return a[0] * 100 + b[0] * 10 + c[0]
+      }
+      export func packed(x: i32) -> i32 {
+        let p: *[2x2]i32 = [[x, 1], [2, x + 1]]
+        let q: *[2x3]i32 = [[x; 3], [7; 3]]
+        return p[0][0] * 10000 + p[0][1] * 1000 + p[1][1] * 100 + q[0][2] * 10 + q[1][1]
+      }
+    `)
+    expect([two(3, 4), packed(5)]).toEqual([342, 51657])
+  })
+})

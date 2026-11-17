@@ -152,6 +152,8 @@ String literals are array literals of `u8`:
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
 ```
 
+An array literal given where a pointer or slice is wanted is laid out in memory. In a function, its values that are only known when the program runs (`[x, 2]`) are stored into it each time it is evaluated: the literal is a cell of its own for that place in the source, never shared with another literal, so a pointer kept from an earlier evaluation sees the values of the later one. Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the same way. A literal laid out apart from the one it is in, an element of a slice of slices (`[][]i32`), of a pointer to framed arrays (`*[2][!]u8`) or a row of a table ([2.5](#nesting)), is laid out when the program is compiled, so its values must be constants: `let t: [][]i32 = [[a, 2], [3]]` is an error (`an element of [][]i32 is laid out at compile time: its values must be constants`).
+
 #### The `mut` Keyword on Literals
 
 `mut` does two things: it forces the value into memory and marks it writable.
@@ -917,6 +919,17 @@ type Point = (x:i32, y:i32)
 type City = (name:[]u8, at:Point)
 
 data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
+```
+
+Data is laid out when the program is compiled, and no code fills it in later, so each value in it is known by then: a literal, a constant expression (`1 + 1`, `k * 2` with `def k = 4`, `sizeof(u64)`, `~0`), or the name of other data declared before it, which is that data's address (for a slice field, its address and length). Anything else is an error, `data 'xs' is laid out at compile time: its values must be constants`.
+
+```ents
+def k = 4
+type Ref = (p:*[3]i32, n:u32)
+
+data ones:*[3]i32 = [1, 1, 1]
+data xs:*[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]   // 2, 8, 8, 0xFFFFFFFF
+data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, and 3
 ```
 
 #### Mutability

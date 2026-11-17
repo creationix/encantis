@@ -1994,64 +1994,97 @@ function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: numb
   if (!type) return ''
   // Get the element type to determine stride
   const elemType = type.kind === 'slice' ? type.element
-    : type.kind === 'pointer' && type.pointee.kind === 'array' ? type.pointee.element
+    : type.kind === 'pointer' && type.pointee.kind === 'array' ? packedRow(type.pointee)
     : null
   if (!elemType) return ''
-  const elemSize = byteSize(elemType) ?? 0
-  if (elemSize === 0) return ''
+  const parts: string[] = []
+  runtimeStores(expr, elemType, ref.ptr, ctx, parts)
+  return parts.length > 0 ? parts.join('\n') + '\n' : ''
+}
 
+// What one element of an array literal is: a row of [NxM]T is a [M]T, which
+// lies in place.
+function packedRow(t: RT.ArrayRT): ResolvedType {
+  const sizes = t.sizes
+  if (sizes && sizes.length > 1 && sizes.every((s) => typeof s === 'number')) return { kind: 'array', element: t.element, sizes: sizes.slice(1) }
+  return t.element
+}
+
+// The stores of the values of a literal that are only known when the program
+// runs, each at its place from `base`. A row written out in place (in a
+// [NxM]T) has its own, at their places in the row.
+function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedType, base: number, ctx: CodegenContext, parts: string[]): void {
+  const elemSize = byteSize(elemType) ?? 0
+  if (elemSize === 0) return
+  const u = unwrap(elemType)
+  const inPlace = (elem: AST.Expr): AST.ArrayExpr | AST.RepeatExpr | null => {
+    let inner = ungroup(elem)
+    while (inner.kind === 'AnnotationExpr') inner = ungroup(inner.expr)
+    const row = u.kind === 'array' && u.sizes !== null && u.sizes.every((s) => typeof s === 'number')
+    return row && (inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') ? inner : null
+  }
   // A repeat literal has its value in every slot, computed once per slot as
-  // it is for a repeat that is a value.
+  // it is for a repeat that is a value. One with nothing to store has no slot
+  // to visit, however many it has.
+  if (expr.kind === 'RepeatExpr' && !inPlace(expr.value) && !isRuntimeExpr(expr.value, ctx)) return
   const elements = expr.kind === 'ArrayExpr' ? expr.elements
     : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
-  const parts: string[] = []
-  const u = unwrap(elemType)
   for (let i = 0; i < elements.length; i++) {
     const elem = elements[i]
-    if (isRuntimeExpr(elem, ctx.calls)) {
-      const base = ref.ptr + i * elemSize
+    const at = base + i * elemSize
+    const row = inPlace(elem)
+    if (row && u.kind === 'array') {
+      runtimeStores(row, packedRow(u), at, ctx, parts)
+    } else if (isRuntimeExpr(elem, ctx)) {
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
         try {
           const valParts = splitMultiValue(value, 2)
-          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
-          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+          parts.push(`(i32.store (i32.const ${at}) ${valParts[0]})`)
+          parts.push(`(i32.store (i32.const ${at + 4}) ${valParts[1]})`)
         } catch {
-          parts.push(`(i32.const ${base})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${base + 4}) (local.get $__slot_len))`)
+          parts.push(`(i32.const ${at})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${at + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value, ctx))
+        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx))
       }
     }
   }
-  return parts.length > 0 ? parts.join('\n') + '\n' : ''
 }
 
-function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
+function isRuntimeExpr(expr: AST.Expr, ctx: CodegenContext): boolean {
   if (expr.kind === 'LiteralExpr') return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
-  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, calls)
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, ctx)
+  // (x) is x
+  const inner = ungroup(expr)
+  if (inner !== expr) return isRuntimeExpr(inner, ctx)
+  // A value the checker worked out (1 + 1, sizeof(u64), a def, the name of
+  // data) is laid out with the literal.
+  if (ctx.constants.has(expr)) return false
   // A type that is called, Vec(u32)(p, 0, cap), is the struct of its arguments.
-  const built = expr.kind === 'CallExpr' ? calls.get(expr) : undefined
-  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, calls)
+  const built = expr.kind === 'CallExpr' ? ctx.calls.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, ctx)
   // A struct written out from literals, as a tuple or a constructor, is data
   // too; one runtime field makes the whole struct runtime. A type's name is
   // the identifier that starts with a capital letter.
   const fields = expr.kind === 'TupleExpr' ? expr.elements
     : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
     : null
-  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, calls))
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, ctx))
   return true
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
 // that points at it): runtime when one of its elements is, or the value it
 // repeats.
-function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
-  if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
-  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value, calls)
-  return isRuntimeExpr(expr, calls)
+function isRuntimeField(expr: AST.Expr, ctx: CodegenContext): boolean {
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  if (e.kind === 'ArrayExpr') return e.elements.some((x) => isRuntimeField(x, ctx))
+  if (e.kind === 'RepeatExpr') return isRuntimeField(e.value, ctx)
+  return isRuntimeExpr(e, ctx)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -2965,7 +2998,7 @@ function collectLocals(
       for (const elem of expr.elements) {
         // Any runtime slice element that doesn't split into (ptr, len) parts
         // (a call, a ?? fallback, ...) goes through the scratch local.
-        if (isRuntimeExpr(elem, checkResult.calls)) needsSlotLocal = true
+        if (isRuntimeExpr(elem, ctx)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -3071,7 +3104,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls, constants: checkResult.constants })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
 
@@ -3534,6 +3567,7 @@ export function programToWat(
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
   const allCalls: TypeCheckResult['calls'] = new Map()
+  const allConstants: TypeCheckResult['constants'] = new Map()
 
   // One data section for the literals of all modules. A literal is known by
   // its offset in its own module's source, so each module has its own map
@@ -3543,8 +3577,9 @@ export function programToWat(
   for (const [path, result] of checkResults) {
     sources.push({ path, result })
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
+    for (const [expr, value] of result.constants) allConstants.set(expr, value)
   }
-  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls })
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls, constants: allConstants })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
   for (const [path, loaded] of modules) {

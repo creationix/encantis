@@ -712,6 +712,52 @@ cannot assign int(300) to u8
 cannot assign i32 to u8
 ```
 
+Data is laid out when the program is compiled, and nothing fills it in later: each value in it is a literal, a constant expression, or the name of data declared before it. In a function, a literal's values known only at run time are stored into it when it is evaluated, except in a literal laid out apart from it: an element of a slice of slices or a row of a table.
+
+```ents
+def k = 4
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data xs: *[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]
+data refs: *[2]Ref = [(ones, 3), Ref(ones, k)]
+data names: [][]i32 = [ones, [k, 1]]
+
+func f(x: i32) -> i32 {
+  let a: *[2]i32 = [x, 2]
+  let p: *[2x2]i32 = [[x, 1], [2, 3]]
+  let s: [][]i32 = [ones, [x, 1]]
+  return a[0] + p[0][0]
+}
+```
+
+```errors
+an element of [][]i32 is laid out at compile time: its values must be constants
+```
+
+```ents
+global g: i32 = 3
+func one() -> i32 => 1
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data a: *[2]i32 = [g, 1]
+data b: *[2]i32 = [one(), 1]
+data c: *[1]Ref = [(ones, g as u32)]
+data d: [][]i32 = [[g, 1], [2]]
+data e: *[2][2]i32 = [[g, 1], [2, 3]]
+data f = (g, 1)
+```
+
+```errors
+data 'a' is laid out at compile time: its values must be constants
+data 'b' is laid out at compile time: its values must be constants
+data 'c' is laid out at compile time: its values must be constants
+an element of [][]i32 is laid out at compile time: its values must be constants
+a row of *[2][2]i32 is laid out at compile time: its values must be constants
+data 'f' is laid out at compile time: its values must be constants
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.

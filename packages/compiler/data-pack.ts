@@ -93,6 +93,12 @@ export class DataSectionBuilder {
   /** What the checker read a call as, where that is no call: a type that is
    *  called, Vec(u32)(p, 0, cap), is the struct of its arguments. */
   built?: ReadonlyMap<AST.CallExpr, AST.Expr>
+  /** The values the checker worked out for the parts of literals that are
+   *  not literals themselves (1 + 1, sizeof(u64), a def, the name of data). */
+  constants?: ReadonlyMap<AST.Expr, ComptimeValue>
+  /** Where the literal of the module being laid out with this id is, laying
+   *  it out first if it isn't yet: the place a data_ptr constant names. */
+  dataRef?: (id: number) => DataRef | null
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
@@ -451,6 +457,53 @@ function isMutExpr(expr: AST.Expr): boolean {
   return false
 }
 
+// A part of a literal that is only known when the program runs: neither a
+// literal nor a value the checker worked out. Codegen stores such parts into
+// the literal's cell each time the literal is evaluated (emitRuntimeSlots),
+// so a literal with one is a cell of its own: shared with an equal literal,
+// it would hold the other's values.
+function hasRuntimePart(expr: AST.Expr, builder: DataSectionBuilder): boolean {
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  switch (e.kind) {
+    case 'LiteralExpr':
+      return false
+    case 'ArrayExpr':
+      return e.elements.some((element) => hasRuntimePart(element, builder))
+    case 'RepeatExpr':
+      return hasRuntimePart(e.value, builder)
+    case 'TupleExpr':
+      return e.elements.some((element) => !element.value || hasRuntimePart(element.value, builder))
+    case 'CallExpr': {
+      const built = builder.built?.get(e)
+      if (built?.kind === 'TupleExpr') return hasRuntimePart(built, builder)
+      if (e.callee.kind === 'IdentExpr' && /^[A-Z]/.test(e.callee.name)) {
+        return e.args.some((arg) => !arg.value || hasRuntimePart(arg.value, builder))
+      }
+      return !builder.constants?.has(e)
+    }
+    default:
+      return !builder.constants?.has(e)
+  }
+}
+
+// The bytes of a value the checker worked out, as an element or field of
+// this type, or null when it has none there.
+function constantBytes(value: ComptimeValue, type: ResolvedType, builder: DataSectionBuilder): Uint8Array | null {
+  const t = unwrap(type)
+  if (value.kind === 'data_ptr') {
+    const ref = builder.dataRef?.(value.id)
+    if (!ref) return null
+    if (t.kind === 'slice') return concatBytes([serializeI32(ref.ptr), serializeI32(literalLength(ref, t.element))])
+    return serializeI32(ref.ptr)
+  }
+  if (value.kind === 'bool') return new Uint8Array([value.value ? 1 : 0])
+  if (value.kind === 'int' && t.kind === 'primitive') return serializeInt(value.value, t.name) ?? serializeFloat(Number(value.value), t.name)
+  if (value.kind === 'int' && t.kind === 'pointer') return serializeInt(value.value, 'u32')
+  if (value.kind === 'float' && t.kind === 'primitive') return serializeFloat(value.value, t.name)
+  return null
+}
+
 export function serializeLiteral(
   expr: AST.Expr,
   targetType: ArrayRT,
@@ -458,7 +511,7 @@ export function serializeLiteral(
   childRefs?: Map<number, DataRef>,
   mutable = false,
 ): DataRef {
-  const skipDedup = mutable || isMutExpr(expr)
+  const skipDedup = mutable || isMutExpr(expr) || hasRuntimePart(expr, builder)
   if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
@@ -667,6 +720,11 @@ function buildElementBytes(
   const inner = ungroup(expr)
   if (inner !== expr) return buildElementBytes(inner, elementType, framings, builder)
 
+  // A value the checker worked out: 1 + 1, sizeof(u64), ~0, a def, data.
+  const constant = builder.constants?.get(expr)
+  const bytes = constant && constantBytes(constant, elementType, builder)
+  if (bytes) return framings.length > 0 ? applyFramings(bytes, framings, getElementSize(elementType)) : bytes
+
   // A slice written as its two parts, (ptr, len).
   if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
 
@@ -764,6 +822,10 @@ function serializeSeparate(
       const ref = { ptr: words.getUint32(0, true), len: words.getUint32(4, true) }
       childRefs.push(ref)
       pairs.add(ref)
+    } else if (constantOf(child, builder)?.kind === 'data_ptr') {
+      // The name of other data: its place, and for a slice its length.
+      const value = constantOf(child, builder) as { kind: 'data_ptr'; id: number }
+      childRefs.push(builder.dataRef?.(value.id) ?? { ptr: 0, len: 0 })
     } else {
       childRefs.push({ ptr: 0, len: 0 })
     }
@@ -779,6 +841,13 @@ function serializeSeparate(
   const optional = isOptional(targetType.element)
   const ref = builder.internBytes(pointerBytes, skipDedup, optional)
   return { ptr: ref.ptr, len: childRefs.length }
+}
+
+// The value the checker worked out for an element, through an annotation.
+function constantOf(expr: AST.Expr, builder: DataSectionBuilder): ComptimeValue | undefined {
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  return builder.constants?.get(e)
 }
 
 function isSerializableExpr(expr: AST.Expr): boolean {
@@ -1132,7 +1201,7 @@ export function layoutLiterals(literals: QualifiedLiteral[]): DataLayout {
 
 // === Data Section Building from Checker Literals ===
 
-import type { PendingLiteral } from './checker'
+import type { ComptimeValue, PendingLiteral } from './checker'
 import { typeKey } from './checker'
 
 // Result of building the data section
@@ -1153,6 +1222,7 @@ export interface LiteralSource {
 interface DataSectionOptions {
   tolerant?: boolean
   calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
+  constants?: ReadonlyMap<AST.Expr, ComptimeValue>
 }
 
 /**
@@ -1179,6 +1249,7 @@ export function buildProgramDataSection(
 ): { dataBuilder: DataSectionBuilder; literalRefs: Map<number, DataRef>[] } {
   const dataBuilder = new DataSectionBuilder()
   dataBuilder.built = options.calls
+  dataBuilder.constants = options.constants
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)
@@ -1187,9 +1258,39 @@ export function buildProgramDataSection(
   // Resolve serialization types from each module's types map
   const withTypes = sources.flatMap((source, i) => source.literals.map(lit => ({
     ...lit,
-    refs: literalRefs[i],
+    source: i,
     type: source.types.get(typeKey(lit.id, 'DataTarget')) as ArrayRT,
   }))).filter(lit => lit.type)
+  type Pending = (typeof withTypes)[number]
+
+  // Each module's literals by id, for the data a literal names, which is
+  // laid out before it when it isn't yet. Data can only name data declared
+  // before it, so this never comes back to a literal being laid out.
+  const byId = sources.map(() => new Map<number, Pending>())
+  for (const lit of withTypes) if (!byId[lit.source].has(lit.id)) byId[lit.source].set(lit.id, lit)
+  const done = new Set<Pending>()
+  const layOut = (lit: Pending): void => {
+    if (done.has(lit)) return
+    done.add(lit)
+    const refs = literalRefs[lit.source]
+    const outer = dataBuilder.dataRef
+    dataBuilder.dataRef = (id) => {
+      const target = byId[lit.source].get(id)
+      if (target && !done.has(target)) layOut(target)
+      return refs.get(id) ?? null
+    }
+    try {
+      refs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, refs))
+    } catch (e) {
+      // Laying a literal out takes for granted that it passed the checker. In
+      // a module that didn't (the editor asks for metadata as it is typed), a
+      // literal with an element of the wrong type has no layout: it is left
+      // without an address, and the others keep theirs.
+      if (!options.tolerant) throw e
+    } finally {
+      dataBuilder.dataRef = outer
+    }
+  }
 
   // Sort by priority for better deduplication
   // Priority: more specifiers > fixed-size > slices
@@ -1198,17 +1299,7 @@ export function buildProgramDataSection(
   )
 
   // Serialize each literal
-  for (const lit of sorted) {
-    try {
-      lit.refs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, lit.refs))
-    } catch (e) {
-      // Laying a literal out takes for granted that it passed the checker. In
-      // a module that didn't (the editor asks for metadata as it is typed), a
-      // literal with an element of the wrong type has no layout: it is left
-      // without an address, and the others keep theirs.
-      if (!options.tolerant) throw e
-    }
-  }
+  for (const lit of sorted) layOut(lit)
 
   return { dataBuilder, literalRefs }
 }

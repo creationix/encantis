@@ -727,6 +727,26 @@ class CheckContext {
   // the meantime: a type it met, or a literal it is part of.
   unplaced: AST.LiteralExpr[] = []
 
+  // At the end of a function, a test or the module-level declarations: lays
+  // out the strings that met no type, and works out the values of the
+  // literals registered since that are known at compile time, for the data
+  // packer to lay out (and codegen not to store again when the program runs).
+  private settleLiterals(): void {
+    this.placeInferredStrings()
+    const from = Math.min(this.literalsSettled, this.pendingLiterals.length)
+    for (const { expr } of this.pendingLiterals.slice(from)) {
+      for (const leaf of this.literalLeaves(expr)) {
+        if (this.constants.has(leaf)) continue
+        const value = this.evalComptimeExpr(leaf, true)
+        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, value)
+      }
+    }
+    this.literalsSettled = this.pendingLiterals.length
+  }
+
+  // How many of the pending literals had their values worked out
+  literalsSettled = 0
+
   private placeInferredStrings(): void {
     if (this.unplaced.length === 0) return
     const parts = new Set<AST.Expr>()
@@ -737,6 +757,42 @@ class CheckContext {
       this.addLiteral(lit.span.start, lit, array(primitive('u8'), [lit.value.bytes.length]))
     }
     this.unplaced = []
+  }
+
+  // The values a literal laid out in memory is made of, down to those that
+  // are not literals themselves: a computed constant (1 + 1, sizeof(u64), a
+  // def), the name of other data, or a value only known at run time. The
+  // elements of an array, the value a repeat repeats, the fields of a tuple
+  // or of a struct written as a constructor, the two parts of a slice pair.
+  private literalLeaves(expr: AST.Expr, leaves: AST.Expr[] = []): AST.Expr[] {
+    let e = ungrouped(expr)
+    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    switch (e.kind) {
+      case 'LiteralExpr':
+        break
+      case 'ArrayExpr':
+        for (const element of e.elements) this.literalLeaves(element, leaves)
+        break
+      case 'RepeatExpr':
+        this.literalLeaves(e.value, leaves)
+        break
+      case 'TupleExpr':
+        for (const element of e.elements) if (element.value) this.literalLeaves(element.value, leaves)
+        break
+      case 'CallExpr': {
+        const built = this.calls.get(e)
+        if (built?.kind === 'TupleExpr') return this.literalLeaves(built, leaves)
+        if (e.callee.kind === 'IdentExpr' && this.lookup(e.callee.name)?.kind === 'type') {
+          for (const arg of e.args) if (arg.value) this.literalLeaves(arg.value, leaves)
+          break
+        }
+        leaves.push(e)
+        break
+      }
+      default:
+        leaves.push(e)
+    }
+    return leaves
   }
 
   checkModule(module: AST.Module): void {
@@ -751,7 +807,7 @@ class CheckContext {
       this.collectDeclaration(decl)
     }
 
-    this.placeInferredStrings()
+    this.settleLiterals()
 
     // Resolve any forward references in the type cache
     this.resolveForwardRefs()
@@ -765,7 +821,7 @@ class CheckContext {
 
     // The bodies of the instances the module asked for, and of those they ask for
     this.drainInstances()
-    this.placeInferredStrings()
+    this.settleLiterals()
     this.placeInstanceLiterals()
   }
 
@@ -1180,6 +1236,7 @@ class CheckContext {
       }
       // Use checkExpr to propagate element types and register the data literal
       // checkExpr's data literal path handles pendingLiterals, dataId, and element checking
+      const reported = this.errors.length
       if (ptrType.kind === 'pointer' || ptrType.kind === 'slice') {
         this.checkExpr(dataLiteral.expr, ptrType)
       } else {
@@ -1191,6 +1248,9 @@ class CheckContext {
         }
         this.addLiteral(dataId, dataLiteral.expr, dataLiteral.indexedType)
       }
+      // Unless checking it found something wrong already, such as a row of a
+      // table that isn't constant.
+      if (this.errors.length === reported) this.requireConstants(decl.ident, dataLiteral.expr)
       const dataId = dataLiteral.expr.span.start
       const sym = {
         kind: 'def' as const,
@@ -1214,6 +1274,7 @@ class CheckContext {
       }
       const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
       this.addLiteral(dataId, expr, arrType)
+      this.requireConstants(decl.ident, expr)
       const sym = {
         kind: 'def' as const,
         type: pointer(type, false, isMut),
@@ -1227,6 +1288,16 @@ class CheckContext {
     }
 
     this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+  }
+
+  // `data` is laid out when the program is compiled, and no code of the
+  // program fills it in: each value in it has to be known by then.
+  private requireConstants(name: string, literal: AST.Expr): void {
+    for (const leaf of this.literalLeaves(literal)) {
+      if (!this.evalComptimeExpr(leaf, true)) {
+        this.error(leaf.span.start, `data '${name}' is laid out at compile time: its values must be constants`)
+      }
+    }
   }
 
   // Extract a data section literal from an expression if applicable
@@ -1834,7 +1905,7 @@ class CheckContext {
       }
     }
     this.currentScope = prevScope
-    this.placeInferredStrings()
+    this.settleLiterals()
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -1958,7 +2029,7 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
-    this.placeInferredStrings()
+    this.settleLiterals()
   }
 
   // The type a returned value is checked against: for a single named result
@@ -2889,6 +2960,20 @@ class CheckContext {
         for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           if (!this.isConstantInitializer(row)) {
             this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+          }
+        }
+      }
+      // So are the literals among the elements of a slice of slices, or of a
+      // pointer to framed arrays: codegen fills in an element that is known
+      // only at run time, but not what is inside one of them.
+      const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
+      const apart = !tableRow(expected) && framings <= 1 && (arrType.element.kind === 'slice' || arrType.element.kind === 'array')
+      if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+        for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+          let inner = ungrouped(element)
+          while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
+          if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
+            this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
           }
         }
       }

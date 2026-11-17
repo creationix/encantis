@@ -180,6 +180,7 @@ class MetaBuilder {
     const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types, {
       tolerant: this.checkResult.errors.length > 0,
       calls: this.checkResult.calls,
+      constants: this.checkResult.constants,
     })
     this.literalMap = literalRefs
 
