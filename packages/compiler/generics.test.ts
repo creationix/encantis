@@ -4097,6 +4097,261 @@ export func f(x: f64, n: u32) -> f64 => first(x, n) + (head(7, n as i32) + used(
   })
 })
 
+// A pointer or slice whose element is a fixed array is a table of row
+// pointers (reference 2.5, Nesting). An applied type is the type its body
+// names, so a table inside a generic type, or one that a type argument makes,
+// is a table by the same rule, and the instance is the table code by hand.
+describe('tables inside generic types, constructors and comptime functions', () => {
+  test('a generic struct with a table field, built by a constructor given a table', async () => {
+    const generic = `data cells8: *mut [2][3]u8 = mut [[1, 2, 3], [4, 5, 6]]
+data cells32: *mut [2][3]i32 = mut [[10, 20, 30], [40, 50, 60]]
+func Board(comptime T: type) -> type => (cells: *mut [2][3]T, n: u32)
+func board(comptime T: type, m: *mut [2][3]T) -> Board(T) => Board(T)(m, m.len * 100 + m.wid)
+func put(comptime T: type, b: Board(T), i: u32#2, j: u32#3, v: T) {
+  b.cells[i][j] = v
+}
+func total(comptime T: type, b: Board(T)) -> T {
+  let t: T = 0
+  for r in b.cells {
+    t += r[0] + r[1] + r[2]
+  }
+  return t
+}
+export func a(i: u32#2, j: u32#3, v: u8) -> u32 {
+  let b = board(cells8)
+  put(b, i, j, v)
+  return (b.cells[i][j] as u32) * 1000 + total(b) as u32
+}
+export func c(i: u32#2, j: u32#3, v: i32) -> i32 {
+  let b = board(cells32)
+  put(b, i, j, v)
+  return total(b) * 1000 + b.n as i32
+}
+`
+    const byHand = `data cells8: *mut [2][3]u8 = mut [[1, 2, 3], [4, 5, 6]]
+data cells32: *mut [2][3]i32 = mut [[10, 20, 30], [40, 50, 60]]
+type B32 = (cells: *mut [2][3]i32, n: u32)
+type B8 = (cells: *mut [2][3]u8, n: u32)
+func board32(m: *mut [2][3]i32) -> B32 => B32(m, m.len * 100 + m.wid)
+func board8(m: *mut [2][3]u8) -> B8 => B8(m, m.len * 100 + m.wid)
+func put32(b: B32, i: u32#2, j: u32#3, v: i32) {
+  b.cells[i][j] = v
+}
+func put8(b: B8, i: u32#2, j: u32#3, v: u8) {
+  b.cells[i][j] = v
+}
+func total32(b: B32) -> i32 {
+  let t: i32 = 0
+  for r in b.cells {
+    t += r[0] + r[1] + r[2]
+  }
+  return t
+}
+func total8(b: B8) -> u8 {
+  let t: u8 = 0
+  for r in b.cells {
+    t += r[0] + r[1] + r[2]
+  }
+  return t
+}
+export func a(i: u32#2, j: u32#3, v: u8) -> u32 {
+  let b = board8(cells8)
+  put8(b, i, j, v)
+  return (b.cells[i][j] as u32) * 1000 + total8(b) as u32
+}
+export func c(i: u32#2, j: u32#3, v: i32) -> i32 {
+  let b = board32(cells32)
+  put32(b, i, j, v)
+  return total32(b) * 1000 + b.n as i32
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { a, c } = await run(generic)
+    // Row 1 of cells8 becomes [4, 5, 9]; n is N * 100 + the width of a row pointer.
+    expect(a(1, 2, 9)).toBe(9024)
+    expect(c(1, 0, 7)).toBe(177204)
+  })
+
+  test('a generic type as the row: *[2]Row(T) and []Row(T) are tables, a range of one a slice of rows', async () => {
+    const generic = `data grid: *[2]Row(i32) = [[1, 2, 3], [4, 5, 6]]
+data lines: []Row(u16) = [[7, 8, 9], [1, 1, 1], [2, 0, 2]]
+func Row(comptime T: type) -> type => [3]T
+func pick(comptime T: type, s: []Row(T), i: u32, j: u32#3) -> T => if let r = s[i] { r[j] } else { 0 }
+func back(comptime T: type, m: *[2]Row(T), i: u32) -> *[3]T => m[i] ?? m[1]
+func tail(comptime T: type, m: *[2]Row(T)) -> []Row(T) => m[1..2]
+export func a(i: u32, j: u32#3) -> u16 => pick(lines, i, j)
+export func b(i: u32, j: u32#3) -> i32 => back(grid, i)[j] * 10 + tail(grid).len as i32 + grid.wid as i32 * 100
+`
+    const byHand = `data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data lines: [][3]u16 = [[7, 8, 9], [1, 1, 1], [2, 0, 2]]
+func pick(s: [][3]u16, i: u32, j: u32#3) -> u16 => if let r = s[i] { r[j] } else { 0 }
+func back(m: *[2][3]i32, i: u32) -> *[3]i32 => m[i] ?? m[1]
+func tail(m: *[2][3]i32) -> [][3]i32 => m[1..2]
+export func a(i: u32, j: u32#3) -> u16 => pick(lines, i, j)
+export func b(i: u32, j: u32#3) -> i32 => back(grid, i)[j] * 10 + tail(grid).len as i32 + grid.wid as i32 * 100
+`
+    await expectSameWasm(generic, byHand)
+    const { a, b } = await run(generic)
+    expect([a(0, 1), a(2, 2), a(3, 0)]).toEqual([8, 2, 0])
+    expect([b(0, 2), b(5, 0)]).toEqual([431, 441])
+  })
+
+  test('Vec([3]i32) holds row pointers, and Vec(*[3]i32) is a Vec of them', async () => {
+    // [*]mut T with T = [3]i32 is [*]mut [3]i32, a table: an element is a
+    // *mut [3]i32 at a stride of 4, not a [3]i32 at a stride of sizeof(T).
+    const generic = `data space = mut [0:u8; 64]
+data grid: *mut [3][3]i32 = mut [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func at(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func row(comptime T: type, v: *Vec(T), i: u32) -> *mut T => v.ptr[i]
+func width(comptime T: type, v: *Vec(T)) -> u32 => v.ptr.wid * 100 + sizeof(T)
+export func a(i: u32, j: u32#3) -> i32 {
+  let v = space as *mut Vec([3]i32)
+  v.* = Vec([3]i32)(grid, 3, 3)
+  return row(v, i)[j] * 1000 + width(v) as i32
+}
+export func b(j: u32#3) -> i32 {
+  let v = ((space as u32) + 16) as *mut Vec(*[3]i32)
+  v.* = Vec(*[3]i32)(((space as u32) + 32) as [*]mut *[3]i32, 0, 3)
+  for r in grid {
+    v.ptr[2 - v.len] = r
+    v.len += 1
+  }
+  return at(v, 0)[j] * 10 + width(v) as i32
+}
+`
+    const byHand = `data space = mut [0:u8; 64]
+data grid: *mut [3][3]i32 = mut [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+type VecP = (ptr: [*]mut *[3]i32, len: u32, cap: u32)
+type VecR = (ptr: [*]mut [3]i32, len: u32, cap: u32)
+func at(v: *VecP, i: u32) -> *[3]i32 => v.ptr[i]
+func row(v: *VecR, i: u32) -> *mut [3]i32 => v.ptr[i]
+func widthR(v: *VecR) -> u32 => v.ptr.wid * 100 + sizeof([3]i32)
+func widthP(v: *VecP) -> u32 => v.ptr.wid * 100 + sizeof(*[3]i32)
+export func a(i: u32, j: u32#3) -> i32 {
+  let v = space as *mut VecR
+  v.* = VecR(grid, 3, 3)
+  return row(v, i)[j] * 1000 + widthR(v) as i32
+}
+export func b(j: u32#3) -> i32 {
+  let v = ((space as u32) + 16) as *mut VecP
+  v.* = VecP(((space as u32) + 32) as [*]mut *[3]i32, 0, 3)
+  for r in grid {
+    v.ptr[2 - v.len] = r
+    v.len += 1
+  }
+  return at(v, 0)[j] * 10 + widthP(v) as i32
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { a, b } = await run(generic)
+    expect(a(1, 2)).toBe(6412)
+    expect(b(1)).toBe(484)
+    // What is written for any T and returns the element is refused for a row type, as by hand.
+    expect(errorsOf(`func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func at(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+export func f(v: *Vec([3]i32)) -> i32 => at(v, 0)[0]`)).toEqual(['cannot assign *mut [3]i32 to [3]i32, in at(T = [3]i32)'])
+  })
+
+  test('comptime functions given rows and tables, and filling a mutable table', async () => {
+    const generic = `data rows: [][3]i32 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+data board: *mut [2][3]u8 = mut [[0; 3]; 2]
+func fold(comptime R: type, s: []R, comptime f: (*R) -> i32) -> i32 {
+  let t = 0
+  for r in s {
+    t = t * 10 + f(r)
+  }
+  return t
+}
+func fill(comptime T: type, m: *mut [2][3]T, i: u32#2, comptime g: (u32, u32) -> T) {
+  let r = m[i]
+  for j in 3 {
+    r[j] = g(i, j)
+  }
+}
+func first(r: *[3]i32) -> i32 => r[0]
+func last(r: *[3]i32) -> i32 => r[2]
+func mul(i: u32, j: u32) -> u8 => ((i + 1) * (j + 2)) as u8
+export func a() -> i32 => fold(rows, first) * 1000 + fold(rows, last)
+export func b(i: u32#2, j: u32#3) -> u8 {
+  fill(board, 1, mul)
+  return board[i][j]
+}
+`
+    const byHand = `data rows: [][3]i32 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+data board: *mut [2][3]u8 = mut [[0; 3]; 2]
+func fold_first(s: [][3]i32) -> i32 {
+  let t = 0
+  for r in s {
+    t = t * 10 + first(r)
+  }
+  return t
+}
+func fold_last(s: [][3]i32) -> i32 {
+  let t = 0
+  for r in s {
+    t = t * 10 + last(r)
+  }
+  return t
+}
+func fill(m: *mut [2][3]u8, i: u32#2) {
+  let r = m[i]
+  for j in 3 {
+    r[j] = mul(i, j)
+  }
+}
+func first(r: *[3]i32) -> i32 => r[0]
+func last(r: *[3]i32) -> i32 => r[2]
+func mul(i: u32, j: u32) -> u8 => ((i + 1) * (j + 2)) as u8
+export func a() -> i32 => fold_first(rows) * 1000 + fold_last(rows)
+export func b(i: u32#2, j: u32#3) -> u8 {
+  fill(board, 1)
+  return board[i][j]
+}
+`
+    await expectSameWasm(generic, byHand)
+    const { a, b } = await run(generic)
+    expect(a()).toBe(147369)
+    // Row 1 is filled; row 0, its own row of zeros, is not.
+    expect([b(1, 2), b(0, 2)]).toEqual([8, 0])
+  })
+
+  test('a deeper table in a generic struct, and the table rules inside an instance', async () => {
+    const generic = `data cube: *[2][2][3]i32 = [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]]
+func Cube(comptime T: type) -> type => (m: *[2][2][3]T, tag: T)
+func at(comptime T: type, c: Cube(T), i: u32#2, j: u32#2, k: u32#3) -> T => c.m[i][j][k] + c.tag
+func widths(comptime T: type, c: Cube(T)) -> u32 => c.m.wid * 100 + c.m[0].wid * 10 + c.m[0][0].wid
+export func a(i: u32#2, j: u32#2, k: u32#3) -> i32 => at(Cube(i32)(cube, 100), i, j, k)
+export func w() -> u32 => widths(Cube(i32)(cube, 0))
+`
+    const byHand = `data cube: *[2][2][3]i32 = [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]]
+type Cube = (m: *[2][2][3]i32, tag: i32)
+func at(c: Cube, i: u32#2, j: u32#2, k: u32#3) -> i32 => c.m[i][j][k] + c.tag
+func widths(c: Cube) -> u32 => c.m.wid * 100 + c.m[0].wid * 10 + c.m[0][0].wid
+export func a(i: u32#2, j: u32#2, k: u32#3) -> i32 => at(Cube(cube, 100), i, j, k)
+export func w() -> u32 => widths(Cube(cube, 0))
+`
+    await expectSameWasm(generic, byHand)
+    const { a, w } = await run(generic)
+    expect([a(1, 0, 2), a(0, 1, 0)]).toEqual([109, 104])
+    expect(w()).toBe(444)
+
+    expect(errorsOf(`data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+func Board(comptime T: type) -> type => (cells: *[2][3]T, n: u32)
+func whole(comptime T: type, b: Board(T)) -> [2][3]T => b.cells.*
+func lit(comptime T: type, x: T) -> T {
+  let m: *[2][2]T = [[x, 1], [2, 3]]
+  return m[1][1]
+}
+func row(comptime T: type, b: Board(T), i: u32) -> *[3]T => b.cells[i]
+export func f(x: u8, i: u32) -> u8 => lit(x) + whole(Board(i32)(grid, 0))[0][0] as u8 + row(Board(i32)(grid, 0), i)[0] as u8`)).toEqual([
+      'a row of *[2][2]u8 is laid out at compile time: its values must be constants, in lit(T = u8)',
+      'cannot use .* on *[2][3]i32: a table holds pointers to rows that lie apart — load one row with [i].*, in whole(T = i32)',
+      "runtime index on *[2][3]i32 requires 'if let' or '??' (rows are not optional), in row(T = i32)",
+    ])
+  })
+})
+
 describe('examples/generics', () => {
   const dir = join(import.meta.dir, '../../examples/generics')
 
