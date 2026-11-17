@@ -1513,6 +1513,21 @@ describe('structs in data arrays', () => {
     expect(wat).toContain('"\\01\\02\\00\\03\\00\\00\\00\\00\\00\\00\\00"')
   })
 
+  test('an address given for a pointer is laid out as that address', async () => {
+    const { next, bytes, maybe, cell, count } = await run(`
+      type Link = (value: i32, next: *Link, bytes: [*]u8, maybe: ?*i32)
+      data links: *[2]Link = [(1, 64, 72, 0), Link(2, 80, 88, 96)]
+      data cells: []*i32 = [16, 24]
+      data same: *[3]*i32 = [32; 3]
+      export func next() -> u32 => links[1].next as u32
+      export func bytes() -> u32 => links[0].bytes as u32
+      export func maybe() -> u32 => if let p = links[1].maybe { p as u32 } else { 0 }
+      export func cell() -> u32 => (cells.ptr.u32[1]) + (same[2] as u32)
+      export func count() -> u32 => cells.len
+    `)
+    expect([next(), bytes(), maybe(), cell(), count()]).toEqual([80, 72, 96, 56, 2])
+  })
+
   test('a tuple gives its fields by position, in data as in a variable', async () => {
     const { f } = await run(`
       type Point = (x: i32, y: i32)

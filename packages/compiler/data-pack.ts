@@ -784,6 +784,11 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
       const bytes = serializeInt(lit.value, 'i32')
       if (bytes) return bytes
     }
+    // A pointer given as a number is that address: four bytes in memory.
+    if (elementType.kind === 'pointer') {
+      const bytes = serializeInt(lit.value, 'u32')
+      if (bytes) return bytes
+    }
     throw new TypeError(`Cannot serialize int literal to type ${elementType.kind}`)
   }
 
