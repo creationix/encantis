@@ -489,6 +489,16 @@ const readsGlobal = (wat: string) => /\(global\.get\b/.test(wat)
 // Whether an expression reads memory, or could through a call.
 const readsMemory = (wat: string) => loadsMemory(wat) || /\((?:call|call_indirect)\b/.test(wat)
 
+// Whether `wat` sets a local that `address` reads: an if or a block that is a
+// value can assign on its way to it (p.* = if c { p = q ... }), and then the
+// address is another one after the value than before it.
+function setsLocalOf(wat: string, address: string): boolean {
+  for (const [, name] of address.matchAll(/\(local\.get (\$[\w-]+)\)/g)) {
+    if (wat.includes(`(local.set ${name} `) || wat.includes(`(local.set ${name})`) || wat.includes(`(local.tee ${name} `)) return true
+  }
+  return false
+}
+
 // The load and store instructions for one scalar. Integers narrower than a
 // word, and bool (one byte), take their own width in memory and an i32 on the
 // stack.
@@ -571,9 +581,11 @@ function loadFromMemory(type: ResolvedType, ptr: string, ctx: CodegenContext): s
 // integer is also the exception to the rule: it is one scalar, stored limb by
 // limb in order, so a copy over a place that partly overlaps it is not whole.
 //
-// The address is evaluated once, as for loads. A slice or wide integer repeats
-// an address that nothing between its uses can change: one that reads no
-// memory, has no effects, and reads no global while the value has effects.
+// The address is evaluated once, as for loads, and before the value: it is the
+// place the target named when the assignment began. A local or a constant is
+// repeated instead, and a slice or wide integer repeats an address that reads
+// no memory, has no effects, and reads no global while the value has effects;
+// but only when the value sets no local the address reads.
 function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: CodegenContext): string {
   const nw = wideIntParts(type)
   const u = unwrap(type)
@@ -585,8 +597,9 @@ function storeToMemory(type: ResolvedType, ptr: string, value: string, ctx: Code
   const values = trySplitMultiValue(value, parts.length)
   if (nw > 0 && !values) return `(call ${wideHelperName(nw, 'store')} ${ptr} ${value})`
 
-  const repeat = isSimple(ptr) ||
-    ((nw > 0 || u.kind === 'slice') && isRepeatable(ptr) && !loadsMemory(ptr) && !(readsGlobal(ptr) && !isRepeatable(value)))
+  const repeat = (isSimple(ptr) ||
+    ((nw > 0 || u.kind === 'slice') && isRepeatable(ptr) && !loadsMemory(ptr) && !(readsGlobal(ptr) && !isRepeatable(value)))) &&
+    !setsLocalOf(value, ptr)
   let first = ptr
   let rest = ptr
   if (!repeat) {

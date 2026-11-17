@@ -968,6 +968,55 @@ describe('structs in memory', () => {
     ])
   })
 
+  test('the address is the one the target named before the value was computed', async () => {
+    // A value that assigns on its way (an if with statements) can move the
+    // pointer the target names: every part still goes where it pointed.
+    const { whole, field, slice, index } = await run(`
+      type Point = (x: i32, y: i32)
+      type P3 = (x: i32, y: i32, z: i32)
+      data cells: *mut [2]Point = [Point(0, 0), Point(0, 0)]
+      data threes: *mut [2]P3 = [P3(0, 0, 0), P3(0, 0, 0)]
+      data names: *mut [2][]u8 = ["", ""]
+      data three: *[1]i32 = [3]
+      export func whole(c: bool) -> i32 {
+        let p: *mut Point = &cells[0]
+        let q: *mut Point = &cells[1]
+        p.* = if c {
+          p = q
+          Point(1, 2)
+        } else { Point(3, 4) }
+        return cells[0].x * 1000 + cells[0].y * 100 + cells[1].x * 10 + cells[1].y
+      }
+      export func field(c: bool) -> i32 {
+        let p: *mut P3 = &threes[0]
+        let q: *mut P3 = &threes[1]
+        p.* = P3(if c {
+          p = q
+          1
+        } else { 4 }, 2, three[0])
+        return threes[0].x * 100 + threes[0].y * 10 + threes[0].z + threes[1].x + threes[1].y + threes[1].z
+      }
+      export func slice(c: bool) -> u32 {
+        let p: *mut []u8 = &names[0]
+        let q: *mut []u8 = &names[1]
+        p.* = if c {
+          p = q
+          "abc"
+        } else { "de" }
+        return names[0].len * 10 + names[1].len
+      }
+      export func index(c: bool) -> u32 {
+        let i: u32#2 = 0
+        names[i] = if c {
+          i = 1
+          "abcd"
+        } else { "de" }
+        return names[0].len * 10 + names[1].len
+      }
+    `)
+    expect([whole(1), field(1), slice(1), index(1)]).toEqual([1200, 123, 30, 40])
+  })
+
   test('a copy over a place that overlaps its source arrives whole', async () => {
     const { spots, slices } = await run(`${SPOT}
       export func spots() -> i32 {
