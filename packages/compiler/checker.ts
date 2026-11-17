@@ -1627,7 +1627,13 @@ class CheckContext {
     const prevScope = this.currentScope
     const prevReturnType = this.currentReturnType
     this.currentScope = funcScope
-    this.currentReturnType = this.resolveType(decl.signature.output)
+    const results = this.resolveType(decl.signature.output)
+    // What follows `->` is a list of results only where it is written in
+    // parentheses. An instance's `-> T` is one result, also when T is bound
+    // to a tuple or a struct: it is held as the list of that one, so that
+    // its fields are not taken for the function's results below.
+    const oneTuple = decl.signature.output.kind === 'BoundType' && results.kind === 'tuple'
+    this.currentReturnType = oneTuple ? tuple([field(null, results)]) : results
     if (decl.body.kind === 'Block') {
       const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)

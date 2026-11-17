@@ -51,10 +51,32 @@ describe('calling a generic function', () => {
 
   test('a type in parentheses is the tuple of one element it is after a colon', () => {
     const id = 'func id(comptime T: type, a: T) -> T => a\n'
-    expect(instancesOf(`${id}export func f(a: (u32)) -> (u32) => id((u32), a)`)).toEqual(['id<<u32>>'])
+    // After `->` parentheses list the results, so one result that is a tuple
+    // of one element is written ((u32)).
+    expect(instancesOf(`${id}export func f(a: (u32)) -> ((u32)) => id((u32), a)`)).toEqual(['id<<u32>>'])
     expect(errorsOf(`${id}func f(a: u32) -> u32 => id((u32), a)`)).toEqual([
       'argument 2: cannot assign u32 to (u32)',
       'cannot assign (u32) to u32',
+    ])
+  })
+
+  test('the result of an instance is one value, also when the type argument is a tuple or a struct', async () => {
+    // In a hand-written signature `-> (u32)` and `-> (q: i32, r: i32)` list
+    // results. An instance's `-> T` never does: its body returns a T.
+    const source = `func id(comptime T: type, a: T) -> T => a
+func back(comptime T: type, a: T) -> T { return a }
+func none(comptime T: type, a: T) -> T { return }
+export func f(a: (u32)) -> ((u32)) => back((u32), id(a))
+export func g(q: i32, r: i32) -> i32 {
+  let p = back((q: i32, r: i32), id((q: i32, r: i32), (q: q, r: r)))
+  return p.q + p.r
+}`
+    expect(instancesOf(source)).toEqual(['back<<q:i32|r:i32>>', 'back<<u32>>', 'id<<q:i32|r:i32>>', 'id<<u32>>'])
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+    expect((instance.exports.g as (q: number, r: number) => number)(3, 4)).toBe(7)
+    // Not a function with the named results q and r, which a bare return hands back.
+    expect(errorsOf(`${source}\nexport func h(q: i32) -> i32 => none((q: i32, r: i32), (q: q, r: 2)).q`)).toEqual([
+      'return needs a value: the function returns ((q: i32, r: i32)), in none(T = (q: i32, r: i32))',
     ])
   })
 
