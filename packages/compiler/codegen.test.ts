@@ -2711,3 +2711,425 @@ describe('members named like a primitive type', () => {
     expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
   })
 })
+
+describe('declarations take the types they are checked as', () => {
+  test('a constant past an i32 with no type is an i64, alone or in a tuple, local or global', async () => {
+    const x = await run(`
+      global big = 2147483648
+      global count = 0
+      export func pair() -> i64 {
+        let t = (3000000000, 1)
+        return t.0 + (t.1 as i64)
+      }
+      export func parts() -> i64 {
+        let (p, q) = (3000000000, 2147483648)
+        return p - q
+      }
+      export func named() -> i64 {
+        let t = (x: 3000000000, y: 1)
+        return t.x
+      }
+      export func wide() -> i64 => big + 1
+      export func bump() -> i32 {
+        count = 7
+        count += 1
+        return count
+      }
+    `)
+    expect(x.pair()).toBe(3000000001n)
+    expect(x.parts()).toBe(852516352n)
+    expect(x.named()).toBe(3000000000n)
+    expect(x.wide()).toBe(2147483649n)
+    expect(x.bump()).toBe(8)
+  })
+
+  test('a constant loop count is a u32, past an i32 too', async () => {
+    const x = await run(`
+      def big = 3000000000
+      export func lit() -> u32 {
+        let n: u32 = 0
+        for i in 3000000000 {
+          n = i
+          if i == 3 { break }
+        }
+        return n
+      }
+      export func named() -> u32 {
+        let n: u32 = 0
+        for i in big {
+          n += 1
+          if i == 4 { break }
+        }
+        return n
+      }
+      export func top() -> u32 {
+        let n: u32 = 0
+        for i in (1 << 31) + 1 {
+          n = i
+          if i == 6 { break }
+        }
+        return n
+      }
+    `)
+    expect(x.lit()).toBe(3)
+    expect(x.named()).toBe(5)
+    expect(x.top()).toBe(6)
+    const errs = typecheck(parse('func f() { for i in 5000000000 { } }').module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(['cannot assign int(5000000000) to u32'])
+  })
+})
+
+describe('set takes the types of the variables it sets', () => {
+  test('constants in a tuple, or in the branches that give one, take each variable\'s type', async () => {
+    const x = await run(`
+      export func lits() -> i64 {
+        let a: i64 = 0
+        let b: i64 = 0
+        set (a, b) = (1, 2)
+        return a * 10 + b
+      }
+      export func mixed() -> f64 {
+        let a: f32 = 0
+        let b: u64 = 0
+        let c: f64 = 0
+        let x: i32 = 5
+        set (a, b, c) = (1, 2, x)
+        return (a as f64) * 100 + (b as f64) * 10 + c
+      }
+      export func branches(c: bool) -> i64 {
+        let a: i64 = 0
+        let b: u64 = 0
+        set (a, b) = if c { (1, 2) } else { (3, 4) }
+        return a * 10 + (b as i64)
+      }
+      export func named() -> i64 {
+        let a: i64 = 0
+        let b: f64 = 0
+        set (x: a, y: b) = (y: 2, x: 1)
+        return a * 10 + (b as i64)
+      }
+    `)
+    expect(x.lits()).toBe(12n)
+    expect(x.mixed()).toBe(125)
+    expect(x.branches(1)).toBe(12n)
+    expect(x.branches(0)).toBe(34n)
+    expect(x.named()).toBe(12n)
+  })
+
+  test('globals, struct variables and the parts of a nested pattern are set', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      global g1: i64 = 0
+      global g2: f32 = 0
+      global gp: Pt = Pt(0, 0)
+      global gs: []u8 = "ab"
+      data four = [1:u8, 2, 3, 4]
+      export func globals() -> i64 {
+        set (g1, g2) = (4, 5)
+        set gp = Pt(6, 7)
+        set gs = four
+        return g1 * 1000 + (g2 as i64) * 100 + (gp.y as i64) * 10 + (gs.len as i64)
+      }
+      export func local() -> i32 {
+        let p = Pt(1, 2)
+        set p = Pt(3, 4)
+        return p.x * 10 + p.y
+      }
+      export func nested() -> i32 {
+        let a: i32 = 0
+        let b: i32 = 0
+        let c: i32 = 0
+        set (a, (b, c)) = (1, (2, 3))
+        let (d, (e, f)) = (4, (5, 6))
+        return a * 100000 + b * 10000 + c * 1000 + d * 100 + e * 10 + f
+      }
+    `)
+    expect(x.globals()).toBe(4574n)
+    expect(x.local()).toBe(34)
+    expect(x.nested()).toBe(123456)
+  })
+
+  test('a value that is already on the stack is not widened field by field', () => {
+    const errs = typecheck(parse(`
+      func pair() -> (i32, i32) => (1, 2)
+      func f() {
+        let a: i64 = 0
+        let b: i32 = 0
+        set (a, b) = pair()
+      }
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(["cannot set 'a' (i64) from a field of type i32"])
+  })
+})
+
+describe('arguments by place and by name', () => {
+  test('a constructor takes each named argument for its field, and the others by place', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      type Wide = (a: i64, b: f64, c: u8)
+      global gp: Pt = Pt(r: 4, q: 3)
+      data dp: *[2]Pt = [Pt(r: 6, q: 5), Pt(7, r: 8)]
+      export func mixed(q: i32) -> i32 {
+        let p = Pt(q, r: 2)
+        return p.q * 10 + p.r
+      }
+      export func swapped() -> i32 {
+        let p = Pt(r: 2, q: 1)
+        return p.q * 10 + p.r
+      }
+      export func short(q: i32, r: i32) -> i32 => Pt(r:, q:).q * 10 + Pt(r:, q:).r
+      export func wide() -> f64 {
+        let w = Wide(c: 3, a: 1, b: 2)
+        return (w.a as f64) * 100 + w.b * 10 + (w.c as f64)
+      }
+      export func glob() -> i32 => gp.q * 10 + gp.r
+      export func dat() -> i32 => dp[0].q * 1000 + dp[0].r * 100 + dp[1].q * 10 + dp[1].r
+    `)
+    expect(x.mixed(1)).toBe(12)
+    expect(x.swapped()).toBe(12)
+    expect(x.short(1, 2)).toBe(12)
+    expect(x.wide()).toBe(123)
+    expect(x.glob()).toBe(34)
+    expect(x.dat()).toBe(5678)
+  })
+
+  test('the fields of a named constructor are computed in the order of the type', () => {
+    const wat = modWat(`
+      type Pt = (q: i32, r: i32)
+      func one() -> i32 => 1
+      func two() -> i32 => 2
+      export func f() -> i32 => Pt(r: two(), q: one()).r
+    `)
+    expect(wat).toContain('(call $one) (call $two)')
+  })
+})
+
+describe('the address of an element, where a pointer is expected', () => {
+  test('of a many-pointer is the element\'s address, not its value', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      data cells = mut [10:i32, 20, 30, 40]
+      data pts = mut [Pt(1, 2), Pt(3, 4)]
+      func get(p: *i32) -> i32 => p.*
+      func put(p: *mut Pt) { p.x = 9 }
+      export func many(i: u32) -> i32 {
+        let list = cells as [*]mut i32
+        let q = &list[i]
+        return get(q) + get(&list[i + 1])
+      }
+      export func many_struct() -> i32 {
+        let list = pts as [*]mut Pt
+        put(&list[1])
+        return pts[1].x * 10 + pts[1].y
+      }
+      export func fixed() -> i32 => get(&cells[2])
+      export func cell() -> i32 => get(&5)
+    `)
+    expect(x.many(1)).toBe(50)
+    expect(x.many_struct()).toBe(94)
+    expect(x.fixed()).toBe(30)
+    expect(x.cell()).toBe(5)
+  })
+
+  test('of a literal in parentheses is a cell holding it', async () => {
+    const x = await run(`
+      func get(p: *i32) -> i32 => p.*
+      func pair(p: *(i32, i32)) -> i32 => p.0 * 10 + p.1
+      export func expected() -> i32 => get(&(8))
+      export func typed() -> i32 => get(&(6:i32)) + get(&(1):i32)
+      export func inferred() -> i32 {
+        let p = &(9)
+        return p.*
+      }
+      export func tuple() -> i32 => pair(&((1, 2)))
+    `)
+    expect(x.expected()).toBe(8)
+    expect(x.typed()).toBe(7)
+    expect(x.inferred()).toBe(9)
+    expect(x.tuple()).toBe(12)
+  })
+
+  test('of a row of a many-pointer table is where its row pointer is', async () => {
+    const x = await run(`
+      data rows: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+      func sum(r: *[3]i32) -> i32 => r[0] + r[1] * 10 + r[2] * 100
+      export func row(i: u32) -> i32 {
+        let q = &(rows as [*][3]i32)[i]
+        return sum(q.*)
+      }
+      export func write(i: u32) -> i32 {
+        let q: *mut *mut [3]i32 = &(rows as [*]mut [3]i32)[i]
+        q.*[0] = 9
+        return sum(rows[1])
+      }
+    `)
+    expect(x.row(1)).toBe(654)
+    expect(x.write(1)).toBe(659)
+    const errs = typecheck(parse(`
+      func sum(r: *[3]i32) -> i32 => r[0]
+      func f(p: [*][3]i32, i: u32) -> i32 => sum(&p[i])
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(['argument 1: cannot assign **[3]i32 to *[3]i32'])
+  })
+
+  test('of a variable is none', () => {
+    const errs = typecheck(parse(`
+      type Pt = (x: i32, y: i32)
+      func get(p: *i32) -> i32 => p.*
+      func put(p: *mut Pt) { p.x = 9 }
+      func a(x: i32) -> i32 => get(&x)
+      func b() {
+        let p = Pt(1, 2)
+        put(&p)
+      }
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(["'x' has no address: a variable is held in registers", "'p' has no address: a variable is held in registers"])
+  })
+})
+
+describe('the wasm names of variables', () => {
+  test('a part of a variable is never another variable', async () => {
+    const x = await run(`
+      type P = (x: i32, y: i32)
+      global g: P = P(1, 2)
+      global g_x: f64 = 2.5
+      export func local() -> f64 {
+        let a_x: f64 = 2.5
+        let a = P(1, 2)
+        return a_x + (a.x as f64)
+      }
+      export func param(s: []u8) -> u32 {
+        let s_ptr = s.ptr
+        s_ptr += 1
+        return (s_ptr as u32) - (s.ptr as u32)
+      }
+      export func field(r: P) -> i32 {
+        let r_y: i32 = 40
+        return r.y + r_y
+      }
+      export func both() -> f64 {
+        g.x += 1
+        return g_x + (g.x as f64)
+      }
+    `)
+    expect(x.local()).toBe(3.5)
+    expect(x.param(0, 3)).toBe(1)
+    expect(x.field(1, 2)).toBe(42)
+    expect(x.both()).toBe(4.5)
+  })
+
+  test('two parts of one variable named alike are two', async () => {
+    // A field x_y, and the field y of a field x: both parts are named t_x_y.
+    const source = `
+      type In = (y: i32)
+      type T = (x: In, x_y: i32)
+      type W = (x: In, x_y: f64)
+      type P = (x: i32, y: i32)
+      import "env" "h" func host(a: P, a_x: f64, w: W) -> i32
+      global g: T = T(In(1), 2)
+      data ts = [T(In(3), 4), T(In(5), 6)]
+      func mk(a: i32, b: i32) -> T => T(In(a), b)
+      export func local(a: i32, b: i32) -> i32 {
+        let t = mk(a, b)
+        return t.x.y * 10 + t.x_y
+      }
+      export func param(w: W) -> f64 => (w.x.y as f64) + w.x_y
+      export func glob() -> i32 => g.x.y * 10 + g.x_y
+      export func walk() -> i32 {
+        let s = 0
+        for t in ts { s += t.x.y * 10 + t.x_y }
+        return s
+      }
+      export func bound(i: u32) -> i32 => if let t = ts[i] { t.x.y * 10 + t.x_y } else { -1 }
+    `
+    const { default: wabt } = await import('wabt')
+    const wasm = (await wabt()).parseWat('test.wat', modWat(source), { multi_value: true, bulk_memory: true })
+    wasm.validate()
+    const { buffer } = wasm.toBinary({})
+    wasm.destroy()
+    const { instance } = await WebAssembly.instantiate(buffer, { env: { h: () => 0 } })
+    const x = instance.exports as Record<string, (...args: number[]) => unknown>
+    expect(x.local(1, 2)).toBe(12)
+    expect(x.param(1, 2.5)).toBe(3.5)
+    expect(x.glob()).toBe(12)
+    expect(x.walk()).toBe(90)
+    expect(x.bound(1)).toBe(56)
+  })
+
+  test('a name goes to the first variable that asks, and another gets it with a prefix', () => {
+    const wat = modWat(`
+      type P = (x: i32, y: i32)
+      global g: P = P(1, 2)
+      global g_x: f64 = 2.5
+      export func f(a_x: f64) -> f64 {
+        let a = P(1, 2)
+        return a_x + (a.x as f64) + g_x
+      }
+    `)
+    expect(wat).toContain('(func $f (param $a_x f64) (result f64)')
+    // All the parts of the variable that asked later, so they read as one.
+    expect(wat).toContain('(local $_1_a_x i32)\n    (local $_1_a_y i32)')
+    expect(wat).toContain('(global $g_x (mut i32) (i32.const 1))')
+    expect(wat).toContain('(global $_1_g_x (mut f64) (f64.const 2.5))')
+  })
+
+  test('an if let binding is a variable of its own, whatever its type', async () => {
+    const x = await run(`
+      data cells = [7:u32, 8, 9]
+      export func other_type(p: ?*u32) -> u32 {
+        let q: f64 = 1.5
+        if let q = p {
+          return q.*
+        }
+        return q as u32
+      }
+      export func same_type(i: u32) -> u32 {
+        let q: u32 = 5
+        let t: u32 = 0
+        if let q = cells[i] {
+          t = q
+        }
+        return q * 100 + t
+      }
+      export func nested(i: u32, j: u32) -> u32 {
+        if let v = cells[i] {
+          if let v = cells[j] {
+            return v
+          }
+          return v + 1000
+        }
+        return 0
+      }
+    `)
+    expect(x.other_type(0)).toBe(1)
+    expect(x.same_type(1)).toBe(508)
+    expect(x.same_type(7)).toBe(500)
+    expect(x.nested(0, 9)).toBe(1007)
+    expect(x.nested(0, 2)).toBe(9)
+  })
+
+  test('a loop variable is its own from the loop on, whatever the name was before', async () => {
+    const x = await run(`
+      data bytes = [1:u8, 2, 3]
+      data wides = [1.5, 2.5]
+      export func param_then_for(x: f64) -> u32 {
+        let before = x as u32
+        for x in 3 {
+        }
+        return before * 10 + x
+      }
+      export func two_loops() -> f64 {
+        let s: f64 = 0
+        for v in bytes {
+          s += v as f64
+        }
+        for v in wides {
+          s += v
+        }
+        return s
+      }
+    `)
+    expect(x.param_then_for(7)).toBe(73)
+    expect(x.two_loops()).toBe(10)
+  })
+})

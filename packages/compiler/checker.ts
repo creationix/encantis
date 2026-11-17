@@ -468,11 +468,12 @@ function concretizeOnce(t: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map
 function concretizeKind(u: ResolvedType, opts: typeof DEFAULT_OPTIONS, made: Map<ResolvedType, ResolvedType>, open: Set<ResolvedType>): ResolvedType {
   switch (u.kind) {
     case 'comptime_int': {
+      // The default the checker gives a variable (CheckContext.concretize):
+      // an i32 if the value fits one, or else an i64, which also holds the
+      // bits of a 64-bit pattern past it (18446744073709551615 is its -1).
       const val = u.value
       if (val >= -2147483648n && val <= 2147483647n) return primitive(opts.defaultInt)
-      if (val >= 0n && val <= 4294967295n) return primitive('u32')
-      if (val >= -9223372036854775808n && val <= 9223372036854775807n) return primitive('i64')
-      if (val >= 0n && val <= 18446744073709551615n) return primitive('u64')
+      if (val >= -9223372036854775808n && val <= 18446744073709551615n) return primitive('i64')
       // Auto-size to smallest power-of-two type that fits
       for (const bits of [128, 256, 512]) {
         if (val >= -(2n ** BigInt(bits - 1)) && val <= 2n ** BigInt(bits) - 1n) {
@@ -894,6 +895,7 @@ class CheckContext {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
+          if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
           if (isGenericSignature(item.item.signature)) {
             this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
             break
@@ -921,6 +923,12 @@ class CheckContext {
         }
         case 'ImportGlobal': {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
+          // Importing a global of another module twice is the same global
+          // again, as it is for a function (declareFunc).
+          const origin = isSource ? `${decl.module}:${item.name}` : undefined
+          if (origin !== undefined && this.globalOrigins.get(item.item.ident) === origin) break
+          if (this.takenByAnother(item.item.ident, item.span.start, 'value', inTest)) break
+          if (origin !== undefined && !inTest) this.globalOrigins.set(item.item.ident, origin)
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -960,12 +968,37 @@ class CheckContext {
 
   // A generic function's name is unique in its module: a declaration that
   // would take the name over is an error and is left out. (Functions that are
-  // not generic share a name, see declareFunc; other declarations of one name
-  // replace each other silently, as they always have.)
+  // not generic share a name, see declareFunc; any other two declarations of
+  // one name are refused by takenByAnother.)
   private takenByGeneric(name: string, offset: number): boolean {
     if (this.moduleScope.symbols.get(name)?.kind !== 'generic') return false
     this.error(offset, `'${name}' is already declared: a generic function's name is unique in its module`)
     this.contested.add(name)
+    return true
+  }
+
+  // Each name the module declares at its top level is one thing: a global,
+  // def, data or import of the name of another declaration of the module is
+  // an error and is left out, and so is a function of the name of anything
+  // but another function. Functions share a name with each other where
+  // their parameters differ (see declareFunc). Without this the later
+  // declaration replaced the earlier one in some uses and not in others: two
+  // globals of one name were two wasm globals of one name. A function or an
+  // import a test declares is held to the module's names the same way (a
+  // test's function takes over a function of the module, and nothing else),
+  // and its own name is no name of the module's.
+  private readonly topLevel = new Map<string, 'func' | 'value'>()
+  // The module and the name a global imported from another module is
+  // exported under, by the name it is imported as.
+  private readonly globalOrigins = new Map<string, string>()
+  private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
+    const first = this.topLevel.get(name)
+    if (first === undefined) {
+      if (!inTest) this.topLevel.set(name, kind)
+      return false
+    }
+    if (first === 'func' && kind === 'func') return false
+    this.error(offset, `'${name}' is already declared`)
     return true
   }
 
@@ -976,6 +1009,7 @@ class CheckContext {
     }
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
   }
@@ -1246,6 +1280,7 @@ class CheckContext {
 
   collectDef(decl: AST.DefDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     // Defs are comptime - infer type from literal value or use LHS type annotation
     const inferredType = this.inferExpr(decl.value)
 
@@ -1280,6 +1315,7 @@ class CheckContext {
 
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
+    if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     const inferredType = this.inferExpr(decl.value)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
@@ -1819,6 +1855,7 @@ class CheckContext {
       return
     }
     if (this.takenByGeneric(name, decl.span.start)) return
+    if (this.takenByAnother(name, decl.span.start, 'value')) return
 
     let type: ResolvedType
     if (decl.type) {
@@ -1834,7 +1871,11 @@ class CheckContext {
         }
       }
     } else if (decl.value) {
-      type = this.inferExpr(decl.value)
+      // As in checkLetStmt: a constant takes its default type, down to its
+      // literals, so `global g = 2147483648` is an i64 that can be assigned.
+      const valueType = this.inferExpr(decl.value)
+      type = this.concretize(valueType)
+      this.typeDefault(decl.value, type, valueType)
     } else {
       this.error(decl.span.start, 'global needs type annotation or initializer')
       type = primitive('i32')
@@ -2193,6 +2234,14 @@ class CheckContext {
           this.checkRangeAssignment(stmt.target, stmt.op, stmt.value)
           break
         }
+        // Only a variable holds a value that can be replaced: a def or a
+        // data block is a constant, and a function is code.
+        const named = stmt.target.kind === 'IdentExpr' ? this.lookup(stmt.target.name) : undefined
+        if (stmt.target.kind === 'IdentExpr' && named && !isVariable(named)) {
+          this.error(stmt.target.span.start, `cannot assign to '${declaredName(stmt.target.name)}': it is not a variable`)
+          this.inferExpr(stmt.value)
+          break
+        }
         let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
@@ -2233,6 +2282,10 @@ class CheckContext {
         if (iterableType.kind === 'comptime_int') {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
+          // The variable counts up to the count as a u32, so a constant count
+          // is one, not a constant of its default type: 3000000000 is no i64
+          // here, and 5000000000 is no count.
+          if (iterableType.value >= 0n) this.coerce(stmt.iterable, iterableType, primitive('u32'))
         } else if (iterableType.kind === 'slice') {
           elemType = tableRow(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
@@ -2353,7 +2406,7 @@ class CheckContext {
       // Concretize comptime types for variables
       type = this.concretize(valueType)
       // A constant initializer takes the variable's type, down to its literals.
-      if (isComptimeNumber(valueType)) this.typeConstant(stmt.value, type, valueType, false)
+      this.typeDefault(stmt.value, type, valueType)
     } else {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
@@ -2365,11 +2418,65 @@ class CheckContext {
 
   checkSetStmt(stmt: AST.SetStmt): void {
     // set x = v assigns like x = v: the value is checked against x's type.
-    const sym = stmt.pattern.kind === 'IdentPattern' ? this.lookup(stmt.pattern.name) : undefined
-    const valueType = sym && sym.kind !== 'func' && sym.kind !== 'type' && sym.kind !== 'generic' && sym.kind !== 'typefunc'
-      ? this.checkExpr(stmt.value, sym.type)
-      : this.inferExpr(stmt.value)
-    this.validatePatternBindingsExist(stmt.pattern, valueType)
+    // set (a, b) = (1, x) checks a tuple literal, or the branches of an if
+    // or match, against the types of a and b, as `let (a, b): (A, B) = ...`
+    // does: each constant takes its variable's type, and each value widens
+    // to it. Any other value is already on the stack, as it is.
+    const target = this.setTarget(stmt.pattern, stmt.value)
+    const value = ungrouped(stmt.value)
+    const literal = stmt.pattern.kind === 'IdentPattern' || value.kind === 'TupleExpr' || value.kind === 'MatchExpr'
+      || (value.kind === 'IfExpr' && value.else_ !== null)
+    if (target && literal) {
+      // Codegen reads the type of a variable set by name, as it does the
+      // place of an assignment.
+      if (stmt.pattern.kind === 'IdentPattern') this.types.set(typeKey(stmt.pattern.span.start, stmt.pattern.kind), target)
+      this.validatePatternBindingsExist(stmt.pattern, this.checkExpr(stmt.value, target))
+      return
+    }
+    // A constant left in the value takes its default type, which is then
+    // the type of the field it gives a variable.
+    const valueType = this.inferExpr(stmt.value)
+    const type = this.concretize(valueType)
+    this.typeDefault(stmt.value, type, valueType)
+    this.validatePatternBindingsExist(stmt.pattern, type)
+  }
+
+  // The type `set` assigns to through a pattern: the variable's, or the
+  // tuple of the variables' in a tuple pattern. A part that picks a field by
+  // name places it where a tuple literal `value` has a field of that name.
+  // Null where a part names no variable, or where only the value's type says
+  // which field a name picks.
+  private setTarget(pattern: AST.Pattern, value: AST.Expr | null): ResolvedType | null {
+    if (pattern.kind === 'IdentPattern') {
+      const sym = this.lookup(pattern.name)
+      if (!sym || !isVariable(sym)) return null
+      return sym.type
+    }
+    const literal = value ? ungrouped(value) : null
+    const given = literal?.kind === 'TupleExpr' && literal.elements.length === pattern.elements.length ? literal.elements : null
+    const fields: ResolvedField[] = []
+    for (const [i, element] of pattern.elements.entries()) {
+      if (element.kind === 'named') {
+        if (!given) return null
+        break
+      }
+      const type = this.setTarget(element.pattern, given ? argValue(given[i]) : null)
+      if (!type) return null
+      fields.push(field(null, type))
+    }
+    if (fields.length === pattern.elements.length) return tuple(fields)
+    // (x: a, y: b) = (y: 2, x: 1): in the literal's order, by its names.
+    fields.length = 0
+    for (const [i, element] of (given ?? []).entries()) {
+      const part = element.name ? pattern.elements.find((e) => e.kind === 'named' && e.field === element.name) : pattern.elements[i]
+      if (!part || (part.kind === 'named' && !element.name)) return null
+      const type = part.kind === 'named'
+        ? this.setTarget({ kind: 'IdentPattern', name: part.binding ?? part.field, span: pattern.span }, null)
+        : this.setTarget(part.pattern, argValue(element))
+      if (!type) return null
+      fields.push(field(element.name, type))
+    }
+    return tuple(fields)
   }
 
   private validatePatternBindingsExist(pattern: AST.Pattern, type: ResolvedType): void {
@@ -2378,6 +2485,8 @@ class CheckContext {
         const sym = this.lookup(pattern.name)
         if (!sym) {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
+        } else if (!isVariable(sym)) {
+          this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': it is not a variable`)
         }
         break
       }
@@ -2391,7 +2500,7 @@ class CheckContext {
         // to be held the way the variable is: nothing widens it on the way.
         const fits = (varName: string, fieldType: ResolvedType | undefined) => {
           const sym = this.lookup(varName)
-          if (!sym || !fieldType || sym.kind === 'func' || sym.kind === 'type' || sym.kind === 'generic' || sym.kind === 'typefunc') return
+          if (!sym || !fieldType || !isVariable(sym)) return
           if (!typeAssignable(sym.type, fieldType) || !sameRepresentation(fieldType, sym.type)) {
             this.error(pattern.span.start, `cannot set '${varName}' (${typeToString(sym.type)}) from a field of type ${typeToString(fieldType)}`)
           }
@@ -2402,6 +2511,8 @@ class CheckContext {
             const sym = this.lookup(varName)
             if (!sym) {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
+            } else if (!isVariable(sym)) {
+              this.error(pattern.span.start, `cannot set '${declaredName(varName)}': it is not a variable`)
             }
             fits(varName, unwrappedType.fields.find(f => f.name === element.field)?.type)
           } else {
@@ -2832,20 +2943,25 @@ class CheckContext {
     // And what a pointer points to, under its name as well: *A for A = [3]u16
     const pointee = shape.kind === 'pointer' ? unwrap(shape.pointee) : null
 
-    // Bidirectional: propagate expected type through & (ref) expressions
-    if (expr.kind === 'UnaryExpr' && expr.op === '&' && shape.kind === 'pointer') {
-      const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
-      const isLiteral = operand.kind === 'LiteralExpr' || operand.kind === 'ArrayExpr' ||
-        operand.kind === 'RepeatExpr' || operand.kind === 'TupleExpr'
-      if (isLiteral && shape.mutable) markMut(operand)
+    // Bidirectional: propagate expected type through & (ref) of a literal,
+    // which is a cell of the data section of the type pointed to. Any other
+    // operand has an address of its own or has none, whatever is expected:
+    // it is checked below as it is inferred (an element of an array, slice
+    // or many-pointer), and then against the pointer type. `&x` of a
+    // variable held in registers is no address, nor is `&list[k]` the
+    // element's value.
+    const refOperand = expr.kind === 'UnaryExpr' && expr.op === '&' ? addressedLiteral(expr.operand) : null
+    const isLiteral = refOperand !== null && (refOperand.kind === 'LiteralExpr' || refOperand.kind === 'ArrayExpr' ||
+      refOperand.kind === 'RepeatExpr' || refOperand.kind === 'TupleExpr')
+    if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && shape.kind === 'pointer') {
+      const operand = refOperand
+      if (shape.mutable) markMut(operand)
       this.checkExpr(expr.operand, shape.pointee)
-      if (isLiteral) {
-        // Give the literal its own cell in the data section, as inferExpr does.
-        if (operand.kind !== 'TupleExpr') {
-          (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
-        }
-        this.addLiteral(operand.span.start, operand, { kind: 'array', element: shape.pointee, sizes: [1] })
+      // Give the literal its own cell in the data section, as inferExpr does.
+      if (operand.kind !== 'TupleExpr') {
+        (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
       }
+      this.addLiteral(operand.span.start, operand, { kind: 'array', element: shape.pointee, sizes: [1] })
       const result = pointer(shape.pointee, false, shape.mutable)
       this.exprTypes.set(expr, result)
       return result
@@ -3293,7 +3409,7 @@ class CheckContext {
         // Explicit cast - always returns the target type (may generate conversion code)
         const from = this.inferExpr(expr.expr)
         const to = this.resolveType(expr.type)
-        const problem = castProblem(from, to)
+        const problem = this.castProblemOf(expr.expr, from, to)
         if (problem) this.error(expr.span.start, problem)
         return to
       }
@@ -3507,7 +3623,7 @@ class CheckContext {
         if (args.length !== 1) {
           this.error(expr.span.start, `type cast '${expr.callee.name}' expects 1 argument, got ${args.length}`)
         } else {
-          const problem = castProblem(this.inferExpr(args[0].value), to)
+          const problem = this.castProblemOf(args[0].value, this.inferExpr(args[0].value), to)
           if (problem) this.error(expr.span.start, problem)
         }
         return to
@@ -3535,6 +3651,20 @@ class CheckContext {
           expr.span.start,
           `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: ${signatureText(calleeType)}), can be called`,
         )
+      }
+
+      // A function's arguments go to its parameters in order: a name in the
+      // call (`f(b: 1)`, `f(b:)`) would say a parameter it does not choose.
+      if (expr.args.some((a) => a.name !== null)) {
+        const calleeName = expr.callee.kind === 'IdentExpr' ? expr.callee.name : 'a function'
+        this.error(expr.span.start, `'${declaredName(calleeName)}' takes positional arguments`)
+        for (const arg of expr.args) {
+          const value = argValue(arg)
+          if (value && !typeOfArg(value)) this.inferExpr(value)
+        }
+        return calleeType.returns.length === 0 ? VOID
+          : calleeType.returns.length === 1 ? calleeType.returns[0].type
+          : tuple(calleeType.returns)
       }
 
       // Check argument count
@@ -3572,10 +3702,16 @@ class CheckContext {
     // expressions inside it get concrete types.
     // A `type` that names another name for a struct (type IntVec = Vec(u32))
     // constructs what that one does.
+    // Only a type constructs: a value of a struct type (p(1, 2)) is not one.
     const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
-    const struct = namesType ? unwrap(calleeType) : calleeType
-    if (struct.kind === 'tuple') {
-      this.checkConstructorArgs(expr, struct, typeToString(calleeType))
+    const struct = unwrap(calleeType)
+    if (namesType && struct.kind === 'tuple') {
+      const given = this.checkConstructorArgs(expr, struct, (expr.callee as AST.IdentExpr).name)
+      // With names among the arguments, it compiles as the fields' values
+      // in the order of the type, as a generic type's constructor does.
+      if (expr.args.some((a) => a.name !== null) && given.every((args) => args.length === 1)) {
+        this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
+      }
       return calleeType
     }
 
@@ -3599,9 +3735,12 @@ class CheckContext {
     return primitive('i32')
   }
 
-  // The arguments of a constructor, each against the field it is for. Gives
-  // the arguments each field was given, in the order of the fields.
+  // The arguments of a constructor, each against the field it is for: an
+  // argument with a name is for the field of that name, and one without is
+  // for the field at its place. Gives the arguments each field was given, in
+  // the order of the fields.
   private checkConstructorArgs(expr: AST.CallExpr, struct: TupleRT, shown: string): AST.Arg[][] {
+    const before = this.errorsReported
     const args = expr.args
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
@@ -3623,7 +3762,14 @@ class CheckContext {
         this.inferExpr(value)
       }
     })
-    return struct.fields.map((f) => given.get(f) ?? [])
+    const fields = struct.fields.map((f) => given.get(f) ?? [])
+    // As many arguments as fields, each for a field there is: then one
+    // field has two of them, Pt(1, q: 2), and another none.
+    const twice = fields.findIndex((args) => args.length > 1)
+    if (twice >= 0 && this.errorsReported === before) {
+      this.error(fields[twice][1].span.start, `${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
+    }
+    return fields
   }
 
   // Vec(u32)(p, 0, cap), or T(a, b) in an instance: a value of the type the
@@ -3650,13 +3796,6 @@ class CheckContext {
     const given = this.checkConstructorArgs(expr, struct, typeToString(type))
     if (given.every((args) => args.length === 1)) {
       this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-    } else if (this.errorsReported === before) {
-      // As many arguments as fields, each for a field there is: then one
-      // field has two of them.
-      const twice = given.findIndex((args) => args.length > 1)
-      if (twice >= 0) {
-        this.error(given[twice][1].span.start, `${typeToString(type)}: field '${struct.fields[twice].name ?? twice}' is given twice`)
-      }
     }
     return type
   }
@@ -3968,6 +4107,15 @@ class CheckContext {
   // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
     if (!BUILTIN_NAMES.has(name)) return null
+    // Its operands are taken in order, as a function's arguments are.
+    if (expr.args.some((a) => a.name !== null)) {
+      this.error(expr.span.start, `'${name}' takes positional arguments`)
+      for (const arg of expr.args) {
+        const value = argValue(arg)
+        if (value && !typeOfArg(value)) this.inferExpr(value)
+      }
+      return RECOVERY
+    }
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
     switch (name) {
@@ -4373,6 +4521,13 @@ class CheckContext {
   // An operator with a pointer operand works on addresses, which are 32 bits:
   // the other operand is a pointer too, or an integer no wider than that.
   private checkAddressOperands(expr: AST.BinaryExpr, leftType: ResolvedType, rightType: ResolvedType): void {
+    // A function value held in a variable is a number of its own to compare
+    // (f == g); a function's name has none.
+    const named = this.functionNamed(expr.left) ?? this.functionNamed(expr.right)
+    if (named) {
+      this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
+      return
+    }
     const check = (operand: AST.Expr, type: ResolvedType): boolean => {
       const t = unwrap(type)
       if (t.kind === 'pointer' || t.kind === 'func') return true
@@ -4387,6 +4542,26 @@ class CheckContext {
     if (!leftOk || !rightOk) {
       this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
     }
+  }
+
+  // The name of the function `expr` is, where a function is named in place
+  // of a value. A function has no run-time value yet (3.4): what it compiles
+  // to is a wasm funcref, which is no number and no address.
+  private functionNamed(expr: AST.Expr): string | null {
+    const named = ungrouped(expr)
+    if (named.kind !== 'IdentExpr') return null
+    const sym = this.lookup(named.name)
+    return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
+  }
+
+  // What is wrong with a cast, if anything. A function's name cast to a
+  // number or an address (f as u32) has no value to cast.
+  private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
+    const named = this.functionNamed(operand)
+    if (named && unwrap(to).kind !== 'func') {
+      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
+    }
+    return castProblem(from, to)
   }
 
   private checkCondition(expr: AST.Expr): void {
@@ -4465,6 +4640,30 @@ class CheckContext {
       // the stack: its fields can't be widened in place.
       this.error(expr.span.start, `${prefix}cannot convert ${typeToString(actual)} to ${typeToString(expected)} implicitly: convert its fields`)
     }
+  }
+
+  // A variable's initializer with nothing to type it but the variable's
+  // default type (`type`, from concretize): a constant takes it down to its
+  // literals, and so does each element of a tuple literal, so
+  // (3000000000, 1) is an (i64, i32) literal by literal as it is as a value.
+  private typeDefault(expr: AST.Expr, type: ResolvedType, actual: ResolvedType): void {
+    if (isComptimeNumber(actual)) {
+      this.typeConstant(expr, type, actual, false)
+      return
+    }
+    const inner = groupedExpr(expr)
+    if (inner) {
+      this.typeDefault(inner, type, this.exprTypes.get(inner) ?? actual)
+      return
+    }
+    const to = unwrap(type)
+    const from = unwrap(actual)
+    if (expr.kind !== 'TupleExpr' || to.kind !== 'tuple' || from.kind !== 'tuple' || to.fields.length !== expr.elements.length) return
+    expr.elements.forEach((element, i) => {
+      const value = argValue(element)
+      const own = value && this.exprTypes.get(value)
+      if (value && own && from.fields[i]) this.typeDefault(value, to.fields[i].type, own)
+    })
   }
 
   // Give a constant expression the type it's used as. Its operands are
@@ -4618,7 +4817,7 @@ class CheckContext {
         }
         // Address-of on a value: anonymous data section allocation
         const innerExpr = expr.operand
-        const litExpr = innerExpr.kind === 'AnnotationExpr' ? innerExpr.expr : innerExpr
+        const litExpr = addressedLiteral(innerExpr)
         if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' ||
             litExpr.kind === 'RepeatExpr' || litExpr.kind === 'TupleExpr') {
           const dataId = litExpr.span.start
@@ -4631,7 +4830,14 @@ class CheckContext {
           this.addLiteral(dataId, litExpr, arrType)
           return pointer(operandType, false, true)
         }
-        this.error(expr.span.start, `& requires a literal or a pointer/slice operand`)
+        // A variable is held in registers (9.2), and so is a field of one.
+        const held = ungrouped(innerExpr)
+        const variable = held.kind === 'IdentExpr' ? this.lookup(held.name) : undefined
+        if (variable && (variable.kind === 'local' || variable.kind === 'param' || variable.kind === 'return' || variable.kind === 'global')) {
+          this.error(expr.span.start, `'${held.kind === 'IdentExpr' ? held.name : ''}' has no address: a variable is held in registers`)
+        } else {
+          this.error(expr.span.start, `& requires a literal, a pointer, or an element of an array, slice or many-pointer`)
+        }
         return pointer(operandType, false, true)
       }
     }
@@ -4940,6 +5146,14 @@ class CheckContext {
       elem = objType.pointee.element
       mutable = !!objType.mutable
       size = objType.pointee.sizes[0]
+    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' && objType.pointee.sizes === null) {
+      // A many-pointer has no length: its element's address is never
+      // checked, as reading the element is not (4.7). In a table ([*][M]T)
+      // the element is the row pointer, so &p[i] is a **[M]T.
+      const element = tableRow(objType) ?? objType.pointee.element
+      this.inferIndexValue(expr.index)
+      this.exprTypes.set(expr, element)
+      return pointer(element, false, !!objType.mutable)
     } else {
       return null
     }
@@ -7375,10 +7589,22 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   return null
 }
 
+// A name that holds a value in registers, which `=` and `set` can replace.
+function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'param' | 'return' | 'global' }> {
+  return sym.kind === 'local' || sym.kind === 'param' || sym.kind === 'return' || sym.kind === 'global'
+}
+
 // `expr` without the parentheses around it, however many there are.
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// What `&` takes the address of, through parentheses and a type annotation:
+// `&(8)` and `&(8:i32)` lay out the literal 8, as `&8` does.
+export function addressedLiteral(operand: AST.Expr): AST.Expr {
+  const inner = ungrouped(operand)
+  return inner.kind === 'AnnotationExpr' ? ungrouped(inner.expr) : inner
 }
 
 // An array written out, element by element or as a repeat: passed for a

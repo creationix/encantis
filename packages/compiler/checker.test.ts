@@ -753,6 +753,15 @@ describe('concretizeType', () => {
       // Value is lost, but type is concrete
       expect(result.kind).toBe('primitive')
     })
+
+    test('past an i32 is an i64, as a variable of it is', () => {
+      // A literal left with no type of its own is emitted in this type, and
+      // the variable it starts in the checker's default (i64), not a u32.
+      for (const value of [2147483648n, 3000000000n, 4294967295n, 9223372036854775808n, 18446744073709551615n]) {
+        expect(concretizeType(comptimeInt(value))).toEqual(primitive('i64'))
+      }
+      expect(concretizeType(comptimeInt(-2147483649n))).toEqual(primitive('i64'))
+    })
   })
 
   describe('comptime_float', () => {
@@ -2261,7 +2270,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(1)
     `)
-    expect(result.errors.map(e => e.message)).toContain('(x: i32, y: i32) expects 2 fields, got 1')
+    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1')
   })
 
   test('an unknown field name is an error', () => {
@@ -2269,7 +2278,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(x: 1, z: 2)
     `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point")
   })
 })
 
@@ -2772,8 +2781,8 @@ describe('functions that share a name', () => {
   })
 
   test('a global, a def or data that takes the name afterwards is checked without a throw', () => {
-    // Other declarations of one name replace each other, as they always
-    // have. The functions that shared it are no reason to fail on that.
+    // It is refused ('hash' is already declared), and the functions that
+    // shared the name are no reason to fail on that.
     const two = 'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\n'
     for (const taker of ['global hash: u32 = 3', 'def hash = 3', 'data hash = [1:u8, 2]']) {
       expect(() => checkModule(`${two}${taker}\nfunc hash(k: f64) -> u32 => 2\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
@@ -2796,6 +2805,21 @@ describe('functions that share a name', () => {
     expect([...result.symbols.keys()]).toEqual(['hash', "hash:''u8", 'f'])
     // Two imports of one name from the host are two functions of one name in the module.
     expect(errs('import "env" "now" func now() -> u64\nimport "env" "now" func now() -> u64')).toEqual(["'now' is already declared with parameters ()"])
+  })
+
+  test('one global of another source module imported twice is that global, not a second one', () => {
+    expect(errs(`
+      import "./keys" "seed" global seed: u32
+      import "./keys" ( "seed" global seed: u32 )
+      func f() -> u32 => seed
+    `)).toEqual([])
+    // Another global under that name is a second declaration of it.
+    expect(errs(`
+      import "./keys" "seed" global seed: u32
+      import "./keys" "salt" global seed: u32
+      import "env" "now" global now: u64
+      import "env" "now" global now: u64
+    `)).toEqual(["'seed' is already declared", "'now' is already declared"])
   })
 
   test('a function a test declares replaces the one of the module, as it always has', () => {
@@ -3079,5 +3103,193 @@ func k(s: S) -> f64 {
     expect(errs(`${names}func a(x: A, i: u32) -> i8 => x[i]`)).toEqual(['dynamic index on value type [4]i8 — use a pointer or slice for dynamic access'])
     expect(errs(`${names}func a(m: M) -> u32 => m.len`)).toEqual(['cannot get .len on unbounded array [*]u32 - length is unknown'])
     expect(errs(`${names}func a(p: P) -> u32 => p[0..2].len`)).toEqual(['cannot take a range of *mut u16: use a slice or a pointer to an array'])
+  })
+})
+
+describe('arguments by place and by name', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('a function or a builtin is called with positional arguments only', () => {
+    expect(errs(`
+      func f(a: i32, b: i32) -> i32 => a - b
+      func g() -> i32 => f(b: 1, a: 2)
+      func h(b: i32) -> i32 => f(b:, 3)
+      func k(x: i32) -> i32 => x.f(b: 2)
+      func m(x: i32, y: i32) -> i32 => min(a: x, b: y)
+    `)).toEqual([
+      "'f' takes positional arguments",
+      "'f' takes positional arguments",
+      "'f' takes positional arguments",
+      "'min' takes positional arguments",
+    ])
+    expect(errs(`
+      func h(k: u32) -> u32 => k
+      func h(k: u64) -> u32 => 1
+      func g(x: u32) -> u32 => h(k: x)
+    `)).toEqual(["'h' takes positional arguments"])
+  })
+
+  test('a constructor gives each field once, by name or by place', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a() -> Pt => Pt(1, q: 2)
+      func b() -> Pt => Pt(r: 2, 1)
+      func c(q: i32) -> Pt => Pt(q, r: 2)
+    `)).toEqual(["Pt: field 'q' is given twice", "Pt: field 'r' is given twice"])
+  })
+
+  test('a value of a struct type is not a constructor', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func f(p: Pt) { p(3, 4) }
+      func g() {
+        let p = Pt(1, 2)
+        p(3, 4)
+      }
+    `)).toEqual(['cannot call non-function type: Pt', 'cannot call non-function type: (q: i32, r: i32)'])
+  })
+})
+
+describe('a name declared twice at the top of a module', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('is one thing: only functions share a name', () => {
+    const twice = (name: string) => `'${name}' is already declared`
+    expect(errs(`
+      global x: i32 = 1
+      global x: i64 = 2
+      export global y: i32 = 1
+      global y: i32 = 2
+      def d = 1
+      global d: i32 = 2
+      global e: i32 = 2
+      def e = 1
+      data b = [1, 2]
+      global b: i32 = 2
+      import "m" "g" global g: i32
+      global g: i32 = 1
+      func f() -> i32 => 1
+      global f: i32 = 3
+      global h: i32 = 3
+      func h() -> i32 => 1
+      def k = 4
+      import "m" "k" func k() -> i32
+    `)).toEqual(['x', 'y', 'd', 'e', 'b', 'g', 'f', 'h', 'k'].map(twice))
+    // Functions share a name where their parameters differ.
+    expect(errs(`
+      func f(a: u32) -> u32 => a
+      func f(a: u64) -> u32 => 1
+      import "m" "f" func f(a: f64) -> u32
+    `)).toEqual([])
+  })
+
+  test('the first declaration is the one the name stands for', () => {
+    expect(errs(`
+      global x: i64 = 1
+      global x: f64 = 2.5
+      func f() -> i64 => x
+    `)).toEqual(["'x' is already declared"])
+  })
+
+  test('a test takes over a function of the module, and nothing else', () => {
+    const twice = (name: string) => `'${name}' is already declared`
+    expect(errs(`
+      global x: i32 = 5
+      def k = 4
+      data b = [1, 2]
+      func f() -> i32 => 1
+      func get() -> i32 => x + k + b[0] + f()
+      test "t" {
+        func x() -> i32 => 7
+        func k() -> i32 => 7
+        func b() -> i32 => 7
+        import "env" "x" global x: i32
+        import "env" "f" global f: i32
+        import "env" "k" func k() -> i32
+        assert get() == 11
+      }
+    `)).toEqual(['x', 'k', 'b', 'x', 'f', 'k'].map(twice))
+    // A test's own names, and a function of the module it takes over.
+    expect(errs(`
+      func f() -> i32 => 1
+      test "t" {
+        func f() -> i32 => 2
+        func h() -> i32 => 3
+        import "env" "g" global g: i32
+        assert f() + h() + g == 5
+      }
+      test "u" {
+        func h() -> i32 => 4
+        assert h() == 4
+      }
+    `)).toEqual([])
+  })
+})
+
+describe('only a variable is assigned', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('by = or by set: a def, a data block or a function is not one', () => {
+    expect(errs(`
+      func f() -> i32 => 1
+      def k = 3
+      data d = [1:u8]
+      data e = [2:u8]
+      func a() {
+        d = e
+        k += 1
+        f = 5
+      }
+      func b(p: i32) {
+        set d = e
+        set (p, k) = (1, 2)
+        set (x: p, y: f) = (x: 1, y: 2)
+      }
+    `)).toEqual([
+      "cannot assign to 'd': it is not a variable",
+      "cannot assign to 'k': it is not a variable",
+      "cannot assign to 'f': it is not a variable",
+      "cannot set 'd': it is not a variable",
+      "cannot set 'k': it is not a variable",
+      "cannot set 'f': it is not a variable",
+    ])
+    // Locals, params, named results and globals are.
+    expect(errs(`
+      global g: i32 = 0
+      func a(p: i32) -> (q: i32) {
+        let v = 0
+        set (g, p, v) = (1, 2, 3)
+        set q = g + p + v
+        g = 4
+        p += 1
+      }
+    `)).toEqual([])
+  })
+})
+
+describe('a function named where a value is', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const none = "'f' is a function, which has no run-time value yet"
+
+  test('is no number to cast or to compare', () => {
+    expect(errs(`
+      func f() -> i32 => 1
+      func a() -> i64 => f as i64
+      func b() -> u32 => u32(f)
+      func c(p: *u8) -> bool => f == p
+      func d() -> bool => (f) != f
+    `)).toEqual([
+      `cannot cast func() -> i32 to i64: ${none}`,
+      `cannot cast func() -> i32 to u32: ${none}`,
+      `'==' cannot be applied to func() -> i32 and *u8: ${none}`,
+      `'!=' cannot be applied to func() -> i32 and func() -> i32: ${none}`,
+    ])
+  })
+
+  test('while a function value held in a parameter still is one', () => {
+    expect(errs(`
+      func a(g: (i32) -> i32, h: (i32) -> i32) -> bool => g == h
+      func b(g: (i32) -> i32) -> u32 => g as u32
+    `)).toEqual([])
   })
 })

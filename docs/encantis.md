@@ -202,7 +202,7 @@ data table = [1:u64, 2, 3, 4]      // table: *[4]u64 (const)
 data key = x"9d61b19deffd5a60"      // key: *[8]u8 (const)
 data buf = mut [0:u8; 1024]         // buf: *mut [1024]u8 (mutable)
 data count = 5:i32                  // count: *i32 (const, embedded as 4 bytes)
-data count = mut 5:i32              // count: *mut i32 (mutable)
+data tally = mut 5:i32              // tally: *mut i32 (mutable)
 data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 ```
 
@@ -559,6 +559,52 @@ let x = 3.0
 let y = 4.0
 let p = (x:, y:)             // equivalent to (x: x, y: y)
 ```
+
+<!-- spec:begin compile -->
+
+An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix. The struct is built from its fields in the order the type declares them, and that is the order their values are computed in, whatever the order they are written in:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func half(x: f32) -> Point => Point(x, y: x / 2.0)
+
+test "arguments by place and by name" {
+  assert half(4.0).y == 2.0
+  assert Point(y: 1.0, x: 3.0).x == 3.0
+}
+```
+
+Each field is given once:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func f(x: f32) -> f32 => Point(x, y: 2.0).y
+func g() -> f32 => Point(2.0, x: 1.0).x
+func h() -> f32 => Point(y: 1.0, 2.0).x
+```
+
+```errors
+Point: field 'x' is given twice
+Point: field 'y' is given twice
+```
+
+Only a constructor takes fields by name. A tuple literal becomes a struct field by field, by position, as any tuple does ([9.2](#structural-coercion)), whatever its elements are named: as a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 2.0. To give the fields in another order, construct the struct:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func by_place() -> Point => (y: 2.0, x: 1.0)
+func by_name() -> Point => Point(y: 2.0, x: 1.0)
+
+test "a tuple by position, a constructor by name" {
+  assert by_place().x == 2.0
+  assert by_name().x == 1.0
+}
+```
+
+<!-- spec:end -->
 
 #### Struct Field Access
 
@@ -1013,7 +1059,7 @@ let hash: u32 = seed + prime32-1
 
 ```ents
 def max-size = 1024              // inferred i32
-def max-size: u32 = 1024         // explicit u32
+def max-len: u32 = 1024          // explicit u32
 ```
 
 ### 3.2 Data Declarations (`data`)
@@ -1033,7 +1079,7 @@ The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T`
 
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
-data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
+data view: []u8 = [0:u8; 1024]      // []u8 (slice, loses compile-time length)
 ```
 
 An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
@@ -1089,6 +1135,8 @@ global counter = 0:u32           // type inferred from suffix
 let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
+
+A constant with no type, alone or as an element of a tuple, takes its default type ([1.5](#integer-literals)), the same for a `let` and a `global`: `global big = 2147483648` is an `i64` and `let t = (3000000000, 1)` an `(i64, i32)`. The variable is of that type from then on, so `global count = 0` holds any `i32` it is assigned.
 
 A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
 
@@ -1238,6 +1286,22 @@ export name 'hash' is used twice: give one an explicit name, as in export "hash_
 
 Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function, as it always has; a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
 
+Nothing but functions shares a name. A global, `def`, `data` or import has its name to itself in its module, and a function cannot take the name of one, nor can a function or an import declared in a `test`:
+
+```ents
+global count: u32 = 0
+global count: u64 = 0
+def size = 4
+func size() -> u32 => 4
+```
+
+```errors
+'count' is already declared
+'size' is already declared
+```
+
+A function or a global of another source module imported twice under one name is that one again, not a second declaration.
+
 <!-- spec:end -->
 
 #### Calling Conventions
@@ -1256,9 +1320,27 @@ let q, r = divmod(17, 5)
 let (x:, y:) = get_point()
 ```
 
+<!-- spec:begin compile -->
+
+An argument goes to the parameter at its place, so a call of a function, or of a builtin, names none of them (only a constructor's arguments can have names, [2.8](#struct-constructors)):
+
+```ents
+func sub(a: i32, b: i32) -> i32 => a - b
+
+func f() -> i32 => sub(b: 1, a: 2)
+func g(x: f64) -> f64 => sqrt(v: x)
+```
+
+```errors
+'sub' takes positional arguments
+'sqrt' takes positional arguments
+```
+
+<!-- spec:end -->
+
 #### Function Types and Pointers
 
-> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
+> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. A function's name is no number either: cast to a number or an address, or compared, it is a compile error (`cannot cast func() -> u32 to u32: 'f' is a function, which has no run-time value yet`). To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
 
 Function names are first-class values with types corresponding to their signatures. At runtime, function values are opaque indices into WebAssembly's function table.
 
@@ -1495,6 +1577,24 @@ set (x: a, y: b) = p       // assigns a = 3.0, b = 4.0
 
 Any type with multiple underlying values can be destructured (slices, tuples, structs, etc).
 
+`set` assigns what `=` would: a tuple literal, or an `if` or `match` whose branches give one, is checked against the types of the variables it sets, as a `let` with those types would check it. Each constant takes its variable's type and each value widens to it, and a part of the pattern can be a pattern itself:
+
+```ents
+func parts(n: i32) -> f64 {
+  let wide: i64 = 0
+  let ratio: f32 = 0
+  let mean: f64 = 0
+  let (low, high) = (0, 0)
+  set (wide, ratio, mean) = (5000000000, 1, n)   // an i64, an f32 and n widened to an f64
+  set (low, (high, wide)) = (1, (2, 3))
+  return mean + ((low + high) as f64)
+}
+```
+
+Any other value is already on the stack, and each field has to be held the way its variable is: `set (wide, ratio) = pair()`, where `pair` returns `(i32, f32)`, is an error (`cannot set 'wide' (i64) from a field of type i32`).
+
+`=`, a compound assignment and `set` assign to variables: locals, parameters, named results and globals. A `def`, a `data` block and a function are not variables, and naming one is an error (`cannot assign to 'buf': it is not a variable`, `cannot set 'buf': it is not a variable`).
+
 #### Compound Assignment
 
 Compound assignment combines an operation with assignment. Works with any valid lvalue:
@@ -1655,6 +1755,39 @@ if let data = entry.dynamic {
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
 
+<!-- spec:begin compile -->
+
+The binding is a variable of its own, seen in the first branch only. It can have the name of a variable outside, of any type, which it hides there and leaves as it was:
+
+```ents
+data cells = [7:u32, 8, 9]
+
+func pick(i: u32) -> u32 {
+  let v: u32 = 5
+  let seen: u32 = 0
+  if let v = cells[i] {
+    seen = v
+  }
+  return v * 100 + seen          // v is 5 again
+}
+
+func scaled(p: ?*u32) -> f64 {
+  let v: f64 = 0.5
+  if let v = p {
+    return v.* as f64
+  }
+  return v
+}
+
+test "an if let binding hides a variable of its name in its branch" {
+  assert pick(1) == 508
+  assert pick(7) == 500
+  assert scaled(0) == 0.5
+}
+```
+
+<!-- spec:end -->
+
 It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
 
 ```ents
@@ -1677,7 +1810,25 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
 }
 ```
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out.
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
+
+<!-- spec:begin compile -->
+
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A variable is held in registers and has none, whatever type is expected of `&x`:
+
+```ents
+func get(p: *i32) -> i32 => p.*
+
+func third(p: [*]i32) -> i32 => get(&p[2])    // p + 8, the element's address
+func cell() -> i32 => get(&5)                   // a cell holding 5
+func value(x: i32) -> i32 => get(&x)
+```
+
+```errors
+'x' has no address: a variable is held in registers
+```
+
+<!-- spec:end -->
 
 ### 4.8 Slice/Range Syntax
 
@@ -1887,6 +2038,8 @@ loop {                   // infinite loop
   // body
 }
 ```
+
+The variable of a counted loop is a `u32`, and so is a constant count that isn't negative: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error.
 
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 

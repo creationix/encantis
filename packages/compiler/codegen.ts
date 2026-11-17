@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { argValue, ungroupedType } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -64,6 +64,17 @@ export interface CodegenContext {
   funcNames: TypeCheckResult['funcNames']
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
+  // The current function's wasm locals and params, each with the variable
+  // part it holds (see claimLocals).
+  claimed?: Map<string, string>
+  // The locals of the variable an `if let` binds, which is seen only in its
+  // then-branch (see withBinding).
+  bindings?: Map<AST.IfExpr, string[]>
+  // The locals of the `if let` bindings whose then-branch collectLocals is in.
+  busy?: Set<string>
+  // The variables a `let` or a `for` declares, with their locals: from there
+  // on its names stand for them (see letToWat, forToWat).
+  declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -856,7 +867,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         return operand
       }
       // Anonymous data allocation: look up data section ref
-      const innerExpr = expr.operand.kind === 'AnnotationExpr' ? (expr.operand as AST.AnnotationExpr).expr : expr.operand
+      const innerExpr = addressedLiteral(expr.operand)
       const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
       const ref = ctx.literalRefs.get(dataId)
       if (ref) {
@@ -1062,24 +1073,15 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   }
 
   // Struct constructor: a type used as a function. Structs are register-flattened,
-  // so constructing one pushes its fields' values in declaration order. Arguments
-  // match fields by position or by name (Point(y: 2, x: 1)); `x:` is shorthand
-  // for `x: x`.
+  // so constructing one pushes its fields' values in declaration order. One
+  // with names among its arguments (Point(y: 2, x: 1)) the checker recorded
+  // above as the tuple of its fields in order; here each argument is the
+  // field at its place.
   const typeSym = ctx.symbols.get(funcName)
   if (typeSym?.kind === 'type') {
     const structType = RT.unwrap(typeSym.type)
     if (structType.kind === 'tuple') {
-      const argWat = (arg: AST.Arg) => {
-        const value = argValue(arg)
-        return value ? exprToWat(value, ctx) : ''
-      }
-      const named = expr.args.some((a) => a.name)
-      return structType.fields
-        .map((field, i) => {
-          const arg = named ? expr.args.find((a) => a.name === field.name) : expr.args[i]
-          return arg ? argWat(arg) : ''
-        })
-        .join(' ')
+      return expr.args.map((arg) => (arg.value ? exprToWat(arg.value, ctx) : '')).join(' ')
     }
   }
 
@@ -1152,10 +1154,53 @@ function flatSuffixes(type: ResolvedType): string[] {
 }
 
 // The wasm globals that hold a module global: one per wasm value, so a slice
-// or struct global is several, named like a local's parts.
+// or struct global is several, named like a local's parts (see claimGlobals).
 function globalNames(name: string, type: ResolvedType, ctx: CodegenContext): string[] {
   const watName = ctx.nameMap.get(name) ?? name
-  return flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
+  return programGlobals.get(ctx.symbols)?.get(watName) ?? flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
+}
+
+// The wasm globals of the globals of a program, by the name each global is
+// known by in the WAT (its module's prefix and its name), for the symbols of
+// each of its modules.
+const programGlobals = new WeakMap<object, Map<string, string[]>>()
+
+// Names the wasm globals of the globals a module declares or imports from
+// the host, into `into`. As with locals (claimLocals), the parts of a global
+// `g` of a struct with a field `x` would be named like a global `g_x`; a
+// name goes to the first global that asks for it, in the order of the
+// module, and a later one gets all its names with a prefix, `_1_`, `_2_`.
+// Two modules' globals never meet: a module's names carry its prefix.
+function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nameMap: Map<string, string>, into: Map<string, string[]>): void {
+  const claimed = new Set<string>()
+  const claim = (name: string) => {
+    const sym = symbols.get(name)
+    if (sym?.kind !== 'global') return
+    const watName = nameMap.get(name) ?? name
+    const modulePrefix = watName.slice(0, watName.length - name.length)
+    const suffixes = flatSuffixes(sym.type)
+    for (let n = 0; ; n++) {
+      const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
+      // Two parts of one global named alike take names apart, as a local's do.
+      for (let i = 1; i < names.length; i++) {
+        for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+          const w = `_${k}_${name}${suffixes[i]}`
+          if (!claimed.has(w) && !names.includes(w)) names[i] = w
+        }
+      }
+      if (names.some((w) => claimed.has(w))) continue
+      for (const w of names) claimed.add(w)
+      into.set(watName, names.map((w) => `${modulePrefix}${w}`))
+      return
+    }
+  }
+  for (const decl of module.decls) {
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl
+    if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') claim(item.pattern.name)
+    if (item.kind === 'ImportDecl' && !isSourceImport(item.module)) {
+      for (const imported of item.items) if (imported.item.kind === 'ImportGlobal') claim(imported.item.ident)
+    }
+  }
 }
 
 // The registers that hold an expression's value, in order, when it names a
@@ -1620,6 +1665,9 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     ;[base, len] = parts
   } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
     len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && u.pointee.sizes === null) {
+    // A many-pointer's element: its address, unchecked.
+    return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
   } else {
     return null
   }
@@ -1716,13 +1764,12 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
-  const thenBody = bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0)
-  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
-
-  // Bind helper
-  const found = ctx.locals.get(pattern.name)
+  // The binding is seen in the then-branch only.
+  const found = ctx.bindings?.get(expr)
   if (!found) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
   const bindingNames = found
+  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0))
+  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
   function makeBind(loadVal: string): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
@@ -2211,52 +2258,72 @@ function framesToLoop(ctx: CodegenContext): number {
 // tuple pattern's variables. Elements match fields by name (x:, x: y) or by
 // position (a, b); a field no element names is dropped. Values come off the
 // stack last field first, and a field that flattens to several wasm values
-// fills (or drops) that many.
-function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx: CodegenContext): string {
-  const varFor = new Map<number, string>()
+// fills (or drops) that many. An element that is a tuple pattern itself takes
+// its field the same way. `registers` says where a variable is held: a `let`
+// declares locals, and a `set` writes the locals or globals that are there.
+function tuplePatternSets(
+  pattern: AST.TuplePattern,
+  tupleType: RT.TupleRT,
+  ctx: CodegenContext,
+  registers: (name: string) => Registers | null = (name) => ({ names: ctx.locals.get(name) ?? [name], global: false }),
+): string {
+  const partFor = new Map<number, AST.Pattern>()
   pattern.elements.forEach((elem, position) => {
     if (elem.kind === 'named') {
       const index = tupleType.fields.findIndex((f) => f.name === elem.field)
-      if (index >= 0) varFor.set(index, elem.binding ?? elem.field)
-    } else if (elem.pattern.kind === 'IdentPattern') {
-      varFor.set(position, elem.pattern.name)
+      if (index >= 0) partFor.set(index, { kind: 'IdentPattern', name: elem.binding ?? elem.field, span: pattern.span })
+    } else {
+      partFor.set(position, elem.pattern)
     }
   })
   const sets: string[] = []
   for (let i = tupleType.fields.length - 1; i >= 0; i--) {
-    const slots = typeToWasm(tupleType.fields[i].type).length
-    const name = varFor.get(i)
-    const locals = name ? (ctx.locals.get(name) ?? [name]) : []
+    const fieldType = tupleType.fields[i].type
+    const part = partFor.get(i)
+    const inner = unwrap(fieldType)
+    if (part?.kind === 'TuplePattern' && inner.kind === 'tuple') {
+      sets.push(tuplePatternSets(part, inner, ctx, registers))
+      continue
+    }
+    const slots = typeToWasm(fieldType).length
+    const regs = part?.kind === 'IdentPattern' ? registers(part.name) : null
     for (let k = slots - 1; k >= 0; k--) {
-      sets.push(name && locals[k] ? `(local.set $${locals[k]})` : '(drop)')
+      const name = regs?.names[k]
+      sets.push(regs && name ? `(${regs.global ? 'global' : 'local'}.set $${name})` : '(drop)')
     }
   }
   return sets.join('\n')
 }
 
+// From a `let` or a `for` on, the names it declares stand for its variables,
+// as the checker has them: a `for` of a name in one branch and a `let` of it
+// in another are two variables.
+function enterDeclared(stmt: AST.LetStmt | AST.ForStmt, ctx: CodegenContext): void {
+  for (const [name, names] of ctx.declared?.get(stmt) ?? []) ctx.locals.set(name, names)
+}
+
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
-  if (!stmt.value) return '' // Declaration only, no initialization
+  if (!stmt.value) {
+    enterDeclared(stmt, ctx)
+    return '' // Declaration only, no initialization
+  }
+  // The value is computed before the variable is there.
+  const valueWat = exprToWat(stmt.value, ctx)
+  enterDeclared(stmt, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    const value = exprToWat(stmt.value, ctx)
+    const value = valueWat
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
     }
-    const wasmTypes = typeToWasm(type)
-
-    if (wasmTypes.length === 1) {
-      ctx.locals.set(name, [name])
-      return `(local.set $${name} ${value})`
-    }
-
-    // Multiple values - flatten using field names from type
-    const flattened = flattenType(type)
-    const names = flattened.map(f => f.suffix ? `${name}_${f.suffix}` : `${name}_${flattened.indexOf(f)}`)
-    ctx.locals.set(name, names)
+    // The locals collectLocals gave the variable.
+    const names = ctx.locals.get(name)
+    if (!names) throw new Error(`Missing locals for '${name}' at offset ${stmt.pattern.span.start}`)
+    if (names.length === 1) return `(local.set $${names[0]} ${value})`
     // If value is a single expression producing multiple results (e.g. a function call),
     // emit the call then assign from the stack in reverse order
     // Try to split value into components (works for multi-expression values)
@@ -2278,8 +2345,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    const value = exprToWat(stmt.value, ctx)
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${valueWat}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
   }
 
   return ''
@@ -2287,14 +2353,14 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
 function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
   const value = exprToWat(stmt.value, ctx)
+  // set names variables that are there already: locals or globals.
+  const registers = (name: string) => registersOf({ kind: 'IdentExpr', name, span: stmt.pattern.span }, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
-    const name = stmt.pattern.name
-    const localNames = ctx.locals.get(name)
-    if (localNames && localNames.length === 1) {
-      return `(local.set $${localNames[0]} ${value})`
-    }
-    return `(local.set $${name} ${value})`
+    // set x = v is x = v.
+    const regs = registers(stmt.pattern.name)
+    if (regs) return setRegisters(regs, value)
+    return `(local.set $${stmt.pattern.name} ${value})`
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {
@@ -2305,7 +2371,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx, registers)}`
   }
 
   return ''
@@ -2435,15 +2501,24 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 }
 
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
-  const valueName = stmt.binding.value
-  const indexName = stmt.binding.index
-  const valueLocals = ctx.locals.get(valueName) ?? [valueName]
+  // The locals collectLocals gave the loop's variables, which its names stand
+  // for in the body and after the loop, but not in the iterable.
+  const outside = [stmt.binding.value, stmt.binding.index].flatMap((n) => (n ? [[n, ctx.locals.get(n)] as const] : []))
+  enterDeclared(stmt, ctx)
+  const valueLocals = ctx.locals.get(stmt.binding.value) ?? [stmt.binding.value]
+  const valueName = valueLocals[0]
+  const indexName = stmt.binding.index ? (ctx.locals.get(stmt.binding.index) ?? [stmt.binding.index])[0] : undefined
 
   const body = bodyToWat(stmt.body, ctx, false, true)
 
   // Check if iterable is a comptime integer (for i in N)
   const iterType = lookupExprType(stmt.iterable, ctx)
+  for (const [name, names] of outside) {
+    if (names) ctx.locals.set(name, names)
+    else ctx.locals.delete(name)
+  }
   const iterWat = exprToWat(stmt.iterable, ctx)
+  enterDeclared(stmt, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
@@ -2602,19 +2677,11 @@ export function funcToWat(
   for (const param of paramTypes) {
     const paramName = param.name
     if (!paramName) continue
-    const flattened = flattenType(param.type)
-    if (flattened.length === 1 && flattened[0].suffix === '') {
-      params.push(`(param $${paramName} ${flattened[0].wasmType})`)
-      ctx.params.set(paramName, [paramName])
-    } else {
-      // Flatten struct/slice params with proper field names
-      const names = flattened.map((f) => {
-        const fieldName = f.suffix ? `${paramName}_${f.suffix}` : paramName
-        params.push(`(param $${fieldName} ${f.wasmType})`)
-        return fieldName
-      })
-      ctx.params.set(paramName, names)
-    }
+    // A struct or slice param is a wasm param per part, named like a local's.
+    const wasmTypes = typeToWasm(param.type)
+    const names = claimLocals(ctx, paramName, param.type, null)
+    for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
+    ctx.params.set(paramName, names)
   }
 
   // Flatten returns and add named returns as locals
@@ -2628,22 +2695,10 @@ export function funcToWat(
   const namedReturns: { name: string; types: string[] }[] = []
   for (const ret of funcType.type.returns) {
     if (ret.name) {
-      const wasmTypes = typeToWasm(ret.type)
-      if (wasmTypes.length === 1) {
-        locals.push({ name: ret.name, type: wasmTypes[0] })
-        ctx.locals.set(ret.name, [ret.name])
-        namedReturns.push({ name: ret.name, types: wasmTypes })
-      } else {
-        // Name the parts the way params and lets are flattened (tuple field
-        // names, ptr/len for slices), so member access finds them.
-        const names = flattenType(ret.type).map((f, i) => {
-          const fieldName = f.suffix ? `${ret.name}_${f.suffix}` : `${ret.name}_${i}`
-          locals.push({ name: fieldName, type: f.wasmType })
-          return fieldName
-        })
-        ctx.locals.set(ret.name, names)
-        namedReturns.push({ name: ret.name, types: wasmTypes })
-      }
+      // Its parts are named the way params and lets are flattened (tuple
+      // field names, ptr/len for slices), so member access finds them.
+      ctx.locals.set(ret.name, claimLocals(ctx, ret.name, ret.type, locals, true))
+      namedReturns.push({ name: ret.name, types: typeToWasm(ret.type) })
     }
   }
   // Make named return locals available for early return statements
@@ -2697,6 +2752,71 @@ export function funcToWat(
 )`
 }
 
+// The wasm locals (or params) a variable is held in. A variable of one wasm
+// value is its own name; one of several has a local per part, named after
+// the variable and the part (`p_x`, `s_ptr`, `t_0`). Two variables can ask
+// for one name: a struct `a` with a field `x` and a variable `a_x`, or two
+// `if let` bindings of one name and different types. A name goes to the
+// first variable that asks for it in the function (params, then the body in
+// order, then named results), and is shared only by another variable of the
+// same name whose part there has the same wasm type, as the variables of two
+// loops of `i` are. Any other variable gets all its names with a prefix,
+// `_1_`, `_2_`, ...: no identifier starts with `_`, and the compiler's own
+// locals start with `__`. So the names depend on the function alone.
+// `locals` gets a declaration for each name that is new. With `plainIfOne`,
+// a value of one wasm value is the variable's own name even where it is a
+// part (a struct of one field), as a `let`, an `if let` and a named result
+// have always named it.
+//
+// An `if let` binding is a variable of its own, seen in its then-branch
+// only, so it shares a name only with another `if let` binding (`kind`),
+// and not with one whose then-branch it is in (`ctx.busy`).
+function claimLocals(
+  ctx: Pick<CodegenContext, 'claimed' | 'busy'>, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
+): string[] {
+  ctx.claimed ??= new Map()
+  const claimed = ctx.claimed
+  const flat = flattenType(type)
+  const parts = flat.length === 1 && (flat[0].suffix === '' || plainIfOne)
+    ? [{ suffix: '', wasmType: flat[0].wasmType }]
+    : flat.map((f, i) => ({ suffix: f.suffix || String(i), wasmType: f.wasmType }))
+  const owners = parts.map((p) => `${kind}${name} ${p.suffix} ${p.wasmType}`)
+  for (let n = 0; ; n++) {
+    const prefix = n === 0 ? '' : `_${n}_`
+    const names = parts.map((p) => `${prefix}${name}${p.suffix ? `_${p.suffix}` : ''}`)
+    // Two parts of one variable can be named alike: a field `x_y`, and the
+    // field `y` of a field `x`. The later one takes the next prefix whose
+    // name is free, or is the same part's of a variable like this one.
+    for (let i = 1; i < names.length; i++) {
+      for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+        const w = `_${k}_${name}_${parts[i].suffix}`
+        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !ctx.busy?.has(w) && !names.includes(w)) names[i] = w
+      }
+    }
+    if (names.some((w, i) => (claimed.has(w) && claimed.get(w) !== owners[i]) || ctx.busy?.has(w))) continue
+    names.forEach((w, i) => {
+      if (claimed.has(w)) return
+      claimed.set(w, owners[i])
+      locals?.push({ name: w, type: parts[i].wasmType })
+    })
+    return names
+  }
+}
+
+// Compiles `emit` with `name` standing for the locals of a binding that only
+// a branch sees, and the name as it was outside.
+function withBinding<T>(ctx: CodegenContext, name: string, names: string[] | undefined, emit: () => T): T {
+  if (!names) return emit()
+  const outside = ctx.locals.get(name)
+  ctx.locals.set(name, names)
+  try {
+    return emit()
+  } finally {
+    if (outside) ctx.locals.set(name, outside)
+    else ctx.locals.delete(name)
+  }
+}
+
 // Local declarations, leaving out compiler scratch locals (named __...) that
 // the code never uses.
 function declareUsedLocals(locals: LocalDecl[], code: string, sep: string): string {
@@ -2719,6 +2839,38 @@ function collectLocals(
 ): LocalDecl[] {
   const locals: LocalDecl[] = []
 
+  // A variable `stmt` declares: its locals, which its name stands for from
+  // `stmt` on when the code is emitted (enterDeclared). A `let`'s name is
+  // the one variable of that name in its function (the checker refuses a
+  // second), so it stands for it everywhere already; a `for` can take over
+  // the name of a param or a variable before it, which keeps its locals
+  // until the loop.
+  function declare(stmt: AST.LetStmt | AST.ForStmt, name: string, names: string[]) {
+    ctx.declared ??= new Map()
+    ctx.declared.set(stmt, [...(ctx.declared.get(stmt) ?? []), [name, names]])
+    if (stmt.kind === 'LetStmt') ctx.locals.set(name, names)
+  }
+
+  // Declare locals for each element of a tuple pattern, and for the elements
+  // of an element that is a tuple pattern itself.
+  function declarePattern(stmt: AST.LetStmt, pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
+    for (const [position, elem] of pattern.elements.entries()) {
+      // Named elements find their field by name, positional ones by position.
+      const field = elem.kind === 'named'
+        ? tupleType.fields.find((f) => f.name === elem.field)
+        : tupleType.fields[position]
+      if (!field) continue
+      if (elem.kind === 'positional' && elem.pattern.kind === 'TuplePattern') {
+        const inner = unwrap(field.type)
+        if (inner.kind === 'tuple') declarePattern(stmt, elem.pattern, inner)
+        continue
+      }
+      const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
+      // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
+      declare(stmt, name, claimLocals(ctx, name, field.type, locals))
+    }
+  }
+
   function visitStmt(stmt: AST.Statement) {
     if (stmt.kind === 'LetStmt') {
       if (stmt.pattern.kind === 'IdentPattern') {
@@ -2728,20 +2880,7 @@ function collectLocals(
         if (!type) {
           throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
         }
-        const wasmTypes = typeToWasm(type)
-
-        if (wasmTypes.length === 1) {
-          locals.push({ name, type: wasmTypes[0] })
-          ctx.locals.set(name, [name])
-        } else {
-          const flattened = flattenType(type)
-          const names = flattened.map((f, i) => {
-            const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-            locals.push({ name: fieldName, type: f.wasmType })
-            return fieldName
-          })
-          ctx.locals.set(name, names)
-        }
+        declare(stmt, name, claimLocals(ctx, name, type, locals, true))
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // Get the overall tuple type from the pattern
         const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -2749,40 +2888,7 @@ function collectLocals(
           throw new Error(`Missing or invalid tuple type for pattern at offset ${stmt.pattern.span.start}`)
         }
 
-        // Declare locals for each tuple pattern element
-        for (const elem of stmt.pattern.elements) {
-          let name: string
-          let fieldName: string
-          if (elem.kind === 'named') {
-            name = elem.binding ?? elem.field
-            fieldName = elem.field
-          } else if (elem.pattern.kind === 'IdentPattern') {
-            name = elem.pattern.name
-            fieldName = ''
-          } else {
-            continue // Nested patterns not yet supported
-          }
-
-          // Named elements find their field by name, positional ones by position.
-          const field = elem.kind === 'named'
-            ? tupleType.fields.find((f) => f.name === fieldName)
-            : tupleType.fields[stmt.pattern.elements.indexOf(elem)]
-          if (!field) continue
-
-          // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-          const flat = flattenType(field.type)
-          if (flat.length === 1 && flat[0].suffix === '') {
-            locals.push({ name, type: flat[0].wasmType })
-            ctx.locals.set(name, [name])
-          } else {
-            const names = flat.map((f, i) => {
-              const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-              locals.push({ name: localName, type: f.wasmType })
-              return localName
-            })
-            ctx.locals.set(name, names)
-          }
-        }
+        declarePattern(stmt, stmt.pattern, tupleType)
       }
     }
     // Recurse into nested blocks
@@ -2795,21 +2901,12 @@ function collectLocals(
     }
     if (stmt.kind === 'ForStmt') {
       visitExpr(stmt.iterable)
-      // Collect loop binding variable
+      // The loop's variables. The checker keeps them in the enclosing
+      // scope, after the loop too, and so does this. Multi-value elements
+      // (slices, tuples) flatten like lets.
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
-      if (bindingType) {
-        // Multi-value elements (slices, tuples) flatten like lets.
-        const flat = flattenType(bindingType)
-        const names = flat.length === 1 && flat[0].suffix === ''
-          ? [stmt.binding.value]
-          : flat.map((f, i) => (f.suffix ? `${stmt.binding.value}_${f.suffix}` : `${stmt.binding.value}_${i}`))
-        for (const [i, f] of flat.entries()) locals.push({ name: names[i], type: f.wasmType })
-        ctx.locals.set(stmt.binding.value, names)
-      }
-      if (stmt.binding.index) {
-        locals.push({ name: stmt.binding.index, type: 'i32' })
-        ctx.locals.set(stmt.binding.index, [stmt.binding.index])
-      }
+      if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
+      if (stmt.binding.index) declare(stmt, stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
       // Element loops walk a pointer up to an end address.
       const uid = scratchId(stmt.span.start)
       locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
@@ -2853,20 +2950,10 @@ function collectLocals(
       if (expr.pattern && expr.pattern.kind === 'binding') {
         const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
         if (elemType) {
-          const name = expr.pattern.name
-          const wasmTypes = typeToWasm(elemType)
-          if (wasmTypes.length === 1) {
-            locals.push({ name, type: wasmTypes[0] })
-            ctx.locals.set(name, [name])
-          } else {
-            const flattened = flattenType(elemType)
-            const names = flattened.map((f, i) => {
-              const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-              locals.push({ name: fieldName, type: f.wasmType })
-              return fieldName
-            })
-            ctx.locals.set(name, names)
-          }
+          // The binding's locals, seen in the then-branch only (ifLetToWat):
+          // its name can be another variable's outside it.
+          ctx.bindings ??= new Map()
+          ctx.bindings.set(expr, claimLocals(ctx, expr.pattern.name, elemType, locals, true, 'if let '))
           const uid = scratchId(expr.span.start)
           if (expr.condition.kind === 'IndexExpr') {
             // Temporary locals for bounds checking
@@ -2881,7 +2968,12 @@ function collectLocals(
         }
       }
       visitExpr(expr.condition)
+      // A binding of the same name in the then-branch is another variable.
+      const bound = ctx.bindings?.get(expr)?.filter((n) => !ctx.busy?.has(n)) ?? []
+      ctx.busy ??= new Set()
+      for (const n of bound) ctx.busy.add(n)
       visitBody(expr.thenBranch)
+      for (const n of bound) ctx.busy.delete(n)
       for (const elif of expr.elifs) {
         visitExpr(elif.condition)
         visitBody(elif.thenBranch)
@@ -3040,6 +3132,9 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   const dataSection = dataBuilder.result()
 
   const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
+  const globals = new Map<string, string[]>()
+  claimGlobals(module, checkResult.symbols, ctx.nameMap, globals)
+  programGlobals.set(checkResult.symbols, globals)
   const parts: string[] = ['(module']
   let hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module) || usesMemory(checkResult)
 
@@ -3221,6 +3316,10 @@ function emitTestDecl(
     // Leaf test: emit as a function
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
+    // Its locals are its own, named as a function's are (claimLocals).
+    ctx.locals = new Map()
+    ctx.claimed = new Map()
+    ctx.bindings = new Map()
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
@@ -3287,19 +3386,16 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     }
 
     // Parse input type for params
+    const own: Pick<CodegenContext, 'claimed' | 'busy'> = {}
     if (imp.signature.input.kind === 'CompositeType') {
       const fields = imp.signature.input.fields
       for (const [index, field] of fields.entries()) {
         const resolved = checked('params', index, fields.length, field.type)
         const flattened = flattenType(resolved)
         if (field.ident) {
-          if (flattened.length === 1) {
-            params.push(`(param $${field.ident} ${flattened[0].wasmType})`)
-          } else {
-            for (const f of flattened) {
-              params.push(`(param $${field.ident}_${f.suffix} ${f.wasmType})`)
-            }
-          }
+          // Named as a function's params are, so that no two are named alike.
+          const names = claimLocals(own, field.ident, resolved, null, true)
+          for (const [i, f] of flattened.entries()) params.push(`(param $${names[i]} ${f.wasmType})`)
         } else {
           for (const f of flattened) {
             params.push(`(param ${f.wasmType})`)
@@ -3335,8 +3431,9 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const sym = ctx.symbols.get(imp.ident)
     const type = sym?.kind === 'global' ? sym.type : resolveAstType(imp.type)
     const wasmTypes = typeToWasm(type)
+    const names = globalNames(imp.ident, type, ctx)
     return flatSuffixes(type)
-      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${imp.ident}${suffix} ${wasmTypes[i]}))`)
+      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${names[i]} ${wasmTypes[i]}))`)
       .join('\n')
   }
 
@@ -3402,7 +3499,8 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
     const type = ctx.types.get(typeKey(item.pattern.span.start, item.pattern.kind))
     const suffixes = type ? flatSuffixes(type) : ['']
     const watName = ctx.nameMap.get(globalName) ?? globalName
-    return suffixes.map((suffix) => `  (export "${name}${suffix}" (global $${watName}${suffix}))`).join('\n')
+    const names = type ? globalNames(globalName, type, ctx) : [watName]
+    return suffixes.map((suffix, i) => `  (export "${name}${suffix}" (global $${names[i]}))`).join('\n')
   }
 
   if (item.kind === 'MemoryDecl') {
@@ -3554,6 +3652,14 @@ export function programToWat(
     perModuleNameMap.set(path, modNameMap)
     perModuleExports.set(path, modExports)
   }
+  // Each module names the wasm globals of its own globals; a global imported
+  // from another module is known by that module's names.
+  const globals = new Map<string, string[]>()
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (result) claimGlobals(loaded.module, result.symbols, perModuleNameMap.get(path) ?? new Map(), globals)
+  }
+  for (const result of checkResults.values()) programGlobals.set(result.symbols, globals)
 
   function collectAllImports(decls: readonly { kind: string }[]): AST.ImportDecl[] {
     const imports: AST.ImportDecl[] = []
