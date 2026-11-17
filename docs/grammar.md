@@ -730,7 +730,7 @@ v.items().sort(u64, less)     // Calls chain; type arguments are written after t
 (4:u32).double()              // A literal with its type written on it is a receiver in parentheses
 ```
 
-**Method calls.** `x.f(a)` is a member access followed by a call: no rule of its own. The checker reads it as `f(x, a)` where `x` has no member `f`, so whether it is a method call depends on the type of `x`, not on how it is written. A type annotation binds more loosely than a member access, which is why `4:u32.double()` is not a method call on `4:u32`.
+**Method calls.** `x.f(a)` is a member access followed by a call: no rule of its own. The checker reads it as `f(x, a)` where `x` has no member `f`, so whether it is a method call depends on the type of `x`, not on how it is written. A type annotation binds more loosely than a member access, so `4:u32.double()` is no method call on `4:u32`: what follows the colon is read as a type, and `u32.double()` is none, which is a syntax error. Write the receiver in parentheses, `(4:u32).double()`.
 
 **Type arguments.** A call of a generic function may pass a type where the parameter is `comptime T: type`:
 

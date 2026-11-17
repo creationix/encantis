@@ -443,6 +443,12 @@ describe('parser', () => {
       expect(target('p.u32 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'type' } } })
     })
 
+    test('a literal with its type written is a receiver only in parentheses', () => {
+      // After the colon comes a type, and u32.double() is none.
+      expect(parse('4:u32.double()', { startRule: 'Expr' }).errors).not.toEqual([])
+      expect(expr('(4:u32).double()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', member: { kind: 'field', name: 'double' } } })
+    })
+
     test('the editor colours a type pun where the parser reads one', async () => {
       const grammar = await Bun.file(new URL('../extension/encantis.tmlanguage.json', import.meta.url)).json()
       const patterns: { name: string; match: string }[] = grammar.repository.variables.patterns
