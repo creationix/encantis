@@ -1139,6 +1139,14 @@ describe('operands of operators', () => {
     ])
   })
 
+  test('what has no value has no operators', () => {
+    expect(errs(`
+      func nothing() { }
+      func a() -> bool => nothing() == nothing()
+      func b(x: u32) -> u32 => x + nothing()
+    `)).toEqual(['operator == is not defined for ()', 'operator + is not defined for ()'])
+  })
+
   test('the error is the only one: a comparison is still a bool', () => {
     expect(errs(`
       type Pt = (q: i32, r: i32)
