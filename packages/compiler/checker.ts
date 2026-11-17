@@ -3741,7 +3741,7 @@ class CheckContext {
 
   inferMember(expr: AST.MemberExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
-    if (objType === RECOVERY) return RECOVERY
+    if (unresolved(objType)) return RECOVERY
 
     // Unwrap named types to access underlying structure
     const unwrappedType = unwrap(objType)
@@ -4080,7 +4080,7 @@ class CheckContext {
   inferIndex(expr: AST.IndexExpr): ResolvedType {
     const objType = this.inferExpr(expr.object)
     this.inferIndexValue(expr.index)
-    if (objType === RECOVERY) return RECOVERY
+    if (unresolved(objType)) return RECOVERY
 
     if (objType.kind === 'slice') {
       const idx = this.evalComptimeExpr(expr.index)
@@ -5491,6 +5491,15 @@ function signatureText(type: FuncRT): string {
 // that is not concrete.
 function signatureKey(type: FuncRT): string | null {
   return hasOwnType(type) ? canonicalKey(type) : null
+}
+
+// Whether a type is the recovery type, or what points to it or holds it: a
+// parameter `v: *Vex(u32)` whose type did not resolve. Nothing is said about
+// its fields or elements either.
+function unresolved(type: ResolvedType): boolean {
+  if (type === RECOVERY) return true
+  if (type.kind === 'pointer') return unresolved(type.pointee)
+  return (type.kind === 'slice' || type.kind === 'array') && unresolved(type.element)
 }
 
 // Whether a value of this type can decide a type parameter. An untyped literal

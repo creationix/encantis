@@ -2774,6 +2774,21 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
     })
   }
 
+  test('a type that did not resolve says nothing more where it is pointed to, indexed or assigned', () => {
+    const source = `${VEC}func a(v: *Vec(Vec)) -> u32 => v.len
+func b(v: *Vex(u8), w: []Vec(u8, u8)) -> u32 => v.ptr[0] + w[0].len + w.len
+func c() -> u32 {
+  let v: Vec = (0 as [*]mut u8, 1, 2)
+  return v.len
+}`
+    expect(errorsOf(source)).toEqual([
+      "'Vec' is a generic type: write Vec(T)",
+      "unknown generic type 'Vex' — did you mean 'Vec'?",
+      'Vec expects 1 type argument, got 2',
+      "'Vec' is a generic type: write Vec(T)",
+    ])
+  })
+
   test('a generic type nobody applies is not resolved, and one that is exported is nothing to the host', async () => {
     const program = 'export func f(a: u32) -> u32 => a + 1\n'
     const unused = `func Unused(comptime T: type) -> type => (nope: Nope, t: T)
@@ -3002,6 +3017,72 @@ export func a() -> u32 => f(1:u32, inc) + f(u32, 2, inc)`
     // The function it was given is used, by the call that gives it.
     expect(result.references.get(result.symbolDefOffsets.get('ascending') as number)).toEqual([source.indexOf('ascending) }')])
     expect(result.warnings.map(w => w.message)).toEqual(["'descending' is never used"])
+  })
+})
+
+describe('generic types and comptime functions in a program of two modules', () => {
+  // Each module's generics are its own: an instance carries its module's
+  // prefix, and calls the function of that name in its own module.
+  test('an instance calls the function of its own module, under its module\'s prefix', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+export func sort_up(xs: []mut i32) { sort(xs, ascending) }
+export func top(v: *(ptr: [*]mut i32, len: u32, cap: u32)) -> i32 => last(v)
+`)
+      const entry = join(dir, 'main.ents')
+      await writeFile(entry, `import "./lib" (
+  "sort_up" func sort_up(xs: []mut i32)
+  "top" func top(v: *(ptr: [*]mut i32, len: u32, cap: u32)) -> i32
+)
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func descending(a: i32, b: i32) -> bool => a > b
+func ascending(a: i32, b: i32) -> bool => a > b
+func pick(comptime T: type, a: T, b: T, comptime before: (T, T) -> bool) -> T => if before(a, b) { a } else { b }
+data space = mut [0:u8; 64]
+export func run() -> i32 {
+  let a = space as [*]mut i32
+  a[0] = 3
+  a[1] = 1
+  a[2] = 2
+  sort_up(a[0..3])
+  let v: Vec(i32) = Vec(i32)(a, 3, 4)
+  let h = (space as u32 + 32) as *mut Vec(i32)
+  h.* = v
+  return top(h) * 100 + pick(a[0], a[1], descending) * 10 + pick(a[0], a[1], ascending)
+}
+`)
+      const load = await loadModule(entry)
+      const check = typecheckProgram(load.modules, entry, { includeTests: false })
+      expect(check.errors).toEqual([])
+      const wat = programToWat(load.modules, check.results, entry)
+      expectPlainWasm(wat)
+      expect(funcs(wat)).toEqual([
+        'descending', 'ascending', 'pick<i32|ascending>', 'pick<i32|descending>', 'run',
+        'lib$sort<i32|ascending>', 'lib$ascending', 'lib$last<i32>', 'lib$sort_up', 'lib$top',
+      ])
+      expect(funcWat(wat, 'lib$sort<i32|ascending>')).toContain('(call $lib$ascending ')
+      expect(funcWat(wat, 'pick<i32|ascending>')).toContain('(call $ascending ')
+      const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfWat(wat)))
+      // lib sorts 3, 1, 2 upwards; the entry's own `ascending` says greater.
+      expect((instance.exports.run as () => number)()).toBe(322)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 })
 
