@@ -52,6 +52,7 @@ function comptimeTypeParam(name: ohm.Node, typeKw: ohm.Node, at: Span): AST.Fiel
     kind: 'Field',
     comptime: true,
     ident: name.sourceString,
+    identSpan: span(name),
     type: { kind: 'TypeType', span: span(typeKw) },
     span: at,
   }

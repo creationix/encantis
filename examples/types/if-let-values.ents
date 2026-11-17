@@ -49,3 +49,20 @@ test "an if let goes on to its elif branches" {
   assert rank(9, false, true) == -2
   assert rank(9, false, false) == -3
 }
+
+// Where a type is wanted, each branch widens to it, as in any if. An i32 and
+// a u32 have no type between them, but both are i64s.
+func wide_or(p: ?*i32, unsigned: u32) -> i64 => if let q = p { q.* } else { unsigned }
+
+func wide_let(i: u32, small: i8, unsigned: u32) -> i64 {
+  let v: i64 = if let score = scores[i] { score } elif i == 3 { small } else { unsigned }
+  return v
+}
+
+test "an if let's branches widen to the type wanted" {
+  assert wide_or(&scores[0], 4000000000) == 95
+  assert wide_or(0, 4000000000) == 4000000000
+  assert wide_let(2, -1, 4000000000) == 42
+  assert wide_let(3, -1, 4000000000) == -1
+  assert wide_let(4, -1, 4000000000) == 4000000000
+}

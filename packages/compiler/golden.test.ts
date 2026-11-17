@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
-import { join, relative, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { compileToWasm } from './test-utils'
 
 const repo = resolve(import.meta.dir, '../..')
@@ -18,7 +18,8 @@ async function entsFiles(): Promise<string[]> {
   const files: string[] = []
   for (const dir of ['examples', 'lib', 'packages/compiler/tests/fixtures']) {
     for (const entry of await readdir(join(repo, dir), { withFileTypes: true, recursive: true })) {
-      if (entry.name.endsWith('.ents')) files.push(relative(repo, join(entry.parentPath, entry.name)))
+      // The entries are named with `/` on every platform.
+      if (entry.name.endsWith('.ents')) files.push(relative(repo, join(entry.parentPath, entry.name)).split(sep).join('/'))
     }
   }
   return files.sort()

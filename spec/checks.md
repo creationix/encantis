@@ -77,6 +77,9 @@ func a(n: u32) -> (lo: u32, hi: u32) { pair(n) }
 func b(n: u16) -> (lo: u64, hi: f64) { (n, n) }
 func c(n: u16) -> (lo: u64, hi: f64) => (n, n)
 func d(n: i32) -> (r: i64) => n
+func e(n: u32) -> (lo: u32, hi: u32) => pair(n)
+func f(n: u32) -> (hi: u32, lo: u32) => e(n)
+func g(n: u32, c: bool) -> (lo: u32, hi: u32) => if c { pair(n) } else { (0, 0) }
 ```
 
 ```ents
@@ -85,12 +88,16 @@ func pair(n: u32) -> (u32, u32) => (n, n + 1)
 func a(n: u32) -> (lo: u64, hi: u64) { pair(n) }
 func b(n: u32) -> (lo: u32, hi: u32) { n }
 func c(x: f64) -> (r: i64) => x
+func d(n: u32) -> (lo: u64, hi: u64) => pair(n)
+func e(n: u32) -> (lo: u32, hi: u32, top: u32) => pair(n)
 ```
 
 ```errors
 cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields
 cannot assign u32 to (lo: u32, hi: u32)
 cannot assign f64 to i64
+cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields
+cannot assign (u32, u32) to (lo: u32, hi: u32, top: u32)
 ```
 
 ## Operands
@@ -275,6 +282,75 @@ branches have different types: u32 and i32
 this branch has no value: expected i32
 ```
 
+Branches that are all constants are a constant, typed by where it's used. With no type from there it takes the default that holds every branch: `i32`, or `i64` when any of them needs one. Each branch has to be a value of the type by itself. A 64-bit pattern past an `i64` (`18446744073709551615`) is one only where no branch is negative.
+
+```ents
+func a(c: bool) -> i64 {
+  let v = if c { -2147483648 } else { 2147483648 }
+  return v
+}
+
+func b(c: bool) -> i32 {
+  let v = if c { -2147483648 } else { 2147483648 }
+  return v
+}
+
+func c(k: i32, n: u32) -> u32 => n + match k {
+  0 => 5
+  _ => -1
+}
+
+func d(c: bool) -> f64 {
+  let v = if c { 1.5 } else { 9007199254740993 }
+  return v
+}
+
+func e(c: bool) -> i64 {
+  let v = if c { -1 } else { 18446744073709551615 }
+  return v
+}
+```
+
+```errors
+cannot assign i64 to i32
+cannot assign int(-1) to u32
+cannot assign int(9007199254740993) to f64
+cannot assign int(18446744073709551615) to i64
+```
+
+Branches that are tuples agree field by field. A field that is a constant in every branch takes the default that holds each of them; one that is a value in some branch takes the type the values agree on.
+
+```ents
+func a(d: i32) -> i32 {
+  let (dx, dy) = match d {
+    0 => (1, 0)
+    1 => (0, 1)
+    _ => (-1, -1)
+  }
+  return dx + dy
+}
+
+func b(c: bool, x: i64) -> i64 {
+  let t = if c { (1, 2) } else { (x, 4) }
+  return t.0
+}
+
+func c(c: bool) -> i32 {
+  let t = if c { (-2147483648, 1) } else { (2147483648, 2) }
+  return t.0
+}
+
+func d(c: bool) -> i32 {
+  let t = if c { (1, 2) } else { (3, 4, 5) }
+  return t.0
+}
+```
+
+```errors
+cannot assign i64 to i32
+branches have different types: (int(3), int(4), int(5)) and (int(1), int(2))
+```
+
 An `if let` is a value too, and goes on to `elif` and `else` branches like any `if`.
 
 ```ents
@@ -286,6 +362,25 @@ func a(i: u32) -> i32 {
 }
 
 func b(s: []u8, i: u32, wide: i64) -> i64 => if let x = s[i] { x } elif i == 0 { 0 } else { wide }
+```
+
+Its branches meet a declared type like any other `if`'s: each widens to it, even where they have no type between them. The binding stays the first branch's.
+
+```ents
+func a(p: ?*u8, n: i32, u: u32) -> i64 => if let q = p { n } else { u }
+
+func b(p: ?*u8, n: i32, u: u32) -> i64 {
+  let v = if let q = p { n } else { u }
+  return v
+}
+
+func c(p: ?*u8, u: u32) -> i64 => if let q = p { 1 } else { q.* }
+```
+
+```errors
+branches have different types: u32 and i32
+unknown identifier 'q'
+cannot dereference non-pointer type
 ```
 
 The elements of an array literal settle on a type the same way: each widens to the declared element type, or, without one, to the widest of them.
@@ -333,6 +428,36 @@ func b(x: u8) -> i32 => match x {
 
 ```errors
 cannot match u8 against int(300)
+```
+
+A constant subject has no type of its own. It is compared in its default type: `i32` or `i64` by its size, `f64` for a float.
+
+```ents
+def limit = 1
+
+func a() -> i32 => match limit {
+  1 => 2
+  _ => 3
+}
+
+func b(items: [3]u8) -> i32 => match items.len {
+  3 => 2
+  _ => 3
+}
+
+func c() -> i32 => match 5000000000 {
+  5000000000 => 2
+  _ => 3
+}
+
+func d() -> i32 => match 1 {
+  5000000000 => 2
+  _ => 3
+}
+```
+
+```errors
+cannot match i32 against int(5000000000)
 ```
 
 An `if` used as a statement has no value, so its branches can end in anything.
@@ -557,6 +682,36 @@ cannot assign float(1.5) to u64
 300
 ```
 
+## Values in a literal in memory
+
+The value of a repeat literal, and each element of an array literal inside another, meets the element type as an element of the outer literal does: it widens to it, or it is an error.
+
+```ents
+data zeros: *mut [4]u8 = mut [0; 4]
+data rows: [][]u32 = [[1, 2], [3, 4]]
+
+func f(n: i32) -> i64 {
+  let wide: *[3]i64 = [n; 3]
+  return wide[2]
+}
+```
+
+```ents
+data flags: []u32 = [true; 3]
+data rows: [][]u8 = [[300, 1], [2, 3]]
+
+func f(n: i32) -> u8 {
+  let bytes: *[3]u8 = [n; 3]
+  return bytes[0]
+}
+```
+
+```errors
+cannot assign bool to u32
+cannot assign int(300) to u8
+cannot assign i32 to u8
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
@@ -647,6 +802,61 @@ func b(x: u32) { buf[x & ~15] = 2 }
 ```errors
 runtime index on *[16]u8 requires 'if let' or '??'
 runtime index on *[16]u8 requires 'if let' or '??'
+```
+
+A shift takes its count modulo the width it's done in, 32 bits for a `u32` or anything narrower. So `x >> 32` is `x`, not 0, and bounds nothing, while `x >> 60` shifts by 28. A constant with a shift inside it has the value the shift gives it: `65535 >> 32` is 65535 as a `u32`, and 16 is no index into 16 elements.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(x: u32) { buf[x >> 60] = 1 }
+func b(x: u32) { buf[x >> 32] = 2 }
+func c(x: u32) { buf[x >> (16 + 16)] = 3 }
+func d(x: u32) { buf[x & (65535 >> 32)] = 4 }
+func e() { buf[16 >> 32] = 5 }
+func f(b: u8) { buf[b >> 36] = 6 }
+```
+
+```errors
+index type u32#4294967296 may exceed *[16]u8 bounds
+index type u32#4294967296 may exceed *[16]u8 bounds
+index type u32#65536 may exceed *[16]u8 bounds
+index 16 out of bounds for *[16]u8
+```
+
+A constant is worked out in the type it takes, step by step, as the program does it. As a `u32`, `0 - 1` is 4294967295, and that is what a division, a remainder or a right shift is given: `(0 - 1) / 268435455` is 16, `~0 >> 28` is 15.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a() { buf[(0 - 1) / 268435455] = 1 }
+func b(x: u32) { buf[x & ((0 - 1) / 268435455)] = 2 }
+func c() { buf[(1 - 2) % 20 + 1] = 3 }
+func d(x: u32) { buf[x & (~0 >> 28)] = 4 }
+func e() { buf[(0 - 1) % 16] = 5 }
+func f() { memset(buf, 0, (1 - 2) / 4 + 16) }
+```
+
+```errors
+index 16 out of bounds for *[16]u8
+index type u32#17 may exceed *[16]u8 bounds
+index 16 out of bounds for *[16]u8
+memset length 1073741839 exceeds buffer size 16 bytes
+```
+
+A range bound and a length are that value too: `~4294967200` is 95 as a `u32`, not a negative number that would fit anywhere.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a() { buf[~4294967295..~4294967200] = 1 }
+func b() { memset(buf, 0, ~4294967200) }
+func c() { buf[~4294967295..~4294967279] = 1 }
+```
+
+```errors
+range 0..95 is out of bounds for *[16]u8
+memset length 95 exceeds buffer size 16 bytes
 ```
 
 A comparison with a constant narrows the variable where it holds: inside the branch, in later branches of the same `if`, and after an exit that the comparison guards.
@@ -1002,6 +1212,15 @@ func stepped(x: i64, k: i32) -> i64 => max(x, match k {
   _ => 5
 })
 func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
+```
+
+An arm can have statements before its value. A `let` among them is declared once, also where the operand is checked a second time to give its constants the other operand's type.
+
+```ents
+func floored(x: i64, strict: bool) -> i64 => max(x, if strict {
+  let margin = 3
+  5
+} else { 2 })
 ```
 
 ```ents

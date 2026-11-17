@@ -1045,6 +1045,7 @@ describe('globals', () => {
       global under: u32 = (7:u32 - 9:u32) / 2
       global count: u32 = 1:u32 << 40
       global down: i32 = -16:i32 >> 34
+      global far: u128 = 5:u128 >> 130
       global single: f64 = 0.1:f32 + 0.2:f32
       global big: i64 = 1 << 40
     `)
@@ -1062,6 +1063,8 @@ describe('globals', () => {
       // A shift uses the low bits of its count.
       { kind: 'int', value: 256n },
       { kind: 'int', value: -4n },
+      // A wide integer's too: 130 is 2 in the 128 bits of a u128.
+      { kind: 'int', value: 1n },
       { kind: 'float', value: Math.fround(Math.fround(0.1) + Math.fround(0.2)) },
       { kind: 'int', value: 1099511627776n },
     ])
@@ -1323,6 +1326,39 @@ describe('a string literal as a slice', () => {
   })
 })
 
+describe('the values in a literal that is laid out', () => {
+  const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
+
+  test('the value of a repeat literal meets the element type, as an element of an array literal does', () => {
+    // These were laid out as they came: three bytes as three u32s, 300 as 44.
+    expect(errs('data d: []u32 = [true; 3]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data d: *[3]u32 = [1.5; 3]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: []u8 = [300; 3]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: []Pt = [5; 3]')).toEqual(['cannot assign int(5) to Pt'])
+    expect(errs('func f() -> u32 { let d: []u32 = [true; 3]\n return d.len }')).toEqual(['cannot assign bool to u32'])
+    expect(errs('type R = (v: []u32, n: i32)\ndata rs: []R = [([true; 3], 1)]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data z: *mut [4]u8 = mut [0; 4]\ndata w: []f32 = [1; 2]\ndata t: []u32 = [7:u8; 3]\ndata b: []bool = [true; 2]\ndata p: []Pt = [(1, 2); 2]')).toEqual([])
+  })
+
+  test('a value known at run time widens to the element type or is an error', () => {
+    const result = checkModule('func f(n: i32) -> i64 { let d: *[3]i64 = [n; 3]\n return d[2] }')
+    expect(result.errors).toEqual([])
+    const widened = [...result.coercions].find(([expr]) => expr.kind === 'IdentExpr' && expr.name === 'n')
+    expect(widened && typeToString(widened[1])).toBe('i64')
+    expect(errs('func take(s: []f64) -> u32 => s.len\nfunc f(n: i32) -> u32 => take([n; 3])')).toEqual([])
+    expect(errs('func f(n: i32) -> u8 { let d: *[3]u8 = [n; 3]\n return d[2] }')).toEqual(['cannot assign i32 to u8'])
+    expect(errs('func f(x: f64) -> u32 { let d: []i32 = [x; 3]\n return d.len }')).toEqual(['cannot assign f64 to i32'])
+  })
+
+  test('so do the elements of a literal inside another', () => {
+    expect(errs('data d: [][]u32 = [[true, false], [3, 4]]')).toEqual(['cannot assign bool to u32', 'cannot assign bool to u32'])
+    expect(errs('data d: [][]u32 = [[1.5, 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: *[2][2]u32 = [[1.5; 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: [][]u8 = [[300, 1], [3, 4]]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: [][]u32 = [[1, 2], [3, 4]]\ndata e: *[2][2]u8 = [[1, 2], [3, 4]]')).toEqual([])
+  })
+})
+
 describe('a slice from a pointer and a length', () => {
   test('is a value, not a literal for the data section', () => {
     const result = checkModule(`
@@ -1361,6 +1397,28 @@ describe('a slice from a pointer and a length', () => {
     expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
       'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
     ])
+  })
+
+  test('is not the value of a data declaration: there is nothing to lay out', () => {
+    // These built invalid wasm, or threw while the data section was laid out.
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    const message = 'data value must be a literal to lay out: a (ptr, len) pair is a slice already'
+    expect(errs('data s: []i32 = (64, 3)')).toEqual([message])
+    expect(errs('data s = ((64, 3)):[]i32')).toEqual([message])
+    expect(errs('type Bytes = []u8\ndata s: Bytes = (64, 3)')).toEqual([message])
+    // A struct of two fields is a literal, and so is an array of pairs.
+    expect(errs('type Point = (x: i32, y: i32)\ndata p: Point = (1, 2)\ndata q = (1, 2)\ndata lists: [][]i32 = [(64, 3)]')).toEqual([])
+  })
+
+  test('an element of an array of slices is checked as a slice too', () => {
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    expect(errs('data lists: [][]i32 = [(64, 3), [1, 2], ((0, 0))]')).toEqual([])
+    expect(errs('data lists: [][]i32 = [(1.5, 2.5)]')).toEqual([
+      'slice pointer: cannot assign float(1.5) to [*]i32',
+      'slice length: cannot assign float(2.5) to u32',
+    ])
+    expect(errs('data lists: [][]i32 = [(0, 3, 4)]')).toEqual(['cannot assign (int(0), int(3), int(4)) to []i32'])
+    expect(errs('func f(n: u64) { let lists: [][]u8 = [("ab", n)] }')).toEqual(['slice length: cannot assign u64 to u32'])
   })
 
   test('(x) is x: a slice, a string, an array literal or a pair in parentheses is that slice', () => {
@@ -1632,6 +1690,94 @@ describe('operand types', () => {
     expect(index('x & (~0 & 7 | 16)')).toEqual(['index type u32#24 may exceed *[16]u8 bounds (max index 23 >= 16) — narrow the index range to fit'])
   })
 
+  test('a range from a shift takes the count as the shift does: modulo its width', () => {
+    const index = (type: string, size: number, expr: string) => errs(`data t = [0:u8; ${size}]\nfunc f(x: ${type}) -> u8 => t[${expr}]`)
+    const exceeds = (type: string, size: number, max: number) =>
+      [`index type ${type}#${max} may exceed *[${size}]u8 bounds (max index ${max - 1} >= ${size}) — narrow the index range to fit`]
+    // A 32-bit shift by 32 is a shift by 0, however the count is written.
+    expect(index('u32', 16, 'x >> 32')).toEqual(exceeds('u32', 16, 4294967296))
+    expect(index('u32', 16, 'x >> (16 + 16)')).toEqual(exceeds('u32', 16, 4294967296))
+    expect(index('u32', 16, 'x >> 33')).toEqual(exceeds('u32', 16, 2147483648))
+    expect(index('u32', 16, 'x >> 60')).toEqual([])
+    expect(index('u32', 1, '(x & 63) >> 34')).toEqual(exceeds('u32', 1, 16))
+    // A u8 or u16 is shifted as the i32 it's held in.
+    expect(index('u8', 1, 'x >> 8')).toEqual([])
+    expect(index('u8', 1, 'x >> 32')).toEqual(exceeds('u8', 1, 256))
+    expect(index('u16', 1, 'x >> 16')).toEqual([])
+    expect(index('u16', 1, 'x >> 32')).toEqual(exceeds('u16', 1, 65536))
+    // A rotation keeps every bit: no range.
+    const unproven = (size: number) => [`runtime index on *[${size}]u8 requires 'if let' or '??' (no optional type for u8)`]
+    expect(index('u32', 16, 'x >>> 28')).toEqual(unproven(16))
+    expect(index('u32', 16, 'x <<< 4')).toEqual(unproven(16))
+    expect(index('u8', 1, 'x >>> 8')).toEqual(unproven(1))
+    // 64 bits, and the wide integers, whose helpers take the count modulo their width.
+    const ranged = (type: string, range: number, count: number) => errs(`func f(x: ${type}) { let i: ${type}#${range} = x >> ${count} }`)
+    expect(ranged('u64', 16, 60)).toEqual([])
+    expect(ranged('u64', 16, 124)).toEqual([])
+    expect(ranged('u64', 1, 64)).toEqual(['cannot assign u64 to u64#1'])
+    expect(ranged('u128', 16, 124)).toEqual([])
+    expect(ranged('u128', 16, 252)).toEqual([])
+    expect(ranged('u128', 1, 128)).toEqual(['cannot assign u128 to u128#1'])
+    expect(ranged('u256', 1, 256)).toEqual(['cannot assign u256 to u256#1'])
+  })
+
+  test('a constant with a shift in it has the value the shift gives in its type', () => {
+    const index = (expr: string) => errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) -> u8 => t[${expr}]`)
+    // 65535 >> 32 as a u32 is 65535, and 1 >> 32 is 1.
+    expect(index('x & (65535 >> 32)')).toEqual(['index type u32#65536 may exceed *[16]u8 bounds (max index 65535 >= 16) — narrow the index range to fit'])
+    expect(index('(x & 15) + (1 >> 32)')).toEqual(['index type u32#17 may exceed *[16]u8 bounds (max index 16 >= 16) — narrow the index range to fit'])
+    expect(index('x % (4096 >> 40)')).toEqual([])
+    expect(index('16 >> 32')).toEqual(['index 16 out of bounds for *[16]u8'])
+    expect(index('60 >> 34')).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() -> ?*mut u8 => &t[16 >> 32]`)).toEqual(['index 16 out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..(64 >> 32)] = 1 }`)).toEqual(['range 0..64 is out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, 64 >> 32) }`)).toEqual(['memset length 64 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 1]\nfunc f(x: u32) { if x < (16 >> 32) { t[x] = 1 } }`))
+      .toEqual(['index type u32#16 may exceed *[1]u8 bounds (max index 15 >= 1) — narrow the index range to fit'])
+  })
+
+  test('a constant is divided and shifted right as its type holds its operands', () => {
+    const index = (expr: string) => errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) -> u8 => t[${expr}]`)
+    const past = ['index 16 out of bounds for *[16]u8']
+    // As a u32, 0 - 1 is 4294967295: that is what is divided, not -1.
+    expect(index('(0 - 1) / 268435455')).toEqual(past)
+    expect(index('(1 - 2) % 20 + 1')).toEqual(past)
+    expect(index('(~0 >> 28) + 1')).toEqual(past)
+    expect(index('~0 / 268435455')).toEqual(past)
+    expect(index('(0 - 1) / 268435456')).toEqual([])
+    expect(index('(0 - 1) % 16')).toEqual([])
+    expect(index('~0 >> 28')).toEqual([])
+    // A range comes from the same value.
+    const over = ['index type u32#17 may exceed *[16]u8 bounds (max index 16 >= 16) — narrow the index range to fit']
+    expect(index('x & ((0 - 1) / 268435455)')).toEqual(over)
+    expect(index('x % ((0 - 1) / 268435455 + 1)')).toEqual(over)
+    expect(index('x & (~0 >> 28)')).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) { if x < (0 - 1) / 268435455 + 1 { t[x] = 1 } }`)).toEqual(over)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..((0 - 1) / 268435455 + 1)] = 1 }`)).toEqual(['range 0..17 is out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, (1 - 2) / 4 + 16) }`)).toEqual(['memset length 1073741839 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\ndef k = (0 - 1) / 268435455\nfunc f() { t[k] = 1 }`)).toEqual(past)
+    // In a narrower type too: as a u8, 0 - 1 is 255.
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(b: u8) -> u8 => t[b & ((0 - 1) / 15)]`))
+      .toEqual(['index type u8#18 may exceed *[16]u8 bounds (max index 17 >= 16) — narrow the index range to fit'])
+    // A signed type holds -1 as it is: -64 / 4 + 17 is 1.
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f(x: i32) -> i32 { let i: i32 = (0 - 64) / 4 + 17\n return i }`)).toEqual([])
+    expect(index('(0 - 64) / 4 + 17')).toEqual([])
+  })
+
+  test('a range bound or a length is the value its constant has in its type', () => {
+    // ~4294967200 is 95 as a u32. As a bare number it is negative, which
+    // passed for a bound or a length that fits anything.
+    const past = ['range 0..95 is out of bounds for *[16]u8']
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[~4294967295..~4294967200] = 1 }`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..~4294967200] = 1 }`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() -> []u8 => t[~4294967295..~4294967200]`)).toEqual(past)
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[~4294967295..~4294967279] = 1 }`)).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~4294967200) }`)).toEqual(['memset length 95 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~0) }`)).toEqual(['memset length 4294967295 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\ndata s = [0:u8; 128]\nfunc f() { memcpy(t, s, ~4294967200) }`)).toEqual(['memcpy length 95 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, ~4294967279) }`)).toEqual([])
+  })
+
   test('pointer arithmetic takes 32-bit integers', () => {
     expect(errs(`func f(p: [*]u8, n: u32, q: [*]u8) -> bool => p + n < q`)).toEqual([])
     expect(errs(`func f(p: [*]u8, n: i64) { let q = p + n }`)).toEqual(["'+' cannot be applied to [*]u8 and i64"])
@@ -1691,6 +1837,35 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(a: i64) { let x: i32 = 0\n set x = a }`)).toEqual(['cannot assign i64 to i32'])
   })
 
+  test('(x) is x: a struct in parentheses meets a type as the struct does', () => {
+    // One element, whatever the type inside has: this threw in the checker.
+    expect(errs(`
+      type Point = (x: i32, y: i32)
+      type Wide = (a: i64, b: f32)
+      type Seg = (a: Point, b: Point)
+      data points: *[2]Point = [(Point(1, 2)), ((3, 4))]
+      global g: Wide = ((1, 2))
+      func mk(n: i32) -> Point { return (Point(n, 2)) }
+      func sum(p: Point) -> i32 => p.x + p.y
+      func f(c: bool, p: *mut Point) -> i32 {
+        let a: Point = (Point(1, 2))
+        let w: Wide = (((1, 2)))
+        let s: Seg = ((Point(1, 2)), ((3, 4)))
+        let b: Point = if c { (Point(1, 2)) } else { ((3, 4)) }
+        let d = ((1, 2)):Point
+        p.* = (Point(5, 6))
+        return sum((Point(1, 2))) + sum(((3, 4)))
+      }
+    `)).toEqual([])
+    // What is inside still has to be that type.
+    expect(errs('type Point = (x: i32, y: i32)\nfunc f() { let p: Point = ((1, 2, 3)) }')).toEqual([
+      'cannot assign (int(1), int(2), int(3)) to Point',
+    ])
+    expect(errs('type Point = (x: i32, y: i32)\ndata points: *[1]Point = [((1, 2.5))]')).toEqual([
+      'cannot assign float(2.5) to i32',
+    ])
+  })
+
   test('the branches of an if or match settle on one type', () => {
     const source = `func f(c: bool, n: i32, big: i64, x: f64) {
       let a = if c { n } else { big }
@@ -1705,6 +1880,104 @@ describe('values meeting an expected type', () => {
     expect(typeAt(result, source.indexOf('b ='))).toBe('f64')
     expect(typeAt(result, source.indexOf('d ='))).toBe('i64')
     expect(typeAt(result, source.indexOf('e ='))).toBe('i32')
+  })
+
+  test('branches that are all constants default to a type that holds each of them', () => {
+    // v is an i64, as its second branch is, whichever branch comes first.
+    const narrowed = ['cannot assign i64 to i32']
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { -2147483648 } else { 2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { 2147483648 } else { -2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(k: i32) -> i32 { let v = match k { 0 => -2147483648\n 1 => 5\n _ => 2147483648 }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool, d: bool) -> i32 { let v = if c { -2147483648 } else { if d { 1 } else { 1073741824 * 2 } }\n return v }`)).toEqual(narrowed)
+    expect(errs(`func f(c: bool) -> i32 { let v = if c { -2147483648 } else { 2147483647 }\n return v }`)).toEqual([])
+    // A 64-bit pattern is an i64, as it is by itself; more bits than that have no default.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 1 } else { 18446744073709551616 }\n return v }`))
+      .toEqual(['cannot assign int(18446744073709551616) to i64'])
+    expect(errs(`func f() { let v = 18446744073709551616 }`)).toEqual(['cannot assign int(18446744073709551616) to i64'])
+    expect(errs(`func f() { let v = -9223372036854775809 }`)).toEqual(['cannot assign int(-9223372036854775809) to i64'])
+    expect(errs(`func f() { let v = 18446744073709551615 }`)).toEqual([])
+    // As an f64, an integer branch has to be one exactly.
+    expect(errs(`func f(c: bool) -> f64 { let v = if c { 1.5 } else { 3 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> f64 { let v = if c { 1.5 } else { 9007199254740993 }\n return v }`))
+      .toEqual(['cannot assign int(9007199254740993) to f64'])
+  })
+
+  test('constant branches of both signs have to be values of the signed default', () => {
+    // An i64 has the bits of 18446744073709551615, but they are its -1:
+    // both branches came out the same, with nothing said.
+    const past = ['cannot assign int(18446744073709551615) to i64']
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -1 } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 18446744073709551615 } else { -1 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(k: i32) -> i64 { let v = match k { 0 => -1\n 1 => 18446744073709551615\n _ => 0 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool, d: bool) -> i64 { let v = if c { if d { -1 } else { 5 } } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool, d: bool) -> i64 { let v = if c { -1 } else { if d { 5 } else { 18446744073709551615 } }\n return v }`)).toEqual(past)
+    expect(errs(`def k = 3\nfunc f(c: bool) -> i64 { let v = if c { 1 - k } else { 18446744073709551615 }\n return v }`)).toEqual(past)
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -9223372036854775808 } else { 9223372036854775808 }\n return v }`))
+      .toEqual(['cannot assign int(9223372036854775808) to i64'])
+    expect(errs(`func f(c: bool) -> i32 => match (if c { -1 } else { 18446744073709551615 }) { -1 => 1\n _ => 2 }`)).toEqual(past)
+    // Every value of an i64 is fine, and so are 64-bit patterns among themselves.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -9223372036854775808 } else { 9223372036854775807 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { 0x9E3779B97F4A7C15 } else { 0xcbf29ce484222325 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { -1 } else { ~0 }\n return v }`)).toEqual([])
+    // A complement is a pattern itself, not a negative value.
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { ~0 } else { 0x8000000000000000 }\n return v }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i64 { let v = if c { ~1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
+    // A type that holds them both can be given.
+    expect(errs(`func f(c: bool) -> i128 { let v: i128 = if c { -1 } else { 18446744073709551615 }\n return v }`)).toEqual([])
+  })
+
+  test('each constant branch has to be a value of the type the expression is used as', () => {
+    const negative = ['cannot assign int(-2147483648) to u32']
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n / (if c { -2147483648 } else { 2147483648 })`)).toEqual(negative)
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n / (if c { 2147483648 } else { -2147483648 })`)).toEqual(negative)
+    expect(errs(`func f(k: i32, n: u32) -> u32 => n + match k { 0 => 5\n _ => -1 }`)).toEqual(['cannot assign int(-1) to u32'])
+    expect(errs(`func f(c: bool, d: bool, n: u32) -> u32 => n + (if c { 1 } else { if d { 2 } else { -3 } })`)).toEqual(['cannot assign int(-3) to u32'])
+    expect(errs(`func f(c: bool, n: i32) -> i32 => n + (if c { -2147483648 } else { 2147483648 })`)).toEqual(['cannot assign int(2147483648) to i32'])
+    expect(errs(`func f(c: bool, n: i64) -> i64 => n + (if c { -2147483648 } else { 2147483648 })`)).toEqual([])
+    // Not only literal by literal: a negation's operand is in range only once negated.
+    expect(errs(`def k = 3\nfunc f(c: bool, n: u32) -> u32 => n / (if c { 5 } else { -k })`)).toEqual(['cannot assign int(-3) to u32'])
+    expect(errs(`func f(c: bool, n: u8) -> u8 => n / (if c { 200 } else { -(100) })`)).toEqual(['cannot assign int(-100) to u8'])
+    expect(errs(`func f(c: bool, n: i8) -> i8 => n / (if c { 100 } else { -(128) })`)).toEqual([])
+    // A complement is a bit pattern of the type, as anywhere else.
+    expect(errs(`func f(c: bool, n: u32) -> u32 => n & (if c { ~7 } else { 255 })`)).toEqual([])
+  })
+
+  test('the branches of an if let are checked against the type the value is used as', () => {
+    // An i32 and a u32 have no type between them, but each widens to the i64 wanted.
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 => if let q = p { a } else { b }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 { let v: i64 = if let q = p { a } else { b }\n return v }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8, c: bool, a: i32, b: u32) -> i64 => if let q = p { q.* } elif c { a } else { b }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8) -> u8 => if let q = p { 1 } else { 300 }`)).toEqual(['cannot assign int(300) to u8'])
+    expect(errs(`func f(p: ?*u8, x: f64) -> i64 => if let q = p { q.* } else { x }`)).toEqual(['cannot assign f64 to i64'])
+    expect(errs(`func f(p: ?*u8, a: i32) -> i64 => if let q = p { a } else { }`)).toEqual(['this branch has no value: expected i64'])
+    // The binding is the then branch's alone.
+    expect(errs(`func f(p: ?*u8, b: u32) -> i64 => if let q = p { 1 } else { q.* }`)[0]).toContain("unknown identifier 'q'")
+    // With no type wanted, the branches still have to agree between them.
+    expect(errs(`func f(p: ?*u8, a: i32, b: u32) -> i64 { let v = if let q = p { a } else { b }\n return v }`))
+      .toEqual(['branches have different types: u32 and i32 (cast one explicitly)'])
+  })
+
+  test('branches that are tuples with constants in them agree field by field', () => {
+    // 0.2.1 built these; comparing the tuples whole, (0, 1) wasn't a (1, 0).
+    expect(errs(`func f(d: i32) -> i32 { let (dx, dy) = match d { 0 => (1, 0)\n 1 => (0, 1)\n _ => (-1, -1) }\n return dx + dy }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i32 { let t = if c { (1, 2) } else { (3, 4) }\n return t.1 }`)).toEqual([])
+    expect(errs(`func f(c: bool, x: i32) -> i32 { let t = if c { (x, 2) } else { (3, 4) }\n return t.0 }`)).toEqual([])
+    expect(errs(`func f(c: bool, x: i32) -> i32 { let t = if c { ((1, 2), x) } else { ((3, 4), 5) }\n return t.0.1 }`)).toEqual([])
+    expect(errs(`func f(p: ?*u8) -> i32 { let (a, b) = if let q = p { (1, 2) } else { (3, 4) }\n return a + b }`)).toEqual([])
+    // A field takes the type its values would as branches by themselves.
+    const source = `func f(c: bool, x: i64) { let t = if c { (-2147483648, 1.5, 1) } else { (2147483648, 2, x) } }`
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    expect(typeAt(result, source.indexOf('t ='))).toBe('(i64, f64, i64)')
+    expect(errs(`func f(c: bool) -> i32 { let t = if c { (-2147483648, 1) } else { (2147483648, 2) }\n return t.0 }`)).toEqual(['cannot assign i64 to i32'])
+    // Tuples that aren't alike still don't agree.
+    expect(errs(`func f(c: bool) { let t = if c { (1, 2) } else { (3, 4, 5) } }`))
+      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)) (cast one explicitly)'])
+    expect(errs(`func f(c: bool) { let t = if c { (x: 1, y: 2) } else { (y: 3, x: 4) } }`))
+      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)) (cast one explicitly)'])
+    expect(errs(`func f(c: bool, x: f64) { let t = if c { (x, 2) } else { (3, true) } }`))
+      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool) (cast one explicitly)'])
   })
 
   test('branches that cannot agree are an error where the value is used', () => {
@@ -1795,12 +2068,61 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(x: f64) -> (r: i64) => x`)).toEqual(['cannot assign f64 to i64'])
   })
 
+  test('an expression body fills several named results in order, like a trailing value', () => {
+    const pair = 'func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)\n'
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) => pair(n)`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) { pair(n) }`)).toEqual([])
+    // Whatever the value's own fields are called.
+    expect(errs(`func other(n: u32) -> (r: u32, x: u32) => (n, n)\nfunc f(n: u32) -> (q: u32, r: u32) => other(n)`)).toEqual([])
+    expect(errs(`func f(t: (u32, u32)) -> (q: u32, r: u32) => t`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, c: bool) -> (q: u32, r: u32) => if c { pair(n) } else { (0, 0) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, k: i32) -> (q: u32, r: u32) => match k { 0 => pair(n)\n _ => (n, 1) }`)).toEqual([])
+    // Each still has to fit the result it fills, and there have to be as many.
+    expect(errs(`${pair}func f(n: u32) -> (q: u64, r: u64) => pair(n)`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u16, r: u16) => pair(n)`)).toEqual(['cannot assign (u32, u32) to (u16, u16)'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32, s: u32) => pair(n)`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32, s: u32)'])
+    // Elsewhere a tuple's field names count.
+    expect(errs(`${pair}func f(n: u32) { let t: (q: u32, r: u32) = pair(n) }`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32)'])
+  })
+
+  test('a tuple value in parentheses is checked as it is without them', () => {
+    // (e) is e. Taken for a tuple literal of one field, a call in
+    // parentheses made the checker throw.
+    const pair = 'func pair(n: u32) -> (u32, u32) => (n / 10, n % 10)\n'
+    expect(errs(`${pair}func f(n: u32) -> (u32, u32) => (pair(n))`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> (q: u32, r: u32) => ((pair(n)))`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32) -> u32 { let t: (u32, u32) = (pair(n))\n return t.0 }`)).toEqual([])
+    expect(errs(`func f(t: (u32, u32)) -> (u32, u32) { return (t) }`)).toEqual([])
+    expect(errs(`${pair}func f(n: u32, c: bool) -> (u32, u32) => (if c { pair(n) } else { (1, 2) })`)).toEqual([])
+    // A literal in parentheses still takes the expected type field by field.
+    expect(errs(`func f(n: u8) -> (i64, u32) => ((n, 300))`)).toEqual([])
+    expect(errs(`func f(n: u8) -> (i64, u8) => ((n, 300))`)).toEqual(['cannot assign int(300) to u8'])
+    // And the same errors are reported as without the parentheses.
+    expect(errs(`${pair}func f(n: u32) { let t: (q: u32, r: u32) = (pair(n)) }`)).toEqual(['cannot assign (u32, u32) to (q: u32, r: u32)'])
+    expect(errs(`${pair}func f(n: u32) -> (u64, u64) => (pair(n))`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+    expect(errs(`${pair}func f(n: u32) -> (q: u64, r: u64) { (pair(n)) }`))
+      .toEqual(['cannot convert (u32, u32) to (u64, u64) implicitly: convert its fields'])
+  })
+
   test('a match pattern has to be a value of the subject\'s type', () => {
     expect(errs(`func f(x: i64) -> i32 => match x { 5000000000 => 1\n _ => 0 }`)).toEqual([])
     expect(errs(`func f(x: f64) -> i32 => match x { 1 => 1\n 2.5 => 2\n _ => 0 }`)).toEqual([])
     expect(errs(`func f(x: u8) -> i32 => match x { 300 => 1\n _ => 0 }`)).toEqual(['cannot match u8 against int(300)'])
     expect(errs(`func f(x: i32) -> i32 => match x { true => 1\n _ => 0 }`)).toEqual(['cannot match i32 against bool'])
     expect(errs(`func f(x: i32) -> i32 => match x { 1.5 => 1\n _ => 0 }`)).toEqual(['cannot match i32 against float(1.5)'])
+  })
+
+  test('a constant match subject is compared in its default type', () => {
+    expect(errs(`func f() -> i32 => match 1 { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`def k = 1\nfunc f() -> i32 => match k { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f(a: [3]u8) -> i32 => match a.len { 3 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 5000000000 { 5000000000 => 2\n 1 => 1\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 0.5 { 0.5 => 2\n 1 => 1\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f(c: bool) -> i32 => match if c { 1 } else { 2 } { 1 => 2\n _ => 3 }`)).toEqual([])
+    expect(errs(`func f() -> i32 => match 1 { 5000000000 => 2\n _ => 3 }`)).toEqual(['cannot match i32 against int(5000000000)'])
+    expect(errs(`func f() -> i32 => match 1 { 1.5 => 2\n _ => 3 }`)).toEqual(['cannot match i32 against float(1.5)'])
   })
 
   test('a struct value is not widened field by field', () => {
@@ -1976,6 +2298,27 @@ describe('builtins', () => {
     expect(types('', 'max(1, 5000000000)')).toEqual(['i64', 'i64'])
   })
 
+  test('with only literals the default type is the one the options give', () => {
+    const typed = (call: string, options: { defaultInt?: 'i32' | 'i64'; defaultFloat?: 'f32' | 'f64' }) => {
+      const src = `func f() { let r = ${call} }`
+      const result = typecheck(parse(src).module!, options)
+      expect(result.errors.map(e => e.message)).toEqual([])
+      return typeAt(result, src.indexOf(call), 'BuiltinCall')
+    }
+    expect(typed('sqrt(2.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('copysign(5.0, -1.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2.5)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2)', { defaultInt: 'i64' })).toBe('i64')
+    expect(typed('abs(-5)', { defaultInt: 'i64', defaultFloat: 'f32' })).toBe('i64')
+    expect(typed('max(1, 2)', { defaultFloat: 'f32' })).toBe('i32')
+    // Too big for an i32, they are an i64 whichever is the default.
+    expect(typed('max(1, 5000000000)', { defaultInt: 'i32' })).toBe('i64')
+    // The result is of that type too: an f32 where an f32 is wanted.
+    const result = typecheck(parse('func f() -> f32 => sqrt(2.0)').module!, { defaultFloat: 'f32' })
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(errs('func f() -> f32 => sqrt(2.0)')).toEqual(['cannot assign f64 to f32'])
+  })
+
   test('typed operands meet at the wider type', () => {
     expect(types('a: i32, b: i64', 'max(a, b)')).toEqual(['i64', 'i64'])
     expect(types('a: i64, b: i32', 'max(a, b)')).toEqual(['i64', 'i64'])
@@ -2077,6 +2420,23 @@ describe('builtins', () => {
     expect(types('x: i64, a: i32, c: bool', 'max(x, if c { a } else { 5 })')).toEqual(['i64', 'i64'])
     expect(types('a: i32, b: i64, c: bool', 'max(a, if c { b } else { 5 })')).toEqual(['i64', 'i64'])
     expect(errs(`func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })`)).toEqual(['cannot assign f64 to f32'])
+  })
+
+  test('a let in a branch of an operand is declared once, however often the operand is checked', () => {
+    // A constant operand is checked again against the type of the others,
+    // and a pointer operand of memcpy against its own.
+    expect(errs(`func f(x: u64, c: bool) -> u64 => mul_hi(if c { let k = 1\n 5 } else { 2 }, x)`)).toEqual([])
+    expect(errs(`func f(x: i64, k: i32) -> i64 => max(match k {\n 0 => { let one = 1\n 5 }\n _ => 2\n }, x)`)).toEqual([])
+    expect(errs(`func f(x: f32, c: bool) -> f32 => copysign(if c { let k = 1\n 5.0 } else { 2.0 }, x)`)).toEqual([])
+    expect(errs(`
+      data buf = mut [0:u8; 8]
+      func f(c: bool) { memcpy(buf, if c { let k = 1\n "ABCD" } else { "abcd" }, 4) }
+    `)).toEqual([])
+    // A second let of the name is still one too many.
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let k = 1\n let k = 2\n 5 } else { 2 }, x)`))
+      .toEqual(["'k' is already declared in this scope"])
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let x = 1\n 5 } else { 2 }, x)`))
+      .toEqual(["'x' is already declared in this scope"])
   })
 
   test('an if or a match operand takes the range away', () => {

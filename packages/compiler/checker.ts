@@ -593,12 +593,23 @@ class CheckContext {
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new TrialSet<AST.Expr>(this.trial)
+  // The constant each branch of an if or match of constants is by itself.
+  // The branches share one type, and each has to be a value of it.
+  branchConstants = new TrialMap<AST.Expr, ResolvedType>(this.trial)
+  // The patterns that have declared their local. An operand of a builtin is
+  // checked again once its type is settled, statements and all: a `let` in
+  // one of its branches is then the same declaration, not a second one.
+  // A look (see peek) declares in a scope of its own, and is no first time.
+  declared = new TrialSet<AST.Pattern>(this.trial)
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
   currentScope: Scope = this.moduleScope
   insideIfLetCondition = false
   currentReturnType: ResolvedType | null = null
+  // The named results an expression body is being checked against, when
+  // there are several: its value fills them in order.
+  resultsInOrder: ResolvedType | null = null
   // Loops open around the statement being checked, and the depth at the
   // innermost enclosing defer (null outside one). A deferred expression can't
   // return, or break or continue a loop outside it.
@@ -969,12 +980,24 @@ class CheckContext {
       ? decl.ident
       : `${decl.ident}$${decl.span.start}`
 
+    // (x) is x: the literal laid out is the one inside the parentheses.
+    const value = ungrouped(decl.value)
+
+    // A (ptr, len) pair is a slice already: there is no literal to lay out,
+    // and so nothing for the name to point at.
+    const literal = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
+    const literalType = declaredType ?? (value.kind === 'AnnotationExpr' ? inferredType : null)
+    if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
+      this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
+      return
+    }
+
     // Check if literal has mut flag
-    const isMut = this.exprHasMut(decl.value)
+    const isMut = this.exprHasMut(value)
     const dataIdentOff = this.findIdentOffset(decl.span.start, 'data')
 
     // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
-    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
+    const dataLiteral = this.extractDataLiteral(value, inferredType, declaredType)
     if (dataLiteral) {
       // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
@@ -1011,7 +1034,7 @@ class CheckContext {
 
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
-    const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
+    const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
     const dataId = expr.span.start
     if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
       if (expr.kind === 'LiteralExpr') {
@@ -1047,7 +1070,7 @@ class CheckContext {
   } | null {
     // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
     if (expr.kind === 'AnnotationExpr') {
-      const innerExpr = expr.expr
+      const innerExpr = ungrouped(expr.expr)
       if (this.isDataLiteralExpr(innerExpr)) {
         if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
           return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
@@ -1320,6 +1343,15 @@ class CheckContext {
     return overflows && expr.kind === 'BinaryExpr' && expr.op === '/' ? null : held
   }
 
+  // The value a constant has in the type it has been given: the one the
+  // program computes. The bare value of a bit pattern (~0 as a u32) is
+  // negative, and would pass for small where a length or a bound is checked.
+  private constantInType(expr: AST.Expr): ComptimeValue | null {
+    const value = this.evalComptimeExpr(expr)
+    const type = this.exprTypes.get(expr)
+    return value?.kind === 'int' && type ? constantIn(value, type) : value
+  }
+
   private comptimeValue(expr: AST.Expr, typed: boolean): ComptimeValue | null {
     // Handle annotation expression (e.g., 42:u32)
     if (expr.kind === 'AnnotationExpr') {
@@ -1372,23 +1404,36 @@ class CheckContext {
       if (left?.kind === 'int' && right?.kind === 'int') {
         const l = left.value
         const r = right.value
+        // A sum or a product comes out the same whether its operands have
+        // wrapped or not; a quotient, a remainder or a right shift doesn't.
+        // They take each operand as its type holds it, once it has one:
+        // (0 - 1) / 4 as a u32 divides 4294967295, as the program will.
+        const held = (operand: AST.Expr, value: bigint): bigint => {
+          const type = this.exprTypes.get(operand)
+          const constant = type ? constantIn({ kind: 'int', value }, type) : null
+          return constant?.kind === 'int' ? constant.value : value
+        }
+        const divisor = held(expr.right, r)
         switch (expr.op) {
           case '+': return { kind: 'int', value: l + r }
           case '-': return { kind: 'int', value: l - r }
           case '*': return { kind: 'int', value: l * r }
-          case '/': return r !== 0n ? { kind: 'int', value: l / r } : null
-          case '%': return r !== 0n ? { kind: 'int', value: l % r } : null
+          case '/': return divisor !== 0n ? { kind: 'int', value: held(expr.left, l) / divisor } : null
+          case '%': return divisor !== 0n ? { kind: 'int', value: held(expr.left, l) % divisor } : null
           case '&': return { kind: 'int', value: l & r }
           case '|': return { kind: 'int', value: l | r }
           case '^': return { kind: 'int', value: l ^ r }
           // A wider shift than any integer type isn't a value worth computing.
-          // In a type, only the low bits of the count are used (4.2).
+          // Once the shift has a type, the count is the one its instruction
+          // takes: only the low bits (4.2), so `x >> 32` as a u32 is `x >> 0`.
+          // What is proved from the value (a range, an index in bounds) has
+          // to hold for the value the program computes.
           case '<<':
           case '>>': {
-            const width = typed ? shiftWidth(this.exprTypes.get(expr)) : null
-            const count = width ? BigInt.asUintN(width === 64 ? 6 : 5, r) : r
+            const width = shiftWidth(this.exprTypes.get(expr))
+            const count = width ? r & BigInt(width - 1) : r
             if (count < 0n || count > 512n) return null
-            return { kind: 'int', value: expr.op === '<<' ? l << count : l >> count }
+            return { kind: 'int', value: expr.op === '<<' ? l << count : held(expr.left, l) >> count }
           }
         }
       }
@@ -1628,8 +1673,10 @@ class CheckContext {
       }
       // A string literal gets its bytes in the data section when it's checked
       // against the type it's used at, as the argument of a function is. So
-      // does one in an arm of an `if` or a `match`.
-      if (expr.kind === 'LiteralExpr' || expr.kind === 'IfExpr' || expr.kind === 'MatchExpr') this.checkExpr(expr, type)
+      // does one in an arm of an `if` or a `match`. Parentheses around the
+      // operand change nothing.
+      const value = ungrouped(expr)
+      if (value.kind === 'LiteralExpr' || value.kind === 'IfExpr' || value.kind === 'MatchExpr') this.checkExpr(value, type)
       return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
@@ -1655,7 +1702,7 @@ class CheckContext {
     const bufferSize = totalCount * elemSize
 
     // Length must be a comptime constant to verify bounds
-    const len = this.evalComptimeExpr(lenExpr)
+    const len = this.constantInType(lenExpr)
     if (!len || len.kind !== 'int') {
       this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`)
       return
@@ -1725,7 +1772,15 @@ class CheckContext {
         this.error(decl.span.start, `function '${name ?? 'anonymous'}' can reach its end without returning a value`)
       }
     } else {
-      this.checkExpr(decl.body.expr, this.returnValueType())
+      // An expression body supplies the results as a trailing value does:
+      // several named ones are filled in order, whatever the value's own
+      // fields are called. checkExpr knows the value by this copy of them.
+      const results = this.returnValueType()
+      const named = results.kind === 'tuple' && results.fields.some(f => f.name)
+      const prevResults = this.resultsInOrder
+      this.resultsInOrder = named ? tuple(results.fields) : null
+      this.checkExpr(decl.body.expr, this.resultsInOrder ?? results)
+      this.resultsInOrder = prevResults
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
@@ -2048,9 +2103,10 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
-        if (existing) {
+        if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
+        this.declared.add(pattern)
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
@@ -2416,6 +2472,16 @@ class CheckContext {
   // This allows comptime types to resolve based on context
   // Optional errorContext is prepended to error messages (e.g., "argument 1: ")
   checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
+    // (x) is x, and meets the type as x does: it has one element whatever
+    // the type of x is, so nothing below may take it for a tuple of x's fields.
+    const grouped = groupedExpr(expr)
+    if (grouped) {
+      this.coercions.delete(expr)
+      const type = this.checkExpr(grouped, expected, errorContext)
+      this.exprTypes.set(expr, this.exprTypes.get(grouped) ?? type)
+      return type
+    }
+
     // Bidirectional: propagate expected type through & (ref) expressions
     if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
       const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
@@ -2451,6 +2517,13 @@ class CheckContext {
       this.withNarrowing(this.boundsAfterAllFalse(seen), else_, () => this.checkBodyAgainst(else_, expected))
       this.exprTypes.set(expr, expected)
       return expected
+    }
+
+    // ...and into those of an if let, where the binding is in scope.
+    if (expr.kind === 'IfExpr' && expr.pattern && expr.else_) {
+      const type = this.inferIfLet(expr, expected)
+      this.exprTypes.set(expr, type)
+      return type
     }
 
     // Bidirectional: propagate expected type into match-expression arms
@@ -2581,14 +2654,8 @@ class CheckContext {
       return expected
     }
 
-    // No other tuple is a slice. (x) is x, and meets the type as x does.
+    // No other tuple is a slice.
     if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
-      const only = expr.elements.length === 1 && !expr.elements[0].name ? expr.elements[0].value : null
-      if (only) {
-        const type = this.checkExpr(only, expected, errorContext)
-        this.exprTypes.set(expr, type)
-        return type
-      }
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
       this.exprTypes.set(expr, expected)
       return expected
@@ -2626,11 +2693,13 @@ class CheckContext {
           : null
         if (innerType) {
           // A tuple that is a struct element is checked field by field, like
-          // any struct value: its literals take their fields' types.
-          const structElements = unwrap(innerType).kind === 'tuple'
+          // any struct value: its literals take their fields' types. One that
+          // is a slice element is its (ptr, len), checked as any slice value.
+          const inner = unwrap(innerType).kind
           const counted = expected.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            if (this.isDataLiteralExpr(elem) && !(structElements && elem.kind === 'TupleExpr')) {
+            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
+            if (this.isDataLiteralExpr(elem) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
@@ -2690,8 +2759,11 @@ class CheckContext {
     this.exprTypes.set(expr, recordType)
 
     // For other types, check assignability; a constant takes the expected
-    // type and a narrower value is marked to be widened.
-    this.coerce(expr, inferred, expected, prefix)
+    // type and a narrower value is marked to be widened. The value of an
+    // expression body with several named results fills them in order: its
+    // own field names give way to theirs (see checkFuncBody).
+    const filled = expected === this.resultsInOrder ? this.resultsFilledBy(inferred) : expected
+    this.coerce(expr, inferred, filled, prefix)
 
     // For return value, concretize based on expected type
     return this.concretizeToTarget(inferred, expected)
@@ -2708,12 +2780,18 @@ class CheckContext {
   // whose length the bytes of `expr` count towards, if there is one. The array
   // and repeat literals inside a literal are followed from here because they
   // are laid out with it, not checked one by one.
-  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string): void {
+  //
+  // What they hold in the end is a value, and it meets the element type as an
+  // element of the outermost literal does (`among` says `expr` is one): it
+  // widens to it or is an error. So `[true; 3]` is not three u32s, and the
+  // i32 of `[n; 3]` is extended before it is stored into i64 slots.
+  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string, among = false): void {
+    const value = expr
     while (expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr') expr = expr.expr
     const t = unwrap(type)
-    if (expr.kind === 'LiteralExpr') {
+    if (expr.kind === 'LiteralExpr' && expr.value.kind === 'string') {
       const element = t.kind === 'slice' ? t.element : counted
-      if (expr.value.kind !== 'string' || !element || byteSize(element) === 1) return
+      if (!element || byteSize(element) === 1) return
       const elements = typeToString(element)
       const what = t.kind === 'slice'
         ? `cannot assign a string literal to ${typeToString(type)}`
@@ -2727,18 +2805,23 @@ class CheckContext {
       // (x) around anything else is grouping.
       if (t.kind === 'tuple') this.checkExpr(expr, type)
       else if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && expr.elements[0].value) {
-        this.checkStringElements(expr.elements[0].value, type, counted, prefix)
-      }
+        this.checkStringElements(expr.elements[0].value, type, counted, prefix, among)
+      } else if (among) this.checkExpr(value, type)
       return
     }
-    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') return
+    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') {
+      if (among) this.checkExpr(value, type)
+      return
+    }
     const inner = t.kind === 'slice' ? t.element
       : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
       : t.kind === 'array' ? this.peelArraySize(t)
       : type
     const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
+    // Only where the literal is laid out as elements is `inner` their type.
+    const elements = inner !== type
     for (const elem of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-      this.checkStringElements(elem, inner, innerCounted, prefix)
+      this.checkStringElements(elem, inner, innerCounted, prefix, elements)
     }
   }
 
@@ -3343,7 +3426,12 @@ class CheckContext {
         this.error(args[0].value.span.start, `${name} requires ${wanted}, got ${typeToString(floatLiteral)}`)
         return fallback
       }
-      common = floatLiteral || kind === 'float' ? primitive('f64') : this.unifyTypes(types)
+      // The default type is the configured one (TypecheckOptions). Integers
+      // too big for an i32 are an i64 whichever that is.
+      const sized = this.unifyTypes(types)
+      common = floatLiteral || kind === 'float' ? concretizeType(comptimeFloat(0), this.options)
+        : typeEquals(sized, primitive('i32')) ? concretizeType(comptimeInt(0n), this.options)
+        : sized
     }
     for (const [i, type] of types.entries()) {
       if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
@@ -3425,8 +3513,10 @@ class CheckContext {
         if (expr.op === '&') return limit(operand + 1n)
         if (expr.op === '%' && constantOnRight && operand > 0n) return limit(operand)
         if (expr.op === '>>' && constantOnRight) {
+          // The count as the shift takes it: modulo the width it's done in.
           const max = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
-          if (max !== null) return limit(((max - 1n) >> operand) + 1n)
+          const width = shiftWidth(base)
+          if (max !== null && width) return limit(((max - 1n) >> (operand & BigInt(width - 1))) + 1n)
         }
       }
       if (base.max === undefined) return stripMax(base)
@@ -3595,6 +3685,7 @@ class CheckContext {
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
       return
     }
+    const grouped = groupedExpr(expr)
     if (to.kind === 'primitive' && isComptimeNumber(from)) {
       this.typeConstant(expr, expected, actual)
     } else if (to.kind === 'pointer' && from.kind === 'comptime_int') {
@@ -3606,6 +3697,9 @@ class CheckContext {
         this.exprTypes.set(expr, actual)
         this.coercions.set(expr, expected)
       }
+    } else if (grouped && from.kind === 'tuple' && to.kind === 'tuple') {
+      // (e) is e: a tuple in parentheses is converted as it is without them.
+      this.coerce(grouped, actual, expected, prefix)
     } else if (expr.kind === 'TupleExpr' && from.kind === 'tuple' && to.kind === 'tuple') {
       // A tuple literal is converted element by element.
       for (const [i, element] of expr.elements.entries()) {
@@ -3638,19 +3732,35 @@ class CheckContext {
       if (innerType && isComptimeNumber(unwrap(innerType))) this.typeConstant(inner, type, innerType, check)
       else if (innerType && !isComptimeNumber(unwrap(type))) this.coerce(inner, innerType, type)
     }
+    // A branch is one of the values the expression can have, so it has to be
+    // a value of the type by itself, not only literal by literal: -1 is no
+    // branch of a u32. A default type is chosen to hold its integers; as a
+    // float it has to hold them exactly.
+    // With a negative branch the default is a signed type, and the other
+    // branches have to be values of it too, not only bits it has: no 64-bit
+    // type holds both -1 and 18446744073709551615.
+    const least = checkLiterals ? null : this.leastBranch(expr)
     const tail = (body: AST.FuncBody | AST.Expr) => {
-      if (body.kind === 'Block') {
-        const last = body.stmts.at(-1)
-        if (last?.kind === 'ExpressionStmt') again(last.expr)
+      const value = bodyValue(body)
+      if (!value) return
+      const own = this.branchConstants.get(value)
+      const checked = checkLiterals || isFloat(type) || (least !== null && least < 0n)
+      if (own && checked && !isComptimeNumber(unwrap(type)) && !typeAssignable(type, own)) {
+        this.error(value.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
+        again(value, false)
       } else {
-        again(body.kind === 'ArrowBody' ? body.expr : body)
+        again(value)
       }
     }
     switch (expr.kind) {
       case 'LiteralExpr': {
         // Each literal has to fit by its own value: 1.0 + 16777217 isn't an f32.
+        // One that isn't checked that way (the operand of a negation, a
+        // constant with no type but its default) still has to be a number
+        // the type has the bits for: 18446744073709551616 is no i64.const.
         const own = this.inferLiteral(expr)
-        if (checkLiterals && !isComptimeNumber(type) && !typeAssignable(type, own)) {
+        const fits = checkLiterals ? typeAssignable(type, own) : own.kind !== 'comptime_int' || hasBitsFor(type, own.value)
+        if (!isComptimeNumber(type) && !fits) {
           this.error(expr.span.start, `cannot assign ${typeToString(own)} to ${typeToString(type)}`)
         }
         break
@@ -3699,6 +3809,29 @@ class CheckContext {
       }
     }
     this.exprTypes.set(expr, type)
+  }
+
+  // The least constant an if or match of constants can be, through branches
+  // that are ifs or matches themselves. Null for any other expression. A
+  // complement doesn't count: ~0 is a bit pattern, not a negative value.
+  private leastBranch(expr: AST.Expr): bigint | null {
+    const bodies = expr.kind === 'IfExpr' ? [expr.thenBranch, ...expr.elifs.map(elif => elif.thenBranch), expr.else_]
+      : expr.kind === 'MatchExpr' ? expr.arms.map(arm => arm.body)
+      : null
+    if (!bodies) return null
+    let least: bigint | null = null
+    for (const body of bodies) {
+      const value = body && bodyValue(body)
+      const own = value && this.branchConstants.get(value)
+      if (!value || !own || (own.kind === 'comptime_int' && own.bits)) continue
+      const inner = groupedExpr(value) ?? value
+      const constant = this.evalComptimeExpr(inner)
+      const low = inner.kind === 'IfExpr' || inner.kind === 'MatchExpr' ? this.leastBranch(inner)
+        : constant?.kind === 'int' ? constant.value
+        : null
+      if (low !== null && (least === null || low < least)) least = low
+    }
+    return least
   }
 
   inferUnary(expr: AST.UnaryExpr): ResolvedType {
@@ -3921,7 +4054,7 @@ class CheckContext {
       else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
         this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
       }
-      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
       const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
       return { value: null, max: limit }
@@ -3972,7 +4105,7 @@ class CheckContext {
       ? BigInt(pointee.sizes[0]) : null
     const value = (e: AST.Expr | null, fallback: bigint | null): bigint | null => {
       if (!e) return fallback
-      const c = this.evalComptimeExpr(e) as unknown as { kind: string; value?: bigint } | null
+      const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       return c && c.kind === 'int' && typeof c.value === 'bigint' ? c.value : null
     }
     const start = value(expr.start, 0n)
@@ -4328,14 +4461,14 @@ class CheckContext {
     if (valued.every(b => isComptimeNumber(b.type))) {
       // All constants: the expression is one too, typed by where it's used.
       // Every branch takes the type that holds them all, so they agree on a
-      // default when nothing else types them.
-      for (const b of valued) {
-        if (type.kind === 'comptime_float') break
-        if (b.type.kind === 'comptime_float' || magnitude(b.type) > magnitude(type)) type = b.type
-      }
+      // default when nothing else types them: -2147483648 and 2147483648
+      // are an i64 together, whichever comes first.
+      type = standIn(valued.map(b => b.type))
       for (const b of valued) {
         const value = bodyValue(b.body)
-        if (value) this.typeConstant(value, type, b.type)
+        if (!value) continue
+        this.branchConstants.set(value, b.type)
+        this.typeConstant(value, type, b.type)
       }
       return type
     }
@@ -4359,6 +4492,20 @@ class CheckContext {
   // widest of them. `odd` is one that doesn't widen to it, when they have no
   // such type.
   private commonType(types: ResolvedType[]): { type: ResolvedType; odd?: ResolvedType } {
+    // Tuples with constants in them agree field by field, as their fields
+    // would as values by themselves: (1, 0) and (0, n) are an (i32, i32).
+    // A field that is a constant in each takes the default that holds them.
+    const tuples = types.filter((t): t is TupleRT => t.kind === 'tuple')
+    const [first] = tuples
+    const alike = tuples.length === types.length && tuples.every(t =>
+      t.fields.length === first.fields.length && t.fields.every((f, i) => f.name === first.fields[i].name))
+    if (alike && tuples.some(holdsConstant)) {
+      const tupleType = tuple(first.fields.map((f, i) => {
+        const of = tuples.map(t => t.fields[i].type)
+        return field(f.name, of.every(isComptimeNumber) ? this.concretize(standIn(of)) : this.commonType(of).type)
+      }))
+      return { type: tupleType, odd: types.find(t => !typeAssignable(tupleType, t)) }
+    }
     let type = types[0]
     for (const t of types) {
       const constant = isComptimeNumber(unwrap(t))
@@ -4375,13 +4522,21 @@ class CheckContext {
     return { type, odd: types.find(t => !typeAssignable(type, t)) }
   }
 
-  inferIfLet(expr: AST.IfExpr): ResolvedType {
+  // expected: the type the value is used as, when the context gives one.
+  // Each branch is then checked against it, as in a plain if; without one
+  // the branches settle on a type between them.
+  inferIfLet(expr: AST.IfExpr, expected?: ResolvedType): ResolvedType {
     const pattern = expr.pattern
     if (!pattern || pattern.kind !== 'binding') {
       this.error(expr.span.start, 'if let only supports simple bindings')
       return VOID
     }
     const valueUsed = !this.statementExprs.has(expr)
+    const branches: Branch[] = []
+    const branch = (body: AST.FuncBody) => {
+      if (expected) this.checkBodyAgainst(body, expected)
+      else branches.push({ body, type: this.inferBody(body, valueUsed) })
+    }
 
     // Infer the condition — allow runtime indexing for primitive elements
     this.insideIfLetCondition = true
@@ -4406,18 +4561,16 @@ class CheckContext {
     this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
     this.recordDefinition(pattern.name, expr.condition.span.start)
-    const branches: Branch[] = [{ body: expr.thenBranch, type: this.inferBody(expr.thenBranch, valueUsed) }]
+    branch(expr.thenBranch)
     this.currentScope = prevScope
 
     for (const elif of expr.elifs) {
       this.checkElifCondition(elif)
-      branches.push({ body: elif.thenBranch, type: this.inferBody(elif.thenBranch, valueUsed) })
+      branch(elif.thenBranch)
     }
-    if (expr.else_) {
-      branches.push({ body: expr.else_, type: this.inferBody(expr.else_, valueUsed) })
-    }
+    if (expr.else_) branch(expr.else_)
     if (!expr.else_) return VOID
-    return this.unifyBranches(branches, valueUsed)
+    return expected ?? this.unifyBranches(branches, valueUsed)
   }
 
   private checkBodyAgainst(body: AST.FuncBody, expected: ResolvedType): void {
@@ -4463,7 +4616,15 @@ class CheckContext {
   // A literal pattern is compared with the subject, so it has to be a value
   // of the subject's type.
   private checkMatchSubject(expr: AST.MatchExpr): void {
-    const subjectType = this.inferExpr(expr.subject)
+    let subjectType = this.inferExpr(expr.subject)
+    // A constant subject (1, a def, a fixed array's len) has no type for the
+    // patterns to be compared in: it takes its default one, as the
+    // initializer of a let without a type does.
+    if (isComptimeNumber(subjectType)) {
+      const type = this.concretize(subjectType)
+      this.typeConstant(expr.subject, type, subjectType, false)
+      subjectType = type
+    }
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
       for (const pattern of arm.patterns) {
@@ -5184,6 +5345,16 @@ class CheckContext {
     for (const { name, offset } of names) {
       if (!locals.has(name) && this.moduleScope.symbols.has(name)) this.recordReference(name, offset)
     }
+    // A type parameter is in no instance: the copy is made without it, and
+    // with the type in the place of every use. Where it is declared and used
+    // is read off the declaration too, for the editor to find.
+    for (const param of genericParams(decl)) {
+      if (!isTypeParam(param) || !param.identSpan) continue
+      const declared = param.identSpan.start
+      const uses = names.filter((n) => n.name === param.ident).map((n) => n.offset)
+      this.references.set(declared, uses)
+      for (const use of uses) this.symbolRefs.set(use, declared)
+    }
   }
 
   // The literals of an instance body are registered when the body is checked,
@@ -5872,6 +6043,18 @@ export function localNames(decl: AST.FuncDecl): Set<string> {
   return namesIn(decl).locals
 }
 
+// The generic function around `offset` that declares `name` for itself: a
+// parameter, a type parameter, a result or a local. Such a name is in no
+// table of names, so looked up by name alone it would be taken for whatever
+// else is spelled the same: a global, another function's local, a builtin.
+export function genericDeclaring(module: AST.Module, offset: number, name: string): AST.FuncDecl | null {
+  for (const decl of module.decls) {
+    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
+    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return localNames(fn).has(name) ? fn : null
+  }
+  return null
+}
+
 // The names a declaration refers to, with where, and the names it declares.
 function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[]; locals: Set<string> } {
   const names: { name: string; offset: number }[] = []
@@ -6079,12 +6262,14 @@ function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | n
   return constantIn(number, to)
 }
 
-// The width of the wasm integer a shift of this type is done in, which its
-// count is taken modulo. None for a constant's own type or a wide integer.
-function shiftWidth(type: ResolvedType | undefined): 32 | 64 | null {
+// The width a shift of this type is done in, which its count is taken
+// modulo: that of the wasm integer the value is held in (32 bits for a u8),
+// or of the whole of a wide integer, whose helpers do the same. None for a
+// constant's own type.
+function shiftWidth(type: ResolvedType | undefined): number | null {
   const t = type && unwrap(type)
   const size = t?.kind === 'primitive' && isInteger(t) ? byteSize(t) : null
-  return size === null || size > 8 ? null : size > 4 ? 64 : 32
+  return size === null ? null : size <= 4 ? 32 : size * 8
 }
 
 // Whether a type holds an address whole: a pointer, or a 32-bit integer.
@@ -6150,10 +6335,49 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   return null
 }
 
+// `expr` without the parentheses around it, however many there are.
+function ungrouped(expr: AST.Expr): AST.Expr {
+  const inner = groupedExpr(expr)
+  return inner ? ungrouped(inner) : expr
+}
+
 // How far from zero a constant integer is.
 function magnitude(t: ResolvedType): bigint {
   if (t.kind !== 'comptime_int') return 0n
   return t.value < 0n ? -t.value : t.value
+}
+
+// Whether constant `a` stands in for `b` too, where one type has to hold
+// both: it's further from zero, or as far and positive, which takes a bit
+// more as a signed value (-2147483648 is an i32, 2147483648 isn't).
+function standsInFor(a: ResolvedType, b: ResolvedType): boolean {
+  if (magnitude(a) !== magnitude(b)) return magnitude(a) > magnitude(b)
+  return a.kind === 'comptime_int' && b.kind === 'comptime_int' && a.value > b.value
+}
+
+// The constant that stands in for all of these: a float if any of them is
+// one, or else the integer that stands in for the others.
+function standIn(constants: ResolvedType[]): ResolvedType {
+  let type = constants[0]
+  for (const t of constants) {
+    if (type.kind === 'comptime_float') break
+    if (t.kind === 'comptime_float' || standsInFor(t, type)) type = t
+  }
+  return type
+}
+
+// Whether a type is a constant's, or a tuple's with one among its fields.
+function holdsConstant(t: ResolvedType): boolean {
+  return isComptimeNumber(t) || (t.kind === 'tuple' && t.fields.some(f => holdsConstant(f.type)))
+}
+
+// Whether an integer type's bits can hold a constant, signed or unsigned:
+// what its wasm constant can be written as.
+function hasBitsFor(type: ResolvedType, value: bigint): boolean {
+  const t = unwrap(type)
+  if (t.kind !== 'primitive' || !isInteger(t)) return true
+  const bits = BigInt((byteSize(t) ?? 4) * 8)
+  return value >= -(1n << (bits - 1n)) && value < 1n << bits
 }
 
 // The expression a branch takes its value from, if it ends in one.

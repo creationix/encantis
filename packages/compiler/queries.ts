@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, isGenericDecl, localNames } from './checker'
+import { typeKey, typecheck, genericDeclaring } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -68,15 +68,6 @@ function wordStart(source: string, offset: number): number {
   return start
 }
 
-// The generic function whose declaration contains `offset`, if one does
-function genericAt(module: AST.Module, offset: number): AST.FuncDecl | null {
-  for (const decl of module.decls) {
-    const fn = decl.kind === 'FuncDecl' ? decl : decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' ? decl.item : null
-    if (fn && isGenericDecl(fn) && offset >= fn.span.start && offset < fn.span.end) return fn
-  }
-  return null
-}
-
 // Where the name at `offset` is defined: exactly, when the checker recorded
 // this position as a use or as a definition; by name otherwise, which finds
 // the names of the module. A generic's own parameters and locals are never
@@ -92,8 +83,7 @@ function definitionOf(
   const start = wordStart(source, offset)
   const exact = checkResult.symbolRefs.get(offset) ?? checkResult.symbolRefs.get(start)
   if (exact !== undefined) return exact
-  const generic = genericAt(module, start)
-  if (generic && localNames(generic).has(name)) {
+  if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
   }
   return checkResult.symbolDefOffsets.get(name)
@@ -133,6 +123,10 @@ export function hover(
 ): HoverResult | null {
   const name = identAtOffset(source, offset)
   if (!name) return null
+
+  // A generic's own names come before the module's. They have no hover: what
+  // one of them is depends on the instance.
+  if (genericDeclaring(module, wordStart(source, offset), name)) return null
 
   // Check module-scope symbols first
   const sym = checkResult.symbols.get(name)
