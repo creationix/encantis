@@ -2464,12 +2464,18 @@ class CheckContext {
   // whose length the bytes of `expr` count towards, if there is one. The array
   // and repeat literals inside a literal are followed from here because they
   // are laid out with it, not checked one by one.
-  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string): void {
+  //
+  // What they hold in the end is a value, and it meets the element type as an
+  // element of the outermost literal does (`among` says `expr` is one): it
+  // widens to it or is an error. So `[true; 3]` is not three u32s, and the
+  // i32 of `[n; 3]` is extended before it is stored into i64 slots.
+  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string, among = false): void {
+    const value = expr
     while (expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr') expr = expr.expr
     const t = unwrap(type)
-    if (expr.kind === 'LiteralExpr') {
+    if (expr.kind === 'LiteralExpr' && expr.value.kind === 'string') {
       const element = t.kind === 'slice' ? t.element : counted
-      if (expr.value.kind !== 'string' || !element || byteSize(element) === 1) return
+      if (!element || byteSize(element) === 1) return
       const elements = typeToString(element)
       const what = t.kind === 'slice'
         ? `cannot assign a string literal to ${typeToString(type)}`
@@ -2483,18 +2489,23 @@ class CheckContext {
       // (x) around anything else is grouping.
       if (t.kind === 'tuple') this.checkExpr(expr, type)
       else if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && expr.elements[0].value) {
-        this.checkStringElements(expr.elements[0].value, type, counted, prefix)
-      }
+        this.checkStringElements(expr.elements[0].value, type, counted, prefix, among)
+      } else if (among) this.checkExpr(value, type)
       return
     }
-    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') return
+    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') {
+      if (among) this.checkExpr(value, type)
+      return
+    }
     const inner = t.kind === 'slice' ? t.element
       : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
       : t.kind === 'array' ? this.peelArraySize(t)
       : type
     const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
+    // Only where the literal is laid out as elements is `inner` their type.
+    const elements = inner !== type
     for (const elem of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-      this.checkStringElements(elem, inner, innerCounted, prefix)
+      this.checkStringElements(elem, inner, innerCounted, prefix, elements)
     }
   }
 
