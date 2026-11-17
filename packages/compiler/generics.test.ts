@@ -542,7 +542,9 @@ test "group" {
     expect(errorsOf(shadowed)).toEqual([])
   })
 
-  test('a call in a global initializer instantiates like any other', () => {
+  // The checker only: a call in a global's initializer, generic or not, is
+  // not a valid wasm initializer on 0.2.1, so this is no accepted program.
+  test('a call in a global initializer is instantiated when the global is collected', () => {
     const source = `${MAX}global limit: u32 = max(u32, 3, 4)
 export func f() -> u32 => limit`
     expect(instancesOf(source)).toEqual(['max<u32>'])

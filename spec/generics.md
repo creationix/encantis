@@ -2,6 +2,10 @@
 
 Generic functions: a function with a compile-time type parameter, compiled once for each type it is used with. The rules are the "Generics" chapter of [`docs/encantis.md`](../docs/encantis.md), whose own examples are run as tests too. This file holds the cases that are too detailed for the reference: how the new forms parse, programs at the edges of what is accepted, and one case for every error.
 
+The accepted modules of this file are also compiled and validated (see [`README.md`](README.md)), so nothing is listed here as accepted that does not build.
+
+<!-- spec:begin compile -->
+
 ## Declarations
 
 A parameter marked `comptime` is a field with `comptime` set. The type of a type parameter is the keyword `type`. Ordinary parameters have no `comptime` key at all.
@@ -503,14 +507,6 @@ export func a(c: bool, p: Pt) -> Pt => pick(c, p, (q: 0, r: 0))
 export func b(c: bool) -> Pt => pick(Pt, c, (1, 2), (q: 3, r: 4))
 ```
 
-A call in a global's initializer instantiates like any other.
-
-```ents
-func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
-
-global limit: u32 = max(u32, 3, 4)
-```
-
 A generic used only by a test.
 
 ```ents
@@ -979,3 +975,5 @@ export func f() -> u32 => deep(u8, 1)
 ```errors
 type arguments grow without end while instantiating 'deep'
 ```
+
+<!-- spec:end -->

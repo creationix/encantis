@@ -1,8 +1,11 @@
 import { loadModule } from './loader'
 import { typecheck, typecheckProgram } from './checker'
-import { moduleToWat, programToWat } from './codegen'
+import { moduleToWat, programToWat, programToWatWithTests } from './codegen'
 import { parse } from './parser'
-import { resolve } from 'path'
+import { createTestHost } from './test-host'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join, resolve } from 'path'
 import wabt from 'wabt'
 
 // The WAT of one module given as source text, checked without its tests as
@@ -33,6 +36,37 @@ export async function wasmOfWat(wat: string, name = 'test.wat'): Promise<Uint8Ar
 
 export async function wasmOfSource(source: string): Promise<Uint8Array> {
   return wasmOfWat(watOfSource(source))
+}
+
+// Builds one module given as source text with its tests and runs them, as
+// `encantis test` does. Returns the titles of the tests that ran and of those
+// that failed. Throws when the module does not load, check or validate.
+export async function runTestsOfSource(source: string): Promise<{ ran: string[]; failed: string[] }> {
+  const dir = await mkdtemp(join(tmpdir(), 'encantis-tests-'))
+  try {
+    const path = join(dir, 'module.ents')
+    await writeFile(path, source)
+    const load = await loadModule(path, { includeTests: true })
+    if (load.errors.length > 0) throw new Error(`Load errors:\n${load.errors.map(e => e.message).join('\n')}`)
+    const check = typecheckProgram(load.modules, path, { includeTests: true })
+    if (check.errors.length > 0) throw new Error(`Type errors:\n${check.errors.map(e => e.message).join('\n')}`)
+    const { wat, testNames, testTitles } = programToWatWithTests(load.modules, check.results, path)
+    const module = await WebAssembly.compile(await wasmOfWat(wat))
+    const host = createTestHost(module, () => {})
+    const instance = await WebAssembly.instantiate(module, host.imports)
+    host.attach(instance)
+    const failed: string[] = []
+    for (const [i, name] of testNames.entries()) {
+      try {
+        ;(instance.exports[`test_${name}`] as () => void)()
+      } catch {
+        failed.push(testTitles[i])
+      }
+    }
+    return { ran: testTitles, failed }
+  } finally {
+    await rm(dir, { recursive: true })
+  }
 }
 
 export async function compileToWasm(entryPath: string): Promise<Uint8Array> {

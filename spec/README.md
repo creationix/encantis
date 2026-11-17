@@ -28,7 +28,11 @@ A decimal integer literal:
 
 ## The language reference
 
-The examples of [`docs/encantis.md`](../docs/encantis.md) that stand between a `<!-- spec:begin -->` line and the next `<!-- spec:end -->` line are run by the same rules, so a chapter written that way is its own test and needs no second copy here. A region opened with `<!-- spec:begin compile -->` asks for more: every module in it that is expected to check, and doesn't import another source file, is also compiled and validated as WebAssembly. Examples outside a region are not run.
+The examples of [`docs/encantis.md`](../docs/encantis.md) that stand between a `<!-- spec:begin -->` line and the next `<!-- spec:end -->` line are run by the same rules, so a chapter written that way is its own test and needs no second copy here. A region opened with `<!-- spec:begin compile -->` asks for more: every module in it that is expected to check, and doesn't import another source file, is also compiled and validated as WebAssembly, and the `test` blocks it has are run. Examples outside a region are not run.
+
+A spec file here can mark a compile region the same way (`generics.md` is one from top to bottom); its blocks outside a region are run as usual, without compiling.
+
+A marker is a comment, which shows nowhere when it is wrong. So the runner fails on a comment that starts with `spec` and is not one of `<!-- spec:begin -->`, `<!-- spec:begin compile -->` and `<!-- spec:end -->`, and on a begin or an end without its partner.
 
 ## Updating
 

@@ -1697,7 +1697,7 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time.
 
-The examples of this chapter are run as tests: each one is checked, compiled and validated, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)).
+The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
 
 <!-- spec:begin compile -->
 
@@ -1749,7 +1749,7 @@ export func a(c: bool, x: u8, y: u32) -> u32 => pick(u32, c, x, y)      // x is 
 export func b(c: bool, p: Pt, q: Pt) -> Pt => pick(Pt, c, p, q)
 export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32, i32), c, p, q)
 export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
-export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
+export func e(c: bool, p: *mut Pt, q: *mut Pt) -> *mut Pt => pick(*mut Pt, c, p, q)
 export func f(xs: []u64) -> u64 => head(u64, xs)
 ```
 
@@ -1774,6 +1774,13 @@ export func c(x: u64) -> u64 => max(1, x)                   // T = u64, decided 
 export func d(xs: []u64) -> u64 => head(xs)                 // T = u64, from []T
 export func e() -> u16 => head(primes)                      // T = u16: a data array is a slice here
 export func f(p: *mut i64, q: *mut i64) { swap(p, q) }      // T = i64, from *mut T
+
+test "inferred calls" {
+  assert a(3, 7) == 7
+  assert b(0.25) == 0.5
+  assert c(0) == 1
+  assert e() == 2
+}
 ```
 
 **Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. Anything else is an error that says both counts. There is no form that writes some type parameters and infers others. Arguments are positional.
@@ -1861,6 +1868,11 @@ func fact(comptime T: type, n: T) -> T => if n <= 1 { 1 } else { n * fact(T, n -
 
 export func a() -> u32 => bytes(u64, 3) + bytes((u32, u16), 2)   // 24 + 12
 export func b() -> u64 => fact(u64, 20)
+
+test "each instance has its own sizeof, and recursion ends" {
+  assert a() == 36
+  assert b() == 2432902008176640000
+}
 ```
 
 What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
