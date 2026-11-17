@@ -1262,6 +1262,67 @@ describe('struct elements of an array literal', () => {
   })
 })
 
+describe('a string literal as a slice', () => {
+  const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
+  const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>
+    `cannot assign a string literal to ${to} — a string is bytes ([]u8); write the ${element} elements as an array literal${/^[iuf]\d+$/.test(element) ? ' ([1, 2, 3])' : ''}`
+  const among = (element: string) =>
+    `cannot use a string literal among ${element} elements — a string is bytes ([]u8); write the ${element} elements as an array literal ([1, 2, 3])`
+
+  test('is a slice of elements of one byte', () => {
+    for (const type of ['[]u8', '[]mut u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = "abc"\n return 1 }`)).toEqual([])
+    }
+    expect(errs('data names: [][]u8 = ["ab", "c"]\ndata rows: [][][]u8 = [["ab"], ["c", "d"]]\ndata joined: []u8 = ["ab", "c"]')).toEqual([])
+  })
+
+  test('is not a slice of anything wider: its bytes are not that many elements', () => {
+    for (const type of ['[]u16', '[]u32', '[]mut u32', '?[]u32', '[]u64', '[]f32', '[]f64', '[]Pt', '[][]u8']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = "abcd"\n return 1 }`)).toEqual([assign(type)])
+    }
+  })
+
+  test('wherever it meets the slice type', () => {
+    const take = 'func take(xs: []u32) -> u32 => xs.len\n'
+    expect(errs(`${take}func f() -> u32 => take("str")`)).toEqual([`argument 1: ${assign('[]u32')}`])
+    expect(errs('func f() -> []u32 => "str"')).toEqual([assign('[]u32')])
+    expect(errs('func f() -> []u32 { return "str" }')).toEqual([assign('[]u32')])
+    expect(errs('func f(c: bool) -> []u16 => if c { "ab" } else { "abcd" }')).toEqual([assign('[]u16'), assign('[]u16')])
+    expect(errs('func f(s: []u32) -> u32 { s = "str"\n return s.len }')).toEqual([assign('[]u32')])
+    expect(errs('func f(s: []u32) -> u32 { let t: []u32 = s[0..1] ?? "str"\n return t.len }')).toEqual([assign('[]u32')])
+    expect(errs('func f() -> u32 { let s = "str":[]u32\n return s.len }')).toEqual([assign('[]u32')])
+    expect(errs('data d: []u32 = "str"')).toEqual([assign('[]u32')])
+    expect(errs('global g: []u32 = "str"')).toEqual([assign('[]u32')])
+    expect(errs('type R = (name: []u32, n: i32)\nfunc f() -> u32 { let r = R("str", 1)\n return r.n as u32 }')).toEqual([
+      `field name: ${assign('[]u32')}`,
+    ])
+    expect(errs('type R = (name: []u32, n: i32)\ndata rs: []R = [("str", 1)]')).toEqual([assign('[]u32')])
+  })
+
+  test('nor one of the elements of a slice of anything wider', () => {
+    expect(errs('data d: []i32 = [1, "ab"]')).toEqual([among('i32')])
+    expect(errs('data d: []u32 = ["abc"; 2]')).toEqual([among('u32')])
+    expect(errs('data d: []u32 = [[1, 2], ["abc"]]')).toEqual([among('u32')])
+    expect(errs('data d: []u32 = [("abc")]')).toEqual([among('u32')])
+    expect(errs('data d: [][]u16 = ["ab", [1, 2]]')).toEqual([assign('[]u16')])
+    expect(errs('data d: [][]u32 = [["abc"], [1, 2]]')).toEqual([among('u32')])
+    expect(errs('data d: *[2][]u32 = ["abc", "de"]')).toEqual([assign('[]u32'), assign('[]u32')])
+    // A struct inside a nested literal is checked as any struct is.
+    expect(errs('data d: []Pt = [[(1, 2)], [(3, 4)]]')).toEqual([])
+    expect(errs('data d: []Pt = [[("abc", 1)]]')).toEqual(['cannot assign *[3]u8 to i32'])
+  })
+
+  test('behind a pointer there is no length to get wrong', () => {
+    expect(errs('data a: *[2]u16 = "abcd"\ndata b: [*]u32 = "abcd"\ndata c: *[2x2]u8 = ["ab", "cd"]\ndata d: *[!]u8 = "abc"')).toEqual([])
+  })
+
+  test('the same bytes are rejected when they come from a variable', () => {
+    expect(errs('data s = "str"\nfunc take(xs: []u32) -> u32 => xs.len\nfunc f() -> u32 => take(s)')).toEqual([
+      'argument 1: cannot assign *[3]u8 to []u32',
+    ])
+  })
+})
+
 describe('a slice from a pointer and a length', () => {
   test('is a value, not a literal for the data section', () => {
     const result = checkModule(`

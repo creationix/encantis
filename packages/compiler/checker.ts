@@ -2525,6 +2525,7 @@ class CheckContext {
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
       }
+      if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
       // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
         const innerType = expected.kind === 'slice' ? expected.element
@@ -2534,9 +2535,11 @@ class CheckContext {
           // A tuple that is a struct element is checked field by field, like
           // any struct value: its literals take their fields' types.
           const structElements = unwrap(innerType).kind === 'tuple'
+          const counted = expected.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
             if (this.isDataLiteralExpr(elem) && !(structElements && elem.kind === 'TupleExpr')) {
               this.validateDataLiteralRange(elem, innerType)
+              this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
             } else {
               this.checkExpr(elem, innerType)
@@ -2605,6 +2608,47 @@ class CheckContext {
   // [N,M]u8 -> [M]u8 (peel first dimension, remaining is M)
   // [N]u8 -> u8 (single dimension, inner type is element)
   // [N][M]u8 -> [M]u8 (element is already an array type)
+  // A string literal is bytes, and a slice is counted in elements. So a string
+  // can only be a slice, or lie among the elements of one, where an element is
+  // one byte: three bytes are not three u32s, nor three quarters of one.
+  // `expr` is laid out as a `type`; `counted` is the element type of the slice
+  // whose length the bytes of `expr` count towards, if there is one. The array
+  // and repeat literals inside a literal are followed from here because they
+  // are laid out with it, not checked one by one.
+  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string): void {
+    while (expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr') expr = expr.expr
+    const t = unwrap(type)
+    if (expr.kind === 'LiteralExpr') {
+      const element = t.kind === 'slice' ? t.element : counted
+      if (expr.value.kind !== 'string' || !element || byteSize(element) === 1) return
+      const elements = typeToString(element)
+      const what = t.kind === 'slice'
+        ? `cannot assign a string literal to ${typeToString(type)}`
+        : `cannot use a string literal among ${elements} elements`
+      const example = isNumeric(element) ? ' ([1, 2, 3])' : ''
+      this.error(expr.span.start, `${prefix}${what} — a string is bytes ([]u8); write the ${elements} elements as an array literal${example}`)
+      return
+    }
+    if (expr.kind === 'TupleExpr' || expr.kind === 'CallExpr') {
+      // A struct inside a nested literal is checked as any struct value is;
+      // (x) around anything else is grouping.
+      if (t.kind === 'tuple') this.checkExpr(expr, type)
+      else if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && expr.elements[0].value) {
+        this.checkStringElements(expr.elements[0].value, type, counted, prefix)
+      }
+      return
+    }
+    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') return
+    const inner = t.kind === 'slice' ? t.element
+      : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
+      : t.kind === 'array' ? this.peelArraySize(t)
+      : type
+    const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
+    for (const elem of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+      this.checkStringElements(elem, inner, innerCounted, prefix)
+    }
+  }
+
   peelArraySize(t: ArrayRT): ResolvedType {
     // If element is already an array type (nested brackets), use it directly
     if (t.element.kind === 'array') {
@@ -5403,6 +5447,14 @@ function shiftWidth(type: ResolvedType | undefined): 32 | 64 | null {
 function holdsAddress(type: ResolvedType | undefined): boolean {
   const t = type && unwrap(type)
   return t?.kind === 'pointer' || (t?.kind === 'primitive' && (t.name === 'i32' || t.name === 'u32'))
+}
+
+// The type a slice literal's bytes are counted in, to give its length: its
+// element. Null when each element is a literal of its own (a slice, an array
+// or a pointer), and the literal is the list of them.
+function countedElement(element: ResolvedType): ResolvedType | null {
+  const kind = unwrap(element).kind
+  return kind === 'slice' || kind === 'array' || kind === 'pointer' ? null : element
 }
 
 // The integer type a constant has as an address or an offset from one: 32

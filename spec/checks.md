@@ -790,6 +790,38 @@ argument 1: cannot assign []u8 to []u16
 argument 1: cannot assign *[3]u8 to []u16
 ```
 
+A string literal is bytes, so the same holds for one written where the slice is wanted: it is a slice of one-byte elements, and no other. Inside an array literal a string stands for its bytes or, where the elements are slices, for one of them.
+
+```ents
+data names: [][]u8 = ["ab", "c"]
+data joined: []u8 = ["ab", "c"]
+
+func bytes(s: []u8) -> u32 => s.len
+
+func a() -> u32 => bytes("str")
+func b() -> u32 {
+  let signed: []i8 = "str"
+  return signed.len
+}
+```
+
+```ents
+data words: []u32 = [1, "ab"]
+data lists: [][]u16 = ["ab", [1, 2]]
+
+func total(s: []u32) -> u32 => s.len
+
+func a() -> u32 => total("str")
+func b() -> []u16 => "abcd"
+```
+
+```errors
+cannot use a string literal among u32 elements
+cannot assign a string literal to []u16
+argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8); write the u32 elements as an array literal ([1, 2, 3])
+cannot assign a string literal to []u16
+```
+
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
 
 ```ents
