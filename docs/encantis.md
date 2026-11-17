@@ -111,9 +111,11 @@ x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
 b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. The default type when no annotation is provided is `[_]u8` (fat slice with inferred length).
+Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
+
+There is no character literal: `'a'` is a string of one byte, in memory like any other. It is not a byte to compare, compute with, assign or pass: with `c: u8`, `c == 'a'`, `c - 'a'`, `let b: u8 = 'a'` and `match c { 'a' => ... }` are compile errors. Write the byte as a number (`c == 97`).
 
 #### Template Literals
 
@@ -166,6 +168,10 @@ String literals are array literals of `u8`:
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
 ```
 
+An array literal given for a `*[N]T` has N elements, and each row of a `*[N][M]T`, a `[][M]T` or a `*[NxM]T` has M, as does each literal an element of a `*[N]*[M]T` points at: `cannot assign 2 elements to *[3]i32`. Behind a pointer, a string is the bytes of all the elements: `"abcd"` is a `*[4]u8` or a `*[2]u16`, but not a `*[8]u8` (`cannot assign a string of 4 bytes to *[8]u8`) or the rows of a table.
+
+An array literal given where a pointer or slice is wanted is laid out in memory. In a function, its values that are only known when the program runs (`[x, 2]`) are stored into it each time it is evaluated: the literal is a cell of its own for that place in the source, never shared with another literal, so a pointer kept from an earlier evaluation sees the values of the later one. Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the same way. A literal laid out apart from the one it is in, an element of a slice of slices (`[][]i32`), of a pointer to framed arrays (`*[2][!]u8`), what an element of an array of pointers points at (`*[2]*[3]i32 = [[1, 2, 3], [4, 5, 6]]`, `*[2][*]u8 = ["ab", "cd"]`: each element is the address of its literal) or a row of a table ([2.5](#nesting)), is laid out when the program is compiled, so its values must be constants: `let t: [][]i32 = [[a, 2], [3]]` is an error (`an element of [][]i32 is laid out at compile time: its values must be constants`).
+
 #### The `mut` Keyword on Literals
 
 `mut` does two things: it forces the value into memory and marks it writable.
@@ -182,6 +188,8 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 ```
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
+
+A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T` (or for a `*mut [N][!]T`) and the elements of a literal given for a slice of mutable slices (`[][]mut u8`).
 
 #### `def` — Compile-Time Constants
 
@@ -210,7 +218,7 @@ data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 
 The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
 
-**Zero-initialized buffers** are free — wasm memory starts as zeros, so `data buf = mut [0:u8; 1024]` emits no data segment.
+**Zeros are free** — wasm memory starts as zeros, so a data segment stops at the last byte that isn't zero, and `data buf = mut [0:u8; 1024]` emits no data segment at all. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`). All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
 
 ---
 
@@ -430,10 +438,12 @@ func print(msg: []u8)            // read-only: cannot write through msg
 func fill(buf: []mut u8)         // mutable: can write through buf
 
 data buf = mut [0:u8; 1024]
+data text = "hello"
 print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
-fill("hello")                     // ERROR: const literal → mutable param
+fill(text)                        // ERROR: const data → mutable param
+fill("hello")                     // OK: given for []mut u8, the literal is a mutable copy of its own
 ```
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
@@ -1091,13 +1101,25 @@ type City = (name:[]u8, at:Point)
 data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
 ```
 
-#### Mutability
-
-By default, data is mutable (wasm linear memory is always writable). Use `mut` on the literal to signal intent and prevent deduplication:
+Data is laid out when the program is compiled, and no code fills it in later, so each value in it is known by then: a literal, a constant expression (`1 + 1`, `k * 2` with `def k = 4`, `sizeof(u64)`, `~0`), or the name of other data declared before it, which is that data's address (for a slice field, its address and length). Anything else is an error, `data 'xs' is laid out at compile time: its values must be constants`.
 
 ```ents
-data table = [0:u8; 256]            // shared, may be deduplicated
-data buffer = mut [0:u8; 1024]      // unique, never deduplicated
+def k = 4
+type Ref = (p:*[3]i32, n:u32)
+
+data ones:*[3]i32 = [1, 1, 1]
+data xs:*[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]   // 2, 8, 8, 0xFFFFFFFF
+data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, and 3
+```
+
+#### Mutability
+
+Data is const unless its literal is `mut` or its declared type is a mutable pointer or slice. Const data may share its bytes with equal literals; mutable data is its own:
+
+```ents
+data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
+data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
+data counts: []mut u32 = [0, 0]     // []mut u32: unique, as if written with mut
 ```
 
 ### 3.3 Variables
@@ -2151,11 +2173,11 @@ let msg:[]u8 = match status & 3 {
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated):
+Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number or a bool; a string, `'a'` included, is not one ([1.5](#string-literals)):
 
 ```ents
-match char {
-  'a', 'e', 'i', 'o', 'u' => true
+match c {
+  97, 101, 105, 111, 117 => true   // the bytes of a, e, i, o, u
   _ => false
 }
 ```
@@ -3248,13 +3270,13 @@ let offset = u64(clz(n)) * 8
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
-| `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
-| `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
-| `memzero(dest)` | *[N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
+| `memcpy(dest, src, len)` | *mut [N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
+| `memset(dest, value, len)` | *mut [N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
+| `memzero(dest)` | *mut [N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
-`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+`memcpy` and `memset` take pointers to sized arrays. The destination is written, so it is a `*mut` pointer, as for a write through an index: `memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
 
 > **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 

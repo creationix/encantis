@@ -18,7 +18,7 @@ import {
   totalElements,
 } from './types'
 import * as RT from './types'
-import { dataToWat, buildDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
+import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
@@ -357,7 +357,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${lit.value})`
+      return `(${wt}.const ${numberText(lit.value)})`
     }
 
     case 'bool':
@@ -376,6 +376,11 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       return `(i32.const 0)`
     }
   }
+}
+
+// A number as WAT writes it. -0 is a float of its own: `${-0}` is "0".
+function numberText(value: number | bigint): string {
+  return Object.is(value, -0) ? '-0' : `${value}`
 }
 
 // A literal that lies in the data section, as the slice over all of it.
@@ -415,7 +420,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${val.value})`
+        return `(${wt}.const ${numberText(val.value)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -1689,6 +1694,13 @@ function evalComptimeIndex(expr: AST.Expr): number | null {
   return null
 }
 
+// How many times a repeat literal repeats its value: a count written as a
+// constant expression ([0; k]) has the value the checker worked out.
+function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
+  const constant = ctx.constants.get(expr.count)
+  return evalComptimeIndex(expr.count) ?? (constant?.kind === 'int' ? Number(constant.value) : null)
+}
+
 function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
   if (!elemType) throw new Error('Missing element type for coalesce')
@@ -2017,64 +2029,97 @@ function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: numb
   if (!type) return ''
   // Get the element type to determine stride
   const elemType = type.kind === 'slice' ? type.element
-    : type.kind === 'pointer' && type.pointee.kind === 'array' ? type.pointee.element
+    : type.kind === 'pointer' && type.pointee.kind === 'array' ? packedRow(type.pointee)
     : null
   if (!elemType) return ''
-  const elemSize = byteSize(elemType) ?? 0
-  if (elemSize === 0) return ''
-
-  // A repeat literal has its value in every slot, computed once per slot as
-  // it is for a repeat that is a value.
-  const elements = expr.kind === 'ArrayExpr' ? expr.elements
-    : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
   const parts: string[] = []
+  runtimeStores(expr, elemType, ref.ptr, ctx, parts)
+  return parts.length > 0 ? parts.join('\n') + '\n' : ''
+}
+
+// What one element of an array literal is: a row of [NxM]T is a [M]T, which
+// lies in place.
+function packedRow(t: RT.ArrayRT): ResolvedType {
+  const sizes = t.sizes
+  if (sizes && sizes.length > 1 && sizes.every((s) => typeof s === 'number')) return { kind: 'array', element: t.element, sizes: sizes.slice(1) }
+  return t.element
+}
+
+// The stores of the values of a literal that are only known when the program
+// runs, each at its place from `base`. A row written out in place (in a
+// [NxM]T) has its own, at their places in the row.
+function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedType, base: number, ctx: CodegenContext, parts: string[]): void {
+  const elemSize = byteSize(elemType) ?? 0
+  if (elemSize === 0) return
   const u = unwrap(elemType)
+  const inPlace = (elem: AST.Expr): AST.ArrayExpr | AST.RepeatExpr | null => {
+    let inner = ungroup(elem)
+    while (inner.kind === 'AnnotationExpr') inner = ungroup(inner.expr)
+    const row = u.kind === 'array' && u.sizes !== null && u.sizes.every((s) => typeof s === 'number')
+    return row && (inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') ? inner : null
+  }
+  // A repeat literal has its value in every slot, computed once per slot as
+  // it is for a repeat that is a value. One with nothing to store has no slot
+  // to visit, however many it has.
+  if (expr.kind === 'RepeatExpr' && !inPlace(expr.value) && !isRuntimeExpr(expr.value, ctx)) return
+  const elements = expr.kind === 'ArrayExpr' ? expr.elements
+    : Array<AST.Expr>(repeatCount(expr, ctx) ?? 0).fill(expr.value)
   for (let i = 0; i < elements.length; i++) {
     const elem = elements[i]
-    if (isRuntimeExpr(elem, ctx.calls)) {
-      const base = ref.ptr + i * elemSize
+    const at = base + i * elemSize
+    const row = inPlace(elem)
+    if (row && u.kind === 'array') {
+      runtimeStores(row, packedRow(u), at, ctx, parts)
+    } else if (isRuntimeExpr(elem, ctx)) {
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
         try {
           const valParts = splitMultiValue(value, 2)
-          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
-          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+          parts.push(`(i32.store (i32.const ${at}) ${valParts[0]})`)
+          parts.push(`(i32.store (i32.const ${at + 4}) ${valParts[1]})`)
         } catch {
-          parts.push(`(i32.const ${base})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${base + 4}) (local.get $__slot_len))`)
+          parts.push(`(i32.const ${at})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${at + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value, ctx))
+        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx))
       }
     }
   }
-  return parts.length > 0 ? parts.join('\n') + '\n' : ''
 }
 
-function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
+function isRuntimeExpr(expr: AST.Expr, ctx: CodegenContext): boolean {
   if (expr.kind === 'LiteralExpr') return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
-  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, calls)
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, ctx)
+  // (x) is x
+  const inner = ungroup(expr)
+  if (inner !== expr) return isRuntimeExpr(inner, ctx)
+  // A value the checker worked out (1 + 1, sizeof(u64), a def, the name of
+  // data) is laid out with the literal.
+  if (ctx.constants.has(expr)) return false
   // A type that is called, Vec(u32)(p, 0, cap), is the struct of its arguments.
-  const built = expr.kind === 'CallExpr' ? calls.get(expr) : undefined
-  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, calls)
+  const built = expr.kind === 'CallExpr' ? ctx.calls.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, ctx)
   // A struct written out from literals, as a tuple or a constructor, is data
   // too; one runtime field makes the whole struct runtime. A type's name is
   // the identifier that starts with a capital letter.
   const fields = expr.kind === 'TupleExpr' ? expr.elements
     : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
     : null
-  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, calls))
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, ctx))
   return true
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
 // that points at it): runtime when one of its elements is, or the value it
 // repeats.
-function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
-  if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
-  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value, calls)
-  return isRuntimeExpr(expr, calls)
+function isRuntimeField(expr: AST.Expr, ctx: CodegenContext): boolean {
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  if (e.kind === 'ArrayExpr') return e.elements.some((x) => isRuntimeField(x, ctx))
+  if (e.kind === 'RepeatExpr') return isRuntimeField(e.value, ctx)
+  return isRuntimeExpr(e, ctx)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -2090,7 +2135,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
     return `${stores}(i32.const ${ref.ptr})`
   }
   // Value repeat literal: emit element N times
-  const countVal = evalComptimeIndex(expr.count)
+  const countVal = repeatCount(expr, ctx)
   if (countVal !== null) {
     const elem = exprToWat(expr.value, ctx)
     return Array(countVal).fill(elem).join(' ')
@@ -2146,7 +2191,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${p.value.value})`
+              ? `(${wt}.const ${numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
@@ -3021,7 +3066,7 @@ function collectLocals(
       for (const elem of expr.elements) {
         // Any runtime slice element that doesn't split into (ptr, len) parts
         // (a call, a ?? fallback, ...) goes through the scratch local.
-        if (isRuntimeExpr(elem, checkResult.calls)) needsSlotLocal = true
+        if (isRuntimeExpr(elem, ctx)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -3125,11 +3170,23 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   }
 }
 
+// A wasm memory has at most 65536 pages of 64 KiB: 4 GiB. Laying out zeros
+// costs nothing, so data can be declared that no memory can hold, and its
+// addresses would not be i32s.
+const MEMORY_LIMIT = 65536 * 65536
+
+function memoryHolds(size: number): void {
+  if (size > MEMORY_LIMIT) {
+    throw new Error(`the data takes ${size} bytes of memory, more than the ${MEMORY_LIMIT} (4 GiB) a wasm memory can hold`)
+  }
+}
+
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls, constants: checkResult.constants })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
   const globals = new Map<string, string[]>()
@@ -3597,22 +3654,28 @@ export function programToWat(
 ): string {
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
-  const allLiterals: import('./checker').PendingLiteral[] = []
-  const allTypes = new Map<string, import('./types').ResolvedType>()
   const allCalls: TypeCheckResult['calls'] = new Map()
+  const allConstants: TypeCheckResult['constants'] = new Map()
 
-  // Collect all literals and types for a unified data section
+  // One data section for the literals of all modules. A literal is known by
+  // its offset in its own module's source, so each module has its own map
+  // into the section: two modules with a literal at the same offset (or two
+  // instances at the same private offset) must not read each other's data.
+  const sources: { path: string; result: TypeCheckResult }[] = []
   for (const [path, result] of checkResults) {
-    allLiterals.push(...result.literals)
-    for (const [k, v] of result.types) allTypes.set(k, v)
+    sources.push({ path, result })
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
+    for (const [expr, value] of result.constants) allConstants.set(expr, value)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
-  for (const [, loaded] of modules) {
-    const result = checkResults.get(loaded.path)
-    if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls, constants: allConstants })
+  const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
+  const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (result) labelDataEntries(loaded.module, result, dataBuilder, refsOf(path))
   }
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   // Build per-module name mappings
   const perModuleNameMap = new Map<string, Map<string, string>>()
@@ -3706,7 +3769,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
@@ -3771,7 +3834,7 @@ export function programToWat(
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
-      parts.push(funcToWat(fn, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
+      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
     }
   }
 
@@ -3780,7 +3843,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'GlobalDecl') {
         parts.push(globalToWat(decl, ctx))
@@ -3796,7 +3859,7 @@ export function programToWat(
   if (entryModule) {
     const entryNameMap = buildFullNameMap(entryPath)
     const entryResult = checkResults.get(entryPath)!
-    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap, dataSection.totalSize)
+    const ctx = createContext(entryResult, refsOf(entryPath), entryNameMap, dataSection.totalSize)
     for (const decl of entryModule.module.decls) {
       if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl' && !isGenericExport(decl)) {
         parts.push(exportToWat(decl, ctx))
@@ -3812,10 +3875,10 @@ export function programToWat(
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
       const testNameMap = buildFullNameMap(testFilePath)
-      const ctx = createContext(testResult, globalLiteralRefs, testNameMap, dataSection.totalSize)
+      const ctx = createContext(testResult, refsOf(testFilePath), testNameMap, dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, '', ctx, testResult, globalLiteralRefs, testNameMap, parts)
+        emitTestDecl(decl, '', ctx, testResult, refsOf(testFilePath), testNameMap, parts)
       }
     }
   }

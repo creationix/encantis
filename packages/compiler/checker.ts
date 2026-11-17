@@ -660,6 +660,11 @@ class CheckContext {
   exprTypes = new TrialMap<AST.Expr, ResolvedType>(this.trial)
   coercions = new TrialMap<AST.Expr, ResolvedType>(this.trial)
   constants = new TrialMap<AST.Expr, ComptimeValue>(this.trial)
+  // The symbol each name was read as where it is written. A parameter or a
+  // binding can have the name of a def or of data, and then it is not that
+  // constant: the values of a literal are worked out at the end of the
+  // function, when its names are no longer in scope.
+  readAs = new WeakMap<AST.IdentExpr, Symbol>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new TrialSet<AST.Expr>(this.trial)
@@ -796,6 +801,81 @@ class CheckContext {
     this.pendingLiterals.push({ id, expr })
   }
 
+  // Strings whose value was inferred with no type to meet (`let s = "ab"`,
+  // the source of `buf[0..2] = "ab"`, a branch of an untyped `if`): a string
+  // is always in memory, so each is laid out as its own bytes at the end of
+  // the function or declaration it is in, unless something laid it out in
+  // the meantime: a type it met, or a literal it is part of.
+  unplaced: AST.LiteralExpr[] = []
+
+  // At the end of a function, a test or the module-level declarations: lays
+  // out the strings that met no type, and works out the values of the
+  // literals registered since that are known at compile time, for the data
+  // packer to lay out (and codegen not to store again when the program runs).
+  private settleLiterals(): void {
+    this.placeInferredStrings()
+    const from = Math.min(this.literalsSettled, this.pendingLiterals.length)
+    for (const { expr } of this.pendingLiterals.slice(from)) {
+      for (const leaf of this.literalLeaves(expr)) {
+        if (this.constants.has(leaf)) continue
+        const value = this.evalComptimeExpr(leaf, true)
+        if (value && value.kind !== 'type' && value.kind !== 'func') this.constants.set(leaf, value)
+      }
+    }
+    this.literalsSettled = this.pendingLiterals.length
+  }
+
+  // How many of the pending literals had their values worked out
+  literalsSettled = 0
+
+  private placeInferredStrings(): void {
+    if (this.unplaced.length === 0) return
+    const parts = new Set<AST.Expr>()
+    for (const { expr } of this.pendingLiterals) literalParts(expr, parts)
+    for (const lit of this.unplaced) {
+      if (lit.dataId !== undefined || parts.has(lit) || lit.value.kind !== 'string') continue
+      lit.dataId = lit.span.start
+      this.addLiteral(lit.span.start, lit, array(primitive('u8'), [lit.value.bytes.length]))
+    }
+    this.unplaced = []
+  }
+
+  // The values a literal laid out in memory is made of, down to those that
+  // are not literals themselves: a computed constant (1 + 1, sizeof(u64), a
+  // def), the name of other data, or a value only known at run time. The
+  // elements of an array, the value a repeat repeats, the fields of a tuple
+  // or of a struct written as a constructor, the two parts of a slice pair.
+  private literalLeaves(expr: AST.Expr, leaves: AST.Expr[] = []): AST.Expr[] {
+    let e = ungrouped(expr)
+    while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+    switch (e.kind) {
+      case 'LiteralExpr':
+        break
+      case 'ArrayExpr':
+        for (const element of e.elements) this.literalLeaves(element, leaves)
+        break
+      case 'RepeatExpr':
+        this.literalLeaves(e.value, leaves)
+        break
+      case 'TupleExpr':
+        for (const element of e.elements) if (element.value) this.literalLeaves(element.value, leaves)
+        break
+      case 'CallExpr': {
+        const built = this.calls.get(e)
+        if (built?.kind === 'TupleExpr') return this.literalLeaves(built, leaves)
+        if (e.callee.kind === 'IdentExpr' && this.lookup(e.callee.name)?.kind === 'type') {
+          for (const arg of e.args) if (arg.value) this.literalLeaves(arg.value, leaves)
+          break
+        }
+        leaves.push(e)
+        break
+      }
+      default:
+        leaves.push(e)
+    }
+    return leaves
+  }
+
   checkModule(module: AST.Module): void {
     // Pre-pass: register all type names (to allow forward references)
     for (const decl of module.decls) {
@@ -816,6 +896,8 @@ class CheckContext {
       if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
     }
 
+    this.settleLiterals()
+
     // Resolve any forward references in the type cache
     this.resolveForwardRefs()
     this.checkOverloads()
@@ -828,6 +910,7 @@ class CheckContext {
 
     // The bodies of the instances the module asked for, and of those they ask for
     this.drainInstances()
+    this.settleLiterals()
     this.placeInstanceLiterals()
   }
 
@@ -1353,6 +1436,7 @@ class CheckContext {
       }
       // Use checkExpr to propagate element types and register the data literal
       // checkExpr's data literal path handles pendingLiterals, dataId, and element checking
+      const reported = this.errors.length
       if (unwrap(ptrType).kind === 'pointer' || unwrap(ptrType).kind === 'slice') {
         this.checkExpr(dataLiteral.expr, ptrType)
       } else {
@@ -1364,6 +1448,9 @@ class CheckContext {
         }
         this.addLiteral(dataId, dataLiteral.expr, dataLiteral.indexedType)
       }
+      // Unless checking it found something wrong already, such as a row of a
+      // table that isn't constant.
+      if (this.errors.length === reported) this.requireConstants(decl.ident, dataLiteral.expr)
       const dataId = dataLiteral.expr.span.start
       const sym = {
         kind: 'def' as const,
@@ -1387,6 +1474,7 @@ class CheckContext {
       }
       const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
       this.addLiteral(dataId, expr, arrType)
+      this.requireConstants(decl.ident, expr)
       const sym = {
         kind: 'def' as const,
         type: pointer(type, false, isMut),
@@ -1400,6 +1488,16 @@ class CheckContext {
     }
 
     this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+  }
+
+  // `data` is laid out when the program is compiled, and no code of the
+  // program fills it in: each value in it has to be known by then.
+  private requireConstants(name: string, literal: AST.Expr): void {
+    for (const leaf of this.literalLeaves(literal)) {
+      if (!this.evalComptimeExpr(leaf, true)) {
+        this.error(leaf.span.start, `data '${name}' is laid out at compile time: its values must be constants`)
+      }
+    }
   }
 
   // Extract a data section literal from an expression if applicable
@@ -1800,9 +1898,10 @@ class CheckContext {
       }
     }
 
-    // Handle identifier references to other defs
+    // Handle identifier references to other defs, unless the name is read
+    // as a parameter or a binding that has the def's name
     if (expr.kind === 'IdentExpr') {
-      const sym = this.moduleScope.symbols.get(expr.name)
+      const sym = this.readAs.get(expr) ?? this.lookup(expr.name)
       if (sym?.kind === 'def') {
         return sym.value
       }
@@ -2017,15 +2116,20 @@ class CheckContext {
       }
     }
     this.currentScope = prevScope
+    this.settleLiterals()
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
-  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
+  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false, written = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
       if (u.pointee.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
+      }
+      // The destination is written, as through an index: it has to be *mut.
+      if (written && !u.mutable) {
+        this.error(expr.span.start, `${context}: cannot write through const pointer ${typeToString(type)} — use *mut for mutable access`)
       }
       // A string literal gets its bytes in the data section when it's checked
       // against the type it's used at, as the argument of a function is. So
@@ -2141,6 +2245,7 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
+    this.settleLiterals()
   }
 
   // The type a returned value is checked against: for a single named result
@@ -3141,12 +3246,11 @@ class CheckContext {
         : shape.kind === 'array'
         ? shape
         : (pointee as ArrayRT)
-      // Infer mut from target type — no need for explicit mut on the literal
+      // A literal given where a mutable pointer or slice is wanted is `mut`
+      // without the keyword: a copy of its own, shared with no other data.
       const targetMut = (shape.kind === 'pointer' && shape.mutable) ||
         (shape.kind === 'slice' && shape.mutable)
-      if (targetMut || this.exprHasMut(expr)) {
-        if ('mut' in expr) (expr as { mut?: boolean }).mut = true
-      }
+      if (targetMut) markMut(expr)
       this.addLiteral(expr.span.start, expr, arrType)
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
@@ -3164,7 +3268,9 @@ class CheckContext {
           const inner = unwrap(innerType).kind
           const counted = shape.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
+            // A tuple is never laid out apart behind a pointer element: as
+            // for a field or a let, (1, 2) is not a *Pt.
+            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
             // (x) is x: a value in parentheses is checked as that value, and
             // only a literal is laid out as one.
             if (this.isDataLiteralExpr(ungrouped(elem)) && !asValue) {
@@ -3183,6 +3289,23 @@ class CheckContext {
         for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
           if (!this.isConstantInitializer(row)) {
             this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+          }
+        }
+      }
+      if (expected.kind === 'pointer' || expected.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
+      // So are the literals among the elements of a slice of slices, or of a
+      // pointer to framed arrays: codegen fills in an element that is known
+      // only at run time, but not what is inside one of them.
+      const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
+      const of = arrType.element
+      const apart = !tableRow(expected) && framings <= 1 &&
+        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && of.pointee.kind === 'array'))
+      if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+        for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+          let inner = ungrouped(element)
+          while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
+          if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
+            this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
           }
         }
       }
@@ -3302,6 +3425,51 @@ class CheckContext {
     }
   }
 
+  // An array literal laid out for a fixed number of elements has that many:
+  // *[3]i32 takes three, and so does each row of a *[2][3]i32, a [][3]i32 or
+  // a *[2x3]i32. Fewer would leave the last ones to whatever data follows;
+  // more would be bytes nothing reaches. A string is bytes, so it is that
+  // many elements only where an element is one byte.
+  private checkLiteralCount(expr: AST.Expr, type: ResolvedType, prefix: string): void {
+    const e = ungrouped(expr)
+    const string = e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e.value.bytes.length : null
+    if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr' && string === null) return
+    const t = unwrap(type)
+    const array = t.kind === 'pointer' && t.pointee.kind === 'array' ? t.pointee : t.kind === 'array' ? t : null
+    const fixed = array?.sizes && array.sizes.length > 0 && array.sizes.every((s) => typeof s === 'number') ? array.sizes as number[] : null
+    const row = t.kind === 'slice' ? t.element
+      : array && fixed && fixed.length > 1 ? { kind: 'array' as const, element: array.element, sizes: fixed.slice(1) }
+      : array?.element ?? null
+    if (array && fixed && string !== null) {
+      // Behind a pointer a string is the bytes of the elements, all of them;
+      // but the rows of a table are laid out apart, not as these bytes.
+      const table = tableRow(type)
+      if (table) {
+        const elements = typeToString(table.pointee)
+        this.error(e.span.start, `${prefix}cannot assign a string literal to ${typeToString(type)} — a string is bytes ([]u8); write the ${elements} elements as an array literal`)
+      } else if (byteSize(array) !== null && byteSize(array) !== string) {
+        this.error(e.span.start, `${prefix}cannot assign a string of ${string} byte${string === 1 ? '' : 's'} to ${typeToString(type)}`)
+      }
+      return
+    }
+    if (array && fixed) {
+      const count = e.kind === 'ArrayExpr' ? e.elements.length : e.kind === 'RepeatExpr' ? this.evalComptimeExpr(e.count) : null
+      const n = typeof count === 'number' ? count : count?.kind === 'int' ? Number(count.value) : null
+      if (n !== null && n !== fixed[0]) {
+        this.error(e.span.start, `${prefix}cannot assign ${n} element${n === 1 ? '' : 's'} to ${typeToString(type)}`)
+        return
+      }
+    }
+    // The rows: fixed arrays, laid out in place or apart, or the literals an
+    // array of pointers points at.
+    const r = row && unwrap(row)
+    if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr') return
+    const rows = r?.kind === 'array' ? r.sizes?.every((s) => typeof s === 'number')
+      : r?.kind === 'pointer' && r.pointee.kind === 'array'
+    if (!r || !rows) return
+    for (const element of e.kind === 'ArrayExpr' ? e.elements : [e.value]) this.checkLiteralCount(element, r, prefix)
+  }
+
   peelArraySize(t: ArrayRT): ResolvedType {
     // If element is already an array type (nested brackets), use it directly
     if (t.element.kind === 'array') {
@@ -3349,7 +3517,7 @@ class CheckContext {
     this.coercions.delete(expr)
     switch (expr.kind) {
       case 'LiteralExpr':
-        return this.inferLiteral(expr)
+        return this.inferLiteral(expr, typedByContext)
 
       case 'IdentExpr':
         return this.inferIdent(expr)
@@ -3445,7 +3613,7 @@ class CheckContext {
     }
   }
 
-  inferLiteral(expr: AST.LiteralExpr): ResolvedType {
+  inferLiteral(expr: AST.LiteralExpr, typedByContext = false): ResolvedType {
     switch (expr.value.kind) {
       case 'int':
         return comptimeInt(expr.value.value)
@@ -3455,9 +3623,11 @@ class CheckContext {
 
       case 'string': {
         // String literals have known length at compile time
-        // Default to *[N]u8 - pointer to N-byte array
+        // Default to *[N]u8 - pointer to N-byte array; `mut "ab"` is a
+        // writable copy of its own, a *mut [N]u8.
         const len = expr.value.bytes.length
-        return ptrArray(primitive('u8'), len)
+        if (!typedByContext && expr.dataId === undefined) this.unplaced.push(expr)
+        return pointer(array(primitive('u8'), [len]), false, !!expr.mut)
       }
 
       case 'bool':
@@ -3480,6 +3650,7 @@ class CheckContext {
 
     // Record this as a reference to the symbol
     this.recordReference(expr.name, expr.span.start)
+    this.readAs.set(expr, sym)
 
     switch (sym.kind) {
       case 'local':
@@ -4125,7 +4296,7 @@ class CheckContext {
           this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
           return VOID
         }
-        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
+        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest', false, true))
         // memzero has no length operand: the destination's type gives it.
         if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
           this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
@@ -4141,7 +4312,7 @@ class CheckContext {
           return VOID
         }
 
-        this.checkMemOpPtr(args[0].value, 'memset dest')
+        this.checkMemOpPtr(args[0].value, 'memset dest', false, true)
         this.checkExpr(args[1].value, primitive('u8'), 'memset value')
         this.checkExpr(args[2].value, primitive('u32'), 'memset len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memset')
@@ -4157,7 +4328,7 @@ class CheckContext {
           return VOID
         }
 
-        this.checkMemOpPtr(args[0].value, 'memcpy dest')
+        this.checkMemOpPtr(args[0].value, 'memcpy dest', false, true)
         this.checkMemOpPtr(args[1].value, 'memcpy src', true)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')
@@ -4368,6 +4539,25 @@ class CheckContext {
     // second error.
     const wider = (isFloat(right) && !isFloat(left)) || (byteSize(right) ?? 0) > (byteSize(left) ?? 0)
     const fallback = comparison ? primitive('bool') : stripMax(wider ? rightType : leftType)
+
+    // A string is bytes in memory, never a character: next to a number its
+    // value would be its address. Quotes of either kind make a string.
+    const string = (operand: AST.Expr): AST.LiteralExpr | null => {
+      let e = ungrouped(operand)
+      while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+      return e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e : null
+    }
+    const isAddress = (t: ResolvedType) => t.kind === 'pointer' || t.kind === 'func' || t.kind === 'slice'
+    const lone = string(expr.left) && !string(expr.right) && !isAddress(right) ? string(expr.left)
+      : string(expr.right) && !string(expr.left) && !isAddress(left) ? string(expr.right)
+      : null
+    if (lone?.value.kind === 'string') {
+      const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
+      const bytes = lone.value.bytes
+      const hint = bytes.length === 1 ? `; write its byte as a number (${bytes[0]})` : ''
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — a string is bytes in memory, not a character${hint}`)
+      return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+    }
 
     if (!isScalar(left) || !isScalar(right)) {
       this.checkAddressOperands(expr, leftType, rightType)
@@ -5398,6 +5588,9 @@ class CheckContext {
       this.error(expr.count.span.start, 'repeat count cannot be negative')
       return comptimeArrayLiteral(valueType, 0)
     }
+    // A count written as a constant expression ([0; k], [0; 2 * 8]) is laid
+    // out and compiled as its value.
+    if (expr.count.kind !== 'LiteralExpr') this.constants.set(expr.count, countValue)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(valueType, count)
@@ -6183,6 +6376,7 @@ class CheckContext {
     const literals = literalMarks(expr, (call) => this.known(call))
     const recorded = this.trial.begin()
     const registered = this.pendingLiterals.length
+    const unplaced = this.unplaced.length
     const warned = this.warnings.length
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
@@ -6191,6 +6385,7 @@ class CheckContext {
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
+    this.unplaced.length = unplaced
     this.trial.rollback(recorded)
     for (const { node, marks } of literals) {
       delete node.mut
@@ -7684,6 +7879,22 @@ function assignsVariable(node: unknown, name: string): boolean {
     if (k !== 'span' && typeof v === 'object' && assignsVariable(v, name)) return true
   }
   return false
+}
+
+// The literals laid out as parts of `expr`: its elements, the value it
+// repeats, the fields of a struct it holds, down to any depth.
+function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
+  const inner = expr.kind === 'ArrayExpr' ? expr.elements
+    : expr.kind === 'RepeatExpr' ? [expr.value]
+    : expr.kind === 'TupleExpr' ? expr.elements.map((e) => e.value)
+    : expr.kind === 'CallExpr' ? expr.args.map((a) => a.value)
+    : expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr' ? [expr.expr]
+    : []
+  for (const part of inner) {
+    if (!part || parts.has(part)) continue
+    parts.add(part)
+    literalParts(part, parts)
+  }
 }
 
 // Flag a literal as mutable data, so the data section gives it its own bytes.

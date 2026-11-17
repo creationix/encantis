@@ -3,6 +3,7 @@ import { loadModule, isSourceImport, resolveModulePath } from './loader'
 import { typecheckProgram } from './checker'
 import { programToWat } from './codegen'
 import { resolve } from 'path'
+import { instantiate } from './test-utils'
 
 const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
 
@@ -110,6 +111,22 @@ describe('unified codegen', () => {
     // Only one memory declaration
     const memoryCount = (wat.match(/\(memory /g) || []).length
     expect(memoryCount).toBe(1)
+  })
+
+  test('each module reads its own literals, also where two stand at the same offset', async () => {
+    // Literals are known by their offset in their module's source, and an
+    // instance's by a private offset that is the same in every module for
+    // the same place in the generic: lit-util.ents is padded so that both
+    // pairs meet.
+    const main = await Bun.file(resolve(fixtures, 'lit-main.ents')).text()
+    const util = await Bun.file(resolve(fixtures, 'lit-util.ents')).text()
+    expect(util.indexOf('"abcd"')).toBe(main.indexOf('"ABCD"'))
+    expect(util.indexOf('"util"')).toBe(main.indexOf('"MAIN"'))
+    expect(util.indexOf('func upick')).toBe(main.indexOf('func mpick'))
+    const instance = await instantiate(resolve(fixtures, 'lit-main.ents'))
+    const both = (instance.exports.both as () => number)() >>> 0
+    // 'A', 'a', 'M', 'u'
+    expect(both.toString(16)).toBe('41614d75')
   })
 
   test('errors on multiple memory declarations', async () => {

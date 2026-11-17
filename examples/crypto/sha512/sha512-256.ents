@@ -2,7 +2,7 @@
 // SHA-512 with different IV, truncated to 32 bytes
 
 import "./sha512" (
-  "sha512-with-iv" func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *[64]u8)
+  "sha512-with-iv" func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8)
 )
 
 // SHA-512/256 IV (generated per FIPS 180-4 §5.3.6)
@@ -16,7 +16,7 @@ data iv256 = [
 data full_hash = mut [0:u8; 64]
 
 // Public API: SHA-512/256
-export func sha512-256(input: []u8, output: *[32]u8) {
+export func sha512-256(input: []u8, output: *mut [32]u8) {
   sha512-with-iv(iv256, input, full_hash)
   memcpy(output, full_hash, 32)
 }

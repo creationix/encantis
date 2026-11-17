@@ -712,6 +712,134 @@ cannot assign int(300) to u8
 cannot assign i32 to u8
 ```
 
+Data is laid out when the program is compiled, and nothing fills it in later: each value in it is a literal, a constant expression, or the name of data declared before it. In a function, a literal's values known only at run time are stored into it when it is evaluated, except in a literal laid out apart from it: an element of a slice of slices or a row of a table.
+
+```ents
+def k = 4
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data xs: *[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]
+data refs: *[2]Ref = [(ones, 3), Ref(ones, k)]
+data names: [][]i32 = [ones, [k, 1]]
+
+func f(x: i32) -> i32 {
+  let a: *[2]i32 = [x, 2]
+  let p: *[2x2]i32 = [[x, 1], [2, 3]]
+  let s: [][]i32 = [ones, [x, 1]]
+  return a[0] + p[0][0]
+}
+```
+
+```errors
+an element of [][]i32 is laid out at compile time: its values must be constants
+```
+
+```ents
+global g: i32 = 3
+func one() -> i32 => 1
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data a: *[2]i32 = [g, 1]
+data b: *[2]i32 = [one(), 1]
+data c: *[1]Ref = [(ones, g as u32)]
+data d: [][]i32 = [[g, 1], [2]]
+data e: *[2][2]i32 = [[g, 1], [2, 3]]
+data f = (g, 1)
+```
+
+```errors
+data 'a' is laid out at compile time: its values must be constants
+data 'b' is laid out at compile time: its values must be constants
+data 'c' is laid out at compile time: its values must be constants
+an element of [][]i32 is laid out at compile time: its values must be constants
+a row of *[2][2]i32 is laid out at compile time: its values must be constants
+data 'f' is laid out at compile time: its values must be constants
+```
+
+An array literal for a `*[N]T` has N elements, and each row of a table or of a `*[NxM]T` has M. Behind a pointer a string is the bytes of all the elements; the rows of a table are laid out apart, so a string cannot be them.
+
+```ents
+data a: *[3]i32 = [1, 2, 3]
+data b: *[2]u16 = "abcd"
+data c: *[2x2]u8 = ["ab", "cd"]
+data d: *[2][2]i32 = [[1, 2], [3, 4]]
+data e: *[4]u8 = [7; 4]
+data f: *[!]u8 = "abc"
+data g: [*]u32 = "abcd"
+```
+
+```ents
+data a: *[3]i32 = [1, 2]
+data b: *[2]i32 = [1, 2, 3]
+data c: *[3]i32 = [1; 2]
+data d: *[2][2]i32 = [[1, 2], [3]]
+data e: [][2]i32 = [[1, 2], [3, 4, 5]]
+data f: *[8]u8 = "abcd"
+data g: *[4]u32 = "abcd"
+data h: *[2][2]u8 = "abcd"
+
+func row() -> *mut [4][]u8 => mut "abcd"
+```
+
+```errors
+cannot assign 2 elements to *[3]i32
+cannot assign 3 elements to *[2]i32
+cannot assign 2 elements to *[3]i32
+cannot assign 1 element to [2]i32
+cannot assign 3 elements to [2]i32
+cannot assign a string of 4 bytes to *[8]u8
+cannot assign a string of 4 bytes to *[4]u32
+cannot assign a string literal to *[2][2]u8 — a string is bytes ([]u8); write the [2]u8 elements as an array literal
+cannot assign a string of 4 bytes to *mut [4][]u8
+```
+
+An element of an array of pointers given a literal is the address of that literal, laid out apart: it has the count its pointer says, its values are constants, and a tuple is not a pointer to a struct.
+
+```ents
+type Pt = (x: i32, y: i32)
+data ones: *[2]i32 = [1, 1]
+data a: *[2]*[2]i32 = [[1, 2], ones]
+data b: *[2][*]u8 = ["ab", "cde"]
+data c: *[2]*[2]i32 = [[1, 2, 3], [4, 5]]
+data d: *[2]*[2]u8 = ["abc", "de"]
+data e: *[1]*Pt = [(1, 2)]
+
+func f(x: i32) -> i32 {
+  let p: *[2]*[2]i32 = [[x, 2], ones]
+  return p[0][0]
+}
+```
+
+```errors
+cannot assign 3 elements to *[2]i32
+cannot assign a string of 3 bytes to *[2]u8
+cannot assign (int(1), int(2)) to *Pt
+an element of *[2]*[2]i32 is laid out at compile time: its values must be constants
+```
+
+`memcpy`, `memset` and `memzero` write their destination, as a write through an index does: it is a `*mut` pointer.
+
+```ents
+data src = [1:u8, 2, 3, 4]
+data dst = [0:u8; 4]
+data out = mut [0:u8; 4]
+
+func a() { memcpy(dst, src, 4) }
+func b() { memset(dst, 7, 4) }
+func c() { memzero(dst) }
+func d(p: *[4]u8) { memcpy(p, src, 4) }
+func e() { memcpy(out, src, 4) }
+```
+
+```errors
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memset dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memzero dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
@@ -1241,6 +1369,30 @@ cannot use a string literal among u32 elements
 cannot assign a string literal to []u16
 argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8); write the u32 elements as an array literal ([1, 2, 3])
 cannot assign a string literal to []u16
+```
+
+A string in single quotes is a string too, never a character: not a byte to compare, compute with, assign or pass. Next to a pointer it is the address of its bytes.
+
+```ents
+func is_a(c: u8) -> bool => c == 'a'
+func is_b(c: u8) -> bool => ('b') != c
+func offset(c: u8) -> u8 => c - 'a'
+func before(c: u32) -> bool => c < "ab"
+func next() -> bool => 'a' + 1 == 98
+func put() { let c: u8 = 'a' }
+func take(c: u8) -> u8 => c
+func give() -> u8 => take('a')
+func same(p: *[2]u8) -> bool => p == "ab"
+```
+
+```errors
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'!=' cannot be applied to a string and u8 — a string is bytes in memory, not a character; write its byte as a number (98)
+'-' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'<' cannot be applied to u32 and a string — a string is bytes in memory, not a character
+'+' cannot be applied to a string and int(1) — a string is bytes in memory, not a character; write its byte as a number (97)
+cannot assign *[1]u8 to u8
+argument 1: cannot assign *[1]u8 to u8
 ```
 
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
