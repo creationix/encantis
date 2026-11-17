@@ -1,0 +1,68 @@
+// An `if let` is an if: it can be used as a value, and it can go on to elif
+// and else branches when there is nothing to bind.
+
+data scores = [95, 87, 42]:*[_]i32
+data bytes = [7:u8, 8, 9]
+
+// As a value: the bound element, or the fallback.
+func score_or(i: u32, fallback: i32) -> i32 {
+  let s = if let score = scores[i] { score } else { fallback }
+  return s
+}
+
+// The branches widen to one type, like any if's.
+func byte_or(s: []u8, i: u32, fallback: i64) -> i64 => if let b = s[i] { b } else { fallback }
+
+func through(p: ?*i32, fallback: i32) -> i32 {
+  let v = if let q = p { q.* } else { fallback }
+  return v
+}
+
+test "an if let gives the value of the branch taken" {
+  assert score_or(1, -1) == 87
+  assert score_or(3, -1) == -1
+  assert byte_or(bytes, 2, 5000000000) == 9
+  assert byte_or(bytes, 3, 5000000000) == 5000000000
+  assert through(&scores[2], 0) == 42
+  assert through(0, -7) == -7
+}
+
+// With elif branches, as a statement and as a value.
+func grade(i: u32, lenient: bool) -> i32 {
+  if let score = scores[i] {
+    return score
+  } elif lenient {
+    return 50
+  } else {
+    return 0
+  }
+}
+
+func rank(i: u32, a: bool, b: bool) -> i32 => if let score = scores[i] { score / 10 } elif a { -1 } elif b { -2 } else { -3 }
+
+test "an if let goes on to its elif branches" {
+  assert grade(0, false) == 95
+  assert grade(9, true) == 50
+  assert grade(9, false) == 0
+  assert rank(0, true, true) == 9
+  assert rank(9, true, true) == -1
+  assert rank(9, false, true) == -2
+  assert rank(9, false, false) == -3
+}
+
+// Where a type is wanted, each branch widens to it, as in any if. An i32 and
+// a u32 have no type between them, but both are i64s.
+func wide_or(p: ?*i32, unsigned: u32) -> i64 => if let q = p { q.* } else { unsigned }
+
+func wide_let(i: u32, small: i8, unsigned: u32) -> i64 {
+  let v: i64 = if let score = scores[i] { score } elif i == 3 { small } else { unsigned }
+  return v
+}
+
+test "an if let's branches widen to the type wanted" {
+  assert wide_or(&scores[0], 4000000000) == 95
+  assert wide_or(0, 4000000000) == 4000000000
+  assert wide_let(2, -1, 4000000000) == 42
+  assert wide_let(3, -1, 4000000000) == -1
+  assert wide_let(4, -1, 4000000000) == 4000000000
+}

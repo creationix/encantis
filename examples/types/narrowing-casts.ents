@@ -1,0 +1,38 @@
+// A cast to an 8- or 16-bit integer keeps only that many bits, whatever it
+// casts from, so the result compares and widens as a value of its type.
+
+func low_byte(x: i64) -> u8 => x as u8
+func low_word(x: u64) -> u16 => x as u16
+func signed_byte(x: i64) -> i8 => x as i8
+func signed_word(x: i64) -> i16 => i16(x)
+func float_byte(x: f64) -> u8 => x as u8
+func float_signed(x: f32) -> i8 => x as i8
+
+func is_ff(x: i64) -> bool => x as u8 == 255
+func byte_plus(x: i64, n: i32) -> i32 => (x as u8) + n
+
+test "an i64 cast to u8 or u16 keeps the low bits" {
+  assert low_byte(0x1ff) == 255
+  assert low_byte(0x12345678) == 0x78
+  assert low_word(0x12345678) == 0x5678
+  assert is_ff(0x1ff)
+  assert !is_ff(0x100)
+}
+
+test "the narrow value widens as itself" {
+  assert byte_plus(0x1ff, 1) == 256
+  assert byte_plus(-1, 0) == 255
+}
+
+test "an i64 cast to i8 or i16 keeps the low bits, with their sign" {
+  assert signed_byte(0x1ff) == -1
+  assert signed_byte(0x17f) == 127
+  assert signed_word(0x18000) == -32768
+}
+
+test "a float cast to u8 or i8 is cut the same way" {
+  assert float_byte(65.9) == 65
+  assert float_byte(300.0) == 44
+  assert float_signed(-3.5) == -3
+  assert float_signed(200.0) == -56
+}

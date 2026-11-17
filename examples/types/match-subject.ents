@@ -1,0 +1,190 @@
+// A match evaluates its subject once, however many arms it is tested
+// against.
+
+data digits = [3:u8, 1, 4, 1, 5]
+
+global calls: u32 = 0
+global cursor: u32 = 0
+
+func next() -> u8 {
+  calls += 1
+  let d = digits[cursor % 5] ?? 0
+  cursor += 1
+  return d
+}
+
+func reset() {
+  calls = 0
+  cursor = 0
+}
+
+// The last arm is reached only after every other test has failed.
+func classify() -> i32 => match next() {
+  1 => 10
+  4 => 40
+  5 => 50
+  _ => -1
+}
+
+test "a call in the subject runs once" {
+  reset()
+  assert classify() == -1              // 3
+  assert calls == 1
+  assert classify() == 10              // 1
+  assert classify() == 40              // 4
+  assert calls == 3
+}
+
+// The subject can be any expression, with scratch values of its own.
+func bucket(s: []u8, i: u32) -> i64 => match (s[i] ?? 255) / 2 {
+  0 => 5000000000
+  1, 2 => -1
+  _ => 7
+}
+
+func wide(a: i64, b: i64) -> i32 => match a * b {
+  10000000000 => 1
+  0 => 2
+  _ => 3
+}
+
+// As an operand, and one match inside another.
+func nested(k: i32, n: i32) -> i32 => 100 + match k + 1 {
+  1 => match n * 2 {
+    4 => 1
+    _ => 2
+  }
+  2 => 3
+  _ => 4
+}
+
+test "the subject is an expression like any other" {
+  assert bucket(digits, 1) == 5000000000     // 1 / 2
+  assert bucket(digits, 2) == -1             // 4 / 2
+  assert bucket(digits, 9) == 7              // 255 / 2
+  assert wide(100000, 100000) == 1
+  assert wide(0, 5) == 2
+  assert wide(3, 4) == 3
+  assert nested(0, 2) == 101
+  assert nested(0, 3) == 102
+  assert nested(1, 0) == 103
+  assert nested(7, 0) == 104
+}
+
+// As a statement in a loop: one draw per turn.
+func count_ones(turns: u32) -> u32 {
+  let ones: u32 = 0
+  for i in turns {
+    match next() {
+      1 => { ones += 1 }
+      _ => {}
+    }
+  }
+  return ones
+}
+
+test "a match statement draws its subject once per turn" {
+  reset()
+  assert count_ones(5) == 2
+  assert calls == 5
+}
+
+// A subject that is several values (a slice, a tuple, a wide integer) or none
+// can only meet `_`. It is evaluated once all the same.
+func fresh() -> []u8 {
+  calls += 1
+  let all: []u8 = digits
+  return all
+}
+
+func two() -> (u8, u8) => (next(), next())
+
+func nothing() {
+  calls += 1
+}
+
+func any_slice(s: []u8) -> i32 => match s { _ => 1 }
+
+func any_fresh() -> i32 => match fresh() { _ => 2 }
+
+func any_two() -> i32 => match two() { _ => 3 }
+
+func any_wide(x: u128) -> i32 => match x + 1 { _ => 4 }
+
+func any_nothing() -> i32 => match nothing() { _ => 5 }
+
+test "a subject of several values, or none, is evaluated once" {
+  reset()
+  assert any_slice(digits) == 1
+  assert calls == 0
+  assert any_fresh() == 2
+  assert calls == 1
+  assert any_two() == 3
+  assert calls == 3
+  assert any_wide(7) == 4
+  assert any_nothing() == 5
+  assert calls == 4
+}
+
+// As a statement.
+func drain() -> u32 {
+  match fresh() {
+    _ => { cursor += 2 }
+  }
+  return cursor
+}
+
+test "a match statement on a slice" {
+  reset()
+  assert drain() == 2
+  assert calls == 1
+}
+
+// A constant subject has no type of its own: it is compared in its default
+// type, i32 or i64 by its size, f64 for a float.
+def level = 1
+def far = 5000000000
+def half = 0.5
+
+func by_literal() -> i32 => match 1 {
+  1 => 2
+  _ => 3
+}
+
+func by_def() -> i32 => match level {
+  1 => 2
+  _ => 3
+}
+
+func by_len(items: [3]u8) -> i32 => match items.len {
+  3 => 2
+  _ => 3
+}
+
+func by_i64() -> i32 => match far {
+  1 => 1
+  5000000000 => 2
+  _ => 3
+}
+
+func by_f64() -> i32 => match half * 3 {
+  1 => 1
+  1.5 => 2
+  _ => 3
+}
+
+func by_choice(c: bool) -> i32 => match if c { level } else { 7 } {
+  1 => 2
+  7 => 4
+  _ => 3
+}
+
+test "a constant subject is compared in its default type" {
+  assert by_literal() == 2
+  assert by_def() == 2
+  assert by_len([1, 2, 3]) == 2
+  assert by_i64() == 2
+  assert by_f64() == 2
+  assert by_choice(true) == 2
+  assert by_choice(false) == 4
+}
