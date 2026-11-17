@@ -76,7 +76,9 @@ export type Symbol =
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string }
   | { kind: 'global'; type: ResolvedType }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
-  | { kind: 'local'; type: ResolvedType }
+  // `binding`: a variable a `for`, an `if let` or a match arm binds, which
+  // its body alone sees; a `let` has none
+  | { kind: 'local'; type: ResolvedType; binding?: BindingKind }
   | { kind: 'param'; type: ResolvedType }
   | { kind: 'return'; type: ResolvedType }
   // A function with comptime parameters. It has no type of its own: each
@@ -152,7 +154,14 @@ const RECOVERY: ResolvedType = primitive('i32')
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
+  // The variables of a `for`, seen in its body only. A `let` in that body
+  // is declared in the scope around it: a `let` is seen in the rest of its
+  // function (see letScope).
+  bindings?: true
 }
+
+// What declared a variable that a body alone sees (see bindName).
+export type BindingKind = 'loop' | 'if let' | 'match'
 
 // === Type Key Helper ===
 
@@ -612,7 +621,8 @@ class CheckContext {
   // checked again once its type is settled, statements and all: a `let` in
   // one of its branches is then the same declaration, not a second one.
   // A look (see peek) declares in a scope of its own, and is no first time.
-  declared = new TrialSet<AST.Pattern>(this.trial)
+  // The same goes for the variables of a `for`, an `if let` or a match arm.
+  declared = new TrialSet<AST.Pattern | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm>(this.trial)
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -2129,15 +2139,22 @@ class CheckContext {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
         }
-        // Record the binding types and add them to scope
+        // The loop's variables are seen in its body only: after the loop
+        // their names are free again.
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
-        this.currentScope.symbols.set(stmt.binding.value, { kind: 'local', type: elemType })
-        this.recordDefinition(stmt.binding.value, stmt.binding.span.start)
-        if (stmt.binding.index) {
-          this.currentScope.symbols.set(stmt.binding.index, { kind: 'local', type: primitive('u32') })
-          this.recordDefinition(stmt.binding.index, stmt.binding.span.start)
+        const scope = this.currentScope
+        const loop: Scope = { parent: scope, symbols: new Map(), bindings: true }
+        const binding = stmt.binding
+        const at = binding.span.start
+        if (binding.index) this.bindName(loop, binding.index, primitive('u32'), at, 'loop', binding)
+        this.bindName(loop, binding.value, elemType, binding.index ? binding.span.end - binding.value.length : at, 'loop', binding, at)
+        this.declared.add(binding)
+        this.currentScope = loop
+        try {
+          this.checkLoopBody(stmt.body)
+        } finally {
+          this.currentScope = scope
         }
-        this.checkLoopBody(stmt.body)
         break
       }
       case 'AssertStmt':
@@ -2361,6 +2378,43 @@ class CheckContext {
     }
   }
 
+  // Where a `let` declares its variables: the scope it is in, past the
+  // variables of a `for` around it, which only the loop's body sees.
+  private letScope(): Scope {
+    let scope = this.currentScope
+    while (scope.bindings && scope.parent) scope = scope.parent
+    return scope
+  }
+
+  // Declares a variable that a `for`, an `if let` or a match arm binds, in
+  // `scope`, the scope its body is checked in. It never has the name of a
+  // variable the body would see without it: a parameter, a named result, a
+  // variable declared before it (a `let` is seen in the rest of its
+  // function), the variable of a `for`, `if let` or match arm around it, or
+  // a global, whose name a `let` cannot have either. Nor does it have the
+  // name of a `def`, which stands for its value wherever it is written. A
+  // function or a `data` block of the module is no variable, and its name
+  // is hidden in the body.
+  // `node` is the binding's: checked again, it is the same declaration (see
+  // declared). An error is reported at `at`, the definition recorded at `defAt`.
+  private bindName(
+    scope: Scope, name: string, type: ResolvedType | null, at: number, kind: BindingKind,
+    node: AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm, defAt = at,
+  ): void {
+    const outer = this.currentScope
+    this.currentScope = scope
+    const existing = this.lookup(name)
+    this.currentScope = outer
+    const taken = existing && takenName(existing)
+    if (taken && !this.declared.has(node)) {
+      const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
+      this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}`)
+    }
+    if (!type) return
+    scope.symbols.set(name, { kind: 'local', type, binding: kind })
+    this.recordDefinition(name, defAt)
+  }
+
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
     switch (pattern.kind) {
       case 'IdentPattern': {
@@ -2369,7 +2423,7 @@ class CheckContext {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
         this.declared.add(pattern)
-        this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
+        this.letScope().symbols.set(pattern.name, { kind: 'local', type })
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
         break
@@ -2395,7 +2449,7 @@ class CheckContext {
             }
             // binding is null for shorthand (x:) - use field name as variable name
             const varName = element.binding ?? element.field
-            this.currentScope.symbols.set(varName, { kind: 'local', type: tupleField.type })
+            this.letScope().symbols.set(varName, { kind: 'local', type: tupleField.type })
             this.recordDefinition(varName, pattern.span.start)
           } else {
             // Positional pattern: (a, b) - match by index
@@ -4367,10 +4421,16 @@ class CheckContext {
     this.requireBool(expr, this.inferExpr(expr), 'condition')
   }
 
-  // `elif let x = e` tests an optional, not a bool.
+  // `elif let x = e` tests an optional, not a bool. Its names are the
+  // bindings of an `if let`, and no more free to take.
   private checkElifCondition(elif: AST.ElifBranch): void {
-    if (elif.pattern) this.inferExpr(elif.condition)
-    else this.checkCondition(elif.condition)
+    if (elif.pattern) {
+      this.inferExpr(elif.condition)
+      for (const name of patternNames(elif.pattern)) this.bindName(this.currentScope, name, null, elif.span.start, 'if let', elif)
+      this.declared.add(elif)
+    } else {
+      this.checkCondition(elif.condition)
+    }
   }
 
   // Report a condition or logical operand that isn't a bool: there is no
@@ -5328,14 +5388,19 @@ class CheckContext {
       elemType = condType
     }
 
-    // Bind the pattern variable in a new scope for the then-branch
+    // The binding is seen in the then-branch only, which is a scope of its
+    // own: a `let` there is seen in that branch only too.
     const prevScope = this.currentScope
-    this.currentScope = { parent: prevScope, symbols: new Map() }
-    this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
+    const then: Scope = { parent: prevScope, symbols: new Map() }
+    this.bindName(then, pattern.name, elemType, expr.span.start, 'if let', expr, expr.condition.span.start)
+    this.declared.add(expr)
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
-    this.recordDefinition(pattern.name, expr.condition.span.start)
-    branch(expr.thenBranch)
-    this.currentScope = prevScope
+    this.currentScope = then
+    try {
+      branch(expr.thenBranch)
+    } finally {
+      this.currentScope = prevScope
+    }
 
     for (const elif of expr.elifs) {
       this.checkElifCondition(elif)
@@ -5387,7 +5452,8 @@ class CheckContext {
   }
 
   // A literal pattern is compared with the subject, so it has to be a value
-  // of the subject's type.
+  // of the subject's type. The names a pattern binds are its arm's own, and
+  // no more free to take than those of a `for`.
   private checkMatchSubject(expr: AST.MatchExpr): void {
     let subjectType = this.inferExpr(expr.subject)
     // A constant subject (1, a def, a fixed array's len) has no type for the
@@ -5400,6 +5466,8 @@ class CheckContext {
     }
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
+      for (const name of arm.patterns.flatMap(patternNames)) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
+      this.declared.add(arm)
       for (const pattern of arm.patterns) {
         if (pattern.kind !== 'literal') continue
         const value = pattern.value
@@ -7274,6 +7342,45 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   if (expr.kind === 'GroupExpr') return expr.expr
   if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
   return null
+}
+
+// What a name a `for`, an `if let` or a match arm cannot bind is, as the
+// error says: a variable, a `def`, or a comptime function parameter. Null
+// for a name it can hide.
+function takenName(sym: Symbol): string | null {
+  switch (sym.kind) {
+    case 'param':
+      return 'a parameter'
+    case 'return':
+      return 'a named result'
+    case 'global':
+      return 'a global'
+    case 'local':
+      return sym.binding === 'loop' ? 'a loop variable in scope'
+        : sym.binding === 'if let' ? 'an if let binding in scope'
+        : sym.binding === 'match' ? 'a match binding in scope'
+        : 'a variable in scope'
+    case 'def':
+      return sym.value.kind === 'data_ptr' ? null : 'a def'
+    case 'func':
+      // A comptime function parameter, in an instance.
+      return sym.alias ? 'a parameter' : null
+    default:
+      return null
+  }
+}
+
+// The names a match pattern binds, wherever they are in it.
+function patternNames(pattern: AST.MatchPattern): string[] {
+  switch (pattern.kind) {
+    case 'binding':
+      return [pattern.name]
+    case 'constructor':
+    case 'tuple':
+      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [e.field] : patternNames(e.pattern)))
+    default:
+      return []
+  }
 }
 
 // A name that holds a value in registers, which `=` and `set` can replace.

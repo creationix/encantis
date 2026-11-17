@@ -979,6 +979,8 @@ let ptr:*u8       // uninitialized
 global total:i32 = 0
 ```
 
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+
 A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
 
 ```ents
@@ -1625,32 +1627,53 @@ if let data = entry.dynamic {
 
 <!-- spec:begin compile -->
 
-The binding is a variable of its own, seen in the first branch only. It can have the name of a variable outside, of any type, which it hides there and leaves as it was:
+The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written, so it never hides one and never changes one:
 
 ```ents
 data cells = [7:u32, 8, 9]
 
-func pick(i: u32) -> u32 {
-  let v: u32 = 5
-  let seen: u32 = 0
-  if let v = cells[i] {
-    seen = v
+func get(p: ?*u32) -> u32 {
+  if let p = p {
+    return p.*
   }
-  return v * 100 + seen          // v is 5 again
+  return 0
 }
 
-func scaled(p: ?*u32) -> f64 {
-  let v: f64 = 0.5
-  if let v = p {
-    return v.* as f64
+func pick(i: u32) -> u32 {
+  let v: u32 = 5
+  if let v = cells[i] {
+    return v
   }
   return v
 }
+```
 
-test "an if let binding hides a variable of its name in its branch" {
-  assert pick(1) == 508
-  assert pick(7) == 500
-  assert scaled(0) == 0.5
+```errors
+'p' is already declared: an if let binding cannot reuse the name of a parameter
+'v' is already declared: an if let binding cannot reuse the name of a variable in scope
+```
+
+After the branch the name is free again: another `if let` can bind it, to a value of another type, and so can a `let`.
+
+```ents
+data cells = [7:u32, 8, 9]
+data names = ["ab", "cde"]
+
+func size(i: u32) -> u32 {
+  let n: u32 = 0
+  if let v = cells[i] {
+    n += v
+  }
+  if let v = names[i] {
+    n += v.len
+  }
+  let v: u32 = 100
+  return n + v
+}
+
+test "an if let binding is a variable of its first branch" {
+  assert size(1) == 111
+  assert size(5) == 100
 }
 ```
 
@@ -1925,6 +1948,73 @@ func total(list:[]Spot) -> i32 {
 }
 ```
 
+<!-- spec:begin compile -->
+
+The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def`, which stands for its value wherever it is written. So a loop never hides a variable, and never changes one:
+
+```ents
+func count(n: u32) -> u32 {
+  let t: u32 = 0
+  for n in n {
+    t += 1
+  }
+  return t
+}
+
+func after() -> u32 {
+  let c: u32 = 5
+  for c in 3 {
+  }
+  return c
+}
+
+func grid() -> u32 {
+  let t: u32 = 0
+  for i in 3 {
+    for i in 4 {
+      t += 1
+    }
+  }
+  return t
+}
+```
+
+```errors
+'n' is already declared: a loop variable cannot reuse the name of a parameter
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
+```
+
+After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function or a `data` block of the module is no variable: a loop variable of its name hides it in the body.
+
+```ents
+data bytes = [1:u8, 2, 3]
+data wides = [1.5, 2.5]
+
+func scale() -> f64 => 2.0
+
+func total() -> f64 {
+  let s: f64 = 0
+  for v in bytes {
+    s += v as f64
+  }
+  for v in wides {
+    s += v
+  }
+  for scale in 2 {
+    s += scale as f64
+  }
+  let v: f64 = 0.5
+  return s * scale() + v
+}
+
+test "a loop's variables are its body's" {
+  assert total() == 22.5
+}
+```
+
+<!-- spec:end -->
+
 ### 5.3 Control Statements
 
 All control statements support a `when` suffix for conditional execution:
@@ -2140,6 +2230,23 @@ The convention distinguishes patterns by case:
 - **lowercase** (`x`, `y`) — binding (introduces a variable)
 - **literals** (`0`, `"hello"`) — exact match
 - **`_`** — wildcard (match anything, don't bind)
+
+<!-- spec:begin compile -->
+
+A binding is a variable of its arm, seen in the arm's body only. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is:
+
+```ents
+func next(n: u32, k: u32) -> u32 => match k {
+  0 => 1
+  n => n + 1
+}
+```
+
+```errors
+'n' is already declared: a match binding cannot reuse the name of a parameter
+```
+
+<!-- spec:end -->
 
 ### 6.4 If-Let Bindings
 

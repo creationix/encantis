@@ -3025,51 +3025,55 @@ describe('the wasm names of variables', () => {
     expect(wat).toContain('(global $_1_g_x (mut f64) (f64.const 2.5))')
   })
 
-  test('an if let binding is a variable of its own, whatever its type', async () => {
-    const x = await run(`
+  // What the checker accepts, compiled and run.
+  const accepted = async (code: string) => {
+    const module = parse(code).module as AST.Module
+    expect(typecheck(module).errors.map((e) => e.message)).toEqual([])
+    return { x: await run(code), wat: modWat(code) }
+  }
+
+  test('if let bindings of one name in turn are variables of their own, whatever their types', async () => {
+    const { x } = await accepted(`
       data cells = [7:u32, 8, 9]
-      export func other_type(p: ?*u32) -> u32 {
-        let q: f64 = 1.5
-        if let q = p {
-          return q.*
-        }
-        return q as u32
-      }
-      export func same_type(i: u32) -> u32 {
-        let q: u32 = 5
-        let t: u32 = 0
-        if let q = cells[i] {
-          t = q
-        }
-        return q * 100 + t
-      }
-      export func nested(i: u32, j: u32) -> u32 {
+      data wides = [1.5, 2.5]
+      data names = ["ab", "cde"]
+      export func size(i: u32) -> f64 {
+        let n: f64 = 0
         if let v = cells[i] {
-          if let v = cells[j] {
-            return v
-          }
-          return v + 1000
+          n += v as f64
         }
-        return 0
+        if let v = wides[i] {
+          n += v
+        }
+        if let v = names[i] {
+          n += v.len as f64
+        }
+        let v: u32 = 100
+        return n + (v as f64)
       }
+      func sum(p: ?*u32, q: ?*f64) -> f64 {
+        let n: f64 = 0
+        if let v = p {
+          n += v.* as f64
+        }
+        if let v = q {
+          n += v.*
+        }
+        return n
+      }
+      export func pointers() -> f64 => sum(&cells[1], &wides[0]) + sum(0, 0)
     `)
-    expect(x.other_type(0)).toBe(1)
-    expect(x.same_type(1)).toBe(508)
-    expect(x.same_type(7)).toBe(500)
-    expect(x.nested(0, 9)).toBe(1007)
-    expect(x.nested(0, 2)).toBe(9)
+    expect(x.size(1)).toBe(113.5)
+    expect(x.size(2)).toBe(109)
+    expect(x.size(5)).toBe(100)
+    expect(x.pointers()).toBe(9.5)
   })
 
-  test('a loop variable is its own from the loop on, whatever the name was before', async () => {
-    const x = await run(`
+  test('a loop variable is seen in its body only, and its name is free after it', async () => {
+    const { x, wat } = await accepted(`
       data bytes = [1:u8, 2, 3]
       data wides = [1.5, 2.5]
-      export func param_then_for(x: f64) -> u32 {
-        let before = x as u32
-        for x in 3 {
-        }
-        return before * 10 + x
-      }
+      func scale() -> u32 => 10
       export func two_loops() -> f64 {
         let s: f64 = 0
         for v in bytes {
@@ -3080,8 +3084,52 @@ describe('the wasm names of variables', () => {
         }
         return s
       }
+      export func then_let() -> i64 {
+        let t: u32 = 0
+        for c in 3 {
+          t += c
+        }
+        let c: i64 = 5000000000
+        return c + (t as i64)
+      }
+      export func in_branch(k: bool) -> f64 {
+        let s: f64 = 0
+        if k {
+          for c in wides {
+            s += c
+          }
+        }
+        for c in 2 {
+          s += c as f64
+        }
+        let c: f64 = 0.25
+        return s + c
+      }
+      export func hides() -> u32 {
+        let t: u32 = 0
+        for scale in 3 {
+          t += scale
+        }
+        return t * scale()
+      }
+      // After the loop the name is the data block's again.
+      export func hides_data() -> u32 {
+        let t: u32 = 0
+        for bytes in bytes {
+          t += bytes as u32
+        }
+        return t * 10 + bytes[2] as u32
+      }
     `)
-    expect(x.param_then_for(7)).toBe(73)
     expect(x.two_loops()).toBe(10)
+    expect(x.then_let()).toBe(5000000003n)
+    expect(x.in_branch(1)).toBe(5.25)
+    expect(x.in_branch(0)).toBe(1.25)
+    expect(x.hides()).toBe(30)
+    expect(x.hides_data()).toBe(63)
+    // Variables of one name and wasm type that are never seen at once
+    // share a local; another wasm type takes the next prefix.
+    const body = wat.slice(wat.indexOf('(func $in_branch'), wat.indexOf('(func $hides'))
+    expect(body.match(/\(local \$(?!__)\w+ \w+\)/g)).toEqual(['(local $s f64)', '(local $c f64)', '(local $_1_c i32)'])
   })
 })

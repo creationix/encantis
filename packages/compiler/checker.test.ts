@@ -3144,3 +3144,104 @@ describe('a function named where a value is', () => {
     `)).toEqual([])
   })
 })
+
+describe('the variables of a for, an if let or a match arm', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const loop = (name: string, what: string) => `'${name}' is already declared: a loop variable cannot reuse the name of ${what}`
+  const ifLet = (name: string, what: string) => `'${name}' is already declared: an if let binding cannot reuse the name of ${what}`
+  const arm = (name: string, what: string) => `'${name}' is already declared: a match binding cannot reuse the name of ${what}`
+
+  test('a loop variable cannot have the name of a variable seen where the loop is', () => {
+    // Bug 11 of the board-builder port: the loop took the variable over.
+    expect(errs('func f() -> u32 {\n let c: u32 = 5\n for c in 3 { }\n return c\n}')).toEqual([loop('c', 'a variable in scope')])
+    expect(errs('func f(n: u32) -> u32 {\n let t: u32 = 0\n for n in n { t += 1 }\n return t\n}')).toEqual([loop('n', 'a parameter')])
+    expect(errs('func f() -> (n: u32) {\n for n in 3 { }\n}')).toEqual([loop('n', 'a named result')])
+    expect(errs('func f() {\n for i in 3 {\n for i in 4 { }\n }\n}')).toEqual([loop('i', 'a loop variable in scope')])
+    // A let is seen to the end of its function, past its block.
+    expect(errs('func f(c: bool) -> i64 {\n let i: i64 = 5000000000\n if c {\n for i in 3 { }\n }\n return i\n}'))
+      .toEqual([loop('i', 'a variable in scope')])
+    expect(errs('func f(c: bool) {\n if c {\n let k: u32 = 1\n }\n for k in 3 { }\n}')).toEqual([loop('k', 'a variable in scope')])
+    expect(errs('global g: u32 = 1\nfunc f() {\n for g in 3 { }\n}')).toEqual([loop('g', 'a global')])
+    // A def stands for its value wherever it is written: the loop's would never be seen.
+    expect(errs('def k = 30\nfunc f() -> u32 {\n let t: u32 = 0\n for k in 3 { t += k }\n return t\n}')).toEqual([loop('k', 'a def')])
+  })
+
+  test('both names of a loop are checked, each where it is written', () => {
+    const src = 'data xs = [1:u32, 2]\nfunc f() -> u32 {\n let v: u32 = 100\n for i, v in xs { }\n return v\n}'
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([loop('v', 'a variable in scope')])
+    expect(found[0].offset).toBe(src.indexOf('v in'))
+    expect(errs('data xs = [1:u32, 2]\nfunc f(i: u32) {\n for i, v in xs { }\n}')).toEqual([loop('i', 'a parameter')])
+    expect(errs('data xs = [1:u32, 2]\nfunc f() {\n for i, i in xs { }\n}')).toEqual([loop('i', 'a loop variable in scope')])
+  })
+
+  test('an if let binding cannot have the name of a variable seen where it is', () => {
+    expect(errs('func f(p: ?*u32) -> u32 {\n if let p = p {\n return p.*\n }\n return 0\n}')).toEqual([ifLet('p', 'a parameter')])
+    // Of the binding's type or another: either was a variable the branch could not see.
+    expect(errs('func f(p: ?*u32) -> u32 {\n let q: ?*u32 = 0\n if let q = p {\n return q.*\n }\n return 7\n}'))
+      .toEqual([ifLet('q', 'a variable in scope')])
+    expect(errs('func f(p: ?*u32) -> f64 {\n let q: f64 = 0.5\n if let q = p {\n return q.* as f64\n }\n return q\n}'))
+      .toEqual([ifLet('q', 'a variable in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f(i: u32) -> u32 {\n if let v = cells[i] {\n if let v = cells[0] {\n return v\n }\n }\n return 0\n}'))
+      .toEqual([ifLet('v', 'an if let binding in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f() {\n for v in 2 {\n if let v = cells[v] { }\n }\n}'))
+      .toEqual([ifLet('v', 'a loop variable in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f(i: u32) {\n if let v = cells[i] {\n for v in 2 { }\n }\n}'))
+      .toEqual([loop('v', 'an if let binding in scope')])
+    // An elif let binds as an if let does.
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n let v: u32 = 9\n if c {\n return 1\n } elif let v = p {\n return 2\n }\n return v\n}'))
+      .toEqual([ifLet('v', 'a variable in scope')])
+  })
+
+  test('a match binding cannot have the name of a variable seen where the match is', () => {
+    expect(errs('func f(n: u32, k: u32) -> u32 => match k {\n 0 => 1\n n => n + 1\n}')).toEqual([arm('n', 'a parameter')])
+    expect(errs('func f(x: i32, p: (i32, i32)) -> i32 => match p {\n (x, 0) => 1\n _ => 0\n}')).toEqual([arm('x', 'a parameter')])
+    expect(errs('func f(k: u32) -> u32 {\n let t: u32 = 0\n for n in 3 {\n t += match k {\n n => 1\n _ => 0\n }\n }\n return t\n}'))
+      .toEqual([arm('n', 'a loop variable in scope')])
+  })
+
+  test('the names are free again after the body', () => {
+    expect(errs(`
+      data bytes = [1:u8, 2, 3]
+      data wides = [1.5, 2.5]
+      data cells = [7:u32, 8]
+      func f(p: ?*f64) -> f64 {
+        let s: f64 = 0
+        for i in 3 { s += i as f64 }
+        for i in 4 { s += i as f64 }
+        for v in bytes { s += v as f64 }
+        for v in wides { s += v }
+        if let q = cells[1] { s += q as f64 }
+        if let q = p { s += q.* }
+        let v: f64 = 1
+        let i: i64 = 5000000000
+        let q: u32 = 2
+        return s + v
+      }
+    `)).toEqual([])
+    // A function or a data block of the module is no variable: a binding hides it in its body.
+    expect(errs('data d = [1:u8, 2]\nfunc b() -> u32 => 1\nfunc f(k: []u8) -> u32 {\n let t: u32 = 0\n for b in k { t += b as u32 }\n for d in d { t += d as u32 }\n return t + b()\n}'))
+      .toEqual([])
+    // In a test, as in a function.
+    expect(errs('test "t" {\n for i in 3 { }\n let i: u32 = 4\n assert i == 4\n}')).toEqual([])
+    expect(errs('test "t" {\n let i: u32 = 4\n for i in 3 { }\n}')).toEqual([loop('i', 'a variable in scope')])
+  })
+
+  test('a let keeps its rules: in a loop body it is seen to the end of the function', () => {
+    expect(errs('func f() -> u32 {\n for i in 3 {\n let last = i\n }\n return last\n}')).toEqual([])
+    expect(errs('func f() {\n for i in 3 {\n let x = i\n }\n let x = 2\n}')).toEqual(["'x' is already declared in this scope"])
+    expect(errs('func f() {\n for i in 3 {\n let i = 2\n }\n}')).toEqual(["'i' is already declared in this scope"])
+    expect(errs('global g: u32 = 1\nfunc f() {\n let g: u32 = 2\n}')).toEqual(["'g' is already declared in this scope"])
+    // A let in the first branch of an if let is seen there alone, as it was.
+    expect(errs('func f(p: ?*u32) -> u32 {\n if let v = p {\n let x: u32 = v.*\n }\n let x: u32 = 2\n return x\n}')).toEqual([])
+  })
+
+  test('a binding checked again is the same declaration', () => {
+    // A constant operand of a builtin is checked twice, statements and all:
+    // the let after the loop is then already there.
+    expect(errs('func f(x: i64, c: bool) -> i64 => max(if c {\n for i in 3 { }\n let i = 1\n 5\n } else { 2 }, x)')).toEqual([])
+    expect(errs('func f(x: i64, c: bool, p: ?*u32) -> i64 => max(if c {\n if let v = p { }\n let v = 1\n 5\n } else { 2 }, x)')).toEqual([])
+    // And a real collision is reported once.
+    expect(errs('func f(x: i64, c: bool) -> i64 => max(if c {\n for x in 3 { }\n 5\n } else { 2 }, x)')).toEqual([loop('x', 'a parameter')])
+  })
+})

@@ -3256,6 +3256,39 @@ export func a() -> u32 => f(1:u32, inc) + f(u32, 2, inc)`
     expect(errorsOf(unknown)).toEqual(["unknown type 'Nope'"])
   })
 
+  test('a loop variable in an instance cannot have the name of a parameter or a variable', () => {
+    const source = `func each(comptime T: type, xs: []T, comptime g: (T) -> T) -> T {
+  let t: T = 0
+  for g in xs { t += g }
+  for t in xs { }
+  return t
+}
+func inc(x: u32) -> u32 => x + 1
+export func a(xs: []u32) -> u32 => each(xs, inc)`
+    expect(errorsOf(source)).toEqual([
+      "'g' is already declared: a loop variable cannot reuse the name of a parameter, in each(T = u32, g = inc)",
+      "'t' is already declared: a loop variable cannot reuse the name of a variable in scope, in each(T = u32, g = inc)",
+    ])
+  })
+
+  test('the loops of an instance leave their names free after them', async () => {
+    const source = `func twice(comptime T: type, xs: []T) -> T {
+  let t: T = 0
+  for x in xs { t += x }
+  for x in xs { t += x }
+  let x: T = 1
+  return t + x
+}
+data a = [1:u32, 2, 3]
+data b = [0.5, 1.5]
+test "both instances" {
+  assert twice(u32, a) == 13
+  assert twice(f64, b) == 5
+}`
+    expect(errorsOf(source)).toEqual([])
+    expect(await runTestsOfSource(source)).toEqual({ ran: ['both instances'], failed: [] })
+  })
+
   test('the editor finds the parameter at its name', () => {
     const source = `${SORT}export func up(xs: []mut i32) { sort(xs, ascending) }`
     const result = check(source, { source })
