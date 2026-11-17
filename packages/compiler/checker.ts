@@ -3090,9 +3090,10 @@ class CheckContext {
   private inferConstructor(expr: AST.CallExpr, built: AST.Type): ResolvedType {
     const fail = (message?: string): ResolvedType => {
       if (message) this.error(expr.span.start, message)
+      // A type among the arguments, T(u8), is part of the same mistake.
       for (const arg of expr.args) {
         const value = argValue(arg)
-        if (value) this.inferExpr(value)
+        if (value && !typeOfArg(value)) this.inferExpr(value)
       }
       return RECOVERY
     }

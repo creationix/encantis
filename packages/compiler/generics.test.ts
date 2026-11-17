@@ -815,6 +815,9 @@ export func f() -> (i32, i32) => make((i32, i32), 1)`
       number,
       "unknown identifier 'nope', in make(T = u32)",
     ])
+    // A type among them is part of the one mistake: T was taken for a
+    // generic type, and that a type is no value needs no saying.
+    expect(errorsOf(source.replace(/\(i32, i32\)/g, 'u32').replace('T(x, x)', 'T(u8)'))).toEqual([number])
   })
 
   test('a warning in an instance is placed in the generic and names the instance', () => {
