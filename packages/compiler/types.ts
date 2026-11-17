@@ -295,12 +295,13 @@ export function isValueArray(t: ArrayRT): boolean {
   return t.sizes !== null && t.sizes.length === 1 && typeof t.sizes[0] === 'number'
 }
 
-// A pointer or slice whose element is a fixed array (*[N][M]T, [][M]T,
-// [*][M]T) is a table: each element is a pointer to its row, which is laid out
-// on its own, as the data packer lays out the literal. A fixed array that is a
-// field of a struct, or a value in registers, lies in place instead. Returns
-// the row pointer an element is (*[M]T, *mut [M]T in a mutable table), or
-// null when the type isn't a table. *[NxM]T is one packed block, not a table.
+// A pointer or slice whose element is an array (*[N][M]T, [][M]T, [*][M]T,
+// and rows that are framed or packed: *[N][!]T, *[N][AxB]T) is a table: each
+// element is a pointer to its row, which is laid out on its own, as the data
+// packer lays out the literal. A fixed array that is a field of a struct, or a
+// value in registers, lies in place instead. Returns the row pointer an
+// element is (*[M]T, *mut [M]T in a mutable table), or null when the type
+// isn't a table. *[NxM]T is one packed block, not a table.
 export function tableRow(t: ResolvedType): PointerRT | null {
   const u = unwrap(t)
   let element: ResolvedType
@@ -312,8 +313,23 @@ export function tableRow(t: ResolvedType): PointerRT | null {
     return null
   }
   const row = unwrap(element)
-  if (row.kind !== 'array' || !isValueArray(row)) return null
+  if (!isRowArray(row)) return null
   return pointer(row, false, u.mutable)
+}
+
+// An array type that, as the element of a pointer or slice, is a row laid
+// out on its own: one with a size, fixed ([M]T), framed ([!]T) or packed
+// ([AxB]T). The size of a row a literal gives ([_]T) is still to be known.
+export function isRowArray(t: ResolvedType): t is ArrayRT {
+  return t.kind === 'array' && t.sizes !== null && t.sizes.length > 0 && !t.sizes.includes('_')
+}
+
+// The array a null-terminated pointer reads (the [!]T of a *[!]T, or the
+// [!]T itself, which is held as its pointer), or null for any other type.
+export function framedArray(t: ResolvedType): ArrayRT | null {
+  const u = unwrap(t)
+  const array = u.kind === 'pointer' ? unwrap(u.pointee) : u
+  return array.kind === 'array' && array.sizes?.length === 1 && array.sizes[0] === '!' ? array : null
 }
 
 // Helper to check if a size is a framing specifier
@@ -751,8 +767,11 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     return lossless(false)
   }
 
+  // An array that is a value ([N]T, held in registers) has no address, so it
+  // is no pointer and no slice: only an array held as its pointer (a [!]T)
+  // coerces to one.
   // Fixed array coerces to pointer-to-array: [N]T → *[N]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array') {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array') {
     if (!s.sizes?.includes('_')) {
       const elemResult = typeAssignResult(t.pointee.element, s.element)
       if (elemResult.compatible && elemResult.lossiness === 'lossless') {
@@ -761,14 +780,12 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     }
   }
 
-  // Fixed array coerces to slice: [N]T → []T
-  if (s.kind === 'array' && t.kind === 'slice' && !s.sizes?.includes('_')) {
-    const elemResult = typeAssignResult(t.element, s.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
-  }
+  // No array without its pointer coerces to a slice: a [N]T is a value, and
+  // one held as its pointer ([!]T, [?]T, a packed [NxM]T) has no length to
+  // give it here: (s.ptr, s.len) is the slice (9.5). A pointer to it does.
 
   // Fixed array coerces to many-pointer: [N]T → [*]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
     const elemResult = typeAssignResult(t.pointee.element, s.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
   }

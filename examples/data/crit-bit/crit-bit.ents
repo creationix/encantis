@@ -309,7 +309,7 @@ test "first is the smallest key" {
   assert insert("figs")
   let k = first()
   assert k.len == 3
-  assert k[0] == 0x66
+  assert (k[0] ?? 0) == 0x66
 }
 
 test "many keys, half deleted" {

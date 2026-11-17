@@ -1259,6 +1259,7 @@ describe('tables', () => {
     data cube: *[2][2][2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
     data spare: *mut [3]i32 = mut [1, 2, 3]
     data fixed: *[3]i32 = [1, 2, 3]
+    data pair: *[2]i32 = [5, 6]
   `
   const check = (body: string, params = '') => checkModule(`${tables}\nfunc f(${params}) {\n${body}\n}`)
   const errs = (body: string, params = '') => check(body, params).errors.map(e => e.message)
@@ -1272,7 +1273,7 @@ describe('tables', () => {
   test('an element is a pointer to its row', () => {
     expect(letType('grid[1]')).toBe('*[3]i32')
     expect(letType('board[1]')).toBe('*mut [3]i32')
-    expect(letType('rows[0]')).toBe('*[2]i32')
+    expect(letType('rows[i] ?? pair', 'i: u32')).toBe('*[2]i32')
     expect(letType('many[5]')).toBe('*[2]i32')
     expect(letType('cube[1]')).toBe('*[2][2]i32')
     expect(letType('cube[1][0]')).toBe('*[2]i32')
@@ -1283,6 +1284,7 @@ describe('tables', () => {
     expect(letType('ps[1].v', 'ps: *[2](k: u8, v: [2]i32)')).toBe('[2]i32')
     // A packed block is not a table: its row is an address in the block.
     expect(letType('p[1]', 'p: *[2x3]i32')).toBe('*[3]i32')
+    expect(letType('p[1]', 'p: *mut [2x3]i32')).toBe('*mut [3]i32')
   })
 
   test('a run-time index works on both, each checked on its own', () => {
@@ -1312,7 +1314,7 @@ describe('tables', () => {
     const constPointer = 'cannot write through const pointer — use *mut for mutable access'
     expect(errs('board[i][j] = 5\nboard[1][0] += 1', 'i: u32#2, j: u32#3')).toEqual([])
     expect(errs('grid[1][0] = 5')).toEqual([constPointer])
-    expect(errs('rows[0][0] = 5')).toEqual([constPointer])
+    expect(errs('if let r = rows[0] { r[0] = 5 }')).toEqual([constPointer])
     // m[i] = r points row i at r.
     expect(errs('board[1] = spare')).toEqual([])
     expect(errs('grid[1] = fixed')).toEqual([constPointer])
@@ -1325,6 +1327,16 @@ describe('tables', () => {
       row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
     ])
     expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+  })
+
+  test('len of a packed *[NxM]T is N, its rows; wid of a slice is the width of an element', () => {
+    const value = (expr: string, params = '') => errs(`let n: u32#1 = ${expr}`, params)
+    // A constant has to fit a ranged type, which pins it down.
+    expect(value('p.len', 'p: *[2x3]i32')).toEqual(['cannot assign int(2) to u32#1'])
+    expect(value('v.len', 'v: [2x3]i32')).toEqual(['cannot assign int(2) to u32#1'])
+    expect(value('s.wid', 's: []u64')).toEqual(['cannot assign int(8) to u32#1'])
+    expect(value('rows.wid', 'rows: []mut [3]i32')).toEqual(['cannot assign int(4) to u32#1'])
+    expect(value('q.wid', 'q: *[]u16')).toEqual(['cannot assign int(2) to u32#1'])
   })
 
   test('len and wid are constants', () => {
@@ -1353,6 +1365,190 @@ describe('tables', () => {
     expect(errs('let v = grid.*')).toEqual([
       'cannot use .* on *[2][3]i32: a table holds pointers to rows that lie apart — load one row with [i].*',
     ])
+  })
+})
+
+describe('indexes not known to be in range', () => {
+  // Reference 2.5 (Optional Types) and 4.7: an index that isn't proven gives
+  // an optional element where there is one, which is resolved before anything
+  // is read through it; a slice's length is only known at run time.
+  const prelude = `
+    type Pt = (x: i32, y: i32)
+    data names: [][]u8 = ["Alice", "Bob"]
+    data one = 1:i32
+    data two = 2:i32
+    data ps: *mut [2]*i32 = mut [one, two]
+    data bytes: *mut [4]u8 = mut [0; 4]
+    data packed: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+  `
+  const errs = (body: string, params = '') =>
+    checkModule(`${prelude}\nfunc f(${params}) {\n${body}\n}`).errors.map(e => e.message)
+  const unresolved = (what: string, type: string) => `cannot ${what} ${type}: it may be none — resolve it with 'if let' or '??' first`
+  const letType = (value: string, params = '') => {
+    const source = `${prelude}\nfunc f(${params}) {\nlet r = ${value}\n}`
+    const result = checkModule(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    return typeAt(result, source.indexOf('let r =') + 4)
+  }
+
+  test('an element that can be none is an optional, and nothing is read through it', () => {
+    expect(letType('names[i]', 'i: u32')).toBe('?[]u8')
+    expect(letType('ps[i]', 'i: u32')).toBe('?*i32')
+    expect(errs('let n = names[i][0] ?? 0', 'i: u32')).toEqual([unresolved('index', '?[]u8')])
+    expect(errs('let n = names[i].len', 'i: u32')).toEqual([unresolved('use .len on', '?[]u8')])
+    expect(errs('let n = (names[i] ?? "")[0] ?? 0', 'i: u32')).toEqual([])
+  })
+
+  test('an optional is not indexed, dereferenced, ranged, iterated, moved, or read through', () => {
+    expect(errs('let a = q[0]', 'q: ?*[3]i32')).toEqual([unresolved('index', '?*[3]i32')])
+    expect(errs('let a = p.*', 'p: ?*u8')).toEqual([unresolved('dereference', '?*u8')])
+    expect(errs('let a = p.x\nlet b = p.1', 'p: ?*Pt')).toEqual([unresolved('use .x on', '?*Pt'), unresolved('use .1 on', '?*Pt')])
+    expect(errs('let a = s.ptr\nlet b = s[1..]', 's: ?[]u8')).toEqual([unresolved('use .ptr on', '?[]u8'), unresolved('take a range of', '?[]u8')])
+    expect(errs('for c in s { }', 's: ?[]u8')).toEqual([unresolved('iterate over', '?[]u8')])
+    expect(errs('let a = p + 1\np -= 1', 'p: ?[*]u8')).toEqual([unresolved("use '+' on", '?[*]u8'), unresolved("use '-=' on", '?[*]u8')])
+    expect(errs('let a = &q[1]', 'q: ?*[3]i32')).toEqual([unresolved('index', '?*[3]i32')])
+    expect(errs('let a = p.u32', 'p: ?*u8')).toEqual([unresolved('use .u32 on', '?*u8')])
+    // Comparing one, with 0 too, and passing it on as an optional are fine.
+    expect(errs('let a = p == 0 as ?*u8\nlet b: ?*u8 = p', 'p: ?*u8')).toEqual([])
+  })
+
+  test('a write needs an index known to be in range, whatever the element is', () => {
+    expect(errs('ps[i] = q', 'i: u32, q: *i32')).toEqual([
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
+    expect(errs('ps[i] = q\nps[1] = q\nif let p = &ps[j] { p.* = q }', 'i: u32#2, j: u32, q: *i32')).toEqual([])
+    expect(errs('s[i] = t', 's: []mut []u8, i: u32, t: []u8')).toEqual([
+      'writing to an element of a slice needs its index checked: use if let on its address (&s[i])',
+    ])
+    expect(errs('if let p = &s[i] { p.* = t }', 's: []mut []u8, i: u32, t: []u8')).toEqual([])
+    // An element that has no optional type is written the same way: the
+    // message is about the write, which no ?? can resolve.
+    const slice = 'writing to an element of a slice needs its index checked: use if let on its address (&s[i])'
+    expect(errs('s[0] = 1\ns[i] = 2\ns[i] += 3', 's: []mut u8, i: u32')).toEqual([slice, slice, slice])
+    expect(errs('b[i] = 1\nb[i] |= 2', 'b: *mut [16]u8, i: u32')).toEqual([
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
+    expect(errs('z[0] = 1', 'z: *mut [!]u8')).toEqual([
+      'writing to an element of *mut [!]u8 needs its index checked: its length is only found at run time, by a scan',
+    ])
+    // A field of the element is written as the element is: once, as a write.
+    expect(errs('s[i].x = 1\ns[0].y += 2\nm[i].x = 3', 's: []mut Pt, i: u32, m: *mut [4]Pt')).toEqual([
+      slice, slice,
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
+    // Only the element written to: the row it is in is read.
+    expect(errs('m[i][0] = 1', 'm: *mut [2][3]u8, i: u32')).toEqual([
+      "runtime index on *[2][3]u8 requires 'if let' or '??' (rows are not optional)",
+    ])
+    expect(errs('if let p = &s[i] { p.* = 1 }\nb[i & 15] = 1', 's: []mut u8, b: *mut [16]u8, i: u32')).toEqual([])
+  })
+
+  test("a slice's length is only known at run time: a constant index is not proven either", () => {
+    const constant = (k: number, type: string, why: string) =>
+      `index ${k} on ${type} requires 'if let' or '??': a slice's length is only known at run time (${why})`
+    expect(errs('let a = s[0]', 's: []u8')).toEqual([constant(0, '[]u8', 'no optional type for u8')])
+    expect(errs('let a = rows[1][0]', 'rows: [][2]i32')).toEqual([constant(1, '[][2]i32', 'rows are not optional')])
+    expect(errs('s[0] = 1', 's: []mut u8')).toEqual(['writing to an element of a slice needs its index checked: use if let on its address (&s[i])'])
+    expect(letType('names[0]')).toBe('?[]u8')
+    expect(errs('let a = s[0] ?? 0\nif let b = s[2] { }\nlet c = s.ptr[0]', 's: []u8')).toEqual([])
+  })
+
+  test('a *[!]T is indexed like a slice, its length found by a scan; what has no length is not checked', () => {
+    const scan = "its length is only found at run time, by a scan"
+    expect(errs('let a = z[i]', 'z: *[!]i32, i: u32')).toEqual(["runtime index on *[!]i32 requires 'if let' or '??' (no optional type for i32)"])
+    expect(errs('let a = z[1]', 'z: *[!]i32')).toEqual([`index 1 on *[!]i32 requires 'if let' or '??': ${scan} (no optional type for i32)`])
+    expect(errs('let a = z[1] ?? 0\nlet n = z.len\nif let b = z[i] { }', 'z: *[!]i32, i: u32')).toEqual([])
+    expect(errs('let r = m[0][1] ?? 0\nlet s = m[i]', 'm: *[2][!]u8, i: u32')).toEqual([
+      "runtime index on *[2][!]u8 requires 'if let' or '??' (rows are not optional)",
+    ])
+    expect(errs('let n = s.len', 's: *[!]Pt')).toEqual([])
+    expect(errs('let n = s.len', 's: *[!](i32, i32, i32)')).toEqual([
+      'cannot find the length of *[!](i32, i32, i32): the scan for its zero end needs elements of 1, 2, 4 or 8 bytes',
+    ])
+    expect(errs('let a = p[0]\nlet n = p.len', 'p: *[?]u8')).toEqual([
+      'indexing *[?]u8 is not supported yet: its length prefix is not read',
+      '.len of *[?]u8 is not supported yet: its length prefix is not read',
+    ])
+    const nothing = (what: string, type: string) => `${what} has nothing to check here: ${type} has no length, so its index is never checked — index it directly`
+    expect(errs('let a = mp[i] ?? 0\nif let b = mp[i] { }', 'mp: [*]i32, i: u32')).toEqual([nothing('??', '[*]i32'), nothing('if let', '[*]i32')])
+    expect(errs('if let r = many[i] { }', 'many: [*][2]i32, i: u32')).toEqual([nothing('if let', '[*][2]i32')])
+    // A many-pointer's element that is an optional is still checked.
+    expect(errs('if let p = mp[i] { }', 'mp: [*]?*i32, i: u32')).toEqual([])
+  })
+
+  test('a *T is one T: an index past it is refused', () => {
+    const past = (type: string, element: string) => `cannot index ${type} past its one element: read it with .*, or index a [*]${element}`
+    expect(errs('let a = p[0]\nlet b = q[0]', 'p: *u8, q: *mut Pt')).toEqual([])
+    expect(errs('let a = p[1]\nlet b = p[i]', 'p: *u8, i: u32')).toEqual([past('*u8', 'u8'), past('*u8', 'u8')])
+    expect(errs('p[3] = 1', 'p: *mut u8')).toEqual([past('*mut u8', 'u8')])
+    expect(errs('let a = p[i]\np[i] = 1', 'p: [*]mut u8, i: u32')).toEqual([])
+  })
+
+  test('the row index of a packed *[NxM]T is checked against N', () => {
+    expect(errs('let a = packed[i][j]', 'i: u32#2, j: u32#3')).toEqual([])
+    expect(errs('let a = packed[2][0]')).toEqual(['index 2 out of bounds for *[2x3]i32'])
+    expect(errs('let a = packed[i][0]', 'i: u32')).toEqual([
+      "runtime index on *[2x3]i32 requires 'if let' or '??' (rows are not optional)",
+    ])
+    expect(errs('let a = packed[i][0]', 'i: u32#3')).toEqual([
+      'index type u32#3 may exceed *[2x3]i32 bounds (max index 2 >= 2) — narrow the index range to fit',
+    ])
+    expect(errs('if let r = packed[i] { let a = r[0] }\nlet b = (packed[i] ?? packed[0])[1]', 'i: u32')).toEqual([])
+  })
+
+  test('a range that may pass N proves nothing: the index is checked as one with no range', () => {
+    // An element that can be none is an optional, as for a u32 index.
+    expect(letType('ps[j]', 'j: u32#3')).toBe('?*i32')
+    // One that can't is resolved where it is taken, if let and ?? checking it.
+    expect(errs('let a = bytes[j] ?? 0\nif let b = bytes[j] { }\nif let r = packed[k] { }', 'j: u32#5, k: u32#3')).toEqual([])
+    // Elsewhere the range was what was meant to prove it.
+    expect(errs('let a = bytes[j]', 'j: u32#5')).toEqual([
+      'index type u32#5 may exceed *[4]u8 bounds (max index 4 >= 4) — narrow the index range to fit',
+    ])
+  })
+})
+
+describe('arrays where a pointer is wanted', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const prelude = 'func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]\nfunc len(s: []i32) -> u32 => s.len\nfunc raw(p: [*]i32) -> i32 => p[0]\n'
+
+  test('a value array has no address: it is no pointer, slice or many-pointer', () => {
+    expect(errs(`${prelude}func f(v: [3]i32) -> i32 => sum(v) + len(v) as i32 + raw(v)`)).toEqual([
+      'argument 1: cannot assign [3]i32 to *[3]i32',
+      'argument 1: cannot assign [3]i32 to []i32',
+      'argument 1: cannot assign [3]i32 to [*]i32',
+    ])
+    expect(errs(`${prelude}func f(x: i32) -> i32 {\n  let v: [3]i32 = [x, 2, 3]\n  return v.sum()\n}`)).toEqual([
+      'sum takes *[3]i32 first; the receiver is a [3]i32, which is held in registers and has no address',
+    ])
+    // A literal is laid out in memory.
+    expect(errs(`${prelude}func f() -> i32 => sum([1, 2, 3]) + len([1, 2]) as i32`)).toEqual([])
+    // A [!]T is held as its pointer, but has no length to make a slice with
+    // until it is scanned for: (v.ptr, v.len) is the slice (9.5).
+    expect(errs('func n(s: []u8) -> u32 => s.len\nfunc f(v: [!]u8) -> u32 => n(v)\nfunc g(v: [!]u8) -> u32 {\n  let s: []u8 = v\n  return s.len\n}')).toEqual([
+      'argument 1: cannot assign [!]u8 to []u8',
+      'cannot assign [!]u8 to []u8',
+    ])
+    expect(errs('func m(p: [*]u8) -> u8 => p[1]\nfunc z(p: *[!]u8) -> u32 => p.len\nfunc f(v: [!]u8) -> u32 => m(v) as u32 + z(v)')).toEqual([])
+    // Nor does a packed [NxM]T written without the *, which is held the same
+    // way: the call passed its pointer alone, an invalid module.
+    expect(errs('func n(s: []i32) -> u32 => s.len\nfunc f(v: [2x3]i32) -> u32 => n(v)')).toEqual([
+      'argument 1: cannot assign [2x3]i32 to []i32',
+    ])
+  })
+
+  test('the elements of a literal for a *[N]T are its elements, not arrays or strings', () => {
+    expect(errs(`${prelude}func f() -> i32 => sum([[1, 2, 3], [4, 5, 6], [7, 8, 9]])`)).toEqual([
+      'argument 1: cannot assign [3]i32 to i32', 'argument 1: cannot assign [3]i32 to i32', 'argument 1: cannot assign [3]i32 to i32',
+    ])
+    expect(errs(`${prelude}func f() -> i32 => sum(["ab", "c", "d"])`)).toEqual(Array(3).fill(
+      'argument 1: cannot use a string literal among i32 elements — a string is bytes ([]u8); write the i32 elements as an array literal ([1, 2, 3])',
+    ))
+    // Among bytes a string is its bytes.
+    expect(errs('func b(r: *[3]u8) -> u8 => r[0]\nfunc f() -> u8 => b(["ab", "c"])')).toEqual([])
+    // So a table literal is no flat one, and picks the overload for a table.
+    expect(errs('func total(m: *[2][3]i32) -> i32 => m[0][0]\nfunc total(r: *[3]i32) -> i32 => r[0]\nfunc f() -> i32 => total([[1, 2, 3], [4, 5, 6]]) + total([1, 2, 3])')).toEqual([])
   })
 })
 
@@ -1836,6 +2032,39 @@ describe('operand types', () => {
     expect(ranged('u128', 16, 252)).toEqual([])
     expect(ranged('u128', 1, 128)).toEqual(['cannot assign u128 to u128#1'])
     expect(ranged('u256', 1, 256)).toEqual(['cannot assign u256 to u256#1'])
+  })
+
+  test('a loop count is an integer of at most 32 bits', () => {
+    const loop = (type: string) => errs(`func f(n: ${type}) -> u32 {\n  let t: u32 = 0\n  for i in n { t += i }\n  return t\n}`)
+    for (const type of ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u32#9']) expect(loop(type)).toEqual([])
+    for (const type of ['i64', 'u64', 'u128', 'f32', 'f64', 'bool']) {
+      expect(loop(type)).toEqual([`a loop count must be an integer of at most 32 bits, not ${type}`])
+    }
+  })
+
+  test('a compound assignment keeps a range only where x = x op v would', () => {
+    // x op= v is x = x op v: the result goes back into x, so it has to fit
+    // x's range, or an index the range proved would pass the end.
+    const body = (init: string, update: string, params = 'x: u32') =>
+      errs(`data buf = mut [0:u8; 16]\nfunc f(${params}) {\n  let i = ${init}\n  ${update}\n  buf[i] = 1\n}`)
+    const over = (result: string, range: string, op: string) => [`cannot assign ${result} to ${range} (the result of '${op}')`]
+    expect(body('x & 15', 'i += 1')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(body('x & 3', 'i <<= 3')).toEqual(over('u32', 'u32#4', '<<='))
+    expect(body('x & 7', 'i *= 3')).toEqual(over('u32#22', 'u32#8', '*='))
+    expect(body('x >> 28', 'i += 1')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(body('x & 15', 'i -= 1')).toEqual(over('u32', 'u32#16', '-='))
+    expect(body('x & 15', 'i += k', 'x: u32, k: u32#1')).toEqual(over('u32', 'u32#16', '+='))
+    // As the plain assignment says.
+    expect(body('x & 15', 'i = i + 1')).toEqual(['cannot assign u32#17 to u32#16'])
+    // A result that stays in the range is fine.
+    expect(body('x & 15', 'i &= 7\ni >>= 1\ni %= 9\ni += 0')).toEqual([])
+    expect(body('x & 15', 'i *= 1\ni >>= 0')).toEqual([])
+    // Through a parameter, a loop variable and an element of a ranged type.
+    expect(errs('data buf = mut [0:u8; 16]\nfunc f(i: u32#16) {\n  i += 1\n  buf[i] = 1\n}')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(errs('data buf = mut [0:u8; 16]\nfunc f() {\n  for i in 16 {\n    i += 1\n    buf[i] = 1\n  }\n}')).toEqual(over('u32#17', 'u32#16', '+='))
+    expect(errs('data g = mut [0:u8#4; 4]\nfunc f(k: u32#4) {\n  g[k] += 1\n}')).toEqual(over('u8#5', 'u8#4', '+='))
+    // Without a range nothing changes.
+    expect(body('x', 'i += 1\ni <<= 3', 'x: u32').filter((e) => e.includes('the result'))).toEqual([])
   })
 
   test('a constant with a shift in it has the value the shift gives in its type', () => {

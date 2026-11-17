@@ -123,7 +123,7 @@ Template literals use backticks and `${expr}` interpolation to combine static te
 
 ```ents
 `hello ${name}\n`
-`Error ${msg}: ${errnos[code]}\n`
+`Error ${msg}: ${errnos[code] ?? "unknown"}\n`
 `${x} + ${y} = ${x + y}`
 ```
 
@@ -131,12 +131,12 @@ Template literals produce a **slice of slices** (`[][]u8`) — an array of fragm
 
 ```ents
 // Template literal:
-wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, nwritten)
+wasi_fd_write(stderr, `Error ${msg}: ${errnos[code] ?? "unknown"}\n`, nwritten)
 
 // Equivalent manual construction:
-data err_iovecs:[]mut []u8 = ["Error ", "", ": ", "", "\n"]
+data err_iovecs:*mut [5][]u8 = mut ["Error ", "", ": ", "", "\n"]
 err_iovecs[1] = msg
-err_iovecs[3] = errnos[code]
+err_iovecs[3] = errnos[code] ?? "unknown"
 wasi_fd_write(stderr, err_iovecs, nwritten)
 ```
 
@@ -357,6 +357,8 @@ let z = v[i]        // ERROR: dynamic index requires memory — use a slice or p
 
 Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
 
+A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+
 ### 2.5 Pointer Types
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
@@ -371,7 +373,11 @@ All pointers are `u32` (wasm 32-bit address space). Every pointer type starts wi
 | `[*]T`     | many-pointer (no bounds)         | N/A             | `sizeof(T)`         | `[i]` (unchecked)                |
 | `[]T`      | slice (fat pointer)              | runtime         | `sizeof(T)`         | `[i]`                            |
 
-`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`.
+`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`. A packed `*[NxM]T` counts its rows (`.len` is N, as `p[i]` takes a row) but measures an element (`.wid` is `sizeof(T)`), so its size is `p.len * M * p.wid`.
+
+A `*[!]T` ends at its first element whose bytes are all zero (the terminator the literal is laid out with: one whole element of zeros, a struct's or a slice's `(ptr, len)` too, so the elements of a `*[!][]u8` are pairs as in any array of slices), so `.len` reads elements until it finds it; the scan reads each element as one integer, so `T` must be 1, 2, 4 or 8 bytes wide. Its length known only at run time, an index into a `*[!]T` is checked as one into a slice is ([4.7](#47-bounds-checked-indexing)): `z[i] ?? 0`, `if let x = z[1]`, each scanning for the length. A `[!]T` written without the `*` is held as the same pointer, and reads the same way. Neither is a slice until its length is scanned for: `(z.ptr, z.len)` makes one ([9.5](#95-array-type-conversions)), and passing a `[!]u8` where a `[]u8` is wanted is an error (as it is for a packed `[NxM]T` written without the `*`; `*[NxM]T` is a slice of its N×M elements).
+
+> **Status: a `*[?]T` (a length prefix in LEB128, then the elements) is laid out but not read yet:** indexing one and `.len` are compile errors (`indexing *[?]u8 is not supported yet: its length prefix is not read`).
 
 ```ents
 let p: *u8 = ...
@@ -413,6 +419,8 @@ p.*                              // type error: ?*u8 is not *u8
 if let val = p { val.* }         // OK: unwrapped inside if-let
 p ?? default_ptr                 // OK: resolved with fallback
 ```
+
+Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared, with `0` too, and passed where an optional is expected.
 
 **Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
 
@@ -458,7 +466,7 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 *[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
 
-The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table. Rows that are framed or packed are laid out on their own too: an element of `*[N][!]T` is a `*[!]T`, and one of `*[N][AxB]T` a `*[AxB]T` (so `m[i][j][k]` is cell `k` of row `j` of block `i`); a `*[!][M]T` is a table whose row pointers end with a null one.
 
 ```ents
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
@@ -479,7 +487,7 @@ In a table:
 - `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
 - `&m[i]` is the address of the row pointer: a `**[M]T`, or `*mut *mut [M]T` in a mutable table (optional, as in [4.7](#element-addresses-and-writes), when `i` isn't proven).
 - `m.*` is an error: the rows lie apart, so there is no `[N][M]T` to load or store whole.
-- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants. With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
+- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants (a framed or packed row is held as its pointer, so a variable can stand for one). With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
 
 ### 2.6 Slices
 
@@ -491,9 +499,11 @@ let buf: []mut u8 = get-buf()   // mutable slice
 
 text.ptr        // extract pointer
 text.len        // get length (u32)
-text[i]         // element access (read)
-buf[i] = 0      // element write (only on []mut)
+text[i] ?? 0    // element access (read), checked against text.len
+if let p = &buf[i] { p.* = 0 }   // element write (only on []mut)
 ```
+
+A slice's length is a run-time value, so no index into a slice is known to be in range at compile time, a constant one either: every element read is checked against `.len` and resolved with `if let` or `??` ([4.7](#47-bounds-checked-indexing)), and an element is written through its address.
 
 Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating through a `[]mut` slice affects the underlying memory.
 
@@ -1647,6 +1657,8 @@ ptr.* ^= mask            // XOR through pointer
 
 The result goes back into `x`, so `n` widens to the type of `x`, never the other way: `total += small` is fine, `small += total` needs `small += total as i32`. A shift count (`x <<= n`) can be any integer type.
 
+The result has to fit a range `x`'s type carries ([Ranged Integers](#ranged-integers)), as in the plain `x = x op n`: with `let i = k & 15` (a `u32#16`), `i &= 7`, `i >>= 1` and `i %= 9` keep it, while `i += 1`, `i -= 1`, `i <<= 1` and `i *= 3` are errors (`cannot assign u32#17 to u32#16 (the result of '+=')`), since `buf[i]` on a `*[16]u8` is proven by the range. Only a constant `n` gives the result a range; to step a ranged index, bring it back into range (`i = (i + 1) & 15`) or keep it in a plain `u32`.
+
 ### 4.6 Pointer Operations
 
 #### Arithmetic
@@ -1668,6 +1680,8 @@ arr[2]          // offset by 2 elements (8 bytes for i32)
 ```
 
 Note: `ptr + n` offsets by bytes, `ptr[n]` offsets by elements.
+
+A `*T` points to one `T`: `p[0]` is that `T`, as `p.*` is, and any other index is an error (`cannot index *u8 past its one element: read it with .*, or index a [*]u8`). A pointer to bytes read one after another is a `[*]u8`.
 
 For arrays and slices with known bounds, runtime indexing is bounds-checked. See [4.7 Bounds-Checked Indexing](#47-bounds-checked-indexing) for details on how `if let`, `??`, and optional types interact with indexing.
 
@@ -1701,6 +1715,8 @@ let x = table[0]                  // OK: 0 < 4
 let y = table[3]                  // OK: 3 < 4
 let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
 ```
+
+A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index (`u32#4`) proves itself against a `*[N]T` the same way a constant does ([Ranged Integers](#ranged-integers)). One whose range may pass N proves nothing, and is checked like any run-time index: its element is an optional where it can be one, and `if let` or `??` resolves it; anywhere else it is an error (`index type u32#5 may exceed *[4]u8 bounds`).
 
 **Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds (the row pointers of a table are the exception, see [Nesting](#nesting)):
 
@@ -1741,7 +1757,9 @@ let msg = strings[idx]            // inferred as ?[]u8
 let resolved = msg ?? "default"   // resolve when needed
 ```
 
-This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check.
+This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check. An optional element is never read through before it is resolved (see [Optional Types](#optional-types)): `names[i][0]` and `names[i].len` are errors, `(names[i] ?? "")[0]` is not.
+
+When the elements are optionals themselves (`[]?*T`), the element of an index that isn't proven is that optional, none when the index is out of range, and `if let` and `??` check both the index and the element.
 
 #### The `??` Operator
 
@@ -1820,7 +1838,7 @@ func score(i: u32, lenient: bool) -> i64 => if let s = scores[i] { s } elif leni
 
 #### Element Addresses and Writes
 
-Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
+Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index into a `*[N]T`), or the write is an error, whatever the element is: `ps[i] = q` with a `*mut [4]*u8` and `i: u32` is refused (`writing to an element needs an index known to be in range`) although `ps[i]` reads as an optional. On a slice no index is proven. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
 
 ```ents
 func put(s: []mut u8, i: u32, v: u8) -> bool {
@@ -1832,7 +1850,7 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
 }
 ```
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. `if let` and `??` have nothing to check on its index, and are errors there (`if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly`), unless its elements are optionals themselves. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
 
 <!-- spec:begin compile -->
 
@@ -2061,7 +2079,7 @@ loop {                   // infinite loop
 }
 ```
 
-The variable of a counted loop is a `u32`, and so is a constant count that isn't negative: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error.
+A counted loop's count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` (a `u32#N` for a constant `N`) that counts up from 0 while it is below the count, so a negative count runs the loop zero times. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error.
 
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 

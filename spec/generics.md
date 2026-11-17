@@ -2489,7 +2489,7 @@ func len(xs: []u8) -> u32 => 97
 func wid(xs: []u8) -> u32 => 96
 
 func through(b: *Box) -> u32 => b.n + n(b)                  // the field, then the function
-func of(xs: []u8) -> u32 => xs.len + len(xs) + xs.wid()     // a slice has .len; it has no .wid
+func of(xs: []u8) -> u32 => xs.len + len(xs) + xs.wid + wid(xs)   // a slice has .len and .wid
 
 data four = [1:u8, 2, 3, 4]
 data space = mut [0:u8; 8]
@@ -2503,7 +2503,7 @@ test "the member is the member" {
   assert through(p) == 6 + 98
   assert four.len == 4
   assert four.wid == 1
-  assert of("abc") == 3 + 97 + 96
+  assert of("abc") == 3 + 97 + 1 + 96
 }
 ```
 

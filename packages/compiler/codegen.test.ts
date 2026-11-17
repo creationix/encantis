@@ -136,6 +136,10 @@ function modWat(code: string): string {
     throw new Error('Failed to parse module')
   }
   const checkResult = typecheck(module)
+  // A program the checker refuses has no meaning to compile.
+  if (checkResult.errors.length > 0) {
+    throw new Error(`Check error: ${checkResult.errors.map((e) => e.message).join('; ')}`)
+  }
   return moduleToWat(module, checkResult)
 }
 
@@ -932,6 +936,122 @@ const SPOT = `
   func pair() -> []i32 => ((space as [*]i32), 2:u32)
 `
 
+describe('counted loops', () => {
+  test('a negative signed count runs the loop zero times', async () => {
+    const { count, small, unsigned } = await run(`
+      export func count(n: i32) -> i32 {
+        let t = 0
+        for i in n {
+          t += 1
+          break when t > 1000
+        }
+        return t
+      }
+      export func small(n: i8) -> i32 {
+        let t = 0
+        for i in n { t += 1 }
+        return t
+      }
+      export func unsigned(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          t += 1
+          break when t > 1000
+        }
+        return t
+      }
+    `)
+    expect([count(3), count(0), count(-1), count(-2147483648), count(2147483647)]).toEqual([3, 0, 0, 0, 1001])
+    expect([small(5), small(-3)]).toEqual([5, 0])
+    // An unsigned count of 2^32 - 1 is that many.
+    expect([unsigned(3), unsigned(0), unsigned(-1)]).toEqual([3, 0, 1001])
+  })
+
+  test('the count is evaluated once, before the loop', async () => {
+    const code = `
+      global calls: i32 = 0
+      global limit: u32 = 3
+      func next() -> u32 {
+        calls += 1
+        return 4
+      }
+      export func call() -> i32 {
+        calls = 0
+        let t = 0
+        for i in next() { t += 1 }
+        return calls * 100 + t
+      }
+      export func local(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          n = 0
+          t += 1
+        }
+        return t
+      }
+      export func shadow(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n {
+          t += 1
+          for n in 1 { t += 0 }
+        }
+        return t
+      }
+      export func glob() -> u32 {
+        limit = 3
+        let t: u32 = 0
+        for i in limit {
+          limit = 1
+          t += 1
+        }
+        return t
+      }
+      export func steady(n: u32) -> u32 {
+        let t: u32 = 0
+        for i in n { t += i }
+        return t
+      }
+      type Lim = (n: u32, m: u32)
+      global glim: Lim = (n: 4, m: 0)
+      export func field(n: u32) -> u32 {
+        let p: Lim = (n: n, m: 0)
+        let t: u32 = 0
+        for i in p.n {
+          p.n = 1
+          t += 1
+        }
+        return t
+      }
+      export func gfield() -> u32 {
+        glim = (n: 4, m: 0)
+        let t: u32 = 0
+        for i in glim.n {
+          glim.n = 1
+          t += 1
+        }
+        return t
+      }
+      export func same(n: u32) -> u32 {
+        let t: u32 = 0
+        for n in n { t += 1 }
+        return t
+      }
+      export func fill(xs: []mut u8) {
+        for i in xs.len { xs.ptr[i] = 7 }
+      }
+    `
+    const { call, local, shadow, glob, steady, field, gfield, same } = await run(code)
+    expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
+    // Assigning a field of the variable the count is read from changes it
+    // too, and so does a loop variable that takes its name (and its local).
+    expect([field(5), gfield(), same(4)]).toEqual([5, 4, 4])
+    // A variable the body doesn't change is read where it is compared; a
+    // store through a pointer it holds doesn't change it.
+    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
+    expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $xs_len)))')
+  })
+})
+
 describe('structs in memory', () => {
   test('a struct is stored one field at a time, at its offset, through one address', () => {
     const body = bodyOf(`${SPOT}
@@ -1442,10 +1562,10 @@ describe('struct values in registers and on the stack', () => {
       }
       export func ptr(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8).ptr as u32 - space as u32
       export func len(n: u32) -> u32 => (((1 / n) as [*]u8, 3):[]u8).len
-      export func index(n: u32) -> u32 => ((space as [*]u8, 1 / n):[]u8)[0] as u32
+      export func index(n: u32) -> u32 => (((space as [*]u8, 1 / n):[]u8)[0] ?? 0) as u32
       export func address(n: u32) -> u32 {
-        let p: *u8 = &((space as [*]u8, 1 / n):[]u8)[0]
-        return p.* as u32
+        if let p = &((space as [*]u8, 1 / n):[]u8)[0] { return p.* as u32 }
+        return 9
       }
     `
     const m = await run(code)
@@ -1466,7 +1586,7 @@ describe('struct values in registers and on the stack', () => {
       data space = mut [0:u8; 16]
       func pair() -> []i32 => ((space as [*]i32), 2:u32)
       func len() -> u32 => pair().len
-      func second() -> i32 => pair()[1]
+      func second() -> i32 => pair().ptr[1]
     `)
     expect(wat).toMatch(/\(block \(result i32\) \(call \$pair\) \(local\.set \$__len_\d+\) \(drop\) \(local\.get \$__len_\d+\)\)/)
     expect(wat).toContain('(i32.load (i32.add (block (result i32) (call $pair) (drop)) (i32.mul (i32.const 1) (i32.const 4))))')
@@ -1789,6 +1909,69 @@ describe('tables', () => {
     expect(distinct()).toBe(7)
   })
 
+  test('rows that are framed or packed are row pointers too, and a *[!]T is checked against its scanned length', async () => {
+    const { row, name, cell, lens, wide, framed } = await run(`
+      data m: *[2][!]u8 = ["ab", "cde"]
+      data names: [][!]u8 = ["alice", "bob"]
+      data k: *[2][2x2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+      data t: *[!][2]i32 = [[7, 1], [3, 4]]
+      data z: *[!]i32 = [7, 1, 3]
+      data w: *[!]u64 = [7, 1, 3]
+      export func row(i: u32, j: u32) -> u32 => if let r = m[i] { (r[j] ?? 0) as u32 + r.len * 1000 } else { 9 }
+      export func name(i: u32) -> u32 => if let r = names[i] { r.len } else { 99 }
+      export func cell(i: u32#2, j: u32#2, l: u32#2) -> i32 => k[i][j][l]
+      export func lens() -> u32 => t.len * 100 + z.len * 10 + w.len
+      export func wide(i: u32) -> u64 => w[i] ?? 0
+      export func framed(i: u32) -> i32 => if let r = t[i] { r[0] * 10 + r[1] } else { -1 }
+    `)
+    expect([row(0, 0), row(0, 1), row(0, 2), row(1, 2), row(2, 0)]).toEqual([2097, 2098, 2000, 3101, 9])
+    expect([name(0), name(1), name(2)]).toEqual([5, 3, 99])
+    expect([cell(0, 0, 0), cell(1, 0, 1), cell(1, 1, 1)]).toEqual([1, 6, 8])
+    expect(lens()).toBe(233)
+    expect([wide(0), wide(2), wide(3)]).toEqual([7n, 3n, 0n])
+    expect([framed(0), framed(1), framed(2)]).toEqual([71, 34, -1])
+  })
+
+  test('a *[!]T of structs or slices ends with one whole zero element, which its scan finds', async () => {
+    // Each is followed by bytes that aren't zero: a terminator shorter than
+    // an element would let the scan run on into them.
+    const { pairs, alias, rows, words, local } = await run(`
+      type Pr = (a: u16, b: u16)
+      type W = u16
+      data pr: *[!]Pr = [(a: 1, b: 2), (a: 0, b: 3), (a: 4, b: 0)]
+      data after: *[4]u8 = [7, 7, 7, 7]
+      data wa: *[!]W = [1, 2]
+      data after2: *[4]u8 = [7, 7, 7, 7]
+      data rs: *[2][!]Pr = [[(a: 1, b: 1)], [(a: 2, b: 2), (a: 3, b: 0)]]
+      data after3: *[4]u8 = [7, 7, 7, 7]
+      data ws: *[!][]u8 = ["ab", "f", "cde"]
+      data after4: *[4]u8 = [7, 7, 7, 7]
+      export func pairs(i: u32) -> u32 => pr.len * 1000 + (if let x = pr[i] { x.a as u32 * 10 + x.b as u32 } else { 99 })
+      export func alias() -> u32 => wa.len
+      export func rows() -> u32 => (if let r = rs[1] { r.len } else { 9 }) * 10 + (if let r = rs[0] { r.len } else { 9 })
+      export func words(i: u32) -> u32 => ws.len * 10 + (if let x = ws[i] { x.len } else { 9 })
+      export func local() -> u32 {
+        let z: *[!]Pr = [(a: 5, b: 6), (a: 7, b: 8)]
+        return z.len
+      }
+    `)
+    expect([pairs(0), pairs(1), pairs(2), pairs(3)]).toEqual([3012, 3003, 3040, 3099])
+    expect([alias(), rows(), local()]).toEqual([2, 21, 2])
+    expect([words(0), words(1), words(2), words(3)]).toEqual([32, 31, 33, 39])
+  })
+
+  test('len of a packed block is its rows, and wid of a slice the width of an element', async () => {
+    const { lens, size } = await run(`
+      data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+      data words: []u64 = [1, 2, 3]
+      data rows: [][3]i32 = [[1, 2, 3], [4, 5, 6]]
+      export func lens() -> u32 => m.len * 1000 + words.wid * 100 + rows.wid * 10 + (if m.len == 2 { 1 } else { 0 })
+      export func size(s: []u64) -> u32 => s.len * s.wid
+    `)
+    expect(lens()).toBe(2841)
+    expect(size(0, 5)).toBe(40)
+  })
+
   test('len, wid, sizeof, loops, lets, arguments and ranges', async () => {
     const { lens, loops, pass, addr, range, copy } = await run(`${TABLES}
       data board: *mut [2][3]i32 = mut [[0; 3]; 2]
@@ -1815,7 +1998,7 @@ describe('tables', () => {
       }
       export func range() -> i32 {
         let s = grid[1..]
-        return (s.len as i32) * 100 + s[0][2]
+        return (s.len as i32) * 100 + s.ptr[0][2]
       }
       export func copy() -> i32 {
         board[0..2] = grid[0..2]
@@ -1828,6 +2011,90 @@ describe('tables', () => {
     expect([addr(0), addr(1)]).toEqual([1, 4])
     expect(range()).toBe(105)
     expect(copy()).toBe(57)
+  })
+})
+
+describe('indexes not known to be in range', () => {
+  test('an optional element read at an unproven index is none when the index is out of range', async () => {
+    const code = `
+      data names: [][]u8 = ["Alice", "Bob", "Charlie"]
+      data numbers: *[2]i32 = [7, 8]
+      data cells: *mut [2]*i32 = mut [0, 0]
+      export func setup() {
+        cells[0] = numbers.ptr as *i32
+        cells[1] = (numbers.ptr + 4) as *i32
+      }
+      export func len(i: u32) -> u32 {
+        let n = names[i]
+        if let s = n { return s.len }
+        return 99
+      }
+      export func cell(i: u32) -> i32 {
+        let p = cells[i]
+        return if let q = p { q.* } else { -1 }
+      }
+    `
+    const { setup, len, cell } = await run(code)
+    setup()
+    expect([len(0), len(2), len(3), len(-1), len(1000000)]).toEqual([5, 7, 99, 99, 99])
+    expect([cell(0), cell(1), cell(2), cell(-1)]).toEqual([7, 8, -1, -1])
+    expect(modWat(code)).toContain('(if (result i32 i32) (i32.lt_u (local.get $i) (i32.const 3))')
+  })
+
+  test('an index whose range may pass N is checked at run time', async () => {
+    const { cell, byte, row } = await run(`
+      data numbers: *[2]i32 = [7, 8]
+      data cells: *mut [2]*i32 = mut [0, 0]
+      data bytes: *[2]u8 = [5, 6]
+      data packed: *[2x2]i32 = [[1, 2], [3, 4]]
+      export func cell(j: u32#3) -> i32 {
+        cells[0] = numbers.ptr as *i32
+        cells[1] = (numbers.ptr + 4) as *i32
+        let p = cells[j]
+        return if let q = p { q.* } else { -1 }
+      }
+      export func byte(j: u32#3) -> u32 => (bytes[j] ?? 9) as u32 * 10 + (if let b = bytes[j] { b as u32 } else { 9 })
+      export func row(j: u32#3) -> i32 => if let r = packed[j] { r[1] } else { -1 }
+    `)
+    expect([cell(0), cell(1), cell(2)]).toEqual([7, 8, -1])
+    expect([byte(0), byte(1), byte(2)]).toEqual([55, 66, 99])
+    expect([row(0), row(1), row(2)]).toEqual([2, 4, -1])
+  })
+
+  test('the row of a packed *[NxM]T is checked against N by if let and ??', async () => {
+    const { row, cell } = await run(`
+      data m: *[2x3]i32 = [[7, 1, 2], [3, 4, 5]]
+      data zeros: *[3]i32 = [0, 0, 0]
+      export func row(i: u32) -> i32 => if let r = m[i] { r[0] * 10 + r[2] } else { -1 }
+      export func cell(i: u32) -> i32 => (m[i] ?? zeros)[1]
+    `)
+    expect([row(0), row(1), row(2), row(-1)]).toEqual([72, 35, -1, -1])
+    expect([cell(0), cell(1), cell(2)]).toEqual([1, 4, 0])
+  })
+
+  test('if let and ?? on an element that is an optional itself check the element too', async () => {
+    const { setup, bound, fallback } = await run(`
+      data one: *[1]i32 = [7]
+      data ps: *mut [2]?*i32 = mut [0, 0]
+      export func setup() { ps[0] = one.ptr as *i32 }
+      export func bound(i: u32) -> i32 => if let p = ps[i] { p.* } else { -1 }
+      export func fallback(i: u32) -> i32 => (ps[i] ?? one.ptr as *i32).* - 7
+    `)
+    setup()
+    expect([bound(0), bound(1), bound(2), bound(-1)]).toEqual([7, -1, -1, -1])
+    expect([fallback(0), fallback(1), fallback(2)]).toEqual([0, 0, 0])
+  })
+})
+
+describe('literals where a pointer is wanted', () => {
+  test('a table literal calls the overload for a table, a flat one the flat one', async () => {
+    const { t, f } = await run(`
+      func total(m: *[2][3]i32) -> i32 => m[0][0] + m[1][2]
+      func total(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+      export func t() -> i32 => total([[1, 2, 3], [4, 5, 6]])
+      export func f() -> i32 => total([1, 2, 3])
+    `)
+    expect([t(), f()]).toEqual([7, 6])
   })
 })
 
@@ -1934,10 +2201,10 @@ describe('structs in data arrays', () => {
       export func elems() -> i32 => points[0].x * 1000 + points[0].y * 100 + points[1].x * 10 + points[1].y
       export func fields() -> u32 {
         let r = rows[0]
-        return r.s.len * 10000 + (r.s[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
+        return r.s.len * 10000 + (r.s.ptr[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
       }
-      export func whole() -> u32 => xs.len * 100 + (xs[2] as u32) * 10 + (k.* as u32)
-      export func nested() -> u32 => names.len * 100 + names[0].len * 10 + names[1].len
+      export func whole() -> u32 => xs.len * 100 + (xs.ptr[2] as u32) * 10 + (k.* as u32)
+      export func nested() -> u32 => names.len * 100 + names.ptr[0].len * 10 + names.ptr[1].len
     `)
     expect([elems(), fields(), whole(), nested()]).toEqual([1234, 35289, 365, 223])
   })
@@ -2005,12 +2272,12 @@ describe('structs in data arrays', () => {
       }
       export func local() -> u32 {
         let two: []Row = [((64, 3), 7), Row((0, 4), 8)]
-        return two[0].s.len * 1000 + (two[0].tag as u32) * 100 + two[1].s.len * 10 + (two[1].tag as u32)
+        return two.ptr[0].s.len * 1000 + (two.ptr[0].tag as u32) * 100 + two.ptr[1].s.len * 10 + (two.ptr[1].tag as u32)
       }
-      export func slices() -> u32 => (lists[0].ptr as u32) * 1000 + lists[0].len * 100 + lists[1].len * 10 + lists[2].len
+      export func slices() -> u32 => (lists.ptr[0].ptr as u32) * 1000 + lists.ptr[0].len * 100 + lists.ptr[1].len * 10 + lists.ptr[2].len
       export func mixed(p: [*]i32, n: u32) -> u32 {
         let three: [][]i32 = [(p, n), (64, 2), [7, 8, 9]]
-        return three[0].len * 100 + three[1].len * 10 + three[2].len
+        return three.ptr[0].len * 100 + three.ptr[1].len * 10 + three.ptr[2].len
       }
     `)
     expect([field(), local(), slices(), mixed(0, 5)]).toEqual([6434852, 3748, 64324, 523])
@@ -2026,7 +2293,7 @@ describe('structs in data arrays', () => {
         calls += 1
         return calls
       }
-      func sum(s: []i32) -> i32 => s[0] * 100 + s[1] * 10 + s[2]
+      func sum(s: []i32) -> i32 => s.ptr[0] * 100 + s.ptr[1] * 10 + s.ptr[2]
       func read(r: Row) -> i32 => r.v[0] * 1000 + r.v[1] * 100 + r.v[2] * 10 + r.tag
       export func field(n: i32) -> i32 {
         let rows: *[1]Row = [Row([n + 1; 3], 7)]
@@ -2038,7 +2305,7 @@ describe('structs in data arrays', () => {
       }
       export func slice(n: i32) -> i32 {
         let rows: []Named = [(([n; 3]), 7)]
-        return sum(rows[0].s) * 10 + rows[0].tag
+        return sum(rows.ptr[0].s) * 10 + rows.ptr[0].tag
       }
       export func whole(n: i32) -> i32 {
         let xs: *[3]i32 = [n + 1; 3]
@@ -2127,7 +2394,7 @@ describe('a slice from an array literal', () => {
       export func f() -> u32 {
         let signed: []i8 = "abc"
         let joined: []u8 = ["ab", "c"]
-        return take("abcd") + signed.len * 10 + joined.len * 100 + names[1].len * 1000 + names.len * 10000
+        return take("abcd") + signed.len * 10 + joined.len * 100 + names.ptr[1].len * 1000 + names.len * 10000
       }
     `
     // Every length the literals give is a whole number.
@@ -2163,7 +2430,7 @@ describe('a slice from a pointer and a length', () => {
       export func f() -> u32 {
         let nums: []i32 = ([1, 2, 3])
         let named = Named(("ab"), 1)
-        return take(("abcd")) + word.len * 10 + nums.len * 100 + (nums[2] as u32) * 1000 + named.name.len * 10000
+        return take(("abcd")) + word.len * 10 + nums.len * 100 + (nums.ptr[2] as u32) * 1000 + named.name.len * 10000
       }
       export func g(p: [*]u8, n: u32) -> u32 {
         let s: []u8 = ((p, n))
@@ -3225,19 +3492,19 @@ describe('a literal given for a mutable pointer or slice', () => {
       data cstr = "hi"
       data str: []mut u8 = "hi"
       func fill(buf: []mut u8, v: u8) -> []u8 {
-        buf[0] = v
+        if let e = &buf[0] { e.* = v }
         return buf
       }
       export func run() -> i32 {
-        s[0] = 5
+        if let e = &s[0] { e.* = 5 }
         u[1] = 7
         t[0][0] = 9
-        str[0] = 1
+        if let e = &str[0] { e.* = 1 }
         let a = fill([0:u8; 2], 3)
         let b = fill([0:u8; 2], 4)
         let p: *mut [2]i32 = [20, 8]
         p[0] = 6
-        return c[0] * 1000000 + c[1] * 10000 + t[1][0] * 1000 + (cstr[0] as i32) + (a[0] as i32) * 10 + (b[0] as i32) * 100
+        return (c[0] ?? 0) * 1000000 + (c[1] ?? 0) * 10000 + t[1][0] * 1000 + (cstr[0] as i32) + ((a[0] ?? 0) as i32) * 10 + ((b[0] ?? 0) as i32) * 100
       }
     `)
     // c is untouched, t's rows are two, cstr is "h", a and b are two buffers
@@ -3252,11 +3519,14 @@ describe('a literal given for a mutable pointer or slice', () => {
       data q: *[2][]mut u8 = ["ab", "ab"]
       data r: [][]mut u8 = [[1, 2], [1, 2]]
       export func run(v: u8) -> u32 {
-        if let a = p[0] { a[0] = v }
-        q[0][0] = v
-        if let b = r[0] { b[0] = v }
+        if let a = p[0] {
+          let w = a as [*]mut u8
+          w[0] = v
+        }
+        if let e = &q[0][0] { e.* = v }
+        if let b = r[0] { if let e = &b[0] { e.* = v } }
         let s: [][]mut u8 = [[1, 2], [1, 2]]
-        if let d = s[0] { d[0] = v }
+        if let d = s[0] { if let e = &d[0] { e.* = v } }
         let rows = (if let e = r[1] { e[0] ?? 0 } else { 0 }) * 10 + (if let f = s[1] { f[0] ?? 0 } else { 0 })
         return (c[0] as u32) * 100000 + (cc[0] as u32) * 10000 + ((q[1][0] ?? 0) as u32) * 100 + (rows as u32)
       }
@@ -3302,9 +3572,9 @@ describe('values of literals laid out in memory', () => {
       data names: [][]i32 = [ones, twos]
       export func a() -> u32 => (refs[0].p as u32) * 1000 + refs[0].k
       export func b() -> u32 => (refs[1].p as u32) * 1000 + refs[1].k
-      export func c() -> i32 => refs[1].p[2] * 100 + views[0].s[1] * 10 + (views[0].s.len as i32)
+      export func c() -> i32 => refs[1].p[2] * 100 + (views[0].s[1] ?? 0) * 10 + (views[0].s.len as i32)
       export func d() -> u32 => (ones as u32) * 1000 + (twos as u32)
-      export func e() -> i32 => if let s = names[1] { s[0] * 10 + (s.len as i32) } else { 0 }
+      export func e() -> i32 => if let s = names[1] { (s[0] ?? 0) * 10 + (s.len as i32) } else { 0 }
       export func local() -> i32 {
         let r: *[1]Ref = [(twos, 9)]
         return r[0].p[0] * 10 + (r[0].k as i32)
@@ -3338,7 +3608,7 @@ describe('values of literals laid out in memory', () => {
       data d: [][]u8 = [[1; 2]; 3]
       data e: *[3][]u8 = [[1, 2]; 3]
       data f: [][]u8 = ["ab"; 3]
-      export func counts() -> u32 => d.len * 1000 + d[2].len * 100 + (e[1].len) * 10 + f.len
+      export func counts() -> u32 => d.len * 1000 + (d[2] ?? "").len * 100 + (e[1].len) * 10 + f.len
       export func local(n: u32) -> u32 {
         let x: []u8 = "abc"
         let a: *[3][]u8 = [x; 3]
@@ -3402,20 +3672,20 @@ describe('values of literals laid out in memory', () => {
       data twos: *[3]i32 = [2, 2, 2]
       data many: [][]i32 = [twos, twos]
       func param(ones: *[3]i32) -> i32 {
-        let a: *[1]*[3]i32 = [ones]
+        let held: *[1]*[3]i32 = [ones]
         let r: *[1]R = [(ones, 1)]
-        return a[0][0] * 10 + r[0].p[1]
+        return held[0][0] * 10 + r[0].p[1]
       }
       func binding(o: ?*[3]i32) -> i32 {
         if let ones = o {
-          let a: *[1]*[3]i32 = [ones]
-          return a[0][2]
+          let held: *[1]*[3]i32 = [ones]
+          return held[0][2]
         }
         return 0
       }
       func slices(ones: []i32) -> u32 {
-        let a: [][]i32 = [ones, ones]
-        return if let r = a[1] { r.len } else { 0 }
+        let held: [][]i32 = [ones, ones]
+        return if let r = held[1] { r.len } else { 0 }
       }
       export func a() -> i32 => param(twos)
       export func b() -> i32 => binding(twos)
@@ -3423,8 +3693,8 @@ describe('values of literals laid out in memory', () => {
       export func d() -> i32 {
         let t: i32 = 0
         for ones in many {
-          let a: [][]i32 = [ones]
-          t = t + (if let r = a[0] { r[0] ?? 0 } else { 0 })
+          let held: [][]i32 = [ones]
+          t = t + (if let r = held[0] { r[0] ?? 0 } else { 0 })
         }
         return t
       }

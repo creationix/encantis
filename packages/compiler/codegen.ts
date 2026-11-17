@@ -75,6 +75,9 @@ export interface CodegenContext {
   // The variables a `let` or a `for` declares, with their locals: from there
   // on its names stand for them (see letToWat, forToWat).
   declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
+  // Indexes that aren't known to be in range, read as an optional (see
+  // TypeCheckResult.unproven): checked, none when out of range.
+  unproven: Set<AST.IndexExpr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -93,6 +96,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     dataSectionSize,
     calls: checkResult.calls,
     funcNames: checkResult.funcNames,
+    unproven: checkResult.unproven,
   }
 }
 
@@ -1416,6 +1420,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1439,7 +1444,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         return `(i32.load offset=4 ${exprToWat(expr.object, ctx)})`
       }
       if (member.name === 'wid') {
-        const elemSize = byteSize(sliceType.element)
+        const elemSize = byteSize(RT.tableRow(sliceType) ?? sliceType.element)
         if (elemSize === null) {
           throw new Error(`Cannot determine element size for ${sliceType.element.kind}`)
         }
@@ -1460,6 +1465,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1544,9 +1550,55 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   }
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (isRowIndex(expr, ctx)) return elementAddress(expr, ctx)
+  if (ctx.unproven.has(expr)) return checkedIndexToWat(expr, type, ctx)
   const addr = lvalueAddressOf(expr, ctx)
   if (addr === null) throw new Error(`Cannot index this expression at offset ${expr.span.start}`)
   return loadFromMemory(type, addr, ctx)
+}
+
+// xs[i] with an index not known to be in range, on a slice or a *[N]T of
+// pointers or slices: the element, an optional, is none (0) when i is out of
+// range. The container and the index are evaluated once, in that order; parts
+// that are locals or constants are used as they are.
+function checkedIndexToWat(expr: AST.IndexExpr, type: ResolvedType, ctx: CodegenContext): string {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const setup: string[] = []
+  const keep = (wat: string): string => {
+    if (isSimple(wat)) return wat
+    const local = scratchLocal(ctx, 'i32')
+    setup.push(`(local.set ${local} ${wat})`)
+    return `(local.get ${local})`
+  }
+  const obj = exprToWat(expr.object, ctx)
+  let base: string
+  let len: string
+  if (u?.kind === 'slice') {
+    const parts = trySplitMultiValue(obj, 2)
+    if (parts) {
+      base = keep(parts[0])
+      len = keep(parts[1])
+    } else {
+      const [ptr, length] = [scratchLocal(ctx, 'i32'), scratchLocal(ctx, 'i32')]
+      setup.push(obj, `(local.set ${length})`, `(local.set ${ptr})`)
+      base = `(local.get ${ptr})`
+      len = `(local.get ${length})`
+    }
+  } else if (u?.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
+    base = keep(obj)
+    len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u && RT.framedArray(u)) {
+    base = keep(obj)
+    len = keep(scannedLength(base, u, ctx))
+  } else {
+    throw new Error(`Cannot check this index at offset ${expr.span.start}`)
+  }
+  const index = keep(exprToWat(expr.index, ctx))
+  const results = typeToWasm(type).join(' ')
+  const { offset } = indexOffset(expr.object, base, index, ctx)
+  const none = typeToWasm(type).map((t) => `(${t}.const 0)`).join(' ')
+  const value = `(if (result ${results}) (i32.lt_u ${index} ${len}) (then ${loadFromMemory(type, offset, ctx)}) (else ${none}))`
+  return setup.length === 0 ? value : `(block (result ${results})\n${setup.join('\n')}\n${value})`
 }
 
 // items[start..end]: (ptr + start * stride, end - start). Parts that are
@@ -1686,6 +1738,24 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
 
+// The length of a null-terminated *[!]T (or [!]T): how many elements come
+// before the first one whose bytes are all zero, as the data packer ends it.
+// Each element is read as one integer of its width (the checker allows 1, 2,
+// 4 or 8 bytes); a row of a table is its pointer. `ptr` is evaluated once.
+function scannedLength(ptr: string, objType: ResolvedType, ctx: CodegenContext): string {
+  const framed = RT.framedArray(objType)
+  if (!framed) throw new Error(`no length to scan for in ${RT.typeToString(objType)}`)
+  const width = byteSize(RT.tableRow(objType) ?? framed.element)
+  const load = width === 1 ? 'i32.load8_u' : width === 2 ? 'i32.load16_u' : width === 4 ? 'i32.load' : width === 8 ? 'i64.load' : null
+  if (!load) throw new Error(`cannot scan for the end of ${RT.typeToString(objType)}`)
+  const zero = width === 8 ? 'i64.eqz' : 'i32.eqz'
+  const at = scratchLocal(ctx, 'i32')
+  const n = scratchLocal(ctx, 'i32')
+  const label = `$__scan${at.slice(1)}`
+  const element = width === 1 ? `(i32.add (local.get ${at}) (local.get ${n}))` : `(i32.add (local.get ${at}) (i32.mul (local.get ${n}) (i32.const ${width})))`
+  return `(block (result i32) (local.set ${at} ${ptr}) (local.set ${n} (i32.const 0)) (block ${label} (loop ${label}_next (br_if ${label} (${zero} (${load} ${element}))) (local.set ${n} (i32.add (local.get ${n}) (i32.const 1))) (br ${label}_next))) (local.get ${n}))`
+}
+
 function evalComptimeIndex(expr: AST.Expr): number | null {
   if (expr.kind === 'LiteralExpr' && expr.value.kind === 'int') {
     return Number(expr.value.value)
@@ -1701,6 +1771,17 @@ function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
   return evalComptimeIndex(expr.count) ?? (constant?.kind === 'int' ? Number(constant.value) : null)
 }
 
+// Whether the elements an index expression reads are optionals themselves
+// (in a []?*T): then if let and ?? check the element as well as the index,
+// as for any optional, reading it none when the index is out of range.
+function holdsOptionals(expr: AST.IndexExpr, ctx: CodegenContext): boolean {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const pointee = u?.kind === 'pointer' ? unwrap(u.pointee) : null
+  const element = u?.kind === 'slice' ? u.element : pointee?.kind === 'array' ? pointee.element : null
+  return element !== null && RT.isOptional(unwrap(element))
+}
+
 function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const elemType = ctx.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
   if (!elemType) throw new Error('Missing element type for coalesce')
@@ -1710,7 +1791,7 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const resultStr = `(result ${resultTypes.join(' ')})`
 
   // Check if this is a bounds-checked index expression
-  if (expr.expr.kind === 'IndexExpr') {
+  if (expr.expr.kind === 'IndexExpr' && !holdsOptionals(expr.expr, ctx)) {
     return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, scratchId(expr.span.start), ctx)
   }
 
@@ -1748,9 +1829,15 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
     parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
     const arrayType = objType.pointee
-    if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+    // N, also of a packed *[NxM]T, whose rows are counted the same way
+    if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
       parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+    } else if (RT.framedArray(objType)) {
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     }
+  } else if (objType && RT.framedArray(objType)) {
+    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
   }
 
   const elemSize = byteSize(elemType) ?? 1
@@ -1758,7 +1845,9 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const offset = elemSize === 1
     ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
     : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-  const loadVal = loadFromMemory(elemType, offset, ctx)
+  const loadVal = isRowIndex(indexExpr, ctx)
+    ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+    : loadFromMemory(elemType, offset, ctx)
 
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
@@ -1791,7 +1880,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Index expression: bounds check
-  if (expr.condition.kind === 'IndexExpr') {
+  if (expr.condition.kind === 'IndexExpr' && !holdsOptionals(expr.condition, ctx)) {
     const indexExpr = expr.condition
     const uid = scratchId(expr.span.start)
     const idxLocal = `__iflet_idx_${uid}`
@@ -1809,11 +1898,17 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       const arrayType = objType.pointee
-      if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+      // N, also of a packed *[NxM]T, whose rows are counted the same way
+      if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
         parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+      } else if (RT.framedArray(objType)) {
+        parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
       } else {
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
       }
+    } else if (objType && RT.framedArray(objType)) {
+      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     } else {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       parts.push(`(local.set $${lenLocal} (i32.const 0))`)
@@ -1824,7 +1919,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const offset = elemSize === 1
       ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
       : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-    const loadVal = loadFromMemory(elemType, offset, ctx)
+    const loadVal = isRowIndex(indexExpr, ctx)
+      ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+      : loadFromMemory(elemType, offset, ctx)
     const bindWat = makeBind(loadVal)
 
     if (elseBody) {
@@ -2545,6 +2642,52 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
   )`
 }
 
+// Whether anything in a subtree may give the variable `name` a new value: an
+// assignment to it or to a part of it (p.n = 0 changes the p_n local a count
+// p.n is read from), or a declaration of that name, which shares the
+// variable's wasm local (a let, a loop or if-let binding, a pattern).
+function mayChange(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) return node.some((n) => mayChange(n, name))
+  if (!node || typeof node !== 'object') return false
+  const n = node as Record<string, unknown> & { kind?: string; target?: AST.LValue }
+  if (n.kind === 'AssignmentStmt' && n.target && assignedRoot(n.target) === name) return true
+  if (n.kind !== 'IdentExpr' && ['name', 'binding', 'field', 'value', 'index'].some((k) => n[k] === name)) return true
+  return Object.entries(n).some(([k, v]) => k !== 'span' && typeof v === 'object' && mayChange(v, name))
+}
+
+// The variable whose registers an assignment target is, or is a field of:
+// p for p, p.n, p.a.b. A target with an index or a dereference in it is an
+// element (in memory, or of an array, which no count is read from).
+function assignedRoot(target: AST.LValue): string | null {
+  let t: AST.LValue | AST.Expr = target
+  while ((t.kind === 'MemberExpr' && t.member.kind === 'field') || t.kind === 'GroupExpr') {
+    t = t.kind === 'GroupExpr' ? t.expr : t.object
+  }
+  return t.kind === 'IdentExpr' ? t.name : null
+}
+
+// Whether a loop count read as one register (a local, or a global) is still
+// the count where the loop compares with it: nothing in the body may change
+// the variable it is read from (a slice's length is part of the slice), and
+// for a global, the body calls nothing that could.
+function steadyRead(stmt: AST.ForStmt, wat: string): boolean {
+  const body = stmt.body
+  let root = ungroup(stmt.iterable)
+  while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
+  if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  // for n in n: the loop variable takes the local the count is read from.
+  if (stmt.binding.value === root.name || stmt.binding.index === root.name) return false
+  if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
+  return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
+}
+
+function makesCall(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(makesCall)
+  if (!node || typeof node !== 'object') return false
+  if ((node as { kind?: string }).kind === 'CallExpr') return true
+  return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
+}
+
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   // The locals collectLocals gave the loop's variables, which its names stand
   // for in the body and after the loop, but not in the iterable.
@@ -2568,11 +2711,20 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
     // The body sits in its own $continue block so that continue still reaches
-    // the increment.
-    return `(local.set $${valueName} (i32.const 0))
+    // the increment. The count is evaluated once, before the loop: a constant,
+    // or a variable the body doesn't change, is read where it is compared.
+    // A signed count is compared signed, so a negative one runs the loop zero
+    // times; value counts up from 0 and stops at the count, so it never
+    // reaches the values where the two comparisons differ.
+    const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
+    const steady = constant !== null || steadyRead(stmt, iterWat)
+    const count = steady ? iterWat : scratchLocal(ctx, 'i32')
+    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
+    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
 (block $break
     (loop $next
-      (br_if $break (i32.ge_u (local.get $${valueName}) ${iterWat}))
+      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
       (block $continue
         ${body}
       )

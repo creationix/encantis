@@ -3835,7 +3835,7 @@ describe('zero cost, generic types and comptime function parameters', () => {
   // The size is that of the hand-written side compiled by the branch this one
   // stands on.
   test('a vector for two element types and a sort with three comparators are the module written by hand', async () => {
-    expect(await expectSameWasm(ZC2_GENERIC, ZC2_BY_HAND)).toHaveLength(1318)
+    expect(await expectSameWasm(ZC2_GENERIC, ZC2_BY_HAND)).toHaveLength(1326)
     const wat = watOfSource(ZC2_GENERIC)
     expect(funcs(wat)).toEqual([
       'alloc', "vec<''u8>", 'vec<u64>', "push<''u8>", 'push<u64>', "items<''u8>", 'items<u64>',
@@ -3847,7 +3847,7 @@ describe('zero cost, generic types and comptime function parameters', () => {
   })
 
   test('with fields through the pointer, the header stored and loaded whole, and struct elements', async () => {
-    expect(await expectSameWasm(NATURAL_GENERIC, NATURAL_BY_HAND)).toHaveLength(905)
+    expect(await expectSameWasm(NATURAL_GENERIC, NATURAL_BY_HAND)).toHaveLength(913)
     const { slots } = await run(NATURAL_GENERIC)
     // The fifth slot is used: its hash, 4 * 7, and the capacity grown to 8.
     expect(slots(5)).toBe(28 + 8)
@@ -4017,8 +4017,16 @@ export func c(b: *Box) -> u32 => b.n + n(b)`
 func ptr(xs: *[4]u8) -> u32 => 8
 func wid(xs: []u8) -> u32 => 9
 data four = [1:u8, 2, 3, 4]
-export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid() + len(xs) + ptr(four)`
-    expect(compiled(source)).toEqual(['wid/1'])
+export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid + len(xs) + ptr(four) + wid(xs)`
+    expect(compiled(source)).toEqual([])
+    // .wid of a slice is the width of an element (reference 2.5), so a call of
+    // it is the field, as for any member.
+    expect(errorsOf(`func wid(xs: []u8) -> u32 => 9\nfunc f(xs: []u8) -> u32 => xs.wid()`)).toEqual([
+      "cannot call non-function type: int(1) ('wid' is a field here, and a field wins over the function 'wid': write wid(...))",
+    ])
+    expect(errorsOf(`func wid(xs: [][3]i32) -> u32 => 9\nfunc f(rows: [][3]i32) -> u32 => rows.wid()`)).toEqual([
+      "cannot call non-function type: int(4) ('wid' is a field here, and a field wins over the function 'wid': write wid(...))",
+    ])
   })
 
   test('a many-pointer has no length, so len is a function it can be the receiver of', () => {
@@ -4417,7 +4425,7 @@ describe('zero cost, method calls and functions that share a name', () => {
   test('the stage 2 program written with method calls is the same module written by hand', async () => {
     expect(ZC2_METHODS).not.toBe(ZC2_GENERIC)
     expect(ZC2_METHODS.match(/\.(push|items|sort)\(/g)).toHaveLength(9)
-    expect(await expectSameWasm(ZC2_METHODS, ZC2_BY_HAND)).toHaveLength(1318)
+    expect(await expectSameWasm(ZC2_METHODS, ZC2_BY_HAND)).toHaveLength(1326)
   })
 
   test('x.f(a) and f(x, a) are the same code', async () => {

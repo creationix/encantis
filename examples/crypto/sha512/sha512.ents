@@ -47,7 +47,7 @@ inline func small-sigma0(x: u64) -> u64 => (x <<< 63) ^ (x <<< 56) ^ (x >> 7)
 inline func small-sigma1(x: u64) -> u64 => (x <<< 45) ^ (x <<< 3) ^ (x >> 6)
 
 // Load 64-bit big-endian from byte pointer
-func load-be64(ptr: *u8, offset: u32) -> u64 {
+func load-be64(ptr: [*]u8, offset: u32) -> u64 {
   let p = ptr + offset
   let b0 = p[0] as u64
   let b1 = p[1] as u64
@@ -61,7 +61,7 @@ func load-be64(ptr: *u8, offset: u32) -> u64 {
 }
 
 // Store 64-bit big-endian to byte pointer
-func store-be64(ptr: *mut u8, offset: u32, value: u64) {
+func store-be64(ptr: [*]mut u8, offset: u32, value: u64) {
   let p = ptr + offset
   p[0] = (value >> 56) as u8
   p[1] = (value >> 48) as u8
@@ -77,7 +77,7 @@ func store-be64(ptr: *mut u8, offset: u32, value: u64) {
 func compress(block: *[128]u8) {
   // Load message schedule from block (big-endian)
   for i in 16 {
-    w[i] = load-be64(block as *u8, (i * 8) as u32)
+    w[i] = load-be64(block as [*]u8, (i * 8) as u32)
   }
 
   // Extend message schedule
@@ -160,13 +160,13 @@ export func sha512-with-iv(hash_iv: *[8]u64, input: []u8, output: *mut [64]u8) {
   }
 
   // Append length in bits as big-endian u64 at end of block
-  store-be64(pad_block as *mut u8, 120 as u32, total_bits)
+  store-be64(pad_block as [*]mut u8, 120 as u32, total_bits)
 
   compress(pad_block)
 
   // Write hash output as big-endian
   for i in 8 {
-    store-be64(output as *mut u8, (i * 8) as u32, state[i])
+    store-be64(output as [*]mut u8, (i * 8) as u32, state[i])
   }
 }
 

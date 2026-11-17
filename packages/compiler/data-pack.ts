@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
+import { byteSize, isOptional, isRowArray, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -48,10 +48,12 @@ function getRepeatCount(expr: AST.RepeatExpr, builder?: DataSectionBuilder): num
  * Merged: framings apply to contiguous data (e.g., [!x!]u8)
  * Separate: nested array types requiring pointer indirection (e.g., [!][!]u8)
  */
+// A framed array of slices ([!][]u8) is separate: its elements are (ptr,
+// len) pairs, the strings laid out apart, as for any array of slices.
 function isMergedBrackets(type: ArrayRT): boolean {
   const framings = getFramings(type.sizes)
   return framings.length > 1 ||
-    (framings.length === 1 && type.element.kind !== 'array')
+    (framings.length === 1 && type.element.kind !== 'array' && type.element.kind !== 'slice')
 }
 
 // The bytes of a literal: those written out, then a run of zeros that is
@@ -982,9 +984,9 @@ function serializeSeparate(
   const innerType: ArrayRT = elem.kind === 'slice'
     ? { kind: 'array', element: elem.element, sizes: ['_'] }
     : elem as ArrayRT
-  // A many-pointer to fixed arrays ([*][M]T) is a table like *[N][M]T: its
-  // elements are row pointers, not (ptr, len) pairs.
-  const rows = elem.kind === 'array' && isValueArray(elem)
+  // A many-pointer to arrays ([*][M]T, [*][!]T) is a table like *[N][M]T:
+  // its elements are row pointers, not (ptr, len) pairs.
+  const rows = isRowArray(elem)
   const childRefs: DataRef[] = []
   // The elements given as (ptr, len): what they hold is what was written.
   const pairs = new Set<DataRef>()
@@ -1159,9 +1161,12 @@ function applyFraming(
   return bytes
 }
 
-// Get the byte size of an element type (for null terminators)
+// Get the byte size of an element type (for null terminators): a *[!]T ends
+// at its first element whose bytes are all zero, so the terminator is one
+// whole element, a struct's or a slice's too.
 function getElementSize(written: ResolvedType): number {
   const type = unwrap(written)
+  if (type.kind === 'tuple' || type.kind === 'slice') return byteSize(type) ?? 1
   if (type.kind === 'primitive') {
     switch (type.name) {
       case 'i8':

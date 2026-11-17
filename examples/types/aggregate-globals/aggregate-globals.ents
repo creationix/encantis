@@ -58,9 +58,9 @@ test "a slice global starts as its initializer" {
 
 test "a cast in a part of a global's initializer" {
   assert first.len == 3
-  assert first[2] == 5
+  assert (first[2] ?? 0) == 5
   assert low.len == 4
-  assert low[0] == 2
+  assert (low[0] ?? 0) == 2
   assert scaled.0 == 44
   assert scaled.1 == 7.0
 }
