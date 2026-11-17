@@ -2723,6 +2723,29 @@ describe('functions that share a name', () => {
     expect(called(mut, 'func f(p: *mut [4]u8, q: *[4]u8) -> u32 => len(p) + len(q)', 'len')).toEqual(['len:*mut.\'4\'u8'])
   })
 
+  test('a literal beside typed arguments is exact where it fits', () => {
+    const gt = `
+      func gt(a: u32, b: u32) -> bool => a > b
+      func gt(a: f64, b: f64) -> bool => a > b
+    `
+    // x is a u32: gt(u32, u32) takes it as it is and 10 fits; gt(f64, f64)
+    // would convert x. Either side, and as the receiver.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 10) || gt(10, x) || x.gt(10)', 'gt')).toEqual([])
+    expect(called(gt, 'func f(x: f64) -> bool => gt(x, 10) || gt(1.5, x)', 'gt')).toEqual(['gt:f64|f64', 'gt:f64|f64'])
+    // A loop counter in a range is exact as its type, as it is without a literal.
+    expect(called(gt, 'func f() -> (n: u32) { for i in 12 { if gt(i, 3) { n += 1 } } }', 'gt')).toEqual([])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 2.5)', 'gt')).toEqual(['gt:f64|f64'])
+    // Two that are exact alike are still ambiguous: the typed u8 is a u8 for
+    // both, and 3 fits both.
+    const put = `
+      func put(a: u8, b: u8) -> u32 => 1
+      func put(a: u8, b: u32) -> u32 => 2
+    `
+    expect(errs(`${put}\nfunc f(x: u8) -> u32 => put(x, 3)`)).toEqual(["'put' is ambiguous for (u8, int(3))"])
+    expect(called(put, 'func f(x: u8) -> u32 => put(x, 300) + put(x, 3:u32)', 'put')).toEqual(['put:u8|u32', 'put:u8|u32'])
+  })
+
   test('without one, the only function the arguments can be passed to', () => {
     const two = `
       func hash(k: u64) -> u32 => 1

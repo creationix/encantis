@@ -1384,6 +1384,19 @@ func counted() -> (n: u32) {
 }
 ```
 
+An untyped literal has no type of its own: beside typed arguments it only has to fit, and the function whose typed arguments match exactly is the one meant, before one that would convert them.
+
+```ents
+func gt(a: u32, b: u32) -> bool => a > b
+func gt(a: f64, b: f64) -> bool => a > b
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
+
+func typed(x: u32, y: f64, z: u8) -> u32 => if gt(x, 10) && gt(10, x) && gt(y, 10) && x.gt(3) { put(z, 300) } else { put(z, 3:u8) }
+```
+
+Where two are exact alike, as `put(z, 3)` is for both `put`s, that is still ambiguous (below).
+
 Without such a function, it means the only one the arguments can be passed to, with the conversions an argument gets.
 
 ```ents
@@ -1406,12 +1419,15 @@ type Cell = (x: i32, y: i32)
 
 func hash(k: u32) -> u32 => k
 func hash(k: u64) -> u32 => 1
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
 
 func a(c: Cell) -> u32 => hash(c)
 func b(x: f64) -> u32 => hash(x, x)
 func c() -> u32 => hash(5)
 func d(x: u8) -> u32 => hash(x)
 func e() -> u32 => hash()
+func f(z: u8) -> u32 => put(z, 3)
 ```
 
 ```errors
@@ -1420,6 +1436,7 @@ no function 'hash' accepts (f64, f64)
 'hash' is ambiguous for (int(5))
 'hash' is ambiguous for (u8)
 no function 'hash' accepts ()
+'put' is ambiguous for (u8, int(3))
 ```
 
 An argument with an error of its own is that error alone, and nothing more is said of what the call's value is used for.

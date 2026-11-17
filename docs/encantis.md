@@ -1049,7 +1049,7 @@ test "each call reaches its own function" {
 }
 ```
 
-1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second.
+1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second. An untyped literal has no type of its own: beside typed arguments it only has to fit its parameter (see below).
 2. **Otherwise it is the only function the arguments can be passed to.** `hash("salt")` is `hash(k: []u8)`: a string is not a number. The argument is then converted as for any call.
 3. **Anything else is an error**, whether no function takes the arguments or more than one could:
 
@@ -1066,19 +1066,38 @@ no function 'hash' accepts (f64)
 'hash' is ambiguous for (int(5))
 ```
 
-`hash(5:u64)` says which. A literal has no type of its own, so a call with one among its arguments is never an exact match, whatever its other arguments are. Where the functions differ in the width or kind of their numbers, the other arguments can usually be passed to more than one of them, and the literal has to say what it is:
+`hash(5:u64)` says which. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
 
 ```ents
 func gt(a: u32, b: u32) -> bool => a > b
 func gt(a: f64, b: f64) -> bool => a > b
 
-func f(x: u32) -> bool => gt(x, 10)
-func g(x: u32) -> bool => gt(x, 10:u32)
+export func f(x: u32) -> bool => gt(x, 10)        // gt(a: u32, b: u32)
+export func g(x: f64) -> bool => gt(x, 10)        // gt(a: f64, b: f64)
+export func h(x: u32) -> bool => gt(x, 2.5)       // 2.5 is no u32: gt(a: f64, b: f64), x converted
+
+test "the typed argument says which" {
+  assert f(11)
+  assert !f(10)
+  assert g(10.5)
+  assert !h(2)
+}
+```
+
+Only functions that are exact alike remain ambiguous: those whose typed arguments are the same and whose literals fit each of them, as `hash(5)` above, where there is no typed argument at all, and this one, where `x` is a `u8` for both and `3` fits both:
+
+```ents
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
+
+func f(x: u8) -> u32 => put(x, 3)
 ```
 
 ```errors
-'gt' is ambiguous for (u32, int(10))
+'put' is ambiguous for (u8, int(3))
 ```
+
+`put(x, 3:u32)` says which, and `put(x, 300)` needs no help: 300 fits only a `u32`.
 
 What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 

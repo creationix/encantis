@@ -3476,9 +3476,10 @@ class CheckContext {
   }
 
   // Which of the functions that share a name a call means: the one whose
-  // parameter types are the argument types, or else the only one the
-  // arguments can be passed to. Null, with the error reported, when there is
-  // none or more than one.
+  // parameter types are the types of the arguments that have one, where the
+  // others (untyped literals) fit, or else the only one the arguments can be
+  // passed to. Null, with the error reported, when there is none or more
+  // than one.
   private pickOverload(expr: AST.CallExpr, name: string, members: readonly string[]): string | null {
     const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
     const fail = (message?: string): null => {
@@ -3509,8 +3510,19 @@ class CheckContext {
     // parameter asks for that very range.
     const key = (type: ResolvedType) => (hasOwnType(type) ? canonicalKey(type) : null)
     const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
-    let found = typed ? candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i]))) : []
-    if (typed && found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
+    // An argument without a type of its own (a literal, or one that is
+    // nothing by itself) is exact wherever it fits: gt(x, 10) with x a u32
+    // is gt(u32, u32), not gt(f64, f64), which would convert x. Functions
+    // that are exact alike are as ambiguous as before.
+    const own = alone.map((type) => (type && hasOwnType(type) ? type : null))
+    const exact = (as: (type: ResolvedType) => ResolvedType) =>
+      candidates.filter(
+        (c) =>
+          c.params.every((p, i) => own[i] === null || same(p.type, as(own[i] as ResolvedType))) &&
+          c.params.every((p, i) => own[i] !== null || this.fits(args[i], p.type)),
+      )
+    let found = exact((type) => type)
+    if (found.length !== 1) found = exact(withoutRanges)
     if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
     if (found.length !== 1) {
       // An argument that is nothing by itself, and that no one function gives
