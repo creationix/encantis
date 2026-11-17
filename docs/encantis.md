@@ -337,14 +337,15 @@ Use fixed arrays for small data that benefits from register access: cryptographi
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
 
-| Type      | Meaning                    | `.len`          | `.wid`             | Indexing            |
-|-----------|----------------------------|-----------------|---------------------|---------------------|
-| `*T`      | pointer to one T           | N/A             | `sizeof(T)`         | `.*` to dereference |
-| `*[N]T`   | pointer to N elements      | N (comptime)    | `sizeof(T)`         | `[i]`               |
-| `*[!]T`   | pointer to null-terminated | scans, O(n)     | `sizeof(T)`         | `[i]`               |
-| `*[NxM]T` | pointer to N×M packed 2D   | N, M (comptime) | `sizeof(T)`         | `[i]` → `*[M]T`     |
-| `[*]T`    | many-pointer (no bounds)   | N/A             | `sizeof(T)`         | `[i]` (unchecked)   |
-| `[]T`     | slice (fat pointer)        | runtime         | `sizeof(T)`         | `[i]`               |
+| Type       | Meaning                          | `.len`          | `.wid`              | Indexing                         |
+|------------|----------------------------------|-----------------|---------------------|----------------------------------|
+| `*T`       | pointer to one T                 | N/A             | `sizeof(T)`         | `.*` to dereference              |
+| `*[N]T`    | pointer to N elements            | N (comptime)    | `sizeof(T)`         | `[i]`                            |
+| `*[!]T`    | pointer to null-terminated       | scans, O(n)     | `sizeof(T)`         | `[i]`                            |
+| `*[N][M]T` | pointer to a table of N rows     | N (comptime)    | 4 (a row pointer)   | `[i]` → `*[M]T`, loaded          |
+| `*[NxM]T`  | pointer to N×M packed 2D         | N (comptime)    | `sizeof(T)`         | `[i]` → `*[M]T`, computed        |
+| `[*]T`     | many-pointer (no bounds)         | N/A             | `sizeof(T)`         | `[i]` (unchecked)                |
+| `[]T`      | slice (fat pointer)              | runtime         | `sizeof(T)`         | `[i]`                            |
 
 `.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`.
 
@@ -430,6 +431,29 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 *[N][M]T    // pointer to N pointers to M-element arrays
 *[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
+
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]   // a slice of three row pointers
+
+func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
+```
+
+In a table:
+
+- `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
+- Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
+- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself.
+- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
+- `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
+- `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
+- `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
+- `&m[i]` is the address of the row pointer: a `**[M]T`, or `*mut *mut [M]T` in a mutable table (optional, as in [4.7](#element-addresses-and-writes), when `i` isn't proven).
+- `m.*` is an error: the rows lie apart, so there is no `[N][M]T` to load or store whole.
+- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants. With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
 
 ### 2.6 Slices
 
@@ -1424,7 +1448,7 @@ let y = table[3]                  // OK: 3 < 4
 let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
 ```
 
-**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds:
+**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds (the row pointers of a table are the exception, see [Nesting](#nesting)):
 
 ```ents
 data names:[][]u8 = ["Alice", "Bob", "Charlie"]
@@ -2821,7 +2845,7 @@ Any value type can be an element of an array or the target of a pointer. In memo
 | `[N]T` | N × `sizeof(T)` |
 | `(a:T1, b:T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
 
-`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset.
+`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset. The one exception is a fixed array that is the element of a pointer or slice (`*[N][M]T`, `[][M]T`, `[*][M]T`): there each element is a 4-byte pointer to its row, which lies apart ([Nesting](#nesting)).
 
 ```ents
 type Lane = (cells:[]i32, free:i32)       // 12 bytes: cells.ptr 0, cells.len 4, free 8

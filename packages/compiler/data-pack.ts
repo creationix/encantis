@@ -453,8 +453,9 @@ export function serializeLiteral(
   targetType: ArrayRT,
   builder: DataSectionBuilder,
   childRefs?: Map<number, DataRef>,
+  mutable = false,
 ): DataRef {
-  const skipDedup = isMutExpr(expr)
+  const skipDedup = mutable || isMutExpr(expr)
   if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
@@ -726,7 +727,11 @@ function serializeSeparate(
   skipDedup: boolean,
   refsMap?: Map<number, DataRef>,
 ): DataRef {
-  if (expr.kind !== 'ArrayExpr') {
+  // [row; n] is n rows, each laid out like a row written out.
+  const elements = expr.kind === 'RepeatExpr' ? Array<AST.Expr>(getRepeatCount(expr)).fill(expr.value)
+    : expr.kind === 'ArrayExpr' ? expr.elements
+    : null
+  if (!elements) {
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
@@ -734,14 +739,19 @@ function serializeSeparate(
   const innerType: ArrayRT = elem.kind === 'slice'
     ? { kind: 'array', element: elem.element, sizes: ['_'] }
     : elem as ArrayRT
+  // A many-pointer to fixed arrays ([*][M]T) is a table like *[N][M]T: its
+  // elements are row pointers, not (ptr, len) pairs.
+  const rows = elem.kind === 'array' && isValueArray(elem)
   const childRefs: DataRef[] = []
   // The elements given as (ptr, len): what they hold is what was written.
   const pairs = new Set<DataRef>()
 
-  for (const element of expr.elements) {
+  for (const element of elements) {
     const child = ungroup(element)
     if (isSerializableExpr(child)) {
-      const ref = serializeLiteral(child, innerType, builder)
+      // The rows of a mutable table are written through it: each is its own,
+      // shared with no other data.
+      const ref = serializeLiteral(child, innerType, builder, undefined, rows && skipDedup)
       childRefs.push(ref)
       if (refsMap && child.span.start !== 0) {
         refsMap.set(child.span.start, ref)
@@ -756,7 +766,7 @@ function serializeSeparate(
     }
   }
 
-  const isSlice = elem.kind === 'slice' || targetType.sizes === null || (targetType.sizes.length === 0)
+  const isSlice = elem.kind === 'slice' || (!rows && (targetType.sizes === null || targetType.sizes.length === 0))
   // A (ptr, len) element holds its child's length in elements, not bytes.
   const elementRefs = isSlice
     ? childRefs.map((ref) => pairs.has(ref) ? ref : { ptr: ref.ptr, len: literalLength(ref, innerType.element) })

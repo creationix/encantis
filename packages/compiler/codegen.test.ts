@@ -1140,7 +1140,7 @@ describe('structs in memory', () => {
         return p.len * 10 + (if p.ptr as u32 == bytes as u32 { 1 } else { 0 })
       }
       export func array(c: bool) -> i32 {
-        let p: *mut [2]i32 = &pairs[0]
+        let p: *mut [2]i32 = pairs[0]
         p.* = [1, if c {
           p.*[0] = 9
           2
@@ -1721,6 +1721,113 @@ describe('globals of several wasm values', () => {
       export func f() -> f64 => f64(o.tag) * 100.0 + f64(o.pos.x) * 10.0 + o.pos.y + f64(o.w) + f64((o.big >> 98) as u64) + row[0] + row[1] + row[2]
     `)
     expect(f()).toBe(200 + 60 + 1 + 2 ** 33 + 4 + 7.5)
+  })
+})
+
+describe('tables', () => {
+  // The data packer lays *[N][M]T, [][M]T and [*][M]T out as rows apart and a
+  // table of their addresses; every read and write goes through that table.
+  const TABLES = `
+    data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+    data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+    data many: [*][2]i32 = [[10, 11], [12, 13]]
+    data cube: *[2][2][2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+  `
+  const cells = (f: (i: number, j: number) => unknown, n: number, m: number) =>
+    Array.from({ length: n }, (_, i) => Array.from({ length: m }, (_, j) => f(i, j))).flat()
+
+  test('a cell is read through its row pointer, with constant or run-time indexes', async () => {
+    const { at, k00, k12, deep, slice, many2 } = await run(`${TABLES}
+      export func at(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+      export func k00() -> i32 => grid[0][0]
+      export func k12() -> i32 => grid[1][2]
+      export func deep(i: u32#2, j: u32#2, k: u32#2) -> i32 => cube[i][j][k]
+      export func slice(i: u32, j: u32#2) -> i32 => if let r = rows[i] { r[j] } else { -1 }
+      export func many2(i: u32, j: u32#2) -> i32 => many[i][j]
+    `)
+    expect(cells(at, 2, 3)).toEqual([7, 1, 2, 3, 4, 5])
+    expect([k00(), k12()]).toEqual([7, 5])
+    expect(cells((i, j) => [deep(i, j, 0), deep(i, j, 1)], 2, 2).flat()).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect([slice(0, 0), slice(0, 1), slice(1, 0), slice(2, 1), slice(3, 0)]).toEqual([7, 1, 3, 6, -1])
+    expect([many2(0, 1), many2(1, 0)]).toEqual([11, 12])
+  })
+
+  test('a row index is checked against N or the slice length, at a stride of 4', async () => {
+    const { row, slice } = await run(`${TABLES}
+      export func row(i: u32) -> i32 => if let r = grid[i] { r[0] * 10 + r[2] } else { -1 }
+      export func slice(i: u32) -> i32 => (rows[i] ?? cube[1][1])[1]
+    `)
+    expect([row(0), row(1), row(2), row(-1)]).toEqual([72, 35, -1, -1])
+    expect([slice(0), slice(2), slice(3)]).toEqual([1, 6, 8])
+    expect(modWat(`${TABLES}\nexport func f(i: u32#2) -> u32 => grid[i] as u32`)).toMatch(/\(i32\.mul \(local\.get \$i\) \(i32\.const 4\)\)/)
+  })
+
+  test('writes go through the row pointer, and a row can be pointed elsewhere', async () => {
+    const { write, repoint, distinct } = await run(`
+      data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+      data other: *mut [2][3]i32 = mut [[0, 0, 0], [0, 0, 0]]
+      data zeros: *[2][3]i32 = [[0, 0, 0], [0, 0, 0]]
+      data spare: *mut [3]i32 = mut [40, 41, 42]
+      export func write(i: u32#2, j: u32#3, v: i32) -> i32 {
+        board[i][j] = v
+        board[i][j] += 1
+        return board[i][j]
+      }
+      export func repoint() -> i32 {
+        board[1] = spare
+        board[1][0] = 50
+        return spare[0] * 100 + board[1][2]
+      }
+      export func distinct() -> i32 {
+        other[0][1] = 7
+        // Each row of a mutable table is its own, shared with no other data.
+        return other[1][1] * 100 + zeros[0][1] * 10 + other[0][1]
+      }
+    `)
+    expect([write(1, 2, 8), write(0, 0, 3), write(1, 0, 0)]).toEqual([9, 4, 1])
+    expect(repoint()).toBe(5042)
+    expect(distinct()).toBe(7)
+  })
+
+  test('len, wid, sizeof, loops, lets, arguments and ranges', async () => {
+    const { lens, loops, pass, addr, range, copy } = await run(`${TABLES}
+      data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+      func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+      func total(s: []i32) -> i32 {
+        let t = 0
+        for x in s { t += x }
+        return t
+      }
+      export func lens() -> u32 => grid.len * 10000 + grid.wid * 1000 + grid[0].len * 100 + sizeof(*[2][3]i32) * 10 + sizeof([2][3]i32) / 6
+      export func loops() -> i32 {
+        let t = 0
+        for k, r in grid { t += r[2] * (k as i32 + 1) }
+        for s in rows { t += s[0] * 100 }
+        return t
+      }
+      export func pass(i: u32#2) -> i32 {
+        let r = grid[i]
+        return sum(r) * 100 + total(grid[i])
+      }
+      export func addr(i: u32#2) -> i32 {
+        let p = &grid[i]
+        return p.*[1]
+      }
+      export func range() -> i32 {
+        let s = grid[1..]
+        return (s.len as i32) * 100 + s[0][2]
+      }
+      export func copy() -> i32 {
+        board[0..2] = grid[0..2]
+        return board[1][2] * 10 + board[0][0]
+      }
+    `)
+    expect(lens()).toBe(24344)
+    expect(loops()).toBe(2 + 10 + 1500)
+    expect([pass(0), pass(1)]).toEqual([1010, 1212])
+    expect([addr(0), addr(1)]).toEqual([1, 4])
+    expect(range()).toBe(105)
+    expect(copy()).toBe(57)
   })
 })
 
