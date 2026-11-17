@@ -595,6 +595,26 @@ describe('expression codegen', () => {
       expect(wat).not.toContain('__match_')
     })
 
+    test('a match on a subject of several values keeps it in no local', () => {
+      const wat = funcWat('func f(s: []u8) -> i32 => match s { _ => 1 }')
+      expect(wat).not.toContain('__match_')
+      expect(wat).not.toContain('local.get $s_ptr')
+    })
+
+    test('a match evaluates a subject of several values once, and drops them', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() -> (i32, i64) => (1, 2)`)
+      expect(wat).toContain('(call $g)\n(drop)\n(drop)\n(i32.const 1)')
+      expect(wat).not.toContain('__match_')
+    })
+
+    test('a match evaluates a subject with no value', () => {
+      const wat = funcWat(`func f() -> i32 => match g() { _ => 1 }
+        func g() {}`)
+      expect(wat).toContain('(call $g)\n(i32.const 1)')
+      expect(wat).not.toContain('(drop)')
+    })
+
     test('a match arm block gives its value', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         0 => { let x = k + 1\n x * 2 }

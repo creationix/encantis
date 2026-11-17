@@ -88,3 +88,54 @@ test "a match statement draws its subject once per turn" {
   assert count_ones(5) == 2
   assert calls == 5
 }
+
+// A subject that is several values (a slice, a tuple, a wide integer) or none
+// can only meet `_`. It is evaluated once all the same.
+func fresh() -> []u8 {
+  calls += 1
+  let all: []u8 = digits
+  return all
+}
+
+func two() -> (u8, u8) => (next(), next())
+
+func nothing() {
+  calls += 1
+}
+
+func any_slice(s: []u8) -> i32 => match s { _ => 1 }
+
+func any_fresh() -> i32 => match fresh() { _ => 2 }
+
+func any_two() -> i32 => match two() { _ => 3 }
+
+func any_wide(x: u128) -> i32 => match x + 1 { _ => 4 }
+
+func any_nothing() -> i32 => match nothing() { _ => 5 }
+
+test "a subject of several values, or none, is evaluated once" {
+  reset()
+  assert any_slice(digits) == 1
+  assert calls == 0
+  assert any_fresh() == 2
+  assert calls == 1
+  assert any_two() == 3
+  assert calls == 3
+  assert any_wide(7) == 4
+  assert any_nothing() == 5
+  assert calls == 4
+}
+
+// As a statement.
+func drain() -> u32 {
+  match fresh() {
+    _ => { cursor += 2 }
+  }
+  return cursor
+}
+
+test "a match statement on a slice" {
+  reset()
+  assert drain() == 2
+  assert calls == 1
+}

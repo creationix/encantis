@@ -1692,17 +1692,25 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
 
 function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
   let subject = exprToWat(expr.subject, ctx)
+  const subjectType = lookupExprType(expr.subject, ctx)
+  const subjectTypes = subjectType ? typeToWasm(subjectType) : ['i32']
   // Each arm's test reads the subject again. Anything but a plain read (a
   // call, arithmetic) is evaluated once, into a scratch local.
   let setup = ''
-  if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
+  if (subjectTypes.length !== 1) {
+    // A slice, a tuple, nothing at all: only `_` takes a subject that isn't
+    // one wasm value, so no arm reads it and it needs no local. It is still
+    // evaluated, for what it does, unless all it does is read.
+    if (!/^(?:\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)\s*)*$/.test(subject)) {
+      setup = `${[subject, ...subjectTypes.map(() => '(drop)')].join('\n')}\n`
+    }
+  } else if (!/^\((?:local\.get|global\.get|[if](?:32|64)\.const) [^\s()]+\)$/.test(subject)) {
     const local = `$__match_${expr.span.start}`
     setup = `(local.set ${local} ${subject})\n`
     subject = `(local.get ${local})`
   }
   // Patterns are compared in the subject's type.
-  const subjectType = lookupExprType(expr.subject, ctx)
-  const wt = subjectType ? typeToWasmSingle(subjectType) : 'i32'
+  const wt = subjectTypes[0] ?? 'i32'
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
