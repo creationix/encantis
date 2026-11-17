@@ -2641,7 +2641,7 @@ describe('functions that share a name', () => {
       'bump takes *mut Box first; the receiver is a Box, which is held in registers and has no address',
     ])
     expect(called('func f(a: Later) -> i32 => a.x\nfunc f(a: Other) -> i32 => a.y\ntype Later = (x: i32)\ntype Other = (y: i32)',
-      'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:@Other'])
+      'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:<y:i32>'])
   })
 
   test('a generic function cannot share its name', () => {
@@ -2856,5 +2856,27 @@ describe('types that refer to themselves', () => {
     expect(errs('type A = (b: B, v: u32)\ntype B = (a: ?*A, w: A)\nfunc f(a: A, b: B) -> u32 => a.v')).toEqual([holds('B')])
     expect(errs('type A = B\ntype B = A\nfunc f(n: A) -> u32 => 1')).toEqual([holds('B')])
     expect(errs('func L(comptime T: type) -> type => (head: T, rest: ?*T)\ntype Knot = L(Knot)\nfunc f(p: *Knot) -> u32 => sizeof(Knot)')).toEqual([holds('Knot')])
+  })
+})
+
+describe('types declared further down', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+
+  test('a chain of names resolves in whatever order it is declared', () => {
+    const chain = 'type A = B\ntype B = C\ntype C = u32\n'
+    expect(errs(`${chain}func f(a: A) -> u32 => a + 1\nfunc g(x: u32) -> A => x\nfunc h() -> u32 => sizeof(A)`)).toEqual([])
+    expect(errs(`${chain}func f(a: A, b: B) -> bool => a == b`)).toEqual([])
+    // Through the fields of structs
+    const fields = 'type S = (t: T, v: A)\ntype T = (u: U, w: B)\ntype U = (x: C)\n'
+    expect(errs(`${fields}${chain}func f(s: S) -> u32 => s.t.u.x + s.t.w + s.v\nfunc g() -> u32 => sizeof(S)`)).toEqual([])
+    expect(errs(`${fields}${chain}func f(s: *S) -> u32 => s.t.u.x\nfunc g(x: (t: (u: (x: u32), w: u32), v: u32)) -> S => x`)).toEqual([])
+  })
+
+  test('a global, a def or a data that names a type declared below it is checked against that type', () => {
+    expect(errs('global one: Byte = 1\nglobal origin: (first: Byte, second: u16) = (1, 2)\ntype Byte = u8\nfunc f() -> u32 => origin.second + one')).toEqual([])
+    expect(errs('global origin: P = P(1, 2)\ntype P = (first: Byte, second: u16)\ntype Byte = u8\nfunc f() -> u32 => origin.second')).toEqual([])
+    expect(errs('data table = [P(3, 4)]\ndef four: Byte = 4\ntype P = (first: Byte, second: u16)\ntype Byte = u8\nfunc f() -> u32 => (table as *P).second + four')).toEqual([])
+    // And refused where it does not fit, as it is above
+    expect(errs('global one: Byte = 300\ntype Byte = u8')).toEqual(['cannot assign int(300) to Byte'])
   })
 })

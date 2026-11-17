@@ -44,6 +44,21 @@ func distance(a:Point, b:Point) -> f32   // Point is a type
 let point = Point(1.0, 2.0)              // point is a variable, Point is a constructor
 ```
 
+A type can be named anywhere in its module, above its declaration as well as below it: in another type, a signature, a global's or a `data`'s type and initializer. The types of a module are resolved before anything else in it, so names that lead to one another resolve in whatever order they are declared.
+
+<!-- spec:begin compile -->
+
+```ents
+global origin: Pair = (1, 2)
+type Pair = (first: Coord, second: Coord)
+type Coord = Size
+type Size = u32
+
+export func far() -> Size => origin.first + origin.second
+```
+
+<!-- spec:end -->
+
 The type parameters of a generic function are type identifiers too: in `func max(comptime T: type, a: T, b: T)`, `T` is a type inside the function (see [8. Generics](#8-generics)).
 
 ### 1.4 Reserved Keywords
@@ -550,7 +565,7 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
 
 #### Types That Refer to Themselves
 
-A type can refer to itself, or to a type declared after it, through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
+A type can refer to itself through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
 
 <!-- spec:begin compile -->
 

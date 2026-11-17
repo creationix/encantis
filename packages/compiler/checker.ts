@@ -742,9 +742,15 @@ class CheckContext {
     }
     this.checkTypeFuncs()
 
-    // First pass: collect all type aliases, function signatures, globals, defs
+    // First pass: collect all type aliases, function signatures, globals, defs.
+    // The types come first: nothing in a type is a value, and any other
+    // declaration can name a type declared below it, also in an initializer
+    // that is checked where it is collected.
     for (const decl of module.decls) {
-      this.collectDeclaration(decl)
+      if (decl.kind === 'TypeDecl') this.collectDeclaration(decl)
+    }
+    for (const decl of module.decls) {
+      if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
     }
 
     // Resolve any forward references in the type cache
@@ -5587,10 +5593,10 @@ class CheckContext {
       for (const [param, type] of found) bound.set(param, type)
     }
 
-    // A type declared further down is not known yet while declarations are
-    // still being collected. A call in a global's initializer or a def's
-    // value is inferred there, before it is rejected for not being a
-    // constant: its instance would be keyed by the name, not by the type.
+    // A type that is not resolved yet would key the instance by its name,
+    // not by the type. The types of a module are collected before anything
+    // else is, so a call in a global's initializer or a def's value, which is
+    // inferred while declarations are collected, finds them all.
     for (const p of typeParams) {
       const pending = unresolvedName(bound.get(p) as ResolvedType)
       if (pending) {

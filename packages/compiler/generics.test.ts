@@ -734,15 +734,15 @@ export func f() -> u32 => limit`)).toEqual(notConstant)
   // constants. A type argument declared further down is not resolved yet
   // there; instantiated all the same, the instance would be made for the
   // name alone and its errors would be about that.
-  test('a type argument has to be declared before a call that is inferred during collection', () => {
+  test('a type argument may be declared after a call that is inferred during collection', () => {
+    // The types of a module are collected before its globals and defs, so
+    // the type is no part of what is wrong, wherever it is declared.
     const pick = 'func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\n'
-    const late = "type argument T of 'pick' uses type 'Late' before it is declared"
     expect(errorsOf(`${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q
-type Late = (q: i32, r: i32)`)).toEqual([late, 'global initializer must be a compile-time constant'])
+type Late = (q: i32, r: i32)`)).toEqual(['global initializer must be a compile-time constant'])
     expect(errorsOf(`${pick}def d = pick(Late, true, (1, 2), (3, 4)).q
 type Late = (q: i32, r: i32)
-export func f() -> i32 => d`)).toEqual([late, 'def value must be a compile-time constant'])
-    // Declared first, the type is no part of what is wrong.
+export func f() -> i32 => d`)).toEqual(['def value must be a compile-time constant'])
     expect(errorsOf(`type Late = (q: i32, r: i32)
 ${pick}global g: i32 = pick(Late, true, (1, 2), (3, 4)).q`)).toEqual(['global initializer must be a compile-time constant'])
   })
