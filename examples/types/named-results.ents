@@ -38,3 +38,63 @@ test "a trailing if leaves the named results as set" {
 test "a trailing loop leaves the named result as set" {
   assert sum_to(5) == 10
 }
+
+// A bare return hands the named results back as they are set so far. (With an
+// unnamed result it is an error: there is nothing for it to return.)
+export func first_factor(n: u32) -> (factor: u32, found: bool) {
+  factor = 2
+  found = true
+  loop {
+    return when n % factor == 0
+    factor += 1
+    if factor * factor > n {
+      found = false
+      return
+    }
+  }
+}
+
+test "a bare return gives back the named results as set" {
+  let a = first_factor(91)
+  assert a.factor == 7
+  assert a.found
+  let b = first_factor(97)
+  assert !b.found
+}
+
+// A trailing value supplies the results, in order: a tuple literal (each
+// element widens to its result), or a call whose results are passed on.
+export func split(n: u32) -> (hi: u32, lo: u32) {
+  (n >> 16, n & 0xffff)
+}
+
+export func widened(n: u16) -> (count: u64, half: f64) {
+  (n, n / 2)
+}
+
+export func swapped(n: u32) -> (lo: u32, hi: u32) {
+  split(n << 16 | n >> 16)
+}
+
+test "a trailing value fills the named results in order" {
+  let a = split(0x12345678)
+  assert a.hi == 0x1234
+  assert a.lo == 0x5678
+  let b = widened(9)
+  assert b.count == 9
+  assert b.half == 4.0
+  let c = swapped(0x12345678)
+  assert c.lo == 0x5678
+  assert c.hi == 0x1234
+}
+
+// An expression body is the results too.
+export func halves(n: u16) -> (hi: u64, lo: f64) => (n >> 8, n & 0xff)
+export func wide(n: i32) -> (r: i64) => n
+
+test "an expression body supplies named results" {
+  let h = halves(0x1234)
+  assert h.hi == 0x12
+  assert h.lo == 52.0
+  assert wide(-7) == -7
+}

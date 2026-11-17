@@ -1,0 +1,37 @@
+// The builtins' names are not reserved. A function the program declares takes
+// the place of the builtin of the same name, everywhere in the module.
+
+func max(a: i32, b: i32, c: i32) -> i32 {
+  let m = a
+  if b > m { m = b }
+  if c > m { m = c }
+  return m
+}
+
+// Not the builtin's absolute value: the distance from ten.
+func abs(x: i32) -> i32 {
+  return x - 10 when x > 10
+  return 10 - x
+}
+
+test "a declared function takes the place of the builtin" {
+  assert max(1, 7, 3) == 7
+  assert abs(4) == 6
+  assert abs(-4) == 14
+}
+
+test "a variable with a builtin's name does not" {
+  let min = min(8, 5)
+  assert min == 5
+  assert min(min, 3) == 3
+}
+
+// A parameter named max hides the function declared above, and where it does
+// the name is the builtin's again.
+func largest(max: i32, other: i32) -> i32 => max(max, other)
+
+test "nor does one that hides the declared function" {
+  assert largest(2, 9) == 9
+  assert largest(9, 2) == 9
+  assert max(2, 9, 1) == 9
+}

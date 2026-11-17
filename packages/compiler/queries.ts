@@ -117,6 +117,14 @@ export function gotoDefinition(
   }
 }
 
+// The type of the identifier used (not declared) at an offset.
+function identExprType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  for (const [expr, type] of checkResult.exprTypes) {
+    if (expr.kind === 'IdentExpr' && expr.span.start === offset) return type
+  }
+  return undefined
+}
+
 export function hover(
   source: string,
   module: AST.Module,
@@ -132,7 +140,7 @@ export function hover(
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, at the start of the callee's name.
     if (sym.kind === 'generic') {
-      const instance = checkResult.types.get(typeKey(wordStart(source, offset), 'IdentExpr'))
+      const instance = identExprType(checkResult, wordStart(source, offset))
       if (instance) return { name, type: typeToString(instance), kind: sym.kind }
     }
     const result: HoverResult = {
@@ -150,7 +158,7 @@ export function hover(
 
   // Check type map for the identifier at this offset (params, locals, let bindings)
   const type = checkResult.types.get(typeKey(offset, 'IdentPattern'))
-    ?? checkResult.types.get(typeKey(offset, 'IdentExpr'))
+    ?? identExprType(checkResult, offset)
     ?? checkResult.types.get(typeKey(offset, 'Field'))
   if (type) {
     return {
@@ -326,7 +334,7 @@ export function signatureHelp(
   const sym = checkResult.symbols.get(name)
   // A generic has the signature of the instance this call uses, which the
   // checker recorded at the callee's name.
-  const ft = sym?.kind === 'generic' ? checkResult.types.get(typeKey(wordStart(source, offset), 'IdentExpr')) : sym?.kind === 'func' ? sym.type : null
+  const ft = sym?.kind === 'generic' ? identExprType(checkResult, wordStart(source, offset)) : sym?.kind === 'func' ? sym.type : null
   if (ft?.kind !== 'func') return null
 
   return {

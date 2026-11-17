@@ -1,0 +1,112 @@
+// Tuples and structs in data arrays are laid out in the data section like any
+// other literal: field after field, with no padding. A tuple gives the fields
+// by position; a constructor can name them.
+
+type Point = (x: i32, y: i32)
+type Named = (name: []u8, at: Point, dims: [3]u16, last: u8)
+
+data pairs = [(1, 2), (3, 4)]
+data points: *[2]Point = [Point(x: 5, y: 6), Point(y: 8, x: 7)]
+data swapped: *[1]Point = [(y: 8, x: 7)]
+data mixed = [(1:u8, 2:i16, 3:u64), (4, 5, 6)]
+data nested = [((1, 2), 3:u8), ((4, 5), 6)]
+data people: *[2]Named = [("ab", (1, 2), [3:u16, 4, 5], 6), Named("cde", Point(7, 8), [9:u16, 10, 11], 12)]
+
+test "an array of tuples" {
+  assert pairs[0].0 == 1
+  assert pairs[0].1 == 2
+  assert pairs[1].0 == 3
+  assert pairs[1].1 == 4
+}
+
+test "an array of structs, a constructor's fields by name in any order" {
+  assert points[0].x == 5
+  assert points[0].y == 6
+  assert points[1].x == 7
+  assert points[1].y == 8
+  let t = 0
+  for p in points { t += p.x * p.y }
+  assert t == 86
+}
+
+test "a tuple's fields go by position, whatever they are called" {
+  assert swapped[0].x == 8
+  assert swapped[0].y == 7
+  let local: Point = (y: 8, x: 7)
+  assert local.x == 8
+}
+
+test "a slice field points at its own literal" {
+  assert people[0].name.len == 2
+  assert people[0].name.ptr[1] == 98
+  assert people[1].name.len == 3
+  assert people[1].name.ptr[2] == 101
+  let n: u32 = 0
+  for p in people { n += p.name.len }
+  assert n == 5
+}
+
+type Entry = (key: *[!]u8, bytes: *[3]u8, code: u8)
+
+data entries: *[2]Entry = [("ab", "xyz", 1), Entry("hij", [7:u8, 8, 9], 2)]
+
+func key-length(key: *[!]u8) -> u32 {
+  let p = key as [*]u8
+  let n: u32 = 0
+  while p[n] != 0 { n += 1 }
+  return n
+}
+
+test "a pointer field points at its own literal too" {
+  assert key-length(entries[0].key) == 2
+  assert key-length(entries[1].key) == 3
+  assert entries[0].bytes[2] == 122
+  assert entries[1].bytes[1] == 8
+  assert entries[1].code == 2
+}
+
+test "struct and fixed-array fields lie in place" {
+  assert people[0].at.y == 2
+  assert people[1].at.x == 7
+  assert people[0].dims[0] == 3
+  assert people[0].dims[2] == 5
+  assert people[1].dims[1] == 10
+  assert people[0].last == 6
+  assert people[1].last == 12
+  assert sizeof(Named) == 23
+}
+
+test "fields of different widths are packed" {
+  assert mixed[0].0 == 1
+  assert mixed[0].1 == 2
+  assert mixed[0].2 == 3
+  assert mixed[1].0 == 4
+  assert mixed[1].1 == 5
+  assert mixed[1].2 == 6
+}
+
+test "tuples in tuples" {
+  assert nested[0].0.1 == 2
+  assert nested[1].0.0 == 4
+  assert nested[1].1 == 6
+}
+
+func corner(a: i32) -> i32 {
+  let local: *[2]Point = [(x: 1, y: 2), (x: a, y: 4)]
+  return local[1].x + local[1].y * 10 + local[0].y * 100
+}
+
+test "a tuple with a runtime field is filled in when the literal is reached" {
+  assert corner(7) == 247
+}
+
+type Mixed = (a: u64, b: u8, c: f32)
+
+func widths(x: u8) -> f32 {
+  let l: *[2]Mixed = [(5, x, 1.5), Mixed(7, 2, 2.5)]
+  return (l[0].a as f32) + (l[0].b as f32) + l[0].c + l[1].c + (l[1].a as f32)
+}
+
+test "its literal fields take the types of the struct's fields" {
+  assert widths(3) == 19.0
+}

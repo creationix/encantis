@@ -409,6 +409,20 @@ export interface Arg extends BaseNode {
   value: Expr | null // null for shorthand (name:)
 }
 
+// `x:` is shorthand for `x: x`. The identifier it stands for is one node per
+// argument, so the type the checker records for it is the one codegen finds.
+const shorthandValues = new WeakMap<Arg, IdentExpr>()
+
+export function argValue(arg: Arg): Expr | null {
+  if (arg.value || !arg.name) return arg.value
+  let ident = shorthandValues.get(arg)
+  if (!ident) {
+    ident = { kind: 'IdentExpr', name: arg.name, span: arg.span }
+    shorthandValues.set(arg, ident)
+  }
+  return ident
+}
+
 // expr.member or expr.0 or expr.* or expr.type
 export interface MemberExpr extends BaseNode {
   kind: 'MemberExpr'

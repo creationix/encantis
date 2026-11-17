@@ -46,9 +46,9 @@ const BUILTIN_SIGNATURES: Record<string, string> = {
   min: 'builtin min(a: T, b: T) -> T',
   max: 'builtin max(a: T, b: T) -> T',
   // Integer bit operations
-  clz: 'builtin clz(x: i32) -> i32',
-  ctz: 'builtin ctz(x: i32) -> i32',
-  popcnt: 'builtin popcnt(x: i32) -> i32',
+  clz: 'builtin clz(x: i32) -> u8',
+  ctz: 'builtin ctz(x: i32) -> u8',
+  popcnt: 'builtin popcnt(x: i32) -> u8',
 };
 
 // Convert symbol kind to display prefix
@@ -356,9 +356,9 @@ export function startServer(connection: Connection): void {
       min: 'Minimum of two values (all numeric types).',
       max: 'Maximum of two values (all numeric types).',
       copysign: 'Copy sign of y to x (f32/f64).',
-      clz: 'Count leading zeros (integers).',
-      ctz: 'Count trailing zeros (integers).',
-      popcnt: 'Population count - number of 1 bits (integers).',
+      clz: 'Count leading zeros (i32/i64/u32/u64).',
+      ctz: 'Count trailing zeros (i32/i64/u32/u64).',
+      popcnt: 'Population count - number of 1 bits (i32/i64/u32/u64).',
     };
 
     // Type docs

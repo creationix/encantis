@@ -524,6 +524,26 @@ let x = p.x              // field read
 p.y = 5.0                // field write
 ```
 
+A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call. Fields of fields chain.
+
+```ents
+type Point = (x:f32, y:f32)
+type Rect = (origin:Point, size:(w:f32, h:f32))
+
+func bounds() -> Rect => Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
+
+func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
+  p.x = 0.0                    // a field of the Point that p points to
+  p.y += 1.0
+  list[i].origin.x = p.x       // a field of a field of an element
+  let r = bounds()
+  r.size.w = 2.0               // a field of a field of a variable
+  return bounds().size.h       // a field of a call's result
+}
+```
+
+`p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
+
 ### 2.9 Enum Types (Algebraic Data Types)
 
 > **Status: Design only** — enums are parsed but not yet type-checked or compiled.
@@ -662,12 +682,47 @@ u8 → u16 → u32 → u64
 f32 → f64
 ```
 
+An unsigned integer also widens to a wider signed one, which holds all its values: `u8` → `i16`, `u32` → `i64`.
+
 Integer to float is implicit only when the float's mantissa can hold all values:
 
 | Float | Safe integer types | Mantissa bits |
 |-------|-------------------|---------------|
 | f32 | i8, u8, i16, u16 | 24 |
 | f64 | i8, u8, i16, u16, i32, u32 | 53 |
+
+A value widens wherever two operand types meet or a value meets a declared type:
+
+- **Operators.** The narrower operand of an arithmetic, bitwise or comparison operator widens to the other's type. That is the type of the result (`bool` for a comparison).
+- **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
+- **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
+- **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`.
+
+```ents
+type Sample = (count: i64, mean: f64)
+
+func scale(r: f64, n: i32) -> f64 => r * n        // n widens to f64
+
+func total(a: u8, b: i32, c: i64) -> i64 {
+  let sum: i64 = a                                 // u8 to i64
+  sum += b                                         // i32 to i64
+  return sum + c
+}
+
+func sample(n: i32, sum: f32) -> Sample => Sample(n, sum)
+
+func pick(c: bool, n: i32, x: f64) -> f64 {
+  let v = if c { n } else { x }                    // an f64: n widens
+  return v
+}
+```
+
+The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
+
+A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [8.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
+
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([8.2](#structural-coercion)).
 
 #### Comptime Literal Promotion
 
@@ -677,6 +732,22 @@ Unsuffixed literals check actual value, not type:
 let x:f32 = 1.0 + 42        // OK: 42 fits in f32 mantissa
 let y:f32 = 1.0 + 16777216  // OK: 2^24 is max exact integer
 let z:f32 = 1.0 + 16777217  // ERROR: exceeds f32 precision
+```
+
+A constant expression takes the type it's used as, all the way down to its literals. A float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`:
+
+```ents
+func third() -> f32 {
+  let x: f32 = 1.0 / 3       // an f32 division of two f32 constants
+  return x
+}
+
+func big() -> i64 {
+  let x = 5000000000 + 1     // an i64 addition: the 1 isn't an i32
+  return x
+}
+
+func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
 ```
 
 Once a value has a concrete type, normal promotion rules apply:
@@ -691,8 +762,10 @@ let a:f32 = z          // ERROR: f64 → f32 needs explicit cast
 ```ents
 i32 + f32   // ERROR: i32 exceeds f32's mantissa
 i32 + u32   // ERROR: mixed signedness, cast explicitly
+i32 < u32   // ERROR: the same goes for comparisons
 i64 → i32   // ERROR: narrowing needs explicit cast
 bool + i32  // ERROR: cast bool first
+f64 % 2.0   // ERROR: % and the bitwise operators need integers
 ```
 
 #### Explicit Casts
@@ -730,6 +803,8 @@ Casts are required for:
 - Mixed signedness operations
 - Bool→integer
 
+A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
+
 ---
 
 ## 3. Declarations
@@ -765,6 +840,7 @@ data key = x"9d61b19deffd5a60"      // key: *[8]u8
 data table = [1:u64, 2, 3, 4]       // table: *[4]u64
 data msg = "hello"                   // msg: *[5]u8
 data origin = (0.0, 0.0)            // origin: *(f64, f64)
+data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
 ```
 
 The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:
@@ -772,6 +848,15 @@ The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T`
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
 data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
+```
+
+An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+
+```ents
+type Point = (x:i32, y:i32)
+type City = (name:[]u8, at:Point)
+
+data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
 ```
 
 #### Mutability
@@ -790,8 +875,25 @@ data buffer = mut [0:u8; 1024]      // unique, never deduplicated
 let count:i32 = 0
 let ptr:*u8       // uninitialized
 
-// Global variable (stored in linear memory)
+// Global variable (a wasm global)
 global total:i32 = 0
+```
+
+A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+
+```ents
+type Size = (w:i32, h:i32)
+
+global order:[]i32 = (0, 0)        // two wasm globals: the pointer and the length
+global size:Size = Size(3, 4)      // one per field
+global scratch:Size                // zero until it's set
+
+func keep(list:[]i32) -> u32 {
+  order = list
+  size.h += 1
+  scratch = size
+  return order.len
+}
 ```
 
 Type annotations are optional when the type can be inferred from the initializer:
@@ -801,6 +903,25 @@ global counter = 0:u32           // type inferred from suffix
 let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
+
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
+
+```ents
+def page = 64 * 1024
+data table = [1:u16, 2, 3]
+
+global limit: u32 = 4 * page     // 262144
+global ratio: f64 = 2 / 3.0
+global mask: u32 = ~0 << 12
+global span: (u32, f64) = (4 * page, 1 / 4.0)
+global bits: u32 = -1 as u32     // 4294967295
+global low: u8 = 300 as u8       // 44, as the cast gives at run time
+global bytes: [*]u8 = table as [*]u8
+```
+
+The value is the one the expression has at run time, in the types its parts have: `7 / 2` starts an `f64` global as 3.5 and an `i32` one as 3, and `200:u8 + 100:u8` is 44 whatever the global's type.
+
+A cast of an address is a constant when it keeps the address whole: to another pointer type, or to `i32` or `u32`. A value that needs a call or another global isn't a constant: assign it in a function.
 
 ### 3.4 Functions
 
@@ -830,7 +951,19 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results it fills them in order, whatever its own fields are called. An expression body gives the results the same way.
+
+```ents
+func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
+
+func halves(n: u16) -> (hi: u64, lo: f64) {
+  (n >> 8, n & 0xff)                     // each element widens to its result
+}
+
+func swapped(n: u32) -> (lo: u32, hi: u32) {
+  split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
+}
+```
 
 A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
@@ -948,6 +1081,8 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
 | `-\|` | saturating subtract (not yet implemented) | integers |
 | `*\|` | saturating multiply (not yet implemented) | integers |
 
+The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result. Types neither of which holds the other, such as `i32` and `u32`, need a cast.
+
 Saturating operators clamp at type boundaries instead of wrapping:
 
 ```ents
@@ -972,6 +1107,24 @@ let z = x -| 200     // -128 (min i8)
 | `<<<` | rotate left | integers |
 | `>>>` | rotate right | integers |
 
+`&`, `|` and `^` also take two bools. `>>` keeps the sign of a signed value.
+
+`~` of a constant is a bit pattern in the type it's used as, so it fits an unsigned type that holds its operand: `~7` is `0xfffffff8` as a `u32`. A negative constant doesn't: `x & -8` needs a signed `x`.
+
+```ents
+func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
+func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
+```
+
+The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
+
+A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
+
+```ents
+func rotr(x: u32, n: u32) -> u32 => x >>> n
+func swap_nibbles(b: u8) -> u8 => b <<< 4
+```
+
 ### 4.3 Comparison Operators
 
 | Operator | Description |
@@ -983,15 +1136,17 @@ let z = x -| 200     // -128 (min i8)
 | `==` | equal |
 | `!=` | not equal |
 
-All comparisons return `bool`.
+All comparisons return `bool`. The operands widen to one type, as for arithmetic. `==` and `!=` also compare bools and pointers; the ordering operators also compare pointers.
+
+`&&` and `||` take bools and evaluate the right side only when it's needed.
 
 ### 4.4 Unary Operators
 
 | Operator | Description |
 |----------|-------------|
-| `-x` | negation |
+| `-x` | negation (numbers) |
 | `!x` | logical NOT (bool only) |
-| `~x` | bitwise NOT |
+| `~x` | bitwise NOT (integers) |
 | `x.*` | dereference |
 
 For slice/array length and pointer extraction, use property access: `slice.len`, `slice.ptr`.
@@ -1016,6 +1171,22 @@ Assignment targets (lvalues) can be:
 | `ptr.T` | Type-punned memory location |
 | `(a, b, ...)` | Positional destructuring |
 | `(x:, y:, ...)` | Named destructuring (trailing colon) |
+
+An assignment reads its whole value before it writes any of it, so a value can be rebuilt from itself, in a variable or in memory:
+
+```ents
+type Point = (x:i32, y:i32)
+
+func flip(p:Point, q:*mut Point) -> Point {
+  p = Point(p.y, p.x)          // swaps the fields
+  q.* = Point(q.y, q.x)        // and so does this, in memory
+  return p
+}
+```
+
+The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
+
+The target's address is evaluated once, also for a compound assignment: `xs[next()] += 1` calls `next` one time.
 
 > **Status: Destructuring is not yet fully implemented in codegen.**
 
@@ -1074,6 +1245,8 @@ count += 1               // increment variable
 arr[i] += delta          // modify array element
 ptr.* ^= mask            // XOR through pointer
 ```
+
+The result goes back into `x`, so `n` widens to the type of `x`, never the other way: `total += small` is fine, `small += total` needs `small += total as i32`. A shift count (`x <<= n`) can be any integer type.
 
 ### 4.6 Pointer Operations
 
@@ -1201,6 +1374,14 @@ if let data = entry.dynamic {
 
 `if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
 
+It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
+
+```ents
+data scores = [95, 87, 42]:*[_]i32
+
+func score(i: u32, lenient: bool) -> i64 => if let s = scores[i] { s } elif lenient { 50 } else { -1 }
+```
+
 #### Element Addresses and Writes
 
 Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index), or the write is an error. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
@@ -1323,6 +1504,21 @@ if x != 0 { ... } // OK: explicit comparison
 if flag { ... }   // OK: flag is bool
 ```
 
+The same goes for `while`, `when`, `assert`, and the operands of `&&`, `||` and `!`.
+
+An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)).
+
+```ents
+func sign(x: i32) -> i32 => if x < 0 { -1 } elif x > 0 { 1 } else { 0 }
+
+func gap(found: bool, p: i32, l: i32) -> i32 {
+  let v = if found { p - l } else { -1 }
+  return v
+}
+```
+
+Used as a statement, an `if` has no value to agree on: its branches can end in anything.
+
 ### 5.2 Loops
 
 ```ents
@@ -1349,6 +1545,20 @@ loop {                   // infinite loop
 
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 
+The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func total(list:[]Spot) -> i32 {
+  let t = 0
+  for s in list {
+    t += s.c + s.di + s.room
+  }
+  return t
+}
+```
+
 ### 5.3 Control Statements
 
 All control statements support a `when` suffix for conditional execution:
@@ -1366,6 +1576,8 @@ return value when cond   // return if condition is true
 ```
 
 The `when` form is equivalent to wrapping in `if cond { ... }`.
+
+A bare `return` is for a function with no result, or with named results, which it returns as they are set. In a function with an unnamed result, `return` needs a value.
 
 #### Defer
 
@@ -1416,7 +1628,7 @@ match value {
 }
 ```
 
-Match arms are tested in order. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
+Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
 
 ```ents
 let result = match code {
@@ -1430,7 +1642,7 @@ let result = match code {
 }
 ```
 
-Match is an expression and returns a value. All arms must have compatible types:
+Match is an expression and returns a value. All arms must have compatible types: they widen to one type, like the branches of an `if`.
 
 ```ents
 let msg:[]u8 = match status & 3 {
@@ -1679,6 +1891,8 @@ export "mem" memory 8 256  // explicit name, 8 min, 256 max
 // Export global - name defaults to global identifier
 export global counter:i32 = 0
 ```
+
+A global of several wasm values is exported (and imported from the host) as one wasm global per value, each named for its part the way a local's registers are: `export global order:[]i32` exports `order_ptr` and `order_len`, and a struct global `size:(w:i32, h:i32)` exports `size_w` and `size_h`.
 
 ### 7.3 Memory Declarations
 
@@ -1938,6 +2152,7 @@ Encantis distinguishes between register storage (WASM locals/globals) and linear
 | `let p:Point` | Multiple WASM locals | Fields are separate registers |
 | `let ptr:*[64]u8` | Single WASM local (i32) | Holds a pointer, doesn't allocate |
 | `global g:i32` | WASM global | Module-scoped register |
+| `global s:[]u8` | Two WASM globals (ptr, len) | One per value, like a local |
 | `def buffer = [0:u8; 64]` | Linear memory | Allocates 64 bytes in data section |
 
 Primitives and structs are stored in WASM locals/globals—fast registers with no memory address. Pointer variables are single i32 values that reference memory allocated via `def`.
@@ -1984,7 +2199,7 @@ length(ptr.*)              // OK: dereference to get by-value Point
 For by-reference semantics, explicitly accept a pointer. The caller must ensure the data is serialized in linear memory:
 
 ```ents
-func modify(p:*Point) {
+func modify(p:*mut Point) {
   p.x = 0.0
   p.y = 0.0
 }
@@ -1992,7 +2207,7 @@ func modify(p:*Point) {
 let p = Point(3.0, 4.0)
 modify(&p)                 // ERROR: p has no address (stack-allocated)
 
-let mem_p:*Point = allocate_point()
+let mem_p:*mut Point = allocate_point()
 modify(mem_p)              // OK: mem_p points to linear memory
 ```
 
@@ -2011,6 +2226,8 @@ func scale(p:BigPoint, factor:i32) -> BigPoint {
 let small = (x: 10:i8, y: 20:i8)
 scale(small, 2)
 ```
+
+> **Status:** only fields that are held the same way coerce (`i8` → `i32`, both a wasm `i32`). A field that needs a conversion (`i32` → `i64`, integer → float) is a checker error for a value that already exists; a literal's elements are converted one by one ([2.10](#implicit-widening)).
 
 This coercion only applies to by-value passing. For pointers, exact memory layout is required:
 
@@ -2080,27 +2297,72 @@ let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
 
+### 9.6 Structs and Slices in Memory
+
+Any value type can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+
+| Type | Bytes in memory |
+|------|-----------------|
+| `i8`, `u8`, `bool` | 1 |
+| `i16`, `u16` | 2 |
+| `i32`, `u32`, `f32` | 4 |
+| `i64`, `u64`, `f64` | 8 |
+| `i128` ... `u512` | 16 ... 64, as 64-bit limbs, least significant first |
+| `*T`, `[*]T`, `*[N]T` | 4 |
+| `[]T` | 8: the pointer, then the length |
+| `[N]T` | N × `sizeof(T)` |
+| `(a:T1, b:T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+
+`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset.
+
+```ents
+type Lane = (cells:[]i32, free:i32)       // 12 bytes: cells.ptr 0, cells.len 4, free 8
+type Option = (d:i32, lane:Lane)          // 16 bytes: d 0, lane 4
+type Mixed = (a:u8, b:i16, c:u64)         // 11 bytes: a 0, b 1, c 3
+```
+
+A value in memory is read and written whole or part by part. Each wasm value of it is one load or store at its offset, so there is nothing to pay for the struct: `list[k] = Spot(a, b, c)` is three stores, and `list[k].di` is one load.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func sum(s:Spot) -> i32 => s.c + s.di + s.room
+
+func demo(list:[*]mut Spot, k:u32, p:*mut Spot, all:[]Spot) -> i32 {
+  list[k] = Spot(20, 1, 2)       // store a whole struct
+  let s = list[k]                // load one: s is a copy, in registers
+  p.* = s                        // through a pointer to one struct
+  p.di += 1                      // one field through the pointer (p.* is implied)
+  list[k + 1] = list[k]          // copy from one place to another
+  let t = sum(p.*) + sum(list[k])   // pass by value
+  for spot in all {              // each element in turn
+    t += spot.room
+  }
+  return t
+}
+```
+
+The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opts[i].lane.cells.len`, `for x in opts[i].lane.cells { ... }`.
+
 ---
 
 ## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
 
-A generic function declared with the name of a builtin (`min`, `max`, `abs`, ...) replaces the builtin in its module: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls. See [8. Generics](#8-generics).
-
-### 10.1 Float Builtins
+### 10.1 Numeric Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
 | `sqrt(x)` | f32/f64 | same | Square root |
-| `abs(x)` | f32/f64 | same | Absolute value |
 | `ceil(x)` | f32/f64 | same | Ceiling (round up) |
 | `floor(x)` | f32/f64 | same | Floor (round down) |
 | `trunc(x)` | f32/f64 | same | Truncate toward zero |
 | `nearest(x)` | f32/f64 | same | Round to nearest even (banker's rounding) |
-| `min(a, b)` | f32/f64 | same | Minimum of two values |
-| `max(a, b)` | f32/f64 | same | Maximum of two values |
 | `copysign(x, y)` | f32/f64 | same | Copy sign of y to x |
+| `abs(x)` | any numeric | same | Absolute value |
+| `min(a, b)` | any numeric | same | Minimum of two values |
+| `max(a, b)` | any numeric | same | Maximum of two values |
 
 ```ents
 let x:f64 = -3.7
@@ -2113,6 +2375,19 @@ min(3.0, 5.0)          // 3.0
 copysign(5.0, -1.0)    // -5.0
 ```
 
+The operands of a builtin are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type (§2.10). With only literals, the operands take their default type (`i32`, `f64`).
+
+```ents
+let x:f32 = 0.25
+let n:i32 = -7
+let big:i64 = 5000000000
+max(1.0, x)            // f32, the same as max(x, 1.0)
+max(n, big)            // i64: n widens
+abs(n - 10)            // 17
+```
+
+On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min` and `max` return one of their operands, so when every operand is in a range (§2.2), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`.
+
 ### 10.2 Integer Builtins
 
 | Function | Input | Returns | Description |
@@ -2120,8 +2395,9 @@ copysign(5.0, -1.0)    // -5.0
 | `clz(x)` | i32/i64/u32/u64 | u8 | Count leading zeros (0 to bit width) |
 | `ctz(x)` | i32/i64/u32/u64 | u8 | Count trailing zeros (0 to bit width) |
 | `popcnt(x)` | i32/i64/u32/u64 | u8 | Population count (0 to bit width) |
+| `mul_hi(a, b)` | u64, u64 | u64 | High 64 bits of the 128-bit product |
 
-These functions return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type.
+The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error: convert it first (`clz(b as u32) - 24` for a `u8`).
 
 ```ents
 let n:u32 = 0b00001000
@@ -2131,7 +2407,12 @@ popcnt(n)              // 1:u8 (number of 1 bits)
 
 // Result implicitly widens to target type
 let count:u32 = popcnt(n)    // u8 → u32 implicit
-let offset:u64 = clz(n) * 8  // u8 → u64 implicit
+let big:u64 = 0x500000000
+let odd = big >> ctz(big)    // the count widens to the u64 it shifts: 5
+
+// Arithmetic on the count alone is u8 arithmetic: widen it first if the
+// result can pass 255
+let offset = u64(clz(n)) * 8
 ```
 
 ### 10.3 Memory Builtins
@@ -2140,10 +2421,13 @@ let offset:u64 = clz(n) * 8  // u8 → u64 implicit
 |----------|-------|---------|-------------|
 | `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
 | `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
+| `memzero(dest)` | *[N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
-`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. Range assignment (§4.8) is the checked form for compile-time sizes.
+`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+
+> **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 
 ```ents
 let pages = memory-size()    // current page count
@@ -2162,17 +2446,20 @@ if old == -1 {
 | Conversion | Instruction |
 |------------|-------------|
 | i32 → i64 | i64.extend_i32_s / _u |
-| i32 → f32 | f32.convert_i32_s / _u |
+| i8, u8, i16, u16 → f32 | f32.convert_i32_s / _u |
 | i32 → f64 | f64.convert_i32_s / _u |
-| i64 → f32 | f32.convert_i64_s / _u |
-| i64 → f64 | f64.convert_i64_s / _u |
 | f32 → f64 | f64.promote_f32 |
+
+Here `i32` stands for every integer type up to 32 bits: they all live in a wasm `i32`, so widening among them emits nothing. `_s` or `_u` follows the signedness of the type widened.
 
 ### 11.2 Narrowing Instructions (explicit cast)
 
 | Conversion | Instruction |
 |------------|-------------|
 | i64 → i32 | i32.wrap_i64 |
+| i32, u32 → f32 | f32.convert_i32_s / _u |
+| i64 → f32 | f32.convert_i64_s / _u |
+| i64 → f64 | f64.convert_i64_s / _u |
 | f64 → f32 | f32.demote_f64 |
 | f32 → i32 | i32.trunc_f32_s / _u |
 | f64 → i32 | i32.trunc_f64_s / _u |
