@@ -876,8 +876,11 @@ class CheckContext {
     if (!inTest && this.moduleScope.symbols.get(name)?.kind === 'func') {
       const members = this.overloads.get(name) ?? [name]
       const key = paramsKey(sym.type)
-      if (members.some((m) => paramsKey((this.moduleScope.symbols.get(m) as Symbol & { kind: 'func' }).type) === key)) {
-        this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(sym.type)})`)
+      const same = members
+        .map((m) => (this.moduleScope.symbols.get(m) as Symbol & { kind: 'func' }).type)
+        .find((type) => paramsKey(type) === key)
+      if (same) {
+        this.error(decl.span.start, `'${name}' is already declared with parameters (${paramsText(same)})`)
         return
       }
       known = keyedName(`${name}:`, key, '', (taken) => this.moduleScope.symbols.has(taken))
@@ -895,15 +898,16 @@ class CheckContext {
   // take the same types.
   private checkOverloads(): void {
     for (const [name, members] of this.overloads) {
-      const seen = new Set<string>()
+      const seen = new Map<string, FuncRT>()
       const distinct = members.filter((member) => {
         const sym = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
         const key = paramsKey(sym.type)
-        if (!seen.has(key)) {
-          seen.add(key)
+        const same = seen.get(key)
+        if (!same) {
+          seen.set(key, sym.type)
           return true
         }
-        this.error(this.symbolDefOffsets.get(member) ?? 0, `'${name}' is already declared with parameters (${paramsText(sym.type)})`)
+        this.error(this.symbolDefOffsets.get(member) ?? 0, `'${name}' is already declared with parameters (${paramsText(same)})`)
         return false
       })
       this.overloads.set(name, distinct)

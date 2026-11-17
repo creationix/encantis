@@ -1061,3 +1061,204 @@ func zero(p: *mut [!]u8) { memzero(p) }
 memcpy src: expected *[N]T, got []u8
 memzero dest: *mut [!]u8 has no size known at compile time
 ```
+
+## Functions that share a name
+
+Two functions may have one name when their parameter lists differ in length or in types. A call means the one whose parameter types are the argument types.
+
+```ents
+func size(a: u8) -> u32 => 1
+func size(a: u32) -> u32 => 4
+func size(a: u64) -> u32 => 8
+func size(a: u32, b: u32) -> u32 => 8
+func size(p: *u8) -> u32 => 1
+func size(p: *mut u8) -> u32 => 2
+func size() -> u32 => 0
+
+func exact(a: u8, b: u32, c: u64) -> u32 => size(a) + size(b) + size(c) + size(b, b) + size()
+func writable(p: *mut u8, q: *u8) -> u32 => size(p) + size(q)
+func counted() -> (n: u32) {
+  for i in 12 {
+    n += size(i)             // a u32 that is known to lie in a range is a u32
+  }
+}
+```
+
+Without such a function, it means the only one the arguments can be passed to, with the conversions an argument gets.
+
+```ents
+func show(n: u64) -> u32 => 8
+func show(s: []u8) -> u32 => s.len
+func fill(b: []u8) -> u32 => 1
+func fill(b: []u32) -> u32 => 4
+
+data four = [1:u8, 2, 3, 4]
+
+func widened(a: u8, b: u32) -> u32 => show(a) + show(b) + show(7)
+func strings() -> u32 => show("text") + show(four)
+func literals() -> u32 => fill([1, 300]) + fill("ab")       // 300 is no u8; a string is no []u32
+```
+
+No function that takes the arguments is one error, and so is more than one that could.
+
+```ents
+type Cell = (x: i32, y: i32)
+
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+
+func a(c: Cell) -> u32 => hash(c)
+func b(x: f64) -> u32 => hash(x, x)
+func c() -> u32 => hash(5)
+func d(x: u8) -> u32 => hash(x)
+func e() -> u32 => hash()
+```
+
+```errors
+no function 'hash' accepts (Cell)
+no function 'hash' accepts (f64, f64)
+'hash' is ambiguous for (int(5))
+'hash' is ambiguous for (u8)
+no function 'hash' accepts ()
+```
+
+An argument with an error of its own is that error alone, and nothing more is said of what the call's value is used for.
+
+```ents
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+
+func a() -> u32 => hash(nope)
+func b(x: f64) -> bool => hash(hash(x))
+```
+
+```errors
+unknown identifier 'nope'
+no function 'hash' accepts (f64)
+```
+
+Two functions of one name need different parameter types. The names of the parameters, the result and a name for a type do not tell them apart; a type declared further down is the type it names.
+
+```ents
+type Meters = u32
+
+func hash(k: u32) -> u32 => k
+func hash(n: Meters) -> u64 => 1
+func none() { }
+func none() -> u32 => 0
+func late(a: Later) -> i32 => a.x
+func late(a: (x: i32)) -> i32 => 1
+
+type Later = (x: i32)
+```
+
+```errors
+'hash' is already declared with parameters (u32)
+'none' is already declared with parameters ()
+'late' is already declared with parameters (Later)
+```
+
+An imported function shares a name like a declared one.
+
+```ents
+import "env" (
+  "log_u32" func log(x: u32)
+  "log_f64" func log(x: f64)
+)
+func log(s: []u8) { }
+
+export func f(n: u32, x: f64) {
+  log(n)
+  log(x)
+  log("done")
+}
+```
+
+```ents
+import "env" (
+  "a" func log(x: u32)
+  "b" func log(y: u32)
+)
+```
+
+```errors
+'log' is already declared with parameters (u32)
+```
+
+A function the program declares with the name of a builtin takes the builtin's place, and shares the name only with other declared functions.
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func max(a: Pt, b: Pt) -> Pt => if a.q > b.q { a } else { b }
+func max(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+
+func f(p: Pt, x: f64) -> f64 => (max(p, p).q as f64) + max(x, 1.5)
+func g(a: i64) -> i64 => max(a, a)
+```
+
+```errors
+no function 'max' accepts (i64, i64)
+```
+
+Each export needs a name of its own, whatever is exported.
+
+```ents
+export func hash(k: u32) -> u32 => k
+export "hash_bytes" func hash(k: []u8) -> u32 => k.len
+```
+
+```ents
+export func hash(k: u32) -> u32 => k
+export func hash(k: []u8) -> u32 => k.len
+export "hash" global seed: u32 = 1
+```
+
+```errors
+export name 'hash' is used twice: give one an explicit name, as in export "hash_2" func hash(...)
+export name 'hash' is used twice: give one an explicit name, as in export "hash_2" global seed
+```
+
+A function declared in a `test` block does not share: it takes over the name, as it always has.
+
+```ents
+func hash(k: u32) -> u32 => k
+
+test "its own hash" {
+  func hash(k: u64) -> u32 => 1
+  assert hash(1:u64) == 1
+}
+```
+
+## Calling a function value
+
+A function is called by its name. One held in a parameter, a local, a global or a field has no run-time form yet, and calling it is one error.
+
+```ents
+type Handler = (run: (u32) -> u32, arg: u32)
+
+func inc(a: u32) -> u32 => a + 1
+func apply(f: (u32) -> u32, x: u32) -> u32 => f(x)
+func stored(x: u32) -> u32 {
+  let g = inc
+  return g(x)
+}
+func field(h: Handler) -> u32 => h.run(h.arg)
+```
+
+```errors
+calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called
+calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called
+calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called
+```
+
+Its arguments are still checked.
+
+```ents
+func apply(f: (u32) -> u32, x: f64) -> u32 => f(x)
+```
+
+```errors
+calling a function value is not supported yet
+argument 1: cannot assign f64 to u32
+```

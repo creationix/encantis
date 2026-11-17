@@ -971,6 +971,75 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 
 A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
+#### Functions That Share a Name
+
+<!-- spec:begin compile -->
+
+Two functions may have the same name when their parameter lists differ, in the number of parameters or in their types. A call means one of them by its arguments:
+
+```ents
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+func hash(k: u64) -> u32 => hash((k ^ (k >> 32)) as u32)
+func hash(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for b in k {
+    h = (h ^ (b as u32)) * 0x01000193
+  }
+}
+
+export func a(n: u32, wide: u64) -> u32 => hash(n) ^ hash(wide)     // hash(k: u32), hash(k: u64)
+export func b(name: []u8) -> u32 => hash(name) ^ hash("salt")       // hash(k: []u8), both times
+
+test "each call reaches its own function" {
+  assert a(1, 1) == 0
+  assert hash(7:u32) == 7 * 0x45d9f3b
+  assert b("x") != b("y")
+}
+```
+
+1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second.
+2. **Otherwise it is the only function the arguments can be passed to.** `hash("salt")` is `hash(k: []u8)`: a string is not a number. The argument is then converted as for any call.
+3. **Anything else is an error**, whether no function takes the arguments or more than one could:
+
+```ents
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+
+func f(x: f64) -> u32 => hash(x)
+func g() -> u32 => hash(5)
+```
+
+```errors
+no function 'hash' accepts (f64)
+'hash' is ambiguous for (int(5))
+```
+
+`hash(5:u64)` says which. What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
+
+```ents
+func hash(k: u32) -> u32 => k
+func hash(n: u32) -> u64 => 1
+```
+
+```errors
+'hash' is already declared with parameters (u32)
+```
+
+Each of the functions is a function of its own in the output, and a call of one is a direct call. In WAT the first one declared keeps the name and each later one carries its parameter types, `$hash:u64`, `$hash:''u8`; the spelling is not part of the language and names do not reach the `.wasm` file. An imported function shares a name in the same way. Every export needs a name of its own:
+
+```ents
+export func hash(k: u32) -> u32 => k
+export func hash(k: u64) -> u32 => 1
+```
+
+```errors
+export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)
+```
+
+Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function, as it always has. And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
+
+<!-- spec:end -->
+
 #### Calling Conventions
 
 Functions are called with positional arguments only:
@@ -988,6 +1057,8 @@ let (x:, y:) = get_point()
 ```
 
 #### Function Types and Pointers
+
+> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
 
 Function names are first-class values with types corresponding to their signatures. At runtime, function values are opaque indices into WebAssembly's function table.
 
@@ -1294,6 +1365,8 @@ ptr.([]u8)
 
 > **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
+A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)).
+
 ### 4.7 Bounds-Checked Indexing
 
 Array and slice indexing follows strict rules based on whether the index is known at compile time:
@@ -1438,43 +1511,105 @@ cv[8..16] = iv            // a *[8]T copies all of its elements
 
 The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§10.3), where the length is written out.
 
-### 4.8 UFCS (Uniform Function Call Syntax)
+### 4.9 Method-Call Syntax
 
-> **Status: Not yet implemented.**
+`x.f(a, b)` calls the function `f` with `x` as its first argument, when `x` has no member named `f`. Any function can be called this way; there are no methods to declare. (Elsewhere this is called uniform function call syntax.)
 
-Any function can be called using method syntax. If `f(a, b, c)` is valid, then `a.f(b, c)` is also valid:
-
-```ents
-func length(p:Point) -> f32 {
-  return sqrt(p.x * p.x + p.y * p.y)
-}
-
-func scale(p:Point, factor:f32) -> Point {
-  return Point(p.x * factor, p.y * factor)
-}
-
-let p = Point(3.0, 4.0)
-p.length()                 // same as length(p)
-p.scale(2.0)               // same as scale(p, 2.0)
-
-// Chaining
-p.scale(2.0).length()      // same as length(scale(p, 2.0))
-```
-
-UFCS works for all types, not just structs:
+<!-- spec:begin compile -->
 
 ```ents
-func double(x:i32) -> i32 => x * 2
-func to_hex(data:[]u8) -> []u8 => ...
+type Point = (x: f64, y: f64)
 
-let n = 21
-n.double()                 // 42
+func length(p: Point) -> f64 => sqrt(p.x * p.x + p.y * p.y)
+func scale(p: Point, factor: f64) -> Point => Point(p.x * factor, p.y * factor)
+func double(n: u32) -> u32 => n * 2
 
-let data:[]u8 = ...
-data.to_hex()              // works on slices too
+export func a(p: Point) -> f64 => p.scale(2.0).length()      // length(scale(p, 2.0))
+export func b(n: u32) -> u32 => n.double().double()          // any type has them, not only structs
+export func c(xs: []u8) -> u32 => xs.len.double()            // .len is the slice's own member
+
+test "method calls" {
+  assert a(Point(3.0, 4.0)) == 10.0
+  assert b(21) == 84
+  assert c("abc") == 6
+  assert (4:u32).double() == 8
+}
 ```
 
-Note: There are no implicit built-in methods except for operators that already look like function calls (ex: `sqrt(n)` can be written as `n.sqrt()`). Slice properties like `slice.len` and `slice.ptr` are built-in field access, not method calls.
+1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense.
+2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)) the receiver is the first argument that is not a comptime one, and the call is the inferred form, so the receiver usually decides the type parameters. `v.push(u32, 7)`, with the type parameters written after the receiver, is the explicit form and means `push(u32, v, 7)`.
+3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it.
+4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
+5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+func double(n: u32) -> u32 => n * 2
+
+export func f(v: *mut Vec(u32), x: f64) -> u32 {
+  v.push(7)                                        // push(v, 7): T = u32, from v
+  v.push(u32, 8)                                   // push(u32, v, 8)
+  return v.last().double() + (x.sqrt().min(9.5) as u32)
+}
+```
+
+is the same module as the one written with plain calls:
+
+```ents same-wasm
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+func double(n: u32) -> u32 => n * 2
+
+export func f(v: *mut Vec(u32), x: f64) -> u32 {
+  push(v, 7)
+  push(u32, v, 8)
+  return double(last(v)) + (min(sqrt(x), 9.5) as u32)
+}
+```
+
+A value is held in registers and has no address, so a function that takes a pointer cannot be called on one. This is why a container's header lives in memory ([8.5](#85-generic-types)):
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func f(v: Vec(u32)) { v.push(7) }
+```
+
+```errors
+push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
+```
+
+Otherwise the errors of `x.f(a)` are those of `f(x, a)`, reported at the name of the method. With neither a member nor a function of that name, one error says both. A field that is called is still the field:
+
+```ents
+type Box = (size: u32, n: u32)
+func size(b: Box) -> u32 => b.size * b.n
+
+func f(b: Box) -> u32 => b.area(2)
+func g(b: Box) -> u32 => b.size()
+```
+
+```errors
+no field 'area' on type Box, and no function 'area' accepts (Box, int(2))
+cannot call non-function type: u32 ('size' is a field here, and a field wins over the function 'size': write size(...))
+```
+
+A type written on a literal binds more loosely than a member does, so a literal that is given its type is a receiver in parentheses: `(4:u32).double()`.
+
+<!-- spec:end -->
 
 ---
 
@@ -1917,7 +2052,7 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ## 8. Generics
 
-A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, and a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call.
+A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, and a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call. Two things of the rest of the language are what make generic code read well: method-call syntax, `v.push(7)` ([4.9](#49-method-call-syntax)), and functions that share a name ([3.4](#functions-that-share-a-name)), through which each type brings its own `hash` and `eq` ([8.3](#83-requirements)).
 
 The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
 
@@ -2099,6 +2234,75 @@ The command line also prints the call that first asked for the instance and, whe
 shapes.ents:2:51: '>' cannot be applied to Pt and Pt, in max(T = Pt)
   required from shapes.ents:4:38
 ```
+
+**Calls are requirements too.** A call in a generic body, `eq(a, b)` or `k.hash()`, is resolved when the instance is checked, by its name and the types of its arguments ([3.4](#functions-that-share-a-name)). So each type a generic is used with brings its own function:
+
+```ents
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+func hash(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ (w as u32)) * 0x01000193
+  }
+}
+func eq(a: u32, b: u32) -> bool => a == b
+func eq(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+func bucket(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n
+func same(comptime K: type, a: K, b: K) -> bool => hash(a) == hash(b) && a.eq(b)
+
+export func f(a: []u8, b: []u8) -> u32 => if same(a, b) { bucket(a, 16) } else { bucket(7:u32, 3) }
+export func g(a: u32, b: u32) -> bool => same(u32, a, b)
+```
+
+`same` for `K = []u8` calls `hash(k: []u8)` and `eq(a: []u8, b: []u8)`; for `K = u32` it calls the other pair. All of them are direct calls, and the module is the one with every function written out under a name of its own:
+
+```ents same-wasm
+func hash_u32(k: u32) -> u32 => k * 0x45d9f3b
+func hash_bytes(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ (w as u32)) * 0x01000193
+  }
+}
+func eq_u32(a: u32, b: u32) -> bool => a == b
+func eq_bytes(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+func bucket_bytes(k: []u8, n: u32) -> u32 => hash_bytes(k) % n
+func bucket_u32(k: u32, n: u32) -> u32 => hash_u32(k) % n
+func same_bytes(a: []u8, b: []u8) -> bool => hash_bytes(a) == hash_bytes(b) && eq_bytes(a, b)
+func same_u32(a: u32, b: u32) -> bool => hash_u32(a) == hash_u32(b) && eq_u32(a, b)
+
+export func f(a: []u8, b: []u8) -> u32 => if same_bytes(a, b) { bucket_bytes(a, 16) } else { bucket_u32(7:u32, 3) }
+export func g(a: u32, b: u32) -> bool => same_u32(a, b)
+```
+
+A type that does not bring a function the body calls is one error for that function, where the generic is first used with the type. It is reported once for the instance, however many calls in the body ask for the function, and it reads the same whether no function of the name takes the type or none of that name is declared at all:
+
+```ents
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+func hash(k: []u8) -> u32 => k.len
+func same(comptime K: type, a: K, b: K) -> bool => hash(a) == hash(b) && eq(a, b)
+
+export func f(a: f64, b: f64) -> bool => same(a, b)
+```
+
+```errors
+no function 'hash' accepts (f64), in same(K = f64)
+no function 'eq' accepts (f64, f64), in same(K = f64)
+```
+
+A call with the wrong number of arguments for the one function of its name is a mistake in the body, not a requirement on the type, and reads as it does anywhere (`'eq' expected 2 arguments, got 1, in same(K = u32)`).
 
 ### 8.4 Instances
 
@@ -2317,7 +2521,7 @@ export func up(xs: []mut i32) { sort_ascending(xs) }
 export func down(xs: []mut i32) { sort_descending(xs) }
 ```
 
-Comptime function parameters are always written, also in the inferred form: `sort(xs, ascending)` is the inferred form of `sort(i32, xs, ascending)`. The argument is the name of a function of the module (declared at module level or imported; not a generic, not an expression, not a function a `test` declares), or a comptime function parameter of the enclosing generic passed on. Two instances are the same when the functions are the same function.
+Comptime function parameters are always written, also in the inferred form: `sort(xs, ascending)` is the inferred form of `sort(i32, xs, ascending)`, and with a receiver `xs.sort(ascending)` is too ([4.9](#49-method-call-syntax)). The argument is the name of a function of the module (declared at module level or imported; not a generic, not an expression, not a function a `test` declares, not a name that several functions share), or a comptime function parameter of the enclosing generic passed on. Two instances are the same when the functions are the same function.
 
 The parameter's type is a function type, written out or named: with `type Cmp = (i32, i32) -> bool`, `comptime before: Cmp` is the same parameter, and so is one typed by an applied generic type whose body is a function type.
 
@@ -2369,13 +2573,14 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A type parameter that is applied, `T(u32)` as a type | `a type parameter cannot be applied` |
 | A constructor on a type that is not a struct or tuple | `u32 is not a struct or tuple type: it has no constructor; to convert a number write x as T` |
 | A comptime function argument that is not the name of a function | `argument 3 of 'sort' must be the name of a function: before is a comptime function parameter` |
+| A comptime function argument that is a name several functions share | the same, followed by `('less' has several overloads)` |
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
-Also not in this version: method-call syntax, generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
+Also not in this version: generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
 
 One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
-Two limits are older than generics and are met through them. A name for a pointer, slice, array or optional type (a `type`, and so a generic type with such a body) is passed, stored, matched and measured as the type it names, but `.*`, `.ptr`, `.len`, indexing and `if let` do not see through the name yet: give a generic type a struct or tuple as its body, and write such a type out where its value is used. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a call of a function value at run time does not compile yet: a generic that calls a function takes it as a comptime parameter.
+Two limits are older than generics and are met through them. A name for a pointer, slice, array or optional type (a `type`, and so a generic type with such a body) is passed, stored, matched and measured as the type it names, but `.*`, `.ptr`, `.len`, indexing and `if let` do not see through the name yet: give a generic type a struct or tuple as its body, and write such a type out where its value is used. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
 <!-- spec:end -->
 
@@ -2607,7 +2812,7 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 ## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
 
 ### 10.1 Numeric Builtins
 
@@ -2853,7 +3058,7 @@ use math.vector as vec
 
 **Why:** Larger projects need to split code across files. Currently the only modularity is WASM-level imports from the host environment. A proper module system enables code organization and selective visibility.
 
-### Operator Overloading via UFCS
+### Operator Overloading via Method Calls
 
 Operators could desugar to function calls, allowing user-defined types to support standard operators through regular function definitions:
 
@@ -2870,9 +3075,9 @@ func *(v:Vec2, s:f64) -> Vec2 =>
 let result = (a + b) * 2.0
 ```
 
-Combined with function overloading, the same operator name can have multiple implementations for different type signatures. The compiler selects the correct overload based on argument types.
+Functions already share a name when their parameter types differ ([3.4](#functions-that-share-a-name)), so one operator name can have an implementation for each pair of types, and the compiler would pick one by the operand types as it does for any call.
 
-**Why:** Unifies operators with UFCS—no special mechanism needed. Operators become overloaded functions resolved by the same rules as method calls. This keeps the language simple while enabling expressive numeric and container types.
+**Why:** Unifies operators with method-call syntax ([4.9](#49-method-call-syntax)): no special mechanism needed. Operators become functions that share a name, resolved by the rules calls already follow. This keeps the language simple while enabling expressive numeric and container types.
 
 ### Closures
 

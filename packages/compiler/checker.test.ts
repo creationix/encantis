@@ -2230,15 +2230,17 @@ describe('functions that share a name', () => {
     const result = checkModule(src)
     expect(result.errors).toEqual([{ offset: src.lastIndexOf('func'), message: "'hash' is already declared with parameters (u32)" }])
     expect(errs('func f() { }\nfunc f() { }')).toEqual(["'f' is already declared with parameters ()"])
-    // The names of the parameters and the result are not what tells two apart.
+    // The names of the parameters and the result are not what tells two
+    // apart, nor is a name for a type. The message shows the earlier one's
+    // parameters as they were written.
     expect(errs('type Meters = u32\nfunc f(a: Meters, b: []u8) { }\nfunc f(x: u32, y: []u8) -> u32 => 1')).toEqual([
-      "'f' is already declared with parameters (u32, []u8)",
+      "'f' is already declared with parameters (Meters, []u8)",
     ])
   })
 
   test('also when a parameter type is declared further down', () => {
     expect(errs('func f(a: Later) -> i32 => a.x\nfunc f(a: (x: i32)) -> i32 => 1\ntype Later = (x: i32)')).toEqual([
-      "'f' is already declared with parameters ((x: i32))",
+      "'f' is already declared with parameters (Later)",
     ])
     expect(called('func f(a: Later) -> i32 => a.x\nfunc f(a: Other) -> i32 => a.y\ntype Later = (x: i32)\ntype Other = (y: i32)',
       'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:@Other'])
