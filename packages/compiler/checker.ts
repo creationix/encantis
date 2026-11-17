@@ -138,9 +138,11 @@ const MAX_CHAIN_KEY_GROWTH = 16
 const MAX_NAME_KEY = 120
 // How far out an error in an instance names the calls it was required from
 const MAX_NOTES = 4
-// A generic type that applies itself is refused where it is declared. This
-// stops one that got past that.
-const MAX_APPLY_DEPTH = 64
+// A generic type that applies itself is refused where it is declared, so what
+// comes this deep is honest nesting: a chain of generic types each holding
+// the next. The limit is far above any written by hand and well short of
+// what the stack takes.
+const MAX_APPLY_DEPTH = 1000
 
 // The type of an expression whose error is already reported. Compared by
 // identity, so that what the expression is used for stays silent about it.
@@ -651,6 +653,8 @@ class CheckContext {
   // in applications of them a type is being resolved
   typeFuncs: (Symbol & { kind: 'typefunc' })[] = []
   applyDepth = 0
+  // Set where that depth ran out, until the application that began it reports it
+  applyTooDeep = false
   // What an inferred call found for its type parameters, or null when it
   // failed. A call nested in another's deciding argument is come to twice, and
   // without this each level of nesting would double the work.
@@ -4699,7 +4703,7 @@ class CheckContext {
     const cached = settled ? sym.cache.get(key) : undefined
     if (cached) return cached
     if (owner.applyDepth >= MAX_APPLY_DEPTH) {
-      this.error(at, `generic type '${name}' refers to itself`)
+      owner.applyTooDeep = true
       return RECOVERY
     }
     const bound = new Map(params.map((p, i) => [p.ident as string, args[i]]))
@@ -4710,6 +4714,16 @@ class CheckContext {
     owner.applyDepth++
     const resolved = named(shown, owner.resolveType(body))
     owner.applyDepth--
+    // Nothing of a type that was cut short is a type. The error is one, at
+    // the application that was written: the declarations it went through are
+    // each as they should be.
+    if (owner.applyTooDeep) {
+      if (owner.applyDepth === 0) {
+        owner.applyTooDeep = false
+        this.error(at, `generic types are nested more than ${MAX_APPLY_DEPTH} deep in '${shown}'`)
+      }
+      return RECOVERY
+    }
     if (settled) sym.cache.set(key, resolved)
     return resolved
   }

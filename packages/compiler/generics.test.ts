@@ -2791,6 +2791,23 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
     })
   }
 
+  // Nothing in a chain refers to itself, however long it is: each generic
+  // type holds the next one. The limit that stops a runaway is far beyond
+  // what is written by hand, and says what it is.
+  test('a long chain of generic types is not one that refers to itself', async () => {
+    const chain = (n: number) => `${Array.from({ length: n - 1 }, (_, i) => `func G${i}(comptime T: type) -> type => (x: G${i + 1}(T), t: u8)`).join('\n')}
+func G${n - 1}(comptime T: type) -> type => (x: T, t: u8)
+export func size() -> u32 => sizeof(G0(u8))
+export func last(g: *G0(u8)) -> u8 => g.t`
+    const { size } = await run(chain(66))
+    expect(size()).toBe(67)
+    // Once for each application that was written: the signature's, then the body's.
+    expect(check(chain(1001)).errors.map(place)).toEqual([
+      { offset: chain(1001).lastIndexOf('G0(u8)'), message: "generic types are nested more than 1000 deep in 'G0(u8)'" },
+      { offset: chain(1001).indexOf('G0(u8)'), message: "generic types are nested more than 1000 deep in 'G0(u8)'" },
+    ])
+  })
+
   test('a type that did not resolve says nothing more where it is pointed to, indexed or assigned', () => {
     const source = `${VEC}func a(v: *Vec(Vec)) -> u32 => v.len
 func b(v: *Vex(u8), w: []Vec(u8, u8)) -> u32 => v.ptr[0] + w[0].len + w.len

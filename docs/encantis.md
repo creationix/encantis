@@ -2254,6 +2254,8 @@ func List(comptime T: type) -> type => (head: T, next: ?*List(T))
 generic type 'List' refers to itself
 ```
 
+Generic types that hold one another in a chain are not that, however long the chain. The compiler stops at 1000 levels, with `generic types are nested more than 1000 deep in 'G0(u8)'` at the application that was written.
+
 ### 8.6 Comptime Function Parameters
 
 A **function parameter**, `comptime before: (T, T) -> bool`, is given the name of a function. Inside the generic, `before(a, b)` is a direct call of that function. This is how a sort takes its comparator without a function pointer:
