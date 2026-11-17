@@ -472,6 +472,28 @@ func f(c: bool, n: i32) {
 }
 ```
 
+## Destructuring
+
+A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.
+
+```ents
+type Spot = (c: i32, di: i32, room: i32)
+
+func f(s: Spot) -> i32 {
+  let q: i32 = 0
+  let room: i32 = 0
+  set (room:, di: q) = s
+  set (room:, q:) = s
+  set (nope: q, room: room) = s
+  return q + room
+}
+```
+
+```errors
+field 'q' not found in Spot
+field 'nope' not found in Spot
+```
+
 ## Globals
 
 A global starts as a constant: a literal, a constant expression, or the address of data. An integer constant can start a float or a wider global.

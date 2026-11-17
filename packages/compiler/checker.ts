@@ -2262,7 +2262,11 @@ class CheckContext {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             }
             this.recordReference(varName, namedPartAt(element))
-            fits(varName, unwrappedType.fields.find(f => f.name === element.field)?.type)
+            // As in a let: a part names a field the value has, or nothing
+            // would be assigned to its variable
+            const field = unwrappedType.fields.find(f => f.name === element.field)
+            if (!field) this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
+            fits(varName, field?.type)
           } else {
             const fieldType = unwrappedType.fields[pattern.elements.indexOf(element)]?.type
             this.validatePatternBindingsExist(element.pattern, fieldType ?? type)

@@ -1361,6 +1361,8 @@ let b:f64
 set (x: a, y: b) = p       // assigns a = 3.0, b = 4.0
 ```
 
+A named part names a field of the value, in a `set` as in a `let`: `set (z: a) = p` is an error, `field 'z' not found in Point`.
+
 Any type with multiple underlying values can be destructured (slices, tuples, structs, etc).
 
 #### Compound Assignment
