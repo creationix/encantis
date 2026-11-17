@@ -1363,6 +1363,17 @@ describe('a slice from a pointer and a length', () => {
     ])
   })
 
+  test('is not the value of a data declaration: there is nothing to lay out', () => {
+    // These built invalid wasm, or threw while the data section was laid out.
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    const message = 'data value must be a literal to lay out: a (ptr, len) pair is a slice already'
+    expect(errs('data s: []i32 = (64, 3)')).toEqual([message])
+    expect(errs('data s = ((64, 3)):[]i32')).toEqual([message])
+    expect(errs('type Bytes = []u8\ndata s: Bytes = (64, 3)')).toEqual([message])
+    // A struct of two fields is a literal, and so is an array of pairs.
+    expect(errs('type Point = (x: i32, y: i32)\ndata p: Point = (1, 2)\ndata q = (1, 2)\ndata lists: [][]i32 = [(64, 3)]')).toEqual([])
+  })
+
   test('an element of an array of slices is checked as a slice too', () => {
     const errs = (source: string) => checkModule(source).errors.map(e => e.message)
     expect(errs('data lists: [][]i32 = [(64, 3), [1, 2], ((0, 0))]')).toEqual([])

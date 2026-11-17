@@ -721,6 +721,15 @@ class CheckContext {
     // (x) is x: the literal laid out is the one inside the parentheses.
     const value = ungrouped(decl.value)
 
+    // A (ptr, len) pair is a slice already: there is no literal to lay out,
+    // and so nothing for the name to point at.
+    const literal = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
+    const literalType = declaredType ?? (value.kind === 'AnnotationExpr' ? inferredType : null)
+    if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
+      this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
+      return
+    }
+
     // Check if literal has mut flag
     const isMut = this.exprHasMut(value)
     const dataIdentOff = this.findIdentOffset(decl.span.start, 'data')
