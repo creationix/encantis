@@ -705,6 +705,9 @@ class CheckContext {
   // reported.
   settled = new Map<AST.CallExpr, ResolvedType>()
   failed = new Map<AST.CallExpr, ResolvedType>()
+  // The receiver of each call that was written x.f(a), by the call f(x, a)
+  // it stands for: what is said of that call is said of it as it was written.
+  receivers = new Map<AST.CallExpr, AST.Expr>()
   refused = new Set<AST.CallExpr>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
@@ -3327,10 +3330,7 @@ class CheckContext {
       const argCount = expr.args.filter((a) => a.value).length
       if (argCount !== calleeType.params.length) {
         const calleeName = expr.callee.kind === 'IdentExpr' ? `'${expr.callee.name}' ` : ''
-        this.error(
-          expr.span.start,
-          `${calleeName}expected ${calleeType.params.length} argument${calleeType.params.length === 1 ? '' : 's'}, got ${argCount}`,
-        )
+        this.error(expr.span.start, `${calleeName}expected ${this.counted(expr, calleeType.params.length, argCount)}`)
       }
 
       // Use bidirectional type checking for arguments
@@ -3341,7 +3341,7 @@ class CheckContext {
       for (const arg of expr.args) {
         if (arg.value && argIndex < calleeType.params.length) {
           const paramType = calleeType.params[argIndex].type
-          this.checkExpr(arg.value, paramType, `argument ${argIndex + 1}`)
+          this.checkExpr(arg.value, paramType, this.place(expr, argIndex))
           argIndex++
         }
       }
@@ -3491,6 +3491,35 @@ class CheckContext {
     return written ? typeText(written) : typeToString(typeOf(arg))
   }
 
+  // What a message calls the argument at `index` of a call: its place as the
+  // call was written. Of x.f(a), which is held as f(x, a), x is the receiver
+  // and a the first argument.
+  private place(call: AST.CallExpr, index: number): string {
+    const receiver = this.receivers.get(call)
+    if (!receiver) return `argument ${index + 1}`
+    const slot = call.args.findIndex((a) => a.value === receiver)
+    return index === slot ? 'receiver' : `argument ${index < slot ? index + 1 : index}`
+  }
+
+  // "2 arguments, got 3", counted as the call was written: the receiver of
+  // x.f(a) is not one of what stands in the parentheses.
+  private counted(call: AST.CallExpr, wanted: number, got: number, between = ', '): string {
+    const plural = (n: number) => `${n} argument${n === 1 ? '' : 's'}`
+    if (!this.receivers.has(call)) return `${plural(wanted)}${between}got ${got}`
+    // A function that takes nothing has no place for a receiver either.
+    if (wanted === 0) return `${plural(0)}${between}got ${got}: the receiver is one`
+    return `${plural(wanted - 1)} after the receiver${between}got ${got - 1}`
+  }
+
+  // A call of `name` with its type arguments written, as a message shows it:
+  // in the form the call has, f(u32, ...) or x.f(u32, ...).
+  private written(call: AST.CallExpr, name: string, typeArgs: string[], values: number): string {
+    const receiver = this.receivers.get(call)
+    const rest = values - (receiver ? 1 : 0) > 0 ? ', ...' : ''
+    const before = !receiver ? '' : receiver.kind === 'IdentExpr' ? `${receiver.name}.` : '.'
+    return `${before}${name}(${typeArgs.join(', ')}${rest})`
+  }
+
   // Which of the functions that share a name a call means: the one whose
   // parameter types are the argument types, or else the only one the
   // arguments can be passed to. Null, with the error reported, when there is
@@ -3587,9 +3616,12 @@ class CheckContext {
   // Gives the type of that call, or null where f is a member of x and the
   // call is one of that member's value.
   private inferMethodCall(expr: AST.CallExpr, receiver: AST.Expr, name: string): ResolvedType | null {
+    // What is said of the call is said at the method's name: the calls of a
+    // chain all start where the chain does.
+    const at = expr.callee.span.end - name.length
     const fail = (message?: string): ResolvedType => {
       if (!this.attempting) this.methodCalls.set(expr, 'failed')
-      if (message) this.requirement(expr.callee.span.start, message)
+      if (message) this.requirement(at, message)
       this.inferExpr(receiver)
       for (const arg of expr.args) {
         if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
@@ -3621,7 +3653,6 @@ class CheckContext {
       // that what is said about the callee is said there, and so that each
       // call of a chain, which all start where the chain does, has a place
       // of its own.
-      const at = expr.callee.span.end - name.length
       const callee: AST.IdentExpr = { kind: 'IdentExpr', name, span: { start: at, end: expr.callee.span.end } }
       const self: AST.Arg = { kind: 'Arg', name: null, value: receiver, span: receiver.span }
       const sym = this.lookup(name)
@@ -3632,6 +3663,7 @@ class CheckContext {
         args: [...expr.args.slice(0, slot), self, ...expr.args.slice(slot)],
         span: { start: at, end: expr.span.end },
       }
+      this.receivers.set(call, receiver)
       // A builtin is a function too, unless something of the program has
       // its name.
       const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name))
@@ -5436,12 +5468,10 @@ class CheckContext {
     // A comptime function parameter is always written, in either form.
     const runtimeCount = params.length - typeParams.length
     if (!explicit && expr.args.length !== runtimeCount) {
-      const count = `'${name}' expects ${runtimeCount} argument${runtimeCount === 1 ? '' : 's'}`
       // A generic with comptime function parameters only has the one form.
-      const forms = typeParams.length === 0
-        ? `${count}, got ${expr.args.length}`
-        : `${count}, or ${params.length} with its type argument${typeParams.length === 1 ? '' : 's'} written; got ${expr.args.length}`
-      return fail(expr.span.start, forms)
+      const receiver = this.receivers.has(expr) && runtimeCount > 0 ? 1 : 0
+      const between = typeParams.length === 0 ? ', ' : `, or ${params.length - receiver} with its type argument${typeParams.length === 1 ? '' : 's'} written; `
+      return fail(expr.span.start, `'${name}' expects ${this.counted(expr, runtimeCount, expr.args.length, between)}`)
     }
     const pairs: { param: AST.Field; arg: AST.Expr; index: number }[] = []
     for (const param of params) {
@@ -5456,7 +5486,7 @@ class CheckContext {
     const funcs = new Map<AST.Field, ComptimeValue & { kind: 'func' }>()
     for (const { param, arg, index } of pairs) {
       if (!param.comptime || isTypeParam(param)) continue
-      const value = this.evalComptimeArg(name, param, arg, index)
+      const value = this.evalComptimeArg(name, param, arg, this.place(expr, index))
       if (value?.kind !== 'func') return fail()
       funcs.set(param, value)
     }
@@ -5465,7 +5495,7 @@ class CheckContext {
     if (explicit) {
       for (const { param, arg, index } of pairs) {
         if (!isTypeParam(param)) continue
-        const value = this.evalComptimeArg(name, param, arg, index)
+        const value = this.evalComptimeArg(name, param, arg, this.place(expr, index))
         if (value?.kind !== 'type') return fail()
         bound.set(param.ident as string, value.type)
       }
@@ -5518,7 +5548,7 @@ class CheckContext {
     const runtimeArgs: AST.Arg[] = []
     for (const { param, arg, index } of pairs) {
       if (param.comptime) continue
-      this.checkExpr(arg, sig.params[runtimeArgs.length].type, `argument ${index + 1}`)
+      this.checkExpr(arg, sig.params[runtimeArgs.length].type, this.place(expr, index))
       runtimeArgs.push(expr.args[index])
     }
 
@@ -5574,7 +5604,7 @@ class CheckContext {
       const type = this.peek(arg)
       if (type === RECOVERY || this.errorsReported > reported) return null
       if (isUnit(type)) {
-        this.error(arg.span.start, `argument ${index + 1} of '${name}' has no value`)
+        this.error(arg.span.start, `${this.place(expr, index)} of '${name}' has no value`)
         return null
       }
       if (hasOwnType(type)) {
@@ -5587,7 +5617,6 @@ class CheckContext {
     const missing = typeParams.find((p) => !bound.has(p))
     if (!missing) return bound
 
-    const rest = pairs.length > 0 ? ', ...' : ''
     const literals = untyped.filter((u) => mentions(u.param.type, [missing]))
     // An argument with a type of its own that mentions the parameter and did
     // not decide it: its shape did not match. What the literals would be on
@@ -5609,7 +5638,7 @@ class CheckContext {
       const plural = typeParams.length === 1 ? '' : 's'
       this.error(
         expr.span.start,
-        `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${name}(${typeParams.map(() => 'u32').join(', ')}${rest})`,
+        `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${this.written(expr, name, typeParams.map(() => 'u32'), pairs.length)}`,
       )
       return null
     }
@@ -5624,7 +5653,7 @@ class CheckContext {
     const example = text ? ` (${text}:${typeToString(this.concretize(literals[0].type))})` : ''
     this.error(
       expr.span.start,
-      `cannot infer ${missing} for '${name}' from untyped literals: write ${name}(${written.join(', ')}${rest}) or give a literal its type${example}`,
+      `cannot infer ${missing} for '${name}' from untyped literals: write ${this.written(expr, name, written, pairs.length)} or give a literal its type${example}`,
     )
     return null
   }
@@ -5680,20 +5709,20 @@ class CheckContext {
   // The one place a comptime argument is evaluated. A type argument is read as
   // a type because of where it stands, as after a colon, and resolved in the
   // calling module.
-  private evalComptimeArg(callee: string, param: AST.Field, arg: AST.Expr, index: number): ComptimeValue | null {
+  private evalComptimeArg(callee: string, param: AST.Field, arg: AST.Expr, place: string): ComptimeValue | null {
     if (!isTypeParam(param)) {
       // A function parameter is given a function of the module by its name,
       // or, inside an instance, a comptime function parameter passed on.
       const target = arg.kind === 'IdentExpr' ? this.lookup(arg.name) : undefined
       if (arg.kind !== 'IdentExpr' || target?.kind !== 'func') {
-        this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
+        this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter`)
         return null
       }
       // Functions that share the name are told apart by the arguments of a
       // call, and here there are none.
       if (this.overloads.has(arg.name) && target === this.moduleScope.symbols.get(arg.name)) {
         for (const member of this.overloads.get(arg.name) ?? []) this.recordReference(member, arg.span.start)
-        this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter ('${arg.name}' has several overloads)`)
+        this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter ('${arg.name}' has several overloads)`)
         return null
       }
       this.recordReference(arg.name, arg.span.start)
@@ -5701,14 +5730,14 @@ class CheckContext {
       // instance, a function of the module, could not call.
       const ofTest = this.testDeclared.has(target) || (this.testOnly.has(arg.name) && target === this.moduleScope.symbols.get(arg.name))
       if (ofTest) {
-        this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be a function declared at module level: '${arg.name}' is declared inside a test`)
+        this.error(arg.span.start, `${place} of '${callee}' must be a function declared at module level: '${arg.name}' is declared inside a test`)
         return null
       }
       return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline }
     }
     const ast = typeOfArg(arg)
     if (!ast) {
-      this.error(arg.span.start, `argument ${index + 1} of '${callee}' must be a type: ${param.ident} is a type parameter`)
+      this.error(arg.span.start, `${place} of '${callee}' must be a type: ${param.ident} is a type parameter`)
       return null
     }
     const before = this.errorsReported
@@ -6622,7 +6651,8 @@ export function declaredName(name: string): string {
 }
 
 // A number literal as it would be written, for a message
-function literalText(expr: AST.Expr): string | null {
+function literalText(grouped: AST.Expr): string | null {
+  const expr = ungrouped(grouped)
   if (expr.kind !== 'LiteralExpr') return null
   if (expr.value.kind === 'int') return expr.value.value.toString()
   if (expr.value.kind === 'float') {

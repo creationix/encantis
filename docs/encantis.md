@@ -1622,7 +1622,7 @@ func f(v: Vec(u32)) { v.push(7) }
 push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
 ```
 
-Otherwise the errors of `x.f(a)` are those of `f(x, a)`, reported at the name of the method. With neither a member nor a function of that name, one error says both. A field that is called is still the field:
+Otherwise the errors of `x.f(a)` are those of `f(x, a)`, reported at the name of the method and worded for the call as it was written: `x` is the receiver and the arguments are counted after it, as in `'double' expected 0 arguments after the receiver, got 1` for `n.double(1)`. With neither a member nor a function of that name, one error says both. A field that is called is still the field:
 
 ```ents
 type Box = (size: u32, n: u32)

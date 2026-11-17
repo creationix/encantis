@@ -3878,7 +3878,7 @@ export func f(x: u32) -> u32 => x.double() + x.add(3)`)).toEqual(['double/1', 'a
 }`
     expect(compiled(source)).toEqual(['push<u8>/2', 'push<u64>/2', 'get<u8>/2'])
     // As in push(u64, v, 9), the written type is what the receiver is checked against.
-    expect(errorsOf(source.replace('w.push(u64, 9)', 'v.push(u64, 9)'))).toEqual(['argument 2: cannot assign *mut Vec(u8) to *mut Vec(u64)'])
+    expect(errorsOf(source.replace('w.push(u64, 9)', 'v.push(u64, 9)'))).toEqual(['receiver: cannot assign *mut Vec(u8) to *mut Vec(u64)'])
   })
 
   test('a comptime function parameter is written in either form, wherever it is declared', () => {
@@ -3944,7 +3944,7 @@ export func f(xs: []u8) -> u32 => xs.len + four.len + (four.ptr as u32) + xs.wid
     ])
     // A value of another type is an argument that does not fit, as in push(u8, v, 7).
     expect(errorsOf(`${PUSH}export func f(v: Vec(u32)) { v.push(u8, 7) }`)).toEqual([
-      'argument 2: cannot assign Vec(u32) to *mut Vec(u8)',
+      'receiver: cannot assign Vec(u32) to *mut Vec(u8)',
     ])
     expect(errorsOf(`type Pt = (q: i32, r: i32)
 func norm(p: *Pt) -> i32 => p.q + p.r
@@ -3956,7 +3956,7 @@ export func f(p: Pt) -> i32 => p.norm()`)).toEqual([
   test('nor is a pointer followed for a value', () => {
     expect(errorsOf(`type Pt = (q: i32, r: i32)
 func norm(p: Pt) -> i32 => p.q + p.r
-export func f(p: *Pt) -> i32 => p.norm()`)).toEqual(['argument 1: cannot assign *Pt to Pt'])
+export func f(p: *Pt) -> i32 => p.norm()`)).toEqual(['receiver: cannot assign *Pt to Pt'])
     // p.* is the value.
     expect(compiled(`type Pt = (q: i32, r: i32)
 func norm(p: Pt) -> i32 => p.q + p.r
@@ -4030,16 +4030,62 @@ export func f(a: i32, b: i32) -> i32 => a.pick(b, less)`)).toEqual(['pick<i32|le
     expect(errorsOf(`${DOUBLE}export func f(p: (q: u32)) -> u32 => p.r.double()`)).toEqual(["no field 'r' on type (q: u32)"])
   })
 
-  test('the errors of the call are those of f(x, a), at the name of the method', () => {
+  test('the errors of the call are those of f(x, a), said of the call as it was written, at the name of the method', () => {
+    // The receiver is the receiver, and the arguments are counted after it:
+    // x.double(1) has one argument, not two.
     const source = `${DOUBLE}export func f(x: u32, y: f64) -> u32 => x.double(1) + y.double()`
     expect(check(source).errors.map(place)).toEqual([
-      { offset: source.indexOf('double(1)'), message: "'double' expected 1 argument, got 2" },
-      { offset: source.indexOf('y.double'), message: 'argument 1: cannot assign f64 to u32' },
+      { offset: source.indexOf('double(1)'), message: "'double' expected 0 arguments after the receiver, got 1" },
+      { offset: source.indexOf('y.double'), message: 'receiver: cannot assign f64 to u32' },
     ])
-    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => x.max()`)).toEqual([
+    const add = 'func add(n: u32, m: u32) -> u32 => n + m\n'
+    expect(errorsOf(`${add}export func f(x: u32) -> u32 => x.add() + x.add(1.5)`)).toEqual([
+      "'add' expected 1 argument after the receiver, got 0",
+      'argument 1: cannot assign float(1.5) to u32',
+    ])
+    expect(errorsOf('func nothing() -> u32 => 0\nexport func f(x: u32) -> u32 => x.nothing()')).toEqual([
+      "'nothing' expected 0 arguments, got 1: the receiver is one",
+    ])
+    expect(errorsOf(`${MAX}export func f(x: u32) -> u32 => x.max() + x.max(u32, 1.5) + x.max(u8, 3)`)).toEqual([
+      "'max' expects 1 argument after the receiver, or 2 with its type argument written; got 0",
+      'argument 2: cannot assign float(1.5) to u32',
+      'receiver: cannot assign u32 to u8',
+    ])
+    expect(errorsOf(`${ZERO}export func f(x: u32) -> u32 => x.zero()`)).toEqual(["receiver of 'zero' must be a type: T is a type parameter"])
+    // The plain call counts and numbers as it always did.
+    expect(errorsOf(`${add}${MAX}export func f(x: u32) -> u32 => add(x) + add(x, 1.5) + max(x)`)).toEqual([
+      "'add' expected 2 arguments, got 1",
+      'argument 2: cannot assign float(1.5) to u32',
       "'max' expects 2 arguments, or 3 with its type argument written; got 1",
     ])
-    expect(errorsOf(`${ZERO}export func f(x: u32) -> u32 => x.zero()`)).toEqual(["argument 1 of 'zero' must be a type: T is a type parameter"])
+  })
+
+  test('what a message suggests writing is in the form the call has', () => {
+    const make = 'func make(comptime T: type, n: u32) -> T => n as T\n'
+    expect(errorsOf(`${make}export func f(x: u32) -> u64 => x.make()`)).toEqual(["cannot infer T for 'make': write the type argument, as in x.make(u32)"])
+    expect(errorsOf(`${make}export func f(x: u32) -> u64 => make(x)`)).toEqual(["cannot infer T for 'make': write the type argument, as in make(u32, ...)"])
+    // A literal in parentheses is still the literal to give a type.
+    expect(errorsOf(`${MAX}export func f() -> u32 => (3).max(6)`)).toEqual([
+      "cannot infer T for 'max' from untyped literals: write .max(i32, ...) or give a literal its type (3:i32)",
+    ])
+    expect(errorsOf(`${MAX}export func f() -> u32 => max((3), 6)`)).toEqual([
+      "cannot infer T for 'max' from untyped literals: write max(i32, ...) or give a literal its type (3:i32)",
+    ])
+  })
+
+  test('every error of a call with a receiver is at the name of the method', () => {
+    const source = `${PUSH}type Pt = (q: i32, r: i32)
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+export func f(p: Pt, v: Vec(u32)) -> u32 {
+  v.push(7)
+  return p.q.area() + p.r.hash()
+}`
+    expect(check(source).errors.map(place)).toEqual([
+      { offset: source.indexOf('push(7)'), message: 'push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address' },
+      { offset: source.indexOf('area()'), message: "no field 'area' on type i32, and no function 'area' accepts (i32)" },
+      { offset: source.indexOf('hash()'), message: "no function 'hash' accepts (i32)" },
+    ])
   })
 
   test('an error in an instance is required from the method, not from where its chain starts', () => {

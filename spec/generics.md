@@ -2375,7 +2375,7 @@ func g(p: *Pt) -> i32 => p.*.norm()
 ```
 
 ```errors
-argument 1: cannot assign *Pt to Pt
+receiver: cannot assign *Pt to Pt
 ```
 
 Neither a member nor a function of the name is one error. A variable of the name is no function.
@@ -2423,7 +2423,7 @@ func f() -> u32 => nope.double().double().double()
 unknown identifier 'nope'
 ```
 
-The other errors of `x.f(a)` are those of `f(x, a)`: the receiver counts among the arguments.
+The other errors of `x.f(a)` are those of `f(x, a)`, said of the call as it was written: `x` is the receiver, and the arguments are counted after it.
 
 ```ents
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
@@ -2437,15 +2437,32 @@ func c(x: u32) -> u32 => x.max()
 func d(x: u32) -> u32 => x.max(u8, 3)
 func e(x: u32) -> u32 => x.zero()
 func f(x: u32) -> u32 => x.nothing()
+func g(x: u32) -> u32 => x.max(u32, 1.5)
 ```
 
 ```errors
-'double' expected 1 argument, got 2
-argument 1: cannot assign f64 to u32
-'max' expects 2 arguments, or 3 with its type argument written; got 1
-argument 2: cannot assign u32 to u8
-argument 1 of 'zero' must be a type: T is a type parameter
-'nothing' expected 0 arguments, got 1
+'double' expected 0 arguments after the receiver, got 1
+receiver: cannot assign f64 to u32
+'max' expects 1 argument after the receiver, or 2 with its type argument written; got 0
+receiver: cannot assign u32 to u8
+receiver of 'zero' must be a type: T is a type parameter
+'nothing' expected 0 arguments, got 1: the receiver is one
+argument 2: cannot assign float(1.5) to u32
+```
+
+What a message suggests writing is in the form the call has.
+
+```ents
+func make(comptime T: type, n: u32) -> T => n as T
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+func a(x: u32) -> u64 => x.make()
+func b() -> u32 => (3).max(6)
+```
+
+```errors
+cannot infer T for 'make': write the type argument, as in x.make(u32)
+cannot infer T for 'max' from untyped literals: write .max(i32, ...) or give a literal its type (3:i32)
 ```
 
 ## Calls in a generic body
