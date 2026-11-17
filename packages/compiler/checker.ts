@@ -5323,8 +5323,7 @@ class CheckContext {
       scope.symbols.set(name, { kind: 'func', type: value.type, inline: value.inline, alias: value.name })
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.
-      const at = this.source?.indexOf(name, param.span.start + 'comptime'.length) ?? -1
-      if (at >= 0 && at < param.span.end) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + at)
+      if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start)
     })
   }
 

@@ -163,6 +163,36 @@ export func f(v: *Vec(u32), xs: []mut i32) -> u32 {
     expect(findReferences(source, module, check, code.indexOf('ascending'))?.references.map(r => r.offset)).toEqual([code.indexOf('ascending)')])
   })
 
+  test('a comptime function parameter is defined at its name and found at each use', () => {
+    // The name stands after the keyword, whatever lies between: it is where
+    // the parser read it, with no source text to search for it.
+    const program = `func twice(comptime T: type, comptime /* f, the step */ f: (T) -> T, x: T) -> T => f(f(x))
+func thrice(comptime T: type, comptime f: (T) -> T, x: T) -> T => twice(T, f, f(x))
+func inc(x: u32) -> u32 => x + 1
+export func up(x: u32) -> u32 => thrice(inc, x)
+`
+    const { source, module, check } = setup(program)
+    const declared = program.indexOf('f: (T)')
+    const uses = [program.indexOf('=> f(f(x))') + 3, program.indexOf('=> f(f(x))') + 5]
+    for (const at of [declared, ...uses]) {
+      expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'f', location: { offset: declared, length: 1 } })
+      expect(rename(source, module, check, at)).toEqual({
+        oldName: 'f',
+        locations: [declared, ...uses].map(offset => ({ offset, length: 1 })),
+      })
+    }
+    // Passed on for another's comptime function parameter, it is used there too.
+    const second = program.indexOf('f: (T)', program.indexOf('func thrice'))
+    expect(rename(source, module, check, second)?.locations.map(l => l.offset)).toEqual([
+      second, program.indexOf('twice(T, f') + 9, program.indexOf('f(x))', second),
+    ])
+    // It is the generic's own name: no hover, and not the function it was given.
+    expect(hover(source, module, check, declared)).toBeNull()
+    expect(rename(source, module, check, program.indexOf('inc'))?.locations.map(l => l.offset)).toEqual([
+      program.indexOf('func inc'), program.indexOf('thrice(inc') + 7,
+    ])
+  })
+
   // No applied type has the type parameter: it is found from the generic
   // type as written, applied or not, as a generic function's is.
   const shapes = `global len: u32 = 7

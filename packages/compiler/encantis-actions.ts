@@ -403,6 +403,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
       kind: 'Field',
       comptime: true,
       ident: ident.toAST(),
+      identSpan: span(ident),
       type: typeAnnotation.toAST(),
       span: span(this),
     } as AST.Field
