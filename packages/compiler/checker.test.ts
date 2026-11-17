@@ -3026,6 +3026,40 @@ describe('a name declared twice at the top of a module', () => {
       func f() -> i64 => x
     `)).toEqual(["'x' is already declared"])
   })
+
+  test('a test takes over a function of the module, and nothing else', () => {
+    const twice = (name: string) => `'${name}' is already declared`
+    expect(errs(`
+      global x: i32 = 5
+      def k = 4
+      data b = [1, 2]
+      func f() -> i32 => 1
+      func get() -> i32 => x + k + b[0] + f()
+      test "t" {
+        func x() -> i32 => 7
+        func k() -> i32 => 7
+        func b() -> i32 => 7
+        import "env" "x" global x: i32
+        import "env" "f" global f: i32
+        import "env" "k" func k() -> i32
+        assert get() == 11
+      }
+    `)).toEqual(['x', 'k', 'b', 'x', 'f', 'k'].map(twice))
+    // A test's own names, and a function of the module it takes over.
+    expect(errs(`
+      func f() -> i32 => 1
+      test "t" {
+        func f() -> i32 => 2
+        func h() -> i32 => 3
+        import "env" "g" global g: i32
+        assert f() + h() + g == 5
+      }
+      test "u" {
+        func h() -> i32 => 4
+        assert h() == 4
+      }
+    `)).toEqual([])
+  })
 })
 
 describe('a function named where a value is', () => {

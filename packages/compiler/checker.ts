@@ -812,7 +812,7 @@ class CheckContext {
         case 'ImportFunc': {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
-          if (!inTest && this.takenByAnother(name, item.span.start, 'func')) break
+          if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
           if (isGenericSignature(item.item.signature)) {
             this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
             break
@@ -840,7 +840,7 @@ class CheckContext {
         }
         case 'ImportGlobal': {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
-          if (!inTest && this.takenByAnother(item.item.ident, item.span.start, 'value')) break
+          if (this.takenByAnother(item.item.ident, item.span.start, 'value', inTest)) break
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
@@ -895,12 +895,15 @@ class CheckContext {
   // but another function. Functions share a name with each other where
   // their parameters differ (see declareFunc). Without this the later
   // declaration replaced the earlier one in some uses and not in others: two
-  // globals of one name were two wasm globals of one name.
+  // globals of one name were two wasm globals of one name. A function or an
+  // import a test declares is held to the module's names the same way (a
+  // test's function takes over a function of the module, and nothing else),
+  // and its own name is no name of the module's.
   private readonly topLevel = new Map<string, 'func' | 'value'>()
-  private takenByAnother(name: string, offset: number, kind: 'func' | 'value'): boolean {
+  private takenByAnother(name: string, offset: number, kind: 'func' | 'value', inTest = false): boolean {
     const first = this.topLevel.get(name)
     if (first === undefined) {
-      this.topLevel.set(name, kind)
+      if (!inTest) this.topLevel.set(name, kind)
       return false
     }
     if (first === 'func' && kind === 'func') return false
@@ -915,7 +918,7 @@ class CheckContext {
     }
     if (!decl.ident) return // Anonymous function
     if (this.takenByGeneric(decl.ident, decl.span.start)) return
-    if (!inTest && this.takenByAnother(decl.ident, decl.span.start, 'func')) return
+    if (this.takenByAnother(decl.ident, decl.span.start, 'func', inTest)) return
     const sig = this.resolveSignature(decl.signature)
     this.declareFunc(decl, decl.ident, { kind: 'func', type: sig, inline: decl.inline }, inTest)
   }
