@@ -3612,7 +3612,7 @@ class CheckContext {
         return fail(`no field '${name}' on type ${typeToString(type)}, and no function '${name}' accepts (${types.join(', ')})`)
       }
       // A value has no address, and none is taken for it.
-      const pointer = sym && type ? this.pointerWanted(sym, name, expr.args, type) : null
+      const pointer = sym && type ? this.pointerWanted(sym, name, expr.args, receiver, type) : null
       if (pointer && type) {
         this.recordReference(name, at)
         return fail(`${name} takes ${pointer} first; the receiver is a ${typeToString(type)}, which is held in registers and has no address`)
@@ -3634,11 +3634,13 @@ class CheckContext {
 
   // The pointer type a function takes as its first argument, where the
   // receiver of a method call is a value of what that pointer points to.
-  private pointerWanted(sym: Symbol, name: string, args: AST.Arg[], receiver: ResolvedType): string | null {
+  // A literal is no such value: passed for a pointer it is data in memory,
+  // as it is when it is written as the first argument.
+  private pointerWanted(sym: Symbol, name: string, args: AST.Arg[], value: AST.Expr, receiver: ResolvedType): string | null {
     if (unwrap(receiver).kind === 'pointer') return null
     const pointsTo = (type: ResolvedType): boolean => {
       const u = unwrap(type)
-      return u.kind === 'pointer' && typeAssignable(u.pointee, receiver)
+      return u.kind === 'pointer' && typeAssignable(u.pointee, receiver) && !this.fits(value, type)
     }
     if (sym.kind === 'func') {
       // Of functions that share the name, another may take the value.

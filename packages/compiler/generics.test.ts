@@ -4065,6 +4065,16 @@ export func f(seed: u32) -> u32 => seed${'.inc()'.repeat(calls)}`
     ])
   })
 
+  test('a literal receiver is data where the function takes a pointer, as the same literal is as an argument', async () => {
+    const first = 'func first(a: *[2]f64) -> f64 => a[0]\n'
+    await expectSameWasm(`${first}export func f() -> f64 => [1, 2.5].first()`, `${first}export func f() -> f64 => first([1, 2.5])`)
+    const len = 'func len3(a: *[3]u8) -> u32 => a.len\n'
+    await expectSameWasm(`${len}export func f() -> u32 => "abc".len3() + [1:u8, 2, 3].len3()`, `${len}export func f() -> u32 => len3("abc") + len3([1:u8, 2, 3])`)
+    // With the type argument of a generic written, the pointer type is known.
+    const head = 'func head3(comptime T: type, a: *[3]T) -> T => a[0]\n'
+    await expectSameWasm(`${head}export func f() -> u8 => [1:u8, 2, 3].head3(u8)`, `${head}export func f() -> u8 => head3(u8, [1:u8, 2, 3])`)
+  })
+
   test('the method is used, and found from its name in the call', () => {
     const source = `${DOUBLE}${PUSH}export func f(v: *mut Vec(u32), x: u32) -> u32 {
   v.push(x.double())
