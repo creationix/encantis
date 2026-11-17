@@ -1617,7 +1617,25 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
 }
 ```
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out.
+With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected.
+
+<!-- spec:begin compile -->
+
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section), or an element of an array, slice or many-pointer. A variable is held in registers and has none, whatever type is expected of `&x`:
+
+```ents
+func get(p: *i32) -> i32 => p.*
+
+func third(p: [*]i32) -> i32 => get(&p[2])    // p + 8, the element's address
+func cell() -> i32 => get(&5)                   // a cell holding 5
+func value(x: i32) -> i32 => get(&x)
+```
+
+```errors
+'x' has no address: a variable is held in registers
+```
+
+<!-- spec:end -->
 
 ### 4.8 Slice/Range Syntax
 

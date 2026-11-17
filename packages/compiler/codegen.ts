@@ -1631,6 +1631,9 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     ;[base, len] = parts
   } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
     len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && u.pointee.sizes === null) {
+    // A many-pointer's element: its address, unchecked.
+    return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
   } else {
     return null
   }

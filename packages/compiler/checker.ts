@@ -2716,20 +2716,27 @@ class CheckContext {
       return type
     }
 
-    // Bidirectional: propagate expected type through & (ref) expressions
-    if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
-      const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
-      const isLiteral = operand.kind === 'LiteralExpr' || operand.kind === 'ArrayExpr' ||
-        operand.kind === 'RepeatExpr' || operand.kind === 'TupleExpr'
-      if (isLiteral && expected.mutable) markMut(operand)
+    // Bidirectional: propagate expected type through & (ref) of a literal,
+    // which is a cell of the data section of the type pointed to. Any other
+    // operand has an address of its own or has none, whatever is expected:
+    // it is checked below as it is inferred (an element of an array, slice
+    // or many-pointer), and then against the pointer type. `&x` of a
+    // variable held in registers is no address, nor is `&list[k]` the
+    // element's value.
+    const refOperand = expr.kind === 'UnaryExpr' && expr.op === '&'
+      ? (expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand)
+      : null
+    const isLiteral = refOperand !== null && (refOperand.kind === 'LiteralExpr' || refOperand.kind === 'ArrayExpr' ||
+      refOperand.kind === 'RepeatExpr' || refOperand.kind === 'TupleExpr')
+    if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && expected.kind === 'pointer') {
+      const operand = refOperand
+      if (expected.mutable) markMut(operand)
       this.checkExpr(expr.operand, expected.pointee)
-      if (isLiteral) {
-        // Give the literal its own cell in the data section, as inferExpr does.
-        if (operand.kind !== 'TupleExpr') {
-          (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
-        }
-        this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
+      // Give the literal its own cell in the data section, as inferExpr does.
+      if (operand.kind !== 'TupleExpr') {
+        (operand as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = operand.span.start
       }
+      this.addLiteral(operand.span.start, operand, { kind: 'array', element: expected.pointee, sizes: [1] })
       const result = pointer(expected.pointee, false, expected.mutable)
       this.exprTypes.set(expr, result)
       return result
@@ -4576,7 +4583,14 @@ class CheckContext {
           this.addLiteral(dataId, litExpr, arrType)
           return pointer(operandType, false, true)
         }
-        this.error(expr.span.start, `& requires a literal or a pointer/slice operand`)
+        // A variable is held in registers (9.2), and so is a field of one.
+        const held = ungrouped(innerExpr)
+        const variable = held.kind === 'IdentExpr' ? this.lookup(held.name) : undefined
+        if (variable && (variable.kind === 'local' || variable.kind === 'param' || variable.kind === 'return' || variable.kind === 'global')) {
+          this.error(expr.span.start, `'${held.kind === 'IdentExpr' ? held.name : ''}' has no address: a variable is held in registers`)
+        } else {
+          this.error(expr.span.start, `& requires a literal, a pointer, or an element of an array, slice or many-pointer`)
+        }
         return pointer(operandType, false, true)
       }
     }
@@ -4879,6 +4893,12 @@ class CheckContext {
       elem = objType.pointee.element
       mutable = !!objType.mutable
       size = objType.pointee.sizes[0]
+    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' && objType.pointee.sizes === null) {
+      // A many-pointer has no length: its element's address is never
+      // checked, as reading the element is not (4.7).
+      this.inferIndexValue(expr.index)
+      this.exprTypes.set(expr, objType.pointee.element)
+      return pointer(objType.pointee.element, false, !!objType.mutable)
     } else {
       return null
     }

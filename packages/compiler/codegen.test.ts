@@ -2713,3 +2713,45 @@ describe('arguments by place and by name', () => {
     expect(wat).toContain('(call $one) (call $two)')
   })
 })
+
+describe('the address of an element, where a pointer is expected', () => {
+  test('of a many-pointer is the element\'s address, not its value', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      data cells = mut [10:i32, 20, 30, 40]
+      data pts = mut [Pt(1, 2), Pt(3, 4)]
+      func get(p: *i32) -> i32 => p.*
+      func put(p: *mut Pt) { p.x = 9 }
+      export func many(i: u32) -> i32 {
+        let list = cells as [*]mut i32
+        let q = &list[i]
+        return get(q) + get(&list[i + 1])
+      }
+      export func many_struct() -> i32 {
+        let list = pts as [*]mut Pt
+        put(&list[1])
+        return pts[1].x * 10 + pts[1].y
+      }
+      export func fixed() -> i32 => get(&cells[2])
+      export func cell() -> i32 => get(&5)
+    `)
+    expect(x.many(1)).toBe(50)
+    expect(x.many_struct()).toBe(94)
+    expect(x.fixed()).toBe(30)
+    expect(x.cell()).toBe(5)
+  })
+
+  test('of a variable is none', () => {
+    const errs = typecheck(parse(`
+      type Pt = (x: i32, y: i32)
+      func get(p: *i32) -> i32 => p.*
+      func put(p: *mut Pt) { p.x = 9 }
+      func a(x: i32) -> i32 => get(&x)
+      func b() {
+        let p = Pt(1, 2)
+        put(&p)
+      }
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(["'x' has no address: a variable is held in registers", "'p' has no address: a variable is held in registers"])
+  })
+})
