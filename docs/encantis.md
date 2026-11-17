@@ -1168,6 +1168,8 @@ Assignment targets (lvalues) can be:
 | `(a, b, ...)` | Positional destructuring |
 | `(x:, y:, ...)` | Named destructuring (trailing colon) |
 
+> **Status: the type-punned write is not implemented.** `ptr.T` is the pointer as a `[*]T` (see [Type-Punned Memory Access](#type-punned-memory-access)), so `ptr.u32 = value` is a compile error: write `ptr.u32[0] = value`.
+
 An assignment reads its whole value before it writes any of it, so a value can be rebuilt from itself, in a variable or in memory:
 
 ```ents
@@ -1281,6 +1283,8 @@ ptr.f64             // read 8 bytes as f64
 ptr.(MyStruct)
 ptr.([]u8)
 ```
+
+> **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
 ### 4.7 Bounds-Checked Indexing
 

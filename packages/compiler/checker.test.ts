@@ -1216,6 +1216,24 @@ describe('writes through pointers', () => {
     expect(errs('h.p.c = 5', 'h: (p: *Spot)')).toEqual([constPointer])
     expect(errs('h.p.c = 5', 'h: (p: *mut Spot)')).toEqual([])
   })
+
+  test('a type pun is the pointer, not a place: the place is its element', () => {
+    const pun = (type: string, pointer: string) =>
+      `cannot assign to .${type}: it is the pointer as ${pointer}, not the ${type} it points at — write .${type}[0] = value to store one`
+    for (const type of ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64', 'bool']) {
+      const value = type === 'bool' ? 'true' : '1'
+      expect(errs(`b.${type} = ${value}`, 'b: [*]mut u8')).toEqual([pun(type, `[*]mut ${type}`)])
+      expect(errs(`b.${type}[0] = ${value}`, 'b: [*]mut u8')).toEqual([])
+    }
+    // Whatever is punned and whatever is assigned, also with an operator.
+    expect(errs('s.u16 = 1', 's: []mut u8')).toEqual([pun('u16', '[*]mut u16')])
+    expect(errs('m.u32 = m.u32', 'm: *mut Spot')).toEqual([pun('u32', '[*]mut u32')])
+    expect(errs('b.u32 += 1', 'b: [*]mut u8')).toEqual([pun('u32', '[*]mut u32')])
+    expect(errs('b.u32 = 1', 'b: [*]u8')).toEqual([pun('u32', '[*]u32')])
+    expect(errs('n.u8 = 1', 'n: u32')).toEqual(['cannot assign to .u8: a type pun is not a place a value can be stored to'])
+    // The value is still checked.
+    expect(errs('b.u32 = nothing', 'b: [*]mut u8')).toEqual([pun('u32', '[*]mut u32'), "unknown identifier 'nothing'"])
+  })
 })
 
 describe('struct elements of an array literal', () => {

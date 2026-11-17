@@ -1529,6 +1529,17 @@ class CheckContext {
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
         }
+        // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
+        // so there is no place behind it to store to. The place is p.u32[0].
+        if (stmt.target.kind === 'MemberExpr' && stmt.target.member.kind === 'type') {
+          const pun = typeToString(this.resolveType(stmt.target.member.type))
+          const pointer = targetType && unwrap(targetType).kind === 'pointer'
+          this.error(stmt.span.start, pointer
+            ? `cannot assign to .${pun}: it is the pointer as ${typeToString(targetType as ResolvedType)}, not the ${pun} it points at — write .${pun}[0] = value to store one`
+            : `cannot assign to .${pun}: a type pun is not a place a value can be stored to`)
+          this.inferExpr(stmt.value)
+          break
+        }
         this.checkMutability(stmt.target, stmt.span.start)
         if (targetType && stmt.op === '=') {
           this.checkExpr(stmt.value, targetType)
