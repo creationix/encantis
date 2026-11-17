@@ -5038,6 +5038,150 @@ describe('method calls on tables', () => {
       expect(said(method)).toEqual(said(plain))
     }
   })
+
+  test('a row is the receiver as the row pointer m[i] is, and what a table has built in is a member', async () => {
+    const decls = `func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+func fill(r: *mut [3]i32, v: i32) {
+  for j in 3 {
+    r[j] = v + (j as i32)
+  }
+}
+func cell(m: *[2][3]i32, i: u32#2, j: u32#3) -> i32 => m[i][j]
+func double(n: u32) -> u32 => n * 2
+func firsts(rows: [][3]u16) -> (t: u32) {
+  t = 0
+  for r in rows {
+    t = t * 100 + (r[0] as u32)
+  }
+}
+data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+data rows: [][3]u16 = [[10, 20, 30], [40, 50, 60], [70, 80, 90]]
+data tab: *[3][3]u16 = [[11, 21, 31], [41, 51, 61], [71, 81, 91]]
+`
+    const method = `${decls}export func a(i: u32) -> i32 => (grid[i] ?? grid[0]).sum() * 100 + grid.cell(1, 2)
+export func b(v: i32) -> i32 {
+  board[0].fill(v)
+  board[1].fill(v * 10)
+  let s = 0:i32
+  for row in board {
+    s = s * 1000 + row.sum()
+  }
+  return s
+}
+export func c(i: u32) -> u32 => grid.len.double() * 100 + grid.wid.double() * 10 + (if let r = rows[i] { r.len } else { 0 }) + tab[1..].firsts() * 1000
+`
+    const plain = `${decls}export func a(i: u32) -> i32 => sum(grid[i] ?? grid[0]) * 100 + cell(grid, 1, 2)
+export func b(v: i32) -> i32 {
+  fill(board[0], v)
+  fill(board[1], v * 10)
+  let s = 0:i32
+  for row in board {
+    s = s * 1000 + sum(row)
+  }
+  return s
+}
+export func c(i: u32) -> u32 => double(grid.len) * 100 + double(grid.wid) * 10 + (if let r = rows[i] { r.len } else { 0 }) + firsts(tab[1..]) * 1000
+`
+    await expectSameWasm(method, plain)
+    const { a, b, c } = await run(method)
+    expect([a(1), a(2)]).toEqual([1506, 606])
+    expect(b(1)).toBe(6033)
+    // .len is 2 rows, .wid the 4 bytes of a row pointer
+    expect([c(0), c(3)]).toEqual([4171483, 4171480])
+    expect(errorsOf(`func len(m: *[2][3]i32) -> u32 => 9\ndata grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nexport func f() -> u32 => grid.len()`)).toEqual([
+      "cannot call non-function type: int(2) ('len' is a field here, and a field wins over the function 'len': write len(...))",
+    ])
+  })
+
+  test('functions that share a name tell a table, a packed block and a flat array apart, and a row from a slice', async () => {
+    const data = `data t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data p: *[2x3]i32 = [[7, 8, 9], [10, 11, 12]]
+data s: *[6]i32 = [13, 14, 15, 16, 17, 18]
+data u: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data flat: []i32 = [7, 8, 9, 10]
+`
+    const shared = `func corner(m: *[2][3]i32) -> i32 => m[1][2] * 100 + m[0][0]
+func corner(m: *[2x3]i32) -> i32 => m[1][2] * 1000 + m[0][1]
+func corner(m: *[6]i32) -> i32 => m[5] * 10000 + m[2]
+func view(m: [][3]i32) -> u32 => m.len * 10 + m.ptr.wid
+func view(m: []i32) -> u32 => 1000 + m.len
+func pick(r: *[3]i32) -> i32 => r[2]
+func pick(r: []i32) -> i32 => 100 + (r.len as i32)
+${data}export func a() -> i32 => t.corner() + p.corner() + s.corner() + u.corner()
+export func b() -> u32 => t.view() * 1000000 + p.view() * 1000 + s.view()
+export func c(i: u32#2) -> i32 => t[i].pick() * 1000 + flat.pick() + u[0].corner_row()
+func corner_row(r: *mut [3]i32) -> i32 => r[0] * 10000
+`
+    const byHand = `func corner_t(m: *[2][3]i32) -> i32 => m[1][2] * 100 + m[0][0]
+func corner_p(m: *[2x3]i32) -> i32 => m[1][2] * 1000 + m[0][1]
+func corner_s(m: *[6]i32) -> i32 => m[5] * 10000 + m[2]
+func view_t(m: [][3]i32) -> u32 => m.len * 10 + m.ptr.wid
+func view_s(m: []i32) -> u32 => 1000 + m.len
+func pick_r(r: *[3]i32) -> i32 => r[2]
+func pick_s(r: []i32) -> i32 => 100 + (r.len as i32)
+${data}export func a() -> i32 => corner_t(t) + corner_p(p) + corner_s(s) + corner_t(u)
+export func b() -> u32 => view_t(t) * 1000000 + view_s(p) * 1000 + view_s(s)
+export func c(i: u32#2) -> i32 => pick_r(t[i]) * 1000 + pick_s(flat) + corner_row(u[0])
+func corner_row(r: *mut [3]i32) -> i32 => r[0] * 10000
+`
+    await expectSameWasm(shared, byHand)
+    const { a, b, c } = await run(shared)
+    expect(a()).toBe(193225)
+    // the table is a slice of 2 rows; the packed block and the flat array are 6 elements
+    expect(b()).toBe(25007006)
+    expect(c(1)).toBe(16104)
+    // None of the three is the other, and a row of a mutable table is taken by both of these.
+    expect(errorsOf(`func f(m: *[2x3]i32) -> u32 => 2\nfunc f(m: *[6]i32) -> u32 => 3\n${data}export func a() -> u32 => t.f()`)).toEqual([
+      "no function 'f' accepts (*[2][3]i32)",
+    ])
+    expect(errorsOf(`func f(m: *[2x3]i32) -> u32 => 2\n${data}export func a() -> u32 => t.f()`)).toEqual(['receiver: cannot assign *[2][3]i32 to *[2x3]i32'])
+    expect(errorsOf(`func pick(r: *[3]i32) -> i32 => r[2]\nfunc pick(r: []i32) -> i32 => 1\n${data}export func a() -> i32 => u[1].pick()`)).toEqual([
+      "'pick' is ambiguous for (*mut [3]i32)",
+    ])
+  })
+
+  test('a row decides T of a generic *[3]T or []T, and a table decides T of *[2][3]T and R of *[2]R', async () => {
+    const data = `data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data bytes: *[2][3]u8 = [[7, 8, 9], [10, 11, 12]]
+`
+    const generic = `func total(comptime T: type, r: *[3]T) -> T => r[0] + r[1] + r[2]
+func first(comptime T: type, xs: []T) -> T => xs[0] ?? 0
+func cell(comptime T: type, m: *[2][3]T, i: u32#2, j: u32#3) -> T => m[i][j]
+func rowlen(comptime R: type, m: *[2]R, i: u32#2) -> u32 => m[i].len * 10 + m.wid
+func fold(comptime T: type, m: *[2][3]T, comptime f: (*[3]T) -> T) -> (t: T) {
+  t = 0
+  for row in m {
+    t += row.f()
+  }
+}
+func rsum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+${data}export func a() -> i32 => grid[1].total() * 100 + grid[0].first() + grid.cell(1, 0) * 10000 + grid.fold(rsum) * 1000000
+export func b() -> u32 => (bytes[1].total() as u32) + (bytes.cell(0, 2) as u32) * 1000 + grid.rowlen(1) * 100000 + bytes.rowlen(0) * 10000000
+`
+    const byHand = `func total_i32(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+func total_u8(r: *[3]u8) -> u8 => r[0] + r[1] + r[2]
+func first_i32(xs: []i32) -> i32 => xs[0] ?? 0
+func cell_i32(m: *[2][3]i32, i: u32#2, j: u32#3) -> i32 => m[i][j]
+func cell_u8(m: *[2][3]u8, i: u32#2, j: u32#3) -> u8 => m[i][j]
+func rowlen_i32(m: *[2][3]i32, i: u32#2) -> u32 => m[i].len * 10 + m.wid
+func rowlen_u8(m: *[2][3]u8, i: u32#2) -> u32 => m[i].len * 10 + m.wid
+func fold_i32_rsum(m: *[2][3]i32) -> (t: i32) {
+  t = 0
+  for row in m {
+    t += rsum(row)
+  }
+}
+func rsum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+${data}export func a() -> i32 => total_i32(grid[1]) * 100 + first_i32(grid[0]) + cell_i32(grid, 1, 0) * 10000 + fold_i32_rsum(grid) * 1000000
+export func b() -> u32 => (total_u8(bytes[1]) as u32) + (cell_u8(bytes, 0, 2) as u32) * 1000 + rowlen_i32(grid, 1) * 100000 + rowlen_u8(bytes, 0) * 10000000
+`
+    await expectSameWasm(generic, byHand)
+    const { a, b } = await run(generic)
+    expect(a()).toBe(21041501)
+    // m.wid in the instance is the 4 bytes of a row pointer, not sizeof(R)
+    expect(b()).toBe(343409033)
+  })
 })
 
 describe('examples/generics', () => {
