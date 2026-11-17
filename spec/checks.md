@@ -773,6 +773,44 @@ cannot assign (int(1), int(2), int(3)) to []i32
 cannot assign () to []i32
 ```
 
+So is an element of a literal of slices: a value in parentheses is that value, and a many-pointer has no length to be one.
+
+```ents
+data room = mut [0:u8; 64]
+
+func f() -> u32 {
+  let xs: [][]u8 = [(room as [*]u8)]
+  let ys: [][]mut u8 = [((room as [*]mut u8)), room]
+  return xs.len + ys.len
+}
+```
+
+```errors
+cannot assign [*]u8 to []u8
+cannot assign [*]mut u8 to []mut u8
+```
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+
+func total(xs: [][]u8) -> u32 {
+  let n: u32 = 0
+  for x in xs { n += x.len }
+  return n
+}
+
+test "values in parentheses among slices" {
+  let s: []u8 = more
+  let xs: [][]u8 = [(text), ("ab"), (s), ((text as [*]u8, 2))]
+  assert total(xs) == 3 + 2 + 5 + 2
+}
+```
+
+<!-- spec:end -->
+
 ## Slices from a pointer to an array
 
 A `*[N]T` is a `[]T` of length `N` wherever it meets one: an argument, an initializer, an assignment, a returned value, an expression body, a branch, a field of a struct or tuple literal, and under a name for the slice type.

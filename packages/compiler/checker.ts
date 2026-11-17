@@ -2965,7 +2965,9 @@ class CheckContext {
           const counted = shape.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
             const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
-            if (this.isDataLiteralExpr(elem) && !asValue) {
+            // (x) is x: a value in parentheses is checked as that value, and
+            // only a literal is laid out as one.
+            if (this.isDataLiteralExpr(ungrouped(elem)) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
