@@ -150,7 +150,7 @@ Template literals produce a **slice of slices** (`[][]u8`) — an array of fragm
 wasi_fd_write(stderr, `Error ${msg}: ${errnos[code]}\n`, nwritten)
 
 // Equivalent manual construction:
-data err_iovecs:[]mut []u8 = ["Error ", "", ": ", "", "\n"]
+data err_iovecs:[]mut []u8 = mut ["Error ", "", ": ", "", "\n"]
 err_iovecs[1] = msg
 err_iovecs[3] = errnos[code]
 wasi_fd_write(stderr, err_iovecs, nwritten)
@@ -205,7 +205,9 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
-A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T` (or for a `*mut [N][!]T`) and the elements of a literal given for a slice of mutable slices (`[][]mut u8`).
+A literal is constant unless it is written with `mut`, wherever it is: where a mutable pointer or slice is wanted, a literal without `mut` is an error that shows it written with the keyword. `let buf: []mut u8 = [0:u8; 20]` is `a literal is constant: write `mut [0:u8; 20]` for a []mut u8`; the same goes for `data s: []mut i32 = [20, 8]`, an argument `"abc"` for a `[]mut u8` parameter (`mut "abc"`), a slice field of a struct (`Buf(mut [0:u8; 4], 0)`), an element of a slice of mutable slices (`data q: *[2][]mut u8 = [mut "ab", mut "cd"]`) and the table literal of a `*mut [N][M]T`.
+
+`mut` makes the whole literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `&` before a literal makes a writable cell of its own as well (`let n = &0:u32` is a `*mut u32`).
 
 #### `def` — Compile-Time Constants
 
@@ -459,7 +461,8 @@ print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
 fill(text)                        // ERROR: const data → mutable param
-fill("hello")                     // OK: given for []mut u8, the literal is a mutable copy of its own
+fill("hello")                     // ERROR: a literal is constant: write `mut "hello"` for a []mut u8
+fill(mut "hello")                 // OK: a mutable copy of its own
 ```
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
@@ -968,12 +971,13 @@ data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, an
 
 #### Mutability
 
-Data is const unless its literal is `mut` or its declared type is a mutable pointer or slice. Const data may share its bytes with equal literals; mutable data is its own:
+Data is const unless its literal is `mut`, and a mutable type needs a `mut` literal ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). Const data may share its bytes with equal literals; mutable data is its own:
 
 ```ents
 data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
 data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
-data counts: []mut u32 = [0, 0]     // []mut u32: unique, as if written with mut
+data counts: []mut u32 = mut [0, 0] // []mut u32: unique
+data sums: []mut u32 = [0, 0]       // ERROR: a literal is constant: write `mut [0, 0]` for a []mut u32
 ```
 
 ### 3.3 Variables

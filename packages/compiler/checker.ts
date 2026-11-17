@@ -1205,7 +1205,15 @@ class CheckContext {
 
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
-    const inferredType = this.inferExpr(decl.value)
+    // With a declared type the literal is checked against it below, which
+    // tells it whether it has to be mut.
+    if (decl.type) this.mutLiterals++
+    let inferredType: ResolvedType
+    try {
+      inferredType = this.inferExpr(decl.value)
+    } finally {
+      if (decl.type) this.mutLiterals--
+    }
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
     // Use span-based key for data inside test blocks to avoid name collisions
@@ -1524,6 +1532,94 @@ class CheckContext {
       return !!(expr as { mut?: boolean }).mut
     }
     return false
+  }
+
+  // What a literal laid out in memory for `expected` holds: its elements,
+  // the literals it lays out apart, its count.
+  private checkDataLiteralParts(expr: AST.Expr, expected: ResolvedType, arrType: ArrayRT, prefix: string): void {
+    this.addLiteral(expr.span.start, expr, arrType)
+    if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
+      (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+    }
+    if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
+    // Propagate element type into array elements
+    if (expr.kind === 'ArrayExpr') {
+      const innerType = expected.kind === 'slice' ? expected.element
+        : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
+        : null
+      if (innerType) {
+        // A tuple that is a struct element is checked field by field, like
+        // any struct value: its literals take their fields' types. One that
+        // is a slice element is its (ptr, len), checked as any slice value.
+        const inner = unwrap(innerType).kind
+        const counted = expected.kind === 'slice' ? countedElement(innerType) : null
+        for (const elem of (expr as AST.ArrayExpr).elements) {
+          // A tuple is never laid out apart behind a pointer element: as
+          // for a field or a let, (1, 2) is not a *Pt.
+          const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
+          if (this.isDataLiteralExpr(elem) && !asValue) {
+            const element = unwrap(innerType)
+            if ((element.kind === 'pointer' || element.kind === 'slice') && element.mutable) {
+              this.requireMutLiteral(elem, innerType, prefix)
+            }
+            this.validateDataLiteralRange(elem, innerType)
+            this.checkStringElements(elem, innerType, counted, prefix)
+            this.exprTypes.set(elem, innerType)
+          } else {
+            this.checkExpr(elem, innerType)
+          }
+        }
+      }
+    }
+    // So is what a repeat repeats, as each of its copies.
+    if (expr.kind === 'RepeatExpr' && this.isDataLiteralExpr(ungrouped(expr.value))) {
+      const innerType = expected.kind === 'slice' ? expected.element
+        : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
+        : null
+      const element = innerType && unwrap(innerType)
+      if (innerType && element && (element.kind === 'pointer' || element.kind === 'slice') && element.mutable) {
+        this.requireMutLiteral(expr.value, innerType, prefix)
+      }
+    }
+    // The rows of a table are laid out apart from it, at compile time: a
+    // row or a cell known only at run time has no place to be stored.
+    if (tableRow(expected) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+      for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        if (!this.isConstantInitializer(row)) {
+          this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+        }
+      }
+    }
+    if (expected.kind === 'pointer' || expected.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
+    // So are the literals among the elements of a slice of slices, or of a
+    // pointer to framed arrays: codegen fills in an element that is known
+    // only at run time, but not what is inside one of them.
+    const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
+    const of = arrType.element
+    const apart = !tableRow(expected) && framings <= 1 &&
+      (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && of.pointee.kind === 'array'))
+    if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+      for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        let inner = ungrouped(element)
+        while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
+        if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
+          this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+        }
+      }
+    }
+  }
+
+  // How many `mut` literals the one being checked is inside. A `mut` literal
+  // is writable all through, with what it lays out apart.
+  private mutLiterals = 0
+
+  // A literal is constant unless it is written with `mut`: where a mutable
+  // pointer or slice is wanted, the error shows it written so. An attempt
+  // (which function of a name a call means) takes the literal as it is meant:
+  // the check of the call then names the keyword.
+  private requireMutLiteral(expr: AST.Expr, expected: ResolvedType, prefix: string): void {
+    if (this.mutLiterals > 0 || this.attempting > 0 || writtenMut(expr)) return
+    this.error(expr.span.start, `${prefix}a literal is constant: write \`mut ${writtenLiteral(expr, (e) => this.exprTypes.get(e))}\` for a ${typeToString(expected)}`)
   }
 
   // Validate data literal byte values against a ranged element type
@@ -2946,68 +3042,25 @@ class CheckContext {
         : expected.kind === 'array'
         ? expected
         : (expected.pointee as ArrayRT)
-      // A literal given where a mutable pointer or slice is wanted is `mut`
-      // without the keyword: a copy of its own, shared with no other data.
+      // A literal is constant unless it is written with `mut`, which makes it
+      // a copy of its own, shared with no other data.
       const targetMut = (expected.kind === 'pointer' && expected.mutable) ||
         (expected.kind === 'slice' && expected.mutable)
+      const written = writtenMut(expr)
       if (targetMut) markMut(expr)
-      this.addLiteral(expr.span.start, expr, arrType)
-      if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
-        (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+      // Under `mut`, what the literal lays out apart is writable too: the rows
+      // of a table, the elements of a slice of slices, a slice field. Where
+      // the literal itself lacks it, the one error for it says so for all.
+      const covering = targetMut || written
+      const reported = this.errors.length
+      if (covering) this.mutLiterals++
+      try {
+        this.checkDataLiteralParts(expr, expected, arrType, prefix)
+      } finally {
+        if (covering) this.mutLiterals--
       }
-      if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
-      // Propagate element type into array elements
-      if (expr.kind === 'ArrayExpr') {
-        const innerType = expected.kind === 'slice' ? expected.element
-          : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
-          : null
-        if (innerType) {
-          // A tuple that is a struct element is checked field by field, like
-          // any struct value: its literals take their fields' types. One that
-          // is a slice element is its (ptr, len), checked as any slice value.
-          const inner = unwrap(innerType).kind
-          const counted = expected.kind === 'slice' ? countedElement(innerType) : null
-          for (const elem of (expr as AST.ArrayExpr).elements) {
-            // A tuple is never laid out apart behind a pointer element: as
-            // for a field or a let, (1, 2) is not a *Pt.
-            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
-            if (this.isDataLiteralExpr(elem) && !asValue) {
-              this.validateDataLiteralRange(elem, innerType)
-              this.checkStringElements(elem, innerType, counted, prefix)
-              this.exprTypes.set(elem, innerType)
-            } else {
-              this.checkExpr(elem, innerType)
-            }
-          }
-        }
-      }
-      // The rows of a table are laid out apart from it, at compile time: a
-      // row or a cell known only at run time has no place to be stored.
-      if (tableRow(expected) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
-        for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-          if (!this.isConstantInitializer(row)) {
-            this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
-          }
-        }
-      }
-      if (expected.kind === 'pointer' || expected.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
-      // So are the literals among the elements of a slice of slices, or of a
-      // pointer to framed arrays: codegen fills in an element that is known
-      // only at run time, but not what is inside one of them.
-      const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
-      const of = arrType.element
-      const apart = !tableRow(expected) && framings <= 1 &&
-        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && of.pointee.kind === 'array'))
-      if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
-        for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-          let inner = ungrouped(element)
-          while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
-          if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
-            this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
-          }
-        }
-      }
-      // Record the expected type so codegen knows to emit ptr+len for slices
+      // Once nothing else is wrong with it.
+      if (targetMut && !written && this.errors.length === reported) this.requireMutLiteral(expr, expected, prefix)
       this.exprTypes.set(expr, expected)
       return expected
     }
@@ -3211,6 +3264,22 @@ class CheckContext {
 
   // typedByContext: the expression is about to meet an expected type.
   inferExprInner(expr: AST.Expr, typedByContext = false): ResolvedType {
+    // What a `mut` literal holds is writable with it (see requireMutLiteral).
+    // Nor is a literal about to meet a type told before it meets it: the
+    // check that follows says what it holds is constant, if it is.
+    const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr'
+    if (literal && (typedByContext || writtenMut(expr))) {
+      this.mutLiterals++
+      try {
+        return this.inferExprOf(expr, typedByContext)
+      } finally {
+        this.mutLiterals--
+      }
+    }
+    return this.inferExprOf(expr, typedByContext)
+  }
+
+  private inferExprOf(expr: AST.Expr, typedByContext: boolean): ResolvedType {
     // Inferring afresh: whatever context marked it for widening before is gone.
     this.coercions.delete(expr)
     switch (expr.kind) {
@@ -7339,6 +7408,46 @@ export function spellCodepoints(codepoints: number[], quote: "'" | '"'): string 
   return out + quote
 }
 
+// A literal written out again, for an error that shows how to write it: in
+// full when it is short, else as its brackets or quotes around an ellipsis.
+function writtenLiteral(expr: AST.Expr, typeOf: (e: AST.Expr) => ResolvedType | undefined): string {
+  const text = (e: AST.Expr | null): string => {
+    if (!e) return '...'
+    switch (e.kind) {
+      case 'LiteralExpr': {
+        const v = e.value
+        if (v.kind === 'string') return spellCodepoints([...new TextDecoder().decode(v.bytes)].map((c) => c.codePointAt(0)!), '"')
+        if (v.kind === 'int' && e.quoted) return spellCodepoints([Number(v.value)], "'")
+        if (v.kind === 'int' && v.radix === 16) return `${v.value < 0n ? '-' : ''}0x${(v.value < 0n ? -v.value : v.value).toString(16)}`
+        return String(v.value)
+      }
+      case 'ArrayExpr':
+        return `[${e.elements.map(text).join(', ')}]`
+      case 'RepeatExpr':
+        return `[${text(e.value)}; ${text(e.count)}]`
+      case 'TupleExpr':
+        return e.quoted ? spellCodepoints(e.elements.map((a) => (a.value?.kind === 'LiteralExpr' && a.value.value.kind === 'int' ? Number(a.value.value.value) : 0)), "'")
+          : `(${e.elements.map((a) => (a.name ? `${a.name}: ${text(a.value)}` : text(a.value))).join(', ')})`
+      case 'AnnotationExpr': {
+        const type = e.type.kind === 'PrimitiveType' || e.type.kind === 'TypeRef' ? e.type.name : typeOf(e) && typeToString(typeOf(e)!)
+        return type ? `${text(e.expr)}:${type}` : text(e.expr)
+      }
+      case 'GroupExpr':
+        return `(${text(e.expr)})`
+      case 'IdentExpr':
+        return e.name
+      case 'CallExpr':
+        return `${text(e.callee)}(${e.args.map((a) => (a.name ? `${a.name}: ${text(a.value)}` : text(a.value))).join(', ')})`
+      default:
+        return '...'
+    }
+  }
+  const full = text(expr)
+  if (full.length <= 40) return full
+  const inner = ungrouped(expr)
+  return inner.kind === 'LiteralExpr' ? '"..."' : inner.kind === 'TupleExpr' ? '(...)' : '[...]'
+}
+
 // What a single-quoted literal that meets an address type is told: it is no
 // string, and how the string it looks like is written.
 function notAString(codepoints: number[]): string {
@@ -7456,11 +7565,24 @@ function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
   }
 }
 
+// The literals the checker flagged as mutable, which were not written so.
+const impliedMut = new WeakSet<AST.Expr>()
+
 // Flag a literal as mutable data, so the data section gives it its own bytes.
 function markMut(expr: AST.Expr): void {
   if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+    if (!expr.mut) impliedMut.add(expr)
     ;(expr as { mut?: boolean }).mut = true
   }
+}
+
+// Whether a literal is written with `mut` (mut [1, 2], mut "ab":[]mut u8).
+function writtenMut(expr: AST.Expr): boolean {
+  if (expr.kind === 'AnnotationExpr') return writtenMut(expr.expr)
+  if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+    return !!expr.mut && !impliedMut.has(expr)
+  }
+  return false
 }
 
 // === Control-flow termination ===

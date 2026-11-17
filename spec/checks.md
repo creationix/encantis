@@ -682,6 +682,62 @@ cannot assign float(1.5) to u64
 300
 ```
 
+## Literals for mutable pointers and slices
+
+A literal is constant unless it is written with `mut`. Where a mutable pointer or slice is wanted, a literal without the keyword is an error that shows it written with it. `mut` makes all of a literal writable and its own: the rows of a table, the elements of a slice of slices and the slice fields of its structs too.
+
+```ents
+type Buf = (bytes: []mut u8, n: u32)
+
+data s: []mut i32 = mut [20, 8]
+data t: *mut [2][2]i32 = mut [[1, 2], [1, 2]]
+data q: *[2][]mut u8 = [mut "ab", mut "cd"]
+data r: [][]mut u8 = mut [[1, 2], [3, 4]]
+data bufs: *mut [1]Buf = mut [([0:u8; 4], 0)]
+
+func fill(buf: []mut u8) -> u32 => buf.len
+func fill(n: u32) -> u32 => n
+
+func f() -> u32 {
+  let buf: []mut u8 = mut [0:u8; 20]
+  let b = Buf(mut [0:u8; 4], 0)
+  let cell = &0:u32
+  return fill(mut "hello") + fill(buf) + fill(b.bytes) + cell.*
+}
+```
+
+```ents
+type Buf = (bytes: []mut u8, n: u32)
+
+data s: []mut i32 = [20, 8]
+data t: *mut [2][2]i32 = [[1, 2], [1, 2]]
+data q: *[2][]mut u8 = [mut "ab", "cd"]
+data r: [][]mut u8 = [[0:u8; 2]; 3]
+data e: []mut u8 = ""
+
+func fill(buf: []mut u8) -> u32 => buf.len
+func fill(n: u32) -> u32 => n
+
+func f(x: i32) -> u32 {
+  let buf: []mut u8 = [0:u8; 20]
+  let b: Buf = ([0:u8; 4], 0)
+  let p: *mut [2]i32 = [x, 8]
+  return fill("hello") + fill(buf)
+}
+```
+
+```errors
+a literal is constant: write `mut [20, 8]` for a []mut i32
+a literal is constant: write `mut [[1, 2], [1, 2]]` for a *mut [2][2]i32
+a literal is constant: write `mut "cd"` for a []mut u8
+a literal is constant: write `mut [0:u8; 2]` for a []mut u8
+a literal is constant: write `mut ""` for a []mut u8
+a literal is constant: write `mut [0:u8; 20]` for a []mut u8
+a literal is constant: write `mut [0:u8; 4]` for a []mut u8
+a literal is constant: write `mut [x, 8]` for a *mut [2]i32
+argument 1: a literal is constant: write `mut "hello"` for a []mut u8
+```
+
 ## Values in a literal in memory
 
 The value of a repeat literal, and each element of an array literal inside another, meets the element type as an element of the outer literal does: it widens to it, or it is an error.

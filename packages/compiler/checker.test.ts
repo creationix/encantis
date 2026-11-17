@@ -1315,7 +1315,7 @@ describe('tables', () => {
     expect(errs('let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]\nlet u: *[2][3]i32 = [v, [1, 2, 3]]\nlet w: [][2]i32 = [[a; 2]; 3]', 'a: i32, v: [3]i32')).toEqual([
       row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
     ])
-    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = mut [a, 2, 3]', 'a: i32')).toEqual([])
   })
 
   test('len and wid are constants', () => {
@@ -1373,6 +1373,42 @@ describe('struct elements of an array literal', () => {
   })
 })
 
+describe('a literal for a mutable pointer or slice', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+
+  test('is written with mut, and the error shows it so', () => {
+    expect(errs('data s: []mut i32 = [20, 8]')).toEqual([constant('[20, 8]', '[]mut i32')])
+    expect(errs('data s: []mut i32 = mut [20, 8]')).toEqual([])
+    expect(errs('data s: *mut [2]u8 = "ab"')).toEqual([constant('"ab"', '*mut [2]u8')])
+    expect(errs('data s: *mut [3]u8 = mut "a\\n\\""')).toEqual([])
+    expect(errs('data s: *mut [3]u8 = "a\\n\\""')).toEqual([constant('"a\\n\\""', '*mut [3]u8')])
+    expect(errs('data s: []mut u16 = [0xff; 4]')).toEqual([constant('[0xff; 4]', '[]mut u16')])
+    // A long one is shown by its brackets.
+    expect(errs('data s: []mut u16 = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]')).toEqual([constant('[...]', '[]mut u16')])
+  })
+
+  test('mut covers what the literal lays out apart, and only one error is reported for it', () => {
+    const source = 'type B = (bytes: []mut u8, n: u32)\n'
+    expect(errs(`${source}data bs: *mut [2]B = mut [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([])
+    expect(errs(`${source}data bs: *mut [2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([constant('[([0:u8; 2], 0), B("ab", 1)]', '*mut [2]B')])
+    expect(errs(`${source}data bs: *[2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([constant('[0:u8; 2]', '[]mut u8'), `field bytes: ${constant('"ab"', '[]mut u8')}`])
+    // Nothing else wrong with it, or the other error is the one.
+    expect(errs('data s: []mut u32 = "abcd"')).toEqual([expect.stringContaining('cannot assign a string literal to []mut u32')])
+  })
+
+  test('the function meant is found as if the literal were mut, and an instance names it', () => {
+    expect(errs('func fill(b: []mut u8) -> u32 => b.len\nfunc fill(n: u32) -> u32 => n\nfunc f() -> u32 => fill([0:u8; 4])'))
+      .toEqual([`argument 1: ${constant('[0:u8; 4]', '[]mut u8')}`])
+    expect(errs('func zeros(comptime T: type, n: T) -> u32 {\n  let b: []mut T = [n; 4]\n  return b.len\n}\nfunc f() -> u32 => zeros(u8, 1)'))
+      .toEqual([`${constant('[n; 4]', '[]mut u8')}, in zeros(T = u8)`])
+  })
+
+  test('& before a literal is a writable cell of its own', () => {
+    expect(errs('func f() -> u32 {\n  let n = &0:u32\n  n.* = 1\n  let p: *mut i32 = &5\n  return n.*\n}')).toEqual([])
+  })
+})
+
 describe('a string literal as a slice', () => {
   const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
   const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>
@@ -1381,8 +1417,11 @@ describe('a string literal as a slice', () => {
     `cannot use a string literal among ${element} elements — a string is bytes ([]u8); write the ${element} elements as an array literal ([1, 2, 3])`
 
   test('is a slice of elements of one byte', () => {
-    for (const type of ['[]u8', '[]mut u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
+    for (const type of ['[]u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
       expect(errs(`func f() -> u32 { let s: ${type} = "abc"\n return 1 }`)).toEqual([])
+    }
+    for (const type of ['[]mut u8', '?[]mut u8', '*mut [3]u8']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = mut "abc"\n return 1 }`)).toEqual([])
     }
     expect(errs('data names: [][]u8 = ["ab", "c"]\ndata rows: [][][]u8 = [["ab"], ["c", "d"]]\ndata joined: []u8 = ["ab", "c"]')).toEqual([])
   })

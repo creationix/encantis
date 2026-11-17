@@ -1060,9 +1060,9 @@ describe('structs in memory', () => {
     const { whole, field, slice, index } = await run(`
       type Point = (x: i32, y: i32)
       type P3 = (x: i32, y: i32, z: i32)
-      data cells: *mut [2]Point = [Point(0, 0), Point(0, 0)]
-      data threes: *mut [2]P3 = [P3(0, 0, 0), P3(0, 0, 0)]
-      data names: *mut [2][]u8 = ["", ""]
+      data cells: *mut [2]Point = mut [Point(0, 0), Point(0, 0)]
+      data threes: *mut [2]P3 = mut [P3(0, 0, 0), P3(0, 0, 0)]
+      data names: *mut [2][]u8 = mut ["", ""]
       data three: *[1]i32 = [3]
       export func whole(c: bool) -> i32 {
         let p: *mut Point = &cells[0]
@@ -1109,10 +1109,10 @@ describe('structs in memory', () => {
     const { struct, three, slice, array, fill } = await run(`
       type Point = (x: i32, y: i32)
       type P3 = (x: i32, y: i32, z: i32)
-      data cells: *mut [1]Point = [Point(0, 0)]
-      data threes: *mut [1]P3 = [P3(0, 0, 0)]
-      data names: *mut [1][]u8 = [""]
-      data pairs: *mut [1][2]i32 = [[0, 0]]
+      data cells: *mut [1]Point = mut [Point(0, 0)]
+      data threes: *mut [1]P3 = mut [P3(0, 0, 0)]
+      data names: *mut [1][]u8 = mut [""]
+      data pairs: *mut [1][2]i32 = mut [[0, 0]]
       data bytes: *[3]u8 = "abc"
       export func struct(c: bool) -> i32 {
         let p: *mut Point = &cells[0]
@@ -2786,7 +2786,7 @@ describe('a string with no type to meet', () => {
       export func a() -> i32 => has("")
       export func b() -> i32 => hasm(mut "")
       export func c() -> i32 {
-        let e: []mut u8 = []
+        let e: []mut u8 = mut []
         return hasm(e)
       }
       export func d() -> i32 => hasp(nothing)
@@ -2810,15 +2810,15 @@ describe('a string with no type to meet', () => {
   })
 })
 
-describe('a literal given for a mutable pointer or slice', () => {
-  test('is a copy of its own, as if written with mut', async () => {
+describe('a mut literal given for a mutable pointer or slice', () => {
+  test('is a copy of its own', async () => {
     const { run: go } = await run(`
       data c: []i32 = [20, 8]
-      data s: []mut i32 = [20, 8]
-      data u: *mut [_]i32 = [20, 8]
-      data t: *mut [2][2]i32 = [[1, 2], [1, 2]]
+      data s: []mut i32 = mut [20, 8]
+      data u: *mut [_]i32 = mut [20, 8]
+      data t: *mut [2][2]i32 = mut [[1, 2], [1, 2]]
       data cstr = "hi"
-      data str: []mut u8 = "hi"
+      data str: []mut u8 = mut "hi"
       func fill(buf: []mut u8, v: u8) -> []u8 {
         buf[0] = v
         return buf
@@ -2828,9 +2828,9 @@ describe('a literal given for a mutable pointer or slice', () => {
         u[1] = 7
         t[0][0] = 9
         str[0] = 1
-        let a = fill([0:u8; 2], 3)
-        let b = fill([0:u8; 2], 4)
-        let p: *mut [2]i32 = [20, 8]
+        let a = fill(mut [0:u8; 2], 3)
+        let b = fill(mut [0:u8; 2], 4)
+        let p: *mut [2]i32 = mut [20, 8]
         p[0] = 6
         return c[0] * 1000000 + c[1] * 10000 + t[1][0] * 1000 + (cstr[0] as i32) + (a[0] as i32) * 10 + (b[0] as i32) * 100
       }
@@ -2840,17 +2840,18 @@ describe('a literal given for a mutable pointer or slice', () => {
   })
 
   test('so is each element of a slice of mutable slices, and each row of a mutable pointer to framed arrays', async () => {
+    // Each element written with mut, or all of them under the mut of the literal they are in.
     const { run: go } = await run(`
       data c = "ab"
       data cc: *[2]u8 = [1, 2]
-      data p: *mut [2][!]u8 = ["ab", "ab"]
-      data q: *[2][]mut u8 = ["ab", "ab"]
-      data r: [][]mut u8 = [[1, 2], [1, 2]]
+      data p: *mut [2][!]u8 = mut ["ab", "ab"]
+      data q: *[2][]mut u8 = [mut "ab", mut "ab"]
+      data r: [][]mut u8 = mut [[1, 2], [1, 2]]
       export func run(v: u8) -> u32 {
         if let a = p[0] { a[0] = v }
         q[0][0] = v
         if let b = r[0] { b[0] = v }
-        let s: [][]mut u8 = [[1, 2], [1, 2]]
+        let s: [][]mut u8 = [mut [1, 2], mut [1, 2]]
         if let d = s[0] { d[0] = v }
         let rows = (if let e = r[1] { e[0] ?? 0 } else { 0 }) * 10 + (if let f = s[1] { f[0] ?? 0 } else { 0 })
         return (c[0] as u32) * 100000 + (cc[0] as u32) * 10000 + ((q[1][0] ?? 0) as u32) * 100 + (rows as u32)
@@ -2969,7 +2970,7 @@ describe('values of literals laid out in memory', () => {
       data pa: *[2]*[2]i32 = [[1, 2], [3, 4]]
       data pn: *[2]*[3]i32 = [ones, [7, 1 + 1, 9]]
       data ps: *[2][*]u8 = ["ab", "cd"]
-      data pm: *[2]*mut [2]i32 = [[1, 2], [1, 2]]
+      data pm: *[2]*mut [2]i32 = [mut [1, 2], mut [1, 2]]
       export func a() -> i32 => pa[0][1] * 10 + pa[1][0]
       export func b() -> i32 => pn[0][2] * 100 + pn[1][1] * 10 + pn[1][2]
       export func c() -> u8 => ps[1][1]
