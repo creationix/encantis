@@ -186,7 +186,7 @@ data table = [1:u64, 2, 3, 4]      // table: *[4]u64 (const)
 data key = x"9d61b19deffd5a60"      // key: *[8]u8 (const)
 data buf = mut [0:u8; 1024]         // buf: *mut [1024]u8 (mutable)
 data count = 5:i32                  // count: *i32 (const, embedded as 4 bytes)
-data count = mut 5:i32              // count: *mut i32 (mutable)
+data tally = mut 5:i32              // tally: *mut i32 (mutable)
 data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
 ```
 
@@ -927,7 +927,7 @@ let hash: u32 = seed + prime32-1
 
 ```ents
 def max-size = 1024              // inferred i32
-def max-size: u32 = 1024         // explicit u32
+def max-len: u32 = 1024          // explicit u32
 ```
 
 ### 3.2 Data Declarations (`data`)
@@ -947,7 +947,7 @@ The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T`
 
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
-data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
+data view: []u8 = [0:u8; 1024]      // []u8 (slice, loses compile-time length)
 ```
 
 An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
