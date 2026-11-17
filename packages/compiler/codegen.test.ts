@@ -1895,6 +1895,63 @@ describe('module codegen', () => {
     expect(wat).toContain('(global $ones (mut i64) (i64.const 18446744073709551615))')
   })
 
+  test('a cast of a constant starts a global as the value the cast gives', () => {
+    const wat = modWat(`
+      type Spot = (c: i64, di: i32)
+      def k = 7
+      data table = mut [1:i32, 2, 3, 4]
+      global same: u32 = 5 as u32
+      global call: u32 = u32(5)
+      global bits: u32 = -1 as u32
+      global real: f64 = 1.5 as f64
+      global named: u32 = k as u32
+      global size: u32 = sizeof(Spot) as u32
+      global start: u32 = table as u32
+      global words: [*]i32 = table as [*]i32
+      global bytes: [*]u8 = table as [*]u8
+      global wide: i64 = 5 as i64
+      global byte: u8 = 300 as u8
+      global small: i8 = 200 as i8
+      global single: f32 = 1.5 as f32
+      global whole: i32 = 2.9 as i32
+      global cut: u32 = 5000000000 as u32
+    `)
+    // What 0.2.1 emitted for these, when the cast left the wasm value alone.
+    expect(wat).toContain('(global $same (mut i32) (i32.const 5))')
+    expect(wat).toContain('(global $call (mut i32) (i32.const 5))')
+    expect(wat).toContain('(global $bits (mut i32) (i32.const -1))')
+    expect(wat).toContain('(global $real (mut f64) (f64.const 1.5))')
+    expect(wat).toContain('(global $named (mut i32) (i32.const 7))')
+    expect(wat).toContain('(global $size (mut i32) (i32.const 12))')
+    expect(wat).toContain('(global $start (mut i32) (i32.const 8))')
+    expect(wat).toContain('(global $words (mut i32) (i32.const 8))')
+    expect(wat).toContain('(global $bytes (mut i32) (i32.const 8))')
+    // A cast that needs an instruction at run time: its result.
+    expect(wat).toContain('(global $wide (mut i64) (i64.const 5))')
+    expect(wat).toContain('(global $byte (mut i32) (i32.const 44))')
+    expect(wat).toContain('(global $small (mut i32) (i32.const -56))')
+    expect(wat).toContain('(global $single (mut f32) (f32.const 1.5))')
+    expect(wat).toContain('(global $whole (mut i32) (i32.const 2))')
+    expect(wat).toContain('(global $cut (mut i32) (i32.const 705032704))')
+  })
+
+  test('a global starts as what its expression gives at run time', () => {
+    const wat = modWat(`
+      global real: f64 = 7 / 2
+      global third: f32 = 1 / 3
+      global byte: i32 = 200:u8 + 100:u8
+      global word: u64 = 0xFFFFFFFF:u32 + 1
+      global count: u32 = 1:u32 << 40
+      global zero: f64 = 0.0 * -1.0
+    `)
+    expect(wat).toContain('(global $real (mut f64) (f64.const 3.5))')
+    expect(wat).toContain('(global $third (mut f32) (f32.const 0.3333333432674408))')
+    expect(wat).toContain('(global $byte (mut i32) (i32.const 44))')
+    expect(wat).toContain('(global $word (mut i64) (i64.const 0))')
+    expect(wat).toContain('(global $count (mut i32) (i32.const 256))')
+    expect(wat).toContain('(global $zero (mut f64) (f64.const -0))')
+  })
+
   test('export without explicit name uses function name', () => {
     const wat = modWat(`
       export func multiply(a: i32, b: i32) -> i32 => a * b
