@@ -1045,6 +1045,7 @@ describe('globals', () => {
       global under: u32 = (7:u32 - 9:u32) / 2
       global count: u32 = 1:u32 << 40
       global down: i32 = -16:i32 >> 34
+      global far: u128 = 5:u128 >> 130
       global single: f64 = 0.1:f32 + 0.2:f32
       global big: i64 = 1 << 40
     `)
@@ -1065,6 +1066,8 @@ describe('globals', () => {
     // A shift uses the low bits of its count.
     expect(init('count')).toEqual({ kind: 'int', value: 256n })
     expect(init('down')).toEqual({ kind: 'int', value: -4n })
+    // A wide integer's too: 130 is 2 in the 128 bits of a u128.
+    expect(init('far')).toEqual({ kind: 'int', value: 1n })
     expect(init('single')).toEqual({ kind: 'float', value: Math.fround(Math.fround(0.1) + Math.fround(0.2)) })
     expect(init('big')).toEqual({ kind: 'int', value: 1099511627776n })
   })
@@ -1423,6 +1426,52 @@ describe('operand types', () => {
     expect(index('x & (if c { 3 } else { 15 })')).toEqual(unproven)
     expect(index('x & ~15')).toEqual(unproven)
     expect(index('x & (~0 & 7 | 16)')).toEqual(['index type u32#24 may exceed *[16]u8 bounds (max index 23 >= 16) — narrow the index range to fit'])
+  })
+
+  test('a range from a shift takes the count as the shift does: modulo its width', () => {
+    const index = (type: string, size: number, expr: string) => errs(`data t = [0:u8; ${size}]\nfunc f(x: ${type}) -> u8 => t[${expr}]`)
+    const exceeds = (type: string, size: number, max: number) =>
+      [`index type ${type}#${max} may exceed *[${size}]u8 bounds (max index ${max - 1} >= ${size}) — narrow the index range to fit`]
+    // A 32-bit shift by 32 is a shift by 0, however the count is written.
+    expect(index('u32', 16, 'x >> 32')).toEqual(exceeds('u32', 16, 4294967296))
+    expect(index('u32', 16, 'x >> (16 + 16)')).toEqual(exceeds('u32', 16, 4294967296))
+    expect(index('u32', 16, 'x >> 33')).toEqual(exceeds('u32', 16, 2147483648))
+    expect(index('u32', 16, 'x >> 60')).toEqual([])
+    expect(index('u32', 1, '(x & 63) >> 34')).toEqual(exceeds('u32', 1, 16))
+    // A u8 or u16 is shifted as the i32 it's held in.
+    expect(index('u8', 1, 'x >> 8')).toEqual([])
+    expect(index('u8', 1, 'x >> 32')).toEqual(exceeds('u8', 1, 256))
+    expect(index('u16', 1, 'x >> 16')).toEqual([])
+    expect(index('u16', 1, 'x >> 32')).toEqual(exceeds('u16', 1, 65536))
+    // A rotation keeps every bit: no range.
+    const unproven = (size: number) => [`runtime index on *[${size}]u8 requires 'if let' or '??' (no optional type for u8)`]
+    expect(index('u32', 16, 'x >>> 28')).toEqual(unproven(16))
+    expect(index('u32', 16, 'x <<< 4')).toEqual(unproven(16))
+    expect(index('u8', 1, 'x >>> 8')).toEqual(unproven(1))
+    // 64 bits, and the wide integers, whose helpers take the count modulo their width.
+    const ranged = (type: string, range: number, count: number) => errs(`func f(x: ${type}) { let i: ${type}#${range} = x >> ${count} }`)
+    expect(ranged('u64', 16, 60)).toEqual([])
+    expect(ranged('u64', 16, 124)).toEqual([])
+    expect(ranged('u64', 1, 64)).toEqual(['cannot assign u64 to u64#1'])
+    expect(ranged('u128', 16, 124)).toEqual([])
+    expect(ranged('u128', 16, 252)).toEqual([])
+    expect(ranged('u128', 1, 128)).toEqual(['cannot assign u128 to u128#1'])
+    expect(ranged('u256', 1, 256)).toEqual(['cannot assign u256 to u256#1'])
+  })
+
+  test('a constant with a shift in it has the value the shift gives in its type', () => {
+    const index = (expr: string) => errs(`data t = mut [0:u8; 16]\nfunc f(x: u32) -> u8 => t[${expr}]`)
+    // 65535 >> 32 as a u32 is 65535, and 1 >> 32 is 1.
+    expect(index('x & (65535 >> 32)')).toEqual(['index type u32#65536 may exceed *[16]u8 bounds (max index 65535 >= 16) — narrow the index range to fit'])
+    expect(index('(x & 15) + (1 >> 32)')).toEqual(['index type u32#17 may exceed *[16]u8 bounds (max index 16 >= 16) — narrow the index range to fit'])
+    expect(index('x % (4096 >> 40)')).toEqual([])
+    expect(index('16 >> 32')).toEqual(['index 16 out of bounds for *[16]u8'])
+    expect(index('60 >> 34')).toEqual([])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() -> ?*mut u8 => &t[16 >> 32]`)).toEqual(['index 16 out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { t[0..(64 >> 32)] = 1 }`)).toEqual(['range 0..64 is out of bounds for *[16]u8'])
+    expect(errs(`data t = mut [0:u8; 16]\nfunc f() { memset(t, 1, 64 >> 32) }`)).toEqual(['memset length 64 exceeds buffer size 16 bytes'])
+    expect(errs(`data t = mut [0:u8; 1]\nfunc f(x: u32) { if x < (16 >> 32) { t[x] = 1 } }`))
+      .toEqual(['index type u32#16 may exceed *[1]u8 bounds (max index 15 >= 1) — narrow the index range to fit'])
   })
 
   test('pointer arithmetic takes 32-bit integers', () => {

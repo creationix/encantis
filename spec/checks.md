@@ -497,6 +497,26 @@ runtime index on *[16]u8 requires 'if let' or '??'
 runtime index on *[16]u8 requires 'if let' or '??'
 ```
 
+A shift takes its count modulo the width it's done in, 32 bits for a `u32` or anything narrower. So `x >> 32` is `x`, not 0, and bounds nothing, while `x >> 60` shifts by 28. A constant with a shift inside it has the value the shift gives it: `65535 >> 32` is 65535 as a `u32`, and 16 is no index into 16 elements.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(x: u32) { buf[x >> 60] = 1 }
+func b(x: u32) { buf[x >> 32] = 2 }
+func c(x: u32) { buf[x >> (16 + 16)] = 3 }
+func d(x: u32) { buf[x & (65535 >> 32)] = 4 }
+func e() { buf[16 >> 32] = 5 }
+func f(b: u8) { buf[b >> 36] = 6 }
+```
+
+```errors
+index type u32#4294967296 may exceed *[16]u8 bounds
+index type u32#4294967296 may exceed *[16]u8 bounds
+index type u32#65536 may exceed *[16]u8 bounds
+index 16 out of bounds for *[16]u8
+```
+
 A comparison with a constant narrows the variable where it holds: inside the branch, in later branches of the same `if`, and after an exit that the comparison guards.
 
 ```ents

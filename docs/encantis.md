@@ -277,7 +277,7 @@ for i in 4 {                    // i: u32#4
 
 **Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
 
-**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
+**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). The count is the one the shift takes (§4.2): `x >> 32` on a `u32` is `x`, with no range, and `x >> 60` is `x >> 28`. A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
 
 **Narrowing:** Comparing an unsigned variable with a constant narrows its range wherever the comparison is known to hold:
 
@@ -1064,7 +1064,7 @@ func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
 func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
 ```
 
-The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
+The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used: the count modulo the width the value is shifted in, which is 32 bits for a value of 32 bits or fewer and the value's own width otherwise. So `x << 32` on a `u32` is `x`, and on a `u8` too, while `x << 8` on a `u8` is 0. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
 
 A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
 

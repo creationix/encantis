@@ -1116,11 +1116,14 @@ class CheckContext {
           case '|': return { kind: 'int', value: l | r }
           case '^': return { kind: 'int', value: l ^ r }
           // A wider shift than any integer type isn't a value worth computing.
-          // In a type, only the low bits of the count are used (4.2).
+          // Once the shift has a type, the count is the one its instruction
+          // takes: only the low bits (4.2), so `x >> 32` as a u32 is `x >> 0`.
+          // What is proved from the value (a range, an index in bounds) has
+          // to hold for the value the program computes.
           case '<<':
           case '>>': {
-            const width = typed ? shiftWidth(this.exprTypes.get(expr)) : null
-            const count = width ? BigInt.asUintN(width === 64 ? 6 : 5, r) : r
+            const width = shiftWidth(this.exprTypes.get(expr))
+            const count = width ? r & BigInt(width - 1) : r
             if (count < 0n || count > 512n) return null
             return { kind: 'int', value: expr.op === '<<' ? l << count : l >> count }
           }
@@ -2817,8 +2820,10 @@ class CheckContext {
         if (expr.op === '&') return limit(operand + 1n)
         if (expr.op === '%' && constantOnRight && operand > 0n) return limit(operand)
         if (expr.op === '>>' && constantOnRight) {
+          // The count as the shift takes it: modulo the width it's done in.
           const max = base.max !== undefined ? BigInt(base.max) : unsignedLimit(base)
-          if (max !== null) return limit(((max - 1n) >> operand) + 1n)
+          const width = shiftWidth(base)
+          if (max !== null && width) return limit(((max - 1n) >> (operand & BigInt(width - 1))) + 1n)
         }
       }
       if (base.max === undefined) return stripMax(base)
@@ -4185,12 +4190,14 @@ function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | n
   return constantIn(number, to)
 }
 
-// The width of the wasm integer a shift of this type is done in, which its
-// count is taken modulo. None for a constant's own type or a wide integer.
-function shiftWidth(type: ResolvedType | undefined): 32 | 64 | null {
+// The width a shift of this type is done in, which its count is taken
+// modulo: that of the wasm integer the value is held in (32 bits for a u8),
+// or of the whole of a wide integer, whose helpers do the same. None for a
+// constant's own type.
+function shiftWidth(type: ResolvedType | undefined): number | null {
   const t = type && unwrap(type)
   const size = t?.kind === 'primitive' && isInteger(t) ? byteSize(t) : null
-  return size === null || size > 8 ? null : size > 4 ? 64 : 32
+  return size === null ? null : size <= 4 ? 32 : size * 8
 }
 
 // Whether a type holds an address whole: a pointer, or a 32-bit integer.
