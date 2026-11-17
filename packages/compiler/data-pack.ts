@@ -419,6 +419,16 @@ function serializeSortedParts(
   return refMap
 }
 
+// (x) is x: parentheses around one expression parse as a group or a
+// one-element tuple, and what is laid out is the expression inside.
+function ungroup(expr: AST.Expr): AST.Expr {
+  if (expr.kind === 'GroupExpr') return ungroup(expr.expr)
+  if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name && expr.elements[0].value) {
+    return ungroup(expr.elements[0].value)
+  }
+  return expr
+}
+
 /**
  * Serialize a literal expression to bytes based on target type.
  * Handles both merged brackets (*[![!u8]] - single contiguous write) and
@@ -560,8 +570,8 @@ function structFieldValues(expr: AST.Expr, struct: TupleRT): (AST.Expr | null)[]
 // a literal points at that literal, which is laid out on its own.
 function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataSectionBuilder): Uint8Array {
   const t = unwrap(fieldType)
-  let lit = expr
-  while (lit.kind === 'AnnotationExpr' || lit.kind === 'GroupExpr') lit = lit.expr
+  let lit = ungroup(expr)
+  while (lit.kind === 'AnnotationExpr') lit = ungroup(lit.expr)
   const isString = lit.kind === 'LiteralExpr' && lit.value.kind === 'string'
   if (isString || lit.kind === 'ArrayExpr' || lit.kind === 'RepeatExpr') {
     const count = lit.kind === 'ArrayExpr' ? lit.elements.length
@@ -642,12 +652,10 @@ function buildElementBytes(
     return combined
   }
 
-  // (x) is grouping: the element itself.
+  // (x) is grouping: the element itself, whatever its type is.
   const struct = unwrap(elementType)
-  if (expr.kind === 'GroupExpr') return buildElementBytes(expr.expr, elementType, framings, builder)
-  if (expr.kind === 'TupleExpr' && struct.kind !== 'tuple' && expr.elements.length === 1 && expr.elements[0].value) {
-    return buildElementBytes(expr.elements[0].value, elementType, framings, builder)
-  }
+  const inner = ungroup(expr)
+  if (inner !== expr) return buildElementBytes(inner, elementType, framings, builder)
 
   // A struct written out, as a tuple or a constructor: its fields one after
   // another, as they lie in memory. A field only known when the program runs
@@ -703,7 +711,8 @@ function serializeSeparate(
     : elem as ArrayRT
   const childRefs: DataRef[] = []
 
-  for (const elem of expr.elements) {
+  for (const element of expr.elements) {
+    const elem = ungroup(element)
     if (isSerializableExpr(elem)) {
       const ref = serializeLiteral(elem, innerType, builder)
       childRefs.push(ref)

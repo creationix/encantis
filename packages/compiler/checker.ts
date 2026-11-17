@@ -718,12 +718,15 @@ class CheckContext {
       ? decl.ident
       : `${decl.ident}$${decl.span.start}`
 
+    // (x) is x: the literal laid out is the one inside the parentheses.
+    const value = ungrouped(decl.value)
+
     // Check if literal has mut flag
-    const isMut = this.exprHasMut(decl.value)
+    const isMut = this.exprHasMut(value)
     const dataIdentOff = this.findIdentOffset(decl.span.start, 'data')
 
     // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
-    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
+    const dataLiteral = this.extractDataLiteral(value, inferredType, declaredType)
     if (dataLiteral) {
       // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
@@ -760,7 +763,7 @@ class CheckContext {
 
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
-    const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
+    const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
     const dataId = expr.span.start
     if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
       if (expr.kind === 'LiteralExpr') {
@@ -796,7 +799,7 @@ class CheckContext {
   } | null {
     // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
     if (expr.kind === 'AnnotationExpr') {
-      const innerExpr = expr.expr
+      const innerExpr = ungrouped(expr.expr)
       if (this.isDataLiteralExpr(innerExpr)) {
         if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
           return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
@@ -2100,6 +2103,16 @@ class CheckContext {
   // This allows comptime types to resolve based on context
   // Optional errorContext is prepended to error messages (e.g., "argument 1: ")
   checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
+    // (x) is x, and meets the type as x does: it has one element whatever
+    // the type of x is, so nothing below may take it for a tuple of x's fields.
+    const grouped = groupedExpr(expr)
+    if (grouped) {
+      this.coercions.delete(expr)
+      const type = this.checkExpr(grouped, expected, errorContext)
+      this.exprTypes.set(expr, this.exprTypes.get(grouped) ?? type)
+      return type
+    }
+
     // Bidirectional: propagate expected type through & (ref) expressions
     if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
       const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
@@ -2265,14 +2278,8 @@ class CheckContext {
       return expected
     }
 
-    // No other tuple is a slice. (x) is x, and meets the type as x does.
+    // No other tuple is a slice.
     if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
-      const only = expr.elements.length === 1 && !expr.elements[0].name ? expr.elements[0].value : null
-      if (only) {
-        const type = this.checkExpr(only, expected, errorContext)
-        this.exprTypes.set(expr, type)
-        return type
-      }
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
       this.exprTypes.set(expr, expected)
       return expected
@@ -4414,6 +4421,12 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   if (expr.kind === 'GroupExpr') return expr.expr
   if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
   return null
+}
+
+// `expr` without the parentheses around it, however many there are.
+function ungrouped(expr: AST.Expr): AST.Expr {
+  const inner = groupedExpr(expr)
+  return inner ? ungrouped(inner) : expr
 }
 
 // How far from zero a constant integer is.

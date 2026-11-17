@@ -1541,6 +1541,26 @@ describe('structs in data arrays', () => {
     expect(f(8)).toBe(888)
   })
 
+  test('(x) is x: a literal in parentheses is laid out as the literal', async () => {
+    const { elems, fields, whole, nested } = await run(`
+      type Point = (x: i32, y: i32)
+      type Row = (s: []i32, name: []u8, at: Point, tag: u8)
+      data points: *[2]Point = [(Point(1, 2)), ((3, 4))]
+      data rows: *[1]Row = [(Row(([4, 5, 6]), ("ab"), ((7, 8)), (9)))]
+      data xs: []i32 = ([4, 5, 6])
+      data k: i32 = (5)
+      data names: [][]u8 = [("ab"), ("cde")]
+      export func elems() -> i32 => points[0].x * 1000 + points[0].y * 100 + points[1].x * 10 + points[1].y
+      export func fields() -> u32 {
+        let r = rows[0]
+        return r.s.len * 10000 + (r.s[1] as u32) * 1000 + r.name.len * 100 + (r.at.y as u32) * 10 + (r.tag as u32)
+      }
+      export func whole() -> u32 => xs.len * 100 + (xs[2] as u32) * 10 + (k.* as u32)
+      export func nested() -> u32 => names.len * 100 + names[0].len * 10 + names[1].len
+    `)
+    expect([elems(), fields(), whole(), nested()]).toEqual([1234, 35289, 365, 223])
+  })
+
   test('slice and fixed-array fields', async () => {
     const code = `
       type Named = (name: []u8, at: (x: i8, y: i8), dims: [3]u16, last: u8)

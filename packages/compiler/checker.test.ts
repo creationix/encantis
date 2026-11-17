@@ -1691,6 +1691,35 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(a: i64) { let x: i32 = 0\n set x = a }`)).toEqual(['cannot assign i64 to i32'])
   })
 
+  test('(x) is x: a struct in parentheses meets a type as the struct does', () => {
+    // One element, whatever the type inside has: this threw in the checker.
+    expect(errs(`
+      type Point = (x: i32, y: i32)
+      type Wide = (a: i64, b: f32)
+      type Seg = (a: Point, b: Point)
+      data points: *[2]Point = [(Point(1, 2)), ((3, 4))]
+      global g: Wide = ((1, 2))
+      func mk(n: i32) -> Point { return (Point(n, 2)) }
+      func sum(p: Point) -> i32 => p.x + p.y
+      func f(c: bool, p: *mut Point) -> i32 {
+        let a: Point = (Point(1, 2))
+        let w: Wide = (((1, 2)))
+        let s: Seg = ((Point(1, 2)), ((3, 4)))
+        let b: Point = if c { (Point(1, 2)) } else { ((3, 4)) }
+        let d = ((1, 2)):Point
+        p.* = (Point(5, 6))
+        return sum((Point(1, 2))) + sum(((3, 4)))
+      }
+    `)).toEqual([])
+    // What is inside still has to be that type.
+    expect(errs('type Point = (x: i32, y: i32)\nfunc f() { let p: Point = ((1, 2, 3)) }')).toEqual([
+      'cannot assign (int(1), int(2), int(3)) to Point',
+    ])
+    expect(errs('type Point = (x: i32, y: i32)\ndata points: *[1]Point = [((1, 2.5))]')).toEqual([
+      'cannot assign float(2.5) to i32',
+    ])
+  })
+
   test('the branches of an if or match settle on one type', () => {
     const source = `func f(c: bool, n: i32, big: i64, x: f64) {
       let a = if c { n } else { big }
