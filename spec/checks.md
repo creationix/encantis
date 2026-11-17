@@ -362,6 +362,14 @@ global mask: u8 = ~0 << 4
 global base: [*]u8 = table
 ```
 
+The value is the one the expression has at run time, in the types its parts have: `7 / 2` is 3.5 as an `f64` and 3 as an `i32`, and `200:u8 + 100:u8` wraps to 44 before it widens.
+
+```ents
+global halves: f64 = 7 / 2
+global pairs: i32 = 7 / 2
+global wrapped: i32 = 200:u8 + 100:u8
+```
+
 A cast of a constant is a constant: the value the cast gives at run time. An address stays one as another pointer type or as a 32-bit integer.
 
 ```ents

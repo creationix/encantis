@@ -3061,7 +3061,8 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
   if (value.kind === 'data_ptr') return null
   if (wt === 'f32' || wt === 'f64') {
     const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
-    return `(${wt}.const ${Number.isNaN(v) ? 'nan' : Number.isFinite(v) ? v : v > 0 ? 'inf' : '-inf'})`
+    const text = Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`
+    return `(${wt}.const ${text})`
   }
   if (value.kind === 'float') return null
   // A complement or a sub-word value: the bits it has in this type.

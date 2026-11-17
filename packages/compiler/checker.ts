@@ -1040,8 +1040,21 @@ class CheckContext {
   }
 
   // Evaluate a compile-time constant expression. `typed` is for a global's
-  // initializer, where a cast of a constant is one too.
+  // initializer, which has to start as the value its expression has at run
+  // time: each value is held in the type the checker gave its expression, so
+  // arithmetic wraps, divides and shifts as that type does (`7 / 2` is 3.5
+  // as an f64), and a cast of a constant is a constant too.
   evalComptimeExpr(expr: AST.Expr, typed = false): ComptimeValue | null {
+    const value = this.comptimeValue(expr, typed)
+    const type = typed ? this.exprTypes.get(expr) : undefined
+    if (!value || !type) return value
+    const held = constantIn(value, type)
+    // A quotient that doesn't fit is the least value by -1, which traps.
+    const overflows = held.kind === 'int' && value.kind === 'int' && held.value !== value.value
+    return overflows && expr.kind === 'BinaryExpr' && expr.op === '/' ? null : held
+  }
+
+  private comptimeValue(expr: AST.Expr, typed: boolean): ComptimeValue | null {
     // Handle annotation expression (e.g., 42:u32)
     if (expr.kind === 'AnnotationExpr') {
       return this.evalComptimeExpr(expr.expr, typed)
@@ -1103,8 +1116,14 @@ class CheckContext {
           case '|': return { kind: 'int', value: l | r }
           case '^': return { kind: 'int', value: l ^ r }
           // A wider shift than any integer type isn't a value worth computing.
-          case '<<': return r >= 0n && r <= 512n ? { kind: 'int', value: l << r } : null
-          case '>>': return r >= 0n && r <= 512n ? { kind: 'int', value: l >> r } : null
+          // In a type, only the low bits of the count are used (4.2).
+          case '<<':
+          case '>>': {
+            const width = typed ? shiftWidth(this.exprTypes.get(expr)) : null
+            const count = width ? BigInt.asUintN(width === 64 ? 6 : 5, r) : r
+            if (count < 0n || count > 512n) return null
+            return { kind: 'int', value: expr.op === '<<' ? l << count : l >> count }
+          }
         }
       }
       const number = (v: ComptimeValue | null) => (v?.kind === 'int' || v?.kind === 'float' ? Number(v.value) : null)
@@ -1156,14 +1175,13 @@ class CheckContext {
       }
     }
 
-    // A cast (`x as T`, `T(x)`): the operand's value, converted from the
-    // type the checker gave the operand as the cast converts it at run time.
+    // A cast (`x as T`, `T(x)`): the operand's value, converted as the cast
+    // converts it at run time.
     const castee = typed ? castOperand(expr) : null
     if (castee) {
       const value = this.evalComptimeExpr(castee, true)
-      const from = this.exprTypes.get(castee)
       const to = this.exprTypes.get(expr)
-      return value && from && to ? castConstant(constantIn(value, from), to) : null
+      return value && to ? castConstant(value, to) : null
     }
 
     return null
@@ -4157,6 +4175,14 @@ function castConstant(value: ComptimeValue, to: ResolvedType): ComptimeValue | n
     return constantIn({ kind: 'int', value: BigInt(whole) }, to)
   }
   return constantIn(number, to)
+}
+
+// The width of the wasm integer a shift of this type is done in, which its
+// count is taken modulo. None for a constant's own type or a wide integer.
+function shiftWidth(type: ResolvedType | undefined): 32 | 64 | null {
+  const t = type && unwrap(type)
+  const size = t?.kind === 'primitive' && isInteger(t) ? byteSize(t) : null
+  return size === null || size > 8 ? null : size > 4 ? 64 : 32
 }
 
 // Whether a type holds an address whole: a pointer, or a 32-bit integer.

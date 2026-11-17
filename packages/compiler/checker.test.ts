@@ -1029,7 +1029,51 @@ describe('globals', () => {
     expect(init('size')).toEqual({ kind: 'int', value: 262144n })
     expect(init('ratio')).toEqual({ kind: 'float', value: 1.5 })
     expect(init('count')).toEqual({ kind: 'int', value: 3n })
-    expect(init('mask')).toEqual({ kind: 'int', value: -16n })
+    // As a u8 holds it.
+    expect(init('mask')).toEqual({ kind: 'int', value: 240n })
+  })
+
+  test('a constant is worked out in its type, as it would be at run time', () => {
+    const result = checkModule(`
+      def half = 7 / 2
+      global real: f64 = 7 / 2
+      global third: f32 = 1 / 3
+      global named: f64 = half
+      global whole: i32 = half
+      global byte: i32 = 200:u8 + 100:u8
+      global word: u64 = 0xFFFFFFFF:u32 + 1
+      global under: u32 = (7:u32 - 9:u32) / 2
+      global count: u32 = 1:u32 << 40
+      global down: i32 = -16:i32 >> 34
+      global single: f64 = 0.1:f32 + 0.2:f32
+      global big: i64 = 1 << 40
+    `)
+    expect(result.errors).toEqual([])
+    const init = (name: string) => {
+      const sym = result.symbols.get(name)
+      return sym?.kind === 'global' ? sym.init : undefined
+    }
+    // A float division where the literals are floats, an integer one where they're integers.
+    expect(init('real')).toEqual({ kind: 'float', value: 3.5 })
+    expect(init('third')).toEqual({ kind: 'float', value: Math.fround(1 / 3) })
+    expect(init('named')).toEqual({ kind: 'float', value: 3.5 })
+    expect(init('whole')).toEqual({ kind: 'int', value: 3n })
+    // Arithmetic wraps to its operands' width before the result widens.
+    expect(init('byte')).toEqual({ kind: 'int', value: 44n })
+    expect(init('word')).toEqual({ kind: 'int', value: 0n })
+    expect(init('under')).toEqual({ kind: 'int', value: 2147483647n })
+    // A shift uses the low bits of its count.
+    expect(init('count')).toEqual({ kind: 'int', value: 256n })
+    expect(init('down')).toEqual({ kind: 'int', value: -4n })
+    expect(init('single')).toEqual({ kind: 'float', value: Math.fround(Math.fround(0.1) + Math.fround(0.2)) })
+    expect(init('big')).toEqual({ kind: 'int', value: 1099511627776n })
+  })
+
+  test('a division that traps at run time is not a constant', () => {
+    const message = 'global initializer must be a compile-time constant'
+    expect(errs(`global g: i32 = (-2147483648):i32 / -1`)).toEqual([message])
+    expect(errs(`global g: i32 = 1 / 0`)).toEqual([message])
+    expect(errs(`global g: i32 = (-2147483648):i32 % -1`)).toEqual([])
   })
 
   test('an initializer that has to be computed at run time is an error', () => {

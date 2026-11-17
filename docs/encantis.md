@@ -869,6 +869,8 @@ global low: u8 = 300 as u8       // 44, as the cast gives at run time
 global bytes: [*]u8 = table as [*]u8
 ```
 
+The value is the one the expression has at run time, in the types its parts have: `7 / 2` starts an `f64` global as 3.5 and an `i32` one as 3, and `200:u8 + 100:u8` is 44 whatever the global's type.
+
 A cast of an address is a constant when it keeps the address whole: to another pointer type, or to `i32` or `u32`. A value that needs a call or another global isn't a constant: assign it in a function.
 
 ### 3.4 Functions

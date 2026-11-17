@@ -1,7 +1,8 @@
 // A global starts as a compile-time constant. The compiler works the value
 // out, so the initializer can be an expression of literals and defs, and a
 // constant of one type can start a global of a wider one. A cast of a
-// constant is one too: the value the cast gives at run time.
+// constant is one too. The value is the one the expression has at run time,
+// in the types its parts have.
 
 def page = 64 * 1024
 
@@ -26,6 +27,11 @@ global single: f64 = (0.1 as f32) as f64
 global start: u32 = table as u32
 global second: [*]u16 = table as [*]u16
 
+global halves: f64 = 7 / 2
+global pairs: i32 = 7 / 2
+global wrapped: i32 = 200:u8 + 100:u8
+global shifted: u32 = 1:u32 << 33
+
 func limit_now() -> u32 => limit
 func ratio_now() -> f64 => ratio
 func third_now() -> f32 => third
@@ -44,6 +50,14 @@ func wide_now() -> i64 => wide
 func single_now() -> f64 => single
 func start_now() -> u32 => start
 func second_now() -> u16 => second[0]
+
+func halves_now() -> f64 => halves
+func pairs_now() -> i32 => pairs
+func wrapped_now() -> i32 => wrapped
+func shifted_now() -> u32 => shifted
+
+func sum(a: u8, b: u8) -> i32 => a + b
+func shift(n: u32, by: u32) -> u32 => n << by
 
 // The same casts, done at run time.
 func cut(n: i32) -> u8 => n as u8
@@ -87,4 +101,13 @@ test "a cast of a constant is the value the cast gives at run time" {
 test "an address cast to an integer or another pointer is the same address" {
   assert start_now() == first as u32
   assert second_now() == 0x0503
+}
+
+test "a constant is worked out in the type it has" {
+  assert halves_now() == 3.5
+  assert pairs_now() == 3
+  assert wrapped_now() == 44
+  assert wrapped_now() == sum(200, 100)
+  assert shifted_now() == 2
+  assert shifted_now() == shift(1, 33)
 }

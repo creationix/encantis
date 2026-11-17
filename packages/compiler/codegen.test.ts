@@ -896,6 +896,23 @@ describe('module codegen', () => {
     expect(wat).toContain('(global $cut (mut i32) (i32.const 705032704))')
   })
 
+  test('a global starts as what its expression gives at run time', () => {
+    const wat = modWat(`
+      global real: f64 = 7 / 2
+      global third: f32 = 1 / 3
+      global byte: i32 = 200:u8 + 100:u8
+      global word: u64 = 0xFFFFFFFF:u32 + 1
+      global count: u32 = 1:u32 << 40
+      global zero: f64 = 0.0 * -1.0
+    `)
+    expect(wat).toContain('(global $real (mut f64) (f64.const 3.5))')
+    expect(wat).toContain('(global $third (mut f32) (f32.const 0.3333333432674408))')
+    expect(wat).toContain('(global $byte (mut i32) (i32.const 44))')
+    expect(wat).toContain('(global $word (mut i64) (i64.const 0))')
+    expect(wat).toContain('(global $count (mut i32) (i32.const 256))')
+    expect(wat).toContain('(global $zero (mut f64) (f64.const -0))')
+  })
+
   test('export without explicit name uses function name', () => {
     const wat = modWat(`
       export func multiply(a: i32, b: i32) -> i32 => a * b
