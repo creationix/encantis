@@ -10,7 +10,8 @@ import { grammar as bundled } from './encantis-grammar.bundle'
 type WithRecipe = ohm.Grammar & { toRecipe(): unknown }
 
 test('encantis-grammar.bundle.ts is generated from encantis-grammar.ohm', () => {
-  const source = readFileSync(new URL('./encantis-grammar.ohm', import.meta.url), 'utf-8')
+  // A checkout may have CRLF line ends (git on Windows); the bundle was made from LF.
+  const source = readFileSync(new URL('./encantis-grammar.ohm', import.meta.url), 'utf-8').replace(/\r\n/g, '\n')
   const fresh = (ohm.grammar(source) as WithRecipe).toRecipe()
   // Through JSON, as the bundle script writes it.
   expect(JSON.parse(JSON.stringify((bundled as WithRecipe).toRecipe()))).toEqual(JSON.parse(JSON.stringify(fresh)))
