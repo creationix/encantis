@@ -720,9 +720,9 @@ func pick(c: bool, n: i32, x: f64) -> f64 {
 
 The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
 
-A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [8.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
+A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [9.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
 
-Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([8.2](#structural-coercion)).
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([9.2](#structural-coercion)).
 
 #### Comptime Literal Promotion
 
