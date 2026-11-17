@@ -7322,7 +7322,6 @@ function assignsVariable(node: unknown, name: string): boolean {
   return false
 }
 
-// Flag a literal as mutable data, so the data section gives it its own bytes.
 // The literals laid out as parts of `expr`: its elements, the value it
 // repeats, the fields of a struct it holds, down to any depth.
 function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
@@ -7339,6 +7338,7 @@ function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
   }
 }
 
+// Flag a literal as mutable data, so the data section gives it its own bytes.
 function markMut(expr: AST.Expr): void {
   if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
     ;(expr as { mut?: boolean }).mut = true
