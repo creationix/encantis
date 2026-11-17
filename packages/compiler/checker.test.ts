@@ -1421,6 +1421,11 @@ describe('indexes not known to be in range', () => {
     expect(errs('z[0] = 1', 'z: *mut [!]u8')).toEqual([
       'writing to an element of *mut [!]u8 needs its index checked: its length is only found at run time, by a scan',
     ])
+    // A field of the element is written as the element is: once, as a write.
+    expect(errs('s[i].x = 1\ns[0].y += 2\nm[i].x = 3', 's: []mut Pt, i: u32, m: *mut [4]Pt')).toEqual([
+      slice, slice,
+      'writing to an element needs an index known to be in range: use a constant or ranged index, or if let on its address (&xs[i])',
+    ])
     // Only the element written to: the row it is in is read.
     expect(errs('m[i][0] = 1', 'm: *mut [2][3]u8, i: u32')).toEqual([
       "runtime index on *[2][3]u8 requires 'if let' or '??' (rows are not optional)",

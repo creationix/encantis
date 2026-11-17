@@ -2042,9 +2042,11 @@ class CheckContext {
         }
         let targetType: ResolvedType | undefined
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
-          this.writingTo = stmt.target.kind === 'IndexExpr' ? stmt.target : null
+          // The element written to, also where a field of it is (s[i].x = v).
+          let written: AST.Expr = stmt.target
+          while (written.kind === 'MemberExpr' && written.member.kind === 'field') written = written.object
+          this.writingTo = written.kind === 'IndexExpr' ? written : null
           targetType = this.inferExpr(stmt.target)
-          this.writingTo = null
         }
         // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
         // so there is no place behind it to store to. The place is p.u32[0].
@@ -2054,6 +2056,7 @@ class CheckContext {
           this.error(stmt.span.start, pointer
             ? `cannot assign to .${pun}: it is the pointer as ${typeToString(targetType as ResolvedType)}, not the ${pun} it points at — write .${pun}[0] = value to store one`
             : `cannot assign to .${pun}: a type pun is not a place a value can be stored to`)
+          this.writingTo = null
           this.inferExpr(stmt.value)
           break
         }
@@ -2064,7 +2067,9 @@ class CheckContext {
           this.unprovenWrite(stmt.target)
           if (targetType) targetType = unwrapOptional(unwrap(targetType))
         }
+        // (checkMutability looks at the target again: still the write.)
         this.checkMutability(stmt.target, stmt.span.start)
+        this.writingTo = null
         if (targetType && stmt.op === '=') {
           this.checkExpr(stmt.value, targetType)
         } else if (targetType) {
