@@ -63,7 +63,7 @@ encantis --version
 - [Grammar](docs/grammar.md): the formal syntax.
 - [Spec tests](spec/): how the language parses and checks, as markdown examples that run as tests.
 - [lib](lib/): helpers for reading input, parsing text and printing, written in Encantis.
-- [Examples](examples/): allocators, data structures, generic functions, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
+- [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
 
 ## Development
 

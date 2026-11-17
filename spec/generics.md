@@ -1725,6 +1725,20 @@ func f(v: *Vec(int(5))) -> u32 => 0
 type argument T of 'Vec' must be a concrete type
 ```
 
+In the declaration of a generic function these are found where it is declared, once, whatever its calls are.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func last(comptime T: type, v: *Vec(T, T)) -> T => v.ptr[v.len - 1]
+
+export func a(v: *Vec(u8)) -> u8 => last(v)
+export func b(v: *Vec(u16)) -> u16 => last(u16, v)
+```
+
+```errors
+Vec expects 1 type argument, got 2
+```
+
 Different arguments are different types.
 
 ```ents

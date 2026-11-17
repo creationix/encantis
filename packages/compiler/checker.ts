@@ -2328,9 +2328,8 @@ class CheckContext {
         if (sym?.kind === 'typefunc') {
           // Where its declaration has an error, or a type wanted the name,
           // that one error is all there is to say.
-          if (sym.valid && !this.contested.has(type.name)) {
-            this.error(type.span.start, `'${type.name}' is a generic type: write ${typeFuncForm(sym.decl)}`)
-          }
+          const problem = this.typeFuncProblem(type)
+          if (problem) this.error(type.span.start, problem)
           return RECOVERY
         }
         // Check if this is a forward reference to a type being defined
@@ -3563,7 +3562,7 @@ class CheckContext {
   private coerce(expr: AST.Expr, actual: ResolvedType, expected: ResolvedType, prefix = ''): void {
     // Its error is already reported: what it is used for says nothing more.
     // Nor does what is assigned to something of a type that did not resolve.
-    if (actual === RECOVERY || expected === RECOVERY) return
+    if (actual === RECOVERY || unresolved(expected)) return
     const from = unwrap(actual)
     const to = unwrap(expected)
     // An array literal's own type is a guess from its elements ([0.5, x] an
@@ -4541,8 +4540,20 @@ class CheckContext {
         typeParams.add(p.ident)
       }
     }
-    const applied = typeApplications([decl.signature, decl.body]).find((t) => typeParams.has(t.name))
-    if (applied) reject(applied.span.start, `a type parameter cannot be applied`)
+    // What the declaration says of generic types is checked here, by name
+    // alone. An instance would say it once for each set of arguments, and an
+    // inferred call that cannot find T through `v: *Vec(T, T)` would say
+    // that it cannot, which is not the mistake.
+    // A name a type parameter was refused for is still that parameter's here.
+    const own = new Set(params.flatMap((p) => (p.type.kind === 'TypeType' && p.ident ? [p.ident] : [])))
+    for (const used of typeUses([decl.signature, decl.body])) {
+      if (own.has(used.name)) {
+        if (used.kind === 'TypeApply') reject(used.span.start, `a type parameter cannot be applied`)
+        continue
+      }
+      const problem = this.typeFuncProblem(used)
+      if (problem) reject(used.span.start, problem)
+    }
     return valid
   }
 
@@ -4623,6 +4634,27 @@ class CheckContext {
     }
   }
 
+  // What is wrong with the way a type names a generic type, if anything: a
+  // generic type without its arguments, or an application of what is no
+  // generic type, or with the wrong number of arguments. Null also for a
+  // generic type whose declaration has the error.
+  private typeFuncProblem(used: AST.TypeRef | AST.TypeApply): string | null {
+    const { name } = used
+    const sym = this.moduleScope.symbols.get(name)
+    if (used.kind === 'TypeRef') {
+      const bare = sym?.kind === 'typefunc' && sym.valid && !this.contested.has(name)
+      return bare ? `'${name}' is a generic type: write ${typeFuncForm(sym.decl)}` : null
+    }
+    if (sym?.kind !== 'typefunc') {
+      if (sym?.kind === 'type' || this.pendingTypeNames.has(name)) return `'${name}' is not a generic type`
+      const similar = this.findSimilar(name)
+      return `unknown generic type '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`
+    }
+    const params = sym.decl.params.length
+    if (!sym.valid || used.args.length === params) return null
+    return `${name} expects ${params} type argument${params === 1 ? '' : 's'}, got ${used.args.length}`
+  }
+
   // Vec(u32): the generic type's body with its parameters replaced by these
   // arguments, resolved in the module that declares it.
   private applyTypeFunc(type: AST.TypeApply): ResolvedType {
@@ -4631,23 +4663,12 @@ class CheckContext {
     this.recordReference(name, at)
     const before = this.errorsReported
     const args = type.args.map((a) => this.resolveType(a))
+    const problem = this.typeFuncProblem(type)
+    if (problem) this.error(at, problem)
     const sym = this.moduleScope.symbols.get(name)
-    if (sym?.kind !== 'typefunc') {
-      if (sym?.kind === 'type' || this.pendingTypeNames.has(name)) {
-        this.error(at, `'${name}' is not a generic type`)
-      } else {
-        const similar = this.findSimilar(name)
-        this.error(at, `unknown generic type '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`)
-      }
-      return RECOVERY
-    }
-    // Its declaration has the error.
-    if (!sym.valid) return RECOVERY
+    // Where the generic type's declaration has the error, that is all.
+    if (problem || sym?.kind !== 'typefunc' || !sym.valid) return RECOVERY
     const params = sym.decl.params
-    if (args.length !== params.length) {
-      this.error(at, `${name} expects ${params.length} type argument${params.length === 1 ? '' : 's'}, got ${args.length}`)
-      return RECOVERY
-    }
     if (this.errorsReported > before) return RECOVERY
     const vague = args.findIndex((a) => !hasOwnType(a))
     if (vague >= 0) {
@@ -5431,17 +5452,22 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
   }
 }
 
-// Every application of a generic type written under an AST node, at any
-// depth: Vec(T), and the Slot(K) inside Set(Slot(K)).
-function typeApplications(node: unknown, found: AST.TypeApply[] = []): AST.TypeApply[] {
+// Every type name written under an AST node, at any depth, applied or not:
+// Pt, Vec(T), and the Slot(K) inside Set(Slot(K)).
+function typeUses(node: unknown, found: (AST.TypeRef | AST.TypeApply)[] = []): (AST.TypeRef | AST.TypeApply)[] {
   if (Array.isArray(node)) {
-    for (const n of node) typeApplications(n, found)
+    for (const n of node) typeUses(n, found)
   } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
     const n = node as { kind?: string }
-    if (n.kind === 'TypeApply') found.push(n as AST.TypeApply)
-    for (const [key, value] of Object.entries(n)) if (key !== 'span') typeApplications(value, found)
+    if (n.kind === 'TypeRef' || n.kind === 'TypeApply') found.push(n as AST.TypeRef | AST.TypeApply)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') typeUses(value, found)
   }
   return found
+}
+
+// The applications among them: Vec(T), and the Slot(K) inside Set(Slot(K)).
+function typeApplications(node: unknown): AST.TypeApply[] {
+  return typeUses(node).filter((t): t is AST.TypeApply => t.kind === 'TypeApply')
 }
 
 // How a generic type is applied, for a message: Vec(T), Pair(A, B)

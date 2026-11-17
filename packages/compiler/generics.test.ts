@@ -2789,6 +2789,24 @@ func c() -> u32 {
     ])
   })
 
+  // An instance would repeat such an error for each set of type arguments,
+  // and the inferred call of c, which cannot find T through *Vec(T, T), would
+  // say that it cannot infer T.
+  test('how a generic function names a generic type is checked where it is declared, once whatever calls it', () => {
+    const source = `${VEC}type Pt = (q: i32, r: i32)
+func a(comptime T: type, v: *Vec, x: T) -> T => x
+func b(comptime T: type, v: *Pt(T), x: T) -> T => x
+func c(comptime T: type, v: *Vec(T, T)) -> T => v.ptr[0]
+func d(comptime T: type, x: T) -> u32 => sizeof(Vex(T))
+export func f(v: *Vec(u8), p: *Pt) -> u32 => a(v, 1:u32) + a(v, 2:u8) + b(p, 3:u32) + c(v) + d(4:u32) + d(5:u8)`
+    expect(check(source).errors).toEqual([
+      { offset: source.indexOf('Vec, x'), message: "'Vec' is a generic type: write Vec(T)" },
+      { offset: source.indexOf('Pt(T)'), message: "'Pt' is not a generic type" },
+      { offset: source.indexOf('Vec(T, T)'), message: 'Vec expects 1 type argument, got 2' },
+      { offset: source.indexOf('Vex(T)'), message: "unknown generic type 'Vex' — did you mean 'Vec'?" },
+    ])
+  })
+
   test('a generic type nobody applies is not resolved, and one that is exported is nothing to the host', async () => {
     const program = 'export func f(a: u32) -> u32 => a + 1\n'
     const unused = `func Unused(comptime T: type) -> type => (nope: Nope, t: T)
