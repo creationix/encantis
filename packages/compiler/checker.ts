@@ -3602,7 +3602,7 @@ class CheckContext {
         if (p.type.kind === 'FuncType') {
           reject(at, `comptime parameter '${p.ident}' must be a type parameter: comptime function parameters are not supported yet`)
         } else {
-          reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type' or a function type`)
+          reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type'`)
         }
       } else if (!p.comptime) {
         reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
@@ -3726,6 +3726,7 @@ class CheckContext {
   ): Map<string, ResolvedType> | null {
     const bound = new Map<string, ResolvedType>()
     const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
+    const typed: AST.Field[] = []
     for (const { param, arg, index } of pairs) {
       if (!mentionsUnbound(param.type, typeParams, bound)) continue
       // An argument with an error of its own decides nothing: the type it
@@ -3737,15 +3738,24 @@ class CheckContext {
         this.error(arg.span.start, `argument ${index + 1} of '${name}' has no value`)
         return null
       }
-      if (hasOwnType(type)) matchType(param.type, type, typeParams, bound)
-      else untyped.push({ param, arg, type })
+      if (hasOwnType(type)) {
+        matchType(param.type, type, typeParams, bound)
+        typed.push(param)
+      } else {
+        untyped.push({ param, arg, type })
+      }
     }
     const missing = typeParams.find((p) => !bound.has(p))
     if (!missing) return bound
 
     const rest = pairs.length > 0 ? ', ...' : ''
     const literals = untyped.filter((u) => mentionsUnbound(u.param.type, [missing], bound))
-    if (literals.length === 0) {
+    // An argument with a type of its own that mentions the parameter and did
+    // not decide it: its shape did not match, or the parameter stands inside a
+    // function type, which matching does not look into. What the literals
+    // would be on their own is then no hint at what was meant.
+    const passedOver = typed.some((p) => mentionsUnbound(p.type, [missing], bound))
+    if (literals.length === 0 || passedOver) {
       const plural = typeParams.length === 1 ? '' : 's'
       this.error(
         expr.span.start,

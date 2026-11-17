@@ -272,6 +272,31 @@ export func d(c: bool, p: Pt, q: Pt) -> Pt => pick((q: i32, r: i32), c, p, q)`
     expect(instancesOf(`${ZERO}export func f() -> u32 => zero(u32)`)).toEqual(['zero<u32>'])
   })
 
+  // Matching does not look into a function type (that comes with comptime
+  // function parameters). A function passed for f: (T) -> T decides nothing,
+  // and the literal after it is no hint at T: inc takes a u32, not an i32.
+  test('a function type is not matched, and the literals after it are not taken as a hint', () => {
+    const source = `func inc(x: u32) -> u32 => x + 1
+func apply(comptime T: type, f: (T) -> T, x: T) -> T => x
+func keep(comptime T: type, f: (T) -> T) -> u32 => sizeof(T)
+`
+    expect(errorsOf(`${source}func a() -> u32 => apply(inc, 3)`)).toEqual([
+      "cannot infer T for 'apply': write the type argument, as in apply(u32, ...)",
+    ])
+    expect(errorsOf(`${source}func b() -> u32 => keep(inc)`)).toEqual([
+      "cannot infer T for 'keep': write the type argument, as in keep(u32, ...)",
+    ])
+    // An argument that does decide T, and the type written, are accepted.
+    expect(instancesOf(`${source}export func c(v: u32) -> u32 => apply(inc, v) + apply(u32, inc, 3) + keep(u32, inc)`)).toEqual([
+      'apply<u32>',
+      'keep<u32>',
+    ])
+    // The same when a typed argument has the wrong shape for its parameter
+    expect(errorsOf(`${COUNT}func d(n: u32) -> u32 => count(n, 5)`)).toEqual([
+      "cannot infer T for 'count': write the type argument, as in count(u32, ...)",
+    ])
+  })
+
   test('the type a call is used as is not used to infer', () => {
     expect(errorsOf(`${ZERO}func f() { let x: u32 = zero() }`)).toEqual([
       "cannot infer T for 'zero': write the type argument, as in zero(u32)",
@@ -789,7 +814,7 @@ describe('declaring a generic function', () => {
     [
       'a comptime value parameter',
       'func f(comptime n: u32) -> u32 => n',
-      "comptime value parameters are not supported yet: 'n' must be 'type' or a function type",
+      "comptime value parameters are not supported yet: 'n' must be 'type'",
     ],
     [
       'a lower-case type parameter',

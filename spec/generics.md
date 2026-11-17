@@ -563,7 +563,17 @@ func f(comptime n: u32) -> u32 => n
 ```
 
 ```errors
-comptime value parameters are not supported yet: 'n' must be 'type' or a function type
+comptime value parameters are not supported yet: 'n' must be 'type'
+```
+
+An array size that names a comptime value parameter is not parsed at all.
+
+```ents
+func zeros(comptime n: u32) -> [n]u8 => 0
+```
+
+```errors
+Expected
 ```
 
 A type parameter with a lower-case name.
@@ -740,6 +750,19 @@ func f() -> u32 => count([3:u32, 5, 5], 5)
 
 ```errors
 cannot infer T for 'count' from untyped literals: write count(u32, ...) or give a literal its type
+```
+
+A type parameter that only a function type mentions. Matching does not look into a function type, and the literal is not taken as a hint: `inc` takes a `u32`.
+
+```ents
+func inc(x: u32) -> u32 => x + 1
+func apply(comptime T: type, f: (T) -> T, x: T) -> T => x
+
+func f() -> u32 => apply(inc, 3)
+```
+
+```errors
+cannot infer T for 'apply': write the type argument, as in apply(u32, ...)
 ```
 
 A value where a type is needed.

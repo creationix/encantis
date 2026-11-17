@@ -1892,7 +1892,7 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | Not supported | What the compiler says |
 |---|---|
 | A comptime function parameter, `comptime before: (T, T) -> bool` | `comptime parameter 'before' must be a type parameter: comptime function parameters are not supported yet` |
-| A comptime value parameter, `comptime n: u32`, and with it `[n]T` | `comptime value parameters are not supported yet: 'n' must be 'type' or a function type` |
+| A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type'` |
 | Constructing with a type parameter, `T(a, b)` | `T(...) on a type parameter is not supported yet` |
 | A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
 | A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
@@ -1900,7 +1900,7 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
 
-Also not in this version: generic types (a type that takes type parameters), method-call syntax, writing some type parameters and inferring others, inference from the expected result type, and traits or declared requirements.
+Also not in this version: generic types (a type that takes type parameters), method-call syntax, writing some type parameters and inferring others, inference from the expected result type, inference through a function type (for `f: (T) -> T` the argument `inc` does not decide `T`; write the type argument), and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
 
 One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name with `type` and pass the name.
 
@@ -2290,7 +2290,7 @@ comptime func generate_table() -> *[256]u8 {
 def crc_table = generate_table()
 ```
 
-Comptime function parameters and comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed. Compile-time control flow (a comptime `if` that picks a type or a branch) comes after them.
+Comptime function parameters and comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed, and neither is an array size that names a parameter (`[n]u8`). Compile-time control flow (a comptime `if` that picks a type or a branch) comes after them.
 
 **Why:** Generic types make containers reusable (`Vec(u32)`, `Map(K, V)`). Compile-time function parameters and values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
 
