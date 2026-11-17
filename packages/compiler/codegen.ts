@@ -2596,11 +2596,14 @@ function collectLocals(
         const elem = (checkResult.exprTypes.get(stmt.target) as { element?: ResolvedType } | undefined)?.element
         locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
         if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
+      }
+      // An index or a range in the target can need scratch locals of its own.
+      if (stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr' || stmt.target.kind === 'SliceExpr') {
         visitExpr(stmt.target)
       }
     }
-    // Handle let statements that may have coalesce/if expressions in value
-    if (stmt.kind === 'LetStmt' && stmt.value) {
+    // Handle let and set statements that may have coalesce/if expressions in value
+    if ((stmt.kind === 'LetStmt' || stmt.kind === 'SetStmt') && stmt.value) {
       visitExpr(stmt.value)
     }
     if (stmt.kind === 'ReturnStmt' && stmt.value) {
@@ -2700,6 +2703,11 @@ function collectLocals(
         locals.push({ name: '__slot_len', type: 'i32' })
         ctx.locals.set('__slot_len', ['__slot_len'])
       }
+    }
+    // A repeated value is compiled once per copy, with whatever scratch locals
+    // it needs.
+    if (expr.kind === 'RepeatExpr') {
+      visitExpr(expr.value)
     }
     if (expr.kind === 'MatchExpr') {
       // Where the subject is kept when it's more than a plain read.

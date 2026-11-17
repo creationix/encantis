@@ -594,6 +594,24 @@ describe('expression codegen', () => {
       expect(wat).toMatch(/\(i64\.eq \(local\.get \$__match_\d+\) \(i64\.const 8\)\)/)
     })
 
+    test('the scratch local of a match is declared wherever the match stands', () => {
+      // The pass that declares a function's locals didn't look inside the
+      // index of an assignment's target, the value of a `set` or a repeated
+      // value. A match there kept its subject in a local nothing declared.
+      const subject = 'match x + 1 {\n 1 => 2\n _ => 3\n }'
+      for (const body of [
+        `buf[((${subject}) as u32) & 3] = 7`,
+        `buf[((${subject}) as u32) & 3] += 7`,
+        `let a = 0\n let d = 0\n set (a, d) = ((${subject}), 1)`,
+        `let r = [(${subject}); 2]`,
+      ]) {
+        const wat = funcWat(`func f(x: i32) {\n ${body}\n}\ndata buf = mut [0:u8; 4]`)
+        const scratch = wat.match(/\$__match_\d+/)?.[0]
+        expect(scratch).toBeDefined()
+        expect(wat).toContain(`(local ${scratch} i32)`)
+      }
+    })
+
     test('a match reads a plain subject directly', () => {
       const wat = funcWat(`func f(k: i32) -> i32 => match k {
         6 => 1
