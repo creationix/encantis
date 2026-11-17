@@ -194,7 +194,8 @@ export function formatEncantis(source: string): string {
         tokens.push({ kind: 'comment', text: line.slice(j) }); break
       }
       if (line[j] === '"' || line[j] === "'") { scanString(line[j]); continue }
-      if (line[j] === 'x' && line[j + 1] === '"') {
+      // x"48 65" (hex bytes) and b"SGk=" (base64): the prefix is part of the string
+      if ((line[j] === 'x' || line[j] === 'b') && line[j + 1] === '"') {
         const start = j; j += 2
         while (j < line.length && line[j] !== '"') j++
         if (j < line.length) j++
@@ -264,17 +265,18 @@ export function formatEncantis(source: string): string {
         }
         tokens.push({ kind: 'word', text: line.slice(start, j) }); continue
       }
+      // A number is a run of letters and digits: 0x1F, 0b101, 0o17, 0d1B, 42,
+      // and the 2x3 of an array's dimensions. A decimal one goes on past a
+      // point only to the digits of a fraction (3.14, 1.0e-12): `0..0x1F`
+      // is 0, the two points of a range, and 0x1F, and `t.0.len` a member.
       if (/[0-9]/.test(line[j])) {
         const start = j
-        if (line[j] === '0' && (line[j + 1] === 'x' || line[j + 1] === 'X')) {
-          j += 2; while (j < line.length && /[0-9a-fA-F_]/.test(line[j])) j++
-        } else if (line[j] === '0' && (line[j + 1] === 'b' || line[j + 1] === 'B')) {
-          j += 2; while (j < line.length && /[01_]/.test(line[j])) j++
-        } else {
-          while (j < line.length && /[0-9_.]/.test(line[j])) j++
-          while (line[j] === 'x' && /[0-9]/.test(line[j + 1])) {
-            j++
-            while (j < line.length && /[0-9_.]/.test(line[j])) j++
+        const run = () => { while (j < line.length && /[0-9a-zA-Z_]/.test(line[j])) j++ }
+        run()
+        if (line[j] === '.' && /[0-9]/.test(line[j + 1] ?? '') && /^[0-9_]+$/.test(line.slice(start, j))) {
+          j++; run()
+          if (/[eE]$/.test(line.slice(start, j)) && (line[j] === '+' || line[j] === '-') && /[0-9]/.test(line[j + 1] ?? '')) {
+            j++; run()
           }
         }
         tokens.push({ kind: 'num', text: line.slice(start, j) }); continue
@@ -292,10 +294,12 @@ export function formatEncantis(source: string): string {
     return tokens
   }
 
+  // A point comes before an operator only as the end of `..`, where a value
+  // begins: `p[0..-1]`.
   function isUnaryPosition(prev: Tok | undefined): boolean {
     if (!prev) return true
     return prev.kind === 'open' || prev.kind === 'comma' || prev.kind === 'colon'
-      || prev.kind === 'semi' || prev.kind === 'op'
+      || prev.kind === 'semi' || prev.kind === 'op' || prev.kind === 'dot'
       || (prev.kind === 'word' && KEYWORDS.has(prev.text))
   }
 

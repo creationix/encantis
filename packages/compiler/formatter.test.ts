@@ -164,6 +164,23 @@ describe('formatter', () => {
   // comptime is a word of the language, not a name. No valid program has a
   // parenthesis or a bracket right after it, but a line being typed may, and
   // there it is not drawn up to it the way the name of a called function is.
+  // A decimal number went on over any point and the letters after an x, so
+  // `0..0x1F` was read as the number 0..0x1 and the name F, and came out as
+  // `0..0x1 F`; an exponent, an octal or dozenal number and a base64 string
+  // were split after their first letter. Every form of literal is one word,
+  // right after the points of a range too, and keeps its spacing.
+  test('a number and a string literal are never split, after the points of a range neither', () => {
+    const literals = ['0x1F', '0b101', '0o17', '0d1B', '31', '2.5', '1.5e3', '1.0e-12', '6.022E+23', '0x1F:u32', '-1', '-1.5e-10', 'n']
+    const lines = [
+      ...literals.flatMap(n => [`let a = p[0..${n}]`, `let a = p[${n}..]`, `let a = p[..${n}]`, `let a = p[${n}..${n}]`]),
+      'let f = 1.0e300', 'let s = b"SGk=" == x"48 69"', 'let q = t.0.len + t.0.1', 'let d = 0d10B + 0o755 * 0b1010',
+    ]
+    const program = `export func f(p: *[64]u8, t: ((*[2]u8, u8), u8), n: u32) {\n${lines.map(l => `  ${l}\n`).join('')}}\n`
+    const formatted = formatEncantis(program.replaceAll(': ', ':'))
+    expect(formatted.split('\n').slice(1, -2).map(l => l.trim())).toEqual(lines)
+    expect(shape(formatted)).toEqual(shape(program))
+  })
+
   test('comptime is spaced as a keyword', () => {
     expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
     expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')
