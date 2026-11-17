@@ -1791,6 +1791,44 @@ export func c() -> u64 {
     expect(exports.c()).toBe(33n)
   })
 
+  // 0.2.1 gave the address of the slot for an element that is itself a
+  // pointer. Values are loaded from memory by their type now, in an instance
+  // by the type its argument makes the element.
+  test('an element read out of memory is loaded as the type argument says', async () => {
+    const generic = `type Pt = (q: i32, r: i32)
+data cells = mut [0:u32; 6]
+${HEAD}export func first(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
+export func pointer(v: u32) -> u32 {
+  cells[1] = v
+  return first((cells as [*]*mut Pt)[1..3]) as u32
+}
+export func point(q: i32, r: i32) -> i32 {
+  cells[2] = q as u32
+  cells[3] = r as u32
+  let p = head((cells as [*]Pt)[1..3])
+  return p.q - p.r
+}
+export func slice(n: u32) -> u32 {
+  cells[4] = 16
+  cells[5] = n
+  return head([]u8, (cells as [*][]u8)[2..3]).len
+}`
+    const wat = watOfSource(generic)
+    expect(funcWat(wat, 'head<*mut.<q:i32|r:i32>>')).toContain('(i32.load ')
+    const exports = await run(generic)
+    expect(exports.pointer(0xABCD)).toBe(0xABCD)
+    expect(exports.point(9, 4)).toBe(5)
+    expect(exports.slice(77)).toBe(77)
+    await expectSameWasm(generic, generic
+      .replace(HEAD, `func head_bytes(xs: [][]u8) -> []u8 => xs.ptr[0]
+func head_ptr(xs: []*mut Pt) -> *mut Pt => xs.ptr[0]
+func head_pt(xs: []Pt) -> Pt => xs.ptr[0]
+`)
+      .replace('head(*mut Pt, xs)', 'head_ptr(xs)')
+      .replace('head((cells', 'head_pt((cells')
+      .replace('head([]u8, (cells', 'head_bytes((cells'))
+  })
+
   test('the instances of a module that is not the entry carry its prefix', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
     try {

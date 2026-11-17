@@ -1963,7 +1963,7 @@ export func a(c: bool, x: u8, y: u32) -> u32 => pick(u32, c, x, y)      // x is 
 export func b(c: bool, p: Pt, q: Pt) -> Pt => pick(Pt, c, p, q)
 export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32, i32), c, p, q)
 export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
-export func e(c: bool, p: *mut Pt, q: *mut Pt) -> *mut Pt => pick(*mut Pt, c, p, q)
+export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
 export func f(xs: []u64) -> u64 => head(u64, xs)
 ```
 
