@@ -1903,6 +1903,8 @@ loop {                   // infinite loop
 }
 ```
 
+The variable of a counted loop is a `u32`, and so is a constant count that isn't negative: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error.
+
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
 
 The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.

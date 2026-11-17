@@ -2098,6 +2098,10 @@ class CheckContext {
         if (iterableType.kind === 'comptime_int') {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
+          // The variable counts up to the count as a u32, so a constant count
+          // is one, not a constant of its default type: 3000000000 is no i64
+          // here, and 5000000000 is no count.
+          if (iterableType.value >= 0n) this.coerce(stmt.iterable, iterableType, primitive('u32'))
         } else if (iterableType.kind === 'slice') {
           elemType = tableRow(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {

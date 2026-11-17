@@ -2694,6 +2694,41 @@ describe('declarations take the types they are checked as', () => {
     expect(x.wide()).toBe(2147483649n)
     expect(x.bump()).toBe(8)
   })
+
+  test('a constant loop count is a u32, past an i32 too', async () => {
+    const x = await run(`
+      def big = 3000000000
+      export func lit() -> u32 {
+        let n: u32 = 0
+        for i in 3000000000 {
+          n = i
+          if i == 3 { break }
+        }
+        return n
+      }
+      export func named() -> u32 {
+        let n: u32 = 0
+        for i in big {
+          n += 1
+          if i == 4 { break }
+        }
+        return n
+      }
+      export func top() -> u32 {
+        let n: u32 = 0
+        for i in (1 << 31) + 1 {
+          n = i
+          if i == 6 { break }
+        }
+        return n
+      }
+    `)
+    expect(x.lit()).toBe(3)
+    expect(x.named()).toBe(5)
+    expect(x.top()).toBe(6)
+    const errs = typecheck(parse('func f() { for i in 5000000000 { } }').module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(['cannot assign int(5000000000) to u32'])
+  })
 })
 
 describe('set takes the types of the variables it sets', () => {
