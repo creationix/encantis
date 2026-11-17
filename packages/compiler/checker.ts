@@ -2392,9 +2392,10 @@ class CheckContext {
   // variable declared before it (a `let` is seen in the rest of its
   // function), the variable of a `for`, `if let` or match arm around it, or
   // a global, whose name a `let` cannot have either. Nor does it have the
-  // name of a `def`, which stands for its value wherever it is written. A
-  // function or a `data` block of the module is no variable, and its name
-  // is hidden in the body.
+  // name of a `def` or a `data` block, which stand for a value wherever
+  // they are written (a def's is put in by the parser, and a deferred
+  // expression run inside the body would read the binding). A function of
+  // the module has no value, and its name is hidden in the body.
   // `node` is the binding's: checked again, it is the same declaration (see
   // declared). An error is reported at `at`, the definition recorded at `defAt`.
   private bindName(
@@ -7345,8 +7346,8 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
 }
 
 // What a name a `for`, an `if let` or a match arm cannot bind is, as the
-// error says: a variable, a `def`, or a comptime function parameter. Null
-// for a name it can hide.
+// error says: a variable, a `def` or `data` block, or a comptime function
+// parameter. Null for a name it can hide: a function's.
 function takenName(sym: Symbol): string | null {
   switch (sym.kind) {
     case 'param':
@@ -7361,7 +7362,7 @@ function takenName(sym: Symbol): string | null {
         : sym.binding === 'match' ? 'a match binding in scope'
         : 'a variable in scope'
     case 'def':
-      return sym.value.kind === 'data_ptr' ? null : 'a def'
+      return sym.value.kind === 'data_ptr' ? 'a data block' : 'a def'
     case 'func':
       // A comptime function parameter, in an instance.
       return sym.alias ? 'a parameter' : null

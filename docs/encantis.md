@@ -1950,7 +1950,7 @@ func total(list:[]Spot) -> i32 {
 
 <!-- spec:begin compile -->
 
-The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def`, which stands for its value wherever it is written. So a loop never hides a variable, and never changes one:
+The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def` or a `data` block, which stand for a value wherever they are written. So a loop never hides a variable, and never changes one:
 
 ```ents
 func count(n: u32) -> u32 {
@@ -1985,7 +1985,7 @@ func grid() -> u32 {
 'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
 ```
 
-After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function or a `data` block of the module is no variable: a loop variable of its name hides it in the body.
+After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
 
 ```ents
 data bytes = [1:u8, 2, 3]

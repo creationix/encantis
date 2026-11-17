@@ -584,7 +584,7 @@ func f() {
 
 ## Variables of a loop, an if let and a match arm
 
-A variable that a `for`, an `if let` or a match arm binds is seen in its body only, and never has the name of a variable seen where it is written: it neither hides a variable nor changes one. That is a parameter, a named result, a `let` before it (seen to the end of its function, also past its block), a variable of a loop, `if let` or match arm around it, a global, or a `def`, whose name stands for its value wherever it is written.
+A variable that a `for`, an `if let` or a match arm binds is seen in its body only, and never has the name of a variable seen where it is written: it neither hides a variable nor changes one. That is a parameter, a named result, a `let` before it (seen to the end of its function, also past its block), a variable of a loop, `if let` or match arm around it, a global, or a `def` or `data` block, whose name stands for a value wherever it is written.
 
 ```ents
 global g: u32 = 1
@@ -630,6 +630,7 @@ func indexed() -> u32 {
 func names() {
   for g in 3 { }
   for k in 3 { }
+  for xs in 3 { }
 }
 
 func get(p: ?*u32) -> u32 {
@@ -662,12 +663,13 @@ func arm(n: u32, k: u32) -> u32 => match k {
 'v' is already declared: a loop variable cannot reuse the name of a variable in scope
 'g' is already declared: a loop variable cannot reuse the name of a global
 'k' is already declared: a loop variable cannot reuse the name of a def
+'xs' is already declared: a loop variable cannot reuse the name of a data block
 'p' is already declared: an if let binding cannot reuse the name of a parameter
 'q' is already declared: an if let binding cannot reuse the name of a variable in scope
 'n' is already declared: a match binding cannot reuse the name of a parameter
 ```
 
-After the body the names are free again: two loops one after the other can both use `i`, a `let` after a `for c` declares a variable of its own, and `if let`s in turn can bind one name to values of different types. A `let` in a loop's body is still seen to the end of the function. The name of a function or a `data` block is no variable's, and a binding of it hides it in the body.
+After the body the names are free again: two loops one after the other can both use `i`, a `let` after a `for c` declares a variable of its own, and `if let`s in turn can bind one name to values of different types. A `let` in a loop's body is still seen to the end of the function. A function has no value, and a binding of its name hides it in the body.
 
 ```ents
 data bytes = [1:u8, 2, 3]

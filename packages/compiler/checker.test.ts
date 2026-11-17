@@ -3164,6 +3164,9 @@ describe('the variables of a for, an if let or a match arm', () => {
     expect(errs('global g: u32 = 1\nfunc f() {\n for g in 3 { }\n}')).toEqual([loop('g', 'a global')])
     // A def stands for its value wherever it is written: the loop's would never be seen.
     expect(errs('def k = 30\nfunc f() -> u32 {\n let t: u32 = 0\n for k in 3 { t += k }\n return t\n}')).toEqual([loop('k', 'a def')])
+    // So does a data block, also in a deferred expression run inside the body.
+    expect(errs('data d = [5:u8, 6]\nfunc use(p: *[2]u8) { }\nfunc f(xs: []u8) -> u32 {\n defer use(d)\n for d in xs {\n return 1 when d == 3\n }\n return 0\n}'))
+      .toEqual([loop('d', 'a data block')])
   })
 
   test('both names of a loop are checked, each where it is written', () => {
@@ -3219,8 +3222,8 @@ describe('the variables of a for, an if let or a match arm', () => {
         return s + v
       }
     `)).toEqual([])
-    // A function or a data block of the module is no variable: a binding hides it in its body.
-    expect(errs('data d = [1:u8, 2]\nfunc b() -> u32 => 1\nfunc f(k: []u8) -> u32 {\n let t: u32 = 0\n for b in k { t += b as u32 }\n for d in d { t += d as u32 }\n return t + b()\n}'))
+    // A function of the module has no value: a binding hides it in its body.
+    expect(errs('func b() -> u32 => 1\nfunc f(k: []u8) -> u32 {\n let t: u32 = 0\n for b in k { t += b as u32 }\n return t + b()\n}'))
       .toEqual([])
     // In a test, as in a function.
     expect(errs('test "t" {\n for i in 3 { }\n let i: u32 = 4\n assert i == 4\n}')).toEqual([])

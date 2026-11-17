@@ -3112,21 +3112,12 @@ describe('the wasm names of variables', () => {
         }
         return t * scale()
       }
-      // After the loop the name is the data block's again.
-      export func hides_data() -> u32 {
-        let t: u32 = 0
-        for bytes in bytes {
-          t += bytes as u32
-        }
-        return t * 10 + bytes[2] as u32
-      }
     `)
     expect(x.two_loops()).toBe(10)
     expect(x.then_let()).toBe(5000000003n)
     expect(x.in_branch(1)).toBe(5.25)
     expect(x.in_branch(0)).toBe(1.25)
     expect(x.hides()).toBe(30)
-    expect(x.hides_data()).toBe(63)
     // Variables of one name and wasm type that are never seen at once
     // share a local; another wasm type takes the next prefix.
     const body = wat.slice(wat.indexOf('(func $in_branch'), wat.indexOf('(func $hides'))
