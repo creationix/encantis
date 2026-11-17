@@ -380,4 +380,47 @@ describe('parser', () => {
       expect(body.kind === 'Block' && body.stmts.length).toBe(2)
     })
   })
+
+  describe('members named like a primitive type', () => {
+    const expr = (source: string): Expr => {
+      const result = parse(source, { startRule: 'Expr' })
+      expect(result.errors).toEqual([])
+      return result.module as unknown as Expr
+    }
+
+    test('a name that only starts like one is a field or a method', () => {
+      expect(expr('s.boolish')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'boolish' } })
+      expect(expr('v.u32s()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', member: { kind: 'field', name: 'u32s' } } })
+      expect(expr('p.i8_le')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'i8_le' } })
+      expect(expr('p.f64x')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'f64x' } })
+    })
+
+    test('the whole name is still a type pun', () => {
+      const pun = (name: string) => ({ kind: 'MemberExpr', member: { kind: 'type', type: { kind: 'PrimitiveType', name } } })
+      expect(expr('p.u32')).toMatchObject(pun('u32'))
+      expect(expr('p.u8[4]')).toMatchObject({ kind: 'IndexExpr', object: pun('u8') })
+      expect(expr('p.u32-1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
+      expect(expr('p.u32.u8')).toMatchObject({ kind: 'MemberExpr', object: pun('u32'), member: { kind: 'type' } })
+      expect(expr('p. u32')).toMatchObject(pun('u32'))
+    })
+
+    test('a type pun does not take the next line for the rest of its name', () => {
+      const result = parse('func f(p: *u8) -> u32 {\n  let a = p.u32\n  seen(a)\n  return 1\n}')
+      expect(result.errors).toEqual([])
+      const body = (result.module?.decls[0] as FuncDecl).body
+      expect(body.kind === 'Block' && body.stmts.length).toBe(3)
+      expect(body.kind === 'Block' && body.stmts[0]).toMatchObject({ value: { kind: 'MemberExpr', member: { kind: 'type' } } })
+    })
+
+    test('the same holds where the member is assigned', () => {
+      const target = (source: string) => {
+        const result = parse(`func f(p: *mut S) { ${source} }`)
+        expect(result.errors).toEqual([])
+        const body = (result.module?.decls[0] as FuncDecl).body
+        return body.kind === 'Block' ? body.stmts[0] : null
+      }
+      expect(target('p.u32s = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32s' } } })
+      expect(target('p.u32 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'type' } } })
+    })
+  })
 })
