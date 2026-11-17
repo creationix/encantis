@@ -2945,4 +2945,29 @@ describe('the wasm names of variables', () => {
     expect(x.nested(0, 9)).toBe(1007)
     expect(x.nested(0, 2)).toBe(9)
   })
+
+  test('a loop variable is its own from the loop on, whatever the name was before', async () => {
+    const x = await run(`
+      data bytes = [1:u8, 2, 3]
+      data wides = [1.5, 2.5]
+      export func param_then_for(x: f64) -> u32 {
+        let before = x as u32
+        for x in 3 {
+        }
+        return before * 10 + x
+      }
+      export func two_loops() -> f64 {
+        let s: f64 = 0
+        for v in bytes {
+          s += v as f64
+        }
+        for v in wides {
+          s += v
+        }
+        return s
+      }
+    `)
+    expect(x.param_then_for(7)).toBe(73)
+    expect(x.two_loops()).toBe(10)
+  })
 })

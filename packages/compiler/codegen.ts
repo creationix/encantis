@@ -72,6 +72,9 @@ export interface CodegenContext {
   bindings?: Map<AST.IfExpr, string[]>
   // The locals of the `if let` bindings whose then-branch collectLocals is in.
   busy?: Set<string>
+  // The variables a `let` or a `for` declares, with their locals: from there
+  // on its names stand for them (see letToWat, forToWat).
+  declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -2314,12 +2317,25 @@ function withSliceLength(value: string, valueExpr: AST.Expr, target: ResolvedTyp
   return len === null ? value : `${value} (i32.const ${len})`
 }
 
+// From a `let` or a `for` on, the names it declares stand for its variables,
+// as the checker has them: a `for` of a name in one branch and a `let` of it
+// in another are two variables.
+function enterDeclared(stmt: AST.LetStmt | AST.ForStmt, ctx: CodegenContext): void {
+  for (const [name, names] of ctx.declared?.get(stmt) ?? []) ctx.locals.set(name, names)
+}
+
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
-  if (!stmt.value) return '' // Declaration only, no initialization
+  if (!stmt.value) {
+    enterDeclared(stmt, ctx)
+    return '' // Declaration only, no initialization
+  }
+  // The value is computed before the variable is there.
+  const valueWat = exprToWat(stmt.value, ctx)
+  enterDeclared(stmt, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    let value = exprToWat(stmt.value, ctx)
+    let value = valueWat
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -2352,8 +2368,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    const value = exprToWat(stmt.value, ctx)
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${valueWat}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
   }
 
   return ''
@@ -2511,7 +2526,10 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
 }
 
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
-  // The locals collectLocals gave the loop's variables.
+  // The locals collectLocals gave the loop's variables, which its names stand
+  // for in the body and after the loop, but not in the iterable.
+  const outside = [stmt.binding.value, stmt.binding.index].flatMap((n) => (n ? [[n, ctx.locals.get(n)] as const] : []))
+  enterDeclared(stmt, ctx)
   const valueLocals = ctx.locals.get(stmt.binding.value) ?? [stmt.binding.value]
   const valueName = valueLocals[0]
   const indexName = stmt.binding.index ? (ctx.locals.get(stmt.binding.index) ?? [stmt.binding.index])[0] : undefined
@@ -2520,7 +2538,12 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
 
   // Check if iterable is a comptime integer (for i in N)
   const iterType = lookupExprType(stmt.iterable, ctx)
+  for (const [name, names] of outside) {
+    if (names) ctx.locals.set(name, names)
+    else ctx.locals.delete(name)
+  }
   const iterWat = exprToWat(stmt.iterable, ctx)
+  enterDeclared(stmt, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
@@ -2832,9 +2855,21 @@ function collectLocals(
 ): LocalDecl[] {
   const locals: LocalDecl[] = []
 
+  // A variable `stmt` declares: its locals, which its name stands for from
+  // `stmt` on when the code is emitted (enterDeclared). A `let`'s name is
+  // the one variable of that name in its function (the checker refuses a
+  // second), so it stands for it everywhere already; a `for` can take over
+  // the name of a param or a variable before it, which keeps its locals
+  // until the loop.
+  function declare(stmt: AST.LetStmt | AST.ForStmt, name: string, names: string[]) {
+    ctx.declared ??= new Map()
+    ctx.declared.set(stmt, [...(ctx.declared.get(stmt) ?? []), [name, names]])
+    if (stmt.kind === 'LetStmt') ctx.locals.set(name, names)
+  }
+
   // Declare locals for each element of a tuple pattern, and for the elements
   // of an element that is a tuple pattern itself.
-  function declarePattern(pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
+  function declarePattern(stmt: AST.LetStmt, pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
     for (const [position, elem] of pattern.elements.entries()) {
       // Named elements find their field by name, positional ones by position.
       const field = elem.kind === 'named'
@@ -2843,12 +2878,12 @@ function collectLocals(
       if (!field) continue
       if (elem.kind === 'positional' && elem.pattern.kind === 'TuplePattern') {
         const inner = unwrap(field.type)
-        if (inner.kind === 'tuple') declarePattern(elem.pattern, inner)
+        if (inner.kind === 'tuple') declarePattern(stmt, elem.pattern, inner)
         continue
       }
       const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
       // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-      ctx.locals.set(name, claimLocals(ctx, name, field.type, locals))
+      declare(stmt, name, claimLocals(ctx, name, field.type, locals))
     }
   }
 
@@ -2861,7 +2896,7 @@ function collectLocals(
         if (!type) {
           throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
         }
-        ctx.locals.set(name, claimLocals(ctx, name, type, locals, true))
+        declare(stmt, name, claimLocals(ctx, name, type, locals, true))
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // Get the overall tuple type from the pattern
         const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -2869,7 +2904,7 @@ function collectLocals(
           throw new Error(`Missing or invalid tuple type for pattern at offset ${stmt.pattern.span.start}`)
         }
 
-        declarePattern(stmt.pattern, tupleType)
+        declarePattern(stmt, stmt.pattern, tupleType)
       }
     }
     // Recurse into nested blocks
@@ -2882,13 +2917,12 @@ function collectLocals(
     }
     if (stmt.kind === 'ForStmt') {
       visitExpr(stmt.iterable)
-      // Collect loop binding variable
       // The loop's variables. The checker keeps them in the enclosing
       // scope, after the loop too, and so does this. Multi-value elements
       // (slices, tuples) flatten like lets.
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
-      if (bindingType) ctx.locals.set(stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
-      if (stmt.binding.index) ctx.locals.set(stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
+      if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
+      if (stmt.binding.index) declare(stmt, stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
       // Element loops walk a pointer up to an end address.
       const uid = scratchId(stmt.span.start)
       locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
