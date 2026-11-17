@@ -47,7 +47,8 @@ describe('watdiff', () => {
 
   test('a file that compiles to something else is a difference', async () => {
     const result = await watdiff(await checkout(), await checkout({ wat: '(module (memory 1))' }))
-    expect(result.out).toBe('DIFF examples/one.ents\n0 identical, 1 differing\n')
+    // The path is printed as the platform writes it.
+    expect(result.out).toBe(`DIFF ${join('examples', 'one.ents')}\n0 identical, 1 differing\n`)
     expect(result.code).toBe(1)
   })
 
