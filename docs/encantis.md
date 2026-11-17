@@ -152,6 +152,8 @@ String literals are array literals of `u8`:
 "hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
 ```
 
+An array literal given for a `*[N]T` has N elements, and each row of a `*[N][M]T`, a `[][M]T` or a `*[NxM]T` has M: `cannot assign 2 elements to *[3]i32`. Behind a pointer, a string is the bytes of all the elements: `"abcd"` is a `*[4]u8` or a `*[2]u16`, but not a `*[8]u8` (`cannot assign a string of 4 bytes to *[8]u8`) or the rows of a table.
+
 An array literal given where a pointer or slice is wanted is laid out in memory. In a function, its values that are only known when the program runs (`[x, 2]`) are stored into it each time it is evaluated: the literal is a cell of its own for that place in the source, never shared with another literal, so a pointer kept from an earlier evaluation sees the values of the later one. Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the same way. A literal laid out apart from the one it is in, an element of a slice of slices (`[][]i32`), of a pointer to framed arrays (`*[2][!]u8`) or a row of a table ([2.5](#nesting)), is laid out when the program is compiled, so its values must be constants: `let t: [][]i32 = [[a, 2], [3]]` is an error (`an element of [][]i32 is laid out at compile time: its values must be constants`).
 
 #### The `mut` Keyword on Literals
@@ -2973,13 +2975,13 @@ let offset = u64(clz(n)) * 8
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
-| `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
-| `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
-| `memzero(dest)` | *[N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
+| `memcpy(dest, src, len)` | *mut [N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
+| `memset(dest, value, len)` | *mut [N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
+| `memzero(dest)` | *mut [N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
-`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+`memcpy` and `memset` take pointers to sized arrays. The destination is written, so it is a `*mut` pointer, as for a write through an index: `memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
 
 > **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 

@@ -1909,12 +1909,16 @@ class CheckContext {
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
-  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
+  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false, written = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
       if (u.pointee.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
+      }
+      // The destination is written, as through an index: it has to be *mut.
+      if (written && !u.mutable) {
+        this.error(expr.span.start, `${context}: cannot write through const pointer ${typeToString(type)} — use *mut for mutable access`)
       }
       // A string literal gets its bytes in the data section when it's checked
       // against the type it's used at, as the argument of a function is. So
@@ -2963,6 +2967,7 @@ class CheckContext {
           }
         }
       }
+      if (expected.kind === 'pointer' || expected.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
       // So are the literals among the elements of a slice of slices, or of a
       // pointer to framed arrays: codegen fills in an element that is known
       // only at run time, but not what is inside one of them.
@@ -3091,6 +3096,47 @@ class CheckContext {
     for (const elem of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
       this.checkStringElements(elem, inner, innerCounted, prefix, elements)
     }
+  }
+
+  // An array literal laid out for a fixed number of elements has that many:
+  // *[3]i32 takes three, and so does each row of a *[2][3]i32, a [][3]i32 or
+  // a *[2x3]i32. Fewer would leave the last ones to whatever data follows;
+  // more would be bytes nothing reaches. A string is bytes, so it is that
+  // many elements only where an element is one byte.
+  private checkLiteralCount(expr: AST.Expr, type: ResolvedType, prefix: string): void {
+    const e = ungrouped(expr)
+    const string = e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e.value.bytes.length : null
+    if (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr' && string === null) return
+    const t = unwrap(type)
+    const array = t.kind === 'pointer' && t.pointee.kind === 'array' ? t.pointee : t.kind === 'array' ? t : null
+    const fixed = array?.sizes && array.sizes.length > 0 && array.sizes.every((s) => typeof s === 'number') ? array.sizes as number[] : null
+    const row = t.kind === 'slice' ? t.element
+      : array && fixed && fixed.length > 1 ? { kind: 'array' as const, element: array.element, sizes: fixed.slice(1) }
+      : array?.element ?? null
+    if (array && fixed && string !== null) {
+      // Behind a pointer a string is the bytes of the elements, all of them;
+      // but the rows of a table are laid out apart, not as these bytes.
+      const table = tableRow(type)
+      if (table) {
+        const elements = typeToString(table.pointee)
+        this.error(e.span.start, `${prefix}cannot assign a string literal to ${typeToString(type)} — a string is bytes ([]u8); write the ${elements} elements as an array literal`)
+      } else if (byteSize(array) !== null && byteSize(array) !== string) {
+        this.error(e.span.start, `${prefix}cannot assign a string of ${string} byte${string === 1 ? '' : 's'} to ${typeToString(type)}`)
+      }
+      return
+    }
+    if (array && fixed) {
+      const count = e.kind === 'ArrayExpr' ? e.elements.length : e.kind === 'RepeatExpr' ? this.evalComptimeExpr(e.count) : null
+      const n = typeof count === 'number' ? count : count?.kind === 'int' ? Number(count.value) : null
+      if (n !== null && n !== fixed[0]) {
+        this.error(e.span.start, `${prefix}cannot assign ${n} element${n === 1 ? '' : 's'} to ${typeToString(type)}`)
+        return
+      }
+    }
+    // The rows: fixed arrays, laid out in place or apart.
+    const r = row && unwrap(row)
+    if (!r || r.kind !== 'array' || !r.sizes?.every((s) => typeof s === 'number') || (e.kind !== 'ArrayExpr' && e.kind !== 'RepeatExpr')) return
+    for (const element of e.kind === 'ArrayExpr' ? e.elements : [e.value]) this.checkLiteralCount(element, r, prefix)
   }
 
   peelArraySize(t: ArrayRT): ResolvedType {
@@ -3881,7 +3927,7 @@ class CheckContext {
           this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
           return VOID
         }
-        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
+        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest', false, true))
         // memzero has no length operand: the destination's type gives it.
         if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
           this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
@@ -3897,7 +3943,7 @@ class CheckContext {
           return VOID
         }
 
-        this.checkMemOpPtr(args[0].value, 'memset dest')
+        this.checkMemOpPtr(args[0].value, 'memset dest', false, true)
         this.checkExpr(args[1].value, primitive('u8'), 'memset value')
         this.checkExpr(args[2].value, primitive('u32'), 'memset len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memset')
@@ -3913,7 +3959,7 @@ class CheckContext {
           return VOID
         }
 
-        this.checkMemOpPtr(args[0].value, 'memcpy dest')
+        this.checkMemOpPtr(args[0].value, 'memcpy dest', false, true)
         this.checkMemOpPtr(args[1].value, 'memcpy src', true)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')

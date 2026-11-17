@@ -758,6 +758,64 @@ a row of *[2][2]i32 is laid out at compile time: its values must be constants
 data 'f' is laid out at compile time: its values must be constants
 ```
 
+An array literal for a `*[N]T` has N elements, and each row of a table or of a `*[NxM]T` has M. Behind a pointer a string is the bytes of all the elements; the rows of a table are laid out apart, so a string cannot be them.
+
+```ents
+data a: *[3]i32 = [1, 2, 3]
+data b: *[2]u16 = "abcd"
+data c: *[2x2]u8 = ["ab", "cd"]
+data d: *[2][2]i32 = [[1, 2], [3, 4]]
+data e: *[4]u8 = [7; 4]
+data f: *[!]u8 = "abc"
+data g: [*]u32 = "abcd"
+```
+
+```ents
+data a: *[3]i32 = [1, 2]
+data b: *[2]i32 = [1, 2, 3]
+data c: *[3]i32 = [1; 2]
+data d: *[2][2]i32 = [[1, 2], [3]]
+data e: [][2]i32 = [[1, 2], [3, 4, 5]]
+data f: *[8]u8 = "abcd"
+data g: *[4]u32 = "abcd"
+data h: *[2][2]u8 = "abcd"
+
+func row() -> *mut [4][]u8 => mut "abcd"
+```
+
+```errors
+cannot assign 2 elements to *[3]i32
+cannot assign 3 elements to *[2]i32
+cannot assign 2 elements to *[3]i32
+cannot assign 1 element to [2]i32
+cannot assign 3 elements to [2]i32
+cannot assign a string of 4 bytes to *[8]u8
+cannot assign a string of 4 bytes to *[4]u32
+cannot assign a string literal to *[2][2]u8 — a string is bytes ([]u8); write the [2]u8 elements as an array literal
+cannot assign a string of 4 bytes to *mut [4][]u8
+```
+
+`memcpy`, `memset` and `memzero` write their destination, as a write through an index does: it is a `*mut` pointer.
+
+```ents
+data src = [1:u8, 2, 3, 4]
+data dst = [0:u8; 4]
+data out = mut [0:u8; 4]
+
+func a() { memcpy(dst, src, 4) }
+func b() { memset(dst, 7, 4) }
+func c() { memzero(dst) }
+func d(p: *[4]u8) { memcpy(p, src, 4) }
+func e() { memcpy(out, src, 4) }
+```
+
+```errors
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memset dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memzero dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
