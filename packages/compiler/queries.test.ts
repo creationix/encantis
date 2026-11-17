@@ -820,6 +820,30 @@ export func g(x: u8, i: u64) -> u64 => x as u64 + i
     local('y', at(3, 'y: u32'), [at(3, 'y *')], 'u32')
   })
 
+  // A set wrote to the variable with no record of it: with the module's
+  // names looked up by name, its targets were the last variable of their
+  // name anywhere, and a rename from the variable left them as they were.
+  test('the variables a set assigns are uses of them', () => {
+    const program = `func pair(n: u32) -> (u32, u32) => (n, n + 1)
+export func f(n: u32) -> u32 {
+  let a: u32 = 0
+  let b: u32 = 0
+  set a, b = pair(n)
+  set (x: a, y: b) = (x: b, y: a)
+  return a + b
+}
+export func g(a: u32) -> u32 => a
+`
+    const { source, module, check } = setup(program)
+    const a = program.indexOf('a: u32 = 0')
+    const uses = [program.indexOf('a, b ='), program.indexOf('a, y: b)'), program.indexOf('a)\n'), program.indexOf('a + b')]
+    for (const offset of [a, ...uses]) {
+      expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(a)
+      expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([a, ...uses])
+      expect(hover(source, module, check, offset)).toEqual({ name: 'a', type: 'u32', kind: 'local' })
+    }
+  })
+
   test('a field is not a name of the module or a parameter spelled the same', () => {
     // In the type, in a named argument, in a pattern: no answer
     for (const field of [at(2, 'x: i32'), at(2, 'y: i32'), at(5, 'x: 1'), at(5, 'y: 2'), at(18, 'x: a')]) {

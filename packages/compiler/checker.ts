@@ -2218,6 +2218,8 @@ class CheckContext {
         if (!sym) {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
         }
+        // The variable set is used here, as an assignment's target is
+        this.recordReference(pattern.name, pattern.span.start)
         break
       }
       case 'TuplePattern': {
@@ -2242,6 +2244,7 @@ class CheckContext {
             if (!sym) {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             }
+            this.recordReference(varName, namedPartAt(element))
             fits(varName, unwrappedType.fields.find(f => f.name === element.field)?.type)
           } else {
             const fieldType = unwrappedType.fields[pattern.elements.indexOf(element)]?.type

@@ -252,13 +252,14 @@ export function hover(
   }
 
   // A parameter or a local, where it is defined or used, is what the checker
-  // recorded there, before a name of the module spelled the same (a global
-  // the parameter is named like).
+  // recorded there, or else what it was defined as (where `set` assigns it),
+  // and never a name of the module spelled the same (a global the parameter
+  // is named like).
   const start = wordStart(source, offset)
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
-    const type = localType(checkResult, start)
-    if (type) return { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' }
+    const type = localType(checkResult, start) ?? localType(checkResult, defined)
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 
   // A field is not the module's name spelled like it: it is shown after a
