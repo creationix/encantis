@@ -2005,6 +2005,18 @@ describe('indexes not known to be in range', () => {
   })
 })
 
+describe('literals where a pointer is wanted', () => {
+  test('a table literal calls the overload for a table, a flat one the flat one', async () => {
+    const { t, f } = await run(`
+      func total(m: *[2][3]i32) -> i32 => m[0][0] + m[1][2]
+      func total(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+      export func t() -> i32 => total([[1, 2, 3], [4, 5, 6]])
+      export func f() -> i32 => total([1, 2, 3])
+    `)
+    expect([t(), f()]).toEqual([7, 6])
+  })
+})
+
 describe('structs in data arrays', () => {
   test('constant tuples and constructors are laid out in the data section', () => {
     const wat = modWat(`

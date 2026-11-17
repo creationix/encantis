@@ -732,8 +732,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return lossless(false)
   }
 
+  // An array that is a value ([N]T, held in registers) has no address, so it
+  // is no pointer and no slice: only an array held as its pointer (a [!]T)
+  // coerces to one.
   // Fixed array coerces to pointer-to-array: [N]T → *[N]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array') {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array') {
     if (!s.sizes?.includes('_')) {
       const elemResult = typeAssignResult(t.pointee.element, s.element)
       if (elemResult.compatible && elemResult.lossiness === 'lossless') {
@@ -743,13 +746,13 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
   }
 
   // Fixed array coerces to slice: [N]T → []T
-  if (s.kind === 'array' && t.kind === 'slice' && !s.sizes?.includes('_')) {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'slice' && !s.sizes?.includes('_')) {
     const elemResult = typeAssignResult(t.element, s.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
   }
 
   // Fixed array coerces to many-pointer: [N]T → [*]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
     const elemResult = typeAssignResult(t.pointee.element, s.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
   }

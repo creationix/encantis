@@ -2888,10 +2888,21 @@ class CheckContext {
           // any struct value: its literals take their fields' types. One that
           // is a slice element is its (ptr, len), checked as any slice value.
           const inner = unwrap(innerType).kind
-          const counted = expected.kind === 'slice' ? countedElement(innerType) : null
+          // A string among the numbers of a *[N]T is its bytes only where a
+          // number is one byte, as among a slice's.
+          const counted = expected.kind === 'slice' ? countedElement(innerType)
+            : unwrap(innerType).kind === 'primitive' ? innerType : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
             const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
             if (this.isDataLiteralExpr(elem) && !asValue) {
+              // An array is no number: [[1, 2, 3], [4, 5, 6]] for a *[3]i32
+              // is arrays, not cells to lay out flat. (A slice's literal is
+              // joined, [[1, 2], [3]] as [1, 2, 3]; a string among bytes is
+              // its bytes, which checkStringElements sees to.)
+              const scalar = expected.kind === 'pointer' && unwrap(innerType).kind === 'primitive'
+              if (scalar && (elem.kind === 'ArrayExpr' || elem.kind === 'RepeatExpr')) {
+                this.error(elem.span.start, `${prefix}cannot assign ${typeToString(this.inferExpr(elem))} to ${typeToString(innerType)}`)
+              }
               this.validateDataLiteralRange(elem, innerType)
               this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)

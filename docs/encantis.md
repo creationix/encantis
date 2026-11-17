@@ -333,6 +333,8 @@ let z = v[i]        // ERROR: dynamic index requires memory — use a slice or p
 
 Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
 
+A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+
 ### 2.5 Pointer Types
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.

@@ -1458,6 +1458,37 @@ describe('indexes not known to be in range', () => {
   })
 })
 
+describe('arrays where a pointer is wanted', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const prelude = 'func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]\nfunc len(s: []i32) -> u32 => s.len\nfunc raw(p: [*]i32) -> i32 => p[0]\n'
+
+  test('a value array has no address: it is no pointer, slice or many-pointer', () => {
+    expect(errs(`${prelude}func f(v: [3]i32) -> i32 => sum(v) + len(v) as i32 + raw(v)`)).toEqual([
+      'argument 1: cannot assign [3]i32 to *[3]i32',
+      'argument 1: cannot assign [3]i32 to []i32',
+      'argument 1: cannot assign [3]i32 to [*]i32',
+    ])
+    expect(errs(`${prelude}func f(x: i32) -> i32 {\n  let v: [3]i32 = [x, 2, 3]\n  return v.sum()\n}`)).toEqual([
+      'sum takes *[3]i32 first; the receiver is a [3]i32, which is held in registers and has no address',
+    ])
+    // A literal is laid out in memory.
+    expect(errs(`${prelude}func f() -> i32 => sum([1, 2, 3]) + len([1, 2]) as i32`)).toEqual([])
+  })
+
+  test('the elements of a literal for a *[N]T are its elements, not arrays or strings', () => {
+    expect(errs(`${prelude}func f() -> i32 => sum([[1, 2, 3], [4, 5, 6], [7, 8, 9]])`)).toEqual([
+      'argument 1: cannot assign [3]i32 to i32', 'argument 1: cannot assign [3]i32 to i32', 'argument 1: cannot assign [3]i32 to i32',
+    ])
+    expect(errs(`${prelude}func f() -> i32 => sum(["ab", "c", "d"])`)).toEqual(Array(3).fill(
+      'argument 1: cannot use a string literal among i32 elements — a string is bytes ([]u8); write the i32 elements as an array literal ([1, 2, 3])',
+    ))
+    // Among bytes a string is its bytes.
+    expect(errs('func b(r: *[3]u8) -> u8 => r[0]\nfunc f() -> u8 => b(["ab", "c"])')).toEqual([])
+    // So a table literal is no flat one, and picks the overload for a table.
+    expect(errs('func total(m: *[2][3]i32) -> i32 => m[0][0]\nfunc total(r: *[3]i32) -> i32 => r[0]\nfunc f() -> i32 => total([[1, 2, 3], [4, 5, 6]]) + total([1, 2, 3])')).toEqual([])
+  })
+})
+
 describe('struct elements of an array literal', () => {
   const check = (decl: string) =>
     checkModule(`
