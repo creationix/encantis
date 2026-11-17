@@ -1962,11 +1962,28 @@ class CheckContext {
       if (field.ident) {
         const resolvedType = this.resolveType(field.type)
         const sym: Symbol = { kind, type: resolvedType }
+        const param = kind === 'return' ? scope.symbols.get(field.ident) : undefined
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
+        if (param?.kind === 'param') this.recordInOut(param, sym)
       }
     }
+  }
+
+  // A result named like a parameter is that parameter, `acc` in
+  // `func round(acc: u64, v: u64) -> (acc: u64)`: one local, holding the
+  // argument and then the result. For the editor it is one name, defined
+  // where the result is (as meta shows it), and the parameter's name is a use
+  // of it: a rename from either one renames both and every use.
+  private recordInOut(param: Symbol, result: Symbol): void {
+    const at = this.localDefs.get(param)
+    const def = this.localDefs.get(result)
+    if (at === undefined || def === undefined) return
+    this.localDefs.delete(param)
+    this.references.delete(at)
+    this.references.get(def)?.push(at)
+    this.symbolRefs.set(at, def)
   }
 
   checkBody(body: AST.FuncBody, tailValueUsed = false): void {

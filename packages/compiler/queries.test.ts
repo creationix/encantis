@@ -844,6 +844,32 @@ export func g(a: u32) -> u32 => a
     }
   })
 
+  // A result named like a parameter is that parameter: one local, which holds
+  // the argument and then the result. With each recorded apart, a rename from
+  // the parameter left the result and every use as they were, and one from
+  // the result left the parameter: either way the argument was lost.
+  test('a parameter that is also a result is one name with it', () => {
+    const program = `func step(acc: u64, v: u64) -> (acc: u64) {
+  acc += v
+  acc *= 3
+}
+export func f(acc: u64) -> u64 => step(acc, 1)
+`
+    const { source, module, check } = setup(program)
+    const param = program.indexOf('acc: u64, v')
+    const result = program.indexOf('acc: u64)')
+    const uses = [program.indexOf('acc +='), program.indexOf('acc *=')]
+    for (const offset of [param, result, ...uses]) {
+      expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(result)
+      expect(findReferences(source, module, check, offset)?.references.map(r => r.offset)).toEqual([param, ...uses])
+      expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([result, param, ...uses])
+      expect(hover(source, module, check, offset)).toEqual({ name: 'acc', type: 'u64', kind: 'local' })
+    }
+    // The other function's parameter of that name is its own
+    const other = program.indexOf('acc: u64) -> u64')
+    expect(rename(source, module, check, other)?.locations.map(l => l.offset)).toEqual([other, program.indexOf('acc, 1')])
+  })
+
   test('a field is not a name of the module or a parameter spelled the same', () => {
     // In the type, in a named argument, in a pattern: no answer
     for (const field of [at(2, 'x: i32'), at(2, 'y: i32'), at(5, 'x: 1'), at(5, 'y: 2'), at(18, 'x: a')]) {
