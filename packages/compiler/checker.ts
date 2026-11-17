@@ -3710,7 +3710,7 @@ class CheckContext {
     }
     if (sym.kind === 'func') {
       // Of functions that share the name, another may take the value.
-      const first = this.overloads.has(name) ? undefined : sym.type.params[0]?.type
+      const first = this.shared(name) ? undefined : sym.type.params[0]?.type
       return first && pointsTo(first) ? typeToString(first) : null
     }
     if (sym.kind !== 'generic' || !sym.valid) return null
@@ -5732,7 +5732,7 @@ class CheckContext {
       }
       // Functions that share the name are told apart by the arguments of a
       // call, and here there are none.
-      if (this.overloads.has(arg.name) && target === this.moduleScope.symbols.get(arg.name)) {
+      if (this.shared(arg.name) && target === this.moduleScope.symbols.get(arg.name)) {
         for (const member of this.overloads.get(arg.name) ?? []) this.recordReference(member, arg.span.start)
         this.error(arg.span.start, `${place} of '${callee}' must be the name of a function: ${param.ident} is a comptime function parameter ('${arg.name}' has several overloads)`)
         return null

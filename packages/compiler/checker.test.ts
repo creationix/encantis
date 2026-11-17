@@ -2629,6 +2629,17 @@ describe('functions that share a name', () => {
     expect(errs('func f(a: Later) -> i32 => a.x\nfunc f(a: (x: i32)) -> i32 => 1\ntype Later = (x: i32)')).toEqual([
       "'f' is already declared with parameters (Later)",
     ])
+    // Refused, it is no second function of the name: the name is the one
+    // function's wherever it is used.
+    const less = 'func less(a: u32, b: u32) -> bool => a < b\nfunc less(a: Later, b: Later) -> bool => a > b\ntype Later = u32\n'
+    expect(errs(`${less}func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }\nfunc f(xs: []mut u32) { sort(xs, less) }`)).toEqual([
+      "'less' is already declared with parameters (u32, u32)",
+    ])
+    const bump = 'type Box = (n: u32)\nfunc bump(b: *mut Box) { b.n += 1 }\nfunc bump(b: *mut Later) { b.n += 2 }\ntype Later = (n: u32)\n'
+    expect(errs(`${bump}func f(b: Box) { b.bump() }`)).toEqual([
+      "'bump' is already declared with parameters (*mut Box)",
+      'bump takes *mut Box first; the receiver is a Box, which is held in registers and has no address',
+    ])
     expect(called('func f(a: Later) -> i32 => a.x\nfunc f(a: Other) -> i32 => a.y\ntype Later = (x: i32)\ntype Other = (y: i32)',
       'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:@Other'])
   })
