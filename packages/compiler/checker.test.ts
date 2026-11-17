@@ -1329,10 +1329,12 @@ describe('tables', () => {
   })
 
   test('each element of a loop is a row pointer', () => {
-    const source = `${tables}\nfunc f() {\nfor r in grid { let a = r[2] }\nfor s in rows { let b = s[1] }\n}`
+    const source = `${tables}\nfunc f() {\nfor r in grid { let a = r[2] }\nfor s in rows { let b = s[1] }\nfor w in board { w[0] = 1 }\n}`
     const result = checkModule(source)
     expect(result.errors.map(e => e.message)).toEqual([])
     expect(typeAt(result, source.indexOf('r in grid'), 'ForBinding')).toBe('*[3]i32')
+    expect(typeAt(result, source.indexOf('s in rows'), 'ForBinding')).toBe('*[2]i32')
+    expect(typeAt(result, source.indexOf('w in board'), 'ForBinding')).toBe('*mut [3]i32')
   })
 
   test('a row passes as a pointer or a slice; the table cannot be loaded whole', () => {
