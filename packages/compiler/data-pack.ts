@@ -564,11 +564,10 @@ function byField(expr: AST.TupleExpr, builder: DataSectionBuilder): (AST.Arg | u
 }
 
 // The expressions that give a struct's fields, in the order of the type, when
-// `expr` writes the struct out: a tuple gives them by position, as any tuple
-// that becomes a struct does, and so does a constructor. One that names its
-// arguments (Point(y: 2, x: 1)) is given by the checker as the tuple of its
-// arguments, each going to its field. Type names are the identifiers that
-// start with a capital letter.
+// `expr` writes the struct out: a tuple gives them by position, or by name
+// where it has names, and so does a constructor, which the checker gives as
+// the tuple of its arguments. Type names are the identifiers that start with
+// a capital letter.
 function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSectionBuilder): (AST.Expr | null)[] | null {
   let args: (AST.Arg | undefined)[]
   // A type that is called: the checker gives its arguments as a tuple.
@@ -705,7 +704,7 @@ function isSlicePair(expr: AST.Expr): expr is AST.TupleExpr {
 // literal that is laid out on its own, and the count of elements. A part only
 // known when the program runs stays zero here.
 function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Uint8Array {
-  const [ptr, len] = expr.elements.map((part) => part.value)
+  const [ptr, len] = byField(expr, builder).map((part) => part?.value ?? null)
   return concatBytes([
     ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : new Uint8Array(4),
     len ? buildElementBytes(len, primitive('u32'), [], builder) : new Uint8Array(4),

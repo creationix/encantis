@@ -2989,6 +2989,48 @@ describe('arguments by place and by name', () => {
     `)).toEqual(["Pt: field 'q' is given twice", "Pt: field 'r' is given twice"])
   })
 
+  test('a tuple literal with names gives each field of the struct once, by name or by place', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a() -> Pt => (q: 1, z: 2)
+      func b() -> Pt => (q: 1)
+      func c() -> Pt => (q: 1, q: 2)
+      func d() -> Pt => (r: 2, 1)
+      func e(q: i32) -> Pt => (q, r: 2)
+      func f(r: i32) -> Pt => (r:, q: 1)
+    `)).toEqual([
+      "field 'z' not found in Pt",
+      'Pt expects 2 fields, got 1',
+      "Pt: field 'q' is given twice",
+      "Pt: field 'r' is given twice",
+    ])
+    // A tuple type without names, a slice and named results have the
+    // fields they have.
+    expect(errs(`
+      func f() -> (i32, i32) => (y: 1, x: 2)
+      func g(p: [*]u8) -> []u8 => (len: 3, p: p)
+      func h(p: [*]u8) -> []u8 => (len: 3, len: 4)
+      func k() -> (q: i32, r: i32) => (a: 1, r: 2)
+      func m(p: [*]u8, n: i64) -> []u8 => (len: n, ptr: p)
+    `)).toEqual([
+      "field 'y' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'p' not found in []u8: a slice's fields are ptr and len",
+      "[]u8: field 'len' is given twice",
+      "field 'a' not found in (q: i32, r: i32)",
+      'slice length: cannot assign i64 to u32',
+    ])
+  })
+
+  test('a tuple laid out as a struct in data gives each field a value of its type', () => {
+    expect(errs(`
+      type Small = (b: u8, w: u32)
+      data s: Small = (300, 1)
+      data t: Small = (w: 1.5, b: 2)
+      data u: Small = (w: 1, b: 2)
+    `)).toEqual(['cannot assign int(300) to u8', 'cannot assign float(1.5) to u32'])
+  })
+
   test('a value of a struct type is not a constructor', () => {
     expect(errs(`
       type Pt = (q: i32, r: i32)

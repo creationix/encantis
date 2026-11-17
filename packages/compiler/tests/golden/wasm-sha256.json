@@ -50,7 +50,7 @@
   "examples/types/constructors.ents": "346fab0baf1da5104bc33f1c7b0cb0fb3748b673836e9102f1e891b919a080cc",
   "examples/types/data-cells.ents": "a787d0d33cba301ccc1290549e0938c3c43dc4d60b1fda7ed910a1ec25657de5",
   "examples/types/data-pack.ents": "258a2d3307d76703db7556c0e5240da76038c836307de1cc33ad6f638128b187",
-  "examples/types/data-structs.ents": "3f60ab67586d0ba9f6ce02c43f1c6c7c6f458e3a984582f4bd1ab833cfc09170",
+  "examples/types/data-structs.ents": "99e76da824c543ef0d5e48d5c08d166f1f28073057b2989c93bbe794a0701de6",
   "examples/types/defer.ents": "dbcd914bbef5752c62734e6309e022d4badefc306f95ef0247aaa92284e49669",
   "examples/types/defs.ents": "5478ebdc949b888eca5e36670902f07b50245dfe76c282e169b844ce47f2b12c",
   "examples/types/for-continue.ents": "932bfb188755589a09820dfe59feee6a1ffcef8839eb9e0430e8015a81f7e723",

@@ -769,6 +769,8 @@ Pair(u8, u16)(second: 2, first: 1)
 
 A type that is called constructs a value of it. `Vec(u32)(p, 0, 16)` parses as a call of a call; the checker reads the inner one as the type.
 
+A named argument of a constructor and a named element of a tuple literal are the same syntax and mean the same: the value of the field of that name, whatever its place, while an element without a name is the field at its place. Values are computed in the order they are written (reference [2.8](encantis.md#struct-constructors)).
+
 ### If Expression
 
 [Grammar: `IfExpr`](../packages/compiler/src/grammar/encantis.ohm#L242-L246)
