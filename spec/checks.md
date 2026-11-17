@@ -1139,6 +1139,30 @@ argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8)
 cannot assign a string literal to []u16
 ```
 
+A string in single quotes is a string too, never a character: not a byte to compare, compute with, assign or pass. Next to a pointer it is the address of its bytes.
+
+```ents
+func is_a(c: u8) -> bool => c == 'a'
+func is_b(c: u8) -> bool => ('b') != c
+func offset(c: u8) -> u8 => c - 'a'
+func before(c: u32) -> bool => c < "ab"
+func next() -> bool => 'a' + 1 == 98
+func put() { let c: u8 = 'a' }
+func take(c: u8) -> u8 => c
+func give() -> u8 => take('a')
+func same(p: *[2]u8) -> bool => p == "ab"
+```
+
+```errors
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'!=' cannot be applied to a string and u8 — a string is bytes in memory, not a character; write its byte as a number (98)
+'-' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'<' cannot be applied to u32 and a string — a string is bytes in memory, not a character
+'+' cannot be applied to a string and int(1) — a string is bytes in memory, not a character; write its byte as a number (97)
+cannot assign *[1]u8 to u8
+argument 1: cannot assign *[1]u8 to u8
+```
+
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
 
 ```ents

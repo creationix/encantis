@@ -4041,6 +4041,25 @@ class CheckContext {
     const wider = (isFloat(right) && !isFloat(left)) || (byteSize(right) ?? 0) > (byteSize(left) ?? 0)
     const fallback = comparison ? primitive('bool') : stripMax(wider ? rightType : leftType)
 
+    // A string is bytes in memory, never a character: next to a number its
+    // value would be its address. Quotes of either kind make a string.
+    const string = (operand: AST.Expr): AST.LiteralExpr | null => {
+      let e = ungrouped(operand)
+      while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+      return e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e : null
+    }
+    const isAddress = (t: ResolvedType) => t.kind === 'pointer' || t.kind === 'func' || t.kind === 'slice'
+    const lone = string(expr.left) && !string(expr.right) && !isAddress(right) ? string(expr.left)
+      : string(expr.right) && !string(expr.left) && !isAddress(left) ? string(expr.right)
+      : null
+    if (lone?.value.kind === 'string') {
+      const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
+      const bytes = lone.value.bytes
+      const hint = bytes.length === 1 ? `; write its byte as a number (${bytes[0]})` : ''
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — a string is bytes in memory, not a character${hint}`)
+      return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+    }
+
     if (!isScalar(left) || !isScalar(right)) {
       this.checkAddressOperands(expr, leftType, rightType)
       return fallback

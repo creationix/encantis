@@ -99,6 +99,8 @@ Both single and double quoted strings are equivalent. String literals live in th
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
 
+There is no character literal: `'a'` is a string of one byte, in memory like any other. It is not a byte to compare, compute with, assign or pass: with `c: u8`, `c == 'a'`, `c - 'a'`, `let b: u8 = 'a'` and `match c { 'a' => ... }` are compile errors. Write the byte as a number (`c == 97`).
+
 #### Template Literals
 
 Template literals use backticks and `${expr}` interpolation to combine static text with runtime values:
@@ -1866,11 +1868,11 @@ let msg:[]u8 = match status & 3 {
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated):
+Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number or a bool; a string, `'a'` included, is not one ([1.5](#string-literals)):
 
 ```ents
-match char {
-  'a', 'e', 'i', 'o', 'u' => true
+match c {
+  97, 101, 105, 111, 117 => true   // the bytes of a, e, i, o, u
   _ => false
 }
 ```
