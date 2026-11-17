@@ -1475,6 +1475,48 @@ export func f(a: u32) -> u32 => largest(a, 2, max(a, 3))
     }
   })
 
+  // The copy an instance is made from has offsets of its own, numbered by the
+  // order in which instances were asked for. None of that may show in the
+  // output: the text of an instance is the same wherever its first call stands.
+  test('the text of an instance does not depend on the order of unrelated calls', () => {
+    const generics = `func total(comptime T: type, xs: []T) -> u64 {
+  let sum: u64 = 0
+  for v in xs { sum += v as u64 }
+  return sum
+}
+func first_or(comptime T: type, xs: []T, otherwise: T) -> T => xs[0] ?? otherwise
+func second(comptime T: type, xs: []T) -> T {
+  if let v = xs[1] { return v }
+  return 0
+}
+func longer(comptime T: type, a: []T, b: []T) -> u32 => (if a.len > b.len { a } else { b }).len
+func rest(comptime T: type, xs: []T) -> []T => xs.ptr[1..xs.len]
+func clear(comptime T: type, xs: []mut T) { xs[0..] = 0 }
+func target(comptime T: type, p: ?*T) -> T {
+  if let q = p { return q.* }
+  return 0
+}
+`
+    const uses = (first: string, then: string) => `${generics}
+export func f(xs: []mut ${first}, ys: []mut ${then}, p: ?*${first}, q: ?*${then}) -> u64 {
+  let a = total(xs) + (first_or(xs, 1) as u64) + (second(xs) as u64) + (target(p) as u64)
+  let b = total(ys) + (first_or(ys, 1) as u64) + (second(ys) as u64) + (target(q) as u64)
+  clear(xs)
+  clear(ys)
+  return a + b + ((longer(xs, xs) + rest(xs).len + longer(ys, ys) + rest(ys).len) as u64)
+}
+`
+    const [bytesFirst, wordsFirst] = [watOfSource(uses('u8', 'u64')), watOfSource(uses('u64', 'u8'))]
+    const instances = funcs(bytesFirst).filter(name => name.includes('<'))
+    expect(instances).toHaveLength(14)
+    for (const name of instances) expect(funcWat(wordsFirst, name)).toBe(funcWat(bytesFirst, name))
+    // A scratch local is named after its place in the generic's source.
+    const text = instances.map(name => funcWat(bytesFirst, name)).join('\n')
+    const scratch = [...text.matchAll(/\$__\w+?_(\d+)\b/g)].map(m => Number(m[1]))
+    expect(scratch.length).toBeGreaterThan(20)
+    expect(Math.max(...scratch)).toBeLessThan(generics.length)
+  })
+
   // PENDING claude/operand-types. An argument that is implicitly widened to a
   // parameter of another wasm type (u32 for a u64) is accepted by the checker
   // and not converted by callToWat, for generic and ordinary calls alike; that

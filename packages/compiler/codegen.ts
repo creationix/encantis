@@ -2,7 +2,7 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { typeKey, exprTypeOffset, isGenericDecl, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { typeKey, exprTypeOffset, isGenericDecl, INSTANCE_STRIDE, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -67,6 +67,13 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     calls: checkResult.calls,
   }
 }
+
+// A scratch local or label is named after the place in the source that needs
+// it. In an instance that is the place in the generic, not the offset of the
+// instance's private copy, which depends on how many instances were asked for
+// before it: the text of a function must not change with unrelated code.
+// Within one function the two are equally unique.
+const scratchId = (offset: number): number => offset % INSTANCE_STRIDE
 
 // === Type Mapping ===
 
@@ -1040,7 +1047,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         // A slice that comes off the stack (a call, a ?? fallback): drop the
         // part we don't want. For .len, ptr sits under it, so park len first.
         if (idx === 0) return `(block (result i32) ${full} (drop))`
-        const tmp = `$__len_${expr.span.start}`
+        const tmp = `$__len_${scratchId(expr.span.start)}`
         return `(block (result i32) ${full} (local.set ${tmp}) (drop) (local.get ${tmp}))`
       }
       if (member.name === 'wid') {
@@ -1297,7 +1304,7 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
   if (resultType?.kind !== 'slice' || !objType) throw new Error(`Missing types for range at offset ${expr.span.start}`)
   const u = unwrap(objType)
   const stride = byteSize(resultType.element) ?? 1
-  const uid = expr.span.start
+  const uid = scratchId(expr.span.start)
   const setup: string[] = []
   const simple = (wat: string) => /^\((local\.get \$[\w-]+|i32\.const -?\d+)\)$/.test(wat)
   // A part as a plain expression, through the named scratch local if needed.
@@ -1353,7 +1360,7 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
   if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
   const elem = dstType.element
   const stride = byteSize(elem) ?? 1
-  const uid = target.span.start
+  const uid = scratchId(target.span.start)
   const p = `$__bulk_p_${uid}`
   const n = `$__bulk_n_${uid}`
   const setDst = `${sliceToWat(target, ctx)}\n(local.set ${n})\n(local.set ${p})`
@@ -1414,7 +1421,7 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     return null
   }
   if (!resultType.optional) return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
-  const idx = `$__addr_idx_${expr.span.start}`
+  const idx = `$__addr_idx_${scratchId(expr.span.start)}`
   const { offset } = indexOffset(target.object, base, `(local.get ${idx})`, ctx)
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
@@ -1437,11 +1444,11 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
 
   // Check if this is a bounds-checked index expression
   if (expr.expr.kind === 'IndexExpr') {
-    return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, expr.span.start, ctx)
+    return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, scratchId(expr.span.start), ctx)
   }
 
   // Generic optional unwrap: check ptr != 0
-  const uid = expr.span.start
+  const uid = scratchId(expr.span.start)
   const ptrLocal = `__coal_ptr_${uid}`
   const parts: string[] = []
   const leftWat = exprToWat(expr.expr, ctx)
@@ -1523,7 +1530,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   // Index expression: bounds check
   if (expr.condition.kind === 'IndexExpr') {
     const indexExpr = expr.condition
-    const uid = expr.span.start
+    const uid = scratchId(expr.span.start)
     const idxLocal = `__iflet_idx_${uid}`
     const ptrLocal = `__iflet_ptr_${uid}`
     const lenLocal = `__iflet_len_${uid}`
@@ -1565,7 +1572,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Generic optional expression: null check (ptr != 0)
-  const uid = expr.span.start
+  const uid = scratchId(expr.span.start)
   const ptrLocal = `__iflet_ptr_${uid}`
   const parts: string[] = []
   const condWat = exprToWat(expr.condition, ctx)
@@ -2367,7 +2374,7 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   if (!u || !elemType) throw new Error('for loop over an untyped iterable')
   const stride = byteSize(elemType)
   if (!stride) throw new Error(`for loop over elements of unknown size: ${RT.typeToString(elemType)}`)
-  const uid = stmt.span.start
+  const uid = scratchId(stmt.span.start)
   const ptr = `$__for_ptr_${uid}`
   const end = `$__for_end_${uid}`
   let setup: string
@@ -2717,7 +2724,7 @@ function collectLocals(
         ctx.locals.set(stmt.binding.index, [stmt.binding.index])
       }
       // Element loops walk a pointer up to an end address.
-      const uid = stmt.span.start
+      const uid = scratchId(stmt.span.start)
       locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
       visitBody(stmt.body)
     }
@@ -2731,7 +2738,7 @@ function collectLocals(
       if (stmt.target.kind === 'SliceExpr') {
         // Range assignment: the range's own scratch locals, plus the
         // destination and (for wide fills) the value.
-        const uid = stmt.target.span.start
+        const uid = scratchId(stmt.target.span.start)
         const elem = (checkResult.types.get(typeKey(exprTypeOffset(stmt.target), stmt.target.kind)) as { element?: ResolvedType } | undefined)?.element
         locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
         if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
@@ -2770,7 +2777,7 @@ function collectLocals(
             })
             ctx.locals.set(name, names)
           }
-          const uid = expr.span.start
+          const uid = scratchId(expr.span.start)
           if (expr.condition.kind === 'IndexExpr') {
             // Temporary locals for bounds checking
             locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
@@ -2798,7 +2805,7 @@ function collectLocals(
     }
     if (expr.kind === 'MemberExpr') {
       if (expr.member.kind === 'field' && expr.member.name === 'len') {
-        locals.push({ name: `__len_${expr.span.start}`, type: 'i32' })
+        locals.push({ name: `__len_${scratchId(expr.span.start)}`, type: 'i32' })
       }
       visitExpr(expr.object)
     }
@@ -2807,13 +2814,13 @@ function collectLocals(
       visitExpr(expr.index)
     }
     if (expr.kind === 'SliceExpr') {
-      for (const x of ['p', 'n', 'a', 'b']) locals.push({ name: `__sl_${x}_${expr.span.start}`, type: 'i32' })
+      for (const x of ['p', 'n', 'a', 'b']) locals.push({ name: `__sl_${x}_${scratchId(expr.span.start)}`, type: 'i32' })
       visitExpr(expr.object)
       if (expr.start) visitExpr(expr.start)
       if (expr.end) visitExpr(expr.end)
     }
     if (expr.kind === 'CoalesceExpr') {
-      const uid = expr.span.start
+      const uid = scratchId(expr.span.start)
       if (expr.expr.kind === 'IndexExpr') {
         locals.push({ name: `__coal_idx_${uid}`, type: 'i32' })
       }
@@ -2871,7 +2878,7 @@ function collectLocals(
       if (expr.op === '&' && expr.operand.kind === 'IndexExpr') {
         const t = checkResult.types.get(typeKey(expr.span.start, expr.kind))
         if (t?.kind === 'pointer' && t.optional) {
-          locals.push({ name: `__addr_idx_${expr.span.start}`, type: 'i32' })
+          locals.push({ name: `__addr_idx_${scratchId(expr.span.start)}`, type: 'i32' })
         }
       }
       visitExpr(expr.operand)
