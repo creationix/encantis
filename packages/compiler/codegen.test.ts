@@ -2588,3 +2588,86 @@ describe('declarations take the types they are checked as', () => {
     expect(x.bump()).toBe(8)
   })
 })
+
+describe('set takes the types of the variables it sets', () => {
+  test('constants in a tuple, or in the branches that give one, take each variable\'s type', async () => {
+    const x = await run(`
+      export func lits() -> i64 {
+        let a: i64 = 0
+        let b: i64 = 0
+        set (a, b) = (1, 2)
+        return a * 10 + b
+      }
+      export func mixed() -> f64 {
+        let a: f32 = 0
+        let b: u64 = 0
+        let c: f64 = 0
+        let x: i32 = 5
+        set (a, b, c) = (1, 2, x)
+        return (a as f64) * 100 + (b as f64) * 10 + c
+      }
+      export func branches(c: bool) -> i64 {
+        let a: i64 = 0
+        let b: u64 = 0
+        set (a, b) = if c { (1, 2) } else { (3, 4) }
+        return a * 10 + (b as i64)
+      }
+      export func named() -> i64 {
+        let a: i64 = 0
+        let b: f64 = 0
+        set (x: a, y: b) = (y: 2, x: 1)
+        return a * 10 + (b as i64)
+      }
+    `)
+    expect(x.lits()).toBe(12n)
+    expect(x.mixed()).toBe(125)
+    expect(x.branches(1)).toBe(12n)
+    expect(x.branches(0)).toBe(34n)
+    expect(x.named()).toBe(12n)
+  })
+
+  test('globals, struct variables and the parts of a nested pattern are set', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      global g1: i64 = 0
+      global g2: f32 = 0
+      global gp: Pt = Pt(0, 0)
+      global gs: []u8 = "ab"
+      data four = [1:u8, 2, 3, 4]
+      export func globals() -> i64 {
+        set (g1, g2) = (4, 5)
+        set gp = Pt(6, 7)
+        set gs = four
+        return g1 * 1000 + (g2 as i64) * 100 + (gp.y as i64) * 10 + (gs.len as i64)
+      }
+      export func local() -> i32 {
+        let p = Pt(1, 2)
+        set p = Pt(3, 4)
+        return p.x * 10 + p.y
+      }
+      export func nested() -> i32 {
+        let a: i32 = 0
+        let b: i32 = 0
+        let c: i32 = 0
+        set (a, (b, c)) = (1, (2, 3))
+        let (d, (e, f)) = (4, (5, 6))
+        return a * 100000 + b * 10000 + c * 1000 + d * 100 + e * 10 + f
+      }
+    `)
+    expect(x.globals()).toBe(4574n)
+    expect(x.local()).toBe(34)
+    expect(x.nested()).toBe(123456)
+  })
+
+  test('a value that is already on the stack is not widened field by field', () => {
+    const errs = typecheck(parse(`
+      func pair() -> (i32, i32) => (1, 2)
+      func f() {
+        let a: i64 = 0
+        let b: i32 = 0
+        set (a, b) = pair()
+      }
+    `).module as AST.Module).errors.map((e) => e.message)
+    expect(errs).toEqual(["cannot set 'a' (i64) from a field of type i32"])
+  })
+})

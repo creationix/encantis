@@ -2226,24 +2226,38 @@ function framesToLoop(ctx: CodegenContext): number {
 // tuple pattern's variables. Elements match fields by name (x:, x: y) or by
 // position (a, b); a field no element names is dropped. Values come off the
 // stack last field first, and a field that flattens to several wasm values
-// fills (or drops) that many.
-function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx: CodegenContext): string {
-  const varFor = new Map<number, string>()
+// fills (or drops) that many. An element that is a tuple pattern itself takes
+// its field the same way. `registers` says where a variable is held: a `let`
+// declares locals, and a `set` writes the locals or globals that are there.
+function tuplePatternSets(
+  pattern: AST.TuplePattern,
+  tupleType: RT.TupleRT,
+  ctx: CodegenContext,
+  registers: (name: string) => Registers | null = (name) => ({ names: ctx.locals.get(name) ?? [name], global: false }),
+): string {
+  const partFor = new Map<number, AST.Pattern>()
   pattern.elements.forEach((elem, position) => {
     if (elem.kind === 'named') {
       const index = tupleType.fields.findIndex((f) => f.name === elem.field)
-      if (index >= 0) varFor.set(index, elem.binding ?? elem.field)
-    } else if (elem.pattern.kind === 'IdentPattern') {
-      varFor.set(position, elem.pattern.name)
+      if (index >= 0) partFor.set(index, { kind: 'IdentPattern', name: elem.binding ?? elem.field, span: pattern.span })
+    } else {
+      partFor.set(position, elem.pattern)
     }
   })
   const sets: string[] = []
   for (let i = tupleType.fields.length - 1; i >= 0; i--) {
-    const slots = typeToWasm(tupleType.fields[i].type).length
-    const name = varFor.get(i)
-    const locals = name ? (ctx.locals.get(name) ?? [name]) : []
+    const fieldType = tupleType.fields[i].type
+    const part = partFor.get(i)
+    const inner = unwrap(fieldType)
+    if (part?.kind === 'TuplePattern' && inner.kind === 'tuple') {
+      sets.push(tuplePatternSets(part, inner, ctx, registers))
+      continue
+    }
+    const slots = typeToWasm(fieldType).length
+    const regs = part?.kind === 'IdentPattern' ? registers(part.name) : null
     for (let k = slots - 1; k >= 0; k--) {
-      sets.push(name && locals[k] ? `(local.set $${locals[k]})` : '(drop)')
+      const name = regs?.names[k]
+      sets.push(regs && name ? `(${regs.global ? 'global' : 'local'}.set $${name})` : '(drop)')
     }
   }
   return sets.join('\n')
@@ -2313,14 +2327,15 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
 function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
   const value = exprToWat(stmt.value, ctx)
+  // set names variables that are there already: locals or globals.
+  const registers = (name: string) => registersOf({ kind: 'IdentExpr', name, span: stmt.pattern.span }, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
-    const name = stmt.pattern.name
-    const localNames = ctx.locals.get(name)
-    if (localNames && localNames.length === 1) {
-      return `(local.set $${localNames[0]} ${value})`
-    }
-    return `(local.set $${name} ${value})`
+    // set x = v is x = v.
+    const regs = registers(stmt.pattern.name)
+    const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
+    if (regs) return setRegisters(regs, type ? withSliceLength(value, stmt.value, type, ctx) : value)
+    return `(local.set $${stmt.pattern.name} ${value})`
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {
@@ -2331,7 +2346,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx, registers)}`
   }
 
   return ''
@@ -2746,6 +2761,38 @@ function collectLocals(
 ): LocalDecl[] {
   const locals: LocalDecl[] = []
 
+  // Declare locals for each element of a tuple pattern, and for the elements
+  // of an element that is a tuple pattern itself.
+  function declarePattern(pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
+    for (const [position, elem] of pattern.elements.entries()) {
+      // Named elements find their field by name, positional ones by position.
+      const field = elem.kind === 'named'
+        ? tupleType.fields.find((f) => f.name === elem.field)
+        : tupleType.fields[position]
+      if (!field) continue
+      if (elem.kind === 'positional' && elem.pattern.kind === 'TuplePattern') {
+        const inner = unwrap(field.type)
+        if (inner.kind === 'tuple') declarePattern(elem.pattern, inner)
+        continue
+      }
+      const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
+
+      // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
+      const flat = flattenType(field.type)
+      if (flat.length === 1 && flat[0].suffix === '') {
+        locals.push({ name, type: flat[0].wasmType })
+        ctx.locals.set(name, [name])
+      } else {
+        const names = flat.map((f, i) => {
+          const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
+          locals.push({ name: localName, type: f.wasmType })
+          return localName
+        })
+        ctx.locals.set(name, names)
+      }
+    }
+  }
+
   function visitStmt(stmt: AST.Statement) {
     if (stmt.kind === 'LetStmt') {
       if (stmt.pattern.kind === 'IdentPattern') {
@@ -2776,40 +2823,7 @@ function collectLocals(
           throw new Error(`Missing or invalid tuple type for pattern at offset ${stmt.pattern.span.start}`)
         }
 
-        // Declare locals for each tuple pattern element
-        for (const elem of stmt.pattern.elements) {
-          let name: string
-          let fieldName: string
-          if (elem.kind === 'named') {
-            name = elem.binding ?? elem.field
-            fieldName = elem.field
-          } else if (elem.pattern.kind === 'IdentPattern') {
-            name = elem.pattern.name
-            fieldName = ''
-          } else {
-            continue // Nested patterns not yet supported
-          }
-
-          // Named elements find their field by name, positional ones by position.
-          const field = elem.kind === 'named'
-            ? tupleType.fields.find((f) => f.name === fieldName)
-            : tupleType.fields[stmt.pattern.elements.indexOf(elem)]
-          if (!field) continue
-
-          // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-          const flat = flattenType(field.type)
-          if (flat.length === 1 && flat[0].suffix === '') {
-            locals.push({ name, type: flat[0].wasmType })
-            ctx.locals.set(name, [name])
-          } else {
-            const names = flat.map((f, i) => {
-              const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-              locals.push({ name: localName, type: f.wasmType })
-              return localName
-            })
-            ctx.locals.set(name, names)
-          }
-        }
+        declarePattern(stmt.pattern, tupleType)
       }
     }
     // Recurse into nested blocks

@@ -2204,11 +2204,65 @@ class CheckContext {
 
   checkSetStmt(stmt: AST.SetStmt): void {
     // set x = v assigns like x = v: the value is checked against x's type.
-    const sym = stmt.pattern.kind === 'IdentPattern' ? this.lookup(stmt.pattern.name) : undefined
-    const valueType = sym && sym.kind !== 'func' && sym.kind !== 'type' && sym.kind !== 'generic' && sym.kind !== 'typefunc'
-      ? this.checkExpr(stmt.value, sym.type)
-      : this.inferExpr(stmt.value)
-    this.validatePatternBindingsExist(stmt.pattern, valueType)
+    // set (a, b) = (1, x) checks a tuple literal, or the branches of an if
+    // or match, against the types of a and b, as `let (a, b): (A, B) = ...`
+    // does: each constant takes its variable's type, and each value widens
+    // to it. Any other value is already on the stack, as it is.
+    const target = this.setTarget(stmt.pattern, stmt.value)
+    const value = ungrouped(stmt.value)
+    const literal = stmt.pattern.kind === 'IdentPattern' || value.kind === 'TupleExpr' || value.kind === 'MatchExpr'
+      || (value.kind === 'IfExpr' && value.else_ !== null)
+    if (target && literal) {
+      // Codegen reads the type of a variable set by name, as it does the
+      // place of an assignment.
+      if (stmt.pattern.kind === 'IdentPattern') this.types.set(typeKey(stmt.pattern.span.start, stmt.pattern.kind), target)
+      this.validatePatternBindingsExist(stmt.pattern, this.checkExpr(stmt.value, target))
+      return
+    }
+    // A constant left in the value takes its default type, which is then
+    // the type of the field it gives a variable.
+    const valueType = this.inferExpr(stmt.value)
+    const type = this.concretize(valueType)
+    this.typeDefault(stmt.value, type, valueType)
+    this.validatePatternBindingsExist(stmt.pattern, type)
+  }
+
+  // The type `set` assigns to through a pattern: the variable's, or the
+  // tuple of the variables' in a tuple pattern. A part that picks a field by
+  // name places it where a tuple literal `value` has a field of that name.
+  // Null where a part names no variable, or where only the value's type says
+  // which field a name picks.
+  private setTarget(pattern: AST.Pattern, value: AST.Expr | null): ResolvedType | null {
+    if (pattern.kind === 'IdentPattern') {
+      const sym = this.lookup(pattern.name)
+      if (!sym || sym.kind === 'func' || sym.kind === 'type' || sym.kind === 'generic' || sym.kind === 'typefunc') return null
+      return sym.type
+    }
+    const literal = value ? ungrouped(value) : null
+    const given = literal?.kind === 'TupleExpr' && literal.elements.length === pattern.elements.length ? literal.elements : null
+    const fields: ResolvedField[] = []
+    for (const [i, element] of pattern.elements.entries()) {
+      if (element.kind === 'named') {
+        if (!given) return null
+        break
+      }
+      const type = this.setTarget(element.pattern, given ? argValue(given[i]) : null)
+      if (!type) return null
+      fields.push(field(null, type))
+    }
+    if (fields.length === pattern.elements.length) return tuple(fields)
+    // (x: a, y: b) = (y: 2, x: 1): in the literal's order, by its names.
+    fields.length = 0
+    for (const [i, element] of (given ?? []).entries()) {
+      const part = element.name ? pattern.elements.find((e) => e.kind === 'named' && e.field === element.name) : pattern.elements[i]
+      if (!part || (part.kind === 'named' && !element.name)) return null
+      const type = part.kind === 'named'
+        ? this.setTarget({ kind: 'IdentPattern', name: part.binding ?? part.field, span: pattern.span }, null)
+        : this.setTarget(part.pattern, argValue(element))
+      if (!type) return null
+      fields.push(field(element.name, type))
+    }
+    return tuple(fields)
   }
 
   private validatePatternBindingsExist(pattern: AST.Pattern, type: ResolvedType): void {

@@ -1341,6 +1341,22 @@ set (x: a, y: b) = p       // assigns a = 3.0, b = 4.0
 
 Any type with multiple underlying values can be destructured (slices, tuples, structs, etc).
 
+`set` assigns what `=` would: a tuple literal, or an `if` or `match` whose branches give one, is checked against the types of the variables it sets, as a `let` with those types would check it. Each constant takes its variable's type and each value widens to it, and a part of the pattern can be a pattern itself:
+
+```ents
+func parts(n: i32) -> f64 {
+  let wide: i64 = 0
+  let ratio: f32 = 0
+  let mean: f64 = 0
+  let (low, high) = (0, 0)
+  set (wide, ratio, mean) = (5000000000, 1, n)   // an i64, an f32 and n widened to an f64
+  set (low, (high, wide)) = (1, (2, 3))
+  return mean + ((low + high) as f64)
+}
+```
+
+Any other value is already on the stack, and each field has to be held the way its variable is: `set (wide, ratio) = pair()`, where `pair` returns `(i32, f32)`, is an error (`cannot set 'wide' (i64) from a field of type i32`).
+
 #### Compound Assignment
 
 Compound assignment combines an operation with assignment. Works with any valid lvalue:
