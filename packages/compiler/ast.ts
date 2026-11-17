@@ -545,7 +545,8 @@ export type MatchPattern =
   | { kind: 'constructor'; type: string; elements: MatchPatternElement[] }
   | { kind: 'tuple'; elements: MatchPatternElement[] }
   | { kind: 'variant'; type: string }
-  | { kind: 'binding'; name: string }
+  // `span` is where the name stands: an if let defines it there
+  | { kind: 'binding'; name: string; span: Span }
   | { kind: 'literal'; value: LiteralValue }
   | { kind: 'wildcard' }
 
@@ -604,7 +605,8 @@ export interface TuplePattern extends BaseNode {
 
 export type PatternElement =
   | { kind: 'positional'; pattern: Pattern }
-  | { kind: 'named'; field: string; binding: string | null } // null = shorthand (x:)
+  // null = shorthand (x:). `span` covers the element, the binding last.
+  | { kind: 'named'; field: string; binding: string | null; span: Span }
 
 // ============================================================================
 // Types

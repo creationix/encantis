@@ -662,10 +662,11 @@ class CheckContext {
   // Counts every report, also one that repeats an error already listed: an
   // expression can be inferred twice, and fails the second time too.
   errorsReported = 0
-  // Where the parameters and locals of the instance being checked are defined
-  // in the generic's source, by name. Kept apart from symbolDefOffsets, which
-  // holds one definition per name for the whole module.
-  instanceDefs = new Map<string, number>()
+  // Where each parameter, local, loop variable and if-let binding is defined,
+  // by its symbol (see recordDefinition): in the generic's source for those
+  // of a generic's first instance. Kept apart from symbolDefOffsets, which
+  // holds the one definition of each of the module's names.
+  localDefs = new Map<Symbol, number>()
   // Functions and imports declared inside test blocks. They are registered in
   // module scope, and exist in test builds only.
   testOnly = new Set<string>()
@@ -1117,7 +1118,7 @@ class CheckContext {
     this.currentScope.symbols.set(decl.ident, sym)
     const defIdentOff = this.findIdentOffset(decl.span.start, 'def')
     if (defIdentOff !== null) this.types.set(typeKey(defIdentOff, 'IdentPattern'), type)
-    this.recordDefinition(decl.ident, decl.span.start)
+    this.recordDeclared(decl.ident, decl.span.start, sym)
   }
 
   collectData(decl: AST.DataDecl): void {
@@ -1178,7 +1179,7 @@ class CheckContext {
       this.moduleScope.symbols.set(dataKey, sym)
       this.currentScope.symbols.set(decl.ident, sym)
       if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), ptrType)
-      this.recordDefinition(decl.ident, decl.span.start)
+      this.recordDeclared(decl.ident, decl.span.start, sym)
       return
     }
 
@@ -1200,7 +1201,7 @@ class CheckContext {
       this.moduleScope.symbols.set(dataKey, sym)
       this.currentScope.symbols.set(decl.ident, sym)
       if (dataIdentOff !== null) this.types.set(typeKey(dataIdentOff, 'IdentPattern'), pointer(type, false, isMut))
-      this.recordDefinition(decl.ident, decl.span.start)
+      this.recordDeclared(decl.ident, decl.span.start, sym)
       return
     }
 
@@ -1960,9 +1961,10 @@ class CheckContext {
     for (const field of type.fields) {
       if (field.ident) {
         const resolvedType = this.resolveType(field.type)
-        scope.symbols.set(field.ident, { kind, type: resolvedType })
+        const sym: Symbol = { kind, type: resolvedType }
+        scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
-        this.recordDefinition(field.ident, field.span.start)
+        this.recordDefinition(field.ident, field.span.start, sym)
       }
     }
   }
@@ -2076,13 +2078,21 @@ class CheckContext {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
         }
-        // Record the binding types and add them to scope
+        // Record the binding types and add them to scope. Each name is
+        // defined where it stands: in `for i, v in xs` the index comes first
+        // and the value last.
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
-        this.currentScope.symbols.set(stmt.binding.value, { kind: 'local', type: elemType })
-        this.recordDefinition(stmt.binding.value, stmt.binding.span.start)
-        if (stmt.binding.index) {
-          this.currentScope.symbols.set(stmt.binding.index, { kind: 'local', type: primitive('u32') })
-          this.recordDefinition(stmt.binding.index, stmt.binding.span.start)
+        const { binding } = stmt
+        const value: Symbol = { kind: 'local', type: elemType }
+        const valueAt = binding.index === null ? binding.span.start : binding.span.end - binding.value.length
+        this.currentScope.symbols.set(binding.value, value)
+        this.types.set(typeKey(valueAt, 'Binding'), elemType)
+        this.recordDefinition(binding.value, valueAt, value)
+        if (binding.index !== null) {
+          const index: Symbol = { kind: 'local', type: primitive('u32') }
+          this.currentScope.symbols.set(binding.index, index)
+          this.types.set(typeKey(binding.span.start, 'Binding'), index.type)
+          this.recordDefinition(binding.index, binding.span.start, index)
         }
         this.checkLoopBody(stmt.body)
         break
@@ -2258,9 +2268,10 @@ class CheckContext {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
         this.declared.add(pattern)
-        this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
+        const sym: Symbol = { kind: 'local', type }
+        this.currentScope.symbols.set(pattern.name, sym)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
-        this.recordDefinition(pattern.name, pattern.span.start)
+        this.recordDefinition(pattern.name, pattern.span.start, sym)
         break
       }
       case 'TuplePattern': {
@@ -2284,8 +2295,13 @@ class CheckContext {
             }
             // binding is null for shorthand (x:) - use field name as variable name
             const varName = element.binding ?? element.field
-            this.currentScope.symbols.set(varName, { kind: 'local', type: tupleField.type })
-            this.recordDefinition(varName, pattern.span.start)
+            const sym: Symbol = { kind: 'local', type: tupleField.type }
+            this.currentScope.symbols.set(varName, sym)
+            // The variable is defined where its name stands: last in `x: a`,
+            // and in `x:` the field's name is the variable's
+            const at = element.binding === null ? element.span.start : element.span.end - element.binding.length
+            this.types.set(typeKey(at, 'Binding'), tupleField.type)
+            this.recordDefinition(varName, at, sym)
           } else {
             // Positional pattern: (a, b) - match by index
             const index = pattern.elements.indexOf(element)
@@ -2539,8 +2555,8 @@ class CheckContext {
         return comptimeFloat(type.value)
 
       case 'TypeRef': {
-        // Record reference to type
-        this.recordReference(type.name, type.span.start)
+        // Record reference to type: the module's, whatever is in scope
+        this.recordReference(type.name, type.span.start, false)
 
         const sym = this.moduleScope.symbols.get(type.name)
         if (sym && sym.kind === 'type') {
@@ -5117,9 +5133,12 @@ class CheckContext {
     // Bind the pattern variable in a new scope for the then-branch
     const prevScope = this.currentScope
     this.currentScope = { parent: prevScope, symbols: new Map() }
-    this.currentScope.symbols.set(pattern.name, { kind: 'local', type: elemType })
+    const sym: Symbol = { kind: 'local', type: elemType }
+    this.currentScope.symbols.set(pattern.name, sym)
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
-    this.recordDefinition(pattern.name, expr.condition.span.start)
+    // The binding is defined at its name, not at the value it is taken from
+    this.types.set(typeKey(pattern.span.start, 'Binding'), elemType)
+    this.recordDefinition(pattern.name, pattern.span.start, sym)
     branch(expr.thenBranch)
     this.currentScope = prevScope
 
@@ -5425,7 +5444,7 @@ class CheckContext {
   private applyTypeFunc(type: AST.TypeApply): ResolvedType {
     const { name } = type
     const at = type.span.start
-    this.recordReference(name, at)
+    this.recordReference(name, at, false)
     const before = this.errorsReported
     const args = type.args.map((a) => this.resolveType(a))
     const problem = this.typeFuncProblem(type)
@@ -5909,10 +5928,11 @@ class CheckContext {
       const value = inst.args[i]
       if (value.kind !== 'func') return
       const name = param.ident as string
-      scope.symbols.set(name, { kind: 'func', type: value.type, inline: value.inline, alias: value.name })
+      const sym: Symbol = { kind: 'func', type: value.type, inline: value.inline, alias: value.name }
+      scope.symbols.set(name, sym)
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.
-      if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start)
+      if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start, sym)
     })
   }
 
@@ -5926,7 +5946,6 @@ class CheckContext {
       // Of a chain that never ends, the one error is all there is to say.
       if (inst.chain.stopped) continue
       this.currentInstance = inst
-      this.instanceDefs.clear()
       this.checkFuncBody(inst.decl)
     }
     this.currentInstance = null
@@ -6168,39 +6187,51 @@ class CheckContext {
     return i
   }
 
-  recordDefinition(name: string, offset: number): void {
+  // A def or data is a name of the module by name, also one a test
+  // declares, as it always was. In a test it is the test's, and its uses
+  // find it by its symbol (see recordReference).
+  private recordDeclared(name: string, offset: number, sym: Symbol): void {
+    this.recordDefinition(name, offset)
+    if (this.currentScope !== this.moduleScope) this.localDefs.set(sym, offset)
+  }
+
+  // Where a name is defined. A name of the module has one place, by name
+  // (symbolDefOffsets). A name a function or a test declares for itself (a
+  // parameter, a local, a loop variable, the binding of an if let) is given
+  // with its symbol, and is defined where that symbol was bound: one function
+  // can bind a name twice, in blocks side by side, and two functions the same
+  // name, and by name each of them would be the last one, and a parameter
+  // would take over a global it is spelled like.
+  recordDefinition(name: string, offset: number, local?: Symbol): void {
     if (offset >= INSTANCE_STRIDE) {
       // An instance's parameters and locals are copies of the generic's. The
       // first instance stands for the generic where the editor asks what a
       // name in its body is: its definitions are recorded at their place in
       // the generic's source. The copies in other instances would only repeat
-      // them, and none of them is one of the module's names.
+      // them, and the instance itself is none of the module's names.
       const inst = this.currentInstance
-      if (inst?.first && Math.floor(offset / INSTANCE_STRIDE) === inst.index) {
-        this.instanceDefs.set(name, offset % INSTANCE_STRIDE)
-        this.references.set(offset % INSTANCE_STRIDE, [])
-      }
-      return
+      if (!local || !inst?.first || Math.floor(offset / INSTANCE_STRIDE) !== inst.index) return
+      offset %= INSTANCE_STRIDE
     }
-    this.symbolDefOffsets.set(name, offset)
+    if (local) this.localDefs.set(local, offset)
+    else this.symbolDefOffsets.set(name, offset)
     this.references.set(offset, [])
   }
 
-  // Record a reference to a symbol (looks up def offset by name)
-  recordReference(name: string, refOffset: number): void {
-    let local: number | undefined
-    if (refOffset >= INSTANCE_STRIDE) {
-      // From an instance, a use is recorded at its place in the generic's
-      // source: of a module-level name always (a helper that only generic
-      // bodies call is used), of the instance's own names for the first
-      // instance only, which is the one whose definitions are held.
-      if (this.lookup(name) !== this.moduleScope.symbols.get(name)) {
-        local = this.instanceDefs.get(name)
-        if (local === undefined) return
-      }
-      refOffset %= INSTANCE_STRIDE
-    }
-    const defOffset = local ?? this.symbolDefOffsets.get(name)
+  // Record a use of a name: of what the name means where it is used, a
+  // parameter or local in scope or else the module's name. `scoped` is false
+  // for a type's name, which is the module's whatever is in scope.
+  recordReference(name: string, refOffset: number, scoped = true): void {
+    const module = this.moduleScope.symbols.get(name)
+    const sym = scoped ? this.lookup(name) : module
+    // From an instance, a use is recorded at its place in the generic's
+    // source: of a module-level name always (a helper that only generic
+    // bodies call is used), of the instance's own names for the first
+    // instance only, which is the one whose definitions are held. A name
+    // that is not the module's and has no place recorded (one a test
+    // declares, from an instance) has no uses either.
+    const defOffset = sym === module ? this.symbolDefOffsets.get(name) : sym && this.localDefs.get(sym)
+    refOffset %= INSTANCE_STRIDE
     if (defOffset !== undefined) {
       const refs = this.references.get(defOffset)
       if (refs && !refs.includes(refOffset)) {
@@ -6725,6 +6756,47 @@ export function genericDeclaring(module: AST.Module, offset: number, name: strin
     if (item.kind === 'TypeFuncDecl') return fieldNames([item.params, item.body]).has(name) ? item : null
   }
   return null
+}
+
+// Whether the name that starts at `offset` is a field's: in a type written
+// out (`type Pt = (x: i32)`, a parameter of a function type), after a point
+// (`p.x`, but not the name of a method called), or naming an argument or a
+// part of a pattern (`Pt(x: 1)`, `let (x: a) = p`). A field is in no table of
+// names, so looked up by name it would be taken for whatever else is spelled
+// the same: a global, another function's parameter. A parameter of a
+// function is a Field too, and is found where it is defined before this is
+// asked.
+export function fieldNamedAt(module: AST.Module, offset: number): boolean {
+  const called = new Set<unknown>()
+  const visit = (node: unknown): boolean => {
+    if (Array.isArray(node)) return node.some(visit)
+    if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return false
+    const n = node as Record<string, unknown> & { kind?: string; span?: AST.Span }
+    if (n.span && (offset < n.span.start || offset >= n.span.end)) return false
+    switch (n.kind) {
+      case 'Field':
+        if (typeof n.ident === 'string' && ((n.identSpan as AST.Span | undefined) ?? n.span)?.start === offset) return true
+        break
+      case 'CallExpr':
+        called.add(n.callee)
+        break
+      case 'MemberExpr': {
+        const member = n.member as AST.MemberAccess
+        if (member.kind === 'field' && !called.has(n) && n.span && n.span.end - member.name.length === offset) return true
+        break
+      }
+      case 'Arg':
+        if (n.name !== null && n.value !== null && n.span?.start === offset) return true
+        break
+      case 'named':
+        // (x: a): x is the field, a the variable. In (x:) the name is both.
+        if (typeof n.binding === 'string' && n.span?.start === offset) return true
+        break
+    }
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && visit(value)) return true
+    return false
+  }
+  return visit(module.decls)
 }
 
 // The generic function whose declaration `offset` lies in

@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -110,11 +110,21 @@ function calledAt(checkResult: TypeCheckResult, offset: number, name: string): s
   return name
 }
 
+// Whether a parameter, local, loop variable or if-let binding is defined at
+// `offset`: the checker recorded a definition there that is none of the
+// module's names. Those are found by name, and a function's, a def's or a
+// data's is recorded where its declaration starts, at a keyword.
+function localDefinedAt(checkResult: TypeCheckResult, offset: number): boolean {
+  return checkResult.references.has(offset) && ![...checkResult.symbolDefOffsets.values()].includes(offset)
+}
+
 // Where the name at `offset` is defined: exactly, when the checker recorded
 // this position as a use or as a definition; by name otherwise, which finds
 // the names of the module. A generic's own parameters and locals are never
 // looked up by name: they are in no table of names, so the name would be some
-// other function's, and a rename from it would edit that function.
+// other function's, and a rename from it would edit that function. Nor is a
+// field's name: fields are not followed, and by name a field would be the
+// global or the parameter spelled like it.
 function definitionOf(
   source: string,
   module: AST.Module,
@@ -137,6 +147,8 @@ function definitionOf(
   if (genericDeclaring(module, start, name)) {
     return checkResult.references.has(start) ? start : undefined
   }
+  if (localDefinedAt(checkResult, start)) return start
+  if (fieldNamedAt(module, start)) return undefined
   return checkResult.symbolDefOffsets.get(name)
 }
 
@@ -182,11 +194,22 @@ function identExprType(checkResult: TypeCheckResult, offset: number): ResolvedTy
 }
 
 // What a parameter, a local or a use of one at an offset is: by the binding
-// declared there, or by the identifier used there.
+// declared there (by a let, a for, an if let or a function's signature), or
+// by the identifier used there.
 function localType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
   return checkResult.types.get(typeKey(offset, 'IdentPattern'))
+    ?? checkResult.types.get(typeKey(offset, 'Binding'))
     ?? identExprType(checkResult, offset)
     ?? checkResult.types.get(typeKey(offset, 'Field'))
+}
+
+// The type of the field named at an offset after a point (`p.x`), as the
+// checker typed the member.
+function memberType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
+  for (const [expr, type] of checkResult.exprTypes) {
+    if (expr.kind === 'MemberExpr' && expr.member.kind === 'field' && expr.span.end - expr.member.name.length === offset) return type
+  }
+  return undefined
 }
 
 // How far the offsets of a generic's first instance lie from the generic's
@@ -228,9 +251,26 @@ export function hover(
     return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
   }
 
+  // A parameter or a local, where it is defined or used, is what the checker
+  // recorded there, before a name of the module spelled the same (a global
+  // the parameter is named like).
+  const start = wordStart(source, offset)
+  const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
+  if (defined !== undefined && localDefinedAt(checkResult, defined)) {
+    const type = localType(checkResult, start)
+    if (type) return { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' }
+  }
+
+  // A field is not the module's name spelled like it: it is shown after a
+  // point as the member's type, and not at all where a type declares it.
+  if (defined === undefined && fieldNamedAt(module, start)) {
+    const type = memberType(checkResult, start)
+    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'field' } : null
+  }
+
   // Check module-scope symbols first. A function that shares its name is, at
   // its own declaration, the one declared there.
-  const sym = checkResult.symbols.get(declaredAt(module, checkResult, wordStart(source, offset), name) ?? name)
+  const sym = checkResult.symbols.get(declaredAt(module, checkResult, start, name) ?? name)
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for
