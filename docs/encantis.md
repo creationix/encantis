@@ -855,17 +855,23 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
-A global's initializer is a compile-time constant: a literal, an expression of literals and defs, or the address of a `data` block. The compiler works out its value, so it can be written as it's meant:
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. The compiler works out its value, so it can be written as it's meant:
 
 ```ents
 def page = 64 * 1024
+data table = [1:u16, 2, 3]
 
 global limit: u32 = 4 * page     // 262144
 global ratio: f64 = 2 / 3.0
 global mask: u32 = ~0 << 12
+global bits: u32 = -1 as u32     // 4294967295
+global low: u8 = 300 as u8       // 44, as the cast gives at run time
+global bytes: [*]u8 = table as [*]u8
 ```
 
-A value that needs a call or another global isn't one: assign it in a function.
+The value is the one the expression has at run time, in the types its parts have: `7 / 2` starts an `f64` global as 3.5 and an `i32` one as 3, and `200:u8 + 100:u8` is 44 whatever the global's type.
+
+A cast of an address is a constant when it keeps the address whole: to another pointer type, or to `i32` or `u32`. A value that needs a call or another global isn't a constant: assign it in a function.
 
 ### 3.4 Functions
 
