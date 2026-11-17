@@ -519,6 +519,26 @@ describe('defer codegen', () => {
 
 // === Module Codegen Tests ===
 
+describe('sizeof', () => {
+  // The operand is the type the checker resolved. 0.2.1 resolved it again in
+  // codegen with a resolver of its own, which took a many-pointer for the
+  // array of unknown length behind it and gave it the size 0.
+  test('a many-pointer has the size of a pointer', () => {
+    const wat = modWat('export func f() -> u32 => sizeof([*]u64) * 16 + sizeof(*u64)')
+    expect(wat).toContain('(i32.add (i32.mul (i32.const 4) (i32.const 16)) (i32.const 4))')
+  })
+
+  test('the forms 0.2.1 sized correctly are unchanged', () => {
+    const sizes = (code: string) => [...modWat(code).matchAll(/\(i32\.const (\d+)\)/g)].map(m => Number(m[1]))
+    expect(sizes(`type Pt = (q: i32, r: i32)
+type List = (next: ?*List, v: u64)
+export func a() -> u32 => sizeof(Pt) + sizeof(*Pt) + sizeof([]u8) + sizeof([4]u32)
+export func b() -> u32 => sizeof([2x3]f32) + sizeof(u8#16) + sizeof((u8, u64)) + sizeof(?*u8)
+export func c() -> u32 => sizeof(List) + sizeof(u512) + sizeof(bool) + sizeof(?[]u8) + sizeof(())
+`)).toEqual([8, 4, 8, 16, 24, 1, 9, 4, 12, 64, 1, 8, 0])
+  })
+})
+
 describe('module codegen', () => {
   test('simple module with export', () => {
     const wat = modWat(`
