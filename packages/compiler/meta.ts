@@ -587,7 +587,12 @@ class MetaBuilder {
       }
     }
 
-    this.addSymbol(decl.ident, 'def', sym.type, offset, valueStr)
+    this.addSymbol(decl.ident, 'def', sym.type, offset, valueStr, undefined, decl.ident, this.recordedAt(decl))
+  }
+
+  // Where the checker recorded a def or a data: where its declaration starts
+  private recordedAt(decl: AST.DefDecl | AST.DataDecl): number | undefined {
+    return this.checkResult.references.has(decl.span.start) ? decl.span.start : undefined
   }
 
   private collectData(decl: AST.DataDecl): void {
@@ -605,7 +610,7 @@ class MetaBuilder {
       }
     }
 
-    this.addSymbol(decl.ident, 'data', sym.type, offset, valueStr)
+    this.addSymbol(decl.ident, 'data', sym.type, offset, valueStr, undefined, decl.ident, this.recordedAt(decl))
   }
 
   private findDataInfoForExpr(expr: AST.Expr, type: ResolvedType): string | undefined {
@@ -687,6 +692,9 @@ class MetaBuilder {
     value?: string,
     inline?: boolean,
     known = name,
+    // Where the checker recorded the definition, where that is not found by
+    // the name: a def or data a test declares (each test may declare its own)
+    recorded?: number,
   ): number {
     const typeIndex = typeof type === 'string' ? this.typeRegistry.registerText(type) : this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
@@ -703,7 +711,7 @@ class MetaBuilder {
     // its uses by where it is declared.
     // A parameter or local is defined where it is displayed.
     const local = kind === 'local' || kind === 'param' || kind === 'return'
-    const checkerDefOffset = this.copies || local ? offset : this.checkResult.symbolDefOffsets.get(known)
+    const checkerDefOffset = recorded ?? (this.copies || local ? offset : this.checkResult.symbolDefOffsets.get(known))
     const refs = checkerDefOffset !== undefined
       ? this.checkResult.references.get(checkerDefOffset) ?? []
       : []
@@ -1299,7 +1307,8 @@ class MetaBuilder {
   }
 
   private generateHintsForDef(decl: AST.DefDecl): void {
-    const symbolIndex = this.symbolIndexByName.get(decl.ident)
+    // Its own symbol: a test may declare one of a name another test declares
+    const symbolIndex = this.symbolIndexByDef.get(decl.span.start) ?? this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
       const symbol = this.symbols[symbolIndex]
       const offset = this.findDefIdentOffset(decl)
@@ -1309,7 +1318,8 @@ class MetaBuilder {
   }
 
   private generateHintsForData(decl: AST.DataDecl): void {
-    const symbolIndex = this.symbolIndexByName.get(decl.ident)
+    // Its own symbol: a test may declare one of a name another test declares
+    const symbolIndex = this.symbolIndexByDef.get(decl.span.start) ?? this.symbolIndexByName.get(decl.ident)
     if (symbolIndex !== undefined) {
       const symbol = this.symbols[symbolIndex]
       const offset = this.findDataIdentOffset(decl)

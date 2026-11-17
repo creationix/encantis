@@ -414,4 +414,26 @@ export func g(x: u8, i: u64) -> u64 => x as u64 + i
     expect(built.types[symbolAt('0:7')?.type ?? -1]?.type).toBe('u32')
     expect(symbolAt(key(9, 'q ='))?.name).toBe('q')
   })
+
+  // By name, every test's `data b` was the last one: its uses and its name
+  // were shown with the last one's address.
+  test('a data a test declares is its own symbol, at its own address', () => {
+    const program = `export func f() -> u32 => 1
+test "one" {
+  data b: *[2]u32 = [1, 2]
+  assert b[0] == 1
+}
+test "two" {
+  data b: *[2]u32 = [3, 4]
+  assert b[1] == 4
+}
+`
+    const meta = buildMeta(parse(program).module!, program)
+    const datas = meta.symbols.filter(s => s.name === 'b')
+    expect(datas.map(s => `${s.kind} ${s.def} -> ${s.refs.join(' ')}`)).toEqual(['data 2:7 -> 3:9', 'data 6:7 -> 7:9'])
+    expect(datas[0].value).not.toBe(datas[1].value)
+    for (const [at, index] of [['2:7', 0], ['3:9', 0], ['6:7', 1], ['7:9', 1]] as const) {
+      expect(meta.symbols[meta.hints[at]?.symbol ?? -1]).toBe(datas[index])
+    }
+  })
 })

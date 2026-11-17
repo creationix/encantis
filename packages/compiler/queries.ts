@@ -93,6 +93,26 @@ function declaredAt(module: AST.Module, checkResult: TypeCheckResult, offset: nu
   return decl && (checkResult.funcNames.get(decl) ?? name)
 }
 
+// Where the def or data whose name is written at `offset` is recorded: where
+// its declaration starts. Also one a test declares, which by name would be
+// the last of its name in the module (each test may declare its own).
+function valueDeclaredAt(module: AST.Module, offset: number, name: string): number | undefined {
+  const find = (items: readonly (AST.Declaration | AST.TestItem)[]): number | undefined => {
+    for (const item of items) {
+      const decl = item.kind === 'ExportDecl' ? item.item : item
+      if (decl.kind === 'TestDecl') {
+        const found = find(decl.children)
+        if (found !== undefined) return found
+      } else if ((decl.kind === 'DataDecl' || decl.kind === 'DefDecl') && decl.ident === name
+        && offset > decl.span.start && offset < (decl.type ?? decl.value).span.start) {
+        return decl.span.start
+      }
+    }
+    return undefined
+  }
+  return find(module.decls)
+}
+
 // The name by which the function called at `offset` is known: of functions
 // that share the name `name`, the one that call means. Undefined for
 // anything but a call of a function of the module.
@@ -135,6 +155,8 @@ function definitionOf(
   const start = wordStart(source, offset)
   const declared = declaredAt(module, checkResult, start, name)
   if (declared !== undefined) return checkResult.symbolDefOffsets.get(declared)
+  const value = valueDeclaredAt(module, start, name)
+  if (value !== undefined && checkResult.references.has(value)) return value
   // A call in a generic's body means, of functions that share a name, one
   // function per instance, and is recorded as a use of each: it goes to the
   // one the first instance calls, which is the one hover shows there.

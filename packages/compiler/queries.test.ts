@@ -870,6 +870,31 @@ export func f(acc: u64) -> u64 => step(acc, 1)
     expect(rename(source, module, check, other)?.locations.map(l => l.offset)).toEqual([other, program.indexOf('acc, 1')])
   })
 
+  // Each test may declare a data or a def of a name another test declares
+  // (examples/crypto/ed25519/point.ents: eleven tests, each with its `data b`).
+  // From its name, by name, each one was the last of them in the module.
+  test('a data a test declares is its own, also from its name', () => {
+    const program = `export func f() -> u32 => 1
+test "one" {
+  data b: *[2]u32 = [1, 2]
+  assert b[0] == 1
+}
+test "two" {
+  data b: *[2]u32 = [3, 4]
+  assert b[1] == 4
+}
+`
+    const { source, module, check } = setup(program)
+    const first = program.indexOf('data b')
+    const second = program.lastIndexOf('data b')
+    for (const [decl, use] of [[first, program.indexOf('b[0]')], [second, program.indexOf('b[1]')]]) {
+      for (const offset of [decl + 'data '.length, use]) {
+        expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(decl)
+        expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([decl, use])
+      }
+    }
+  })
+
   test('a field is not a name of the module or a parameter spelled the same', () => {
     // In the type, in a named argument, in a pattern: no answer
     for (const field of [at(2, 'x: i32'), at(2, 'y: i32'), at(5, 'x: 1'), at(5, 'y: 2'), at(18, 'x: a')]) {
