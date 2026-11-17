@@ -378,16 +378,31 @@ export func d(p: *Unit) -> u32 => at(p)`
   })
 
   describe('an if expression ending in an operator, as the argument that decides', () => {
-    // 0.2.1 gives such an if the type () when nothing says what it should be:
-    // let m = if c { x + 1 } else { y } is "cannot assign () to u32" there too.
-    const source = `${MAX}export func f(c: bool, x: u32, y: u32) -> u32 => max(if c { x + 1 } else { y }, y)`
-
-    test('is one error, at the argument', () => {
-      expect(errorsOf(source)).toEqual(["argument 1 of 'max' has no value"])
+    // 0.2.1 gave such an if the type () when nothing said what it should be,
+    // and the call the error "argument 1 of 'max' has no value".
+    test('decides T', () => {
+      const source = `${MAX}export func f(c: bool, x: u32, y: u32) -> u32 => max(if c { x + 1 } else { y }, y)`
+      expect(instancesOf(source)).toEqual(['max<u32>'])
     })
 
-    test.todo('decides T (needs claude/operand-types)', () => {
-      expect(instancesOf(source)).toEqual(['max<u32>'])
+    test('decides the wider type when its branches differ, and the narrower branch is widened', async () => {
+      const source = `${MAX}export func f(c: bool, x: u32, y: u64) -> u64 => max(if c { x + 1 } else { y }, y)`
+      expect(instancesOf(source)).toEqual(['max<u64>'])
+      // x + 1 is a u32 addition, widened where the branch ends: once, although
+      // the argument was inferred to find T and then checked against it.
+      const f = funcWat(watOfSource(source), 'f')
+      expect(f.match(/i64\.extend_i32_u/g)).toEqual(['i64.extend_i32_u'])
+      expect(f).toContain('(i64.extend_i32_u (i32.add (local.get $x) (i32.const 1)))')
+      const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+      const run = instance.exports.f as (c: number, x: number, y: bigint) => bigint
+      expect(run(1, 5, 3n)).toBe(6n)
+      expect(run(0, 5, 3n)).toBe(3n)
+      expect(run(1, -1, 0n)).toBe(0n)
+    })
+
+    test('without an else has no value, and is one error at the argument', () => {
+      const source = `${MAX}export func f(c: bool, x: u32, y: u32) -> u32 => max(if c { x + 1 }, y)`
+      expect(errorsOf(source)).toEqual(["argument 1 of 'max' has no value"])
     })
   })
 
