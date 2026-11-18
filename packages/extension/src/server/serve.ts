@@ -31,6 +31,7 @@ import { fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/comp
 import { getSourceImports, loadModule } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
+import * as nodePath from 'path';
 
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
@@ -233,16 +234,46 @@ export interface ServerOptions {
   readFile?: (path: string) => Promise<string | null>;
 }
 
-// The path of a file: URI, or null for a document that is no file
-function pathOf(uri: string): string | null {
+// What the paths of files are on the platform the server runs on: path's
+// own, or path.win32 or path.posix to see what they are on another.
+type Paths = Pick<typeof nodePath, 'resolve' | 'sep'>;
+
+// The path of the file a file: URI names, as the loader names that file
+// (path.resolve), or null for a document that is no file. Compared with the
+// paths the loader asks for and names modules by, it is the same string for
+// the same file. On Windows it has its drive, and the drive letter is in
+// lower case, as VS Code writes it (file:///d%3A/...), whichever case the
+// URI has; a URI with a host is a UNC path.
+export function pathOf(uri: string, paths: Paths = nodePath): string | null {
   if (!uri.startsWith('file://')) return null;
-  const path = decodeURIComponent(new URL(uri).pathname);
-  return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path;
+  let path: string;
+  let host: string;
+  try {
+    const url = new URL(uri);
+    path = decodeURIComponent(url.pathname);
+    host = url.host === 'localhost' ? '' : url.host;
+  } catch {
+    return null;
+  }
+  if (paths.sep === '\\') {
+    if (host) path = `//${host}${path}`;
+    else if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+  } else if (host) {
+    return null;
+  }
+  return paths.resolve(path).replace(/^[A-Z]:/, drive => drive.toLowerCase());
 }
 
-function uriOf(path: string): string {
-  const slashed = path.replace(/\\/g, '/');
-  return `file://${slashed.startsWith('/') ? '' : '/'}${encodeURI(slashed)}`;
+// The file: URI of a path the loader made, each part of it encoded (a # or
+// a ? is part of a name, not the start of a fragment or a query)
+export function uriOf(path: string, paths: Paths = nodePath): string {
+  const slashed = paths.sep === '\\' ? path.replace(/\\/g, '/') : path;
+  const encode = (parts: string[]) => parts.map(part => (/^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part))).join('/');
+  if (paths.sep === '\\' && slashed.startsWith('//')) {
+    const [host, ...rest] = slashed.slice(2).split('/');
+    return `file://${host}/${encode(rest)}`;
+  }
+  return `file://${slashed.startsWith('/') ? '' : '/'}${encode(slashed.split('/'))}`;
 }
 
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
@@ -254,12 +285,19 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // document reach it. The files are the open documents where they are
   // open, and else what the server can read. Where one cannot be read the
   // document is checked on its own, by the signatures its imports write.
+  // The open document of a file, found by its path: a URI made again from
+  // the path need not be the one the editor gave the document (VS Code
+  // encodes a drive's colon, parentheses and more).
+  function documentAt(path: string): TextDocument | undefined {
+    return documents.all().find(document => pathOf(document.uri) === path);
+  }
+
   async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
     const path = pathOf(uri);
     if (!path) return null;
     const readFile = async (file: string): Promise<string | null> => {
       if (file === path) return text;
-      const open = documents.get(uriOf(file));
+      const open = documentAt(file);
       if (open) return open.getText();
       return options.readFile ? options.readFile(file) : null;
     };
