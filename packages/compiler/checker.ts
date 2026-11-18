@@ -37,6 +37,10 @@ import {
   arrayLength,
   typeParts,
   MAX_TYPE_PARTS,
+  typeRegisters,
+  MAX_PARAM_REGISTERS,
+  MAX_RESULT_REGISTERS,
+  MAX_FUNCTION_REGISTERS,
   watSafe,
   comptimeIntFits,
   typeAssignable,
@@ -2557,6 +2561,8 @@ class CheckContext {
     const testScope: Scope = { parent: this.currentScope, symbols: new Map() }
     const prevScope = this.currentScope
     this.currentScope = testScope
+    const prevVariables = this.variables
+    this.variables = new Map()
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
@@ -2610,6 +2616,11 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.settleLiterals()
+    // A test of statements is a function of its own (nested tests and the
+    // functions it declares are theirs).
+    const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
+    this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
+    this.variables = prevVariables
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -2696,6 +2707,8 @@ class CheckContext {
   }
 
   checkFuncBody(decl: AST.FuncDecl): void {
+    const prevVariables = this.variables
+    this.variables = new Map()
     // Create function scope with params and named returns
     const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
@@ -2760,6 +2773,9 @@ class CheckContext {
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
     this.settleLiterals()
+    const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
+    this.checkSize(`function '${name ?? 'anonymous'}'`, decl.span, decl.body.kind === 'Block' ? decl.body.stmts : decl.body.expr)
+    this.variables = prevVariables
   }
 
   // The type a returned value is checked against: for a single named result
@@ -2795,6 +2811,7 @@ class CheckContext {
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
+        if (param?.kind !== 'param') this.noteVariable(field.span.start, field.ident, resolvedType, kind)
         if (param?.kind === 'param') this.recordInOut(param, sym)
       }
     }
@@ -3281,6 +3298,7 @@ class CheckContext {
     scope.symbols.set(name, sym)
     this.types.set(typeKey(defAt, 'Binding'), type)
     this.recordDefinition(name, defAt, sym)
+    this.noteVariable(defAt, name, type)
   }
 
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
@@ -3295,6 +3313,7 @@ class CheckContext {
         this.letScope().symbols.set(pattern.name, sym)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
+        this.noteVariable(pattern.span.start, pattern.name, type)
         break
       }
       case 'TuplePattern': {
@@ -3358,6 +3377,7 @@ class CheckContext {
     const at = namedPartAt(element)
     this.types.set(typeKey(at, 'Binding'), type)
     this.recordDefinition(varName, at, sym)
+    this.noteVariable(at, varName, type)
   }
 
   private patternIdent(pattern: AST.Pattern): string | null {
@@ -3673,7 +3693,10 @@ class CheckContext {
         // Function type: input -> output
         const params = this.typeToFields(type.input)
         const returns = this.typeToFields(type.output)
-        return func(params, returns)
+        const made = func(params, returns)
+        // One too large to write out has that error (resolveType).
+        if (typeParts(made) <= MAX_TYPE_PARTS) this.checkSignatureSize(type.input, params, type.output, returns)
+        return made
       }
 
       case 'TypeApply':
@@ -3694,7 +3717,29 @@ class CheckContext {
   resolveSignature(sig: AST.FuncSignature): ResolvedType & { kind: 'func' } {
     const params = this.typeToFields(sig.input, true)
     const returns = this.typeToFields(sig.output, true)
+    this.checkSignatureSize(sig.input, params, sig.output, returns)
     return func(params, returns)
+  }
+
+  // The parameters of a function, and its results, are those of a wasm
+  // function: at most 1000 registers each (MAX_PARAM_REGISTERS,
+  // MAX_RESULT_REGISTERS), counted as a value held by value is. Said at the
+  // parameter or the result that goes over.
+  private checkSignatureSize(input: AST.Type, params: ResolvedField[], output: AST.Type, returns: ResolvedField[]): void {
+    const memo = new Map<ResolvedType, number>()
+    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number) => string) => {
+      const counts = fields.map((f) => (f.type === RECOVERY ? 0 : typeRegisters(f.type, memo)))
+      const total = counts.reduce((a, b) => Math.min(a + b, Number.MAX_SAFE_INTEGER), 0)
+      if (total <= limit) return
+      const at = written.kind === 'CompositeType' && written.fields.length === fields.length ? written.fields : null
+      let index = 0
+      for (let sum = counts[0]; sum <= limit; sum += counts[index]) index++
+      this.error(at ? at[index].span.start : written.span.start, message(total))
+    }
+    over(input, params, MAX_PARAM_REGISTERS, (n) =>
+      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer`)
+    over(output, returns, MAX_RESULT_REGISTERS, (n) =>
+      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
   }
 
   // Convert a Type to a list of fields (for function params/returns)
@@ -3734,6 +3779,303 @@ class CheckContext {
     if (type === RECOVERY || typeParts(type, new Map(), true) <= MAX_TYPE_PARTS) return type
     this.error(at, tooLarge(shown()))
     return RECOVERY
+  }
+
+  // === The size of a function ===
+
+  // The variables of the function or test being checked, by where each is
+  // defined: its named parameters and results, and what a let, a for, an
+  // if let or a match arm binds (checkSize).
+  private variables: Map<number, { name: string; type: ResolvedType; of?: 'param' | 'return' }> | null = null
+
+  // `of`: the variable is a parameter or a named result
+  private noteVariable(at: number, name: string, type: ResolvedType, of?: 'param' | 'return'): void {
+    this.variables?.set(at, { name, type, of })
+  }
+
+  // The call a call is compiled as: a method call's f(x, a), an instance's
+  // plain call, a type's struct of its arguments; with the type of the
+  // function it calls, where that is known.
+  private compiledCall(expr: AST.CallExpr): { call: AST.CallExpr | AST.TupleExpr; callee: ResolvedType | undefined } {
+    let call: AST.CallExpr | AST.TupleExpr = expr
+    let callee = this.exprTypes.get(expr.callee)
+    for (let next = this.calls.get(expr); next && next !== call; next = next.kind === 'CallExpr' ? this.calls.get(next) : undefined) {
+      call = next
+      if (next.kind === 'CallExpr') callee = this.exprTypes.get(next.callee) ?? callee
+    }
+    return { call, callee }
+  }
+
+  // A function is one wasm function, and an engine takes one of at most
+  // 50000 locals and a body of at most 7654321 bytes (MAX_FUNCTION_REGISTERS).
+  // What a function holds and computes is counted in registers, the wasm
+  // values a value is laid out in: each register of its parameters and
+  // variables, and each register of each value its code computes, as often as
+  // the code is written out (a fill [x; N] writes x N times, a deferred
+  // expression is written at each exit). A value computes as much code as it
+  // has registers, so this bounds the body as well; and a value an if, an if
+  // let, a match or a ?? gives is a wasm block's results, at most 1000
+  // (MAX_RESULT_REGISTERS). One error where the count goes over, at the value
+  // or the variable that takes it over, and one for each block that gives
+  // too much, where the count is then not said; nothing is said of a function
+  // that has errors already, in its signature or its body (`span`), which is
+  // not compiled. The errors of an instance are where they are in the
+  // generic, which is where its copy is, less its own offset.
+  private checkSize(owner: string, span: AST.Span, body: readonly AST.Statement[] | AST.Expr): void {
+    const from = span.start % INSTANCE_STRIDE
+    const to = from + (span.end - span.start)
+    const hasErrors = () => this.errors.some((e) => e.offset >= from && e.offset < to)
+    const clean = !hasErrors()
+    const memo = new Map<ResolvedType, number>()
+    const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
+    type Use = { at: number; n: number; shown: string | null }
+    const uses: Use[] = []
+    // A signature over its own limits has its error (checkSignatureSize).
+    const signature = { param: 0, return: 0 }
+    for (const [at, { name, type, of }] of this.variables ?? []) {
+      const n = registers(type)
+      uses.push({ at, n, shown: n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null })
+      if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
+    }
+    const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
+    // A value of `n` registers, whose code is written out `copies` times
+    const count = (expr: AST.Expr, n: number, copies: number) => {
+      const type = this.exprTypes.get(expr)
+      const own = times(n, copies)
+      const shown = (n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null
+      uses.push({ at: expr.span.start, n: own, shown })
+    }
+    // A block's value, which a wasm block gives back
+    const blockValue = (expr: AST.Expr, what: string) => {
+      const type = this.exprTypes.get(expr)
+      const n = registers(type)
+      if (type && n > MAX_RESULT_REGISTERS && clean) {
+        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — let it give a pointer to the value instead`)
+      }
+    }
+    // Where a value is stored or read in part, the place it names is not
+    // computed: of p.*[3] only the element is read, of p.* = v nothing.
+    const isPlace = (expr: AST.Expr): boolean => {
+      const inner = groupedExpr(expr)
+      if (inner) return isPlace(inner)
+      switch (expr.kind) {
+        case 'IdentExpr':
+          return true
+        case 'AnnotationExpr':
+          return isPlace(expr.expr)
+        case 'MemberExpr':
+        case 'IndexExpr': {
+          if (expr.kind === 'MemberExpr' && expr.member.kind === 'deref') return true
+          if (expr.kind === 'MemberExpr' && expr.member.kind === 'type') return false
+          const object = this.exprTypes.get(expr.object)
+          const u = object && unwrap(object)
+          return u?.kind === 'pointer' || u?.kind === 'slice' || (u?.kind === 'array' && !isValueArray(u)) || isPlace(expr.object)
+        }
+        default:
+          return false
+      }
+    }
+    const repeats = (expr: AST.RepeatExpr): number => {
+      const written = ungrouped(expr.count)
+      const literal = written.kind === 'LiteralExpr' && written.value.kind === 'int' ? written.value.value : null
+      const constant = this.constants.get(expr.count)
+      const value = literal ?? (constant?.kind === 'int' ? constant.value : null)
+      if (value !== null) return Number(value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : value < 0n ? 0 : value)
+      const type = this.exprTypes.get(expr)
+      const u = type && unwrap(type)
+      const array = u?.kind === 'pointer' ? unwrap(u.pointee) : u
+      if (array?.kind === 'comptime_array') return array.count
+      return array?.kind === 'array' && typeof array.sizes?.[0] === 'number' ? array.sizes[0] : 1
+    }
+    // An element of a literal laid out in memory: a constant one is data,
+    // and only one known when the program runs is stored, by code.
+    const inMemory = (expr: AST.Expr, n: number): void => {
+      const written = ungrouped(expr.kind === 'AnnotationExpr' ? expr.expr : expr)
+      const built = written.kind === 'CallExpr' ? this.calls.get(written) : undefined
+      const e = built?.kind === 'TupleExpr' ? built : written
+      if (e.kind === 'LiteralExpr' || this.constants.has(e) || this.constants.has(expr)) return
+      if (e.kind === 'AnnotationExpr') inMemory(e.expr, n)
+      else if (e.kind === 'ArrayExpr') for (const element of e.elements) inMemory(element, n)
+      else if (e.kind === 'RepeatExpr') inMemory(e.value, times(n, repeats(e)))
+      else if (e.kind === 'TupleExpr') for (const field of e.elements) field.value && inMemory(field.value, n)
+      else value(e, n, false)
+    }
+    // An expression, its code written out `n` times; `part` when only part
+    // of it is used (an object of a member or an index, what & takes the
+    // address of, where an assignment stores)
+    const value = (written: AST.Expr, n: number, part: boolean): void => {
+      // (x) and x: T are x
+      let expr = ungrouped(written)
+      while (expr.kind === 'AnnotationExpr') expr = ungrouped(expr.expr)
+      const type = this.exprTypes.get(expr)
+      const own = () => {
+        if (!(part && isPlace(expr))) count(expr, Math.max(1, registers(type)), n)
+      }
+      switch (expr.kind) {
+        case 'BinaryExpr':
+          own()
+          value(expr.left, n, false)
+          value(expr.right, n, false)
+          return
+        case 'UnaryExpr':
+          own()
+          value(expr.operand, n, expr.op === '&')
+          return
+        case 'CastExpr':
+          own()
+          value(expr.expr, n, false)
+          return
+        case 'CallExpr': {
+          const { call, callee } = this.compiledCall(expr)
+          if (call.kind === 'TupleExpr') {
+            value(call, n, false)
+            return
+          }
+          own()
+          if (call.callee.kind !== 'IdentExpr') value(call.callee, n, false)
+          // A parameter too large to hold has its error where it is declared,
+          // and what is passed for it says nothing more.
+          const params = callee?.kind === 'func' && callee.params.length === call.args.length ? callee.params : null
+          call.args.forEach((arg, i) => {
+            const v = argValue(arg)
+            if (v && v.kind !== 'TypeExpr' && params?.[i].type !== RECOVERY) value(v, n, false)
+          })
+          return
+        }
+        case 'MemberExpr':
+          own()
+          value(expr.object, n, true)
+          return
+        case 'IndexExpr':
+          own()
+          value(expr.object, n, true)
+          value(expr.index, n, false)
+          return
+        case 'SliceExpr':
+          own()
+          value(expr.object, n, true)
+          if (expr.start) value(expr.start, n, false)
+          if (expr.end) value(expr.end, n, false)
+          return
+        case 'CoalesceExpr':
+          own()
+          blockValue(expr, 'a ??')
+          value(expr.expr, n, false)
+          value(expr.fallback, n, false)
+          return
+        case 'TupleExpr':
+          // A literal is its elements.
+          for (const e of expr.elements) {
+            const v = argValue(e)
+            if (v) value(v, n, false)
+          }
+          return
+        case 'ArrayExpr':
+        case 'RepeatExpr': {
+          const u = type && unwrap(type)
+          if (u?.kind === 'pointer' || u?.kind === 'slice') {
+            own()
+            inMemory(expr, n)
+          } else if (expr.kind === 'ArrayExpr') {
+            for (const e of expr.elements) value(e, n, false)
+          } else {
+            value(expr.value, times(n, repeats(expr)), false)
+          }
+          return
+        }
+        case 'IfExpr':
+          own()
+          blockValue(expr, expr.pattern ? 'an if let' : 'an if')
+          value(expr.condition, n, false)
+          block(expr.thenBranch, n)
+          for (const elif of expr.elifs) {
+            value(elif.condition, n, false)
+            block(elif.thenBranch, n)
+          }
+          if (expr.else_) block(expr.else_, n)
+          return
+        case 'MatchExpr':
+          own()
+          blockValue(expr, 'a match')
+          value(expr.subject, n, false)
+          for (const arm of expr.arms) {
+            if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') block(arm.body, n)
+            else value(arm.body, n, false)
+          }
+          return
+        case 'TypeExpr':
+          return
+        default:
+          // A name, a literal, sizeof
+          own()
+      }
+    }
+    const block = (body: AST.FuncBody, n: number) => (body.kind === 'Block' ? statements(body.stmts, n) : value(body.expr, n, false))
+    // Where a value is stored, the place is not computed: what picks it
+    // out of memory or a variable is.
+    const target = (place: AST.LValue, n: number) => {
+      if (place.kind === 'IdentPattern' || place.kind === 'TuplePattern') return
+      value(place, n, true)
+    }
+    const statements = (stmts: readonly AST.Statement[], n: number): void => {
+      stmts.forEach((stmt, i) => {
+        switch (stmt.kind) {
+          case 'LetStmt':
+            if (stmt.value) value(stmt.value, n, false)
+            return
+          case 'SetStmt':
+            value(stmt.value, n, false)
+            return
+          case 'AssignmentStmt':
+            target(stmt.target, n)
+            value(stmt.value, n, false)
+            return
+          case 'ExpressionStmt':
+            value(stmt.expr, n, false)
+            return
+          case 'AssertStmt':
+            value(stmt.expr, n, false)
+            return
+          case 'ReturnStmt':
+            if (stmt.value) value(stmt.value, n, false)
+            if (stmt.when) value(stmt.when, n, false)
+            return
+          case 'BreakStmt':
+          case 'ContinueStmt':
+            if (stmt.when) value(stmt.when, n, false)
+            return
+          case 'WhileStmt':
+            value(stmt.condition, n, false)
+            block(stmt.body, n)
+            return
+          case 'ForStmt':
+            value(stmt.iterable, n, false)
+            block(stmt.body, n)
+            return
+          case 'LoopStmt':
+            block(stmt.body, n)
+            return
+          case 'DeferStmt':
+            // Written at the end of the block and at each exit after it
+            value(stmt.expr, times(n, 1 + exitsIn(stmts.slice(i + 1))), false)
+            return
+        }
+      })
+    }
+    if (Array.isArray(body)) statements(body as readonly AST.Statement[], 1)
+    else value(body as AST.Expr, 1, false)
+
+    // Over the limit: said once, where it goes over
+    if (hasErrors() || signature.param > MAX_PARAM_REGISTERS || signature.return > MAX_RESULT_REGISTERS) return
+    uses.sort((a, b) => a.at - b.at)
+    let total = 0
+    for (const use of uses) {
+      total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      if (total <= MAX_FUNCTION_REGISTERS) continue
+      const here = use.shown ? ` (here ${use.shown})` : ''
+      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)`)
+      return
+    }
   }
 
   // === Expression Type Inference ===
@@ -9600,6 +9942,27 @@ function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
   if (u.kind === 'array') return isValueArray(u) && holdsSlice(u.element, seen)
   if (u.kind === 'tuple') return u.fields.some((f) => holdsSlice(f.type, seen))
   return false
+}
+
+// The kinds of statement, which a test's body holds among its declarations
+const STATEMENT_KINDS: ReadonlySet<string> = new Set<AST.Statement['kind']>([
+  'LetStmt', 'SetStmt', 'WhileStmt', 'ForStmt', 'LoopStmt', 'ReturnStmt', 'BreakStmt',
+  'DeferStmt', 'ContinueStmt', 'AssertStmt', 'AssignmentStmt', 'ExpressionStmt',
+])
+
+// How many returns, breaks and continues there are in some code, at any
+// depth: at most the exits that write a deferred expression out again.
+// Types are left out: a type in an instance's copy can be a resolved type,
+// which can refer to itself.
+function exitsIn(node: unknown): number {
+  if (!node || typeof node !== 'object') return 0
+  if (Array.isArray(node)) return node.reduce((n: number, item) => n + exitsIn(item), 0)
+  const kind = (node as { kind?: unknown }).kind
+  let n = kind === 'ReturnStmt' || kind === 'BreakStmt' || kind === 'ContinueStmt' ? 1 : 0
+  for (const [key, child] of Object.entries(node)) {
+    if (key !== 'span' && key !== 'type' && key !== 'signature' && typeof child === 'object') n += exitsIn(child)
+  }
+  return n
 }
 
 // The expression inside (x), which parses as a group or a one-element tuple.
