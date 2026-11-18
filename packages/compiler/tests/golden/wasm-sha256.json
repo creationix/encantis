@@ -86,6 +86,7 @@
   "lib/stack.ents": "bc8e5b97636757a087e1717a63358a39ab0374916409268a24fe89f4abeb84d7",
   "lib/text.ents": "8e5488a082624c420e15a1db62aa825b4681fce20c6cbbe4859dbcd8eebffb74",
   "lib/vec.ents": "18493b44cdb61c2f29c1184590fc76fe5b88338af4a2ac0948790e388135452d",
+  "packages/compiler/tests/fixtures/generics/byhand.ents": "b763f252f856c424f111003bd441b6dd7d90c5e3818815fb08e0f85232f435c7",
   "packages/compiler/tests/fixtures/generics/containers.ents": "829fc0f7135080d735fcc61a44027eb2b95b9544d525c036e31cb7003b034f33",
   "packages/compiler/tests/fixtures/generics/main.ents": "b763f252f856c424f111003bd441b6dd7d90c5e3818815fb08e0f85232f435c7",
   "packages/compiler/tests/fixtures/generics/nohash.ents": "does not compile",

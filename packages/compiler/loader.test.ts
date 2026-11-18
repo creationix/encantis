@@ -3,7 +3,7 @@ import { loadModule, isSourceImport, resolveModulePath } from './loader'
 import { typecheckProgram } from './checker'
 import { programToWat, programToWatWithTests } from './codegen'
 import { resolve } from 'path'
-import { instantiate } from './test-utils'
+import { compileToWasm, instantiate } from './test-utils'
 import { createTestHost } from './test-host'
 import wabt from 'wabt'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -273,6 +273,47 @@ describe('generics across modules', () => {
     expect(callsIn(wat, `containers$add${cell}`)).toEqual(['hash', `containers$slot${cell}`, `containers$table${cell}`])
     expect(callsIn(wat, `containers$slot${cell}`)).toEqual(['eq'])
     expect(wat).not.toMatch(/call_indirect|\(table|\(elem|ref\.func|funcref/)
+  })
+
+  // Z9: the program of three modules is the module written out by hand in
+  // one file (byhand.ents): the same functions with the same bodies, once
+  // each name of a function or global is read as its counterpart and scratch
+  // locals, which are named after where they are in the source, are read
+  // alike; and, since names do not reach the .wasm file, the same bytes.
+  test('a09 is its single-file hand specialisation: function for function, and byte for byte', async () => {
+    const renamed: Record<string, string> = {
+      'stack$mark': 'mark',
+      'stack$reset': 'reset',
+      'stack$alloc': 'alloc',
+      'stack$extend': 'extend',
+      'stack$top': 'top',
+      [`containers$vec${cell}`]: 'vec_cell',
+      'containers$vec<u32>': 'vec_u32',
+      [`containers$push${cell}`]: 'push_cell',
+      'containers$push<u32>': 'push_u32',
+      'containers$items<u32>': 'items_u32',
+      'containers$zeroed': 'zeroed',
+      [`containers$table${cell}`]: 'table_cell',
+      [`containers$hashset${cell}`]: 'hashset_cell',
+      [`containers$slot${cell}`]: 'slot_cell',
+      [`containers$add${cell}`]: 'add_cell',
+    }
+    const read = (wat: string, names: Record<string, string>) => {
+      let text = wat
+      for (const [from, to] of Object.entries(names)) {
+        for (const end of [' ', ')', '\n']) text = text.split(`$${from}${end}`).join(`$${to}${end}`)
+      }
+      text = text.replace(/\$(__[a-z_]+?)_\d+/g, (_m, name) => `$${name}_#`)
+      const bodies = [...text.matchAll(/^ {2}\(func \$(\S+)[\s\S]*?^ {2}\)$/gm)].map((m) => m[0])
+      const rest = text.replace(/^ {2}\(func \$(\S+)[\s\S]*?^ {2}\)$/gm, '').split('\n').filter((l) => l.trim())
+      return { bodies, rest }
+    }
+    const generic = read(await watOf(at('main.ents')), renamed)
+    const byHand = read(await watOf(at('byhand.ents')), {})
+    expect(generic.bodies).toHaveLength(18)
+    expect(generic.bodies).toEqual(byHand.bodies)
+    expect(generic.rest).toEqual(byHand.rest)
+    expect(Buffer.from(await compileToWasm(at('main.ents'))).equals(Buffer.from(await compileToWasm(at('byhand.ents'))))).toBe(true)
   })
 
   test('a09: the library compiled alone emits no generic and exports nothing', async () => {
