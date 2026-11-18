@@ -1146,9 +1146,11 @@ describe('declaring a generic function', () => {
       'a generic function is declared at module level, not inside a test',
     ],
     [
-      'a source import',
-      'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T',
-      'generic functions cannot be imported yet',
+      // In a file checked on its own the import's signature is all there is
+      // of the generic, and it is held to the rules of a declaration.
+      'a source import whose signature breaks a rule',
+      'import "./lib" "pick" func pick(T: type, a: u32) -> u32',
+      "a parameter of type 'type' must be comptime: write 'comptime T: type'",
     ],
     [
       'a host import',
@@ -1179,6 +1181,32 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
     // It is a function that replaces a builtin, which is said once.
     expect(check(`export ${MAX}`).warnings.map(w => w.message)).toEqual(["'max' replaces the builtin max in this module"])
     expect(check(`export ${MAX.replace('max', 'largest')}`).warnings).toEqual([])
+  })
+
+  // A file checked on its own, as the editor checks one whose imports it
+  // cannot read: an imported generic is the signature its import writes, and
+  // each instance a call asks for is imported from that module when the file
+  // is compiled alone.
+  test('a source import, in a file checked on its own, is its signature', () => {
+    const source = 'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nexport func f(a: u32, b: u32) -> u32 => max(a, b)\nexport func g(a: f64) -> f64 => a.max(0.5)\n'
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => i.name)).toEqual(['max<u32>', 'max<f64>'])
+    const wat = watOfSource(source)
+    expect(wat).toContain('(import "./lib" "max<u32>" (func $max<u32> (param i32) (param i32) (result i32)))')
+    expect(wat).toContain('(import "./lib" "max<f64>" (func $max<f64> (param f64) (param f64) (result f64)))')
+    expect(wat).not.toContain('  (func $max')
+    expect(errorsOf('import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nfunc f(a: u8, b: u32) -> u32 => max(a, b)')).toEqual([
+      'argument 2: cannot assign u32 to u8',
+    ])
+  })
+
+  test('a generic type imported in a file checked on its own leaves its errors to the program', () => {
+    const result = check('import "./lib" "Vec" func Vec(comptime T: type) -> type\nexport func f(v: *Vec(u32)) -> u32 => v.len + nowhere\n')
+    expect(result.partial).toBe(true)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map((w) => w.message)).toEqual(['imported generic types are resolved only when the program is checked'])
+    expect(() => watOfSource('import "./lib" "Vec" func Vec(comptime T: type) -> type\n')).toThrow(/compiled as part of its program/)
   })
 
   // The import may be written as if the function were ordinary; what the

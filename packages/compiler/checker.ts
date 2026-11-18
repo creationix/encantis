@@ -93,7 +93,11 @@ export type Symbol =
   // distinct set of comptime arguments is an instance, which is an ordinary
   // function. `valid` is false when its declaration already has an error, so
   // that calls don't add theirs.
-  | { kind: 'generic'; decl: AST.FuncDecl; owner: CheckContext; instances: Map<string, Instance>; valid: boolean }
+  // `signatureOnly`: imported from a source module while this one is
+  // checked on its own, so all there is of it is the signature the import
+  // writes. Its calls are checked against that, and its instances have no
+  // body here.
+  | { kind: 'generic'; decl: AST.FuncDecl; owner: CheckContext; instances: Map<string, Instance>; valid: boolean; signatureOnly?: true }
   // A generic type: a function from types to a type. Applying it resolves its
   // body with the parameters replaced, in the module that declares it, once
   // for each way its arguments were written (`cache`). The result is the body
@@ -233,6 +237,10 @@ export interface PendingLiteral {
 }
 
 export interface TypeCheckResult {
+  // Whether the module, checked on its own, imports a generic type from
+  // another source module: its errors are not known (and not listed) until
+  // the program is checked, and it cannot be compiled alone.
+  partial: boolean
   // Types of bindings and declarations: "offset:kind" → resolved type
   types: Map<string, ResolvedType>
   // The type of every expression, by AST node
@@ -415,13 +423,19 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     }
   }
 
+  // A module that imports a generic type, checked on its own, cannot tell
+  // what is wrong with it: its errors would be about types it could not
+  // know. It says so once instead.
+  const partial = ctx.typesFromElsewhere !== undefined
+  if (partial) warnings.unshift({ offset: ctx.typesFromElsewhere as number, message: 'imported generic types are resolved only when the program is checked' })
   return {
+    partial,
     types: ctx.types,
     exprTypes: ctx.exprTypes,
     coercions: ctx.coercions,
     constants: ctx.constants,
     symbols: ctx.moduleScope.symbols,
-    errors: ctx.errors,
+    errors: partial ? [] : ctx.errors,
     warnings,
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
@@ -828,6 +842,10 @@ class CheckContext {
   // The functions of this module that instances of other modules' generics
   // call (see callAtSite): used, though nothing in this module calls them.
   calledFromInstances = new Set<string>()
+  // Where the module first imports a generic type while it is checked on its
+  // own: what that type is, and so what anything of it is, is known only
+  // when the program is checked (see finalize).
+  typesFromElsewhere?: number
   // Multi-module support
   filePath?: string
   moduleExports?: Map<string, Map<string, Symbol>>
@@ -1092,7 +1110,10 @@ class CheckContext {
       const depExports = this.exportsOf(decl)
       const missing = isSourceImport(decl.module) && this.filePath && this.moduleExports && !depExports
       for (const imported of decl.items) {
-        if (imported.item.kind === 'ImportTypeFunc' && !missing) this.importTypeFunc(decl, imported, imported.item, depExports)
+        if (imported.item.kind !== 'ImportTypeFunc') continue
+        // Of a module that is not there, the one error is that it is not.
+        if (missing) this.unknownTypeFunc(imported.item, imported.span.start)
+        else this.importTypeFunc(decl, imported, imported.item, depExports)
       }
     }
   }
@@ -1155,7 +1176,7 @@ class CheckContext {
             break
           }
           if (!depExports && isGenericSignature(item.item.signature)) {
-            this.error(item.span.start, `generic functions cannot be imported yet`)
+            this.importSignature(name, item.item)
             break
           }
           if (isSource && depExports) {
@@ -1229,6 +1250,30 @@ class CheckContext {
     this.replacesBuiltin(name, offset)
   }
 
+  // A generic of another module, in a module checked on its own: what the
+  // import writes is all there is of it. Calls are checked against the
+  // signature with their types filled in, as calls of the generic itself
+  // would be; what its body requires of them is found out when the program
+  // is checked.
+  private importSignature(name: string, imported: AST.ImportFunc): void {
+    const decl: AST.FuncDecl = {
+      kind: 'FuncDecl',
+      inline: false,
+      ident: name,
+      signature: imported.signature,
+      body: { kind: 'Block', stmts: [], span: { start: imported.span.end, end: imported.span.end } },
+      span: imported.span,
+    }
+    const valid = this.checkGenericDecl(decl)
+    if (this.moduleScope.symbols.has(name)) {
+      this.error(imported.span.start, `'${name}' is already declared: a generic function's name is unique in its module`)
+      return
+    }
+    this.moduleScope.symbols.set(name, { kind: 'generic', decl, owner: this, instances: new Map(), valid, signatureOnly: true })
+    this.recordDefinition(name, imported.span.start)
+    this.replacesBuiltin(name, imported.span.start)
+  }
+
   // A generic type of another module, under its own name: applied here, its
   // body is resolved in the module that declares it, as a generic type of
   // this module's is. A type can be named anywhere in a module, so the
@@ -1241,16 +1286,24 @@ class CheckContext {
       return
     }
     if (!depExports) {
-      this.error(at, `generic types cannot be imported yet`)
+      // Checked on its own, the module cannot know what the type is: it is
+      // known by name, so that its uses say nothing, and the module is
+      // checked as part of its program.
+      this.typesFromElsewhere ??= at
+      this.unknownTypeFunc(imported, at)
       return
     }
+    // A failed import is the one error: the name is known, and its uses
+    // say nothing more.
     const exported = depExports.get(item.name)
     if (!exported) {
       this.error(at, `'${item.name}' is not exported from '${decl.module}'`)
+      this.unknownTypeFunc(imported, at)
       return
     }
     if (exported.kind !== 'typefunc') {
       this.error(at, `'${item.name}' in '${decl.module}' is not a generic type`)
+      this.unknownTypeFunc(imported, at)
       return
     }
     if (this.moduleScope.symbols.has(name) || this.pendingTypeNames.has(name)) {
@@ -1258,6 +1311,15 @@ class CheckContext {
       return
     }
     this.moduleScope.symbols.set(name, exported)
+    this.recordDefinition(name, at)
+  }
+
+  // A generic type of which only the name is known: its uses say nothing.
+  private unknownTypeFunc(imported: AST.ImportTypeFunc, at: number): void {
+    const name = imported.ident
+    if (this.moduleScope.symbols.has(name)) return
+    const decl: AST.TypeFuncDecl = { kind: 'TypeFuncDecl', ident: name, params: imported.params, body: { kind: 'TypeRef', name, span: imported.span }, span: imported.span }
+    this.moduleScope.symbols.set(name, { kind: 'typefunc', decl, owner: this, cache: new Map(), valid: false })
     this.recordDefinition(name, at)
   }
 
@@ -7663,7 +7725,7 @@ class CheckContext {
     requester?.requests.push(inst)
     sym.instances.set(key, inst)
     owner.instances.push(inst)
-    owner.instanceQueue.push(inst)
+    if (!sym.signatureOnly) owner.instanceQueue.push(inst)
     // The signature exists from here on, which is all a call needs. The body
     // waits for drainInstances.
     owner.collectFunc(decl)

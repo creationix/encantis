@@ -215,9 +215,10 @@ class MetaBuilder {
     // Build data section to get literal addresses for hover hints
     // Use the checker's pending literals which include all def data (arrays, strings, repeats)
     // A module with errors still gets its metadata: a literal the checker
-    // rejected may have no layout, and then has no address to show.
+    // rejected may have no layout, and then has no address to show. So does
+    // one whose errors are known only in its program (see partial).
     const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types, {
-      tolerant: this.checkResult.errors.length > 0,
+      tolerant: this.checkResult.errors.length > 0 || this.checkResult.partial,
       calls: this.checkResult.calls,
       constants: this.checkResult.constants,
       fieldOrder: this.checkResult.fieldOrder,

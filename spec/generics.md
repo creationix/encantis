@@ -848,16 +848,6 @@ export func f() -> u32 => count + count(u32, 1)
 'count' is already declared: a generic function's name is unique in its module
 ```
 
-A generic function imported from another source module.
-
-```ents
-import "./containers" "max" func max(comptime T: type, a: T, b: T) -> T
-```
-
-```errors
-generic functions cannot be imported yet
-```
-
 A generic function imported from the host.
 
 ```ents
@@ -3053,6 +3043,98 @@ func hash(k: u32) -> u32 => k
 
 ```errors
 'hash' is already declared: a generic function's name is unique in its module
+```
+
+## Imported generics
+
+A block here is checked on its own, as the editor checks a file it cannot read the imports of: a generic function imported from a source module is then known by the signature the import writes. Its calls are checked against that signature with the types filled in. What its body requires of them is found out when the program is checked, which the fixtures under `packages/compiler/tests/fixtures/generics` and `loader.test.ts` do. A block with a source import is never compiled.
+
+### Accepted
+
+Explicit and inferred calls, and a method call, of imported generics.
+
+```ents
+import "./containers" (
+  "max" func max(comptime T: type, a: T, b: T) -> T
+  "first" func first(comptime T: type, xs: []T) -> T
+)
+
+export func widest(a: u32, b: u32) -> u32 => max(u32, a, b)
+export func longest(a: f64) -> f64 => a.max(0.5)
+export func head(xs: []u64) -> u64 => first(xs)
+```
+
+A generic type imported as the function it is. What it is, and so what anything made of it is, is known only when the program is checked: a module that imports one and is checked on its own lists no errors, and has one warning, `imported generic types are resolved only when the program is checked`. The mistake below (`y` is declared nowhere) is reported when the program is checked.
+
+```ents
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+)
+
+export func count(x: u32) -> u32 {
+  let v = vec(u32, 4)
+  v.push(x)
+  v.push(y)
+  return v.len
+}
+```
+
+### Rejected
+
+A call of an imported generic is checked as a call of a generic declared in the module is.
+
+```ents
+import "./containers" "max" func max(comptime T: type, a: T, b: T) -> T
+
+func f(a: u8, b: u32) -> u32 => max(a, b)
+```
+
+```errors
+argument 2: cannot assign u32 to u8
+```
+
+```ents
+import "./containers" "zero" func zero(comptime T: type) -> T
+
+func f() -> u32 => zero()
+```
+
+```errors
+cannot infer T for 'zero': write the type argument, as in zero(u32)
+```
+
+The import's signature is held to the rules of a generic's declaration.
+
+```ents
+import "./containers" "pick" func pick(T: type, a: u32, b: u32) -> u32
+```
+
+```errors
+a parameter of type 'type' must be comptime: write 'comptime T: type'
+```
+
+An imported generic's name is unique in its module.
+
+```ents
+import "./containers" "max" func max(comptime T: type, a: T, b: T) -> T
+
+func max(a: u32, b: u32) -> u32 => a
+```
+
+```errors
+'max' is already declared: a generic function's name is unique in its module
+```
+
+A generic type imported from the host.
+
+```ents
+import "env" "Vec" func Vec(comptime T: type) -> type
+```
+
+```errors
+a host import cannot have comptime parameters
 ```
 
 <!-- spec:end -->
