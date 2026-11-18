@@ -1220,6 +1220,10 @@ class CheckContext {
             const exported = depExports.get(item.name)
             if (!exported) {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' is not exported from '${decl.module}'` })
+              // A generic is then known by the signature the import writes,
+              // as in a file checked on its own, so that its calls say
+              // nothing more of what is one mistake.
+              if (isGenericSignature(item.item.signature)) this.importSignature(name, item.item)
               break
             }
             // What the other module exports under the name is what is

@@ -595,6 +595,7 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
       ['import "./lib" "plain" func Plain(comptime T: type) -> type\nexport func f(v: *Plain(u32)) -> u32 => 0\n', "'plain' in './lib' is not a generic type"],
       ['import "./lib" "Nope" func Nope(comptime T: type) -> type\nexport func f(v: *Nope(u32)) -> u32 => 0\n', "'Nope' is not exported from './lib'"],
       ['import "./lib" "len" func len(comptime T: type, v: *Vec(T)) -> u32\nfunc len(x: u32) -> u32 => x\n', "'len' is already declared: a generic function's name is unique in its module"],
+      ['import "./lib" "nope" func nope(comptime T: type, x: T) -> T\nexport func f(x: u32) -> u32 => nope(x)\n', "'nope' is not exported from './lib'"],
     ]
     for (const [main, message] of cases) {
       const errors = await inDir({ 'lib.ents': LIB, 'main.ents': main }, async (dir) => (await program(join(dir, 'main.ents'))).check.errors)
