@@ -1642,6 +1642,27 @@ describe('what a literal error says, wherever the literal is', () => {
     expect(errs('data d: []u8 = (104, 105)')).toEqual(['data value must be a literal to lay out: a (ptr, len) pair is a slice already'])
   })
 
+  // A tuple is not an array (2.7), whether it is written in parentheses or
+  // in single quotes. At 0f1b047 one given for a row of a table, an element
+  // of a slice of arrays, an array pointer or a framed array was accepted
+  // and laid out as zeros: ['abc', 'xyz'] for a *[2][3]u8 read 0, where
+  // ["abc", "xyz"] reads the bytes (and 'xyz' was such a string before Q4).
+  test('a tuple given for an array behind a pointer or as a row is refused', () => {
+    expect(errs("data g: *[2][3]u8 = [[97, 98, 99], 'xyz']")).toEqual([notAString('xyz', '[3]u8')])
+    expect(errs("func f() -> u8 {\n  let t: *[2][3]u8 = ['abc', 'xyz']\n  return t[1][0] ?? 0\n}"))
+      .toEqual([notAString('abc', '[3]u8'), notAString('xyz', '[3]u8')])
+    expect(errs("data d: [][3]u8 = ['abc', 'xyz']\nfunc f() -> u32 => d.len")).toEqual([notAString('abc', '[3]u8'), notAString('xyz', '[3]u8')])
+    expect(errs('data g: *[2][3]u8 = [[97, 98, 99], (120, 121, 122)]')).toEqual(['cannot assign (int(120), int(121), int(122)) to [3]u8'])
+    expect(errs('data d: [][2]u8 = [(1, 2)]\nfunc f() -> u32 => d.len')).toEqual(['cannot assign (int(1), int(2)) to [2]u8'])
+    expect(errs('data r: *[3]u8 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to *[3]u8'])
+    expect(errs('func put(p: *[3]u8) -> u8 => p[0]\nfunc f() -> u8 => put((1, 2, 3))')).toEqual(['argument 1: cannot assign (int(1), int(2), int(3)) to *[3]u8'])
+    expect(errs('func f() -> u32 {\n  let s: []*[2]u8 = [(1, 2)]\n  return s.len\n}')).toEqual(['cannot assign (int(1), int(2)) to *[2]u8'])
+    expect(errs('func f() -> u32 {\n  let s: [!]u8 = (1, 2)\n  return 0\n}')).toEqual(['cannot assign (int(1), int(2)) to [!]u8'])
+    // What is right stays so: strings as rows, tuples for struct elements,
+    // a slice built from its fields.
+    expect(errs('type Pt = (x: i32, y: i32)\ndata ok: *[2][3]u8 = [[97, 98, 99], "xyz"]\ndata pts: *[2]Pt = [(1, 2), (y: 4, x: 3)]\nfunc first(p: [*]u8, n: u32) -> []u8 => (len: n, ptr: p)')).toEqual([])
+  })
+
   test('the receiver of a method call is told to write mut in parentheses', () => {
     const source = 'func fill(s: []mut u8) -> u32 => s.len\n'
     expect(errs(`${source}func f() -> u32 => "ab".fill() + [1, 2].fill() + (mut "ok").fill()`))

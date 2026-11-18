@@ -1809,6 +1809,18 @@ class CheckContext {
           // (x) is x: a value in parentheses is checked as that value, and
           // only a literal is laid out as one.
           const literal = ungrouped(elem)
+          // A tuple is not an array, so it is no row of a table and no
+          // element of a slice of arrays: ['abc', 'xyz'] for a *[2][3]u8 is
+          // codepoints, where ["abc", "xyz"] is the bytes.
+          if (literal.kind === 'TupleExpr' && unwrap(innerType).kind === 'array') {
+            const codepoints = quotedCodepoints(literal)
+            if (codepoints) this.literalMistakes++
+            this.error(elem.span.start, codepoints
+              ? `${prefix}cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(innerType)} — ${notAString(codepoints)}`
+              : `${prefix}cannot assign ${typeToString(this.inferExpr(elem))} to ${typeToString(innerType)}`)
+            this.exprTypes.set(elem, innerType)
+            continue
+          }
           if (this.isDataLiteralExpr(literal) && !asValue) {
             const element = unwrap(innerType)
             if ((element.kind === 'pointer' || element.kind === 'slice') && element.mutable) {
@@ -3631,6 +3643,13 @@ class CheckContext {
 
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
     const isFramedArray = shape.kind === 'array' && shape.sizes?.some(s => s === '!' || s === '?')
+    // A tuple is not an array (2.7): (1, 2, 3) is no *[3]u8 and no [!]u8.
+    // (A slice is its (ptr, len), which a tuple for one gives above.)
+    if (expr.kind === 'TupleExpr' && (pointee?.kind === 'array' || isFramedArray)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
     if (
       this.isDataLiteralExpr(expr) &&
       (pointee?.kind === 'array' ||
