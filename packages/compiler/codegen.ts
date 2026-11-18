@@ -79,6 +79,8 @@ export interface CodegenContext {
   // Indexes that aren't known to be in range, read as an optional (see
   // TypeCheckResult.unproven): checked, none when out of range.
   unproven: Set<AST.IndexExpr>
+  // Range assignments that fill (see TypeCheckResult.fills)
+  fills: Set<AST.SliceExpr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -99,6 +101,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     fieldOrder: checkResult.fieldOrder,
     funcNames: checkResult.funcNames,
     unproven: checkResult.unproven,
+    fills: checkResult.fills,
   }
 }
 
@@ -802,6 +805,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   // Logical (short-circuit)
   if (op === '&&') return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
   if (op === '||') return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
+
+  // An optional slice compared with 0 (none): its pointer is.
+  const leftSlice = unwrap(valueType(expr.left, ctx) ?? RT.VOID).kind === 'slice'
+  if ((op === '==' || op === '!=') && (leftSlice || unwrap(valueType(expr.right, ctx) ?? RT.VOID).kind === 'slice')) {
+    const ptr = slicePointer(leftSlice ? left : right)
+    return op === '==' ? `(i32.eqz ${ptr})` : `(i32.ne ${ptr} (i32.const 0))`
+  }
 
   // Get result type from checker
   const resultType = lookupExprType(expr, ctx)
@@ -1684,8 +1694,9 @@ function sliceToWat(expr: AST.SliceExpr, ctx: CodegenContext): string {
 function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenContext): string {
   const dstType = lookupExprType(target, ctx)
   if (dstType?.kind !== 'slice') throw new Error(`Missing type for range at offset ${target.span.start}`)
-  const elem = dstType.element
-  const stride = byteSize(RT.tableRow(dstType) ?? elem) ?? 1
+  // An element as it lies in memory: in a table, the pointer to its row.
+  const cell = RT.tableRow(dstType) ?? dstType.element
+  const stride = byteSize(cell) ?? 1
   const uid = scratchId(target.span.start)
   const p = `$__bulk_p_${uid}`
   const n = `$__bulk_n_${uid}`
@@ -1693,11 +1704,12 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
   const bytes = stride === 1 ? `(local.get ${n})` : `(i32.mul (local.get ${n}) (i32.const ${stride}))`
   const valueType = lookupExprType(value, ctx)
   const vu = valueType ? unwrap(valueType) : null
-  const isScalar = vu?.kind === 'primitive' || vu?.kind === 'comptime_int' || vu?.kind === 'comptime_float'
 
-  if (!isScalar) {
-    // Copy: the source pointer is the first part of a slice, or the pointer itself.
+  if (!ctx.fills.has(target)) {
+    // Copy: the source pointer is the first part of a slice, or the pointer
+    // itself. An array held in registers is stored, element by element.
     const src = exprToWat(value, ctx)
+    if (vu?.kind === 'array') return `${setDst}\n${storeToMemory(vu, `(local.get ${p})`, src, ctx)}`
     let srcPtr: string
     if (vu?.kind === 'slice') {
       srcPtr = slicePointer(src)
@@ -1708,19 +1720,34 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
   }
 
   const v = exprToWat(value, ctx)
-  const isZero = /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(v)
-  if (stride === 1 || isZero) {
+  const wasm = typeToWasm(cell)
+  // Zeros: every value the element is held in is a constant 0 (a struct, a
+  // wide integer or none for an optional slice all of zeros, too).
+  const parts = wasm.length === 1 ? [v] : trySplitMultiValue(v, wasm.length)
+  const isZero = !!parts && parts.every((part) => /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(part))
+  if ((wasm.length === 1 && stride === 1) || isZero) {
     // Bytes, or zeros of any width: one memory.fill.
     return `${setDst}\n(memory.fill (local.get ${p}) ${isZero ? '(i32.const 0)' : v} ${bytes})`
   }
-  // Wider elements: store each one.
-  const t = `$__bulk_v_${uid}`
+  // Wider elements, and elements of several values (a struct, a slice, a
+  // wide integer): the value is computed once, and stored into each one.
+  let set: string
+  let held: string
+  if (wasm.length === 1) {
+    const t = `$__bulk_v_${uid}`
+    set = `(local.set ${t} ${v})`
+    held = `(local.get ${t})`
+  } else {
+    const temps = wasm.map((type) => scratchLocal(ctx, type))
+    set = [v, ...[...temps].reverse().map((t) => `(local.set ${t})`)].join('\n')
+    held = temps.map((t) => `(local.get ${t})`).join(' ')
+  }
   return `${setDst}
-(local.set ${t} ${v})
+${set}
 (block $__fill_${uid}
   (loop $__fill_next_${uid}
     (br_if $__fill_${uid} (i32.eqz (local.get ${n})))
-    ${storeToMemory(elem, `(local.get ${p})`, `(local.get ${t})`, ctx)}
+    ${storeToMemory(cell, `(local.get ${p})`, held, ctx)}
     (local.set ${p} (i32.add (local.get ${p}) (i32.const ${stride})))
     (local.set ${n} (i32.sub (local.get ${n}) (i32.const 1)))
     (br $__fill_next_${uid})))`
@@ -2091,8 +2118,10 @@ function extendToI64(wat: string, signed: boolean): string {
 }
 
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
-  // A pointer to an array into a slice: the length the array has
+  // A pointer to an array into a slice: the length the array has. The
+  // address 0 into an optional slice is none: a length of 0 with it.
   if (unwrap(toType).kind === 'slice') {
+    if (unwrap(fromType).kind === 'primitive') return `${inner} (i32.const 0)`
     const len = RT.arrayLength(fromType)
     return len === null ? inner : `${inner} (i32.const ${len})`
   }
@@ -3216,7 +3245,8 @@ function collectLocals(
         // Range assignment: the range's own scratch locals, plus the
         // destination and (for wide fills) the value.
         const uid = scratchId(stmt.target.span.start)
-        const elem = (checkResult.exprTypes.get(stmt.target) as { element?: ResolvedType } | undefined)?.element
+        const range = checkResult.exprTypes.get(stmt.target)
+        const elem = range && (RT.tableRow(range) ?? (range as { element?: ResolvedType }).element)
         locals.push({ name: `__bulk_p_${uid}`, type: 'i32' }, { name: `__bulk_n_${uid}`, type: 'i32' })
         if (elem && typeToWasm(elem).length === 1) locals.push({ name: `__bulk_v_${uid}`, type: typeToWasm(elem)[0] })
       }

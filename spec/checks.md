@@ -512,6 +512,82 @@ func f(c: bool, n: i32) {
 }
 ```
 
+An array literal in a branch has no type of its own: next to a branch that is a slice or a pointer, it is laid out as one, as it is where a `let` gives the type. The `if` (or `match`) is then of the typed branch's type, and compiles as it does with the type written.
+
+<!-- spec:begin compile -->
+
+```ents
+data three = [4:i32, 5, 6]
+data pair = [1:i32, 2]
+
+func empty(c: bool, xs: []i32) -> u32 {
+  let ys = if c { xs } else { [] }
+  return ys.len
+}
+func listed(c: bool, xs: []i32) -> i32 {
+  let ys = if c { [7, 8] } else { xs }
+  return (ys[1] ?? 0) + ys.len as i32 * 100
+}
+func arms(k: u32, xs: []i32) -> u32 {
+  let ys = match k {
+    0 => xs
+    1 => [9]
+    _ => [0; 4]
+  }
+  return ys.len
+}
+func ptr(c: bool) -> i32 {
+  let p = if c { pair } else { [7, 8] }
+  return p[1]
+}
+func found(i: u32, xss: [][]i32) -> u32 {
+  let ys = if let x = xss[i] { x } else { [3, 3] }
+  return ys.len
+}
+
+test "a literal branch is of the typed branch's type" {
+  assert empty(true, three) == 3
+  assert empty(false, three) == 0
+  assert listed(true, three) == 208
+  assert listed(false, three) == 305
+  assert arms(0, three) + arms(1, three) + arms(2, three) == 8
+  assert ptr(true) * 10 + ptr(false) == 28
+  assert found(0, [three]) + found(1, [three]) == 5
+}
+```
+
+```ents same-wasm
+data three = [4:i32, 5, 6]
+data pair = [1:i32, 2]
+
+func empty(c: bool, xs: []i32) -> u32 {
+  let ys: []i32 = if c { xs } else { [] }
+  return ys.len
+}
+func listed(c: bool, xs: []i32) -> i32 {
+  let ys: []i32 = if c { [7, 8] } else { xs }
+  return (ys[1] ?? 0) + ys.len as i32 * 100
+}
+func arms(k: u32, xs: []i32) -> u32 {
+  let ys: []i32 = match k {
+    0 => xs
+    1 => [9]
+    _ => [0; 4]
+  }
+  return ys.len
+}
+func ptr(c: bool) -> i32 {
+  let p: *[2]i32 = if c { pair } else { [7, 8] }
+  return p[1]
+}
+func found(i: u32, xss: [][]i32) -> u32 {
+  let ys: []i32 = if let x = xss[i] { x } else { [3, 3] }
+  return ys.len
+}
+```
+
+<!-- spec:end -->
+
 ## Destructuring
 
 A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.
@@ -858,6 +934,39 @@ data table: *[2]Mixed = [(1.5, 2, "x"), (1, 300, "y")]
 ```errors
 cannot assign float(1.5) to u64
 300
+```
+
+So is an element that is an array, in an array held in registers (`[2][3]u16`): a literal row is checked element by element against the row's element type, wherever the array meets its type, a `let`, an argument or a field.
+
+<!-- spec:begin compile -->
+
+```ents
+type S = (n: u8, m: [2][2]u8)
+
+func pick(w: [2][3]u16) -> u16 => w[1][2]
+func rows(k: u8) -> u8 {
+  let x: [2][2]u8 = [[k, 2], [3; 2]]
+  let s = S(1, [[5, 6], [7, 8]])
+  return x[0][0] + x[1][1] + s.m[1][0]
+}
+
+test "a row literal of an array held in registers takes the row's element type" {
+  assert pick([[1, 2, 3], [4, 5, 300]]) == 300
+  assert rows(9) == 19
+}
+```
+
+<!-- spec:end -->
+
+```ents
+func f() -> u8 {
+  let x: [2][2]u8 = [[1, 2], [3, 300]]
+  return x[0][0]
+}
+```
+
+```errors
+cannot assign int(300) to u8
 ```
 
 ## Literals for mutable pointers and slices
@@ -1740,6 +1849,55 @@ func rows(t: *[2][3]i32) -> u32 => t.len + t[1].len
 
 <!-- spec:end -->
 
+So it is at every depth, and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables, `c[1]` a `*[3][4]u8` loaded from it and `c[1][2]` a `*[4]u8` loaded from that, as in the `*[2][3][4]u8` it stands for. A slice or many-pointer of a name for rows, a table of names, and a type parameter that is one read the same way.
+
+<!-- spec:begin compile -->
+
+```ents
+type Cube = [2][3][4]u8
+type Box = Cube
+type Plane = [3][4]u8
+type Hyper = [2]Box
+
+data cube: *Box = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data planes: []Plane = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data hyper: *Hyper = [[[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]], [[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 9]]]]
+
+func at(c: *Box) -> u8 => c[1][2][3]
+func plane(s: []Plane, i: u32) -> u8 => if let p = s[i] { p[2][3] } else { 0 }
+func many(m: [*]Plane) -> u8 => m[1][2][3]
+func deep(h: *Hyper) -> u8 => h[1][1][2][3]
+func whole(comptime T: type, p: *T) -> u8 => p[1][2][3]
+func viaWhole(c: *Box) -> u8 => whole(Cube, c)
+func lens(c: *Cube) -> u32 => c.len * 100 + c[0].len * 10 + c[0][0].len
+
+test "a name for an array of arrays is the table it stands for" {
+  assert at(cube) == 24
+  assert plane(planes, 1) == 24
+  assert plane(planes, 2) == 0
+  assert many(cube as [*]Plane) == 24
+  assert deep(hyper) == 9
+  assert viaWhole(cube) == 24
+  assert lens(cube) == 234
+}
+```
+
+```ents same-wasm
+data cube: *[2][3][4]u8 = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data planes: [][3][4]u8 = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data hyper: *[2][2][3][4]u8 = [[[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]], [[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 9]]]]
+
+func at(c: *[2][3][4]u8) -> u8 => c[1][2][3]
+func plane(s: [][3][4]u8, i: u32) -> u8 => if let p = s[i] { p[2][3] } else { 0 }
+func many(m: [*][3][4]u8) -> u8 => m[1][2][3]
+func deep(h: *[2][2][3][4]u8) -> u8 => h[1][1][2][3]
+func whole(comptime T: type, p: *T) -> u8 => p[1][2][3]
+func viaWhole(c: *[2][3][4]u8) -> u8 => whole([2][3][4]u8, c)
+func lens(c: *[2][3][4]u8) -> u32 => c.len * 100 + c[0].len * 10 + c[0][0].len
+```
+
+<!-- spec:end -->
+
 ## Ranges
 
 `items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.
@@ -1784,6 +1942,52 @@ func rest(s: []u8, i: u32) -> []u8 {
 
 ```errors
 cannot assign ?[]u8 to []u8
+```
+
+A bound is an integer as an index is: of at most 32 bits, signed or not. A negative one is out of range, as a negative index is: read as an unsigned number it is past any length. On a many-pointer nothing is checked, and a negative bound is before the element it points to, as a negative index is. A bit pattern is the `u32` it stands for, in an index as in a bound: `~4294967293` is 2.
+
+<!-- spec:begin compile -->
+
+```ents
+data xs = [1:i32, 2, 3, 4]
+
+func at(i: i32) -> i32 => xs[i] ?? -1
+func part(a: i32, b: i32) -> u32 => if let s = xs[a..b] { s.len } else { 99 }
+func rest(s: []i32, a: i8) -> u32 => if let r = s[a..] { r.len } else { 99 }
+func before(a: i32, b: i32) -> i32 {
+  let p = xs as [*]i32 + 8
+  let s = p[a..b]
+  return (s[0] ?? 0) * 100 + s.len as i32
+}
+func pattern() -> i32 => xs[~4294967293] + xs[~4294967294..].len as i32
+
+test "a negative bound is out of range, as a negative index is" {
+  assert at(-1) == -1
+  assert part(1, 3) == 2
+  assert part(-1, 2) == 99
+  assert part(0, -1) == 99
+  assert part(-1, -1) == 99
+  assert rest(xs, 1) == 3
+  assert rest(xs, -1) == 99
+  assert before(-2, 0) == 102
+  assert pattern() == 6
+}
+```
+
+<!-- spec:end -->
+
+```ents
+data xs = [1:i32, 2, 3, 4]
+
+func a(i: u64) -> u32 => (xs[i..] ?? xs).len
+func b() -> u32 => xs[-1..2].len
+func c(f: f32) -> u32 => (xs[..f] ?? xs).len
+```
+
+```errors
+a range bound must be an integer of at most 32 bits, not u64
+range -1..2 is out of bounds for *[4]i32
+a range bound must be an integer of at most 32 bits, not f32
 ```
 
 A many-pointer has no length, so its ranges are unchecked and need an end.
@@ -2004,6 +2208,122 @@ func c(s: []u8) { buf[0..4] = s }
 writing to a range needs bounds known to fit
 cannot copy 4 elements into a range of 8
 copying into a range needs both lengths known at compile time; use memcpy
+```
+
+A value that can be assigned to one element fills the range, whatever the element is: a struct, a slice, a string where the elements are slices, a wide integer, a row pointer of a table. Anything else is copied in: an array literal is laid out as the range's elements are, and an array held in registers is stored element by element. A generic fills with a value of its type parameter for any type.
+
+<!-- spec:begin compile -->
+
+```ents
+type Pt = (x: i32, y: i32)
+
+data cells = mut [0:u8; 64]
+data grid: *mut [3][2]i32 = mut [[1, 2], [3, 4], [5, 6]]
+data spare: *mut [2]i32 = mut [9, 8]
+data wide = mut [0:u128; 4]
+data ints = mut [0:i32; 4]
+
+func points(v: Pt) {
+  let p = cells as [*]mut Pt
+  p[0..3] = v
+}
+func lists(xs: []i32) {
+  let p = cells as [*]mut []i32
+  p[0..3] = xs
+}
+func names() {
+  let p = cells as [*]mut []u8
+  p[1..3] = "abc"
+}
+func rows() { grid[0..2] = spare }
+func big() { wide[1..3] = 5 }
+func literal(x: i32) { ints[1..4] = [x, 7, 8] }
+func held() {
+  let a: [2]i32 = [5, 6]
+  ints[0..2] = a
+}
+func table(comptime T: type, n: u32, v: T) -> [*]mut T {
+  let p = cells as [*]mut T
+  p[0..n] = v
+  return p
+}
+
+test "a range is filled with a struct, a slice, a row pointer, a wide integer" {
+  points((x: 3, y: -4))
+  assert (cells as [*]Pt)[2].y == -4
+  assert (cells as [*]i32)[6] == 0
+  lists([1, 2, 3, 4])
+  assert (cells as [*][]i32)[2].len == 4
+  assert ((cells as [*][]i32)[2].ptr)[3] == 4
+  names()
+  assert (cells as [*][]u8)[2].len == 3
+  assert (cells as [*][]u8)[0].len == 4
+  rows()
+  grid[0][0] = 1
+  assert grid[1][0] == 1
+  assert grid[2][0] == 5
+  big()
+  assert wide[0] == 0
+  assert wide[2] == 5
+  assert wide[3] == 0
+}
+
+test "an array literal or an array in registers is copied in" {
+  literal(9)
+  held()
+  assert ints[0] == 5
+  assert ints[1] == 6
+  assert ints[2] == 7
+  assert ints[3] == 8
+}
+
+test "a generic fills with a value of its type parameter" {
+  assert table(i32, 4, -2)[3] == -2
+  assert table([]u8, 4, "xy")[3].len == 2
+  assert table(Pt, 4, (x: 1, y: 2))[3].x == 1
+}
+```
+
+<!-- spec:end -->
+
+A fill value that is no element, or a copy whose elements are not the range's, is refused for what it is. A table's elements are its row pointers: rows of a const table are not copied into a mutable one, as `m[i] = r` is refused for them, and an array in registers has no rows to point to. A value of the element type as it is written, a row in registers, or a const row for a mutable table, is meant to fill, and is refused as `m[i] = r` is.
+
+```ents
+type Pt = (x: i32, y: i32)
+
+data cells = mut [0:u8; 64]
+data grid: *[2][2]i32 = [[1, 2], [3, 4]]
+data board: *mut [2][2]i32 = mut [[0, 0], [0, 0]]
+
+func a() {
+  let p = cells as [*]mut Pt
+  p[0..3] = 0
+}
+func b(xs: []u8) {
+  let p = cells as [*]mut []i32
+  p[0..3] = xs
+}
+func c() { board[0..2] = grid }
+func d() { board[0..2] = [[1, 2], [3, 4]] }
+func e() {
+  let v: [2][2]i32 = [[1, 2], [3, 4]]
+  board[0..2] = v
+}
+func f(row: [2]i32) { board[0..2] = row }
+func g() { board[0..2] = grid[1] }
+func h(comptime T: type, p: *mut [2]T, v: T) { p[0..2] = v }
+func k(row: [2]i32) { h([2]i32, board, row) }
+```
+
+```errors
+fill value: cannot assign int(0) to Pt
+cannot copy []u8 into a range of []i32
+cannot copy *[2][2]i32 into a range of *mut [2]i32: its rows are *[2]i32
+a literal is constant: write `mut [[1, 2], [3, 4]]` for a *mut [2][2]i32
+cannot copy [2][2]i32 into a range of *mut [2]i32: its rows are held in registers
+fill value: cannot assign [2]i32 to *mut [2]i32
+fill value: cannot assign *[2]i32 to *mut [2]i32
+fill value: cannot assign [2]i32 to *mut [2]i32, in h(T = [2]i32)
 ```
 
 ## Builtins

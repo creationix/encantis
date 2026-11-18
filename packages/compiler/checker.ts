@@ -305,6 +305,9 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+  // Ranges assigned one value that every element of them gets (a fill,
+  // `p[a..b] = v`), as opposed to the elements of an array to copy in.
+  fills: Set<AST.SliceExpr>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -510,6 +513,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
+    fills: ctx.fills,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -867,6 +871,8 @@ class CheckContext {
   // ends, as a declaration is (`lookUnproven`).
   unproven = new Set<AST.IndexExpr>()
   lookUnproven: AST.IndexExpr[] = []
+  // Range assignments that fill (see TypeCheckResult.fills)
+  fills = new Set<AST.SliceExpr>()
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -6129,6 +6135,23 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
+    // An optional slice is none where its pointer is 0: it is compared with
+    // 0, and only for equality, as an optional pointer is.
+    const optionalSlice = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'slice' && !!t.optional
+    }
+    const zero = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'comptime_int' && t.value === 0n
+    }
+    const none = optionalSlice(leftType) && zero(rightType) ? expr.right
+      : zero(leftType) && optionalSlice(rightType) ? expr.left
+      : null
+    if (none && (expr.op === '==' || expr.op === '!=')) {
+      this.coerce(none, none === expr.left ? leftType : rightType, primitive('u32'))
+      return
+    }
     const check = (operand: AST.Expr, type: ResolvedType): boolean => {
       const t = unwrap(type)
       if (t.kind === 'pointer' || t.kind === 'func') return true
@@ -6222,6 +6245,10 @@ class CheckContext {
       // A constant address is a 32-bit value, whatever it's computed from.
       this.coerce(expr, actual, addressType(from), prefix)
       this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'slice' && from.kind === 'comptime_int') {
+      // 0 for an optional slice: the address 0, and a length of 0.
+      this.coerce(expr, actual, addressType(from), prefix)
+      this.coercions.set(expr, expected)
     } else if (to.kind === 'primitive' && from.kind === 'primitive') {
       if (from.name !== to.name) {
         this.exprTypes.set(expr, actual)
@@ -6245,12 +6272,17 @@ class CheckContext {
       // section has had its elements checked against the element type.)
       // A tuple literal among them meets a struct element as it meets any
       // struct: field by field, by name where it has names.
+      // So is an array literal among them where the element is an array:
+      // its own elements meet the inner element type as they would alone.
       const elementType = this.peelArraySize(to)
       const structs = unwrap(elementType).kind === 'tuple'
+      const rows = unwrap(elementType).kind === 'array'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
-        else if (type) this.coerce(element, type, elementType, prefix)
+        const inner = ungrouped(element).kind
+        if ((structs && inner === 'TupleExpr') || (rows && (inner === 'ArrayExpr' || inner === 'RepeatExpr'))) {
+          this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        } else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
@@ -6703,13 +6735,11 @@ class CheckContext {
   // checked at runtime.
   inferSlice(expr: AST.SliceExpr): ResolvedType {
     const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'take a range of'))
+    // A bound is what an index is: an integer of at most 32 bits, signed or
+    // not. A negative one is, as an unsigned number, past any length.
     const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
       if (!e) return { value: null, max: null }
-      const t = unwrap(this.inferExpr(e))
-      if (t.kind === 'comptime_int') this.checkExpr(e, primitive('u32'))
-      else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
-        this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
-      }
+      const t = unwrap(this.inferIndexValue(e, 'a range bound'))
       const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
       const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
@@ -6742,7 +6772,7 @@ class CheckContext {
       const endFits = e.max !== null && e.max <= n + 1n
       const startFits = s.value === 0n || (e.value !== null && s.max !== null && s.max <= e.value + 1n)
       proven = endFits && startFits
-      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
+      if (s.value !== null && e.value !== null && (s.value < 0n || s.value > e.value || e.value > n)) {
         this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
         proven = true // already reported; don't add a second error
       }
@@ -6769,10 +6799,13 @@ class CheckContext {
     return start !== null && end !== null && end >= start ? end - start : null
   }
 
-  // dst[a..b] = v fills the range with v; dst[a..b] = src copies src into it.
-  // The range is written, so it must be in bounds without a runtime check, like
-  // an indexed write. A copy also needs both lengths known at compile time and
-  // equal; memcpy is the explicit form for a runtime length.
+  // dst[a..b] = v fills the range with v, a value of its element type (a
+  // number, a struct, a slice, a pointer: anything an element can be
+  // assigned); dst[a..b] = src copies the elements of src into it, a slice
+  // or an array of that element type that is no element itself. The range is written, so it must be
+  // in bounds without a runtime check, like an indexed write. A copy also
+  // needs both lengths known at compile time and equal; memcpy is the
+  // explicit form for a runtime length.
   checkRangeAssignment(target: AST.SliceExpr, op: string, value: AST.Expr): void {
     if (op !== '=') {
       this.error(target.span.start, `a range can only be assigned with =`)
@@ -6788,24 +6821,59 @@ class CheckContext {
       this.error(target.span.start, `cannot write through a const range — use *mut or []mut for mutable access`)
     }
     const elem = dst.element
+    // An element as it lies in memory: in a table, the pointer to its row.
+    const cell = tableRow(dst) ?? elem
+    const fill = (): void => {
+      this.checkExpr(value, cell, 'fill value')
+      this.fills.add(target)
+    }
+    const dstLen = this.rangeLength(target)
+    const lengths = (srcLen: bigint | null): void => {
+      if (dstLen === null || srcLen === null) {
+        this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
+      } else if (dstLen !== srcLen) {
+        this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
+      }
+    }
     const valueType = unwrap(this.inferExpr(value))
     const isScalar = valueType.kind === 'primitive' || valueType.kind === 'comptime_int' || valueType.kind === 'comptime_float'
     if (isScalar) {
-      const e = unwrap(elem)
-      const oneValue = (e.kind === 'primitive' && !/^[iu](128|256|512)$/.test(e.name)) || e.kind === 'pointer'
-      if (!oneValue) {
-        this.error(value.span.start, `filling a range needs an element of one value, not ${typeToString(elem)}`)
-        return
-      }
-      this.checkExpr(value, elem, 'fill value: ')
+      fill()
       return
     }
-    // A copy: the source is a slice or pointer to an array of the same elements.
+    // An array literal that is no element is the elements to copy, laid out
+    // as the range's are: `buf[0..2] = [1, 2]`. Rows copied into a mutable
+    // table are rows of its own, `mut` like any rows of a *mut table.
+    if (valueType.kind === 'comptime_array' && !this.fits(value, cell)) {
+      this.checkExpr(value, pointer(array(elem, [valueType.count]), false, !!tableRow(dst) && dst.mutable))
+      lengths(BigInt(valueType.count))
+      return
+    }
+    // A value that can be assigned to an element fills, even where it is an
+    // array of elements as well (a Node of `type Node = *[2]Node`). Anything
+    // else is a copy: the source is a slice or pointer to an array of the
+    // same elements.
     const srcElem = valueType.kind === 'slice' ? valueType.element
       : valueType.kind === 'pointer' && unwrap(valueType.pointee).kind === 'array' ? (unwrap(valueType.pointee) as ArrayRT).element
       : valueType.kind === 'array' ? valueType.element
       : null
-    if (!srcElem || !typeEquals(unwrap(srcElem), unwrap(elem))) {
+    // (Its type says it where it is an array of elements: looking at it as
+    // an element would leave its type taken for one.)
+    const elements = !!srcElem && typeEquals(unwrap(srcElem), unwrap(elem))
+    if (!srcElem || (elements ? typeAssignable(cell, valueType) : this.fits(value, cell))) {
+      // A value that is no array is said to be no element.
+      fill()
+      return
+    }
+    if (!elements) {
+      // Neither. A value of the element type as it is written, or a row a
+      // table's rows can't be (a const one in a mutable table), was meant
+      // to fill: the fill says why it can't, as `m[i] = r` would.
+      const row = tableRow(dst)
+      if (typeAssignable(elem, valueType) || (row && typeAssignable(pointer(row.pointee), valueType))) {
+        fill()
+        return
+      }
       this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(elem)}`)
       return
     }
@@ -6813,18 +6881,26 @@ class CheckContext {
       this.error(value.span.start, `the source range may be out of bounds: resolve it with ?? or if let first`)
       return
     }
-    const dstLen = this.rangeLength(target)
+    // A table's elements are pointers to its rows: the rows of a const table
+    // are not to be written through a mutable one (as m[i] = r is refused).
+    const rows = tableRow(valueType)
+    if (rows && !typeAssignable(cell, rows)) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are ${typeToString(rows)}`)
+      return
+    }
+    // An array held in registers is stored element by element; its rows are
+    // values, which no row pointer can point to.
+    if (valueType.kind === 'array' && cell !== elem) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are held in registers`)
+      return
+    }
     let srcLen: bigint | null = null
     if (value.kind === 'SliceExpr') srcLen = this.rangeLength(value)
     else {
       const arr = valueType.kind === 'pointer' ? unwrap(valueType.pointee) : valueType
       if (arr.kind === 'array' && arr.sizes?.length === 1 && typeof arr.sizes[0] === 'number') srcLen = BigInt(arr.sizes[0])
     }
-    if (dstLen === null || srcLen === null) {
-      this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
-    } else if (dstLen !== srcLen) {
-      this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
-    }
+    lengths(srcLen)
   }
 
   // A value with no type written takes the type of what it is made of
@@ -6933,7 +7009,7 @@ class CheckContext {
     elem = this.rowOf(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
-    const idx = this.evalComptimeExpr(expr.index)
+    const idx = this.constantInType(expr.index)
     let proven = false
     if (size !== null) {
       if (idx && idx.kind === 'int') {
@@ -6958,13 +7034,17 @@ class CheckContext {
   }
 
   // An index is an offset in 32-bit memory: an integer no wider than that.
-  private inferIndexValue(index: AST.Expr): ResolvedType {
+  // A range's bounds are the same.
+  private inferIndexValue(index: AST.Expr, what = 'an index'): ResolvedType {
     const type = this.inferExpr(index)
     const t = unwrap(type)
-    if (t.kind === 'comptime_int') {
+    if (t.kind === 'comptime_int' && t.bits) {
+      // A bit pattern is the u32 it stands for: ~4294967280 is 15.
+      this.checkExpr(index, primitive('u32'))
+    } else if (t.kind === 'comptime_int') {
       this.coerce(index, type, addressType(t))
     } else if (!isInteger(t) || (byteSize(t) ?? 8) > 4) {
-      this.error(index.span.start, `an index must be an integer of at most 32 bits, not ${typeToString(type)}`)
+      this.error(index.span.start, `${what} must be an integer of at most 32 bits, not ${typeToString(type)}`)
     }
     return type
   }
@@ -7097,7 +7177,7 @@ class CheckContext {
         // Fixed-size pointer array *[N]T: check bounds
         if (sizes && typeof sizes[0] === 'number') {
           const n = sizes[0]
-          const idx = this.evalComptimeExpr(expr.index)
+          const idx = this.constantInType(expr.index)
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
@@ -7353,7 +7433,11 @@ class CheckContext {
     }
     for (const b of valued) {
       const value = bodyValue(b.body)
-      if (value) this.coerce(value, b.type, type)
+      if (!value) continue
+      // An array literal next to a pointer or a slice is laid out as one, as
+      // it is wherever it meets that type: `if c { xs } else { [] }`.
+      if (laidOutLiteral(value, b.type, type)) this.checkExpr(value, type)
+      else this.coerce(value, b.type, type)
     }
     return type
   }
@@ -9861,6 +9945,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const t = unwrap(to)
   const single = (x: ResolvedType) => x.kind === 'primitive' || x.kind === 'pointer' || x.kind === 'func' || isComptimeNumber(x)
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
+  // 0 is none for an optional slice, as it is for an optional pointer.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot
@@ -9993,6 +10079,17 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// Whether a branch's value is an array literal with no type of its own that
+// is to be laid out in memory as the pointer or slice the branches are.
+function laidOutLiteral(value: AST.Expr, own: ResolvedType, type: ResolvedType): boolean {
+  const literal = ungrouped(value)
+  const to = unwrap(type)
+  const from = unwrap(own)
+  return (literal.kind === 'ArrayExpr' || literal.kind === 'RepeatExpr')
+    && (from.kind === 'comptime_array' || from.kind === 'comptime_list')
+    && (to.kind === 'slice' || to.kind === 'pointer')
+}
 
 // The loops that zero each row of a table, one for each table in it: a row
 // of *[2][2][2]i32 is a table itself, whose rows are the cells.
