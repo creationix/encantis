@@ -3008,6 +3008,17 @@ describe('arguments by place and by name', () => {
       type One = (v: i32)
       func a() -> One => (w: 5)
     `)).toEqual(["field 'w' not found in One, whose only field is v"])
+    // A value keeps its order: the error says where to give it the type.
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func mk() -> (r: i32, q: i32) => (1, 2)
+      func a() -> Pt => mk()
+      func b() -> (a: i32, q: i32) => (1, 2)
+      func c() -> Pt => b()
+    `)).toEqual([
+      "cannot assign (r: i32, q: i32) to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
+      'cannot assign (a: i32, q: i32) to Pt',
+    ])
     // A tuple type without names, a slice and named results have the
     // fields they have.
     expect(errs(`

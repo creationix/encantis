@@ -4489,7 +4489,7 @@ class CheckContext {
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${reordered(from, to, typeToString(expected))}`)
       return
     }
     const grouped = groupedExpr(expr)
@@ -7384,6 +7384,17 @@ function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'para
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// What to say of a struct value whose fields are those of the struct
+// wanted, in another order: only a literal gives fields by name.
+function reordered(from: ResolvedType, to: ResolvedType, shown: string): string {
+  if (from.kind !== 'tuple' || to.kind !== 'tuple' || from.fields.length !== to.fields.length) return ''
+  const names = (t: TupleRT) => t.fields.map((f) => f.name)
+  const [a, b] = [names(from), names(to)]
+  if (a.some((name) => name === null) || a.every((name, i) => name === b[i])) return ''
+  if (!a.every((name) => b.includes(name)) || new Set(a).size !== a.length) return ''
+  return `: its fields have the names of ${shown}'s in another order, and only a literal gives fields by name; give the value the type ${shown} where it is made`
 }
 
 // Names as a list is said: `x`, `x and y`, `x, y and z`.

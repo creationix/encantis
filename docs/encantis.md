@@ -572,7 +572,7 @@ Point: field 'x' is given twice
 Point: field 'y' is given twice
 ```
 
-A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value, an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, or a value stored through a pointer. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
+A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value, an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, or a value stored through a pointer. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. Only a literal is taken by name: a value made elsewhere keeps its order, and one whose fields have the struct's names in another order is not that struct ([9.2](#structural-coercion)); it is given the struct's type where it is made. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
 
 ```ents
 type Point = (x:f32, y:f32)
@@ -588,7 +588,7 @@ test "a literal with names by name, one without by position" {
 }
 ```
 
-A name the struct has no field of is an error, and so is a field given twice or not at all. A tuple type without names, such as `(f32, f32)`, has no field a name could give:
+A name the struct has no field of is an error, and so is a field given twice or not at all. A tuple type without names, such as `(f32, f32)`, has no field a name could give. The errors name the fields there are:
 
 ```ents
 type Point = (x:f32, y:f32)
@@ -597,6 +597,10 @@ func a() -> Point => (x: 1.0, z: 2.0)
 func b() -> Point => (x: 1.0)
 func c() -> Point => (y: 1.0, 2.0)
 func d() -> (f32, f32) => (x: 1.0, y: 2.0)
+func e() -> Point {
+  let v = (y: 1.0:f32, x: 2.0:f32)
+  return v
+}
 ```
 
 ```errors
@@ -605,6 +609,7 @@ Point expects 2 fields, got 1: no value for y
 Point: field 'y' is given twice
 field 'x' not found in (f32, f32), whose fields have no names: give the values by position
 field 'y' not found in (f32, f32), whose fields have no names: give the values by position
+cannot assign (y: f32, x: f32) to Point: its fields have the names of Point's in another order, and only a literal gives fields by name; give the value the type Point where it is made
 ```
 
 The values are computed in the order they are written, and then each goes to its field, for a constructor and a literal alike: `Point(y: f(), x: g())` calls `f` before `g`. Where the fields are written in the order the type declares them, that is all there is to it. Where they are not, a value that something written after it could change or tell apart (a call, a read of memory or of a global, anything that can trap) is computed in its turn and waits in a local until its field's place comes; a constant, a local that no other value sets, or arithmetic on them that cannot trap is computed at its field's place, as nothing can tell the difference:
