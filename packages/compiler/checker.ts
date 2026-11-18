@@ -2779,6 +2779,14 @@ class CheckContext {
     if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && expected.kind === 'pointer') {
       const operand = refOperand
       if (expected.mutable) markMut(operand)
+      // An array written out where a pointer to an array is wanted is laid
+      // out in the data section as it is without the `&`, and `&` of it is
+      // that pointer: `&[1, 2]` for a *[2]i32 is `[1, 2]`.
+      if ((operand.kind === 'ArrayExpr' || operand.kind === 'RepeatExpr') && unwrap(expected.pointee).kind === 'array') {
+        const result = this.checkExpr(expr.operand, expected)
+        this.exprTypes.set(expr, result)
+        return result
+      }
       this.checkExpr(expr.operand, expected.pointee)
       // Give the literal its own cell in the data section, as inferExpr does.
       if (operand.kind !== 'TupleExpr') {

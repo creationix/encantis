@@ -1731,7 +1731,7 @@ With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no
 
 <!-- spec:begin compile -->
 
-`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A variable is held in registers and has none, whatever type is expected of `&x`:
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
 
 ```ents
 func get(p: *i32) -> i32 => p.*

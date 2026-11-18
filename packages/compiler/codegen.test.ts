@@ -3161,6 +3161,27 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(x.tuple()).toBe(12)
   })
 
+  test('of an array written out is that array laid out, as it is without the &', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      func row(p: *[2]i32) -> i32 => p[0] * 10 + p[1]
+      func pts(p: *[2]Pt) -> i32 => p[0].x * 1000 + p[0].y * 100 + p[1].x * 10 + p[1].y
+      func put(p: *mut [2]i32) -> i32 {
+        p[0] = 9
+        return row(p)
+      }
+      export func ints(v: i32) -> i32 => row(&[1, 2]) * 10000 + row(&[3; 2]) * 100 + row(&[v, 4])
+      export func structs() -> i32 {
+        let p: *[2]Pt = &[(y: 5, x: 6), Pt(7, 8)]
+        return pts(p)
+      }
+      export func own() -> i32 => put(&[1, 2]) * 100 + row([1, 2])
+    `)
+    expect(x.ints(5)).toBe(123354)
+    expect(x.structs()).toBe(6578)
+    expect(x.own()).toBe(9212)
+  })
+
   test('of a row of a many-pointer table is where its row pointer is', async () => {
     const x = await run(`
       data rows: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
