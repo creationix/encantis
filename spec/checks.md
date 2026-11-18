@@ -698,11 +698,13 @@ data bufs: *mut [1]Buf = mut [([0:u8; 4], 0)]
 func fill(buf: []mut u8) -> u32 => buf.len
 func fill(n: u32) -> u32 => n
 
+func count(s: []u8) -> u32 => s.len
+
 func f() -> u32 {
   let buf: []mut u8 = mut [0:u8; 20]
   let b = Buf(mut [0:u8; 4], 0)
   let cell = &0:u32
-  return fill(mut "hello") + fill(buf) + fill(b.bytes) + cell.*
+  return fill(mut "hello") + fill(buf) + fill(b.bytes) + cell.* + (mut "ab").fill() + count(buf[2..] ?? "")
 }
 ```
 
@@ -722,7 +724,12 @@ func f(x: i32) -> u32 {
   let buf: []mut u8 = [0:u8; 20]
   let b: Buf = ([0:u8; 4], 0)
   let p: *mut [2]i32 = [x, 8]
-  return fill("hello") + fill(buf)
+  return fill("hello") + fill(buf) + "ab".fill() + fill(buf[2..] ?? "")
+}
+
+func g(x: []u8) -> u32 {
+  let parts: []mut []u8 = `a${x}b`
+  return parts.len
 }
 ```
 
@@ -736,6 +743,20 @@ a literal is constant: write `mut [0:u8; 20]` for a []mut u8
 a literal is constant: write `mut [0:u8; 4]` for a []mut u8
 a literal is constant: write `mut [x, 8]` for a *mut [2]i32
 argument 1: a literal is constant: write `mut "hello"` for a []mut u8
+receiver: a literal is constant: write `(mut "ab")` for a []mut u8
+a literal is constant: write `mut ""` for a []mut u8
+a literal is constant: write `mut `a${x}b`` for a []mut []u8
+```
+
+`mut` goes on the literal itself, so before a method call it is a syntax error that shows the parentheses:
+
+```ents
+func fill(buf: []mut u8) -> u32 => buf.len
+func f() -> u32 => mut "ab".fill()
+```
+
+```errors
+mut goes on the literal itself: write (mut "ab").fill()
 ```
 
 ## Values in a literal in memory
@@ -1389,6 +1410,16 @@ argument 1: cannot assign 'hi' to []u8 — a single-quoted literal is codepoints
 argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a")
 cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
 'ok' is a tuple of codepoints, and match cannot compare a tuple pattern yet: compare one field at a time
+```
+
+Nor is one a slice in data:
+
+```ents
+data greeting: []u8 = 'hi'
+```
+
+```errors
+cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")
 ```
 
 Single quotes hold at least one character, and an escape names a character: `\u{D800}` to `\u{DFFF}` are UTF-16 surrogates, and none is past `\u{10FFFF}`.

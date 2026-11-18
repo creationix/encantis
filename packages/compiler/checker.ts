@@ -1217,9 +1217,15 @@ class CheckContext {
     const value = ungrouped(decl.value)
 
     // A (ptr, len) pair is a slice already: there is no literal to lay out,
-    // and so nothing for the name to point at.
+    // and so nothing for the name to point at. Single quotes are codepoints,
+    // which no slice is, whatever their number.
     const literal = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
     const literalType = declaredType ?? (value.kind === 'AnnotationExpr' ? inferredType : null)
+    const codepoints = quotedCodepoints(literal)
+    if (codepoints && literalType && wantsAddress(literalType)) {
+      this.error(literal.span.start, `cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(literalType)} — ${notAString(codepoints)}`)
+      return
+    }
     if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
       this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
       return
@@ -1605,13 +1611,25 @@ class CheckContext {
   // is writable all through, with what it lays out apart.
   private mutLiterals = 0
 
+  // What each `a ?? b` being checked is given for.
+  private coalesceTargets = new WeakMap<AST.CoalesceExpr, ResolvedType>()
+
+  // How many errors a literal has had of its own, as written: it lacks `mut`,
+  // it is in the wrong quotes. In an instance such an error stays as it is,
+  // and is not taken for something the type arguments fail to bring.
+  private literalMistakes = 0
+
   // A literal is constant unless it is written with `mut`: where a mutable
   // pointer or slice is wanted, the error shows it written so. An attempt
   // (which function of a name a call means) takes the literal as it is meant:
-  // the check of the call then names the keyword.
+  // the check of the call then names the keyword. The receiver of x.f() is
+  // shown in parentheses, as `mut "ab".f()` would be mut of the call.
   private requireMutLiteral(expr: AST.Expr, expected: ResolvedType, prefix: string): void {
     if (this.mutLiterals > 0 || this.attempting > 0 || writtenMut(expr)) return
-    this.error(expr.span.start, `${prefix}a literal is constant: write \`mut ${writtenLiteral(expr, (e) => this.exprTypes.get(e))}\` for a ${typeToString(expected)}`)
+    this.literalMistakes++
+    const written = `mut ${writtenLiteral(expr, (e) => this.exprTypes.get(e))}`
+    const fix = prefix === 'receiver: ' ? `(${written})` : written
+    this.error(expr.span.start, `${prefix}a literal is constant: write \`${fix}\` for a ${typeToString(expected)}`)
   }
 
   // Validate data literal byte values against a ranged element type
@@ -2884,6 +2902,8 @@ class CheckContext {
       return expected
     }
 
+    // a ?? b: the fallback meets what the whole is given for (see inferCoalesce).
+    if (expr.kind === 'CoalesceExpr') this.coalesceTargets.set(expr, expected)
     const inferred = this.inferExprInner(expr, true)
     const prefix = errorContext ? `${errorContext}: ` : ''
 
@@ -2891,12 +2911,14 @@ class CheckContext {
     // address. A string is bytes in memory, never a character.
     const codepoints = quotedCodepoints(expr)
     if (codepoints && wantsAddress(expected)) {
+      this.literalMistakes++
       this.error(expr.span.start, `${prefix}cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(expected)} — ${notAString(codepoints)}`)
       this.exprTypes.set(expr, expected)
       return expected
     }
     const bytes = stringBytes(expr)
     if (bytes && isInteger(expected) && (bytes.length === 1 || oneCharacter(bytes) !== null)) {
+      this.literalMistakes++
       this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)} — ${notACharacter(bytes)}`)
       this.exprTypes.set(expr, expected)
       return expected
@@ -3591,6 +3613,7 @@ class CheckContext {
       // This allows log("message") to propagate *[!u8] to the string literal
       const listed = this.errors.length
       const reported = this.errorsReported
+      const mistakes = this.literalMistakes
       let argIndex = 0
       for (const arg of expr.args) {
         if (arg.value && argIndex < calleeType.params.length) {
@@ -3599,7 +3622,7 @@ class CheckContext {
           argIndex++
         }
       }
-      if (required !== null && this.errorsReported > reported && this.notAccepted(expr, required, listed)) return RECOVERY
+      if (required !== null && this.errorsReported > reported && this.literalMistakes === mistakes && this.notAccepted(expr, required, listed)) return RECOVERY
 
       // Return type of function
       const result = calleeType.returns.length === 0 ? VOID
@@ -5162,8 +5185,13 @@ class CheckContext {
       elemType = leftType
     }
 
-    // Check fallback type is compatible (checkExpr handles coercion)
-    this.checkExpr(expr.fallback, elemType)
+    // Check fallback type is compatible (checkExpr handles coercion). Given
+    // for the const pointer or slice the left side's value is the mutable one
+    // of, the fallback is given for that too: in println(rest ?? "") nothing
+    // is written through it, so "" needs no mut.
+    const target = this.coalesceTargets.get(expr)
+    this.coalesceTargets.delete(expr)
+    this.checkExpr(expr.fallback, target && constOf(elemType, target) ? target : elemType)
 
     // Record element type for codegen
     this.types.set(typeKey(expr.span.start, 'CoalesceBinding'), elemType)
@@ -7419,7 +7447,7 @@ function writtenLiteral(expr: AST.Expr, typeOf: (e: AST.Expr) => ResolvedType | 
         return String(v.value)
       }
       case 'ArrayExpr':
-        return `[${e.elements.map(text).join(', ')}]`
+        return e.template ? spellTemplate(e, text) : `[${e.elements.map(text).join(', ')}]`
       case 'RepeatExpr':
         return `[${text(e.value)}; ${text(e.count)}]`
       case 'TupleExpr':
@@ -7445,6 +7473,28 @@ function writtenLiteral(expr: AST.Expr, typeOf: (e: AST.Expr) => ResolvedType | 
   return inner.kind === 'LiteralExpr' ? '"..."' : inner.kind === 'TupleExpr' ? '(...)' : '[...]'
 }
 
+// A template literal written out again: its fragments as text, each value
+// in ${}.
+function spellTemplate(e: AST.ArrayExpr, text: (e: AST.Expr) => string): string {
+  let out = '`'
+  for (const element of e.elements) {
+    if (element.kind !== 'LiteralExpr' || element.value.kind !== 'string') {
+      out += `\${${text(element)}}`
+      continue
+    }
+    let chars: string[]
+    try {
+      chars = [...new TextDecoder('utf-8', { fatal: true }).decode(element.value.bytes)]
+    } catch {
+      out += [...element.value.bytes].map((b) => `\\x${b.toString(16).padStart(2, '0')}`).join('')
+      continue
+    }
+    const spelled = spellCodepoints(chars.map((c) => c.codePointAt(0)!), '"').slice(1, -1).replaceAll('\\"', '"')
+    out += spelled.replaceAll('`', '\\`').replaceAll('${', '\\${')
+  }
+  return `${out}\``
+}
+
 // What a single-quoted literal that meets an address type is told: it is no
 // string, and how the string it looks like is written.
 function notAString(codepoints: number[]): string {
@@ -7458,6 +7508,14 @@ function notACharacter(bytes: Uint8Array): string {
   if (one !== null) return `a string is bytes in memory, not a character: a character is written in single quotes (${spellCodepoints([one], "'")})`
   if (bytes.length === 1) return `a string is bytes in memory, not a character; write its byte as a number (${bytes[0]})`
   return 'a string is bytes in memory, not a character'
+}
+
+// Whether `target` is `type`, a mutable pointer or slice, made const.
+function constOf(type: ResolvedType, target: ResolvedType): boolean {
+  const t = unwrap(type)
+  const to = unwrap(target)
+  if ((t.kind !== 'pointer' && t.kind !== 'slice') || !t.mutable || t.kind !== to.kind || to.mutable) return false
+  return typeEquals({ ...t, mutable: false }, to)
 }
 
 // Where an address is wanted: a pointer, a slice, a framed array.

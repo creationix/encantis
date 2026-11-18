@@ -2731,6 +2731,22 @@ describe('a literal in single quotes is codepoints', () => {
   })
 })
 
+describe('the fallback of ?? given for a const slice', () => {
+  test('is a const literal, and the value is the one there is', async () => {
+    const source = `
+      data buf = mut [1:u8, 2, 3]
+      func count(s: []u8) -> u32 => s.len
+      func head(s: []u8) -> u8 => s[0] ?? 0
+      export func len(i: u32) -> u32 => count(buf[i..] ?? "none")
+      export func at(i: u32) -> u8 => head(buf[i..] ?? "none")
+    `
+    expect(typecheck(parse(source).module!).errors).toEqual([])
+    const { len, at } = await run(source)
+    expect([len(0), len(2), len(3), len(4), len(9)]).toEqual([3, 1, 0, 4, 4])
+    expect([at(0), at(2), at(3), at(4)]).toEqual([1, 3, 0, 110])
+  })
+})
+
 describe('an escape in a string', () => {
   test('\\xHH is that byte, \\u{H..} the UTF-8 bytes of that character', async () => {
     const { at } = await run(`

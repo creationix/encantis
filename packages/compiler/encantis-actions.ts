@@ -242,6 +242,11 @@ export class LiteralError extends Error {
   }
 }
 
+// What `mut` can be written before: a literal laid out in memory.
+function isMutLiteral(expr: AST.Expr): boolean {
+  return expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr'
+}
+
 // One codepoint of a single-quoted literal: exactly the int literal of that
 // value, as if it were written there as a number.
 function codepoint(value: number, at: Span): AST.LiteralExpr {
@@ -1463,7 +1468,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
         return expr
       }
     }
-    throw new Error(`mut can only be applied to literals (arrays, strings, tuples), not ${expr.kind}`)
+    // mut "ab".fill() is mut of the call: the literal it is meant for is
+    // written in parentheses with it.
+    let receiver: AST.Expr = expr
+    while (receiver.kind === 'CallExpr' || receiver.kind === 'MemberExpr' || receiver.kind === 'IndexExpr' || receiver.kind === 'SliceExpr') {
+      receiver = receiver.kind === 'CallExpr' ? receiver.callee : receiver.object
+    }
+    const text = operand.sourceString
+    const at = span(operand).start
+    if (receiver !== expr && isMutLiteral(receiver)) {
+      const literal = text.slice(receiver.span.start - at, receiver.span.end - at)
+      throw new LiteralError(`mut goes on the literal itself: write (mut ${literal})${text.slice(receiver.span.end - at)}`, span(this))
+    }
+    throw new LiteralError(`mut goes before a literal (an array, a string or a tuple), not before ${text}`, span(this))
   },
 
   UnaryExpr(expr) {
@@ -1807,7 +1824,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   TemplateLiteral_plain(tmpl) {
     const bytes = templateTokenBytes(tmpl)
     if (bytes.length === 0) {
-      return { kind: 'ArrayExpr', elements: [], span: span(this) } as AST.ArrayExpr
+      return { kind: 'ArrayExpr', elements: [], template: true, span: span(this) } as AST.ArrayExpr
     }
     return {
       kind: 'ArrayExpr',
@@ -1816,6 +1833,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
         value: { kind: 'string', bytes },
         span: span(this),
       } as AST.LiteralExpr],
+      template: true,
       span: span(this),
     } as AST.ArrayExpr
   },
@@ -1840,7 +1858,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     }
     // tail: }text` — skip 1 (}) at start, 1 (`) at end
     pushSegment(templateTokenBytes(tail), tail, 1, 1)
-    return { kind: 'ArrayExpr', elements, span: span(this) } as AST.ArrayExpr
+    return { kind: 'ArrayExpr', elements, template: true, span: span(this) } as AST.ArrayExpr
   },
 
   templateChar_escapeTick(_seq) { return '`' },

@@ -1417,6 +1417,63 @@ describe('a literal for a mutable pointer or slice', () => {
   })
 })
 
+describe('what a literal error says, wherever the literal is', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+  const notAString = (quoted: string, type: string) =>
+    `cannot assign '${quoted}' to ${type} — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("${quoted}")`
+
+  test('a data slice of a single-quoted literal is told to use double quotes', () => {
+    expect(errs("data d: []u8 = 'hi'")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = ('hi')")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = 'hi':[]u8")).toEqual([notAString('hi', '[]u8')])
+    // A (ptr, len) pair written as numbers is still one.
+    expect(errs('data d: []u8 = (104, 105)')).toEqual(['data value must be a literal to lay out: a (ptr, len) pair is a slice already'])
+  })
+
+  test('the receiver of a method call is told to write mut in parentheses', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\n'
+    expect(errs(`${source}func f() -> u32 => "ab".fill() + [1, 2].fill() + (mut "ok").fill()`))
+      .toEqual(['receiver: a literal is constant: write `(mut "ab")` for a []mut u8', 'receiver: a literal is constant: write `(mut [1, 2])` for a []mut u8'])
+    // which is how it parses: mut before "ab".fill() is told the same.
+    const parsed = parse(`${source}func f() -> u32 => mut "ab".fill()`)
+    expect(parsed.errors.map(e => e.shortMessage)).toEqual(['mut goes on the literal itself: write (mut "ab").fill()'])
+    expect(parse('func f(x: u8) -> u8 => mut x').errors.map(e => e.shortMessage))
+      .toEqual(['mut goes before a literal (an array, a string or a tuple), not before x'])
+  })
+
+  test('a template literal is shown as it is written', () => {
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = `a${x}b\\n`\n  return t.len\n}'))
+      .toEqual([constant('`a${x}b\\n`', '[]mut []u8')])
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = mut `a${x}b`\n  return t.len\n}')).toEqual([])
+  })
+
+  test('an instance keeps the error a literal has of its own', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\nfunc greet(s: []u8) -> u32 => s.len\nfunc take(c: u8) -> u8 => c\nfunc first(p: *u8) -> u8 => p.*\n'
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => fill("ab")\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([`argument 1: ${constant('"ab"', '[]mut u8')}, in h(T = u8)`])
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet('hi') + take("a") + first('a')\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([
+        `argument 1: ${notAString('hi', '[]u8')}, in h(T = u8)`,
+        `argument 1: cannot assign *[1]u8 to u8 — a string is bytes in memory, not a character: a character is written in single quotes ('a'), in h(T = u8)`,
+        `argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a"), in h(T = u8)`,
+      ])
+    // What the type argument does not bring is still a requirement.
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet(x)\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual(["no function 'greet' accepts (u8), in h(T = u8)"])
+  })
+
+  test('the fallback of ?? is given for what the whole is given for', () => {
+    const source = 'func first(s: []u8) -> u32 => s.len\n'
+    // A const slice is wanted: "" needs no mut.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 => first(x[i..] ?? "")`)).toEqual([])
+    expect(errs(`${source}func f(t: [][]mut u8) -> u32 {\n  let s: []u8 = t[0] ?? "ab"\n  return first(s)\n}`)).toEqual([])
+    // A mutable one is: it does.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s: []mut u8 = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+  })
+})
+
 describe('a string literal as a slice', () => {
   const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
   const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>

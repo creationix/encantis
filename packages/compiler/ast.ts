@@ -499,6 +499,8 @@ export type LiteralValue =
 export interface ArrayExpr extends BaseNode {
   kind: 'ArrayExpr'
   elements: Expr[]
+  // Written as a template literal (`a${x}b`): its fragments and values.
+  template?: true
   mut?: boolean  // mutable data, skip deduplication in data section
   dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }

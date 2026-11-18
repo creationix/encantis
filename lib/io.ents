@@ -55,7 +55,7 @@ export func print_u64(n: u64) {
     v /= 10
     break when v == 0
   }
-  println(digits[i..] ?? mut "")
+  println(digits[i..] ?? "")
 }
 
 // Writes n in decimal, with a - when negative, then a newline.
