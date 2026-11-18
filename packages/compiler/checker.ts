@@ -6953,7 +6953,11 @@ class CheckContext {
     }
     for (const b of valued) {
       const value = bodyValue(b.body)
-      if (value) this.coerce(value, b.type, type)
+      if (!value) continue
+      // An array literal next to a pointer or a slice is laid out as one, as
+      // it is wherever it meets that type: `if c { xs } else { [] }`.
+      if (laidOutLiteral(value, b.type, type)) this.checkExpr(value, type)
+      else this.coerce(value, b.type, type)
     }
     return type
   }
@@ -9593,6 +9597,17 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// Whether a branch's value is an array literal with no type of its own that
+// is to be laid out in memory as the pointer or slice the branches are.
+function laidOutLiteral(value: AST.Expr, own: ResolvedType, type: ResolvedType): boolean {
+  const literal = ungrouped(value)
+  const to = unwrap(type)
+  const from = unwrap(own)
+  return (literal.kind === 'ArrayExpr' || literal.kind === 'RepeatExpr')
+    && (from.kind === 'comptime_array' || from.kind === 'comptime_list')
+    && (to.kind === 'slice' || to.kind === 'pointer')
+}
 
 // The loops that zero each row of a table, one for each table in it: a row
 // of *[2][2][2]i32 is a table itself, whose rows are the cells.

@@ -512,6 +512,82 @@ func f(c: bool, n: i32) {
 }
 ```
 
+An array literal in a branch has no type of its own: next to a branch that is a slice or a pointer, it is laid out as one, as it is where a `let` gives the type. The `if` (or `match`) is then of the typed branch's type, and compiles as it does with the type written.
+
+<!-- spec:begin compile -->
+
+```ents
+data three = [4:i32, 5, 6]
+data pair = [1:i32, 2]
+
+func empty(c: bool, xs: []i32) -> u32 {
+  let ys = if c { xs } else { [] }
+  return ys.len
+}
+func listed(c: bool, xs: []i32) -> i32 {
+  let ys = if c { [7, 8] } else { xs }
+  return (ys[1] ?? 0) + ys.len as i32 * 100
+}
+func arms(k: u32, xs: []i32) -> u32 {
+  let ys = match k {
+    0 => xs
+    1 => [9]
+    _ => [0; 4]
+  }
+  return ys.len
+}
+func ptr(c: bool) -> i32 {
+  let p = if c { pair } else { [7, 8] }
+  return p[1]
+}
+func found(i: u32, xss: [][]i32) -> u32 {
+  let ys = if let x = xss[i] { x } else { [3, 3] }
+  return ys.len
+}
+
+test "a literal branch is of the typed branch's type" {
+  assert empty(true, three) == 3
+  assert empty(false, three) == 0
+  assert listed(true, three) == 208
+  assert listed(false, three) == 305
+  assert arms(0, three) + arms(1, three) + arms(2, three) == 8
+  assert ptr(true) * 10 + ptr(false) == 28
+  assert found(0, [three]) + found(1, [three]) == 5
+}
+```
+
+```ents same-wasm
+data three = [4:i32, 5, 6]
+data pair = [1:i32, 2]
+
+func empty(c: bool, xs: []i32) -> u32 {
+  let ys: []i32 = if c { xs } else { [] }
+  return ys.len
+}
+func listed(c: bool, xs: []i32) -> i32 {
+  let ys: []i32 = if c { [7, 8] } else { xs }
+  return (ys[1] ?? 0) + ys.len as i32 * 100
+}
+func arms(k: u32, xs: []i32) -> u32 {
+  let ys: []i32 = match k {
+    0 => xs
+    1 => [9]
+    _ => [0; 4]
+  }
+  return ys.len
+}
+func ptr(c: bool) -> i32 {
+  let p: *[2]i32 = if c { pair } else { [7, 8] }
+  return p[1]
+}
+func found(i: u32, xss: [][]i32) -> u32 {
+  let ys: []i32 = if let x = xss[i] { x } else { [3, 3] }
+  return ys.len
+}
+```
+
+<!-- spec:end -->
+
 ## Destructuring
 
 A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.

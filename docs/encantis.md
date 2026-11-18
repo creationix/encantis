@@ -2283,7 +2283,7 @@ if flag { ... }   // OK: flag is bool
 
 The same goes for `while`, `when`, `assert`, and the operands of `&&`, `||` and `!`.
 
-An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)).
+An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)). A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`.
 
 ```ents
 func sign(x: i32) -> i32 => if x < 0 { -1 } elif x > 0 { 1 } else { 0 }
