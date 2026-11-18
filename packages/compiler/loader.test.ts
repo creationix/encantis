@@ -501,6 +501,35 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     })
   })
 
+  // However deep in the library the error is, the module that asked has one
+  // error at its call, naming the error and where it is; and the calls in
+  // between, in whichever modules, have none.
+  test('an error deep in a chain is told once at the call of ordinary code that started it', async () => {
+    const files = {
+      'lib.ents': 'export func slot(comptime K: type, k: K) -> bool => eq(k, k)\nexport func add(comptime K: type, k: K) -> u32 => if slot(k) { hash(k) } else { 0 }\n',
+      'main.ents': 'import "./lib" "add" func add(comptime K: type, k: K) -> u32\ntype Cell = (x: i32, y: i32)\nfunc hash(c: Cell) -> u32 => c.x as u32\nexport func f(c: Cell) -> u32 => add(c)\n',
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'main.ents'))
+      expect(check.results.get(join(dir, 'lib.ents'))?.errors.map((e) => e.message)).toEqual(["no function 'eq' accepts (Cell, Cell), in slot(K = Cell)"])
+      expect(check.results.get(join(dir, 'main.ents'))?.errors.map((e) => e.message)).toEqual([
+        "add(K = Cell) cannot be instantiated: no function 'eq' accepts (Cell, Cell), in slot(K = Cell) (lib.ents:1:53)",
+      ])
+    })
+    const chain = {
+      'b.ents': 'export func g(comptime T: type, x: T) -> T => x * x\n',
+      'a.ents': 'import "./b" "g" func g(comptime T: type, x: T) -> T\nexport func f(comptime T: type, x: T) -> T => g(x)\n',
+      'main.ents': 'import "./a" "f" func f(comptime T: type, x: T) -> T\ntype Pt = (x: i32, y: i32)\nexport func h(p: Pt) -> i32 => f(p).x\n',
+    }
+    await inDir(chain, async (dir) => {
+      const { check } = await program(join(dir, 'main.ents'))
+      const errors = (name: string) => check.results.get(join(dir, name))?.errors.map((e) => e.message)
+      expect(errors('b.ents')).toEqual(["'*' cannot be applied to Pt and Pt, in g(T = Pt)"])
+      expect(errors('a.ents')).toEqual([])
+      expect(errors('main.ents')).toEqual(["f(T = Pt) cannot be instantiated: '*' cannot be applied to Pt and Pt, in g(T = Pt) (b.ents:1:47)"])
+    })
+  })
+
   // Each mistake in importing a generic is one error, and the uses of what
   // was not imported say nothing more.
   test('a wrong generic import is one error', async () => {

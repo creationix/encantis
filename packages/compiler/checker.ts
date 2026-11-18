@@ -143,9 +143,6 @@ export interface Instance {
   usedSite: boolean
   lookedUp: Map<string, string[]>
   requests: Instance[]
-  // Set once an error in it was reported at the call of another module that
-  // asked for it (see reportToRequester)
-  reportedOutside?: true
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -509,16 +506,16 @@ export function typecheckProgram(
   const checked: { path: string; ctx: CheckContext; module: AST.Module }[] = []
 
   // Checks the instances asked for and not yet checked, in every module,
-  // and tells the modules that asked for them of their errors. Says whether
-  // there were any.
+  // and then tells the modules that asked for them of their errors. Says
+  // whether there were any.
   function drain(): boolean {
     let any = false
     for (let more = true; more; ) {
       more = false
       for (const { ctx } of checked) if (ctx.drainLate()) more = true
-      for (const { ctx } of checked) if (ctx.reportToRequesters()) more = true
       any ||= more
     }
+    for (const { ctx } of checked) ctx.reportToRequesters()
     return any
   }
 
@@ -7719,6 +7716,7 @@ class CheckContext {
     }
     if (existing) {
       requester?.requests.push(existing)
+      if (!requester && !this.asked.has(existing)) this.asked.set(existing, { at, told: false })
       return existing
     }
 
@@ -7774,6 +7772,7 @@ class CheckContext {
       requests: [],
     }
     requester?.requests.push(inst)
+    if (!requester) this.asked.set(inst, { at, told: false })
     sym.instances.set(copyKey ?? key, inst)
     owner.instances.push(inst)
     if (!sym.signatureOnly) owner.instanceQueue.push(inst)
@@ -8155,31 +8154,59 @@ class CheckContext {
       this.errors.push(error)
     }
     const inst = offset >= INSTANCE_STRIDE ? this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1] : undefined
-    if (inst && inst.requestedIn !== this) this.errorsIn.set(error, { inst, message })
+    if (inst) this.errorsIn.set(error, { inst, message })
   }
 
-  // The errors of instances that another module's code asked for, with the
-  // instance and the message as it was reported (see reportToRequesters)
+  // The errors of instances, with the instance and the message as it was
+  // reported (see reportToRequesters)
   private errorsIn = new WeakMap<TypeError, { inst: Instance; message: string }>()
 
-  // An error in an instance that another module's code asked for is listed
-  // with the module that declares the generic, where it is. The module that
-  // asked is told too, once, at its call: its own errors are what its author
-  // reads first, and the instance is there because of that call. Done once
-  // the instances are checked, with what they report then: an error can be
-  // taken back for a better one (see notAccepted). Says whether it told any.
-  reportToRequesters(): boolean {
-    let told = false
+  // The instances this module's ordinary code asked for, at the first call
+  // of each (see reportToRequesters)
+  private asked = new Map<Instance, { at: number; told: boolean }>()
+
+  // The first error an instance of this module's has, as it was reported
+  private errorOf(inst: Instance): { error: TypeError; message: string } | undefined {
     for (const error of this.errors) {
       const found = this.errorsIn.get(error)
-      if (!found || found.inst.reportedOutside) continue
-      const { inst, message } = found
-      inst.reportedOutside = true
-      told = true
-      const where = this.source && this.filePath ? ` (${fileName(this.filePath)}:${lineAndColumn(this.source, error.offset)})` : ''
-      inst.requestedIn.error(inst.requestedAt, `${inst.label} cannot be instantiated: ${message}${where}`)
+      if (found?.inst === inst) return { error, message: found.message }
     }
-    return told
+    return undefined
+  }
+
+  // An error in an instance is listed with the module that declares the
+  // generic, where it is, with the calls that led there as notes. Where the
+  // call of ordinary code that the chain started from is in another module,
+  // that module is told too, once, at its call: its own errors are what its
+  // author reads first, and the instance is there because of that call. It
+  // is told the first error of the instance it asked for or of one that
+  // instance's body asks for, however deep, and nothing is said at the calls
+  // between. Done once the instances are checked, with what they report then:
+  // an error can be taken back for a better one (see notAccepted).
+  reportToRequesters(): void {
+    for (const [asked, request] of this.asked) {
+      if (request.told) continue
+      const seen = new Set<Instance>([asked])
+      const queue = [asked]
+      let found: { inst: Instance; error: TypeError; message: string } | undefined
+      for (let inst = queue.shift(); inst && !found; inst = queue.shift()) {
+        const error = inst.owner.errorOf(inst)
+        if (error) found = { inst, ...error }
+        for (const next of inst.requests) {
+          if (seen.has(next)) continue
+          seen.add(next)
+          queue.push(next)
+        }
+      }
+      // The instances are all checked by now, and what they report is final.
+      request.told = true
+      if (!found) continue
+      const owner = found.inst.owner
+      if (owner === this) continue
+      const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, found.error.offset)})` : ''
+      const inner = found.inst === asked ? '' : `, in ${found.inst.label}`
+      this.error(request.at, `${asked.label} cannot be instantiated: ${found.message}${inner}${where}`)
+    }
   }
 
   warn(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {

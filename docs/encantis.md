@@ -3375,7 +3375,7 @@ An instance whose body needed the site belongs to that site, and so does an inst
 
 A function of another module given for a comptime function parameter is called by that module's name for it: `sort(xs, by_cost)` with `by_cost` declared in, or imported from, another module is an instance that calls that function directly, and two modules that give the same function share it.
 
-**Errors.** An error in an instance is the generic's module's, at its line in the generic, labelled with the instance, and with the call it was required from in the module of that call. The module that asked is told too, once, at its call:
+**Errors.** An error in an instance is the generic's module's, at its line in the generic, labelled with the instance, and with the calls it was required from, each in the module of that call. Where the chain of instantiations was started by ordinary code of another module, that module is told too, once, at its call, of the first error of the instance it asked for or of an instance that one's body asked for, however deep; nothing is said at the calls between:
 
 ```text
 containers.ents:77:11: no function 'hash' accepts (Cell), in add(K = Cell)
