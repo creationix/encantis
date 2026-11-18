@@ -301,9 +301,24 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Document Change Handling
   // -----------------------------------------------------------------------------
 
+  // The files each open document's program was read from, by the document's
+  // URI: what the document's check says depends on them too.
+  const programFiles = new Map<string, Set<string>>();
+
   documents.onDidChangeContent(change => {
     validateTextDocument(change.document);
+    revalidateImporters(change.document.uri);
   });
+
+  // The open documents whose programs have the file of this URI are checked
+  // again: what it exports, and the instances it makes for them, may differ.
+  function revalidateImporters(uri: string): void {
+    const path = pathOf(uri);
+    if (!path) return;
+    for (const document of documents.all()) {
+      if (document.uri !== uri && programFiles.get(document.uri)?.has(path)) validateTextDocument(document);
+    }
+  }
 
   async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
@@ -334,6 +349,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // Changed while its program was read: the newer text is checked.
       const latest = documents.get(textDocument.uri);
       if (latest && latest.version !== textDocument.version) return;
+      programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
       if (program) module = program.module;
       meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program });
     } catch (e) {
@@ -872,6 +888,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   documents.onDidClose(e => {
     analysisCache.delete(e.document.uri);
     connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
+    // Closed, the file is read where it is saved, which can differ.
+    programFiles.delete(e.document.uri);
+    revalidateImporters(e.document.uri);
   });
 
   // -----------------------------------------------------------------------------

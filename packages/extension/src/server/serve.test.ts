@@ -336,6 +336,16 @@ describe('a document with source imports', () => {
     expect(references.map(line)).toEqual(['1:32', '2:32'])
   })
 
+  test('a document is checked again when a file of its program changes', async () => {
+    const { diagnostics, sent, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+    const fixed = `${LIB}func hash(k: f64) -> u32 => 1\n`
+    handlers.get('onDidChangeTextDocument')?.({ textDocument: { uri: libUri, version: 2 }, contentChanges: [{ text: fixed }] })
+    const latest = () => sent.filter((s) => s.uri === mainUri).at(-1)?.diagnostics
+    for (let i = 0; i < 100 && latest()?.length !== 0; i++) await Bun.sleep(5)
+    expect(latest()).toEqual([])
+  })
+
   test('an import that cannot be read: the document is checked by the signatures its imports write', async () => {
     const { diagnostics } = await open([[mainUri, MAIN]])
     expect(diagnostics).toEqual([])
