@@ -4435,6 +4435,9 @@ class CheckContext {
     // f((x, 1)) is f((u32, u32)). Functions that are exact alike are as
     // ambiguous as before.
     const own = alone.map((type) => (type && hasOwnType(type) ? type : null))
+    // A tuple literal with names gives a struct's fields by name, in any
+    // order (2.8): (y: 2, x: n) is a (x: u8, y: u8) as (x: n, y: 2) is.
+    const laid = (param: ResolvedType, i: number, type: ResolvedType) => (namedLiteral(args[i]) ? byFieldNames(param, type) : type)
     const exactParts = (param: ResolvedType, arg: ResolvedType | null, as: (type: ResolvedType) => ResolvedType) => {
       if (arg === null) return true
       const filled = literalsAs(param, arg)
@@ -4443,8 +4446,9 @@ class CheckContext {
     const exact = (as: (type: ResolvedType) => ResolvedType) =>
       candidates.filter(
         (c) =>
-          c.params.every((p, i) => own[i] === null || same(p.type, as(own[i] as ResolvedType))) &&
-          c.params.every((p, i) => own[i] !== null || (this.fits(args[i], p.type) && exactParts(p.type, alone[i], as))),
+          c.params.every((p, i) => own[i] === null || same(p.type, as(laid(p.type, i, own[i] as ResolvedType)))) &&
+          c.params.every((p, i) => own[i] !== null ||
+            (this.fits(args[i], p.type) && exactParts(p.type, alone[i] && laid(p.type, i, alone[i]), as))),
       )
     let found = exact((type) => type)
     if (found.length !== 1) found = exact(withoutRanges)
@@ -7734,6 +7738,20 @@ function sameSignature(wanted: FuncRT, given: FuncRT): boolean {
     return canonicalKey(func(params, [field(null, only?.kind === 'tuple' ? only : tuple(returns))]))
   }
   return asStruct(wanted) === asStruct(given)
+}
+
+// The type of a tuple literal with names, as the struct `param` it meets
+// has its fields: each element with a name is the field of that name, and
+// each without one the field at its place (2.8), under the field's name.
+// (y: int(2), x: u8) for a (x: u8, y: u8) is (x: u8, y: int(2)). A tuple
+// that does not give each field once is given back as it is.
+function byFieldNames(param: ResolvedType, arg: ResolvedType): ResolvedType {
+  const p = unwrap(param)
+  const a = unwrap(arg)
+  if (p.kind !== 'tuple' || a.kind !== 'tuple' || p.fields.length !== a.fields.length) return arg
+  const given = p.fields.map((f, i) => a.fields.find((g) => g.name !== null && g.name === f.name) ?? (a.fields[i].name === null ? a.fields[i] : undefined))
+  if (given.some((g) => !g) || new Set(given).size !== given.length) return arg
+  return tuple(p.fields.map((f, i) => field(f.name, given[i]!.type)))
 }
 
 // An argument's type with each untyped literal in it given the type of the

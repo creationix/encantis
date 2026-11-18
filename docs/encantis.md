@@ -1414,7 +1414,7 @@ test "the typed argument says which" {
 }
 ```
 
-The same holds inside a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's parts, and its literals only have to fit. `far((x, 1))` with `x: u32` is `far(p: (u32, u32))`, and `far((x, 1))` with `x: u64` is the other one. An array literal is untyped as a whole, even where an element has a type.
+The same holds inside a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's parts, and its literals only have to fit. `far((x, 1))` with `x: u32` is `far(p: (u32, u32))`, and `far((x, 1))` with `x: u64` is the other one. A tuple with names gives a struct's fields by name ([2.8](#struct-constructors)), and its parts are the fields they give: `(y: 1, x: n)` is as exact for a `(x: u32, y: u32)` as `(x: n, y: 1)` is. An array literal is untyped as a whole, even where an element has a type.
 
 ```ents
 func far(p: (u32, u32)) -> u32 => p.0 + p.1

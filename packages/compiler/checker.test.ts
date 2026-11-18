@@ -3229,6 +3229,13 @@ describe('functions that share a name', () => {
     expect(errs(`${both}\nfunc a(i: u32, j: u32) -> u32 => m((i, 1), j)`)).toEqual(["'m' is ambiguous for ((u32, int(1)), u32)"])
     // Nothing typed in the tuple: nothing to say which.
     expect(errs(`${f}\nfunc a() -> u32 => f((1, 2))`)).toEqual(["'f' is ambiguous for ((int(1), int(2)))"])
+    // A tuple with names gives the fields by name in any order, so its typed
+    // parts are matched by name too: at the merge of claude/dec-named,
+    // g((y: 1, x: i)) and g((y: j, x: i)) were ambiguous where g((x: i, y: 1))
+    // was not.
+    const turned = 'func a(i: u32, j: u32) -> u32 => g((y: 1, x: i)) + g((y: j, x: i)) + g((i, y: 1)) + i.g2((y: 1, x: i))'
+    expect(called(`${f}\nfunc g2(x: u32, p: P32) -> u32 => 1\nfunc g2(x: u32, p: P64) -> u32 => 2\n`, turned, 'g')).toEqual([])
+    expect(called(f, 'func a(i: u64) -> u32 => g((y: 1, x: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
   })
 
   test('without one, the only function the arguments can be passed to', () => {
