@@ -3824,6 +3824,9 @@ function resolveAstType(type: AST.Type): ResolvedType {
     case 'PointerType':
       return { kind: 'pointer', pointee: resolveAstType(type.pointee) }
     case 'IndexedType': {
+      // Every type codegen needs comes from the checker by now; a length
+      // that is an expression is only known there.
+      if (type.size === 'expr') throw new Error('an array length written as an expression is resolved by the checker')
       const element = resolveAstType(type.element)
       // Slice: []T (size is null, not many-pointer)
       if (type.size === null && !type.manyPointer) {

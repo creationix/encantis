@@ -1511,7 +1511,7 @@ class MetaBuilder {
       if (symbolIndex !== undefined && this.checkResult.symbols.get(type.name)?.kind === 'typefunc') {
         this.addHint(type.span.start, type.name.length, this.symbols[symbolIndex].type, symbolIndex)
       }
-      for (const arg of type.args) this.generateHintsForTypeExpr(arg)
+      for (const arg of type.args) if (arg.kind !== 'ValueArg') this.generateHintsForTypeExpr(arg)
     }
     // Recurse into compound types
     if (type.kind === 'PointerType') {

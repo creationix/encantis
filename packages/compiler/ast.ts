@@ -493,6 +493,9 @@ export interface LiteralExpr extends BaseNode {
   value: LiteralValue
   // Written in single quotes ('a'): an int that is a codepoint, never a string.
   quoted?: true
+  // In an instance of a generic, the number a comptime value parameter of
+  // this name was given, put where the name was read.
+  param?: string
   mut?: boolean  // mutable data, skip deduplication in data section
   dataId?: number  // ID for data section lookup (survives def substitution cloning)
 }
@@ -654,6 +657,9 @@ export interface PrimitiveType extends BaseNode {
     | 'f64'
     | 'bool'
   max?: number
+  // A bound written as a name or an expression (u32#n, u32#(n + 1)), for the
+  // checker to compute; a bound written in digits is `max`.
+  bound?: Expr
 }
 
 // *type or *mut type
@@ -679,8 +685,11 @@ export interface IndexedType extends BaseNode {
   // - number[]: multi-dimensional packed [12,16]T
   // - 'inferred': inferred from literal [_]T
   // - 'comptime': comptime list [T]
+  // - 'expr': a length written as a constant expression, [n]T, [k * 2]T, in
+  //   `length`, for the checker to compute
   // - null: unknown/slice []T
-  size: number | number[] | 'inferred' | 'comptime' | null
+  size: number | number[] | 'inferred' | 'comptime' | 'expr' | null
+  length?: Expr
   specifiers: IndexSpecifier[] // framing: ! and ? markers
   manyPointer?: boolean // true for [*]T (thin pointer), false/undefined for []T (fat slice)
   mutable?: boolean // true for []mut T, [*]mut T
@@ -715,7 +724,13 @@ export interface TypeRef extends BaseNode {
 export interface TypeApply extends BaseNode {
   kind: 'TypeApply'
   name: string
-  args: Type[]
+  args: (Type | ValueArg)[]
+}
+
+// A number given to a value parameter of a generic type: the 8 of Ring(8, u32)
+export interface ValueArg extends BaseNode {
+  kind: 'ValueArg'
+  value: Expr
 }
 
 // The keyword `type`, as the type of a comptime parameter
