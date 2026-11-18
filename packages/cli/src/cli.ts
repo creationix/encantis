@@ -12,7 +12,7 @@ import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, sign
 import { LineMap } from '@encantis/compiler/position'
 import { createTestHost } from '@encantis/compiler/test-host'
 import { realpathSync } from 'node:fs'
-import { relative, resolve } from 'node:path'
+import { basename, relative, resolve } from 'node:path'
 import wabt from 'wabt'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
@@ -229,7 +229,7 @@ switch (command) {
     }
 
     // Generate meta.json
-    const srcPath = `file://./${inputFile.split('/').pop()}`
+    const srcPath = `file://./${basename(inputFile)}`
     const { module: metaModule, check: metaCheck, sources } = await checkedInProgram(inputFile, result.module)
     const meta = buildMeta(metaModule, source, { srcPath, checkResult: metaCheck, sources })
     const json = JSON.stringify(meta, bigintReplacer, 2)

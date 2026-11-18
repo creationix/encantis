@@ -1,6 +1,6 @@
 import { parse } from './parser'
 import type { Module, ImportDecl, TestDecl } from './ast'
-import { resolve, dirname } from 'path'
+import { basename, resolve, dirname } from 'path'
 
 export interface LoadedModule {
   path: string
@@ -71,7 +71,7 @@ export async function loadModule(entryPath: string, options?: LoadOptions): Prom
 
   async function load(filePath: string, importedFrom: string | undefined, chain: Set<string>): Promise<boolean> {
     if (chain.has(filePath)) {
-      const cycle = [...chain, filePath].map(p => p.split('/').pop()).join(' → ')
+      const cycle = [...chain, filePath].map(p => basename(p)).join(' → ')
       errors.push({
         message: `Import cycle detected: ${cycle}`,
         filePath,
