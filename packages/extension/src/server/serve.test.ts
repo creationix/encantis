@@ -320,3 +320,21 @@ describe('definition and references of edited text', () => {
     expect(refs.map(start)).toEqual([{ line: 1, character: 5 }, { line: 2, character: 26 }])
   })
 })
+
+describe('a def of a single-quoted literal', () => {
+  // A def's value is put where it is used, still quoted: its use was shown
+  // as the codepoint alone, with no def to go to.
+  test('is the def where it is used', () => {
+    const source = "def lf = '\\n'\nexport func f(c: u8) -> bool => c == lf || c == '\\n'\n"
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => (location as { range: { start: { line: number; character: number } } }).range.start
+    const use = source.indexOf('== lf') + 3
+    expect(value(server('onHover', use))).toBe('```encantis\ndef lf:u8 = 10\n```')
+    expect(start(server('onDefinition', use))).toEqual({ line: 0, character: 4 })
+    expect((server('onReferences', use, { context: { includeDeclaration: true } }) as unknown[]).map(start)).toEqual([{ line: 0, character: 4 }])
+    // The literal itself is still its codepoint, in the def and in the body.
+    expect(value(server('onHover', source.indexOf("'\\n'")))).toContain("'\\n':i32 = 10")
+    expect(value(server('onHover', source.lastIndexOf("'\\n'")))).toContain("'\\n':u8 = 10")
+  })
+})
