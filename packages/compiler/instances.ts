@@ -187,7 +187,8 @@ function listed(list: Listing | undefined): Pick<GenericInfo, 'instances' | 'mor
 // that is a u32 in index_of(T = u32) and an f64 in index_of(T = f64) is a T.
 // Where all of them are one type, that is the type, also when it is what a
 // type parameter is bound to (with one instance, n: u32 and x: T would read
-// alike). Null where they differ in some other way.
+// alike). Null where they differ in some other way, or as two type parameters
+// do that every instance binds alike.
 export function generalize(types: readonly ResolvedType[], views: readonly InstanceView[]): ResolvedType | null {
   const params = [...(views[0]?.bound.keys() ?? [])].filter((name) => views.every((v) => v.bound.get(name)?.kind === 'type'))
   const bound = (v: InstanceView, name: string) => (v.bound.get(name) as ComptimeValue & { kind: 'type' }).type
@@ -203,8 +204,11 @@ export function generalize(types: readonly ResolvedType[], views: readonly Insta
   const go = (here: readonly ResolvedType[]): ResolvedType | null => {
     const texts = here.map(key)
     if (texts.every((t) => t === texts[0])) return here[0]
-    const param = params.find((name) => views.every((v, i) => key(bound(v, name)) === texts[i]))
-    if (param) return named(param, here[0])
+    // The type parameter whose arguments these follow; where two of them are
+    // bound alike in every instance, which one it is cannot be told.
+    const following = params.filter((name) => views.every((v, i) => key(bound(v, name)) === texts[i]))
+    if (following.length > 1) return null
+    if (following.length === 1) return named(following[0], here[0])
     const first = here[0]
     if (here.some((t) => t.kind !== first.kind)) {
       // An alias in some instances and not in others is what it names.
@@ -354,9 +358,17 @@ function typeParamOf(params: readonly AST.Field[], name: string): AST.Field | un
   return params.find((p) => p.comptime && p.ident === name)
 }
 
-// A field of a generic type's body at `offset`, by the names of the fields
-// that lead to it from the body, where each holds the next written out
+// A field of a generic type's body at `offset`, by the steps that lead to it
+// from the body: the name of each field that holds the next written out, and
+// ELEMENT where the next is the element of pointers, slices or arrays written
+// around it (`items: [*](k: K, v: V)`)
+const ELEMENT = '[]'
+
 function fieldPath(body: AST.Type, offset: number): string[] | null {
+  if (body.kind === 'PointerType' || body.kind === 'IndexedType') {
+    const inner = fieldPath(body.kind === 'PointerType' ? body.pointee : body.element, offset)
+    return inner && (inner[0] === ELEMENT ? inner : [ELEMENT, ...inner])
+  }
   if (body.kind !== 'CompositeType') return null
   for (const field of body.fields) {
     if (field.ident === null) continue
@@ -369,9 +381,17 @@ function fieldPath(body: AST.Type, offset: number): string[] | null {
 
 function fieldType(type: ResolvedType, path: readonly string[]): ResolvedType | undefined {
   let here: ResolvedType | undefined = type
-  for (const name of path) {
-    const struct: ResolvedType | undefined = here && unwrap(here)
-    here = struct?.kind === 'tuple' ? struct.fields.find((f) => f.name === name)?.type : undefined
+  for (const step of path) {
+    let struct: ResolvedType | undefined = here && unwrap(here)
+    if (step === ELEMENT) {
+      // [*]X is a pointer to an array of X, *[2]X too: every layer down.
+      while (struct && (struct.kind === 'pointer' || struct.kind === 'slice' || struct.kind === 'array')) {
+        struct = unwrap(struct.kind === 'pointer' ? struct.pointee : struct.element)
+      }
+      here = struct
+      continue
+    }
+    here = struct?.kind === 'tuple' ? struct.fields.find((f) => f.name === step)?.type : undefined
   }
   return here
 }

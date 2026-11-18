@@ -706,6 +706,29 @@ export func f(p: Pt, x: i32) -> i32 => twice(p).q + twice(x)
     })
   })
 
+  test('a local whose types two type parameters follow alike is written with neither', () => {
+    // T and U are bound alike in every instance: the copy z of b: U was
+    // shown as a T, the first of them. Which one it is cannot be told from
+    // the instances, and each type it is is shown instead.
+    const alike = `func two(comptime T: type, comptime U: type, a: T, b: U) -> U {
+  let z = b
+  let w = a
+  return z
+}
+export func f(x: u32) -> u32 => two(x, x)
+export func g(x: f64) -> f64 => two(x, x)
+`
+    const both = [{ in: ['two(T = u32, U = u32)'], type: 'u32' }, { in: ['two(T = f64, U = f64)'], type: 'f64' }]
+    const a = setup(alike)
+    expect(hover(a.source, a.module, a.check, alike.indexOf('z ='))).toEqual({ name: 'z', type: 'u32 or f64', kind: 'local', instances: both })
+    expect(hover(a.source, a.module, a.check, alike.indexOf('w ='))).toEqual({ name: 'w', type: 'u32 or f64', kind: 'local', instances: both })
+    // An instance that binds them apart tells them apart.
+    const apart = `${alike}export func h(x: u32, y: i64) -> i64 => two(x, y)\n`
+    const b = setup(apart)
+    expect(hover(b.source, b.module, b.check, apart.indexOf('z ='))?.type).toBe('U')
+    expect(hover(b.source, b.module, b.check, apart.indexOf('w ='))?.type).toBe('T')
+  })
+
   test('a type parameter: what each instance binds it to', () => {
     const { source, module, check } = setup(code)
     const t = { name: 'T', type: 'type', kind: 'type parameter', instances: each('u32', 'f64') }
@@ -744,6 +767,21 @@ export func f(p: Pt, x: i32) -> i32 => twice(p).q + twice(x)
     expect(hover(source, module, check, code.indexOf('T: type', inBox))).toEqual({
       name: 'T', type: 'type', kind: 'type parameter', instances: [{ in: ['Box(u32)'], type: 'u32' }, { in: ['Box(f64)'], type: 'f64' }],
     })
+  })
+
+  test('a field inside the element of a pointer, a slice or an array is what each application makes it', () => {
+    // Only the fields the body holds directly were shown per application:
+    // k under [*] was shown as `field k: K` and nothing more.
+    const program = `func Map(comptime K: type, comptime V: type) -> type => (items: [*](k: K, v: V), last: *[2](k: K, v: V), all: [](k: K), n: u32)
+export func f(m: Map(u32, u8), q: Map(u64, f32)) -> u32 => m.n + q.n
+`
+    const { source, module, check } = setup(program)
+    const at = (text: string) => hover(source, module, check, program.indexOf(text))
+    const each = (a: string, b: string) => [{ in: ['Map(u32, u8)'], type: a }, { in: ['Map(u64, f32)'], type: b }]
+    expect(at('k: K, v: V), last')).toEqual({ name: 'k', type: 'K', kind: 'field', instances: each('u32', 'u64') })
+    expect(at('v: V), last')).toEqual({ name: 'v', type: 'V', kind: 'field', instances: each('u8', 'f32') })
+    expect(at('v: V), all')).toEqual({ name: 'v', type: 'V', kind: 'field', instances: each('u8', 'f32') })
+    expect(at('k: K), n')).toEqual({ name: 'k', type: 'K', kind: 'field', instances: each('u32', 'u64') })
   })
 
   test('an application made while declarations are collected is one too', () => {
@@ -803,6 +841,19 @@ export func g(p: Pt) -> i32 => pick(left, p)
     expect(findReferences(source, module, check, lonely.indexOf('eq(a: f64'))?.references.map(r => r.offset)).toEqual([call])
     // Only the generic itself is never used.
     expect(check.warnings.map(w => w.message)).toEqual(["'has' is never used"])
+  })
+
+  test('with no instance to go by, a comptime function parameter is found at its uses', () => {
+    // Its uses were read off the declaration for a type parameter only: from
+    // a call of `f` the editor found nothing to go to, rename or list.
+    const lonely = 'func app(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))\n'
+    const { source, module, check } = setup(lonely)
+    const declared = lonely.indexOf('f: (T)')
+    const uses = [lonely.indexOf('f(f'), lonely.indexOf('f(x)')]
+    expect(gotoDefinition(source, module, check, uses[1])?.location.offset).toBe(declared)
+    expect(findReferences(source, module, check, uses[0])?.references.map(r => r.offset)).toEqual(uses)
+    expect(rename(source, module, check, declared)?.locations.map(l => l.offset)).toEqual([declared, ...uses])
+    expect(hover(source, module, check, uses[0])).toEqual({ name: 'f', type: '(T) -> T', kind: 'comptime parameter' })
   })
 })
 
