@@ -189,6 +189,10 @@ class MetaBuilder {
   private bodies = new Map<AST.FuncDecl, { copies: Map<object, object> | null; shift: number }>()
   // Where each hint is, by its key
   private hintOffsets = new Map<string, number>()
+  // While a function's body is gone through: its span. A def's value is
+  // pasted at each use with its own offsets, and is typed there as that use
+  // needs; its hints are the def's own, from where it is declared.
+  private within: AST.Span | null = null
   // The symbols of generic functions and types, with their declarations
   private genericSymbols = new Map<number, AST.FuncDecl | AST.TypeFuncDecl>()
 
@@ -426,6 +430,7 @@ class MetaBuilder {
     if (!body) return
     this.copies = body.copies
     this.shift = body.shift
+    this.within = decl.span
     if (decl.body.kind === 'Block') {
       this.generateHintsForBlock(decl.body)
     } else {
@@ -433,6 +438,7 @@ class MetaBuilder {
     }
     this.copies = null
     this.shift = 0
+    this.within = null
   }
 
   private findFuncIdentOffset(decl: AST.FuncDecl): number {
@@ -1509,6 +1515,7 @@ class MetaBuilder {
     inputParam?: boolean,
     exprStart?: number,
   ): void {
+    if (this.within && (offset < this.within.start || offset >= this.within.end)) return
     const key = this.lineMap.positionKey(offset)
     this.hintOffsets.set(key, offset)
     const hint: MetaHint = { len, type: typeIndex }

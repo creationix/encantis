@@ -235,6 +235,14 @@ test "find" {
     expect(built.symbols.map(s => s.name)).toEqual(['keep', 'f', 'T', 'a', 'c'])
   })
 
+  test('a def\'s value has its own hints, not those of a use it is pasted at', () => {
+    // examples/types/complements.ents: `~low` is a u32 where with_def uses
+    // high, and an i32 in the def itself.
+    const program = 'def low = 7\ndef high = ~low\nexport func f(n: u32) -> u32 => n & high\n'
+    const built = buildMeta(parse(program).module!, program)
+    expect(built.types[built.hints['1:12'].type].type).toBe('i32')
+  })
+
   test('a call of a function declared further down has that function as its symbol', () => {
     // The body of a function had its hints before the functions after it
     // were symbols: the call was a type with no name.
