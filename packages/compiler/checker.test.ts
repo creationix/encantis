@@ -3839,6 +3839,26 @@ describe('the size of a function', () => {
     expect(errs('func id(comptime T: type, x: T) -> u32 => 1\nfunc f(p: *[1001]u8) -> u32 => id(p.*)')).toEqual([`${params(1001)}, in id(T = [1001]u8)`])
   })
 
+  test('the globals, imports and exports of a program are those of one wasm module', () => {
+    const globals = (n: number) => Array.from({ length: n }, (_, i) => `global g${i}: [65535]u8\n`).join('')
+    // 15 are 983025 wasm globals, 16 more than the 1000000 a module has
+    expect(errs(globals(15))).toEqual([])
+    expect(at(globals(16))).toEqual(['g15: the program has more than 1000000 wasm globals, the most a wasm module has (here g15: [65535]u8 is 65535) — keep a large value in memory, as data'])
+    const share = 'share a large value through memory, behind a pointer'
+    expect(errs('export global a: [65535]u8\nexport global b: [65535]u8')).toEqual([`the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has (here b: [65535]u8 is 65535) — ${share}`])
+    expect(errs('import "m" "a" global a: [65535]u8\nimport "m" "b" global b: [65535]u8')).toEqual([`the program imports more than 100000 wasm functions and globals, the most a wasm module has (here b: [65535]u8 is 65535) — ${share}`])
+    // The modules of a program are one wasm module: their globals add up, in
+    // the order the modules are checked, the imported one first. Only the
+    // entry module's exports are the module's.
+    const modules = new Map([
+      ['/p/lib.ents', `${globals(8)}export global big: [65535]u8\nexport global more: [65535]u8\n`],
+      ['/p/main.ents', `import "./lib" "big" global big: [65535]u8\n${globals(8)}export func f() -> u8 => big[0]\n`],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, '/p/main.ents')
+    expect(program.errors.map((e) => e.message)).toEqual(['the program has more than 1000000 wasm globals, the most a wasm module has (here g5: [65535]u8 is 65535) — keep a large value in memory, as data'])
+    expect(program.results.get('/p/main.ents')!.errors.length).toBe(1)
+  })
+
   test('a test is a function, and so is an instance', () => {
     expect(errs('test "big" {\n  let p = 0 as *mut [60000]u8\n  p.* = [0; 60000]\n}')).toEqual([over('u8, written out 60000 times, is 60000', 'test "big"')])
     const copy = 'func copy(comptime T: type, p: *mut T, q: *T) { p.* = q.* }\n'

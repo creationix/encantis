@@ -1197,6 +1197,21 @@ an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block 
 
 <!-- spec:end -->
 
+The modules of a program are one wasm module, which every engine takes with at most 1000000 globals, 100000 imports and 100000 exports. A global held by value is a wasm global for each of its registers; one imported from the host is an import for each, and one the entry module exports an export for each ([7.2](#72-exports)). So the globals of a program are at most 1000000 registers in all, and its imports (a function, or each register of a global) and the exports of its entry module (a function, a memory, or each register of a global) at most 100000 each. Going over is one error, at the global, the import or the export that goes over, the modules taken in the order they are checked, an imported one before the one that imports it.
+
+<!-- spec:begin compile -->
+
+```ents
+export global a: [65535]u8
+export global b: [65535]u8
+```
+
+```errors
+the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has (here b: [65535]u8 is 65535)
+```
+
+<!-- spec:end -->
+
 Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 256 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 256 deep`, before it is parsed.
 
 ---

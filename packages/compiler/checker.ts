@@ -378,7 +378,35 @@ const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultF
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
   const ctx = contextFor(options)
   ctx.checkModule(module)
+  checkModuleSize([{ ctx, module, entry: true }])
   return finalize(ctx, module)
+}
+
+// A place in a module that adds `n` to one of the counts its wasm module is
+// held to (moduleSizeUses), with what to say of it
+type ModuleSizeUse = { at: number; n: number; shown: string | null }
+
+// The wasm module of a program has at most 1000000 globals, 100000 imports
+// and 100000 exports (the limits of the WebAssembly JS API). Going over is
+// one error for each, where the count goes over, in the order the modules
+// were checked.
+function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
+  const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
+  const fix = 'share a large value through memory, behind a pointer'
+  const limits = [
+    { of: 'globals', most: 1000000, said: 'the program has more than 1000000 wasm globals, the most a wasm module has', fix: 'keep a large value in memory, as data' },
+    { of: 'imports', most: 100000, said: 'the program imports more than 100000 wasm functions and globals, the most a wasm module has', fix },
+    { of: 'exports', most: 100000, said: 'the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has', fix },
+  ] as const
+  for (const limit of limits) {
+    let total = 0
+    for (const { ctx, use } of counted.flatMap(({ ctx, uses }) => [...uses[limit.of]].sort((a, b) => a.at - b.at).map((use) => ({ ctx, use })))) {
+      total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      if (total <= limit.most) continue
+      ctx.error(use.at, `${limit.said}${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
+      break
+    }
+  }
 }
 
 function contextFor(options?: TypecheckOptions): CheckContext {
@@ -607,6 +635,7 @@ export function typecheckProgram(
   }
 
   visit(entryPath)
+  checkModuleSize(checked.map(({ path, ctx, module }) => ({ ctx, module, entry: path === entryPath })))
   return { results, errors: [...results.values()].flatMap((result) => result.errors) }
 }
 
@@ -3791,6 +3820,43 @@ class CheckContext {
   // `of`: the variable is a parameter or a named result
   private noteVariable(at: number, name: string, type: ResolvedType, of?: 'param' | 'return'): void {
     this.variables?.set(at, { name, type, of })
+  }
+
+  // What a module adds to the one wasm module of its program, by the limits
+  // of the WebAssembly JS API: a wasm global for each register of each of its
+  // globals (at most 1000000 in a module), an import for each function and
+  // each register of each global it imports from the host, and, for the
+  // entry module, an export for each function and memory and each register
+  // of each global it exports (at most 100000 each). Each where it is
+  // declared, with what to say of it.
+  moduleSizeUses(module: AST.Module, entry: boolean): Record<'globals' | 'imports' | 'exports', ModuleSizeUse[]> {
+    const uses: Record<'globals' | 'imports' | 'exports', ModuleSizeUse[]> = { globals: [], imports: [], exports: [] }
+    const memo = new Map<ResolvedType, number>()
+    const held = (at: number, name: string, type: ResolvedType | undefined): ModuleSizeUse => {
+      const n = type ? typeRegisters(type, memo) : 1
+      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null }
+    }
+    for (const decl of module.decls) {
+      const item = decl.kind === 'ExportDecl' ? decl.item : decl
+      if (item.kind === 'GlobalDecl') {
+        const name = this.patternIdent(item.pattern) ?? ''
+        const use = held(item.pattern.span.start, name, this.types.get(typeKey(item.pattern.span.start, item.pattern.kind)))
+        uses.globals.push(use)
+        if (decl.kind === 'ExportDecl' && entry) uses.exports.push(use)
+      } else if (decl.kind === 'ExportDecl' && entry && !(item.kind === 'FuncDecl' && isGenericDecl(item)) && item.kind !== 'TypeFuncDecl') {
+        uses.exports.push({ at: decl.span.start, n: 1, shown: null })
+      } else if (item.kind === 'ImportDecl' && !isSourceImport(item.module)) {
+        for (const imported of item.items) {
+          if (imported.item.kind === 'ImportGlobal') {
+            const sym = this.moduleScope.symbols.get(imported.item.ident)
+            uses.imports.push(held(imported.item.span.start, imported.item.ident, sym?.kind === 'global' ? sym.type : undefined))
+          } else if (imported.item.kind === 'ImportFunc') {
+            uses.imports.push({ at: imported.span.start, n: 1, shown: null })
+          }
+        }
+      }
+    }
+    return uses
   }
 
   // The call a call is compiled as: a method call's f(x, a), an instance's
