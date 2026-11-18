@@ -1192,8 +1192,10 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
-        // A single-quoted literal shows the codepoint it is.
-        if (type && expr.quoted && expr.value.kind === 'int') {
+        // A single-quoted literal shows the codepoint it is. A def's value
+        // is put where the def is used, quoted with it: there it is the def
+        // (def lf = '\n' at lf), found by its name below.
+        if (type && expr.quoted && expr.value.kind === 'int' && this.source[expr.span.start] === "'") {
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
           this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, expr.value.value.toString())
           break

@@ -351,3 +351,105 @@ describe('a document with source imports', () => {
     expect(diagnostics).toEqual([])
   })
 })
+
+// A document opened in the server and then edited: each change replaces its
+// text, as an editor sends it.
+function editedServer(text: string) {
+  const handlers = new Map<string, Handler>()
+  const connection = new Proxy({}, {
+    get(_target, name: string) {
+      if (name === 'languages') return { semanticTokens: { on: () => {} } }
+      if (name === 'sendDiagnostics' || name === 'listen') return () => {}
+      return (handler: Handler) => {
+        handlers.set(name, handler)
+        return { dispose() {} }
+      }
+    },
+  }) as Connection
+  startServer(connection)
+  const uri = 'file:///edited.ents'
+  let current = text
+  let version = 1
+  handlers.get('onDidOpenTextDocument')?.({ textDocument: { uri, languageId: 'encantis', version, text } })
+  return {
+    change(next: string) {
+      current = next
+      version++
+      handlers.get('onDidChangeTextDocument')?.({ textDocument: { uri, version }, contentChanges: [{ text: next }] })
+    },
+    at(handler: string, offset: number, extra: object = {}) {
+      const before = current.slice(0, offset)
+      const position = { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 }
+      return handlers.get(handler)?.({ textDocument: { uri }, position, ...extra })
+    },
+  }
+}
+
+describe('definition and references of edited text', () => {
+  // While the text does not parse, the last analysis is of older text: the
+  // call of b was answered with a and a's uses.
+  test('an analysis of older text does not answer for the text as it is now', () => {
+    const before = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f() -> u32 => a()\n'
+    const server = editedServer(before)
+    const start = (location: unknown) => (location as { range: { start: { line: number; character: number } } }).range.start
+    expect(start(server.at('onDefinition', before.lastIndexOf('a()')))).toEqual({ line: 0, character: 5 })
+    const broken = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f() -> u32 => b()\nlet = \n'
+    server.change(broken)
+    expect(server.at('onDefinition', broken.lastIndexOf('b()'))).toBeNull()
+    expect(server.at('onReferences', broken.lastIndexOf('b()'), { context: { includeDeclaration: true } })).toBeNull()
+    // Once it parses again, it is answered from its own analysis.
+    const fixed = broken.replace('let = \n', '')
+    server.change(fixed)
+    expect(start(server.at('onDefinition', fixed.lastIndexOf('b()')))).toEqual({ line: 1, character: 5 })
+    const refs = server.at('onReferences', fixed.lastIndexOf('b()'), { context: { includeDeclaration: true } }) as unknown[]
+    expect(refs.map(start)).toEqual([{ line: 1, character: 5 }, { line: 2, character: 26 }])
+  })
+})
+
+describe('a def of a single-quoted literal', () => {
+  // A def's value is put where it is used, still quoted: its use was shown
+  // as the codepoint alone, with no def to go to.
+  test('is the def where it is used', () => {
+    const source = "def lf = '\\n'\nexport func f(c: u8) -> bool => c == lf || c == '\\n'\n"
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => (location as { range: { start: { line: number; character: number } } }).range.start
+    const use = source.indexOf('== lf') + 3
+    expect(value(server('onHover', use))).toBe('```encantis\ndef lf:u8 = 10\n```')
+    expect(start(server('onDefinition', use))).toEqual({ line: 0, character: 4 })
+    expect((server('onReferences', use, { context: { includeDeclaration: true } }) as unknown[]).map(start)).toEqual([{ line: 0, character: 4 }])
+    // The literal itself is still its codepoint, in the def and in the body.
+    expect(value(server('onHover', source.indexOf("'\\n'")))).toContain("'\\n':i32 = 10")
+    expect(value(server('onHover', source.lastIndexOf("'\\n'")))).toContain("'\\n':u8 = 10")
+  })
+})
+
+describe('a single-quoted literal in a template', () => {
+  // What a template's ${...} holds is code: a literal there was passed over
+  // with the template's text, from one backtick to the next, and hovering it
+  // showed nothing. A quote there may hold a } or a backtick.
+  test('shows its codepoints in an interpolation', () => {
+    const source = `func name(c: u8) -> []u8 => "x"
+func pair(a: u8, b: u8) -> []u8 => "y"
+export func g() -> [][]u8 => \`<\${name('a')}|\${pair('}', '\`')}>\` // 'c'
+export func h() -> u8 => 'd'
+`
+    const hover = hoverIn(source)
+    for (const [literal, shown] of [["'a'", "'a':u8 = 97"], ["'}'", "'}':u8 = 125"], ["'`'", "'`':u8 = 96"], ["'d'", "'d':u8 = 100"]]) {
+      for (const at of [0, 1, 2]) expect(hover(source.indexOf(literal) + at)).toContain(shown)
+    }
+    // The template's text is still its own, and a comment is not code.
+    expect(hover(source.indexOf('|'))).toContain('"|":[]u8')
+    expect(hover(source.indexOf('>`'))).toContain('">":[]u8')
+    expect(hover(source.indexOf("'c'") + 1)).toBeNull()
+  })
+
+  // An escaped backtick or ${ is the template's text: the piece of text
+  // ended at it.
+  test('a piece of text is whole past an escape', () => {
+    const source = 'func name(c: u8) -> []u8 => "x"\nexport func g() -> [][]u8 => `a\\`b${name(1)}c\\${d ${name(2)}`\n'
+    const hover = hoverIn(source)
+    for (const at of [0, 1, 2, 3]) expect(hover(source.indexOf('a\\`b') + at)).toContain('"a\\`b":[]u8')
+    for (const at of [0, 1, 2, 3, 4, 5]) expect(hover(source.indexOf('c\\${d') + at)).toContain('"c\\${d ":[]u8')
+  })
+})
