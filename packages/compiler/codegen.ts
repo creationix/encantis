@@ -70,8 +70,6 @@ export interface CodegenContext {
   // The locals of the variable an `if let` binds, which is seen only in its
   // then-branch (see withBinding).
   bindings?: Map<AST.IfExpr, string[]>
-  // The locals of the `if let` bindings whose then-branch collectLocals is in.
-  busy?: Set<string>
   // The variables a `let` or a `for` declares, with their locals: from there
   // on its names stand for them (see letToWat, forToWat).
   declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
@@ -2439,9 +2437,9 @@ function tuplePatternSets(
   return sets.join('\n')
 }
 
-// From a `let` or a `for` on, the names it declares stand for its variables,
-// as the checker has them: a `for` of a name in one branch and a `let` of it
-// in another are two variables.
+// From a `let` on, the names it declares stand for its variables, and those
+// of a `for` in its body, as the checker has them: a `for` of a name in one
+// branch and a `let` of it in another are two variables.
 function enterDeclared(stmt: AST.LetStmt | AST.ForStmt, ctx: CodegenContext): void {
   for (const [name, names] of ctx.declared?.get(stmt) ?? []) ctx.locals.set(name, names)
 }
@@ -2692,7 +2690,7 @@ function makesCall(node: unknown): boolean {
 
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
   // The locals collectLocals gave the loop's variables, which its names stand
-  // for in the body and after the loop, but not in the iterable.
+  // for in the body only: neither in the iterable nor after the loop.
   const outside = [stmt.binding.value, stmt.binding.index].flatMap((n) => (n ? [[n, ctx.locals.get(n)] as const] : []))
   enterDeclared(stmt, ctx)
   const valueLocals = ctx.locals.get(stmt.binding.value) ?? [stmt.binding.value]
@@ -2708,7 +2706,6 @@ function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
     else ctx.locals.delete(name)
   }
   const iterWat = exprToWat(stmt.iterable, ctx)
-  enterDeclared(stmt, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
@@ -2967,11 +2964,13 @@ export function funcToWat(
 // part (a struct of one field), as a `let`, an `if let` and a named result
 // have always named it.
 //
-// An `if let` binding is a variable of its own, seen in its then-branch
-// only, so it shares a name only with another `if let` binding (`kind`),
-// and not with one whose then-branch it is in (`ctx.busy`).
+// An `if let` binding shares a name only with another `if let` binding
+// (`kind`). No two variables of one name are seen in one place (the
+// checker refuses a `for`, `if let` or match binding the name of a
+// variable its body sees), so variables that share a local are never live
+// at once.
 function claimLocals(
-  ctx: Pick<CodegenContext, 'claimed' | 'busy'>, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
+  ctx: Pick<CodegenContext, 'claimed'>, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
 ): string[] {
   ctx.claimed ??= new Map()
   const claimed = ctx.claimed
@@ -2989,10 +2988,10 @@ function claimLocals(
     for (let i = 1; i < names.length; i++) {
       for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
         const w = `_${k}_${name}_${parts[i].suffix}`
-        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !ctx.busy?.has(w) && !names.includes(w)) names[i] = w
+        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !names.includes(w)) names[i] = w
       }
     }
-    if (names.some((w, i) => (claimed.has(w) && claimed.get(w) !== owners[i]) || ctx.busy?.has(w))) continue
+    if (names.some((w, i) => claimed.has(w) && claimed.get(w) !== owners[i])) continue
     names.forEach((w, i) => {
       if (claimed.has(w)) return
       claimed.set(w, owners[i])
@@ -3041,13 +3040,21 @@ function collectLocals(
   // A variable `stmt` declares: its locals, which its name stands for from
   // `stmt` on when the code is emitted (enterDeclared). A `let`'s name is
   // the one variable of that name in its function (the checker refuses a
-  // second), so it stands for it everywhere already; a `for` can take over
-  // the name of a param or a variable before it, which keeps its locals
-  // until the loop.
+  // second), so it stands for it everywhere already. A `for`'s names stand
+  // for its variables in its body only (forToWat): the checker refuses them
+  // the name of anything the body sees, and after the loop the name can be
+  // a `let`'s or another loop's.
   function declare(stmt: AST.LetStmt | AST.ForStmt, name: string, names: string[]) {
     ctx.declared ??= new Map()
     ctx.declared.set(stmt, [...(ctx.declared.get(stmt) ?? []), [name, names]])
     if (stmt.kind === 'LetStmt') ctx.locals.set(name, names)
+  }
+
+  // A `let` without a value shares its locals with no other variable: it is
+  // a variable of its own, and does not start as what a loop or a `let` of
+  // its name before it left there (`for c in 3 { }` then `let c: u32`).
+  function unshared(stmt: AST.LetStmt): string {
+    return stmt.value ? '' : `let ${stmt.span.start} `
   }
 
   // Declare locals for each element of a tuple pattern, and for the elements
@@ -3066,7 +3073,7 @@ function collectLocals(
       }
       const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
       // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-      declare(stmt, name, claimLocals(ctx, name, field.type, locals))
+      declare(stmt, name, claimLocals(ctx, name, field.type, locals, false, unshared(stmt)))
     }
   }
 
@@ -3079,7 +3086,7 @@ function collectLocals(
         if (!type) {
           throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
         }
-        declare(stmt, name, claimLocals(ctx, name, type, locals, true))
+        declare(stmt, name, claimLocals(ctx, name, type, locals, true, unshared(stmt)))
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // Get the overall tuple type from the pattern
         const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -3100,8 +3107,7 @@ function collectLocals(
     }
     if (stmt.kind === 'ForStmt') {
       visitExpr(stmt.iterable)
-      // The loop's variables. The checker keeps them in the enclosing
-      // scope, after the loop too, and so does this. Multi-value elements
+      // The loop's variables, seen in its body only. Multi-value elements
       // (slices, tuples) flatten like lets.
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
       if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
@@ -3150,7 +3156,7 @@ function collectLocals(
         const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
         if (elemType) {
           // The binding's locals, seen in the then-branch only (ifLetToWat):
-          // its name can be another variable's outside it.
+          // after it, its name can be another variable's.
           ctx.bindings ??= new Map()
           ctx.bindings.set(expr, claimLocals(ctx, expr.pattern.name, elemType, locals, true, 'if let '))
           const uid = scratchId(expr.span.start)
@@ -3167,12 +3173,7 @@ function collectLocals(
         }
       }
       visitExpr(expr.condition)
-      // A binding of the same name in the then-branch is another variable.
-      const bound = ctx.bindings?.get(expr)?.filter((n) => !ctx.busy?.has(n)) ?? []
-      ctx.busy ??= new Set()
-      for (const n of bound) ctx.busy.add(n)
       visitBody(expr.thenBranch)
-      for (const n of bound) ctx.busy.delete(n)
       for (const elif of expr.elifs) {
         visitExpr(elif.condition)
         visitBody(elif.thenBranch)
@@ -3601,7 +3602,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     }
 
     // Parse input type for params
-    const own: Pick<CodegenContext, 'claimed' | 'busy'> = {}
+    const own: Pick<CodegenContext, 'claimed'> = {}
     if (imp.signature.input.kind === 'CompositeType') {
       const fields = imp.signature.input.fields
       for (const [index, field] of fields.entries()) {

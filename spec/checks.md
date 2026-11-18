@@ -604,6 +604,121 @@ func f() {
 }
 ```
 
+## Variables of a loop, an if let and a match arm
+
+A variable that a `for`, an `if let` or a match arm binds is seen in its body only, and never has the name of a variable seen where it is written: it neither hides a variable nor changes one. That is a parameter, a named result, a `let` before it (seen to the end of its function, also past its block), a variable of a loop, `if let` or match arm around it, a global, or a `def` or `data` block, whose name stands for a value wherever it is written.
+
+```ents
+global g: u32 = 1
+def k = 30
+data xs = [1:u32, 2, 3]
+
+func after() -> u32 {
+  let c: u32 = 5
+  for c in 3 { }
+  return c
+}
+
+func count(n: u32) -> u32 {
+  let t: u32 = 0
+  for n in n { t += 1 }
+  return t
+}
+
+func filled() -> (n: u32) {
+  for n in 3 { }
+}
+
+func nested() {
+  for i in 3 {
+    for i in 4 { }
+  }
+}
+
+func wide(c: bool) -> i64 {
+  let i: i64 = 5000000000
+  if c {
+    for i in 3 { }
+  }
+  return i
+}
+
+func indexed() -> u32 {
+  let v: u32 = 100
+  for i, v in xs { }
+  return v
+}
+
+func names() {
+  for g in 3 { }
+  for k in 3 { }
+  for xs in 3 { }
+}
+
+func get(p: ?*u32) -> u32 {
+  if let p = p {
+    return p.*
+  }
+  return 0
+}
+
+func other(p: ?*u32) -> f64 {
+  let q: f64 = 0.5
+  if let q = p {
+    return q.* as f64
+  }
+  return q
+}
+
+func arm(n: u32, k: u32) -> u32 => match k {
+  0 => 1
+  n => n + 1
+}
+```
+
+```errors
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope
+'n' is already declared: a loop variable cannot reuse the name of a parameter
+'n' is already declared: a loop variable cannot reuse the name of a named result
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
+'i' is already declared: a loop variable cannot reuse the name of a variable in scope
+'v' is already declared: a loop variable cannot reuse the name of a variable in scope
+'g' is already declared: a loop variable cannot reuse the name of a global
+'k' is already declared: a loop variable cannot reuse the name of a def
+'xs' is already declared: a loop variable cannot reuse the name of a data block
+'p' is already declared: an if let binding cannot reuse the name of a parameter
+'q' is already declared: an if let binding cannot reuse the name of a variable in scope
+'n' is already declared: a match binding cannot reuse the name of a parameter
+```
+
+After the body the names are free again: two loops one after the other can both use `i`, a `let` after a `for c` declares a variable of its own, and `if let`s in turn can bind one name to values of different types. A `let` in a loop's body is still seen to the end of the function. A function has no value, and a binding of its name hides it in the body.
+
+```ents
+data bytes = [1:u8, 2, 3]
+data wides = [1.5, 2.5]
+data cells = [7:u32, 8, 9]
+
+func scale() -> f64 => 2.0
+
+func total(p: ?*f64) -> f64 {
+  let s: f64 = 0
+  for i in 3 { s += i as f64 }
+  for i in 4 { s += i as f64 }
+  for v in bytes {
+    s += v as f64
+    let last = v
+  }
+  for v in wides { s += v }
+  if let q = cells[1] { s += q as f64 }
+  if let q = p { s += q.* }
+  for scale in 2 { s += scale as f64 }
+  let c: u8 = last
+  let i: i64 = 5000000000
+  let v: f64 = 0.5
+  return s * scale() + v
+}
+```
+
 ## Structs in memory
 
 A struct, tuple or slice can be an element or a pointee, and is read and written whole or field by field. A field of the struct a pointer points to is written `p.x`.

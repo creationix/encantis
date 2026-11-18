@@ -989,14 +989,6 @@ describe('counted loops', () => {
         }
         return t
       }
-      export func shadow(n: u32) -> u32 {
-        let t: u32 = 0
-        for i in n {
-          t += 1
-          for n in 1 { t += 0 }
-        }
-        return t
-      }
       export func glob() -> u32 {
         limit = 3
         let t: u32 = 0
@@ -1031,20 +1023,16 @@ describe('counted loops', () => {
         }
         return t
       }
-      export func same(n: u32) -> u32 {
-        let t: u32 = 0
-        for n in n { t += 1 }
-        return t
-      }
       export func fill(xs: []mut u8) {
         for i in xs.len { xs.ptr[i] = 7 }
       }
     `
-    const { call, local, shadow, glob, steady, field, gfield, same } = await run(code)
-    expect([call(), local(5), shadow(4), glob(), steady(4)]).toEqual([104, 5, 4, 3, 6])
+    const { call, local, glob, steady, field, gfield } = await run(code)
+    expect([call(), local(5), glob(), steady(4)]).toEqual([104, 5, 3, 6])
     // Assigning a field of the variable the count is read from changes it
-    // too, and so does a loop variable that takes its name (and its local).
-    expect([field(5), gfield(), same(4)]).toEqual([5, 4, 4])
+    // too. (A loop variable cannot take its name: `for n in n` over a
+    // parameter n is refused, see checker.test.)
+    expect([field(5), gfield()]).toEqual([5, 4])
     // A variable the body doesn't change is read where it is compared; a
     // store through a pointer it holds doesn't change it.
     expect(modWat(code)).toContain('(br_if $break (i32.ge_u (local.get $i) (local.get $n)))')
@@ -3375,51 +3363,55 @@ describe('the wasm names of variables', () => {
     expect(wat).toContain('(global $_1_g_x (mut f64) (f64.const 2.5))')
   })
 
-  test('an if let binding is a variable of its own, whatever its type', async () => {
-    const x = await run(`
+  // What the checker accepts, compiled and run.
+  const accepted = async (code: string) => {
+    const module = parse(code).module as AST.Module
+    expect(typecheck(module).errors.map((e) => e.message)).toEqual([])
+    return { x: await run(code), wat: modWat(code) }
+  }
+
+  test('if let bindings of one name in turn are variables of their own, whatever their types', async () => {
+    const { x } = await accepted(`
       data cells = [7:u32, 8, 9]
-      export func other_type(p: ?*u32) -> u32 {
-        let q: f64 = 1.5
-        if let q = p {
-          return q.*
-        }
-        return q as u32
-      }
-      export func same_type(i: u32) -> u32 {
-        let q: u32 = 5
-        let t: u32 = 0
-        if let q = cells[i] {
-          t = q
-        }
-        return q * 100 + t
-      }
-      export func nested(i: u32, j: u32) -> u32 {
+      data wides = [1.5, 2.5]
+      data names = ["ab", "cde"]
+      export func size(i: u32) -> f64 {
+        let n: f64 = 0
         if let v = cells[i] {
-          if let v = cells[j] {
-            return v
-          }
-          return v + 1000
+          n += v as f64
         }
-        return 0
+        if let v = wides[i] {
+          n += v
+        }
+        if let v = names[i] {
+          n += v.len as f64
+        }
+        let v: u32 = 100
+        return n + (v as f64)
       }
+      func sum(p: ?*u32, q: ?*f64) -> f64 {
+        let n: f64 = 0
+        if let v = p {
+          n += v.* as f64
+        }
+        if let v = q {
+          n += v.*
+        }
+        return n
+      }
+      export func pointers() -> f64 => sum(&cells[1], &wides[0]) + sum(0, 0)
     `)
-    expect(x.other_type(0)).toBe(1)
-    expect(x.same_type(1)).toBe(508)
-    expect(x.same_type(7)).toBe(500)
-    expect(x.nested(0, 9)).toBe(1007)
-    expect(x.nested(0, 2)).toBe(9)
+    expect(x.size(1)).toBe(113.5)
+    expect(x.size(2)).toBe(109)
+    expect(x.size(5)).toBe(100)
+    expect(x.pointers()).toBe(9.5)
   })
 
-  test('a loop variable is its own from the loop on, whatever the name was before', async () => {
-    const x = await run(`
+  test('a loop variable is seen in its body only, and its name is free after it', async () => {
+    const { x, wat } = await accepted(`
       data bytes = [1:u8, 2, 3]
       data wides = [1.5, 2.5]
-      export func param_then_for(x: f64) -> u32 {
-        let before = x as u32
-        for x in 3 {
-        }
-        return before * 10 + x
-      }
+      func scale() -> u32 => 10
       export func two_loops() -> f64 {
         let s: f64 = 0
         for v in bytes {
@@ -3430,9 +3422,74 @@ describe('the wasm names of variables', () => {
         }
         return s
       }
+      export func then_let() -> i64 {
+        let t: u32 = 0
+        for c in 3 {
+          t += c
+        }
+        let c: i64 = 5000000000
+        return c + (t as i64)
+      }
+      export func in_branch(k: bool) -> f64 {
+        let s: f64 = 0
+        if k {
+          for c in wides {
+            s += c
+          }
+        }
+        for c in 2 {
+          s += c as f64
+        }
+        let c: f64 = 0.25
+        return s + c
+      }
+      export func hides() -> u32 {
+        let t: u32 = 0
+        for scale in 3 {
+          t += scale
+        }
+        return t * scale()
+      }
     `)
-    expect(x.param_then_for(7)).toBe(73)
     expect(x.two_loops()).toBe(10)
+    expect(x.then_let()).toBe(5000000003n)
+    expect(x.in_branch(1)).toBe(5.25)
+    expect(x.in_branch(0)).toBe(1.25)
+    expect(x.hides()).toBe(30)
+    // Variables of one name and wasm type that are never seen at once
+    // share a local; another wasm type takes the next prefix.
+    const body = wat.slice(wat.indexOf('(func $in_branch'), wat.indexOf('(func $hides'))
+    expect(body.match(/\(local \$(?!__)\w+ \w+\)/g)).toEqual(['(local $s f64)', '(local $c f64)', '(local $_1_c i32)'])
+  })
+
+  test('a let without a value does not start as what a variable of its name left', async () => {
+    const { x } = await accepted(`
+      data cells = [7:u32, 8, 9]
+      export func after_loop() -> u32 {
+        let t: u32 = 0
+        for c in 3 {
+          t += c
+        }
+        let c: u32
+        return t * 100 + c
+      }
+      export func after_branch(i: u32) -> u32 {
+        if let v = cells[i] {
+          let k: u32 = v
+        }
+        let k: u32
+        return k
+      }
+      export func pair_after_loop() -> u32 {
+        for a in 2 {
+        }
+        let (a, b): (u32, u32)
+        return a + b
+      }
+    `)
+    expect(x.after_loop()).toBe(300)
+    expect(x.after_branch(0)).toBe(0)
+    expect(x.pair_after_loop()).toBe(0)
   })
 })
 
@@ -3697,9 +3754,10 @@ describe('values of literals laid out in memory', () => {
     expect([f.a(), f.b(), f.c(), f.d(), f.e(pa1)]).toEqual([23, 129, 100, 11, 68000 + 700 + 60 + 3])
   })
 
-  test('a parameter or a binding named like data is not that data', async () => {
+  test('a parameter named like data is not that data', async () => {
     // The values of a literal are worked out at the end of the function,
     // when its names are out of scope: these read as the module's data.
+    // (A binding cannot be named like data: see checker.test.)
     const f = await run(`
       type R = (p: *[3]i32, n: u32)
       data ones: *[3]i32 = [1, 1, 1]
@@ -3711,8 +3769,8 @@ describe('values of literals laid out in memory', () => {
         return held[0][0] * 10 + r[0].p[1]
       }
       func binding(o: ?*[3]i32) -> i32 {
-        if let ones = o {
-          let held: *[1]*[3]i32 = [ones]
+        if let one = o {
+          let held: *[1]*[3]i32 = [one]
           return held[0][2]
         }
         return 0
@@ -3726,8 +3784,8 @@ describe('values of literals laid out in memory', () => {
       export func c() -> u32 => slices(twos[0..2])
       export func d() -> i32 {
         let t: i32 = 0
-        for ones in many {
-          let held: [][]i32 = [ones]
+        for one in many {
+          let held: [][]i32 = [one]
           t = t + (if let r = held[0] { r[0] ?? 0 } else { 0 })
         }
         return t
