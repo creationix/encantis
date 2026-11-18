@@ -363,17 +363,18 @@ describe('zeros', () => {
 
   test('a buffer of zeros costs nothing to lay out, however large', () => {
     // 2 GiB: as bytes, more memory than the compiler has. It keeps its place
-    // and size, and has no bytes to write.
-    const section = sectionOf('data space = mut [0:u8; 2147483648]\ndata tail = [7:u8]\ndata table = [0:u32; 1073741824]')
+    // and size, and has no bytes to write. (An array has at most 4294967295
+    // bytes, so the last one is a u32 short of 4 GiB.)
+    const section = sectionOf('data space = mut [0:u8; 2147483648]\ndata tail = [7:u8]\ndata table = [0:u32; 1073741823]')
     expect(section.entries.map((e) => [e.offset, e.length, e.head.length])).toEqual([
       [8, 2147483648, 0],
       [2147483656, 1, 1],
-      [2147483657, 4294967296, 0],
+      [2147483657, 4294967292, 0],
     ])
     expect(dataToWat(section)).toEqual([
       '  ;; 2147483648 zero bytes at 0x8 — 2147483648 zero bytes',
       '(data (i32.const 2147483656) "\\07")  ;; 1 bytes',
-      '  ;; 4294967296 zero bytes at 0x80000009 — 4294967296 zero bytes',
+      '  ;; 4294967292 zero bytes at 0x80000009 — 4294967292 zero bytes',
     ])
   })
 

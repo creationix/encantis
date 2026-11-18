@@ -900,6 +900,30 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.IndexedType
   },
 
+  // [N]T: a near miss of [n]T, read as the name
+  BaseType_lengthUpperMut(_lb, name, _rb, _mut, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: { kind: 'IdentExpr', name: name.sourceString, span: span(name) },
+      specifiers: [],
+      mutable: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  BaseType_lengthUpper(_lb, name, _rb, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: { kind: 'IdentExpr', name: name.sourceString, span: span(name) },
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
+
   // Comma-separated framings: dimensions and/or specifiers
   // [5] -> size=5, [5,16] -> size=[5,16], [!] -> specifier, [5,!] -> size=5 + specifier
   arrayFramings(first, _xs, rest) {

@@ -168,6 +168,8 @@ Encantis {
            | "[]" Type                         -- slice
            | "[" Expr "]" mut Type             -- lengthMut
            | "[" Expr "]" Type                 -- length
+           | "[" typeIdent "]" mut Type        -- lengthUpperMut
+           | "[" typeIdent "]" Type            -- lengthUpper
            | "*" mut Type                      -- pointerMut
            | "*" Type                          -- pointer
            | "^" Type                          -- boundaryPointer
@@ -183,6 +185,9 @@ Encantis {
   // space before the parenthesis: a type can end a statement, and the next
   // line can start with one.
   typeApplyHead = typeIdent "("
+
+  // lengthUpper is a near miss of length, [N]T with a value parameter named
+  // as a type would be: it parses so that the checker can say to write n.
 
   // An argument of a generic type: a type, or a number for a value parameter,
   // Ring(8, u32) or Bits(n * 2). A type is tried first.

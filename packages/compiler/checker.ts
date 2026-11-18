@@ -874,6 +874,12 @@ class CheckContext {
   // The names of the module's defs, wherever they are declared: a comptime
   // value parameter cannot have one (the parser puts a def in for its name)
   defNames = new Set<string>()
+  // The names of the module's data, globals and functions, wherever they are
+  // declared: a length that names one is no unknown name
+  private valueNames = new Set<string>()
+  // The module's defs by name, and those collected so far (see collectDefsIn)
+  private defDecls = new Map<string, AST.DefDecl>()
+  private collectedDefs = new Set<AST.DefDecl>()
 
   // Reference tracking
   references = new Map<number, number[]>() // defOffset → refOffsets
@@ -1138,7 +1144,16 @@ class CheckContext {
 
   // Pre-register type names so they can be referenced before their full definition
   preRegisterTypes(decl: AST.Declaration): void {
-    if (decl.kind === 'DefDecl') this.defNames.add(decl.ident)
+    if (decl.kind === 'DefDecl') {
+      this.defNames.add(decl.ident)
+      if (!this.defDecls.has(decl.ident)) this.defDecls.set(decl.ident, decl)
+    }
+    const declared = decl.kind === 'ExportDecl' ? decl.item : decl
+    if ((declared.kind === 'DataDecl' || declared.kind === 'FuncDecl') && declared.ident) this.valueNames.add(declared.ident)
+    if (declared.kind === 'GlobalDecl' && declared.pattern.kind === 'IdentPattern') this.valueNames.add(declared.pattern.name)
+    if (declared.kind === 'ImportDecl') {
+      for (const item of declared.items) if (item.item.kind !== 'ImportTypeFunc') this.valueNames.add(item.item.ident ?? item.name)
+    }
     if (decl.kind === 'TypeDecl') {
       this.pendingTypeNames.add(decl.ident.name)
       if (!this.typeBodies.has(decl.ident.name)) this.typeBodies.set(decl.ident.name, decl.type)
@@ -1716,6 +1731,9 @@ class CheckContext {
   }
 
   collectDef(decl: AST.DefDecl): void {
+    // Collected already, where a type named it before its turn
+    if (this.collectedDefs.has(decl)) return
+    this.collectedDefs.add(decl)
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     // Defs are comptime - infer type from literal value or use LHS type annotation
@@ -1850,7 +1868,8 @@ class CheckContext {
       return
     }
 
-    this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+    // A literal whose type has the error says nothing more.
+    if (!unresolved(inferredType)) this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
   }
 
   // `data` is laid out when the program is compiled, and no code of the
@@ -2706,10 +2725,12 @@ class CheckContext {
     const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
     // Add parameters and named returns to scope
+    const inst = this.currentInstance?.decl === decl ? this.currentInstance : null
+    const values = inst ? genericParams(inst.of).filter(isValueParam).map((p) => p.ident as string) : []
     this.inSignature(decl.signature, () => {
       this.bindFields(decl.signature.input, funcScope, 'param')
       this.bindFields(decl.signature.output, funcScope, 'return')
-    })
+    }, values)
     if (this.currentInstance?.decl === decl) {
       this.bindComptimeFuncs(this.currentInstance, funcScope)
       this.bindComptimeValues(this.currentInstance, funcScope)
@@ -3638,11 +3659,13 @@ class CheckContext {
           }
           sizes.push(Number(length))
         } else if (type.size !== null && type.size !== 'inferred' && type.size !== 'comptime') {
-          if (Array.isArray(type.size)) {
-            sizes.push(...type.size)
-          } else {
-            sizes.push(type.size)
+          const written = Array.isArray(type.size) ? type.size : [type.size]
+          const problem = written.map((n) => lengthProblem(BigInt(n))).find((p) => p)
+          if (problem) {
+            this.error(type.span.start, problem)
+            return RECOVERY
           }
+          sizes.push(...written)
         } else if (type.size === 'inferred' || type.size === 'comptime') {
           // Both 'inferred' and 'comptime' map to '_' (compile-time known)
           sizes.push('_')
@@ -3736,17 +3759,21 @@ class CheckContext {
   // computed exactly, as no type (a u32's `/` and `>>` would take wrapped
   // operands). Null, with the error reported, for anything else.
   private typeNumber(expr: AST.Expr, what: 'array length' | 'range bound'): bigint | null {
+    this.collectDefsIn(expr)
     const value = this.evalComptimeExpr(expr)
     if (value?.kind === 'int') return value.value
-    if (value) {
-      const shown = value.kind === 'float' ? `float(${value.value})` : value.kind === 'bool' ? 'bool' : 'not a number'
+    if (value?.kind === 'float' || value?.kind === 'bool') {
+      const shown = value.kind === 'float' ? `float(${value.value})` : 'bool'
       this.error(expr.span.start, `${what} must be an integer: it is ${shown}`)
       return null
     }
-    // A name nothing declares is the error of any expression.
+    // A name nothing declares is the error of any expression, said once: a
+    // signature is resolved where it is collected and again where its
+    // function is checked.
     const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
     if (unknown) {
-      this.error(unknown.span.start, this.unknownIdentifier(unknown.name))
+      if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name))
+      this.unknownInTypes.add(unknown.span.start)
       return null
     }
     const name = ungrouped(expr)
@@ -3754,6 +3781,25 @@ class CheckContext {
     const hint = param && name.kind === 'IdentExpr' ? `: '${name.name}' is a parameter; to give it at compile time, write comptime ${name.name}: u32` : ''
     this.error(expr.span.start, `${what} must be a compile-time constant${hint}`)
     return null
+  }
+
+  private unknownInTypes = new Set<number>()
+
+  // A def can size a type wherever it is declared: one a type names before
+  // its declaration is collected there, ahead of its turn.
+  private collectDefsIn(expr: AST.Expr): void {
+    if (this.currentScope !== this.moduleScope && !this.signatureNames) return
+    for (const name of unknownNames(expr)) {
+      const decl = this.defDecls.get(name.name)
+      if (!decl || this.collectedDefs.has(decl) || this.lookup(name.name)) continue
+      const scope = this.currentScope
+      this.currentScope = this.moduleScope
+      try {
+        this.collectDef(decl)
+      } finally {
+        this.currentScope = scope
+      }
+    }
   }
 
   // The names of the parameters of the signature being resolved, which a
@@ -3781,9 +3827,10 @@ class CheckContext {
 
   // Runs `resolve` with the names of a signature's parameters known, for the
   // messages of a length that names one (see typeNumber)
-  inSignature<T>(sig: AST.FuncSignature, resolve: () => T): T {
+  inSignature<T>(sig: AST.FuncSignature, resolve: () => T, values: readonly string[] = []): T {
     const prev = this.signatureNames
     const names = new Map(prev ?? [])
+    for (const name of values) names.set(name, 'value')
     if (sig.input.kind === 'CompositeType') {
       for (const f of sig.input.fields) if (f.ident && !f.comptime && !names.has(f.ident)) names.set(f.ident, 'param')
     }
@@ -6668,8 +6715,9 @@ class CheckContext {
     this.insideIfLetCondition = false
     const indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
-    this.inferIndexValue(expr.index)
-    if (unresolved(indexed)) return RECOVERY
+    const index = this.inferIndexValue(expr.index)
+    // An index whose type has the error says nothing more.
+    if (unresolved(indexed) || unresolved(index)) return RECOVERY
     // A name for a slice, an array or a pointer is the type it names
     const objType = unwrap(this.resolvedFirst(expr.span.start, indexed, 'index'))
 
@@ -6939,6 +6987,13 @@ class CheckContext {
     if (count < 0) {
       this.error(expr.count.span.start, 'repeat count cannot be negative')
       return comptimeArrayLiteral(valueType, 0)
+    }
+    // As many elements and bytes as any array has, at most
+    const tooLong = lengthProblem(countValue.value)
+    const bytes = tooLong === null && hasOwnType(valueType) ? byteSize(array(valueType, [count])) : null
+    if (tooLong || (bytes !== null && bytes > MAX_ARRAY_BYTES)) {
+      this.error(expr.count.span.start, tooLong ?? arrayTooLarge(array(valueType, [count]), bytes as number))
+      return RECOVERY
     }
     // A count written as a constant expression ([0; k], [0; 2 * 8]) is laid
     // out and compiled as its value.
@@ -7333,6 +7388,13 @@ class CheckContext {
       } else {
         typeParams.add(p.ident)
       }
+    }
+    // A length or a bound in the signature that names nothing at all is the
+    // one error: no call could find or give a number for it.
+    const known = (name: string) => params.some((p) => p.ident === name) || this.defNames.has(name) || this.valueNames.has(name) || this.lookup(name) !== undefined
+    for (const length of signatureLengths(decl.signature)) {
+      const unknown = unknownNames(length).find((n) => !known(n.name))
+      if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name))
     }
     // What the declaration says of generic types is checked here, by name
     // alone. An instance would say it once for each set of arguments, and an
@@ -7942,7 +8004,7 @@ class CheckContext {
       if (arithmetic?.length) {
         const owner = this.lookup(name)
         const ctx = owner?.kind === 'generic' ? owner.owner : this
-        const text = ctx.textOf(arithmetic.length) ?? missing
+        const text = ctx.textOf(arithmetic.length) ?? lengthText(arithmetic.length)
         return fail(`: [${text}] does not decide ${missing}, only a length that is ${missing} alone does; write ${what}, as in ${example('8')}`)
       }
       const applied = uses.find((u) => u.applied)?.applied
@@ -8940,7 +9002,10 @@ function lengthText(expr: AST.Expr): string {
     case 'UnaryExpr':
       return `${expr.op}${lengthText(expr.operand)}`
     case 'GroupExpr':
-      return `(${lengthText(expr.expr)})`
+    case 'TupleExpr': {
+      const inner = groupedExpr(expr)
+      return inner ? `(${lengthText(inner)})` : exprText(expr) ?? '...'
+    }
     case 'SizeofExpr':
       return `sizeof(${typeText(expr.type)})`
     case 'AnnotationExpr':
@@ -9346,6 +9411,20 @@ function mentionsUnbound(
     default:
       return false
   }
+}
+
+// The lengths, bounds and value arguments written in a signature's types
+function signatureLengths(node: unknown, found: AST.Expr[] = []): AST.Expr[] {
+  if (Array.isArray(node)) {
+    for (const n of node) signatureLengths(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as { kind?: string; length?: AST.Expr; bound?: AST.Expr; value?: AST.Expr }
+    if (n.kind === 'IndexedType' && n.length) found.push(n.length)
+    if (n.kind === 'PrimitiveType' && n.bound) found.push(n.bound)
+    if (n.kind === 'ValueArg' && n.value) found.push(n.value)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'length' && key !== 'bound') signatureLengths(value, found)
+  }
+  return found
 }
 
 // The value parameter a length decides: one that is the parameter's name
