@@ -11,7 +11,7 @@
 // any other is copied to new storage twice its size.
 //
 // Each element type is its own copy of each function (push<u32>,
-// push<(x:i32|y:i32)>), and a type the program never pushes costs nothing.
+// push<<x:i32|y:i32>>), and a type the program never pushes costs nothing.
 //
 // An element that is a fixed array, Vec([3]i32), is a table: ptr is a
 // [*]mut [3]i32, whose elements are pointers to rows (reference 2.5), so a

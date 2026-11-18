@@ -283,7 +283,9 @@ describe('parser', () => {
       const [vecType, vec] = (result.module?.decls[0] as ImportDecl).items
       expect(vecType).toMatchObject({ name: 'Vec', item: { kind: 'ImportTypeFunc', ident: 'Vec', params: [{ comptime: true, ident: 'T', type: { kind: 'TypeType' } }] } })
       expect(vec.item).toMatchObject({ kind: 'ImportFunc', ident: 'vec', signature: { output: { kind: 'PointerType', pointee: { kind: 'TypeApply', name: 'Vec' } } } })
-      // Two type parameters, and the near misses the checker explains
+      // Two type parameters; and parameters a generic type could not be
+      // declared with, which the import writes and nothing compares (as for
+      // any source import's signature)
       expect(parses('import "./m" "Map" func Map(comptime K: type, comptime V: type) -> type')).toBe(true)
       expect(parses('import "./m" "Vec" func Vec(comptime t: type) -> type')).toBe(true)
       expect(parses('import "./m" "Vec" func Vec(n: u32) -> type')).toBe(true)

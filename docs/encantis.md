@@ -3032,7 +3032,7 @@ A call with the wrong number of arguments for the one function of its name is a 
 An *instance* is one generic function with all its comptime arguments fixed.
 
 - **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
-- **Once.** An instance is one function in the output however many calls use it.
+- **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.7](#87-generics-across-modules)).
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
@@ -3064,7 +3064,7 @@ Instances that agree are listed together, and past twelve instances the rest are
 
 What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
 
-**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. To export an instance, export a function that calls it:
+**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. It makes the generic importable by other source modules ([8.7](#87-generics-across-modules)). To export an instance, export a function that calls it:
 
 ```ents
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
@@ -3328,7 +3328,7 @@ Inside the generic the parameter is not a value. It can be called, and passed on
 
 `export func max(comptime T: type, ...)` and `export func Vec(comptime T: type) -> type` make a generic importable by other source modules. A source import names what it uses with its signature, as for any function ([7.1](#71-imports)), and a generic type as the function it is:
 
-```text
+```ents
 import "./containers" (
   "Vec" func Vec(comptime T: type) -> type
   "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
@@ -3348,7 +3348,7 @@ An instance belongs to the module that declares the generic: its body's names ar
 
 **Where a call in a generic body is looked up.** In the generic's own module first. Where no function there of the callee's name takes the arguments, in the *site*: the module whose ordinary (non-generic) code started the chain of instantiations. So a library provides `hash` and `eq` for the common key types, and a program that uses `Set(Cell)` with its own `Cell` writes `hash(c: Cell)` and `eq(a: Cell, b: Cell)` in the module that makes the set:
 
-```text
+```ents
 import "./containers" (
   "Set" func Set(comptime K: type) -> type
   "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
