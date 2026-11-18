@@ -652,6 +652,12 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     }
   }
 
+  // 0 is none for an optional slice, as for an optional pointer: its
+  // pointer is 0 (and so is its length). Any other number is no slice.
+  if (s.kind === 'comptime_int' && s.value === 0n && t.kind === 'slice' && t.optional) {
+    return lossless(false)
+  }
+
   // Non-optional widens to optional: *T → ?*T, []T → ?[]T
   if (isOptional(t) && !isOptional(s)) {
     return typeAssignResult(unwrapOptional(t), s)

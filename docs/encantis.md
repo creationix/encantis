@@ -445,6 +445,54 @@ Pointers and slices can be **optional** using the `?` prefix. An optional pointe
 
 Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
 
+None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
+
+<!-- spec:begin compile -->
+
+```ents
+type Entry = (key: u32, name: ?[]u8)
+
+data entries: *[2]Entry = [(key: 1, name: 0), (key: 2, name: "two")]
+global last: ?[]u8 = 0
+
+func find(key: u32) -> ?[]u8 {
+  for e in entries {
+    return e.name when e.key == key
+  }
+  return 0
+}
+func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
+func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
+
+test "none is 0 for an optional pointer and an optional slice" {
+  assert find(1) == 0
+  assert find(2) != 0
+  assert size(find(2)) == 3
+  assert size(find(3)) == 99
+  assert size(0) == 99
+  assert last == 0
+  assert cell(0) == 0
+}
+```
+
+Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none:
+
+```ents
+func f(s: ?[]u8) -> bool {
+  let a: ?[]u8 = 5
+  let b: []u8 = 0
+  return s < 0
+}
+```
+
+```errors
+cannot assign int(5) to ?[]u8
+cannot assign int(0) to []u8
+'<' cannot be applied to ?[]u8 and int(0)
+```
+
+<!-- spec:end -->
+
 Optional values cannot be used directly where non-optional values are expected. You must resolve them using `if let` or `??`:
 
 ```ents
@@ -454,7 +502,7 @@ if let val = p { val.* }         // OK: unwrapped inside if-let
 p ?? default_ptr                 // OK: resolved with fallback
 ```
 
-Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared, with `0` too, and passed where an optional is expected.
+Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared (an optional slice only with `0`), and passed where an optional is expected.
 
 **Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
 

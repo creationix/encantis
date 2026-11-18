@@ -5693,6 +5693,23 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
+    // An optional slice is none where its pointer is 0: it is compared with
+    // 0, and only for equality, as an optional pointer is.
+    const optionalSlice = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'slice' && !!t.optional
+    }
+    const zero = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'comptime_int' && t.value === 0n
+    }
+    const none = optionalSlice(leftType) && zero(rightType) ? expr.right
+      : zero(leftType) && optionalSlice(rightType) ? expr.left
+      : null
+    if (none && (expr.op === '==' || expr.op === '!=')) {
+      this.coerce(none, none === expr.left ? leftType : rightType, primitive('u32'))
+      return
+    }
     const check = (operand: AST.Expr, type: ResolvedType): boolean => {
       const t = unwrap(type)
       if (t.kind === 'pointer' || t.kind === 'func') return true
@@ -5786,6 +5803,10 @@ class CheckContext {
       // A constant address is a 32-bit value, whatever it's computed from.
       this.coerce(expr, actual, addressType(from), prefix)
       this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'slice' && from.kind === 'comptime_int') {
+      // 0 for an optional slice: the address 0, and a length of 0.
+      this.coerce(expr, actual, addressType(from), prefix)
+      this.coercions.set(expr, expected)
     } else if (to.kind === 'primitive' && from.kind === 'primitive') {
       if (from.name !== to.name) {
         this.exprTypes.set(expr, actual)

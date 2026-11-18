@@ -806,6 +806,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   if (op === '&&') return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
   if (op === '||') return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
 
+  // An optional slice compared with 0 (none): its pointer is.
+  const leftSlice = unwrap(valueType(expr.left, ctx) ?? RT.VOID).kind === 'slice'
+  if ((op === '==' || op === '!=') && (leftSlice || unwrap(valueType(expr.right, ctx) ?? RT.VOID).kind === 'slice')) {
+    const ptr = slicePointer(leftSlice ? left : right)
+    return op === '==' ? `(i32.eqz ${ptr})` : `(i32.ne ${ptr} (i32.const 0))`
+  }
+
   // Get result type from checker
   const resultType = lookupExprType(expr, ctx)
   if (!resultType) {
@@ -2110,8 +2117,10 @@ function extendToI64(wat: string, signed: boolean): string {
 }
 
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
-  // A pointer to an array into a slice: the length the array has
+  // A pointer to an array into a slice: the length the array has. The
+  // address 0 into an optional slice is none: a length of 0 with it.
   if (unwrap(toType).kind === 'slice') {
+    if (unwrap(fromType).kind === 'primitive') return `${inner} (i32.const 0)`
     const len = RT.arrayLength(fromType)
     return len === null ? inner : `${inner} (i32.const ${len})`
   }
