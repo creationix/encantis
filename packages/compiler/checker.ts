@@ -4026,7 +4026,7 @@ class CheckContext {
           const table = value.kind === 'IdentExpr' ? value.name : 't'
           const at = args[0].value.span.start
           const advice = at >= INSTANCE_STRIDE ? [{ offset: at, message: rowsAdvice(tableRow(dest)?.pointee ?? zeroed) }] : undefined
-          this.error(at, `memzero dest: ${typeToString(dest)} is a table, its elements pointers to rows (reference 2.5): zero each row, for row in ${table} { memzero(row) }`, advice)
+          this.error(at, `memzero dest: ${typeToString(dest)} is a table, its elements pointers to rows (reference 2.5): zero each row, ${zeroRows(dest, table)}`, advice)
         }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
@@ -7463,6 +7463,19 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
+
+// The loops that zero each row of a table, one for each table in it: a row
+// of *[2][2][2]i32 is a table itself, whose rows are the cells.
+function zeroRows(table: ResolvedType, name: string): string {
+  let depth = 0
+  for (let row = tableRow(table); row; row = tableRow(row)) depth++
+  const binders = depth === 1 ? ['row'] : ['row', ...Array.from({ length: depth - 2 }, (_, i) => `row${i + 2}`), 'cells']
+  // A binder with the table's own name would hide it: row is r there.
+  const own = binders.map((b) => (b === name ? `${b[0]}${b.replace(/\D/g, '')}` : b))
+  let body = `memzero(${own[own.length - 1]})`
+  for (let i = own.length - 1; i >= 0; i--) body = `for ${own[i]} in ${i === 0 ? name : own[i - 1]} { ${body} }`
+  return body
+}
 
 // What to write instead where a type parameter that is a fixed array made a
 // table (2.5): rows in place are a struct's array field, or say pointers.

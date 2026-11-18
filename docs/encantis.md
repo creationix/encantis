@@ -462,7 +462,7 @@ In a table:
 
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
-- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`.
+- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`, and in a deeper table each row of rows: `for row in m { for cells in row { memzero(cells) } }` for a `*mut [2][2][2]T`.
 - `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
 - `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
@@ -2650,7 +2650,7 @@ test "one vector for each element type" {
 }
 ```
 
-**A fixed array for T.** With `T = [3]i32`, `[*]mut T` is `[*]mut [3]i32`, a table ([Nesting](#nesting)): each element is a pointer to its row, so code that uses an element as a `T`, as `get` above does, is refused in that instance, with a note that names the rule. For rows packed in place, make the element a struct with an array field, `Vec((cells: [3]i32))`: it lies in place, 12 bytes at a stride of 12, and `v.ptr[i].cells[j]` is one load; for pointers to rows that lie elsewhere, say so, `Vec(*[3]i32)`.
+**A fixed array for T.** With `T = [3]i32`, `[*]mut T` is `[*]mut [3]i32`, a table ([Nesting](#nesting)): each element is a pointer to its row, so code that uses an element as a `T`, as `get` above does, is refused in that instance, with a note that names the rule. For rows packed in place, make the element a struct with an array field, `Vec((cells: [3]i32))`: it lies in place, 12 bytes at a stride of 12, and `v.ptr[i].cells[2]` is one load (an array field is a value: its index is a constant, 2.4); for pointers to rows that lie elsewhere, say so, `Vec(*[3]i32)`.
 
 A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
 

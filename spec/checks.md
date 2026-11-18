@@ -1197,15 +1197,19 @@ A table's own bytes are its row pointers, 4 for each row: `memcpy` and `memset` 
 data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
 
+data cube: *mut [2][2][2]i32 = mut [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
 func f() {
   memcpy(board, grid, 24)
   memzero(board)
+  memzero(cube)
 }
 ```
 
 ```errors
 memcpy length 24 exceeds buffer size 8 bytes
 memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in board { memzero(row) }
+memzero dest: *mut [2][2][2]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in cube { for cells in row { memzero(cells) } }
 ```
 
 <!-- spec:begin compile -->
@@ -1214,9 +1218,11 @@ memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (referenc
 data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
 data after: *[2]i32 = [77, 88]
+data cube: *mut [2][2][2]i32 = mut [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
 
 func clear() {
   for row in board { memzero(row) }
+  for row in cube { for cells in row { memzero(cells) } }
 }
 func fill(i: u32#2) {
   memcpy(board[i], grid[i], 12)
@@ -1225,6 +1231,8 @@ func fill(i: u32#2) {
 test "rows are zeroed and copied one by one" {
   clear()
   assert board[1][2] == 0
+  assert cube[1][1][1] == 0
+  assert cube[0][1][0] == 0
   fill(1)
   assert board[1][0] == 3
   assert board[0][0] == 0
