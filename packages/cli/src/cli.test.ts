@@ -120,3 +120,54 @@ export func f(p: Pt, xs: []u32, o: ?*u32) -> u32 {
     expect(global.stdout).toBe(`x: 2 locations\n  ${global.file}:1:8\n  ${global.file}:14:14\n`)
   })
 })
+
+// In a generic's body a name is what it is in each instance: hover prints the
+// type it is declared with and its type in each instance, and references
+// from one of several functions of a name list the calls that call it.
+describe('generics on the command line', () => {
+  const PROGRAM = `func eq(a: u32, b: u32) -> bool => a == b
+func eq(a: f64, b: f64) -> bool => a == b
+func eq(a: i64, b: i64) -> bool => a == b
+func index_of(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, y in xs {
+    return i when eq(y, x)
+  }
+  return xs.len
+}
+data us = [1:u32, 2, 3]
+data fs = [1.0:f64, 2.0]
+export func f() -> u32 => index_of(us, 2) + index_of(fs, 2.0)
+`
+  async function query(command: string, at: string, ...flags: string[]) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = join(dir, 'generic.ents')
+      await writeFile(file, PROGRAM)
+      const run = Bun.spawnSync([process.execPath, CLI, command, `${file}:${at}`, ...flags])
+      return { file, exitCode: run.exitCode, stdout: run.stdout.toString() }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  test('hover in a generic\'s body', async () => {
+    expect((await query('hover', '4:42')).stdout).toBe('local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64\n')
+    expect((await query('hover', '4:24')).stdout).toBe('type parameter T: type — in index_of(T = u32): u32; in index_of(T = f64): f64\n')
+    expect((await query('hover', '6:19')).stdout).toBe(
+      'func eq: func(a: u32, b: u32) -> bool — in index_of(T = u32): eq(a: u32, b: u32) -> bool; in index_of(T = f64): eq(a: f64, b: f64) -> bool\n',
+    )
+    expect((await query('hover', '12:45')).stdout).toBe('generic index_of: func(xs: []f64, x: f64) -> u32 — calls index_of(T = f64)\n')
+    expect(JSON.parse((await query('hover', '4:42', '--json')).stdout)).toEqual({
+      name: 'x', type: 'T', kind: 'local', instances: [{ in: ['index_of(T = u32)'], type: 'u32' }, { in: ['index_of(T = f64)'], type: 'f64' }],
+    })
+  })
+
+  test('references from one of several functions of a name', async () => {
+    const u32 = await query('references', '1:6')
+    expect(u32.stdout).toBe(`${u32.file}:6:19\n`)
+    // No instance has T = i64.
+    expect((await query('references', '3:6')).stdout).toBe('')
+    const call = await query('definition', '6:19')
+    expect(call.stdout).toBe(`${call.file}:1:1 eq\n`)
+  })
+})

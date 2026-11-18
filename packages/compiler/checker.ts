@@ -244,8 +244,15 @@ export interface TypeCheckResult {
   // Literals that need data section serialization (for codegen)
   literals: PendingLiteral[]
   // The instances of this module's generic functions, in the order they were
-  // first asked for
-  instances: { of: AST.FuncDecl; decl: AST.FuncDecl }[]
+  // first asked for: the generic, its copy (at offsets shifted by
+  // index * INSTANCE_STRIDE), the name the instance is known by in `symbols`
+  // and in WAT (index_of<u32>), how messages name it (index_of(T = u32)), and
+  // its comptime arguments in the order of the comptime parameters
+  instances: InstanceInfo[]
+  // The applications of each of this module's generic types, in the order
+  // they were first resolved: as written once its arguments are resolved
+  // (Pair(u32)), those arguments, and the type it is
+  applications: Map<AST.TypeFuncDecl, Application[]>
   // What to compile in place of a call as written: for a call of a generic,
   // the plain call of its instance; for a call of a comptime function
   // parameter, the call of the function it stands for; for a type that is
@@ -267,6 +274,20 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+}
+
+export interface InstanceInfo {
+  of: AST.FuncDecl
+  decl: AST.FuncDecl
+  name: string
+  label: string
+  args: ComptimeValue[]
+}
+
+export interface Application {
+  shown: string
+  args: ResolvedType[]
+  type: ResolvedType
 }
 
 // === Concretization Options ===
@@ -367,7 +388,8 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
     literals: ctx.pendingLiterals,
-    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
+    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl, name: i.name, label: i.label, args: i.args })),
+    applications: ctx.applications,
     calls: ctx.calls,
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
@@ -729,6 +751,8 @@ class CheckContext {
   // The module's generic types, in the order they are declared, and how deep
   // in applications of them a type is being resolved
   typeFuncs: (Symbol & { kind: 'typefunc' })[] = []
+  // Each generic type's applications, as TypeCheckResult.applications has them
+  applications = new Map<AST.TypeFuncDecl, Application[]>()
   applyDepth = 0
   // Set where that depth ran out, until the application that began it reports it
   applyTooDeep = false
@@ -769,6 +793,14 @@ class CheckContext {
   // it stands for: what is said of that call is said of it as it was written.
   receivers = new Map<AST.CallExpr, AST.Expr>()
   refused = new Set<AST.CallExpr>()
+  // The calls of the module's functions read off the syntax of a generic's
+  // body (see skipGenericBody), and the uses an instance made, each as
+  // "definition:use". Where a generic has instances, a call in its body is a
+  // use of what its instances call, and of nothing else (see settleGuesses).
+  guessedCalls: { generic: AST.FuncDecl; def: number; use: number }[] = []
+  madeInInstances = new Set<string>()
+  // The uses a generic's first instance recorded, at the generic's offsets
+  firstUses = new Set<number>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
   // How many looks are open (see untraced), and of them how many are attempts
@@ -892,6 +924,27 @@ class CheckContext {
     this.drainInstances()
     this.settleLiterals()
     this.placeInstanceLiterals()
+    this.settleGuesses()
+  }
+
+  // A call in a generic's body was taken, before any instance existed, for a
+  // use of every function of its name. Where the generic has instances, each
+  // has recorded what it calls: a guess no instance made is taken back, so
+  // that the uses of one of several functions that share a name are the calls
+  // that call it, and one no call calls is reported as never used. (A generic
+  // cannot be imported: its instances are all this module's.) A generic
+  // nothing instantiates keeps its guesses: any function of the name could be
+  // the one an instance would call.
+  private settleGuesses(): void {
+    const instantiated = new Set(this.instances.map((inst) => inst.of))
+    for (const { generic, def, use } of this.guessedCalls) {
+      if (!instantiated.has(generic) || this.madeInInstances.has(`${def}:${use}`)) continue
+      const refs = this.references.get(def)
+      const at = refs?.indexOf(use) ?? -1
+      if (refs && at >= 0) refs.splice(at, 1)
+      if (this.symbolRefs.get(use) === def) this.symbolRefs.delete(use)
+    }
+    this.guessedCalls = []
   }
 
   // Pre-register type names so they can be referenced before their full definition
@@ -6874,6 +6927,14 @@ class CheckContext {
       return RECOVERY
     }
     if (settled) sym.cache.set(key, resolved)
+    // For the editor, each way it was applied, once: also an application
+    // only a signature makes while declarations are collected, as it was
+    // resolved then, until it is resolved again once they are.
+    const applied = owner.applications.get(sym.decl) ?? []
+    const known = applied.findIndex((a) => a.shown === shown)
+    if (known < 0) applied.push({ shown, args, type: resolved })
+    else if (settled) applied[known] = { shown, args, type: resolved }
+    owner.applications.set(sym.decl, applied)
     return resolved
   }
 
@@ -7361,17 +7422,24 @@ class CheckContext {
     // types this is read off the syntax: a name the generic itself declares
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
-    for (const { name, offset } of names) {
+    for (const { name, offset, called } of names) {
       if (locals.has(name) || !this.moduleScope.symbols.has(name)) continue
       // Which of the functions that share a name a call means is known only
-      // in an instance: all of them count as used.
-      for (const known of this.overloads.get(name) ?? [name]) this.recordReference(known, offset)
+      // in an instance: all of them count as used, until the instances say
+      // which they call (see settleGuesses).
+      for (const known of this.overloads.get(name) ?? [name]) {
+        this.recordReference(known, offset)
+        const def = this.symbolDefOffsets.get(known)
+        if (called && def !== undefined) this.guessedCalls.push({ generic: decl, def, use: offset })
+      }
     }
     // A type parameter is in no instance: the copy is made without it, and
     // with the type in the place of every use. Where it is declared and used
-    // is read off the declaration too, for the editor to find.
+    // is read off the declaration too, for the editor to find; so are the
+    // uses of a comptime function parameter, which an instance records again
+    // (and a generic nothing instantiates has no instance to record them).
     for (const param of genericParams(decl)) {
-      if (!isTypeParam(param) || !param.identSpan) continue
+      if (!param.comptime || !param.identSpan) continue
       const declared = param.identSpan.start
       const uses = names.filter((n) => n.name === param.ident).map((n) => n.offset)
       this.references.set(declared, uses)
@@ -7634,13 +7702,19 @@ class CheckContext {
     // that is not the module's and has no place recorded (one a test
     // declares, from an instance) has no uses either.
     const defOffset = sym === module ? this.symbolDefOffsets.get(name) : sym && this.localDefs.get(sym)
+    const instance = refOffset >= INSTANCE_STRIDE ? this.instances[Math.floor(refOffset / INSTANCE_STRIDE) - 1] : undefined
     refOffset %= INSTANCE_STRIDE
     if (defOffset !== undefined) {
+      if (instance && sym === module) this.madeInInstances.add(`${defOffset}:${refOffset}`)
       const refs = this.references.get(defOffset)
       if (refs && !refs.includes(refOffset)) {
         refs.push(refOffset)
       }
-      this.symbolRefs.set(refOffset, defOffset)
+      // A call in a generic's body may mean one function of a name in one
+      // instance and another in the next: the use is the one the first
+      // instance means, as everything else in the body is shown.
+      if (!instance || instance.first || !this.firstUses.has(refOffset)) this.symbolRefs.set(refOffset, defOffset)
+      if (instance?.first) this.firstUses.add(refOffset)
     }
   }
 }
@@ -8281,8 +8355,16 @@ function literalText(grouped: AST.Expr): string | null {
 }
 
 // The names a function declares for itself: parameters, results and locals.
+// The editor asks this of every name it shows in a generic: it is read off
+// the declaration once.
+const declaredNames = new WeakMap<AST.FuncDecl | AST.TypeFuncDecl, Set<string>>()
 export function localNames(decl: AST.FuncDecl): Set<string> {
-  return namesIn(decl).locals
+  let names = declaredNames.get(decl)
+  if (!names) {
+    names = namesIn(decl).locals
+    declaredNames.set(decl, names)
+  }
+  return names
 }
 
 // The generic function around `offset` that declares `name` for itself: a
@@ -8295,7 +8377,14 @@ export function genericDeclaring(module: AST.Module, offset: number, name: strin
     const item = decl.kind === 'ExportDecl' ? decl.item : decl
     if (offset < item.span.start || offset >= item.span.end) continue
     if (item.kind === 'FuncDecl' && isGenericDecl(item)) return localNames(item).has(name) ? item : null
-    if (item.kind === 'TypeFuncDecl') return fieldNames([item.params, item.body]).has(name) ? item : null
+    if (item.kind === 'TypeFuncDecl') {
+      let names = declaredNames.get(item)
+      if (!names) {
+        names = fieldNames([item.params, item.body])
+        declaredNames.set(item, names)
+      }
+      return names.has(name) ? item : null
+    }
   }
   return null
 }
@@ -8418,9 +8507,12 @@ function fieldNames(node: unknown, found = new Set<string>()): Set<string> {
 }
 
 // The names a declaration refers to, with where, and the names it declares.
-function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[]; locals: Set<string> } {
-  const names: { name: string; offset: number }[] = []
+// `called`: the name is what a call is of, f in f(a) or in x.f(a), which in a
+// generic's body can be one function in one instance and another in the next.
+function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; called: boolean }[]; locals: Set<string> } {
+  const names: { name: string; offset: number; called: boolean }[] = []
   const locals = new Set<string>()
+  const callees = new Set<unknown>()
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) {
       node.forEach(visit)
@@ -8435,13 +8527,14 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[
       case 'IdentExpr':
       case 'TypeRef':
       case 'TypeApply':
-        if (n.span) names.push({ name: n.name as string, offset: n.span.start })
+        if (n.span) names.push({ name: n.name as string, offset: n.span.start, called: callees.has(n) })
         break
       case 'CallExpr': {
         // x.f(a) may be a call of the function f.
         const callee = n.callee as AST.Expr
+        callees.add(callee)
         if (callee.kind === 'MemberExpr' && callee.member.kind === 'field') {
-          names.push({ name: callee.member.name, offset: callee.span.end - callee.member.name.length })
+          names.push({ name: callee.member.name, offset: callee.span.end - callee.member.name.length, called: true })
         }
         break
       }
