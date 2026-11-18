@@ -359,7 +359,7 @@ export interface ProgramCheckResult {
 }
 
 export function typecheckProgram(
-  modules: Map<string, { module: AST.Module }>,
+  modules: Map<string, { module: AST.Module; source?: string }>,
   entryPath: string,
   options?: TypecheckOptions,
 ): ProgramCheckResult {
@@ -386,7 +386,8 @@ export function typecheckProgram(
     }
     visitImports(loaded.module.decls)
 
-    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
+    // Each module's own text, which messages quote (see textOf)
+    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports, source: loaded.source })
     results.set(path, result)
     allErrors.push(...result.errors)
     moduleExports.set(path, getExportedSymbols(loaded.module, result))
@@ -4553,26 +4554,23 @@ class CheckContext {
       const rest = name.slice(at + 1)
       if (rest === '' || !(PRIMITIVE_NAMES.has(head) || hasMember(type, head))) continue
       const text = this.textOf(object)
-      return `: for a subtraction write \`${text === null ? '' : text}.${head} - ${rest}\``
+      if (text === null) return `: for a subtraction write the - with spaces, as in \`${head} - ${rest}\``
+      return `: for a subtraction write \`${text}.${head} - ${rest}\``
     }
     return ''
   }
 
   // The source of an expression as written, where the checker has the source
   // (an instance's offsets are the generic's plus a multiple of the stride);
-  // otherwise a name, or a chain of fields on one.
+  // otherwise what the syntax tree says of the usual forms (names, members,
+  // indexing, calls, parentheses), or null.
   private textOf(expr: AST.Expr): string | null {
     if (this.source) {
       const start = expr.span.start % INSTANCE_STRIDE
       const end = expr.span.end - (expr.span.start - start)
       return this.source.slice(start, end)
     }
-    if (expr.kind === 'IdentExpr') return expr.name
-    if (expr.kind === 'MemberExpr' && expr.member.kind === 'field') {
-      const object = this.textOf(expr.object)
-      return object === null ? null : `${object}.${expr.member.name}`
-    }
-    return null
+    return exprText(expr)
   }
 
   // items[start..end] is a []T over the same memory. On a *[N]T, constant
@@ -6278,6 +6276,38 @@ function hasMember(type: ResolvedType, name: string): boolean {
 // after a colon. Forms that only a type can have are already a TypeExpr; the
 // rest are expressions that are also types (u32, (i32, i32)). Null for
 // anything else: a variable, a literal, ().
+// An expression written out from the syntax tree, for a message: the usual
+// forms only (names, members, indexing, calls, parentheses and decimal
+// integers), null for anything else.
+function exprText(expr: AST.Expr): string | null {
+  const all = (parts: (string | null)[]) => (parts.every((p) => p !== null) ? parts.join('') : null)
+  switch (expr.kind) {
+    case 'IdentExpr':
+      return expr.name
+    case 'LiteralExpr':
+      return expr.value.kind === 'int' && expr.value.radix === 10 ? String(expr.value.value) : null
+    case 'GroupExpr':
+    case 'TupleExpr': {
+      const inner = groupedExpr(expr)
+      return inner === null ? null : all(['(', exprText(inner), ')'])
+    }
+    case 'IndexExpr':
+      return all([exprText(expr.object), '[', exprText(expr.index), ']'])
+    case 'MemberExpr': {
+      const m = expr.member
+      const member =
+        m.kind === 'field' ? m.name : m.kind === 'index' ? String(m.value) : m.kind === 'deref' ? '*' : m.type.kind === 'TypeRef' ? m.type.name : null
+      return all([exprText(expr.object), '.', member])
+    }
+    case 'CallExpr': {
+      const args = expr.args.map((a) => (a.value === null ? `${a.name}:` : all([a.name === null ? '' : `${a.name}: `, exprText(a.value)])))
+      return all([exprText(expr.callee), '(', ...args.flatMap((a, i) => (i === 0 ? [a] : [', ', a])), ')'])
+    }
+    default:
+      return null
+  }
+}
+
 function typeOfArg(expr: AST.Expr): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':

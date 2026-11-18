@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
-import { concretizeType, isConcreteType, typecheck, typeKey, type TypeCheckResult } from './checker'
+import { concretizeType, isConcreteType, typecheck, typecheckProgram, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
 import { parseType as parseTypeLib } from './type-lib'
 import {
@@ -2310,6 +2310,31 @@ func f(x: S) {
 }`)).toEqual(["no field 'zz-1' on type S"])
     // An assignment to one is the same mistake.
     expect(errs(`func f(p: *mut u8) { p.u32-1 = 3 }`)).toEqual(["no field 'u32-1' on type *mut u8: for a subtraction write `p.u32 - 1`"])
+  })
+
+  test('the hint writes out what the member is of, however that is written', () => {
+    const src = `type Pt = (x: u32, y: u32)
+func get(p: Pt) -> Pt => p
+func f(p: Pt, ps: []Pt, q: *Pt, t: (Pt, u8)) -> u32 => get(p).y-2 + ps[0].x-1 + q.*.x-1 + (p).y-1 + t.0.x-1
+`
+    const hints = (messages: string[]) => messages.filter((m) => m.startsWith('no field'))
+    const expected = [
+      "no field 'y-2' on type Pt: for a subtraction write `get(p).y - 2`",
+      "no field 'x-1' on type Pt: for a subtraction write `ps[0].x - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `q.*.x - 1`",
+      "no field 'y-1' on type Pt: for a subtraction write `(p).y - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `t.0.x - 1`",
+    ]
+    // As the command line checks a program: from its files, with their text.
+    const path = '/virtual/hint.ents'
+    const program = typecheckProgram(new Map([[path, { module: parse(src).module!, source: src }]]), path)
+    expect(hints(program.errors.map((e) => e.message))).toEqual(expected)
+    // And from the syntax tree alone.
+    expect(hints(checkModule(src).errors.map((e) => e.message))).toEqual(expected)
+    // What cannot be written out from the tree is left out of the hint.
+    expect(hints(checkModule(`type Pt = (x: u32, y: u32)
+func f(c: bool, p: Pt) -> u32 => (if c { p } else { p }).x-1
+`).errors.map((e) => e.message))).toEqual(["no field 'x-1' on type Pt: for a subtraction write the - with spaces, as in `x - 1`"])
   })
 })
 
