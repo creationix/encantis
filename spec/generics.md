@@ -725,24 +725,24 @@ export func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 
 Each of these is one mistake and one error.
 
-A comptime value parameter.
+A comptime parameter of a float type. A comptime parameter is a type, an integer or a function.
 
 ```ents
-func f(comptime n: u32) -> u32 => n
+func f(comptime r: f64) -> u32 => 0
 ```
 
 ```errors
-comptime value parameters are not supported yet: 'n' must be 'type' or a function type
+comptime parameter 'r' is f64: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
 ```
 
-An array size that names a comptime value parameter is not parsed at all.
+A `bool` is no value parameter: with no compile-time `if`, it would choose nothing.
 
 ```ents
-func zeros(comptime n: u32) -> [n]u8 => 0
+func f(comptime ok: bool) -> u32 => 0
 ```
 
 ```errors
-Expected
+comptime parameter 'ok' is bool: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
 ```
 
 A type parameter with a lower-case name.
@@ -1946,7 +1946,7 @@ export func f(a: u32) -> u32 => a + 1
 
 Each of these is one mistake and one error.
 
-A parameter that is not a comptime type parameter, and no parameters at all.
+A parameter that is not comptime, and no parameters at all.
 
 ```ents
 func Vec(comptime T: type, n: u32) -> type => (T, u32)
@@ -1955,7 +1955,7 @@ func f(v: Vec(u32)) -> u32 => 0
 ```
 
 ```errors
-generic type 'Vec' takes comptime type parameters only, as (comptime T: type)
+generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)
 ```
 
 ```ents
@@ -1963,7 +1963,7 @@ func Unit() -> type => u32
 ```
 
 ```errors
-generic type 'Unit' takes comptime type parameters only, as (comptime T: type)
+generic type 'Unit' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)
 ```
 
 A block body. The body of a generic type is one type.
@@ -3043,6 +3043,728 @@ func hash(k: u32) -> u32 => k
 
 ```errors
 'hash' is already declared: a generic function's name is unique in its module
+```
+
+## Value parameters
+
+A comptime parameter of an integer type, `comptime n: u32`, is given a number. Each number makes an instance, which is the generic with the number put where the name is read, and compiles to the function written by hand for that number (reference 8.7).
+
+### Accepted
+
+The number written, inferred from a length, or written as a constant expression: three calls, two instances.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum(primes)
+export func b() -> u32 => sum(8, squares)
+export func c() -> u32 => sum(2 + 2, primes)
+```
+
+```ents same-wasm
+func sum_4(xs: *[4]u32) -> (total: u32) {
+  for i in 4 {
+    total += xs[i]
+  }
+}
+func sum_8(xs: *[8]u32) -> (total: u32) {
+  for i in 8 {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum_4(primes)
+export func b() -> u32 => sum_8(squares)
+export func c() -> u32 => sum_4(primes)
+```
+
+A value parameter with a type parameter and a comptime function parameter, called as a method and written out: one instance, `sort<8|i32|ascending>`.
+
+```ents
+func sort(comptime n: u32, comptime T: type, xs: *mut [n]T, comptime before: (T, T) -> bool) {
+  for i in n {
+    for j in n {
+      if before(xs[i], xs[j]) {
+        let t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+      }
+    }
+  }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+
+data nums = mut [5:i32, 3, 8, 1, 9, 2, 7, 4]
+
+export func up() { nums.sort(ascending) }
+export func up2() { sort(8, i32, nums, ascending) }
+
+test "sorted" {
+  up()
+  assert nums[0] == 1
+  assert nums[7] == 9
+}
+```
+
+```ents same-wasm
+func sort_8(xs: *mut [8]i32) {
+  for i in 8 {
+    for j in 8 {
+      if ascending(xs[i], xs[j]) {
+        let t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+      }
+    }
+  }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+
+data nums = mut [5:i32, 3, 8, 1, 9, 2, 7, 4]
+
+export func up() { sort_8(nums) }
+export func up2() { sort_8(nums) }
+
+test "sorted" {
+  up()
+  assert nums[0] == 1
+  assert nums[7] == 9
+}
+```
+
+Value parameters of `u8`, `i32` and `u64`. The number is held as its type holds it: `~0` for a `u8` is 255. Instances are in the order of their names as text, so `shift<-3>` comes before `shift<3>`.
+
+```ents
+func shift(comptime k: i32, x: i32) -> i32 => x + k
+func mask(comptime m: u8, x: u8) -> u8 => x & m
+func big(comptime n: u64, x: u64) -> u64 => x + n
+
+export func s(x: i32) -> i32 => shift(0 - 3, x) + shift(3, x)
+export func m(x: u8) -> u8 => mask(~0, x) & mask(15, x)
+export func b(x: u64) -> u64 => big(5000000000, x)
+
+test "numbers of three types" {
+  assert s(10) == 20
+  assert m(255) == 15
+}
+```
+
+```ents same-wasm
+func shift_m3(x: i32) -> i32 => x + -3
+func shift_3(x: i32) -> i32 => x + 3
+func mask_15(x: u8) -> u8 => x & 15
+func mask_255(x: u8) -> u8 => x & 255
+func big_5000000000(x: u64) -> u64 => x + 5000000000
+
+export func s(x: i32) -> i32 => shift_m3(x) + shift_3(x)
+export func m(x: u8) -> u8 => mask_255(x) & mask_15(x)
+export func b(x: u64) -> u64 => big_5000000000(x)
+
+test "numbers of three types" {
+  assert s(10) == 20
+  assert m(255) == 15
+}
+```
+
+A value passed on in arithmetic, to a length of another generic.
+
+```ents
+func fill(comptime n: u32, xs: *mut [n]u8, v: u8) {
+  for i in n {
+    xs[i] = v
+  }
+}
+func doubled(comptime n: u32, xs: *mut [n * 2]u8) { fill(n * 2, xs, 7) }
+
+data bytes = mut [0:u8; 8]
+
+export func h() { doubled(4, bytes) }
+```
+
+```ents same-wasm
+func fill_8(xs: *mut [8]u8, v: u8) {
+  for i in 8 {
+    xs[i] = v
+  }
+}
+func doubled_4(xs: *mut [8]u8) { fill_8(xs, 7) }
+
+data bytes = mut [0:u8; 8]
+
+export func h() { doubled_4(bytes) }
+```
+
+A constant expression as the index of a value array: `v[n - 1]` is the third value.
+
+```ents
+func last(comptime n: u32, comptime T: type, v: [n]T) -> T => v[n - 1]
+
+export func a(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last(v)
+}
+```
+
+```ents same-wasm
+func last_3(v: [3]f64) -> f64 => v[2]
+
+export func a(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last_3(v)
+}
+```
+
+A generic type with value parameters. `Ring(8, u32)` is the struct its body is; a method call finds `n` and `T` through the field `items: *mut [n]T`.
+
+```ents
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+
+func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
+  r.items[(r.head + r.count) % n] = x
+  if r.count < n {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % n
+  }
+}
+
+data cells = mut [0:u32; 8]
+data log: Ring(8, u32) = mut (0, 0, cells)
+
+export func record(x: u32) { log.push(x) }
+export func record2(x: u32) { log.push(8, u32, x) }
+export func size() -> u32 => sizeof(Ring(4 + 4, u32))
+export func built(p: *mut [8]u32) -> u32 => Ring(8, u32)(0, 0, p).count
+```
+
+```ents same-wasm
+type Ring8 = (head: u32#8, count: u32, items: *mut [8]u32)
+
+func push_8(r: *mut Ring8, x: u32) {
+  r.items[(r.head + r.count) % 8] = x
+  if r.count < 8 {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % 8
+  }
+}
+
+data cells = mut [0:u32; 8]
+data log: Ring8 = mut (0, 0, cells)
+
+export func record(x: u32) { push_8(log, x) }
+export func record2(x: u32) { push_8(log, x) }
+export func size() -> u32 => sizeof(Ring8)
+export func built(p: *mut [8]u32) -> u32 => Ring8(0, 0, p).count
+```
+
+A generic type with value parameters only, and a value it does not use: `Tagged(4)` and `Tagged(5)` are one type, as a generic type is its body.
+
+```ents
+func Words(comptime w: u32) -> type => (bits: *mut [w]u32, count: u32#(w * 32 + 1))
+func Tagged(comptime n: u32) -> type => (id: u32)
+
+func words(comptime w: u32, b: *Words(w)) -> u32 => w
+func same(t: Tagged(4)) -> Tagged(5) => t
+
+data ws = mut [0:u32; 3]
+data seen: Words(3) = mut (ws, 0)
+
+export func w() -> u32 => seen.words()
+```
+
+A constructor with value arguments of a type that is not generic stays a value: `Cell(1, 2)` is a `Cell`, which decides `T`.
+
+```ents
+type Cell = (x: i32, y: i32)
+func keep(comptime T: type, x: T) -> T => x
+
+export func f() -> i32 => keep(Cell(1, 2)).x
+```
+
+A buffer per number, laid out once: every call with the same `n` gets the same one.
+
+```ents
+func scratch(comptime n: u32) -> *mut [n]u8 => mut [0:u8; n]
+
+export func a() -> *mut [16]u8 => scratch(16)
+export func b() -> *mut [64]u8 => scratch(64)
+export func c() -> *mut [16]u8 => scratch(16)
+```
+
+A `def` sizes a type, also one declared after it, and a length is any constant: `[0x10]u8` is sixteen bytes.
+
+```ents
+def size = 64
+
+export func f(p: *mut [size]u8, i: u32#size) -> u8 => p[i]
+export func g(p: *[k * 2]u8) -> u32 => p.len
+export func h(p: *[0x10]u8) -> u32 => p.len
+export func j(p: *[sizeof(u64) * 4]u8, i: u32#(k + 1)) -> u8 => p[i]
+
+def k = 4
+```
+
+`n = 0` is a number like any other: a loop over the elements needs no proof.
+
+```ents
+func total(comptime n: u32, xs: *[n]u32) -> (t: u32) {
+  for x in xs {
+    t += x
+  }
+}
+
+data none: *[0]u32 = []
+
+export func z() -> u32 => total(none)
+```
+
+A generic nobody calls is only parsed: what its body does with `n` is not checked.
+
+```ents
+func f(comptime n: u32) -> u32 {
+  n = 3
+  return n
+}
+```
+
+### Rejected at the declaration
+
+Each of these is one mistake and one error.
+
+An upper-case name: a value parameter is named as a value is.
+
+```ents
+func f(comptime N: u32, p: *[N]u8) -> u32 => 0
+```
+
+```errors
+a value parameter's name starts with a lower-case letter: write 'comptime n: u32'
+```
+
+A type parameter as the type of a value parameter, and a slice.
+
+```ents
+func f(comptime T: type, comptime n: T) -> u32 => 0
+func g(comptime s: []u8) -> u32 => 0
+```
+
+```errors
+comptime parameter 'n' is T: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
+comptime parameter 's' is []u8: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
+```
+
+The name of a `def` of the module, which the parser would put in for the name.
+
+```ents
+def n = 4
+func f(comptime n: u32) -> u32 => 0
+```
+
+```errors
+comptime parameter 'n' has the name of a def declared in this module
+```
+
+The name of another parameter, or of a result.
+
+```ents
+func f(comptime n: u32, n: u32) -> u32 => 0
+func g(comptime n: u32, x: u32) -> (n: u32) { }
+```
+
+```errors
+parameter 'n' is declared twice
+result 'n' has the name of the comptime value parameter 'n'
+```
+
+A run-time parameter as a length.
+
+```ents
+func f(len: u32, p: *[len]u8) -> u32 => 0
+```
+
+```errors
+array length must be a compile-time constant: 'len' is a parameter; to give it at compile time, write comptime len: u32
+```
+
+A length that names nothing.
+
+```ents
+func f(comptime n: u32, p: *[m]u8) -> u32 => 0
+```
+
+```errors
+unknown identifier 'm'
+```
+
+A generic type with a parameter that is neither a type nor an integer.
+
+```ents
+func Box(comptime x: f64) -> type => (a: u32)
+```
+
+```errors
+generic type 'Box' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)
+```
+
+A packed array's dimensions are numbers.
+
+```ents
+func f(comptime n: u32, comptime m: u32, p: *[n x m]u8) -> u32 => 0
+```
+
+```errors
+Expected
+```
+
+### Rejected at the call
+
+A value that is not known at compile time, for a value parameter.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+
+func f(xs: []u32) -> u32 => sum(xs)
+func g(x: u32, p: *[4]u32) -> u32 => sum(x, p)
+```
+
+```errors
+cannot infer n for 'sum': a []u32 has no length in its type; write the value argument, as in sum(8, ...)
+argument 1 of 'sum' must be a compile-time constant: n is a comptime value parameter
+```
+
+A `data` block and a type, where a number is wanted, and a number where a type is.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+func get(comptime n: u32, comptime T: type, xs: *[n]T, i: u32#n) -> T => xs[i]
+
+data d = [1:u8]
+
+func f(p: *[4]u32) -> u32 => sum(d, p)
+func g(p: *[4]u32) -> u32 => sum(u32, p)
+func h(p: *[8]u8) -> u8 => get(8, 8, p, 0)
+```
+
+```errors
+argument 1 of 'sum' must be a compile-time constant: n is a comptime value parameter
+argument 1 of 'sum' must be a compile-time constant: n is a comptime value parameter
+argument 2 of 'get' must be a type: T is a type parameter
+```
+
+A number the parameter's type does not hold: the errors of any argument.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+func small(comptime n: u8, xs: *[n]u32) -> u32 => 0
+
+func a(p: *[4]u32) -> u32 => small(300, p)
+func b(p: *[4]u32) -> u32 => sum(0 - 1, p)
+func c(p: *[4]u32) -> u32 => sum(1.5, p)
+func d(p: *[4]u32) -> u32 => sum(4294967296, p)
+func e(p: *[4]u32) -> u32 => sum(true, p)
+```
+
+```errors
+argument 1: cannot assign int(300) to u8
+argument 1: cannot assign int(-1) to u32
+argument 1: cannot assign float(1.5) to u32
+argument 1: cannot assign int(4294967296) to u32
+argument 1: cannot assign bool to u32
+```
+
+Another count of arguments, and named arguments.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+func push(comptime n: u32, comptime T: type, v: *mut [n]T, x: T) { }
+
+func f(p: *[4]u32) -> u32 => sum(4, 4, p)
+func g(p: *mut [4]u32) { push(p, 1, 2) }
+func h(p: *[4]u32) -> u32 => sum(n: 4, xs: p)
+```
+
+```errors
+'sum' expects 1 argument, or 2 with its value argument written; got 3
+'push' expects 2 arguments, or 4 with its comptime arguments written; got 3
+'sum' takes positional arguments
+```
+
+Nothing that decides `n`: no length, a length in arithmetic, a generic type with no length that is `n` alone, an array literal, a value array where a pointer is wanted.
+
+```ents
+func pow(comptime e: u32, x: u64) -> u64 => x
+func fill(comptime n: u32, comptime T: type, x: T) -> u32 => 0
+func set_bit(comptime n: u32, b: *mut [(n + 31) / 32]u32, i: u32#n) { }
+func Tagged(comptime n: u32) -> type => (id: u32#n)
+func tag(comptime n: u32, t: Tagged(n)) -> u32 => 0
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+
+data seen = mut [0:u32; 4]
+
+func a(x: u64) -> u64 => pow(x)
+func b(x: u32) -> u32 => fill(x)
+func c(k: u32) { set_bit(seen, k % 100) }
+func d(t: Tagged(4)) -> u32 => tag(t)
+func e() -> u32 => sum([1, 2, 3])
+func f(v: [4]u32) -> u32 => sum(v)
+```
+
+```errors
+cannot infer e for 'pow': write the value argument, as in pow(8, ...)
+cannot infer n for 'fill': write the comptime arguments, as in fill(8, u32, ...)
+cannot infer n for 'set_bit': [(n + 31) / 32] does not decide n, only a length that is n alone does; write the value argument, as in set_bit(8, ...)
+cannot infer n for 'tag': 'Tagged(n)' has no length that is n alone; write the value argument
+cannot infer n for 'sum' from an array literal: write sum(3, ...)
+cannot infer n for 'sum': write the value argument, as in sum(8, ...)
+```
+
+Once `n` is decided, every other argument is an ordinary argument.
+
+```ents
+func join(comptime a: u32, comptime b: u32, x: *[a]u8, y: *[b]u8, out: *mut [a + b]u8) { }
+func get(comptime n: u32, comptime T: type, xs: *[n]T, i: u32#n) -> T => xs[i]
+func pair(comptime n: u32, a: [n]f64, b: [n]f64) -> f64 => 0.0
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+
+data big = mut [0:u8; 8]
+data widths = [3:u16, 1, 4, 1, 5, 9, 2, 6]
+
+func a() { join("hel", "lo", big) }
+func b(k: u32) -> u16 => get(widths, k)
+func c(k: u32) -> u16 => get(widths, k & 15)
+func d(x: [3]f64, y: [4]f64) -> f64 => pair(x, y)
+func e(v: [4]u32) -> u32 => sum(4, v)
+```
+
+```errors
+argument 3: cannot assign *mut [8]u8 to *mut [5]u8
+argument 2: cannot assign u32 to u32#8
+argument 2: cannot assign u32#16 to u32#8
+argument 2: cannot assign [4]f64 to [3]f64
+argument 2: cannot assign [4]u32 to *[4]u32
+```
+
+A number for a generic type's value parameter.
+
+```ents
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, items: *mut [n]T)
+func Small(comptime n: u8) -> type => (items: *[n]u8)
+
+func a(r: Ring(u32, u8)) -> u32 => 0
+func b(r: Small(300)) -> u32 => 0
+func c(x: u32, r: *Ring(x, u8)) -> u32 => 0
+```
+
+```errors
+argument 1 of 'Ring' must be a compile-time constant: n is a comptime value parameter
+argument 1 of 'Small': cannot assign int(300) to u8
+argument 1 of 'Ring' must be a compile-time constant: n is a comptime value parameter
+```
+
+### Rejected in an instance
+
+Each error is reported at its line in the generic, once for each instance, and labelled with it.
+
+A bound of 0, and a bound past its type.
+
+```ents
+func get(comptime n: u32, comptime T: type, xs: *[n]T, i: u32#n) -> T => xs[i]
+func narrow(comptime n: u32, x: u8#n) -> u8 => x
+
+export func f() -> u8 => get("", 0)
+export func g() -> u8 => narrow(300, 1)
+```
+
+```errors
+range bound must be at least 1: u32#0 has no values, in get(n = 0, T = u8)
+range bound 300 is too large for u8, which has 256 values, in narrow(n = 300)
+```
+
+A negative length, a length past a `u32`, and an array too large for memory.
+
+```ents
+func neg(comptime k: i32, p: *[k]u8) -> u32 => 0
+func long(comptime n: u64, p: *[n]u8) -> u32 => 0
+func wide(comptime n: u32, p: *[n]u64) -> u32 => 0
+
+export func a(p: *[1]u8) -> u32 => neg(0 - 1, p)
+export func b(p: *[1]u8) -> u32 => long(4294967296, p)
+export func c(p: *[1]u64) -> u32 => wide(536870912, p)
+```
+
+```errors
+array length cannot be negative: it is -1, in neg(k = -1)
+array length 4294967296 is too large: an array has at most 4294967295 elements, in long(n = 4294967296)
+array [536870912]u64 is too large: 4294967296 bytes, more than the 4294967295 a 32-bit memory addresses, in wide(n = 536870912)
+```
+
+`n` is no variable: it cannot be assigned to, and its name cannot be bound again.
+
+```ents
+func f(comptime n: u32, p: ?*u32, x: u32) -> u32 {
+  n = 3
+  n += 1
+  let y = 1
+  set (n, y) = (1, 2)
+  for n in 4 { }
+  if let n = p { return 1 }
+  return match x { n => 1 }
+}
+func h(comptime n: u32) -> u32 {
+  let n = 5
+  return n
+}
+
+export func g(p: ?*u32, x: u32) -> u32 => f(8, p, x) + h(8)
+```
+
+```errors
+cannot assign to 'n': it is a comptime value parameter, in f(n = 8)
+cannot assign to 'n': it is a comptime value parameter, in f(n = 8)
+cannot set 'n': it is a comptime value parameter, in f(n = 8)
+'n' is already declared: a loop variable cannot reuse the name of a comptime value parameter, in f(n = 8)
+'n' is already declared: an if let binding cannot reuse the name of a comptime value parameter, in f(n = 8)
+'n' is already declared: a match binding cannot reuse the name of a comptime value parameter, in f(n = 8)
+'n' is already declared in this scope, in h(n = 8)
+```
+
+`n = 0` where the body needs an index proven: the error of the same function written by hand for 0.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+data none: *[0]u32 = []
+
+export func z() -> u32 => sum(none)
+```
+
+```errors
+runtime index on *[0]u32 requires 'if let' or '??' (no optional type for u32), in sum(n = 0)
+```
+
+A value array held in registers is indexed by constants only.
+
+```ents
+func total(comptime n: u32, v: [n]u32) -> (s: u32) {
+  for i in n {
+    s += v[i]
+  }
+}
+
+export func g(v: [4]u32) -> u32 => total(v)
+```
+
+```errors
+dynamic index on value type [4]u32 — use a pointer or slice for dynamic access, in total(n = 4)
+```
+
+Recursion on a value that changes: with no compile-time `if`, each instance asks for the next, until a value its type refuses or the limit of nested instantiations.
+
+```ents
+func pow(comptime e: u32, x: u64) -> u64 => if e == 0 { 1 } else { x * pow(e - 1, x) }
+func count(comptime n: u32, x: u32) -> u32 => if x == 0 { n } else { count(n + 1, x - 1) }
+
+export func cube(x: u64) -> u64 => pow(3, x)
+export func g(x: u32) -> u32 => count(0, x)
+```
+
+```errors
+argument 1: cannot assign int(-1) to u32, in pow(e = 0)
+too many nested instantiations (64) while instantiating 'count', in count(n = 63)
+```
+
+The number put where it does not fit.
+
+```ents
+func f(comptime n: u32) -> u8 {
+  let b: u8 = n
+  return b
+}
+
+export func g() -> u8 => f(300)
+```
+
+```errors
+cannot assign int(300) to u8, in f(n = 300)
+```
+
+A hyphen joins a name: `n-1` is no subtraction. In a signature that is found where the generic is declared, and in its body in each instance.
+
+```ents
+func f(comptime n: u32, p: *[n]u8, q: *[n-1]u8) -> u8 => 0
+func last(comptime n: u32, p: *[n]u8) -> u8 => p[n-1] ?? 0
+
+export func g(p: *[4]u8) -> u8 => last(p)
+```
+
+```errors
+unknown identifier 'n-1': a hyphen joins a name; for subtraction write n - 1
+unknown identifier 'n-1': a hyphen joins a name; for subtraction write n - 1, in last(n = 4)
+```
+
+### Rejected in any type
+
+A length or a bound is a constant, an integer, and within its limits, also written by hand.
+
+```ents
+export func a(q: *[4]u8) -> u32 {
+  let x: u32 = 4
+  let p: *[x]u8 = q
+  return 0
+}
+export func b(i: u32#(1.5)) -> u32 => 0
+export func c(p: *[2.5]u8) -> u32 => 0
+export func d(i: u32#0) -> u32 => 0
+export func e(i: u8#300) -> u32 => 0
+export func f(p: *[4294967296]u8) -> u32 => 0
+export func g(p: *[1000000000]u64) -> u32 => 0
+export func h() -> u32 => sizeof([536870912]u64)
+```
+
+```errors
+range bound must be an integer: it is float(1.5)
+array length must be an integer: it is float(2.5)
+range bound must be at least 1: u32#0 has no values
+range bound 300 is too large for u8, which has 256 values
+array length 4294967296 is too large: an array has at most 4294967295 elements
+array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses
+array length must be a compile-time constant
+array [536870912]u64 is too large: 4294967296 bytes, more than the 4294967295 a 32-bit memory addresses
+```
+
+A hyphen where a subtraction was meant, with `n` a name in scope.
+
+```ents
+export func f(n: u32, v: *[8]u8) -> u8 => v[n-1] ?? 0
+```
+
+```errors
+unknown identifier 'n-1': a hyphen joins a name; for subtraction write n - 1
+```
+
+A repeat literal is an array too.
+
+```ents
+data d = mut [0:u64; 536870912]
+```
+
+```errors
+array [536870912]u64 is too large: 4294967296 bytes, more than the 4294967295 a 32-bit memory addresses
 ```
 
 ## Imported generics

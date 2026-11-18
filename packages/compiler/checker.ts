@@ -7392,10 +7392,13 @@ class CheckContext {
     // A length or a bound in the signature that names nothing at all is the
     // one error: no call could find or give a number for it.
     const known = (name: string) => params.some((p) => p.ident === name) || this.defNames.has(name) || this.valueNames.has(name) || this.lookup(name) !== undefined
+    const prevNames = this.signatureNames
+    this.signatureNames = new Map(params.flatMap((p) => (p.ident ? [[p.ident, isValueParam(p) ? 'value' : 'param'] as const] : [])))
     for (const length of signatureLengths(decl.signature)) {
       const unknown = unknownNames(length).find((n) => !known(n.name))
       if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name))
     }
+    this.signatureNames = prevNames
     // What the declaration says of generic types is checked here, by name
     // alone. An instance would say it once for each set of arguments, and an
     // inferred call that cannot find T through `v: *Vec(T, T)` would say
@@ -7584,7 +7587,7 @@ class CheckContext {
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     const value = this.evalComptimeExpr(arg.value)
     if (value === null) {
-      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name))
+      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
       if (unknown) return fail(this.unknownIdentifier(unknown.name))
       return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     }
