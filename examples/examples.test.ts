@@ -81,6 +81,15 @@ for (const file of entsFiles) {
   const source = entryMod?.source ?? ''
 
   describe(rel, () => {
+    // Generics exist at compile time only: what they compile to has no
+    // function table and no indirect call.
+    if (rel.startsWith('generics/')) {
+      test('compiles to direct calls only', () => {
+        for (const forbidden of ['call_indirect', '(table', '(elem', 'ref.func', 'funcref']) {
+          expect(wat).not.toContain(forbidden)
+        }
+      })
+    }
     for (const [t, name] of testNames.entries()) {
       test(testTitles[t], async () => {
         let failedOffset = -1

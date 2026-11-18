@@ -1,6 +1,8 @@
 // AST types for Encantis language
 // All nodes include span for sourcemap support
 
+import type { ResolvedType } from './types'
+
 export interface Span {
   start: number // byte offset
   end: number // byte offset
@@ -95,6 +97,13 @@ export interface Field extends BaseNode {
   kind: 'Field'
   ident: string | null
   type: Type
+  // A parameter given at compile time (`comptime T: type`): bound when the
+  // function is instantiated and absent from the instance's signature. Absent,
+  // not false, on every other field.
+  comptime?: true
+  // Where the name of a type parameter stands: the field begins at the
+  // keyword before it. Any other field begins with its name.
+  identSpan?: Span
 }
 
 export type FuncBody = Block | ArrowBody
@@ -316,6 +325,7 @@ export type Expr =
   | SliceExpr
   | CoalesceExpr
   | IdentExpr
+  | TypeExpr
   | LiteralExpr
   | ArrayExpr
   | RepeatExpr
@@ -387,6 +397,13 @@ export interface CallExpr extends BaseNode {
   kind: 'CallExpr'
   callee: Expr
   args: Arg[]
+}
+
+// A type written as a call argument: f([]u8, xs), f(Point, a, b). It is only
+// meaningful where the parameter is `comptime T: type`.
+export interface TypeExpr extends BaseNode {
+  kind: 'TypeExpr'
+  type: Type
 }
 
 export interface Arg extends BaseNode {
@@ -589,6 +606,8 @@ export type Type =
   | ComptimeIntType
   | ComptimeFloatType
   | TypeRef
+  | TypeType
+  | BoundType
   | FuncType
 
 export interface PrimitiveType extends BaseNode {
@@ -649,6 +668,19 @@ export interface CompositeType extends BaseNode {
 export interface TypeRef extends BaseNode {
   kind: 'TypeRef'
   name: string // e.g., "Point", "Color"
+}
+
+// The keyword `type`, as the type of a comptime parameter
+export interface TypeType extends BaseNode {
+  kind: 'TypeType'
+}
+
+// A type the compiler has already evaluated. Never parsed: instantiating a
+// generic puts one wherever a type parameter was named.
+export interface BoundType extends BaseNode {
+  kind: 'BoundType'
+  name: string // the type parameter it replaced
+  type: ResolvedType
 }
 
 // Comptime integer: int(value)
@@ -717,6 +749,7 @@ export interface ASTVisitor {
   visitSliceExpr?(node: SliceExpr): void | false
   visitCoalesceExpr?(node: CoalesceExpr): void | false
   visitIdentExpr?(node: IdentExpr): void | false
+  visitTypeExpr?(node: TypeExpr): void | false
   visitLiteralExpr?(node: LiteralExpr): void | false
   visitArrayExpr?(node: ArrayExpr): void | false
   visitRepeatExpr?(node: RepeatExpr): void | false
@@ -919,6 +952,10 @@ function walkExpr(expr: Expr, visitor: ASTVisitor): void {
       break
     case 'IdentExpr':
       visitor.visitIdentExpr?.(expr)
+      break
+    case 'TypeExpr':
+      visitor.visitTypeExpr?.(expr)
+      // No children to walk - a type is not an expression
       break
     case 'LiteralExpr':
       visitor.visitLiteralExpr?.(expr)

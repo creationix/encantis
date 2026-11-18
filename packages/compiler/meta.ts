@@ -315,6 +315,18 @@ class MetaBuilder {
   private collectFunc(decl: AST.FuncDecl): void {
     if (decl.ident) {
       const sym = this.checkResult.symbols.get(decl.ident)
+      if (sym?.kind === 'generic') {
+        // A generic has no type of its own. It is listed with the signature it
+        // was written with, so that its name is found where a function's is:
+        // at its declaration and at its calls, where the hint carries the
+        // signature of the instance. Its parameters and body get no hints yet:
+        // what they are depends on the instance.
+        const { input, output } = decl.signature
+        const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
+        const written = `${this.source.slice(input.span.start, input.span.end)}->${returns}`
+        this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        return
+      }
       if (!sym || sym.kind !== 'func') return
 
       // Find the function name offset (after "func" keyword)
@@ -614,12 +626,12 @@ class MetaBuilder {
   private addSymbol(
     name: string,
     kind: MetaSymbol['kind'],
-    type: ResolvedType,
+    type: ResolvedType | string,
     offset: number,
     value?: string,
     inline?: boolean,
   ): number {
-    const typeIndex = this.typeRegistry.register(type)
+    const typeIndex = typeof type === 'string' ? this.typeRegistry.registerText(type) : this.typeRegistry.register(type)
     const defPos = this.lineMap.positionKey(offset)
 
     // Get doc comment - only for module-level declarations
@@ -1286,6 +1298,16 @@ class TypeRegistry {
     const existing = this.typeIndex.get(key)
     if (existing !== undefined) return existing
 
+    const index = this.types.length
+    this.types.push({ type: key })
+    this.typeIndex.set(key, index)
+    return index
+  }
+
+  // A type that exists only as text: the signature of a generic function
+  registerText(key: string): number {
+    const existing = this.typeIndex.get(key)
+    if (existing !== undefined) return existing
     const index = this.types.length
     this.types.push({ type: key })
     this.typeIndex.set(key, index)

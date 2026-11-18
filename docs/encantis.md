@@ -44,13 +44,15 @@ func distance(a:Point, b:Point) -> f32   // Point is a type
 let point = Point(1.0, 2.0)              // point is a variable, Point is a constructor
 ```
 
+The type parameters of a generic function are type identifiers too: in `func max(comptime T: type, a: T, b: T)`, `T` is a type inside the function (see [8. Generics](#8-generics)).
+
 ### 1.4 Reserved Keywords
 
 The following identifiers are reserved keywords in Encantis (aligns with `encantis.ohm`):
 
 **Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`, `defer`
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `data`, `type`, `import`, `export`, `memory`, `inline`
+**Declarations:** `func`, `let`, `set`, `global`, `def`, `data`, `type`, `import`, `export`, `memory`, `inline`, `comptime`
 
 **Types / Builtins:** `int`, `float`
 
@@ -445,7 +447,7 @@ In a table:
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
 - `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself.
-- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([8.6](#86-structs-and-slices-in-memory)) or in registers.
+- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
 - `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
 - `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
@@ -566,7 +568,7 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
 }
 ```
 
-`p.x` through a pointer reads or writes memory (§8.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
+`p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
 
 ### 2.9 Enum Types (Algebraic Data Types)
 
@@ -742,11 +744,11 @@ func pick(c: bool, n: i32, x: f64) -> f64 {
 }
 ```
 
-The conversion is an instruction only when the WebAssembly type changes ([10.1](#101-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
+The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
 
-A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [8.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
+A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [9.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
 
-Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([8.2](#structural-coercion)).
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([9.2](#structural-coercion)).
 
 #### Comptime Literal Promotion
 
@@ -1016,6 +1018,8 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 
 func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
 ```
+
+A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
 #### Calling Conventions
 
@@ -1482,7 +1486,7 @@ cv[0..8] = hs[0..8]       // copy 8 elements
 cv[8..16] = iv            // a *[8]T copies all of its elements
 ```
 
-The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§9.3), where the length is written out.
+The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§10.3), where the length is written out.
 
 ### 4.8 UFCS (Uniform Function Call Syntax)
 
@@ -1961,13 +1965,261 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ---
 
-## 8. Memory Model
+## 8. Generics
 
-### 8.0 Data Layout
+A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time.
+
+The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
+
+<!-- spec:begin compile -->
+
+### 8.1 Compile-Time Parameters
+
+A parameter marked `comptime` is given at compile time. The function is compiled once for each distinct set of compile-time arguments it is called with, and each copy is an ordinary function that has only the remaining parameters.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+export func widest(a: u32, b: u32) -> u32 => max(u32, a, b)
+export func longest(a: f64, b: f64) -> f64 => max(a, b)
+```
+
+compiles to exactly the module this does:
+
+```ents same-wasm
+func max_f64(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+func max_u32(a: u32, b: u32) -> u32 => if a > b { a } else { b }
+
+export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
+export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
+```
+
+A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`).
+
+Rules:
+
+1. Comptime parameters may appear anywhere in the parameter list; by convention type parameters come first. A parameter's type may mention any type parameter of the same function.
+2. `comptime` is only written in the parameter list of a named function declared with `func` at module level. Every parameter of such a function has a name.
+3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an ordinary argument, or exported to the host. It can only be called. Its name is unique in its module.
+4. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before. A generic function that is never called is only parsed, and nothing is emitted for it.
+
+`comptime` is a reserved word.
+
+### 8.2 Calling a Generic Function
+
+A call to a generic function is written in one of two forms.
+
+**Explicit.** Every parameter gets an argument, in order. The argument of a type parameter is a type, written as it is after a colon:
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+func head(comptime T: type, xs: []T) -> T => xs.ptr[0]
+
+export func a(c: bool, x: u8, y: u32) -> u32 => pick(u32, c, x, y)      // x is widened, as for any u32 parameter
+export func b(c: bool, p: Pt, q: Pt) -> Pt => pick(Pt, c, p, q)
+export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32, i32), c, p, q)
+export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
+export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
+export func f(xs: []u64) -> u64 => head(u64, xs)
+```
+
+In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`).
+
+**Inferred.** All type parameters are left out, and the compiler finds them from the other arguments:
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func head(comptime T: type, xs: []T) -> T => xs.ptr[0]
+func swap(comptime T: type, a: *mut T, b: *mut T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+
+data primes = [2:u16, 3, 5, 7]
+
+export func a(x: u32, y: u32) -> u32 => max(x, y)          // T = u32
+export func b(x: f64) -> f64 => max(x, 0.5)                 // T = f64; the literal is an f64
+export func c(x: u64) -> u64 => max(1, x)                   // T = u64, decided by x
+export func d(xs: []u64) -> u64 => head(xs)                 // T = u64, from []T
+export func e() -> u16 => head(primes)                      // T = u16: a data array is a slice here
+export func f(p: *mut i64, q: *mut i64) { swap(p, q) }      // T = i64, from *mut T
+
+test "inferred calls" {
+  assert a(3, 7) == 7
+  assert b(0.25) == 0.5
+  assert c(0) == 1
+  assert e() == 2
+}
+```
+
+**Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. Anything else is an error that says both counts. There is no form that writes some type parameters and infers others. Arguments are positional.
+
+#### How type parameters are inferred
+
+1. **The first argument that can decide a type parameter decides it.** Go through the parameters left to right. The first one whose written type mentions `T`, and whose argument has a type of its own, decides `T`.
+2. **Deciding is matching shapes.** The parameter's written type is laid over the argument's type: `T` against `u32` gives `T = u32`; `[]T` against `[]u64` gives `T = u64`; `*mut T` against `*mut i64` gives `T = i64`; `(T, U)` against `(i32, f64)` gives both. Matching looks through the conversions an argument gets anyway, and through nothing else:
+
+   | Parameter | Argument | Result |
+   |---|---|---|
+   | `*T` | `*mut X` | `T = X` |
+   | `[]T` | `[]mut X` | `T = X` |
+   | `[]T`, `[*]T` | `*[N]X` (a `data` array, a string) | `T = X` |
+   | `?*T` | `*X` | `T = X` |
+   | `*T` | `[*]X` | no match: what a many-pointer points to is not a type by itself. `[*]T` matches it |
+   | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped, also from the values a tuple argument is made of) |
+   | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
+
+   Type aliases are transparent, as everywhere.
+3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide.
+4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
+5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
+6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+func f(a: u8, b: u32) -> u32 => max(a, b)
+```
+
+```errors
+argument 2: cannot assign u32 to u8
+```
+
+`max(b, a)` is accepted (`T = u32`, and `a` widens like any `u8` passed for a `u32`), and so is `max(u32, a, b)`.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func zero(comptime T: type) -> T => 0
+
+func f() -> i32 => max(1, 2)
+func g() -> u32 => zero()
+```
+
+```errors
+cannot infer T for 'max' from untyped literals: write max(i32, ...) or give a literal its type (1:i32)
+cannot infer T for 'zero': write the type argument, as in zero(u32)
+```
+
+### 8.3 Requirements
+
+A generic states no requirements. It uses its type parameter, and each use is checked for the concrete type when the generic is instantiated. There are no traits or interfaces: what a type must provide is whatever the generic's body does with it.
+
+Operators are requirements. The operands of an operator are single values: numbers, `bool`s and pointers, each operator with the types [chapter 4](#4-expressions--operators) gives it. No operator is defined for structs, tuples, slices or arrays:
+
+```ents
+type Pt = (q: i32, r: i32)
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+export func f(a: Pt, b: Pt) -> Pt => max(a, b)
+```
+
+```errors
+'>' cannot be applied to Pt and Pt, in max(T = Pt)
+```
+
+This holds for every operator, whether it stands between two operands, before one (`-a`, `~a`, `!a`) or in a compound assignment:
+
+```ents
+type Pt = (q: i32, r: i32)
+func neg(comptime T: type, a: T) -> T => -a
+func add(comptime T: type, a: T, b: T) -> T {
+  let sum = a
+  sum += b
+  return sum
+}
+
+export func f(a: Pt, b: Pt) -> Pt => add(neg(a), b)
+```
+
+```errors
+'-' needs a number, not Pt, in neg(T = Pt)
+'+=' cannot be applied to Pt and Pt, in add(T = Pt)
+```
+
+The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.
+
+### 8.4 Instances
+
+An *instance* is one generic function with all its comptime arguments fixed.
+
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
+- **Once.** An instance is one function in the output however many calls use it.
+- **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
+- **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter or for a generic that is not used. No function tables and no indirect calls are involved.
+- **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
+- **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations, or sooner when one call has led to 1000 instances or to type arguments many times the size of its own. A type argument written in ordinary code may be of any size.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
+
+```ents
+func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
+func fact(comptime T: type, n: T) -> T => if n <= 1 { 1 } else { n * fact(T, n - 1) }
+
+export func a() -> u32 => bytes(u64, 3) + bytes((u32, u16), 2)   // 24 + 12
+export func b() -> u64 => fact(u64, 20)
+
+test "each instance has its own sizeof, and recursion ends" {
+  assert a() == 36
+  assert b() == 2432902008176640000
+}
+```
+
+What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
+
+**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. To export an instance, export a function that calls it:
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
+```
+
+### 8.5 Not in This Version
+
+Each of these is rejected with an error that says so, so the syntax stays free for a later version.
+
+| Not supported | What the compiler says |
+|---|---|
+| A comptime function parameter, `comptime before: (T, T) -> bool` | `comptime parameter 'before' must be a type parameter: comptime function parameters are not supported yet` |
+| A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type'` |
+| Constructing with a type parameter, `T(a, b)` | `T(...) on a type parameter is not supported yet` |
+| A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
+| A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
+| Importing a generic function from another source module | `generic functions cannot be imported yet` |
+| A generic host import | `a host import cannot have comptime parameters` |
+| A generic function used as a value | `generic function 'max' must be called` |
+
+Also not in this version: generic types (a type that takes type parameters), method-call syntax, writing some type parameters and inferring others, inference from the expected result type, inference through a function type (for `f: (T) -> T` the argument `inc` does not decide `T`; write the type argument), and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
+
+One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name with `type` and pass the name.
+
+<!-- spec:end -->
+
+### 8.6 How This Is Compile-Time Evaluation
+
+Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type.
+
+| Bound at compile time | Module level | Parameter | Later |
+|---|---|---|---|
+| a type | `type Pt = (q: i32, r: i32)` | `comptime T: type` | |
+| a function | `func f(...)` | | `comptime before: (T, T) -> bool` |
+| a number, bool | `def n = 64` | | `comptime n: u32`; `[n]T` |
+| a type computed from types | | | a function from types to a type |
+| a value computed from values | `def bytes = n * 8` | | `comptime func`, tables |
+
+A call with comptime arguments is evaluated as far as its comptime parameters go: the result is a specialised function, and what is left for run time is the call of it.
+
+---
+
+## 9. Memory Model
+
+### 9.0 Data Layout
 
 Program data (`data` declarations and literals that need memory) is placed from address 8 up. Address 0 means "none" for optional pointers and slices, so nothing real may live there; the first 8 bytes stay unused, which also keeps data 8-byte aligned. `sizeof data` is the address just past the last byte of data, where free memory begins.
 
-### 8.1 Stack vs Memory Allocation
+### 9.1 Stack vs Memory Allocation
 
 Encantis distinguishes between register storage (WASM locals/globals) and linear memory:
 
@@ -1996,7 +2248,7 @@ let b = ptr[0]                   // reads from linear memory
 
 Array and string literals in `def` declarations are serialized to the data section of the WASM module.
 
-### 8.2 By-Value vs By-Reference Passing
+### 9.2 By-Value vs By-Reference Passing
 
 Struct parameters are passed by value—each field becomes a separate WASM argument:
 
@@ -2065,7 +2317,7 @@ let small:(x:i8, y:i8) = (x: 10, y: 20)
 process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
 ```
 
-### 8.3 WASM Type Mapping
+### 9.3 WASM Type Mapping
 
 | Encantis | WASM |
 |----------|------|
@@ -2078,7 +2330,7 @@ process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
 | `*[N]T`, `*[!]T` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
 
-### 8.4 Slice Construction
+### 9.4 Slice Construction
 
 Slices are multi-value pairs (pointer + length). When you have separate components, construct a slice by assigning a tuple to a slice-typed binding:
 
@@ -2095,7 +2347,7 @@ data buffer = mut [0:u8; 1024]
 let slice:[]u8 = buffer              // *[1024]u8 → []u8 implicit
 ```
 
-### 8.5 Array Type Conversions
+### 9.5 Array Type Conversions
 
 | From | To | How |
 |------|----|-----|
@@ -2122,7 +2374,7 @@ let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
 
-### 8.6 Structs and Slices in Memory
+### 9.6 Structs and Slices in Memory
 
 Any value type can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
 
@@ -2171,11 +2423,11 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 ---
 
-## 9. Builtin Functions
+## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
 
-### 9.1 Numeric Builtins
+### 10.1 Numeric Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
@@ -2213,7 +2465,7 @@ abs(n - 10)            // 17
 
 On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min` and `max` return one of their operands, so when every operand is in a range (§2.2), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`.
 
-### 9.2 Integer Builtins
+### 10.2 Integer Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
@@ -2240,7 +2492,7 @@ let odd = big >> ctz(big)    // the count widens to the u64 it shifts: 5
 let offset = u64(clz(n)) * 8
 ```
 
-### 9.3 Memory Builtins
+### 10.3 Memory Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
@@ -2264,9 +2516,9 @@ if old == -1 {
 
 ---
 
-## 10. WebAssembly Reference
+## 11. WebAssembly Reference
 
-### 10.1 Widening Instructions (implicit)
+### 11.1 Widening Instructions (implicit)
 
 | Conversion | Instruction |
 |------------|-------------|
@@ -2277,7 +2529,7 @@ if old == -1 {
 
 Here `i32` stands for every integer type up to 32 bits: they all live in a wasm `i32`, so widening among them emits nothing. `_s` or `_u` follows the signedness of the type widened.
 
-### 10.2 Narrowing Instructions (explicit cast)
+### 11.2 Narrowing Instructions (explicit cast)
 
 | Conversion | Instruction |
 |------------|-------------|
@@ -2291,7 +2543,7 @@ Here `i32` stands for every integer type up to 32 bits: they all live in a wasm 
 | f32 → i64 | i64.trunc_f32_s / _u |
 | f64 → i64 | i64.trunc_f64_s / _u |
 
-### 10.3 Control Flow Instructions
+### 11.3 Control Flow Instructions
 
 | Encantis | WASM |
 |----------|------|
@@ -2307,7 +2559,7 @@ Here `i32` stands for every integer type up to 32 bits: they all live in a wasm 
 
 ---
 
-## 11. Examples
+## 12. Examples
 
 ### Hello World
 
@@ -2357,25 +2609,9 @@ Named return values are declared in the signature and implicitly returned. The `
 
 ---
 
-## 12. Future Additions
+## 13. Future Additions
 
 Features under consideration for future versions of Encantis.
-
-### Generics
-
-Parameterized types and functions would enable reusable algorithms without code duplication:
-
-```ents
-func swap<T>(a:*T, b:*T) {
-  let tmp = a.*
-  a.* = b.*
-  b.* = tmp
-}
-
-type Vec<T> = (data:*T, len:u32, cap:u32)
-```
-
-**Why:** Currently, utilities like `swap`, `min`, `max`, or data structures like vectors must be duplicated for each type. Generics enable writing code once that works for any type, critical for building reusable libraries.
 
 ### SIMD Support
 
@@ -2394,12 +2630,17 @@ let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 
 ### Comptime Evaluation
 
-Compile-time computation beyond simple literals:
+Generic functions take types at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more, in this order:
 
-```ents
-def page_size = 64 * 1024
-def buffer_pages = 4
-def buffer_size = page_size * buffer_pages
+```text
+// Generic types: a function from types to a type
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+// Comptime function parameters: a comparator without a function pointer
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { ... }
+
+// Comptime value parameters, and array sizes that depend on them
+func zeros(comptime n: u32) -> [n]u8 => ...
 
 // Compile-time function execution
 comptime func generate_table() -> *[256]u8 {
@@ -2413,7 +2654,9 @@ comptime func generate_table() -> *[256]u8 {
 def crc_table = generate_table()
 ```
 
-**Why:** Enables computing lookup tables, buffer sizes, and constants at compile time. Reduces runtime overhead and allows complex initialization without startup cost.
+Comptime function parameters and comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed, and neither is an array size that names a parameter (`[n]u8`). Compile-time control flow (a comptime `if` that picks a type or a branch) comes after them.
+
+**Why:** Generic types make containers reusable (`Vec(u32)`, `Map(K, V)`). Compile-time function parameters and values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
 
 ### Module System
 

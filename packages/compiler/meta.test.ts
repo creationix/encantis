@@ -60,6 +60,102 @@ test "add" {
   })
 })
 
+describe('generic functions', () => {
+  const source = `data nums = [3:u32, 5, 8, 13]
+func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    return i when v == x
+  }
+  return xs.len
+}
+func contains(comptime T: type, xs: []T, x: T) -> bool => find(xs, x) < xs.len
+export func has_byte(xs: []u8, x: u8) -> bool => contains(xs, x)
+test "find" {
+  assert find(nums, 8) == 2
+}`
+
+  function meta(): MetaOutput {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return buildMeta(result.module!, source)
+  }
+
+  test('instances are not symbols', () => {
+    expect(meta().symbols.map(s => s.name).filter(name => name.includes('<'))).toEqual([])
+  })
+
+  test('every hint is at a place in the source', () => {
+    const lines = source.split('\n')
+    const hints = Object.keys(meta().hints)
+    expect(hints.length).toBeGreaterThan(0)
+    for (const key of hints) {
+      const [line, column] = key.split(':').map(Number)
+      expect(line).toBeLessThan(lines.length)
+      expect(column).toBeLessThan(lines[line].length)
+    }
+  })
+
+  test('a call of a generic shows the signature of its instance', () => {
+    const hints = metaHints(source)
+    expect(hints['8:49'].type).toBe('(xs:[]u8,x:u8)->bool')
+    expect(hints['10:9'].type).toBe('(xs:[]u32,x:u32)->u32')
+  })
+
+  test('examples/generics/slices.ents: no instance among the symbols, no hint outside the source', async () => {
+    const example = await Bun.file(new URL('../../examples/generics/slices.ents', import.meta.url)).text()
+    const result = parse(example)
+    expect(result.errors).toEqual([])
+    const built = buildMeta(result.module!, example)
+    expect(built.symbols.map(s => s.name).filter(name => name.includes('<'))).toEqual([])
+    const lines = example.split('\n')
+    expect(Object.keys(built.hints).length).toBeGreaterThan(20)
+    for (const key of Object.keys(built.hints)) {
+      const [line, column] = key.split(':').map(Number)
+      expect(line).toBeLessThan(lines.length)
+      expect(column).toBeLessThan(lines[line].length)
+    }
+  })
+
+  test('a generic is a symbol, with the signature it was written with', () => {
+    const built = meta()
+    const find = built.symbols.find(s => s.name === 'find')
+    expect(find?.kind).toBe('func')
+    expect(find?.def).toBe('1:5')
+    expect(built.types[find?.type ?? -1].type).toBe('(comptime T: type, xs: []T, x: T)->u32')
+    // The hint at a call names that symbol, so the editor shows the generic
+    // there and not a builtin of the same name.
+    const call = built.hints['8:49']
+    expect(built.symbols[call.symbol ?? -1].name).toBe('contains')
+  })
+
+  test('examples/generics/minmax.ents: max is the generic, at its declaration and at its calls', async () => {
+    const example = await Bun.file(new URL('../../examples/generics/minmax.ents', import.meta.url)).text()
+    const result = parse(example)
+    expect(result.errors).toEqual([])
+    const built = buildMeta(result.module!, example)
+    const lines = example.split('\n')
+    const max = built.symbols.findIndex(s => s.name === 'max')
+    expect(built.types[built.symbols[max].type].type).toBe('(comptime T: type, a: T, b: T)->T')
+    const line = lines.findIndex(l => l.startsWith('export func max_u32'))
+    const call = built.hints[`${line}:${lines[line].indexOf('max(a, b)')}`]
+    expect(call.symbol).toBe(max)
+    expect(built.types[call.type].type).toBe('(a:u32,b:u32)->u32')
+    // No parameter or local of a generic is a symbol: found by name, it would
+    // be shown for the same name in another function.
+    const swap = lines.findIndex(l => l.startsWith('func swap('))
+    const inSwap = built.symbols.filter(s => Number(s.def.split(':')[0]) >= swap && Number(s.def.split(':')[0]) <= swap + 4)
+    expect(inSwap.map(s => s.name)).toEqual(['swap'])
+  })
+
+  test('of a generic only the name has a hint: its body has no types until it is instantiated', () => {
+    const inDeclaration = Object.keys(meta().hints).filter(key => {
+      const line = Number(key.split(':')[0])
+      return line >= 1 && line <= 7
+    })
+    expect(inDeclaration).toEqual(['1:5', '7:5'])
+  })
+})
+
 describe('a module with errors', () => {
   const meta = (source: string): MetaOutput => {
     const result = parse(source)

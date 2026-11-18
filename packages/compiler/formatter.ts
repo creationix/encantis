@@ -163,7 +163,7 @@ export function formatEncantis(source: string): string {
     'break', 'continue', 'return', 'when',
     'func', 'let', 'set', 'global', 'data', 'def', 'type', 'enum',
     'import', 'export', 'memory', 'inline', 'mut',
-    'as', 'true', 'false', 'int', 'float', 'sizeof',
+    'as', 'true', 'false', 'int', 'float', 'sizeof', 'comptime',
   ])
 
   const FOUR_OPS = new Set(['<<<=', '>>>='])

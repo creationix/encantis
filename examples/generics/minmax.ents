@@ -1,0 +1,62 @@
+// Generic functions: max, min, clamp, swap. Operators on T are checked for each
+// instance: `a > b` is i32.gt_u for u32, i32.gt_s for i32, f64.gt for f64.
+// clamp is a generic calling generics; swap infers T through `*mut T`.
+
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func min(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }
+func clamp(comptime T: type, x: T, lo: T, hi: T) -> T => min(max(x, lo), hi)
+
+func swap(comptime T: type, a: *mut T, b: *mut T) {
+  let tmp = a.*
+  a.* = b.*
+  b.* = tmp
+}
+
+export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
+export func max_i32(a: i32, b: i32) -> i32 => max(a, b)
+export func max_f64(a: f64, b: f64) -> f64 => max(f64, a, b)
+export func clamp_i32(x: i32, lo: i32, hi: i32) -> i32 => clamp(x, lo, hi)
+export func swap_u32(a: *mut u32, b: *mut u32) { swap(a, b) }
+// T = u64, decided by a. b is a u32 passed for a u64 parameter: it is widened
+// at the call, as for any function.
+export func widen(a: u64, b: u32) -> u64 => max(a, b)
+
+test "max and min compare as their type does" {
+  let big: u32 = 0xFFFFFFFF
+  let one: u32 = 1
+  assert max(big, one) == big
+  let neg: i32 = -1
+  assert max(neg, 1) == 1
+  assert min(neg, 1) == -1
+  assert max(f64, 1.5, -2.0) == 1.5
+  assert min(u8, 200, 100) == 100
+}
+
+test "clamp calls max and min for its own T" {
+  assert clamp(i32, 15, 0, 10) == 10
+  assert clamp(i32, -5, 0, 10) == 0
+  let x: f64 = 0.25
+  assert clamp(x, 0.0, 1.0) == 0.25
+}
+
+test "swap exchanges two cells" {
+  let a = &1:u32
+  let b = &2:u32
+  swap(a, b)
+  assert a.* == 2
+  assert b.* == 1
+  let x = &1.5:f64
+  let y = &2.5:f64
+  swap(f64, x, y)
+  assert x.* == 2.5
+}
+
+test "a later argument is widened to T" {
+  let n: u32 = 100
+  let small: u8 = 200
+  assert max(n, small) == 200       // T = u32; a u8 needs no conversion
+  let a: u64 = 0x100000000
+  let b: u32 = 7
+  assert max(a, b) == a
+  assert widen(1, b) == 7
+}

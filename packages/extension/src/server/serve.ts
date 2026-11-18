@@ -23,6 +23,8 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
+import type { Module } from '@encantis/compiler/ast';
+import { genericDeclaring } from '@encantis/compiler/checker';
 import { buildMeta, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
@@ -112,7 +114,7 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
 }
 
 // Cache analysis results per document
-const analysisCache = new Map<string, { text: string; meta: MetaOutput }>();
+const analysisCache = new Map<string, { text: string; meta: MetaOutput; module: Module }>();
 
 // -----------------------------------------------------------------------------
 // Semantic Tokens
@@ -260,7 +262,7 @@ export function startServer(connection: Connection): void {
       return;
     }
 
-    analysisCache.set(textDocument.uri, { text, meta });
+    analysisCache.set(textDocument.uri, { text, meta, module: parseResult.module });
 
     // Convert meta errors and warnings to diagnostics
     const tokenLen = (line: number, col: number): number => {
@@ -453,8 +455,17 @@ export function startServer(connection: Connection): void {
         };
       }
 
-      // Fallback: look up by name in symbols
-      const symbol = meta.symbols.find(s => s.name === word);
+      // A name a generic function declares for itself (a parameter, a type
+      // parameter, a local) has no hint: what it is depends on the instance.
+      // It is that name all the same, before anything else spelled like it:
+      // by name it would be shown as a global, a type or a builtin.
+      if (genericDeclaring(cached.module, wordInfo.start, word)) return null;
+
+      // Fallback: look up by name in symbols. Only a name of the module is
+      // found that way: a parameter or local is what the hint at its own
+      // position says, and where there is none (in the body of a generic
+      // function) a name alone would find some other function's.
+      const symbol = meta.symbols.find(s => s.name === word && s.kind !== 'param' && s.kind !== 'local' && s.kind !== 'return');
       if (symbol) {
         const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
         const display = formatLine(formatSymbolDisplay(symbol, typeStr));

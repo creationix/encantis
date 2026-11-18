@@ -2273,6 +2273,103 @@ describe('struct constructors', () => {
   })
 })
 
+// A struct, a tuple, a slice and an array have no operators: the types a
+// generic's type argument can be and its body cannot assume operators for.
+describe('operands of operators', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  // The checker's wording (noOperator), written once
+  const noOperator = (op: string, left: string, right = left) => `'${op}' cannot be applied to ${left} and ${right}`
+
+  test('a struct has no comparison and no arithmetic', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(p: Pt, q: Pt) -> bool => p > q
+      func b(p: Pt, q: Pt) -> bool => p == q
+      func c(p: Pt, q: Pt) -> Pt => p + q
+    `)).toEqual([noOperator('>', 'Pt'), noOperator('==', 'Pt'), noOperator('+', 'Pt')])
+  })
+
+  test('a slice, a tuple and an array have none either', () => {
+    expect(errs(`
+      func a(x: []u8, y: []u8) -> bool => x == y
+      func b(x: (i32, i32), y: (i32, i32)) -> bool => x != y
+      func c(x: [4]u8, y: [4]u8) -> bool => x < y
+      func d(x: []u8) -> bool => x == 0
+    `)).toEqual([
+      noOperator('==', '[]u8'),
+      noOperator('!=', '(i32, i32)'),
+      noOperator('<', '[4]u8'),
+      noOperator('==', '[]u8', 'int(0)'),
+    ])
+  })
+
+  test('what has no value has no operators', () => {
+    expect(errs(`
+      func nothing() { }
+      func a() -> bool => nothing() == nothing()
+      func b(x: u32) -> u32 => x + nothing()
+    `)).toEqual([noOperator('==', '()'), noOperator('+', 'u32', '()')])
+  })
+
+  test('the error is the only one: a comparison is still a bool', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func f(p: Pt, q: Pt) -> u32 {
+        if p > q { return 1 }
+        let same: bool = p == q
+        return 0
+      }
+    `)).toEqual([noOperator('>', 'Pt'), noOperator('==', 'Pt')])
+  })
+
+  test('a unary operator and a compound assignment have no struct or slice operand either', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(p: Pt) -> Pt => -p
+      func b(p: Pt) -> Pt => ~p
+      func c(p: Pt) -> bool => !p
+      func d(xs: []u8) -> []u8 => -xs
+      func e(p: Pt, q: Pt) {
+        let t = p
+        t += q
+      }
+      func f(xs: []u8, n: u32) {
+        let t = xs
+        t += n
+        t <<= 1
+      }
+    `)).toEqual([
+      "'-' needs a number, not Pt",
+      "'~' needs an integer, not Pt",
+      "operand of '!' must be bool, not Pt",
+      "'-' needs a number, not []u8",
+      noOperator('+=', 'Pt'),
+      noOperator('+=', '[]u8', 'u32'),
+      noOperator('<<=', '[]u8', 'int(1)'),
+    ])
+  })
+
+  test('function values can be told apart', () => {
+    // f == g compiled to one i32.eq on 0.2.1, and still does.
+    expect(errs(`
+      func same(f: (i32) -> i32, g: (i32) -> i32) -> bool => f == g
+      func differ(f: (i32) -> i32, g: (i32) -> i32) -> bool => f != g
+    `)).toEqual([])
+  })
+
+  test('numbers, bools and pointers keep their operators', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a(x: u32, y: u8) -> bool => x > y
+      func b(x: bool, y: bool) -> bool => x == y
+      func c(p: *Pt, q: *Pt) -> bool => p == q
+      func d(p: ?*Pt) -> bool => p != 0
+      func e(p: Pt, q: Pt) -> bool => p.q == q.q && p.r < q.r
+      func f(xs: []u8, ys: []u8) -> bool => xs.len == ys.len || xs.ptr == ys.ptr
+    `)).toEqual([])
+  })
+})
+
 describe('builtins', () => {
   const errs = (src: string) => checkModule(src).errors.map(e => e.message)
   // The type the builtin call `call` computes in, and the type it returns.

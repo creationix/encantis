@@ -1294,3 +1294,64 @@ export function byteSize(t: ResolvedType): number | null {
       return null
   }
 }
+
+// === Instance keys ===
+
+// A string that is the same for two types exactly when they are the same type:
+// aliases are unwrapped at every depth, so Pt and the struct it names give one
+// key. It tells the instances of a generic apart and, through watSafe, names
+// them. Only a concrete type has a key.
+//
+// `open` holds the aliases being written out and how deep in the type each was
+// met. A type that refers to itself is cut where it comes round again, and the
+// cut is written as that depth, not as the alias's name: a type that recurses
+// through an alias of itself (Node holds a ?*Link, and Link = Node) is the same
+// type whichever of its names it was reached by.
+export function canonicalKey(t: ResolvedType, open: readonly { name: string; depth: number }[] = [], depth = 0): string {
+  const inner = (type: ResolvedType) => canonicalKey(type, open, depth + 1)
+  const fields = (fs: ResolvedField[], names: boolean) =>
+    fs.map((f) => (names && f.name ? `${f.name}:${inner(f.type)}` : inner(f.type))).join(',')
+  switch (t.kind) {
+    case 'named':
+    case 'forward_ref': {
+      const back = open.find((o) => o.name === t.name)
+      if (back) return `@${back.depth}`
+      return t.kind === 'named' ? canonicalKey(t.type, [...open, { name: t.name, depth }], depth) : `@${t.name}`
+    }
+    case 'primitive':
+      return t.max !== undefined ? `${t.name}#${t.max}` : t.name
+    case 'pointer': {
+      const opt = t.optional ? '?' : ''
+      const mut = t.mutable ? 'mut ' : ''
+      if (t.pointee.kind === 'array' && t.pointee.sizes === null) {
+        return `${opt}[*]${mut}${inner(t.pointee.element)}`
+      }
+      return `${opt}${t.boundary ? '^' : '*'}${mut}${inner(t.pointee)}`
+    }
+    case 'slice':
+      return `${t.optional ? '?' : ''}[]${t.mutable ? 'mut ' : ''}${inner(t.element)}`
+    case 'array':
+      // An array of unknown length is only ever what a many-pointer points to,
+      // and is written with it above. By itself it must not read as one.
+      return `[${t.sizes === null ? '...' : t.sizes.join('x')}]${inner(t.element)}`
+    case 'tuple':
+      return `(${fields(t.fields, true)})`
+    case 'void':
+      return '()'
+    case 'func':
+      // The names of parameters and results are not part of a function's
+      // type: (x: i32) -> i32 and (y: i32) -> i32 take the same functions.
+      return `(${fields(t.params, false)})->(${fields(t.returns, false)})`
+    default:
+      throw new Error(`not a concrete type: ${t.kind}`)
+  }
+}
+
+// A canonicalKey made legal inside a WAT identifier. Distinct keys stay
+// distinct: a replacement is a character canonicalKey does not produce where
+// the replaced one stands, and the two brackets, which share one, never nest,
+// so the first of each pair is the opening one.
+export function watSafe(key: string): string {
+  const subst: Record<string, string> = { ' ': '.', '(': '<', ')': '>', ',': '|', '[': "'", ']': "'" }
+  return key.replaceAll('->', '=>').replace(/[ (),[\]]/g, (c) => subst[c])
+}
