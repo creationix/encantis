@@ -674,45 +674,9 @@ export function startServer(connection: Connection): void {
       return { word: '*', start: offset, end: offset + 1 };
     }
 
-    // Handle template literal segments — find the segment boundaries
-    // Look backwards for ` or }  and forwards for ${ or `
-    if (ch !== '`' && ch !== '$' && ch !== '{' && ch !== '}') {
-      const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
-      const lineEnd = text.indexOf('\n', offset);
-      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-      const col = offset - lineStart;
-
-      // Check if we're inside a template literal by scanning for unmatched backtick
-      let inTemplate = false;
-      let segStart = -1;
-      for (let i = 0; i < col; i++) {
-        if (line[i] === '`' && (i === 0 || line[i - 1] !== '\\')) {
-          inTemplate = !inTemplate;
-          if (inTemplate) segStart = i + 1;
-        } else if (inTemplate && line[i] === '$' && line[i + 1] === '{') {
-          segStart = -1; // in interpolation
-        } else if (inTemplate && line[i] === '}' && segStart === -1) {
-          segStart = i + 1; // back in text segment
-        }
-      }
-      if (inTemplate && segStart !== -1 && segStart <= col) {
-        // Find segment end: ${ or `
-        let segEnd = col;
-        for (let i = col; i < line.length; i++) {
-          if (line[i] === '`' || (line[i] === '$' && line[i + 1] === '{')) {
-            segEnd = i;
-            break;
-          }
-        }
-        if (segEnd > segStart) {
-          return { word: text.slice(lineStart + segStart, lineStart + segEnd), start: lineStart + segStart, end: lineStart + segEnd };
-        }
-      }
-    }
-
-    // A literal in single quotes ('a', 'ok') is one word, from quote to quote.
-    const codepoints = singleQuotedAt(text, offset);
-    if (codepoints) return codepoints;
+    // A literal in single quotes, or a piece of a template's text, is one word.
+    const quoted = quotedAt(text, offset);
+    if (quoted) return quoted;
 
     // Handle string literals using quote counting to determine if we're inside a string
     // Count quotes from line start to current position
@@ -762,16 +726,24 @@ export function startServer(connection: Connection): void {
     return { word: text.slice(start, end), start, end };
   }
 
-  // The single-quoted literal that `offset` is in or on, read from the start
-  // of its line past comments, strings and escapes.
-  function singleQuotedAt(text: string, offset: number): { word: string; start: number; end: number } | null {
+  // The literal that `offset` is in or on, read from the start of its line
+  // past comments, strings and escapes: one in single quotes ('a', 'ok'),
+  // from quote to quote, or a piece of a template's text, from its backtick
+  // or the } that closes an interpolation to its closing backtick or the next
+  // ${. What a template's ${...} holds is read as code, where a quote may
+  // hold a } or a backtick.
+  function quotedAt(text: string, offset: number): { word: string; start: number; end: number } | null {
     const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
     const lineEnd = text.indexOf('\n', offset) === -1 ? text.length : text.indexOf('\n', offset);
+    // For each ${ that is open, how many braces were open where it opened:
+    // the } that closes it is the one that leaves that many open.
+    const interpolations: number[] = [];
+    let braces = 0;
     let i = lineStart;
     while (i < lineEnd && i <= offset) {
       const ch = text[i];
       if (ch === '/' && text[i + 1] === '/') return null;
-      if (ch === '"' || ch === '`' || ch === "'") {
+      if (ch === '"' || ch === "'") {
         const start = i;
         i++;
         while (i < lineEnd && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
@@ -780,6 +752,23 @@ export function startServer(connection: Connection): void {
         i = end;
         continue;
       }
+      if (ch === '`' || (ch === '}' && interpolations.at(-1) === braces)) {
+        if (ch === '}') interpolations.pop();
+        const start = i + 1;
+        i = start;
+        while (i < lineEnd && text[i] !== '`' && !(text[i] === '$' && text[i + 1] === '{')) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i, lineEnd);
+        if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
+        if (i < lineEnd && text[i] === '$') {
+          interpolations.push(braces);
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+      if (ch === '{') braces++;
+      else if (ch === '}') braces--;
       i++;
     }
     return null;

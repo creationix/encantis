@@ -338,3 +338,24 @@ describe('a def of a single-quoted literal', () => {
     expect(value(server('onHover', source.lastIndexOf("'\\n'")))).toContain("'\\n':u8 = 10")
   })
 })
+
+describe('a single-quoted literal in a template', () => {
+  // What a template's ${...} holds is code: a literal there was passed over
+  // with the template's text, from one backtick to the next, and hovering it
+  // showed nothing. A quote there may hold a } or a backtick.
+  test('shows its codepoints in an interpolation', () => {
+    const source = `func name(c: u8) -> []u8 => "x"
+func pair(a: u8, b: u8) -> []u8 => "y"
+export func g() -> [][]u8 => \`<\${name('a')}|\${pair('}', '\`')}>\` // 'c'
+export func h() -> u8 => 'd'
+`
+    const hover = hoverIn(source)
+    for (const [literal, shown] of [["'a'", "'a':u8 = 97"], ["'}'", "'}':u8 = 125"], ["'`'", "'`':u8 = 96"], ["'d'", "'d':u8 = 100"]]) {
+      for (const at of [0, 1, 2]) expect(hover(source.indexOf(literal) + at)).toContain(shown)
+    }
+    // The template's text is still its own, and a comment is not code.
+    expect(hover(source.indexOf('|'))).toContain('"|":[]u8')
+    expect(hover(source.indexOf('>`'))).toContain('">":[]u8')
+    expect(hover(source.indexOf("'c'") + 1)).toBeNull()
+  })
+})
