@@ -1,0 +1,38 @@
+// The instances 14-fixedvec.uses.ents makes of the functions of lib/fixedvec.ents, written by
+// hand, in the order the instances take: the order of their generics.
+
+type FixedVec4 = (len: u32#5, buf: *mut [4]u64)
+func push_4_u64(v: *mut FixedVec4, x: u64) -> bool {
+  let i = v.len
+  return false when i >= 4
+  v.buf[i] = x
+  v.len = i + 1
+  return true
+}
+func pop_4_u64(v: *mut FixedVec4) -> u64 {
+  assert v.len > 0
+  let i = (v.len - 1) as u32#4
+  v.len = i
+  return v.buf[i]
+}
+func last_4_u64(v: *FixedVec4) -> u64 {
+  assert v.len > 0
+  return v.buf[(v.len - 1) as u32#4]
+}
+func items_4_u64(v: *FixedVec4) -> []u64 => v.buf[0..v.len]
+func items_mut_4_u64(v: *mut FixedVec4) -> []mut u64 => v.buf[0..v.len]
+func clear_4_u64(v: *mut FixedVec4) {
+  v.len = 0
+}
+func full_4_u64(v: *FixedVec4) -> bool => v.len == 4
+
+data cells = mut [0:u64; 4]
+data fv: FixedVec4 = mut (0, cells)
+
+export func a(x: u64) -> bool => push_4_u64(fv, x)
+export func b() -> u64 => pop_4_u64(fv)
+export func c() -> u64 => last_4_u64(fv)
+export func d() -> []u64 => items_4_u64(fv)
+export func e() -> []mut u64 => items_mut_4_u64(fv)
+export func f() { clear_4_u64(fv) }
+export func g() -> bool => full_4_u64(fv)

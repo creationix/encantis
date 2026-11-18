@@ -1,0 +1,94 @@
+// Comptime value parameters: a number given at compile time, which can size
+// a type. Each number is an instance of its own, the function written for
+// that number, so what a length proves (an index in range) it proves in
+// every instance, and the instance's loads and stores have no checks.
+
+// n is inferred from the length of the array, or written.
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+// n and T from a value array held in registers: v[n - 1] is a constant index.
+func last(comptime n: u32, comptime T: type, v: [n]T) -> T => v[n - 1]
+
+// A number in arithmetic: a rotation by a constant.
+func rotl(comptime k: u32, x: u32) -> u32 => (x << k) | (x >> (32 - k))
+
+// Two lengths, and a third computed from them.
+func join(comptime a: u32, comptime b: u32, x: *[a]u8, y: *[b]u8, out: *mut [a + b]u8) {
+  for i in a {
+    out[i] = x[i]
+  }
+  for j in b {
+    out[a + j] = y[j]
+  }
+}
+
+// The proof that i is in range is the caller's: a u32#n.
+func get(comptime n: u32, comptime T: type, xs: *[n]T, i: u32#n) -> T => xs[i]
+
+// A table of n rows of n: m[i] is a row pointer, m[i][i] a cell.
+func trace(comptime n: u32, m: *[n][n]i32) -> (t: i32) {
+  for i in n {
+    t += m[i][i]
+  }
+}
+
+// A buffer of n bytes for each n, laid out once.
+func scratch(comptime n: u32) -> *mut [n]u8 => mut [0:u8; n]
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+data widths = [3:u16, 1, 4, 1, 5, 9, 2, 6]
+data grid: *[3][3]i32 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+data greeting = mut [0:u8; 5]
+
+export func sums() -> u32 => sum(primes) + sum(8, squares)
+export func third(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last(v)
+}
+export func mix(a: u32, b: u32) -> u32 => rotl(7, a) ^ rotl(13, b)
+export func hello() -> u8 {
+  join("hel", "lo", greeting)
+  return greeting[4]
+}
+export func width(k: u32) -> u16 => get(widths, k & 7)
+export func diagonal() -> i32 => trace(grid)
+export func buffer() -> *mut [16]u8 => scratch(16)
+
+test "sums of two lengths" {
+  assert sums() == 17 + 204
+}
+
+test "the last of three values" {
+  assert third(2.0) == 6.0
+}
+
+test "rotations" {
+  assert mix(1, 0) == 128
+  assert mix(0x80000000, 0) == 64
+}
+
+test "joined" {
+  assert hello() == 111
+  assert greeting[0] == 104
+}
+
+test "an index proven by its range" {
+  assert width(2) == 4
+  assert width(15) == 6
+}
+
+test "a table" {
+  assert diagonal() == 15
+}
+
+test "one buffer for each size" {
+  let a = buffer()
+  a[3] = 9
+  assert scratch(16)[3] == 9
+  assert scratch(32)[3] == 0
+}

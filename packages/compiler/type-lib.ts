@@ -31,6 +31,8 @@ export function parseTypeAST(s: string): AST.Type {
 export function astToResolved(ast: AST.Type): ResolvedType {
   switch (ast.kind) {
     case 'PrimitiveType':
+      // A bound written as a name or an expression needs the checker.
+      if (ast.bound) throw new Error(`a range bound written as an expression cannot be resolved without context`)
       return primitive(ast.name)
 
     case 'PointerType':
@@ -52,6 +54,8 @@ export function astToResolved(ast: AST.Type): ResolvedType {
       // Build sizes array from size and specifiers
       const sizes: ArraySize[] = []
 
+      // A length written as an expression needs the checker.
+      if (ast.size === 'expr') throw new Error(`an array length written as an expression cannot be resolved without context`)
       // Add numeric size(s) if present
       if (ast.size !== null && ast.size !== 'inferred' && ast.size !== 'comptime') {
         if (Array.isArray(ast.size)) {

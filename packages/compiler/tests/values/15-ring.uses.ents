@@ -1,0 +1,11 @@
+// The uses of the library's functions, after the functions themselves
+// (comptime-values.test.ts puts the declarations of lib/ring.ents before this,
+// as they are written there).
+
+data slots = mut [0:u32; 8]
+data log: Ring(8, u32) = mut (0, 0, slots)
+
+export func h(x: u32) { log.push(x) }
+export func i(k: u32) -> u32 => log.oldest(k & 7)
+export func j() -> u32 => log.newest()
+export func k() { log.clear() }

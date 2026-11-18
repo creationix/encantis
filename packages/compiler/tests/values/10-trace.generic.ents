@@ -1,0 +1,13 @@
+func trace(comptime n: u32, m: *[n][n]i32) -> (t: i32) {
+  for i in n {
+    t += m[i][i]
+  }
+}
+
+data grid: *[3][3]i32 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+
+export func a() -> i32 => trace(grid)
+
+test "trace" {
+  assert a() == 15
+}

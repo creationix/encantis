@@ -1071,9 +1071,9 @@ export func g() -> u32 => f(u32, 1) + f(2)`
 describe('declaring a generic function', () => {
   const cases: [string, string, string][] = [
     [
-      'a comptime value parameter',
-      'func f(comptime n: u32) -> u32 => n',
-      "comptime value parameters are not supported yet: 'n' must be 'type' or a function type",
+      'a comptime parameter of a float type',
+      'func f(comptime r: f64) -> u32 => 0',
+      "comptime parameter 'r' is f64: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)",
     ],
     [
       'a lower-case type parameter',
@@ -2979,11 +2979,15 @@ func tag(comptime T: type, t: Tagged(T)) -> u32 => t.id + sizeof(T)
       'func List(comptime T: type) -> type => (head: T, next: List(T))\nfunc f(a: *List(u32), b: *List(u8)) -> u32 => 0',
       ["generic type 'List' contains itself: a type can only refer to itself through a pointer or a slice"],
     ],
-    ['no parameters', 'func Vec() -> type => u32\nfunc f(v: Vec(u32)) -> u32 => 0', ["generic type 'Vec' takes comptime type parameters only, as (comptime T: type)"]],
     [
-      'a parameter that is not a type',
+      'no parameters',
+      'func Vec() -> type => u32\nfunc f(v: Vec(u32)) -> u32 => 0',
+      ["generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)"],
+    ],
+    [
+      'a parameter that is not comptime',
       'func Vec(comptime T: type, n: u32) -> type => (T, u32)\nfunc f(v: Vec(u32)) -> u32 => 0',
-      ["generic type 'Vec' takes comptime type parameters only, as (comptime T: type)"],
+      ["generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)"],
     ],
     ['a type parameter declared twice', 'func Two(comptime A: type, comptime A: type) -> type => (A, A)', ["type parameter 'A' is declared twice"]],
     [
@@ -3310,10 +3314,10 @@ export func b(x: i32, y: i32) -> i32 => pick(x, y, lt) - pick(x, y, gt)
     expect(errorsOf(`${source('Fn(T)', 'Cmp')}func c(x: i32) -> i32 => pick(x, x, inc)`)).toEqual([
       "'inc' is (u32) -> u32, but 'pick' needs before: (i32, i32) -> bool",
     ])
-    // A name for any other type is still a value parameter.
+    // A name for an integer type makes a value parameter, and one for any
+    // other type is refused.
     expect(errorsOf(`type Meters = u32\n${PAIR}func f(comptime T: type, comptime n: Meters, comptime p: Pair(T, T)) -> u32 => 0`)).toEqual([
-      "comptime value parameters are not supported yet: 'n' must be 'type' or a function type",
-      "comptime value parameters are not supported yet: 'p' must be 'type' or a function type",
+      "comptime parameter 'p' is Pair(T, T): a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)",
     ])
   })
 

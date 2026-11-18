@@ -1,0 +1,3 @@
+func rotl(comptime k: u32, x: u32) -> u32 => (x << k) | (x >> (32 - k))
+
+export func mix(a: u32, b: u32) -> u32 => rotl(7, a) ^ rotl(13, b)

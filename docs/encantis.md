@@ -314,6 +314,8 @@ set (x:, y:) = other_point    // updates existing x and y
 
 Unsigned integer types can carry an upper bound using `#`: `u32#N` means values in the range `[0, N)` (0 through N-1). The bound is checked at compile time and erased at runtime — a `u32#6` is still a `u32` in WebAssembly.
 
+The bound is a number, a name (`u32#size` with a `def size`, or a comptime value parameter, `u32#n`), or any compile-time constant in parentheses, `u32#(n + 1)`, computed exactly as a length is ([2.4](#24-fixed-arrays-value-type)). It is at least 1, since `u32#0` would have no values (`range bound must be at least 1: u32#0 has no values`), and at most the number of values its type has: `u8#256` is every `u8`, and `u8#300` is `range bound 300 is too large for u8, which has 256 values`.
+
 ```ents
 func get(buf: *[120]u64, i: u32#6) -> u64 => buf[i * 20]
 //                            ^^^^ index is statically known to be < 6
@@ -379,6 +381,8 @@ Mutating a value parameter does NOT affect the caller. Mutating through a refere
 [4]u8               // 4 u8 values
 [3](f32, f32)       // 3 pairs of f32
 ```
+
+**Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type, the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions (2.5) is read only between decimal numbers. A length is at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name (1.2), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
 
 Fixed arrays can only be indexed by **compile-time constant** expressions, since the elements live in registers, not addressable memory:
 
@@ -1290,6 +1294,8 @@ def max-len: u32 = 1024          // explicit u32
 ```
 
 Each place the name is written is a use of the def, also where its value is an expression (`def next = 'a' + 1`): the editor shows the def there and goes from there to it, its references are those places, and a def used nowhere is reported as never used.
+
+A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
 ### 3.2 Data Declarations (`data`)
 
@@ -2852,7 +2858,7 @@ import "../lib/text" (
 
 The signature an import writes is documentation: what the other module exports under the name is what is called, and the module that imports it is checked against that. A name that is not exported is `'add' is not exported from './util'`. Types are structural, so a struct type used across modules is declared again (or written out) where it is needed; a `type` is not imported.
 
-A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them: see [8.7 Generics Across Modules](#87-generics-across-modules).
+A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them: see [8.7 Generics Across Modules](#88-generics-across-modules).
 
 ```text
 import "./containers" (
@@ -2905,7 +2911,7 @@ When no min is specified, the compiler computes it as `max(1, ceil(static_data_b
 
 ## 8. Generics
 
-A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, and a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call. Two things of the rest of the language are what make generic code read well: method-call syntax, `v.push(7)` ([4.9](#49-method-call-syntax)), and functions that share a name ([3.4](#functions-that-share-a-name)), through which each type brings its own `hash` and `eq` ([8.3](#83-requirements)).
+A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call, and a comptime value parameter ([8.7](#87-comptime-value-parameters)) is how it is given a number, such as the length of an array, `[n]T`. Two things of the rest of the language are what make generic code read well: method-call syntax, `v.push(7)` ([4.9](#49-method-call-syntax)), and functions that share a name ([3.4](#functions-that-share-a-name)), through which each type brings its own `hash` and `eq` ([8.3](#83-requirements)).
 
 The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
 
@@ -2932,11 +2938,11 @@ export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
 export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
 ```
 
-A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`).
+A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)).
 
 Rules:
 
-1. Comptime parameters may appear anywhere in the parameter list; by convention type parameters come first. A parameter's type may mention any type parameter of the same function.
+1. Comptime parameters may appear anywhere in the parameter list; by convention they come first, in the order a type writes them: a value parameter `n` before a type parameter `T`, as in `[n]T`. A parameter's type may mention any comptime parameter of the same function.
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level. Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host. It can only be called. Its name is unique in its module.
 4. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before. A generic function that is never called is only parsed, and nothing is emitted for it.
@@ -2994,7 +3000,7 @@ test "inferred calls" {
 }
 ```
 
-**Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. Anything else is an error that says both counts. There is no form that writes some type parameters and infers others. Arguments are positional.
+**Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type or value parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. Anything else is an error that says both counts. There is no form that writes some comptime arguments and infers others. Arguments are positional. A value parameter is inferred from the length of an array in an argument's type ([8.7](#87-comptime-value-parameters)).
 
 #### How type parameters are inferred
 
@@ -3163,13 +3169,13 @@ A call with the wrong number of arguments for the one function of its name is a 
 
 An *instance* is one generic function with all its comptime arguments fixed.
 
-- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
-- **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.7](#87-generics-across-modules)).
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. A number given for a value parameter is one too: two instances are one when theirs are the same number in the parameter's type. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
+- **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.8](#88-generics-across-modules)).
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations, or sooner when one call has led to 1000 instances or to type arguments many times the size of its own. A type argument written in ordinary code may be of any size.
-- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
 func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
@@ -3187,7 +3193,7 @@ test "each instance has its own sizeof, and recursion ends" {
 **In the editor.** What a name in a generic's body is depends on the instance, and the editor (hover in the language server, and the `hover`, `definition` and `references` commands) shows what each instance makes of it:
 
 - A parameter, result or local shows the type it is declared with, in terms of the type parameters, and its type in each instance: `x: T — in index_of(T = u32): u32; in index_of(T = f64): f64`. A local whose type is not written is shown in terms of the type parameters where its types in the instances differ as one type parameter's arguments do, and otherwise as each type it is (`f32 or i64`); so it is also where two type parameters are bound alike in every instance, since which one it follows cannot be told. A field after a point is the member in each instance.
-- A type parameter shows what each instance binds it to; a comptime function parameter, the function each instance was given.
+- A type parameter shows what each instance binds it to; a value parameter, its declared type and the number each instance was given (`n: u32 — in sum(n = 4): 4; in sum(n = 8): 8`); a comptime function parameter, the function each instance was given.
 - A call in the body shows the function each instance calls, where they are not all one function: `eq(y, x)` calls `eq(a: u32, b: u32)` in `index_of(T = u32)` and `eq(a: f64, b: f64)` in `index_of(T = f64)`.
 - A generic shows its instances, a call of it the instance it calls, and a method call `x.f(a)` the call `f(x, a)` it is.
 - A generic type shows its declaration and its applications (`in Pair(u32): (a: u32, b: u32)`), and its type parameters and fields what each application makes them, also a field of an element it holds (`k` in `items: [*](k: K, v: V)`).
@@ -3196,7 +3202,7 @@ Instances that agree are listed together, and past twelve instances the rest are
 
 What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
 
-**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. It makes the generic importable by other source modules ([8.7](#87-generics-across-modules)). To export an instance, export a function that calls it:
+**Exporting.** `export func max(comptime T: type, ...)` is accepted and emits nothing: there is no single function to give the host. It makes the generic importable by other source modules ([8.8](#88-generics-across-modules)). To export an instance, export a function that calls it:
 
 ```ents
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
@@ -3228,7 +3234,7 @@ test "a pair is swapped, and sizes follow the arguments" {
 }
 ```
 
-Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a parameter, a result, a field, a cast, `sizeof(Vec(T))`, a `let` annotation, another generic type's body, a type argument. There is no space between the name and the parenthesis. All parameters of a generic type are type parameters and all are always written: `Vec` alone is not a type.
+Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a parameter, a result, a field, a cast, `sizeof(Vec(T))`, a `let` annotation, another generic type's body, a type argument. There is no space between the name and the parenthesis. A generic type's parameters are type parameters, and numbers (`func Ring(comptime n: u32, comptime T: type) -> type`, [8.7](#87-comptime-value-parameters)); all are always written: `Vec` alone is not a type.
 
 A generic type is declared at module level, before or after its uses, and its name is unique among the types of its module. Nothing of it exists at run time: one that is never applied is only parsed, and `export func Vec(comptime T: type) -> type => ...` is accepted and gives the host nothing.
 
@@ -3334,6 +3340,8 @@ generic type 'List' refers to itself with a type argument that grows, List(*T): 
 ```
 
 Generic types that hold one another in a chain are not that, however long the chain. The compiler stops at 1000 levels, with `generic types are nested more than 1000 deep in 'G0(u8)'` at the application that was written.
+
+**Errors in the body.** A generic type is checked as its applications, as a generic function is as its instances (8.3): an error its arguments make in its body is the application's, reported at its line in the body, once for each application, with the message naming it (`..., in Ring(0, u32)`, [8.7](#87-comptime-value-parameters)) and the use it was required from as a note. That application is then no type, and what is made of it says nothing more; a module that applied another module's generic type is told at its use, `Ring(0, u32) cannot be applied: ...`. A name the body uses that nothing declares is a mistake of the declaration, said once, where it is, when the type is first applied. Where one application inside another has an error, goes too deep or makes the type too large, the whole type is cut short there, with that one error.
 
 ### 8.6 Comptime Function Parameters
 
@@ -3456,7 +3464,299 @@ no field 'y' on type (u32, u32), in second(f = pair)
 
 Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
 
-### 8.7 Generics Across Modules
+### 8.7 Comptime Value Parameters
+
+A **value parameter**, `comptime n: u32`, is given a number at compile time. Inside the function `n` is that number. It can stand where a number can, and it can size a type: `[n]T` is an array of `n` elements, `*[n]T` a pointer to one, `u32#n` a number below `n`. Each number the function is called with makes an instance of its own, so a length that is a value parameter is part of the instance's types, and whatever the compiler proves from a length written as a number it proves from `n`.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum(primes)          // n = 4, from *[4]u32
+export func b() -> u32 => sum(8, squares)      // n written
+export func c() -> u32 => sum(2 + 2, primes)   // the instance of a
+
+test "each length is its own function" {
+  assert a() == 17
+  assert b() == 204
+  assert c() == 17
+}
+```
+
+compiles to exactly the module this does:
+
+```ents same-wasm
+func sum_4(xs: *[4]u32) -> (total: u32) {
+  for i in 4 {
+    total += xs[i]
+  }
+}
+func sum_8(xs: *[8]u32) -> (total: u32) {
+  for i in 8 {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum_4(primes)
+export func b() -> u32 => sum_8(squares)
+export func c() -> u32 => sum_4(primes)
+
+test "each length is its own function" {
+  assert a() == 17
+  assert b() == 204
+  assert c() == 17
+}
+```
+
+In `sum<4>` the loop counter is a `u32#4` and `xs` is a `*[4]u32`, so `xs[i]` is read without a check, as it is in `sum_4`.
+
+Rules:
+
+1. A value parameter is written `comptime n: u32` in the parameter list of a module-level `func`, as every comptime parameter is ([8.1](#81-compile-time-parameters)). Its type is an integer type, `i8` to `i512` or `u8` to `u512`, written out or named, and may carry a range: `comptime n: u32#65` takes the numbers below 65. The type says which numbers the parameter takes, and nothing more: in the body `n` is the number ([below](#inside-the-function)).
+2. Its name starts with a lower-case letter, as every value's does. A type parameter's starts with an upper-case one.
+3. A function with a value parameter is a generic function: it can only be called, it is checked for each instance, and nothing of it is emitted until it is called.
+4. Comptime parameters may stand anywhere in the list, and a parameter's type may use any of them. By convention they come first, in the order a type writes them: `n` before `T`, as in `[n]T`.
+5. A value parameter's name is not the name of another parameter or a result of the function, nor of a `def` of the module, and the body does not bind it again (`let n`, `for n in`, a match arm `n =>`), as for any parameter.
+
+#### Inside the function
+
+In an instance, `n` is the number the call gave, written in place of the name, exactly as `def n = 8` would put it there.
+
+- **In an expression** it is that number, and has no type of its own, as a literal has none: it takes the type its place gives it. `x < n`, `let y: u8 = n`, `return n` and `f(n)` are what they are with `8` written there, and `-n` is the number `-8`, as it is where `def n = 8` puts 8. `let k = n` gives `k` the type `let k = 8` gives (`i32`, or `i64` for a number that an `i32` does not hold): write `let k: u32 = n` for a variable that has one type in every instance.
+- **It is not a variable.** `n = 3`, `n += 1` and `set (n, x) = ...` are errors, and so is a binding that reuses its name; each is reported in every instance, as any mistake in a body is ([8.3](#83-requirements)).
+- **In a type** it is a length or a bound: `[n]T`, `*[n]T`, `*mut [n]T`, `[n][m]T`, `*[n][m]T` (a table, [Nesting](#nesting)), `u32#n`, and an argument of a generic type, `Ring(n, T)`. Any constant expression may stand there: `[n * 2]T`, `[(n + 31) / 32]u32`, `[n * sizeof(T)]u8`, `u32#(n + 1)`. A length is written between the brackets; a bound follows `#` directly when it is a name or a number, and in parentheses otherwise.
+- **Every rule about a number holds for it**, because in the instance it is one: `for i in n` counts with `i: u32#n` ([Ranged Integers](#ranged-integers)); for an unsigned `x`, `x % n` is a `u32#n` and `x & (n - 1)` is a `u32#n`; `v[n - 1]` is a constant index; `[0:u8; n]` is `n` zeros; `sizeof([n]T)` is `n * sizeof(T)`; `.len` of a `*[n]T` is `n`. So does every rule about the number `0`, where a body is instantiated with it ([Bounds](#bounds)).
+- **A hyphen joins a name** ([1.2](#12-identifiers)): `n-1` is one name, not `n` minus 1. Write `v[n - 1]`, `[n - 1]T`, `u32#(n - 1)`.
+
+```ents
+func last(comptime n: u32, comptime T: type, v: [n]T) -> T => v[n - 1]
+func rotl(comptime k: u32, x: u32) -> u32 => (x << k) | (x >> (32 - k))
+
+export func a(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last(v)                                // n = 3, T = f64, from [3]f64
+}
+export func mix(a: u32, b: u32) -> u32 => rotl(7, a) ^ rotl(13, b)
+```
+
+`last<3|f64>` takes the three values of `v` in three registers and returns the third; `rotl<7>` shifts by `7` and by `32 - 7` (the language's `x <<< k` is one instruction; `rotl` spells it out to show `n` in arithmetic). A value array is held in registers, so it is indexed by constants only, in a generic as anywhere ([2.4](#24-fixed-arrays-value-type)): `v[n - 1]` is one, and `v[i]` in `for i in n` is not.
+
+#### Calling a function with value parameters
+
+The two forms of [8.2](#82-calling-a-generic-function) hold, with value parameters counted with the type parameters: if a function has `P` parameters of which `K` are type or value parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. A comptime function parameter is written in both forms.
+
+**Explicit.** The argument of a value parameter is a **compile-time constant**, the same kind of expression that may stand in a length: a number (`8`, `0x40`, `8:u32`, `'a'`), a `def`, a value parameter of the enclosing generic, `sizeof` of a type (also of a type parameter), the `.len` and `.wid` of a `*[N]T`, and arithmetic, bitwise operators and shifts on these. A variable, a global, a call or the address of `data` is not one. It is checked against the parameter's type as any argument is, by its exact value (`sum(0 - 1, p)` is `argument 1: cannot assign int(-1) to u32`), and the instance gets the value it has in that type: `~0` for a `comptime m: u8` is 255.
+
+**Inferred.** A value parameter is found from the other arguments as a type parameter is: going through the parameters left to right, the first one whose written type has `n` as a length, and whose argument has a length in that place, decides it.
+
+| Parameter | Argument | Result |
+|---|---|---|
+| `*[n]T`, `*mut [n]T` | `*[8]u32`, `*mut [8]u32` (a `data` array; a string `"abc"` is a `*[3]u8`) | `n = 8` |
+| `[n]T` | a `[3]f64` held in registers | `n = 3` |
+| `*[n][m]T` | `*[2][3]i32` | `n = 2`, `m = 3` |
+| `*Ring(n, T)` | a pointer to a struct of `Ring`'s shape | `n` from the field `items: *mut [n]T` |
+| `(*[n]u8, u32)` | a tuple `(buf, 1)` | `n` from its typed part |
+| `comptime f: (*[n]u8) -> u32` | a function `g(p: *[8]u8) -> u32` | `n = 8`: a function argument decides as any argument does ([8.6](#86-comptime-function-parameters)) |
+| `*[n]T` | a slice `[]u32`, a `[*]u32`, a `*[!]u32`, a packed `*[2x3]u32` | nothing: there is no length in the type, or not one of that shape |
+| `*[n]T` | a `[4]u32` held in registers | nothing: it has no address ([2.4](#24-fixed-arrays-value-type)), so it matches no pointer, as for `T`; written out, `sum(4, v)` is `argument 2: cannot assign [4]u32 to *[4]u32` |
+| `*[n * 2]u8` | `*[8]u8` | nothing: only a length that is the name alone decides |
+| `u32#n` | a `u32#8` | nothing: a range is dropped, as it is for `T` |
+| `*[n]u32` | an array literal `[1, 2, 3]` | nothing: literals never decide (8.2, rule 3) |
+
+Every other argument is then an ordinary argument of the instance, with the same conversions and the same errors: `join("hel", "lo", big)` below, with a `big` of 8 bytes, is `argument 3: cannot assign *mut [8]u8 to *mut [5]u8`. Nothing is guessed: a value parameter that no argument decides has to be written, and so do the other type and value parameters of that call, since there is no form that writes some of them.
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
+
+func f(xs: []u32) -> u32 => sum(xs)
+func g(x: u32, p: *[4]u32) -> u32 => sum(x, p)
+```
+
+```errors
+cannot infer n for 'sum': a []u32 has no length in its type; write the value argument, as in sum(8, ...)
+argument 1 of 'sum' must be a compile-time constant: n is a comptime value parameter
+```
+
+#### Arithmetic in types, and when two types are the same
+
+A length or a bound may be any compile-time constant (as for an explicit argument, above). It is computed in each instance, as any constant is ([Comptime Literal Promotion](#comptime-literal-promotion)); a length is used as no type, so it is computed exactly, with nothing to wrap in, even where a part of it is typed (`sizeof(T)` is a `u32`), and the type then has that number in it. Two types are the same when they are the same with their lengths computed, as types always are: in an instance where `n` is 4, `[n * 2]u8`, `[2 * n]u8`, `[n + n]u8` and `[8]u8` are one type. Nothing about lengths is ever compared before they are numbers: a generic is checked only as its instances, so there is no rule of algebra for lengths, and none is needed.
+
+```ents
+func join(comptime a: u32, comptime b: u32, x: *[a]u8, y: *[b]u8, out: *mut [a + b]u8) {
+  for i in a {
+    out[i] = x[i]
+  }
+  for j in b {
+    out[a + j] = y[j]
+  }
+}
+
+data buf = mut [0:u8; 5]
+
+export func hello() -> u8 {
+  join("hel", "lo", buf)      // a = 3, b = 2; out is a *mut [5]u8, which buf is
+  return buf[4]
+}
+
+test "joined" {
+  assert hello() == 111
+}
+```
+
+A length is a number from 0 to 4294967295, the most a `u32` `.len` holds, and an array, wherever it is (in registers, in memory, or behind a pointer), has at most 4294967295 bytes: `sizeof([n]T)` is a `u32`, and so is the byte offset of every element a proven index reaches. A bound is at least 1 (`u32#0` would have no values) and at most the number of values its type has (`u8#256` is every `u8`). These hold for types written by hand too.
+
+#### Bounds
+
+What a length proves, it proves in every instance. A ranged index below the length is read and written without a check; an index that is not proven is resolved with `if let` or `??`, or is an error, as in hand-written code ([4.7](#47-bounds-checked-indexing)).
+
+```ents
+func get(comptime n: u32, comptime T: type, xs: *[n]T, i: u32#n) -> T => xs[i]
+
+data widths = [3:u16, 1, 4, 1, 5, 9, 2, 6]
+
+export func a(k: u32) -> u16 => get(widths, k & 7)
+export func b(k: u32) -> u16 => get(widths, k % 8)
+```
+
+`get<8|u16>` is one load. The proof is the caller's: `get(widths, k)` with a plain `k: u32` is `argument 2: cannot assign u32 to u32#8`, and `get(widths, k & 15)` is `argument 2: cannot assign u32#16 to u32#8`.
+
+**`n = 0`** is a number like any other, so an instance for it is refused exactly where the same function written by hand for 0 is. `u32#0` is no type, so `get` cannot be made for an empty array. A loop `for i in 0` counts with a plain `u32`, since its counter has no values to range over, and nothing it indexes is proven; nor does `i >= 0` narrow anything:
+
+```ents
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+data none: *[0]u32 = []
+
+export func z() -> u32 => sum(none)
+```
+
+```errors
+runtime index on *[0]u32 requires 'if let' or '??' (no optional type for u32), in sum(n = 0)
+```
+
+A generic that is meant to work for 0 says so in its body, as hand-written code would (`for x in xs` over the `*[n]u32` itself needs no index).
+
+#### Generic types with value parameters
+
+A generic type ([8.5](#85-generic-types)) takes value parameters as a generic function does, and is applied to numbers as to types: `Ring(8, u32)`.
+
+```ents
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+
+// Adds x after the newest element; when the ring is full, x takes the oldest one's place.
+func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
+  r.items[(r.head + r.count) % n] = x
+  if r.count < n {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % n
+  }
+}
+
+// The i-th oldest element.
+func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) -> T => r.items[(r.head + i) % n]
+
+data cells = mut [0:u32; 8]
+data log: Ring(8, u32) = mut (0, 0, cells)
+
+export func record(x: u32) { log.push(x) }
+export func first() -> u32 => log.oldest(0)
+
+test "the ring keeps the last eight" {
+  for i in 10 {
+    record(i)
+  }
+  assert log.count == 8
+  assert first() == 2
+}
+```
+
+`Ring(8, u32)` is the struct `(head: u32#8, count: u32, items: *mut [8]u32)`, as any generic type is its body. Its value arguments are computed before it is applied, so `Ring(8, u32)`, `Ring(4 + 4, u32)` and the struct written out are one type; `Ring(16, u32)` is another because its body is (`cannot assign *mut Ring(16, u32) to *mut Ring(8, u32)`). As for type parameters, a value the body does not use makes no difference: with `func Tagged(comptime n: u32) -> type => (id: u32)`, `Tagged(4)` and `Tagged(5)` are one type. `log.push(x)` finds `n` and `T` from `log` by the body of `Ring`, through `items: *mut [n]T`; `head: u32#n` decides nothing. It builds a value like any generic type, `Ring(8, u32)(0, 0, cells)`, and a method call writes its comptime arguments after the receiver, `log.push(8, u32, x)`, which is `push(8, u32, log, x)`.
+
+Its value arguments are compile-time constants, as an explicit argument of a generic function is ([above](#calling-a-function-with-value-parameters)), checked against the parameter's type the same way: a `def` declared further down is a number there too, `Small(300)` is `argument 1 of 'Small': cannot assign int(300) to u8` for a `comptime n: u8`, and so are the typed `Small(4:u32)` and `Small(sizeof(u64))`, as `cannot assign u32 to u8`. An error that a number makes in the body is the application's (8.5): with `Ring(0, u32)`, `head: u32#0` is `range bound must be at least 1: u32#0 has no values, in Ring(0, u32)`, with the use as a note. A body that applies its type to numbers that grow is stopped at once, by the parameter's type (`T(n * 2)`: `argument 1 of 'T': cannot assign int(4294967296) to u32, in T(2147483648)`) or at 1000 levels (`T(n + 1)`).
+
+A generic type may also hold its array in place:
+
+```ents
+func Buf(comptime n: u32, comptime T: type) -> type => (len: u32#(n + 1), items: [n]T)
+
+func third(b: Buf(3, u8)) -> u8 => b.items[2]
+data held: Buf(3, u8) = (3, [1, 2, 3])
+
+export func size() -> u32 => sizeof(Buf(3, u8))            // 4 + 3
+export func t() -> u8 => third(Buf(3, u8)(0, [7, 8, 9]))
+export func h() -> u8 => held.items[1]
+
+test "an array held in place" {
+  assert size() == 7
+  assert t() == 9
+  assert h() == 2
+}
+```
+
+`Buf(3, u8)` is four values in registers and seven bytes in memory, its elements inside it. An array held in place, in registers or as a field in memory, is indexed by constants only ([2.4](#24-fixed-arrays-value-type)): `b.items[2]` is one read, and `b.items[i]` is an error. A container that is indexed at run time holds a pointer to its elements, as `Ring` does. The length is a `u32#(n + 1)` because it reaches `n` when the buffer is full; `u32#n` would say it stays below.
+
+#### Instances
+
+- **Identity.** Value arguments are equal when they are the same number in the parameter's type: `sum(primes)`, `sum(4, primes)` and `sum(2 + 2, primes)` share `sum<4>`.
+- **Names.** In WAT a value argument is written in decimal among the others, in the order of the comptime parameters: `$sum<4>`, `$push<8|u32>`, `$shift<-3>`. Instances take the generic's place in the order of their names as text, so `$rotl<13>` comes before `$rotl<7>`. In messages an instance reads `push(n = 8, T = u32)`.
+- **Zero cost.** An instance is the generic with each value parameter replaced by its number, and it compiles to the bytes of that function written by hand. Nothing of `n` exists at run time beyond the constants the hand-written function would have, and none is folded that the hand-written one would not fold: `32 - k` in `rotl<7>` is `(i32.sub (i32.const 32) (i32.const 7))` as `32 - 7` is.
+- **Statics.** A literal in the body belongs to each instance, as for type parameters: `func scratch(comptime n: u32) -> *mut [n]u8 => mut [0:u8; n]` is one buffer of `n` bytes for each `n`, laid out once. Every call with the same `n` gets the same buffer.
+- **One copy per number.** Each value is a function of its own, as each type is: `sum` over arrays of five lengths is five functions. A long body that needs the length only for a few proofs can take a slice in a plain function and keep the generic a short wrapper.
+- **Recursion.** A generic may call itself with the same arguments; that is run-time recursion in one instance. It cannot recurse on a value that changes. There is no compile-time `if`, so both branches of an `if` are in every instance, and each instance asks for the next:
+
+```ents
+func pow(comptime e: u32, x: u64) -> u64 => if e == 0 { 1 } else { x * pow(e - 1, x) }
+
+export func cube(x: u64) -> u64 => pow(3, x)
+```
+
+```errors
+argument 1: cannot assign int(-1) to u32, in pow(e = 0)
+```
+
+`pow<3>` asks for `pow<2>`, and so on to `pow<0>`, whose `else` asks for `pow(0 - 1, x)`. A value that grows instead is stopped by its type or by the limits of [8.4](#84-instances) (64 nested instantiations, 1000 from one call). A loop does what such a recursion would: `for i in e { r *= x }`.
+
+#### With the rest of the language
+
+- **Functions that share a name.** A generic with value parameters is still a generic: its name is unique in its module. In an instance `n` is a literal, so a call `gt(x, n)` in the body picks among overloads as `gt(x, 8)` does: the typed `x` decides and the literal only has to fit ([3.4](#functions-that-share-a-name)).
+- **Tables.** A pointer or slice whose element is a fixed array is a table ([Nesting](#nesting)) whatever its lengths are: a `t: *[n][m]T` is `n` row pointers, `t.len` is `n` and `t[i].len` is `m`. Lengths are matched by shape, never by layout: `*[n][m]T` against a `*[2][3]i32` gives `n = 2`, `m = 3`. The same holds for a type parameter that turns out to be a fixed array ([8.5](#85-generic-types)): `*[n]T` against a `*[2][3]i32` gives `n = 2` and `T = [3]i32`, and the instance has a table, whose `xs[i]` is a row pointer, not a `T`.
+- **Modules.** A source import restates a value parameter as it is declared: `"push" func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T)`. An instance belongs to the generic's module ([8.8](#88-generics-across-modules)), and a value argument is computed in the module that wrote it, with that module's `def`s.
+- **`def`.** A `def` is a number with a name, so it can now size a type outside generics too: with `def size = 64`, `*mut [size]u8` and `u32#size` are types.
+- **In the editor.** A value parameter shows its number in each instance: `n: u32 — in sum(n = 4): 4; in sum(n = 8): 8`.
+
+A table with value-parameter lengths is read as a table written by hand: here `m[i]` loads the row pointer and `m[i][i]` the cell, both proven by `i: u32#n`.
+
+```ents
+func trace(comptime n: u32, m: *[n][n]i32) -> (t: i32) {
+  for i in n {
+    t += m[i][i]
+  }
+}
+
+data grid: *[3][3]i32 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+
+export func a() -> i32 => trace(grid)            // n = 3; the second [n] is then checked: a *[3][4]i32 is refused
+
+test "trace" {
+  assert a() == 15
+}
+```
+
+### 8.8 Generics Across Modules
 
 `export func max(comptime T: type, ...)` and `export func Vec(comptime T: type) -> type` make a generic importable by other source modules. A source import names what it uses with its signature, as for any function ([7.1](#71-imports)), and a generic type as the function it is:
 
@@ -3519,18 +3819,24 @@ Such an error is found when the program is checked, also in a library that was c
 
 The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents`, `lib/set.ents`, `lib/map.ents` and `lib/sort.ents`, on the bump stack of `lib/stack.ents`. [`examples/containers/main.ents`](../examples/containers/main.ents) uses them for a type of its own.
 
-### 8.8 Not in This Version
+### 8.9 Not in This Version
 
 Each of these is rejected with an error that says so, so the syntax stays free for a later version.
 
 | Not supported | What the compiler says |
 |---|---|
-| A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type' or a function type` |
+| A comptime parameter that is neither a type, an integer nor a function: a `bool`, a float, a slice, a type parameter (`comptime n: T`) | `comptime parameter 'ok' is bool: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)` |
+| A value parameter whose argument is a string or a `data` block | `argument 1 of 'f' must be a compile-time constant: s is a comptime value parameter` |
+| Recursion on a value parameter that changes, `pow(e - 1, x)` in `pow(comptime e: u32, ...)` | the chain ends in a value its type refuses (`argument 1: cannot assign int(-1) to u32, in pow(e = 0)`), or at 64 nested instantiations |
+| A packed array whose dimensions are not numbers, `*[n x m]T` | a syntax error at the `x` |
+| An array field in memory indexed at run time | `dynamic index on value type [8]u32 — use a pointer or slice for dynamic access` |
+| A default value, `comptime n: u32 = 16` | a syntax error |
+| A length that is not a constant, `[len]u8` with a variable | `array length must be a compile-time constant` |
 | A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
 | A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
-| A generic type with a parameter that is not `comptime X: type`, or with none | `generic type 'Vec' takes comptime type parameters only, as (comptime T: type)` |
+| A generic type with a parameter that is neither `comptime X: type` nor an integer, or with none | `generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)` |
 | A generic type that refers to itself with a type made of its parameters, `List(*T)` in `List(T)` | `generic type 'List' refers to itself with a type argument that grows, List(*T): applying it would never end` |
 | A generic type declared inside a `test` block | `a generic type is declared at module level, not inside a test` |
 | A generic type that shares its name with a `type` or another generic type | `'Vec' is already declared: a generic type's name is unique in its module` |
@@ -3542,21 +3848,22 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime function argument that is a name several functions share | the same, followed by `('less' has several overloads)` |
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
-Also not in this version: a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
+Also not in this version: a generic type with a block body or conditions (a syntax error: its body is one type), writing some comptime arguments and inferring others, inference from the expected result type, generic functions that share a name, traits or declared requirements, compile-time `if`, `for` and `assert`, and `comptime func`. A value parameter is decided only by a length that is its name alone: not by `[n * 2]`, by a range, or by an array literal's count.
 
 A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
 <!-- spec:end -->
 
-### 8.9 How This Is Compile-Time Evaluation
+### 8.10 How This Is Compile-Time Evaluation
 
-Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type or a function.
+Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type, a function or a number.
 
 | Bound at compile time | Module level | Parameter | Later |
 |---|---|---|---|
 | a type | `type Pt = (q: i32, r: i32)` | `comptime T: type` | |
 | a function | `func f(...)` | `comptime before: (T, T) -> bool` | |
-| a number, bool | `def n = 64` | | `comptime n: u32`; `[n]T` |
+| a number | `def n = 64` | `comptime n: u32`; `[n]T` | |
+| a bool | `def debug = false` | | `comptime ok: bool`, with a compile-time `if` |
 | a type computed from types | | `func Vec(comptime T: type) -> type => ...` | block bodies, conditions |
 | a value computed from values | `def bytes = n * 8` | | `comptime func`, tables |
 
@@ -3985,12 +4292,9 @@ let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 
 ### Comptime Evaluation
 
-Generic functions and generic types take types and functions at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more, in this order:
+Generic functions and generic types take types, functions and numbers at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more:
 
 ```text
-// Comptime value parameters, and array sizes that depend on them
-func zeros(comptime n: u32) -> [n]u8 => ...
-
 // Compile-time function execution
 comptime func generate_table() -> *[256]u8 {
   let table:*[256]u8
@@ -4003,7 +4307,7 @@ comptime func generate_table() -> *[256]u8 {
 def crc_table = generate_table()
 ```
 
-Comptime value parameters are parsed today, and rejected with a message that says they are not supported yet; the other forms are not parsed, and neither is an array size that names a parameter (`[n]u8`). Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body) comes after them.
+This is not parsed today. Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body, recursion on a value parameter that ends) comes after it.
 
 **Why:** Compile-time values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
 

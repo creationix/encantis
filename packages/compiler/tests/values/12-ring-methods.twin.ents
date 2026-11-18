@@ -1,0 +1,46 @@
+type Ring8 = (head: u32#8, count: u32, items: *mut [8]u32)
+type Ring4 = (head: u32#4, count: u32, items: *mut [4]u64)
+
+func push_4(r: *mut Ring4, x: u64) {
+  r.items[(r.head + r.count) % 4] = x
+  if r.count < 4 {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % 4
+  }
+}
+func push_8(r: *mut Ring8, x: u32) {
+  r.items[(r.head + r.count) % 8] = x
+  if r.count < 8 {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % 8
+  }
+}
+
+func oldest_8(r: *Ring8, i: u32#8) -> u32 => r.items[(r.head + i) % 8]
+
+data cells = mut [0:u32; 8]
+data log: Ring8 = mut (0, 0, cells)
+data cells4 = mut [0:u64; 4]
+data log4: Ring4 = mut (0, 0, cells4)
+
+export func record(x: u32) { push_8(log, x) }
+export func record2(x: u32) { push_8(log, x) }
+export func record3(x: u32) { push_8(log, x) }
+export func record4(x: u64) { push_4(log4, x) }
+export func first() -> u32 => oldest_8(log, 0)
+export func size() -> u32 => sizeof(Ring8)
+export func build(p: *mut [8]u32) -> u32 {
+  let r = Ring8(0, 0, p)
+  return r.count
+}
+export func same(r: *mut (head: u32#8, count: u32, items: *mut [8]u32)) { push_8(r, 5) }
+
+test "the ring keeps the last eight" {
+  for i in 10 {
+    record(i)
+  }
+  assert log.count == 8
+  assert first() == 2
+}

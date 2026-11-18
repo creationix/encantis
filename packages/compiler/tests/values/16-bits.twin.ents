@@ -1,0 +1,22 @@
+// The instances 16-bits.uses.ents makes of the functions of lib/bits.ents, written by
+// hand, in the order the instances take: the order of their generics.
+
+func set_bit_4(b: *mut [4]u32, i: u32#128) {
+  b[i >> 5] |= 1 << (i & 31)
+}
+func clear_bit_4(b: *mut [4]u32, i: u32#128) {
+  b[i >> 5] &= ~(1 << (i & 31))
+}
+func has_bit_4(b: *[4]u32, i: u32#128) -> bool => ((b[i >> 5] >> (i & 31)) & 1) == 1
+func count_bits_4(b: *[4]u32) -> (n: u32) {
+  for x in b {
+    n += popcnt(x)
+  }
+}
+
+data seen = mut [0:u32; 4]
+
+export func l(x: u32) { set_bit_4(seen, x & 127) }
+export func m(x: u32) { clear_bit_4(seen, x & 127) }
+export func n(x: u32) -> bool => has_bit_4(seen, x & 127)
+export func o() -> u32 => count_bits_4(seen)

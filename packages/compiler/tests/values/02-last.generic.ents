@@ -1,0 +1,6 @@
+func last(comptime n: u32, comptime T: type, v: [n]T) -> T => v[n - 1]
+
+export func a(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last(v)                                // n = 3, T = f64, from [3]f64
+}

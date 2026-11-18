@@ -1,0 +1,19 @@
+func join(comptime a: u32, comptime b: u32, x: *[a]u8, y: *[b]u8, out: *mut [a + b]u8) {
+  for i in a {
+    out[i] = x[i]
+  }
+  for j in b {
+    out[a + j] = y[j]
+  }
+}
+
+data buf = mut [0:u8; 5]
+
+export func hello() -> u8 {
+  join("hel", "lo", buf)      // a = 3, b = 2; out is a *mut [5]u8, which buf is
+  return buf[4]
+}
+
+test "joined" {
+  assert hello() == 111
+}

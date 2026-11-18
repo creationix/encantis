@@ -1,0 +1,6 @@
+func last_3_f64(v: [3]f64) -> f64 => v[2]
+
+export func a(x: f64) -> f64 {
+  let v: [3]f64 = [x, 2.0, x * 3.0]
+  return last_3_f64(v)
+}

@@ -86,13 +86,15 @@ Encantis {
   // FieldList, so `comptime` cannot be written in them at all.
   ParamList = "(" ListOf<Param, ","> ")"
 
-  // comptimeTypeLower and typeNoComptime are near misses of comptimeType. They
-  // parse so that the checker can say what to write instead.
-  Param = comptime typeIdent ":" type    -- comptimeType
-        | comptime ident ":" type        -- comptimeTypeLower
-        | comptime ident TypeAnnotation  -- comptimeValue
-        | typeIdent ":" type             -- typeNoComptime
-        | Field                          -- plain
+  // comptimeTypeLower, comptimeValueUpper and typeNoComptime are near misses
+  // of comptimeType and comptimeValue. They parse so that the checker can say
+  // what to write instead.
+  Param = comptime typeIdent ":" type        -- comptimeType
+        | comptime ident ":" type            -- comptimeTypeLower
+        | comptime ident TypeAnnotation      -- comptimeValue
+        | comptime typeIdent TypeAnnotation  -- comptimeValueUpper
+        | typeIdent ":" type                 -- typeNoComptime
+        | Field                              -- plain
 
   FieldList = NonemptyListOf<Field, ",">
 
@@ -160,6 +162,10 @@ Encantis {
            | "?" "*" Type                      -- optPointer
            | "[" arrayFramings "]" mut Type     -- arrayMut
            | "[" arrayFramings "]" Type        -- array
+           | ~BracketForm "[" Expr "]" mut Type  -- lengthMut
+           | ~BracketForm "[" Expr "]" Type     -- length
+           | ~BracketForm "[" typeIdent "]" mut Type  -- lengthUpperMut
+           | ~BracketForm "[" typeIdent "]" Type      -- lengthUpper
            | "[*]" mut Type                    -- manyPointerMut
            | "[*]" Type                        -- manyPointer
            | "[]" mut Type                     -- sliceMut
@@ -169,9 +175,10 @@ Encantis {
            | "^" Type                          -- boundaryPointer
            | "(" FieldList? ")"                -- composite
            | ComptimeType                      -- comptimeScalar
+           | rangedHead Expr ")"               -- rangedComputed
            | rangedUnsigned                    -- rangedPrimitive
            | PrimitiveType                     -- primitive
-           | typeApplyHead NonemptyListOf<Type, ","> ")"  -- apply
+           | typeApplyHead NonemptyListOf<TypeArg, ","> ")"  -- apply
            | typeIdent                         -- named
 
   // A generic type applied to its arguments: Vec(u32). Lexical, so there is no
@@ -179,21 +186,43 @@ Encantis {
   // line can start with one.
   typeApplyHead = typeIdent "("
 
+  // lengthUpper is a near miss of length, [N]T with a value parameter named
+  // as a type would be: it parses so that the checker can say to write n.
+
+  // What starts a bracket form of the types of before ([*]T, [!]T, [?]T)
+  // starts no length: `!u8` or `?x` is no number. A near miss of one of
+  // those forms ([*:0]u8, [!u8]) is then the syntax error it was before
+  // lengths were expressions, at the place that form went wrong. (Looked
+  // for before the "[", so that what a syntax error says was expected
+  // after it is what it was.)
+  BracketForm = "[" ("*" | "!" | "?")
+
+  // An argument of a generic type: a type, or a number for a value parameter,
+  // Ring(8, u32) or Bits(n * 2). A type is tried first.
+  TypeArg = Type &("," | ")")  -- type
+          | Expr               -- value
+
         // Lengths and Framing: single or x-separated for multi-dimensional
         // [_]T = inferred, [5]T = 5 elements, [12x16]T = 12×16 packed
         // [!x!]T = double null-terminated (2D), [5x?]T = 5 elements, LEB128-prefixed
         arrayFramings = arrayFraming ("x" arrayFraming)*
 
-        // Single length: _ (inferred) or decimal digits
-        arrayFraming = "_"        -- inferred
-                    | digit+      -- explicit
-                    | "!"         -- nullTerminated
-                    | "?"         -- leb128Prefixed
+        // Single length: _ (inferred) or decimal digits. A number with a
+        // radix prefix is no dimension: [0x10] is the length 16, read as an
+        // expression by BaseType_length.
+        arrayFraming = "_"                               -- inferred
+                    | ~("0" ("x" | "o" | "b" | "d")) digit+  -- explicit
+                    | "!"                                -- nullTerminated
+                    | "?"                                -- leb128Prefixed
 
   UnsignedType = "u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8"
 
-  // Lexical rule: no whitespace between type name and "#" (u8#16 not u8 # 16)
-  rangedUnsigned = ("u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8") "#" digit+
+  // Lexical rule: no whitespace between type name and "#" (u8#16 not u8 # 16).
+  // The bound is a number or a name (u32#n, a def or a value parameter); any
+  // other constant is written in parentheses, u32#(n + 1).
+  rangedUnsigned = unsignedName "#" (digit+ | ident)
+  rangedHead = unsignedName "#("
+  unsignedName = "u512" | "u256" | "u128" | "u64" | "u32" | "u16" | "u8"
 
   PrimitiveType = "i512" | "i256" | "i128" | "i64" | "i32" | "i16" | "i8"
                 | UnsignedType
@@ -476,7 +505,7 @@ Encantis {
   // where the parameter is one.
   TypeLit = &typeOnlyStart BaseType
 
-  typeOnlyStart = "?" | "*" | "[*]" | "[]" | arrayPrefix | rangedUnsigned | bareTypeIdent
+  typeOnlyStart = "?" | "*" | "[*]" | "[]" | arrayPrefix | rangedHead | rangedUnsigned | bareTypeIdent
   arrayPrefix = "[" arrayFramings "]"
   bareTypeIdent = typeIdent ~"("
 

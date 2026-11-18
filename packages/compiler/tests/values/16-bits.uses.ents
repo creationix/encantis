@@ -1,0 +1,10 @@
+// The uses of the library's functions, after the functions themselves
+// (comptime-values.test.ts puts the declarations of lib/bits.ents before this,
+// as they are written there).
+
+data seen = mut [0:u32; 4]
+
+export func l(x: u32) { seen.set_bit(x & 127) }
+export func m(x: u32) { seen.clear_bit(x & 127) }
+export func n(x: u32) -> bool => seen.has_bit(x & 127)
+export func o() -> u32 => seen.count_bits()

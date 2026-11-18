@@ -1,0 +1,28 @@
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+
+// Adds x after the newest element; when the ring is full, x takes the oldest one's place.
+func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
+  r.items[(r.head + r.count) % n] = x
+  if r.count < n {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % n
+  }
+}
+
+// The i-th oldest element.
+func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) -> T => r.items[(r.head + i) % n]
+
+data cells = mut [0:u32; 8]
+data log: Ring(8, u32) = mut (0, 0, cells)
+
+export func record(x: u32) { log.push(x) }
+export func first() -> u32 => log.oldest(0)
+
+test "the ring keeps the last eight" {
+  for i in 10 {
+    record(i)
+  }
+  assert log.count == 8
+  assert first() == 2
+}

@@ -1,0 +1,14 @@
+// The uses of the library's functions, after the functions themselves
+// (comptime-values.test.ts puts the declarations of lib/fixedvec.ents before this,
+// as they are written there).
+
+data cells = mut [0:u64; 4]
+data fv: FixedVec(4, u64) = mut (0, cells)
+
+export func a(x: u64) -> bool => fv.push(x)
+export func b() -> u64 => fv.pop()
+export func c() -> u64 => fv.last()
+export func d() -> []u64 => fv.items()
+export func e() -> []mut u64 => fv.items_mut()
+export func f() { fv.clear() }
+export func g() -> bool => fv.full()
