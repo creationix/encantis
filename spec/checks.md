@@ -1740,6 +1740,55 @@ func rows(t: *[2][3]i32) -> u32 => t.len + t[1].len
 
 <!-- spec:end -->
 
+So it is at every depth, and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables, `c[1]` a `*[3][4]u8` loaded from it and `c[1][2]` a `*[4]u8` loaded from that, as in the `*[2][3][4]u8` it stands for. A slice or many-pointer of a name for rows, a table of names, and a type parameter that is one read the same way.
+
+<!-- spec:begin compile -->
+
+```ents
+type Cube = [2][3][4]u8
+type Box = Cube
+type Plane = [3][4]u8
+type Hyper = [2]Box
+
+data cube: *Box = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data planes: []Plane = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data hyper: *Hyper = [[[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]], [[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 9]]]]
+
+func at(c: *Box) -> u8 => c[1][2][3]
+func plane(s: []Plane, i: u32) -> u8 => if let p = s[i] { p[2][3] } else { 0 }
+func many(m: [*]Plane) -> u8 => m[1][2][3]
+func deep(h: *Hyper) -> u8 => h[1][1][2][3]
+func whole(comptime T: type, p: *T) -> u8 => p[1][2][3]
+func viaWhole(c: *Box) -> u8 => whole(Cube, c)
+func lens(c: *Cube) -> u32 => c.len * 100 + c[0].len * 10 + c[0][0].len
+
+test "a name for an array of arrays is the table it stands for" {
+  assert at(cube) == 24
+  assert plane(planes, 1) == 24
+  assert plane(planes, 2) == 0
+  assert many(cube as [*]Plane) == 24
+  assert deep(hyper) == 9
+  assert viaWhole(cube) == 24
+  assert lens(cube) == 234
+}
+```
+
+```ents same-wasm
+data cube: *[2][3][4]u8 = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data planes: [][3][4]u8 = [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]]
+data hyper: *[2][2][3][4]u8 = [[[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]], [[[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 9]]]]
+
+func at(c: *[2][3][4]u8) -> u8 => c[1][2][3]
+func plane(s: [][3][4]u8, i: u32) -> u8 => if let p = s[i] { p[2][3] } else { 0 }
+func many(m: [*][3][4]u8) -> u8 => m[1][2][3]
+func deep(h: *[2][2][3][4]u8) -> u8 => h[1][1][2][3]
+func whole(comptime T: type, p: *T) -> u8 => p[1][2][3]
+func viaWhole(c: *[2][3][4]u8) -> u8 => whole([2][3][4]u8, c)
+func lens(c: *[2][3][4]u8) -> u32 => c.len * 100 + c[0].len * 10 + c[0][0].len
+```
+
+<!-- spec:end -->
+
 ## Ranges
 
 `items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.
