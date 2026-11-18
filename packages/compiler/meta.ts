@@ -1120,6 +1120,7 @@ class MetaBuilder {
         break
       }
       case 'AssertStmt':
+      case 'DeferStmt':
         this.generateHintsForExpr(stmt.expr)
         break
       case 'BreakStmt':
@@ -1377,9 +1378,12 @@ class MetaBuilder {
         }
         // Recurse into value expression (e.g., 0:u8)
         this.generateHintsForExpr(expr.value)
-        // Generate hint for the count (e.g., 1024)
+        // Generate hint for the count (e.g., 1024), or the def whose name
+        // is written there
         const countType = this.exprType(expr.count)
-        if (countType) {
+        if (this.defUsedAt(expr.count)) {
+          this.generateHintsForExpr(expr.count)
+        } else if (countType) {
           const typeIndex = this.typeRegistry.register(countType)
           const len = this.lineMap.spanLength(expr.count.span.start, expr.count.span.end)
           this.addHint(expr.count.span.start, len, typeIndex)

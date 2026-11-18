@@ -636,6 +636,26 @@ describe('a def where it is used', () => {
     // A negated name of any other kind is the name.
     expect(value(server('onHover', source.indexOf('-x') + 1))).toBe('```encantis\ninput x:i32\n```')
   })
+
+  // The count of a repeated value was shown as its type alone, and what a
+  // defer runs was not looked at: a use there was listed among the def's
+  // references, with no def to go to from it (nor any other name there).
+  test('is the def where it counts a repeated value and where a defer uses it', () => {
+    const source = 'def k = 4\ndata buf = mut [0:u8; k]\nglobal g: i32 = 0\nfunc bump(n: i32) { g += n }\nexport func f(x: i32) -> u8 {\n  defer bump(k + x)\n  return buf[0]\n}\n'
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => {
+      const { line, character } = (location as Location).range.start
+      return `${line}:${character}`
+    }
+    for (const at of [source.indexOf('; k') + 2, source.indexOf('(k') + 1]) {
+      expect(value(server('onHover', at))).toBe('```encantis\ndef k:i32 = 4\n```')
+      expect(start(server('onDefinition', at))).toBe('0:4')
+    }
+    expect((server('onReferences', 4, { context: { includeDeclaration: false } }) as unknown[]).map(start)).toEqual(['1:22', '5:13'])
+    expect(start(server('onDefinition', source.indexOf('bump(k')))).toBe('3:5')
+    expect(value(server('onHover', source.indexOf('+ x') + 2))).toBe('```encantis\ninput x:i32\n```')
+  })
 })
 
 describe('a single-quoted literal in a template', () => {
