@@ -7,7 +7,7 @@ import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/comp
 import { loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
-import { gotoDefinition, hover, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
+import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { createTestHost } from '@encantis/compiler/test-host'
 import { resolve } from 'node:path'
@@ -329,7 +329,7 @@ switch (command) {
       if (jsonOutput) {
         console.log(JSON.stringify(r))
       } else {
-        console.log(`${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`)
+        console.log(hoverText(r))
       }
     } else if (command === 'references') {
       const r = findReferences(qSource, qResult.module!, qCheck, offset)

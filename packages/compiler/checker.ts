@@ -9,6 +9,7 @@ import {
   type ForwardRefRT,
   type ResolvedField,
   type ArrayRT,
+  type ComptimeArrayRT,
   type ArraySize,
   type PointerRT,
   type TupleRT,
@@ -41,6 +42,7 @@ import {
   typeAssignable,
   unwrap,
   unwrapToCut,
+  pointeeArray,
   isFloat,
   isInteger,
   isSigned,
@@ -82,7 +84,9 @@ export type Symbol =
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string }
   | { kind: 'global'; type: ResolvedType }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
-  | { kind: 'local'; type: ResolvedType }
+  // `binding`: a variable a `for`, an `if let` or a match arm binds, which
+  // its body alone sees; a `let` has none
+  | { kind: 'local'; type: ResolvedType; binding?: BindingKind }
   | { kind: 'param'; type: ResolvedType }
   | { kind: 'return'; type: ResolvedType }
   // A function with comptime parameters. It has no type of its own: each
@@ -168,7 +172,19 @@ const RECOVERY: ResolvedType = primitive('i32')
 export interface Scope {
   parent: Scope | null
   symbols: Map<string, Symbol>
+  // The variables of a `for`, seen in its body only. A `let` in that body
+  // is declared in the scope around it: a `let` is seen in the rest of its
+  // function (see letScope).
+  bindings?: true
 }
+
+// What declared a variable that a body alone sees (see bindName).
+export type BindingKind = 'loop' | 'if let' | 'match'
+
+// What makes a declaration the checker can meet more than once: a pattern of
+// a let, a named element of one, the variables of a for, an if let or elif
+// let, a match arm (see CheckContext.declared).
+type Declaration = AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm
 
 // === Type Key Helper ===
 
@@ -228,8 +244,15 @@ export interface TypeCheckResult {
   // Literals that need data section serialization (for codegen)
   literals: PendingLiteral[]
   // The instances of this module's generic functions, in the order they were
-  // first asked for
-  instances: { of: AST.FuncDecl; decl: AST.FuncDecl }[]
+  // first asked for: the generic, its copy (at offsets shifted by
+  // index * INSTANCE_STRIDE), the name the instance is known by in `symbols`
+  // and in WAT (index_of<u32>), how messages name it (index_of(T = u32)), and
+  // its comptime arguments in the order of the comptime parameters
+  instances: InstanceInfo[]
+  // The applications of each of this module's generic types, in the order
+  // they were first resolved: as written once its arguments are resolved
+  // (Pair(u32)), those arguments, and the type it is
+  applications: Map<AST.TypeFuncDecl, Application[]>
   // What to compile in place of a call as written: for a call of a generic,
   // the plain call of its instance; for a call of a comptime function
   // parameter, the call of the function it stands for; for a type that is
@@ -237,6 +260,12 @@ export interface TypeCheckResult {
   // method call x.f(a), the call f(x, a); for a call of a function that
   // shares its name, the call of the one that was meant
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // Which element of a tuple gives each field of the struct it becomes, in
+  // the order of the fields, where that is not the element at the field's
+  // place: for a tuple literal with names among its elements, and for the
+  // tuple a constructor is compiled as. Its elements are computed in the
+  // order they are written, and each value goes to its field.
+  fieldOrder: Map<AST.TupleExpr, number[]>
   // The name a function is known by, in `symbols` and in the output, where
   // that is not the name it was declared with: one that shares its name with
   // a function declared before it has a name of its own (hash:''u8).
@@ -245,6 +274,20 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+}
+
+export interface InstanceInfo {
+  of: AST.FuncDecl
+  decl: AST.FuncDecl
+  name: string
+  label: string
+  args: ComptimeValue[]
+}
+
+export interface Application {
+  shown: string
+  args: ResolvedType[]
+  type: ResolvedType
 }
 
 // === Concretization Options ===
@@ -345,8 +388,10 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
     literals: ctx.pendingLiterals,
-    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
+    instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl, name: i.name, label: i.label, args: i.args })),
+    applications: ctx.applications,
     calls: ctx.calls,
+    fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
   }
@@ -380,7 +425,7 @@ export interface ProgramCheckResult {
 }
 
 export function typecheckProgram(
-  modules: Map<string, { module: AST.Module }>,
+  modules: Map<string, { module: AST.Module; source?: string }>,
   entryPath: string,
   options?: TypecheckOptions,
 ): ProgramCheckResult {
@@ -407,7 +452,8 @@ export function typecheckProgram(
     }
     visitImports(loaded.module.decls)
 
-    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
+    // Each module's own text, which messages quote (see textOf)
+    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports, source: loaded.source })
     results.set(path, result)
     allErrors.push(...result.errors)
     moduleExports.set(path, getExportedSymbols(loaded.module, result))
@@ -589,83 +635,12 @@ export function isConcreteType(t: ResolvedType): boolean {
 
 // === Check Context ===
 
-// What the checker's tables took in while an expression was only being looked
-// at (see CheckContext.peek), to take it back. The tables share one journal,
-// so a look is undone as a whole: a type left on a node, or a conversion, is
-// something codegen would act on.
-class Trial {
-  private open = 0
-  private undo: (() => void)[] = []
-
-  get active(): boolean {
-    return this.open > 0
-  }
-
-  note(undo: () => void): void {
-    this.undo.push(undo)
-  }
-
-  begin(): number {
-    this.open++
-    return this.undo.length
-  }
-
-  rollback(mark: number): void {
-    while (this.undo.length > mark) this.undo.pop()?.()
-    this.open--
-  }
-}
-
-class TrialMap<K, V> extends Map<K, V> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override set(key: K, value: V): this {
-    if (this.trial.active) this.remember(key)
-    return super.set(key, value)
-  }
-
-  override delete(key: K): boolean {
-    if (this.trial.active) this.remember(key)
-    return super.delete(key)
-  }
-
-  private remember(key: K): void {
-    const had = this.has(key)
-    const was = this.get(key) as V
-    this.trial.note(() => {
-      if (had) super.set(key, was)
-      else super.delete(key)
-    })
-  }
-}
-
-class TrialSet<T> extends Set<T> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override add(value: T): this {
-    if (this.trial.active && !this.has(value)) this.trial.note(() => super.delete(value))
-    return super.add(value)
-  }
-
-  override delete(value: T): boolean {
-    if (this.trial.active && this.has(value)) this.trial.note(() => super.add(value))
-    return super.delete(value)
-  }
-}
-
 class CheckContext {
   source?: string
-  // What is recorded per offset and per node can be taken back after an
-  // expression was only looked at (see peek).
-  trial = new Trial()
-  types = new TrialMap<string, ResolvedType>(this.trial)
-  exprTypes = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  coercions = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  constants = new TrialMap<AST.Expr, ComptimeValue>(this.trial)
+  types = new Map<string, ResolvedType>()
+  exprTypes = new Map<AST.Expr, ResolvedType>()
+  coercions = new Map<AST.Expr, ResolvedType>()
+  constants = new Map<AST.Expr, ComptimeValue>()
   // The symbol each name was read as where it is written. A parameter or a
   // binding can have the name of a def or of data, and then it is not that
   // constant: the values of a literal are worked out at the end of the
@@ -673,18 +648,24 @@ class CheckContext {
   readAs = new WeakMap<AST.IdentExpr, Symbol>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
-  statementExprs = new TrialSet<AST.Expr>(this.trial)
+  statementExprs = new Set<AST.Expr>()
   // The constant each branch of an if or match of constants is by itself.
   // The branches share one type, and each has to be a value of it.
-  branchConstants = new TrialMap<AST.Expr, ResolvedType>(this.trial)
+  branchConstants = new Map<AST.Expr, ResolvedType>()
   // The patterns that have declared their local. An operand of a builtin is
   // checked again once its type is settled, statements and all: a `let` in
   // one of its branches is then the same declaration, not a second one.
-  // A look (see peek) declares in a scope of its own, and is no first time.
-  declared = new TrialSet<AST.Pattern>(this.trial)
+  // A look (see peek) declares in a scope of its own, and is no first time:
+  // what it adds is taken out when it ends (`lookDeclared`, see declare).
+  // The same goes for the variables of a `for`, an `if let` or a match arm,
+  // and for a named element of a tuple pattern, `(x:)` or `(x: a)`.
+  declared = new Set<Declaration>()
+  lookDeclared: Declaration[] = []
   // Indexes read as an optional because they aren't known to be in range
-  // (see TypeCheckResult.unproven).
-  unproven = new TrialSet<AST.IndexExpr>(this.trial)
+  // (see TypeCheckResult.unproven). One a look marks is taken out when it
+  // ends, as a declaration is (`lookUnproven`).
+  unproven = new Set<AST.IndexExpr>()
+  lookUnproven: AST.IndexExpr[] = []
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -697,6 +678,9 @@ class CheckContext {
   // The named results an expression body is being checked against, when
   // there are several: its value fills them in order.
   resultsInOrder: ResolvedType | null = null
+  // The trailing value of a block body that fills the named results by name,
+  // and those results (see checkFuncBody).
+  namedTail: { expr: AST.Expr; results: ResolvedType } | null = null
   // Loops open around the statement being checked, and the depth at the
   // innermost enclosing defer (null outside one). A deferred expression can't
   // return, or break or continue a loop outside it.
@@ -741,7 +725,10 @@ class CheckContext {
   instances: Instance[] = []
   instanceQueue: Instance[] = []
   currentInstance: Instance | null = null
-  calls = new TrialMap<AST.CallExpr, AST.CallExpr | AST.TupleExpr>(this.trial)
+  calls = new Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>()
+  // Recorded again, or deleted, each time a tuple meets a struct by name
+  // (see recordFieldOrder), so the check after a look says what stays.
+  fieldOrder = new Map<AST.TupleExpr, number[]>()
   // How many literals were registered when the second pass came to each
   // generic, which is where a function written in its place would add its own
   literalSlots = new Map<AST.FuncDecl, number>()
@@ -764,6 +751,8 @@ class CheckContext {
   // The module's generic types, in the order they are declared, and how deep
   // in applications of them a type is being resolved
   typeFuncs: (Symbol & { kind: 'typefunc' })[] = []
+  // Each generic type's applications, as TypeCheckResult.applications has them
+  applications = new Map<AST.TypeFuncDecl, Application[]>()
   applyDepth = 0
   // Set where that depth ran out, until the application that began it reports it
   applyTooDeep = false
@@ -804,9 +793,19 @@ class CheckContext {
   // it stands for: what is said of that call is said of it as it was written.
   receivers = new Map<AST.CallExpr, AST.Expr>()
   refused = new Set<AST.CallExpr>()
+  // The calls of the module's functions read off the syntax of a generic's
+  // body (see skipGenericBody), and the uses an instance made, each as
+  // "definition:use". Where a generic has instances, a call in its body is a
+  // use of what its instances call, and of nothing else (see settleGuesses).
+  guessedCalls: { generic: AST.FuncDecl; def: number; use: number }[] = []
+  madeInInstances = new Set<string>()
+  // The uses a generic's first instance recorded, at the generic's offsets
+  firstUses = new Set<number>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
-  // How many attempts are open (see attempt)
+  // How many looks are open (see untraced), and of them how many are attempts
+  // (see attempt)
+  looking = 0
   attempting = 0
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
@@ -925,6 +924,27 @@ class CheckContext {
     this.drainInstances()
     this.settleLiterals()
     this.placeInstanceLiterals()
+    this.settleGuesses()
+  }
+
+  // A call in a generic's body was taken, before any instance existed, for a
+  // use of every function of its name. Where the generic has instances, each
+  // has recorded what it calls: a guess no instance made is taken back, so
+  // that the uses of one of several functions that share a name are the calls
+  // that call it, and one no call calls is reported as never used. (A generic
+  // cannot be imported: its instances are all this module's.) A generic
+  // nothing instantiates keeps its guesses: any function of the name could be
+  // the one an instance would call.
+  private settleGuesses(): void {
+    const instantiated = new Set(this.instances.map((inst) => inst.of))
+    for (const { generic, def, use } of this.guessedCalls) {
+      if (!instantiated.has(generic) || this.madeInInstances.has(`${def}:${use}`)) continue
+      const refs = this.references.get(def)
+      const at = refs?.indexOf(use) ?? -1
+      if (refs && at >= 0) refs.splice(at, 1)
+      if (this.symbolRefs.get(use) === def) this.symbolRefs.delete(use)
+    }
+    this.guessedCalls = []
   }
 
   // Pre-register type names so they can be referenced before their full definition
@@ -1151,6 +1171,15 @@ class CheckContext {
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
     this.recordDefinition(known, decl.span.start)
+    this.replacesBuiltin(name, decl.span.start)
+  }
+
+  // A function the module declares or imports with the name of a builtin is
+  // what that name calls in the module: said once, where it is declared. A
+  // variable of the name is no function, and calls of the name still reach
+  // the builtin (reference 10).
+  private replacesBuiltin(name: string, offset: number): void {
+    if (BUILTIN_NAMES.has(name)) this.warn(offset, `'${name}' replaces the builtin ${name} in this module`)
   }
 
   // A test's function takes over the name of the module's function, for the
@@ -1424,9 +1453,15 @@ class CheckContext {
     const value = ungrouped(decl.value)
 
     // A (ptr, len) pair is a slice already: there is no literal to lay out,
-    // and so nothing for the name to point at.
+    // and so nothing for the name to point at. Single quotes are codepoints,
+    // which no slice is, whatever their number.
     const literal = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
     const literalType = declaredType ?? (value.kind === 'AnnotationExpr' ? inferredType : null)
+    const codepoints = quotedCodepoints(literal)
+    if (codepoints && literalType && wantsAddress(literalType)) {
+      this.error(literal.span.start, `cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(literalType)} — ${notAString(codepoints)}`)
+      return
+    }
     if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
       this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
       return
@@ -1485,6 +1520,9 @@ class CheckContext {
       if (expr.kind === 'LiteralExpr') {
         (expr as AST.LiteralExpr).dataId = dataId
       }
+      // A tuple laid out as a struct gives it its fields as it would
+      // anywhere: each meets its field's type, by name where it has names.
+      if (expr.kind === 'TupleExpr' && declaredType && unwrap(declaredType).kind === 'tuple') this.checkExpr(expr, declaredType)
       const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
       this.addLiteral(dataId, expr, arrType)
       this.requireConstants(decl.ident, expr)
@@ -1739,6 +1777,137 @@ class CheckContext {
     return false
   }
 
+  // What a literal laid out in memory for `expected` holds: its elements,
+  // the literals it lays out apart, its count.
+  private checkDataLiteralParts(expr: AST.Expr, expected: ResolvedType, arrType: ArrayRT, prefix: string): void {
+    // A name for a pointer or a slice is the type it names (see checkExpr).
+    const shape = unwrap(expected)
+    const pointee = shape.kind === 'pointer' ? unwrap(shape.pointee) : null
+    this.addLiteral(expr.span.start, expr, arrType)
+    if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
+      (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+    }
+    if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
+    // Propagate element type into array elements
+    if (expr.kind === 'ArrayExpr') {
+      const innerType = shape.kind === 'slice' ? shape.element
+        : pointee?.kind === 'array' ? this.peelArraySize(pointee)
+        : null
+      if (innerType) {
+        // A tuple that is a struct element is checked field by field, like
+        // any struct value: its literals take their fields' types. One that
+        // is a slice element is its (ptr, len), checked as any slice value.
+        const inner = unwrap(innerType).kind
+        // A string among the numbers of a *[N]T is its bytes only where a
+        // number is one byte, as among a slice's.
+        const counted = shape.kind === 'slice' ? countedElement(innerType)
+          : unwrap(innerType).kind === 'primitive' ? innerType : null
+        for (const elem of (expr as AST.ArrayExpr).elements) {
+          // A tuple is never laid out apart behind a pointer element: as
+          // for a field or a let, (1, 2) is not a *Pt.
+          const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
+          // (x) is x: a value in parentheses is checked as that value, and
+          // only a literal is laid out as one.
+          const literal = ungrouped(elem)
+          // A tuple is not an array, so it is no row of a table and no
+          // element of a slice of arrays: ['abc', 'xyz'] for a *[2][3]u8 is
+          // codepoints, where ["abc", "xyz"] is the bytes.
+          if (literal.kind === 'TupleExpr' && unwrap(innerType).kind === 'array') {
+            const codepoints = quotedCodepoints(literal)
+            if (codepoints) this.literalMistakes++
+            this.error(elem.span.start, codepoints
+              ? `${prefix}cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(innerType)} — ${notAString(codepoints)}`
+              : `${prefix}cannot assign ${typeToString(this.inferExpr(elem))} to ${typeToString(innerType)}`)
+            this.exprTypes.set(elem, innerType)
+            continue
+          }
+          if (this.isDataLiteralExpr(literal) && !asValue) {
+            const element = unwrap(innerType)
+            if ((element.kind === 'pointer' || element.kind === 'slice') && element.mutable) {
+              this.requireMutLiteral(literal, innerType, prefix)
+            }
+            // An array is no number: [[1, 2, 3], [4, 5, 6]] for a *[3]i32
+            // is arrays, not cells to lay out flat. (A slice's literal is
+            // joined, [[1, 2], [3]] as [1, 2, 3]; a string among bytes is
+            // its bytes, which checkStringElements sees to.)
+            const scalar = shape.kind === 'pointer' && unwrap(innerType).kind === 'primitive'
+            if (scalar && (literal.kind === 'ArrayExpr' || literal.kind === 'RepeatExpr')) {
+              this.error(elem.span.start, `${prefix}cannot assign ${typeToString(this.inferExpr(elem))} to ${typeToString(innerType)}`)
+            }
+            this.validateDataLiteralRange(elem, innerType)
+            this.checkStringElements(elem, innerType, counted, prefix)
+            this.exprTypes.set(elem, innerType)
+          } else {
+            this.checkExpr(elem, innerType)
+          }
+        }
+      }
+    }
+    // So is what a repeat repeats, as each of its copies.
+    if (expr.kind === 'RepeatExpr' && this.isDataLiteralExpr(ungrouped(expr.value))) {
+      const innerType = shape.kind === 'slice' ? shape.element
+        : pointee?.kind === 'array' ? this.peelArraySize(pointee)
+        : null
+      const element = innerType && unwrap(innerType)
+      if (innerType && element && (element.kind === 'pointer' || element.kind === 'slice') && element.mutable) {
+        this.requireMutLiteral(ungrouped(expr.value), innerType, prefix)
+      }
+    }
+    // The rows of a table are laid out apart from it, at compile time: a
+    // row or a cell known only at run time has no place to be stored. A
+    // framed or packed row is held as its pointer, which can be.
+    const row = tableRow(expected)
+    if (row && isValueArray(row.pointee as ArrayRT) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+      for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        if (!this.isConstantInitializer(row)) {
+          this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+        }
+      }
+    }
+    if (shape.kind === 'pointer' || shape.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
+    // So are the literals among the elements of a slice of slices, or of a
+    // pointer to framed arrays: codegen fills in an element that is known
+    // only at run time, but not what is inside one of them.
+    const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
+    const of = unwrap(arrType.element)
+    const apart = !tableRow(expected) && framings <= 1 &&
+      (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && unwrap(of.pointee).kind === 'array'))
+    if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+      for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+        let inner = ungrouped(element)
+        while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
+        if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
+          this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
+        }
+      }
+    }
+  }
+
+  // How many `mut` literals the one being checked is inside. A `mut` literal
+  // is writable all through, with what it lays out apart.
+  private mutLiterals = 0
+
+  // What each `a ?? b` being checked is given for.
+  private coalesceTargets = new WeakMap<AST.CoalesceExpr, ResolvedType>()
+
+  // How many errors a literal has had of its own, as written: it lacks `mut`,
+  // it is in the wrong quotes. In an instance such an error stays as it is,
+  // and is not taken for something the type arguments fail to bring.
+  private literalMistakes = 0
+
+  // A literal is constant unless it is written with `mut`: where a mutable
+  // pointer or slice is wanted, the error shows it written so. An attempt
+  // (which function of a name a call means) takes the literal as it is meant:
+  // the check of the call then names the keyword. The receiver of x.f() is
+  // shown in parentheses, as `mut "ab".f()` would be mut of the call.
+  private requireMutLiteral(expr: AST.Expr, expected: ResolvedType, prefix: string): void {
+    if (this.mutLiterals > 0 || this.attempting > 0 || writtenMut(expr)) return
+    this.literalMistakes++
+    const written = `mut ${writtenLiteral(expr, (e) => this.exprTypes.get(e))}`
+    const fix = prefix === 'receiver: ' ? `(${written})` : written
+    this.error(expr.span.start, `${prefix}a literal is constant: write \`${fix}\` for a ${typeToString(expected)}`)
+  }
+
   // Validate data literal byte values against a ranged element type
   // For string/hex literals in data contexts where the element has a max bound
   private validateDataLiteralRange(expr: AST.Expr, innerType: ResolvedType): void {
@@ -1925,9 +2094,9 @@ class CheckContext {
       const objType = this.exprTypes.get(expr.object)
         ?? (expr.object.kind === 'IdentExpr' ? typeOfSymbol(this.lookup(expr.object.name)) : undefined)
       if (objType) {
-        const arrType = objType.kind === 'pointer' && objType.pointee.kind === 'array' ? objType.pointee
-          : objType.kind === 'array' ? objType : null
-        if (arrType?.kind === 'array' && arrType.sizes) {
+        const own = unwrap(objType)
+        const arrType = pointeeArray(own) ?? (own.kind === 'array' ? own : null)
+        if (arrType?.sizes) {
           if (expr.member.name === 'len' && arrType.sizes.length === 1 && typeof arrType.sizes[0] === 'number') {
             return { kind: 'int', value: BigInt(arrType.sizes[0]) }
           }
@@ -1984,9 +2153,11 @@ class CheckContext {
       }
     } else if (decl.value) {
       // As in checkLetStmt: a constant takes its default type, down to its
-      // literals, so `global g = 2147483648` is an i64 that can be assigned.
+      // literals, so `global g = 2147483648` is an i64 that can be assigned;
+      // a literal that holds slices holds each as a slice of its length.
       const valueType = this.inferExpr(decl.value)
       type = this.concretize(valueType)
+      this.settleLiteral(decl.value, type)
       this.typeDefault(decl.value, type, valueType)
     } else {
       this.error(decl.span.start, 'global needs type annotation or initializer')
@@ -2139,12 +2310,13 @@ class CheckContext {
   private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false, written = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
-    if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      if (u.pointee.sizes === null && !allowManyPointer) {
+    const arr = pointeeArray(u)
+    if (arr) {
+      if (arr.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
       // The destination is written, as through an index: it has to be *mut.
-      if (written && !u.mutable) {
+      if (written && (u.kind !== 'pointer' || !u.mutable)) {
         this.error(expr.span.start, `${context}: cannot write through const pointer ${typeToString(type)} — use *mut for mutable access`)
       }
       // A string literal gets its bytes in the data section when it's checked
@@ -2168,24 +2340,34 @@ class CheckContext {
     const srcType = this.exprTypes.get(srcExpr)
     if (!srcType) return
 
-    const arrType = srcType.kind === 'pointer' && srcType.pointee.kind === 'array' ? srcType.pointee : null
+    const arrType = pointeeArray(srcType)
     if (!arrType?.sizes || !arrType.sizes.every(s => typeof s === 'number')) return
 
     const totalCount = totalElements(arrType.sizes)
     if (totalCount === null) return
-    const elemSize = byteSize(arrType.element)
+    // A table's elements are its row pointers (2.5): those are its bytes.
+    const row = tableRow(srcType)
+    const elemSize = byteSize(row ?? arrType.element)
     if (elemSize === null) return
     const bufferSize = totalCount * elemSize
+
+    // A length counted in rows (n * sizeof(T) for a T that is a fixed array)
+    // is past a table's bytes: the note says why, and what to write instead.
+    const advice = ptrExpr.span.start >= INSTANCE_STRIDE ? rowsAdvice(row?.pointee ?? arrType)
+      : `${op === 'memset' ? 'set' : 'copy'} the rows one by one, as the arrays they are`
+    const notes = row
+      ? [{ offset: ptrExpr.span.start, message: `a ${typeToString(srcType)} is a table of ${totalCount} pointers to rows, which lie apart (reference 2.5): ${advice}` }]
+      : undefined
 
     // Length must be a comptime constant to verify bounds
     const len = this.constantInType(lenExpr)
     if (!len || len.kind !== 'int') {
-      this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`)
+      this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`, notes)
       return
     }
 
     if (Number(len.value) > bufferSize) {
-      this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`)
+      this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`, notes)
     }
   }
 
@@ -2232,10 +2414,20 @@ class CheckContext {
     if (decl.body.kind === 'Block') {
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
       // With named results, a trailing expression with a value supplies them.
-      this.checkBody(decl.body, named)
       const tail = named ? decl.body.stmts.at(-1) : undefined
+      // A tuple literal with names among its elements fills the results of
+      // those names, as it gives a struct its fields, also where it is the
+      // value of a branch of an if or a match. Such a value is checked
+      // against the results where it stands, as an expression body is, and
+      // a branch whose value is no such literal fills them in order.
+      const results = unwrap(this.returnValueType())
+      const byName = tail?.kind === 'ExpressionStmt' && givesNamedLiteral(tail.expr) && results.kind === 'tuple'
+      const prevTail = this.namedTail
+      this.namedTail = byName ? { expr: tail.expr, results: tuple(results.fields) } : null
+      this.checkBody(decl.body, named)
+      this.namedTail = prevTail
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
-      if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
+      if (!byName && tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
         this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
       }
       // A block body with unnamed results has to return on every path: there
@@ -2337,7 +2529,14 @@ class CheckContext {
       case 'ExpressionStmt':
         if (valueUsed) this.statementExprs.delete(stmt.expr)
         else this.statementExprs.add(stmt.expr)
-        this.inferExpr(stmt.expr)
+        if (valueUsed && this.namedTail?.expr === stmt.expr) {
+          // The trailing value of a body that gives the named results by
+          // name: checked against them (see checkFuncBody).
+          const prevResults = this.resultsInOrder
+          this.resultsInOrder = this.namedTail.results
+          this.checkExpr(stmt.expr, this.namedTail.results)
+          this.resultsInOrder = prevResults
+        } else this.inferExpr(stmt.expr)
         break
       case 'DeferStmt': {
         const prev = this.deferLoopDepth
@@ -2445,9 +2644,9 @@ class CheckContext {
           // here, and 5000000000 is no count.
           if (iterableType.value >= 0n) this.coerce(stmt.iterable, iterableType, primitive('u32'))
         } else if (iterableType.kind === 'slice') {
-          elemType = tableRow(iterableType) ?? iterableType.element
+          elemType = this.rowOf(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
-          elemType = tableRow(iterableType) ?? pointee.element
+          elemType = this.rowOf(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
@@ -2458,17 +2657,23 @@ class CheckContext {
         // The value of each element is held by value in the variable
         const element = elemType
         elemType = this.heldByValue(element, stmt.binding.span.start, () => typeToString(element))
-        // Record the binding types and add them to scope. Each name is
-        // defined where it stands: in `for i, v in xs` the index comes first
-        // and the value last.
+        // The loop's variables are seen in its body only: after the loop
+        // their names are free again. Each name is defined where it stands:
+        // in `for i, v in xs` the index comes first and the value last.
         this.types.set(typeKey(stmt.binding.span.start, stmt.binding.kind), elemType)
-        for (const { name, offset, index } of forNames(stmt.binding)) {
-          const sym: Symbol = { kind: 'local', type: index ? primitive('u32') : elemType }
-          this.currentScope.symbols.set(name, sym)
-          this.types.set(typeKey(offset, 'Binding'), sym.type)
-          this.recordDefinition(name, offset, sym)
+        const scope = this.currentScope
+        const loop: Scope = { parent: scope, symbols: new Map(), bindings: true }
+        const binding = stmt.binding
+        for (const { name, offset, index } of forNames(binding).reverse()) {
+          this.bindName(loop, name, index ? primitive('u32') : elemType, offset, 'loop', binding)
         }
-        this.checkLoopBody(stmt.body)
+        this.declare(binding)
+        this.currentScope = loop
+        try {
+          this.checkLoopBody(stmt.body)
+        } finally {
+          this.currentScope = scope
+        }
         break
       }
       case 'AssertStmt':
@@ -2590,6 +2795,7 @@ class CheckContext {
       }
       // Concretize comptime types for variables
       type = this.concretize(valueType)
+      this.settleLiteral(stmt.value, type)
       // A constant initializer takes the variable's type, down to its literals.
       this.typeDefault(stmt.value, type, valueType)
     } else {
@@ -2723,6 +2929,54 @@ class CheckContext {
     }
   }
 
+  // Marks a declaration as made: checked again, it is the same one (see
+  // declared). One that a look makes is taken out when the look ends.
+  private declare(node: Declaration): void {
+    if (this.declared.has(node)) return
+    this.declared.add(node)
+    if (this.looking) this.lookDeclared.push(node)
+  }
+
+  // Where a `let` declares its variables: the scope it is in, past the
+  // variables of a `for` around it, which only the loop's body sees.
+  private letScope(): Scope {
+    let scope = this.currentScope
+    while (scope.bindings && scope.parent) scope = scope.parent
+    return scope
+  }
+
+  // Declares a variable that a `for`, an `if let` or a match arm binds, in
+  // `scope`, the scope its body is checked in. It never has the name of a
+  // variable the body would see without it: a parameter, a named result, a
+  // variable declared before it (a `let` is seen in the rest of its
+  // function), the variable of a `for`, `if let` or match arm around it, or
+  // a global, whose name a `let` cannot have either. Nor does it have the
+  // name of a `def` or a `data` block, which stand for a value wherever
+  // they are written (a def's is put in by the parser, and a deferred
+  // expression run inside the body would read the binding). A function of
+  // the module has no value, and its name is hidden in the body.
+  // `node` is the binding's: checked again, it is the same declaration (see
+  // declared). An error is reported at `at`, the definition recorded at `defAt`.
+  private bindName(
+    scope: Scope, name: string, type: ResolvedType | null, at: number, kind: BindingKind,
+    node: AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm, defAt = at,
+  ): void {
+    const outer = this.currentScope
+    this.currentScope = scope
+    const existing = this.lookup(name)
+    this.currentScope = outer
+    const taken = existing && takenName(existing)
+    if (taken && !this.declared.has(node)) {
+      const what = kind === 'loop' ? 'a loop variable' : kind === 'if let' ? 'an if let binding' : 'a match binding'
+      this.error(at, `'${name}' is already declared: ${what} cannot reuse the name of ${taken}`)
+    }
+    if (!type) return
+    const sym: Symbol = { kind: 'local', type, binding: kind }
+    scope.symbols.set(name, sym)
+    this.types.set(typeKey(defAt, 'Binding'), type)
+    this.recordDefinition(name, defAt, sym)
+  }
+
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
     switch (pattern.kind) {
       case 'IdentPattern': {
@@ -2730,9 +2984,9 @@ class CheckContext {
         if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
-        this.declared.add(pattern)
+        this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
-        this.currentScope.symbols.set(pattern.name, sym)
+        this.letScope().symbols.set(pattern.name, sym)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
         break
@@ -2743,15 +2997,8 @@ class CheckContext {
         // type, and there is nothing more to say.
         if (type === RECOVERY) {
           for (const element of pattern.elements) {
-            if (element.kind === 'positional') {
-              this.bindPattern(element.pattern, RECOVERY)
-              continue
-            }
-            const sym: Symbol = { kind: 'local', type: RECOVERY }
-            const at = namedPartAt(element)
-            this.currentScope.symbols.set(element.binding ?? element.field, sym)
-            this.types.set(typeKey(at, 'Binding'), RECOVERY)
-            this.recordDefinition(element.binding ?? element.field, at, sym)
+            if (element.kind === 'positional') this.bindPattern(element.pattern, RECOVERY)
+            else this.bindNamedPart(pattern, element, RECOVERY)
           }
           break
         }
@@ -2773,13 +3020,7 @@ class CheckContext {
               this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
               continue
             }
-            // binding is null for shorthand (x:) - use field name as variable name
-            const varName = element.binding ?? element.field
-            const sym: Symbol = { kind: 'local', type: tupleField.type }
-            this.currentScope.symbols.set(varName, sym)
-            const at = namedPartAt(element)
-            this.types.set(typeKey(at, 'Binding'), tupleField.type)
-            this.recordDefinition(varName, at, sym)
+            this.bindNamedPart(pattern, element, tupleField.type)
           } else {
             // Positional pattern: (a, b) - match by index
             const index = pattern.elements.indexOf(element)
@@ -2794,6 +3035,23 @@ class CheckContext {
         break
       }
     }
+  }
+
+  // The variable of a named part of a let's pattern, (x: a) or (x:)
+  private bindNamedPart(pattern: AST.Pattern, element: AST.PatternElement & { kind: 'named' }, type: ResolvedType): void {
+    // binding is null for shorthand (x:) - use field name as variable name
+    const varName = element.binding ?? element.field
+    // Its name is its own, as a plain let's is: taking a variable's
+    // would change that variable (a loop's counter, say).
+    if (this.lookup(varName) && !this.declared.has(element)) {
+      this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
+    }
+    this.declare(element)
+    const sym: Symbol = { kind: 'local', type }
+    this.letScope().symbols.set(varName, sym)
+    const at = namedPartAt(element)
+    this.types.set(typeKey(at, 'Binding'), type)
+    this.recordDefinition(varName, at, sym)
   }
 
   private patternIdent(pattern: AST.Pattern): string | null {
@@ -2954,16 +3212,37 @@ class CheckContext {
 
     // Check if all are pointers to fixed arrays with the same element type
     // e.g., *[8]u8, *[5]u8, *[3]u8 → unify to []u8 if sizes differ, keep *[N]u8 if same
-    if (types.every((t) => t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes?.length === 1 && typeof t.pointee.sizes[0] === 'number')) {
-      const ptrs = types as { kind: 'pointer'; pointee: ArrayRT }[]
-      const elemType = ptrs[0].pointee.element
-      if (ptrs.every((p) => typeEquals(p.pointee.element, elemType))) {
-        const sizes = ptrs.map((p) => p.pointee.sizes?.[0] as number)
+    // (a name for the array, *A for A = [3]u8, is the array).
+    const arrays = types.map((t) => pointeeArray(t))
+    if (arrays.every((a) => a?.sizes?.length === 1 && typeof a.sizes[0] === 'number')) {
+      const elemType = (arrays[0] as ArrayRT).element
+      if (arrays.every((a) => typeEquals((a as ArrayRT).element, elemType))) {
+        const sizes = arrays.map((a) => (a as ArrayRT).sizes?.[0] as number)
         if (sizes.every((s) => s === sizes[0])) {
           return this.concretize(types[0])
         }
         return slice(elemType)
       }
+    }
+
+    // Array literals of one length are an array of what their elements are
+    // together: [[three], [four]] holds two slices, as [three, four] does.
+    if (types.every((t) => t.kind === 'comptime_array')) {
+      const rows = types as ComptimeArrayRT[]
+      if (rows.every((r) => r.count === rows[0].count)) {
+        return array(this.concretize(this.unifyTypes(rows.map((r) => r.element))), [rows[0].count])
+      }
+    }
+
+    // Tuples with the same fields that hold pointers to arrays of different
+    // lengths hold them as slices: [(three, 1), (four, 2)] is a [2]([]i32, i32).
+    const tuples = types.map((t) => unwrap(t))
+    const [first] = tuples
+    if (first.kind === 'tuple' && tuples.every((t) => t.kind === 'tuple' && t.fields.length === first.fields.length
+      && t.fields.every((f, i) => f.name === first.fields[i].name))) {
+      const fields = first.fields.map((f, i) =>
+        field(f.name, this.concretize(this.unifyTypes(tuples.map((t) => (t as TupleRT).fields[i].type)))))
+      if (fields.some((f, i) => holdsSlice(f.type) && !holdsSlice(this.concretize(first.fields[i].type)))) return tuple(fields)
     }
 
     // Mixed or other types - concretize first element as fallback
@@ -3196,6 +3475,22 @@ class CheckContext {
     if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && shape.kind === 'pointer') {
       const operand = refOperand
       if (shape.mutable) markMut(operand)
+      // An array written out where a pointer to an array is wanted is laid
+      // out in the data section as it is without the `&`, and `&` of it is
+      // that pointer: `&[1, 2]` for a *[2]i32 is `[1, 2]`. The `&` asks for
+      // a cell of the literal's own, writable where the pointer is, as `mut`
+      // does: `&[1, 2]` for a *mut [2]i32 needs no `mut` of its own.
+      if ((operand.kind === 'ArrayExpr' || operand.kind === 'RepeatExpr') && pointee?.kind === 'array') {
+        if (shape.mutable) this.mutLiterals++
+        let result: ResolvedType
+        try {
+          result = this.checkExpr(expr.operand, expected)
+        } finally {
+          if (shape.mutable) this.mutLiterals--
+        }
+        this.exprTypes.set(expr, result)
+        return result
+      }
       this.checkExpr(expr.operand, shape.pointee)
       // Give the literal its own cell in the data section, as inferExpr does.
       if (operand.kind !== 'TupleExpr') {
@@ -3246,8 +3541,27 @@ class CheckContext {
       return expected
     }
 
+    // a ?? b: the fallback meets what the whole is given for (see inferCoalesce).
+    if (expr.kind === 'CoalesceExpr') this.coalesceTargets.set(expr, expected)
     const inferred = this.inferExprInner(expr, true)
     const prefix = errorContext ? `${errorContext}: ` : ''
+
+    // A single-quoted literal is codepoints, never a string, nor a constant
+    // address. A string is bytes in memory, never a character.
+    const codepoints = quotedCodepoints(expr)
+    if (codepoints && wantsAddress(expected)) {
+      this.literalMistakes++
+      this.error(expr.span.start, `${prefix}cannot assign ${spellCodepoints(codepoints, "'")} to ${typeToString(expected)} — ${notAString(codepoints)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+    const bytes = stringBytes(expr)
+    if (bytes && isInteger(expected) && (bytes.length === 1 || oneCharacter(bytes) !== null)) {
+      this.literalMistakes++
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)} — ${notACharacter(bytes)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
 
     // Helper to check if sizes include inferred marker
     const hasInferredMarker = (sizes: ArraySize[] | null) => sizes?.includes('_') ?? false
@@ -3341,11 +3655,13 @@ class CheckContext {
 
     // (ptr, len) against a slice is that slice, built from its two parts: a
     // value like any other tuple, with nothing to lay out in the data section.
+    // With names among them, its parts are the fields of the struct a slice
+    // is, (ptr: [*]T, len: u32), and each is given by name.
     if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && shape.kind === 'slice') {
       // Its parts are checked like any value that meets a type: a pointer to
       // the slice's elements, as writable as the slice, and a length that an
       // i32 holds (an i64 or a float would be the wrong wasm value).
-      const [ptr, len] = expr.elements.map(argValue)
+      const [ptr, len] = this.sliceParts(expr, expected, prefix)
       const ptrType = ptr && this.exprTypes.get(ptr)
       if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(shape.element, shape.mutable), 'slice pointer: ')
       const lenType = len && this.exprTypes.get(len)
@@ -3360,15 +3676,28 @@ class CheckContext {
       return expected
     }
 
-    // No other tuple is a slice.
+    // No other tuple is a slice. One with names is the struct a slice is,
+    // given the wrong number of fields.
     if (expr.kind === 'TupleExpr' && shape.kind === 'slice') {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      const given = expr.elements.map((element, i) => element.name ?? ['ptr', 'len'][i])
+      const missing = ['ptr', 'len'].filter((part) => !given.includes(part))
+      const count = `${typeToString(expected)} expects 2 fields, got ${expr.elements.length}`
+      const why = !namedLiteral(expr) ? `cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`
+        : expr.elements.length < 2 && missing.length > 0 ? `${count}: no value for ${spoken(missing)}` : count
+      this.error(expr.span.start, `${prefix}${why}`)
       this.exprTypes.set(expr, expected)
       return expected
     }
 
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
     const isFramedArray = shape.kind === 'array' && shape.sizes?.some(s => s === '!' || s === '?')
+    // A tuple is not an array (2.7): (1, 2, 3) is no *[3]u8 and no [!]u8.
+    // (A slice is its (ptr, len), which a tuple for one gives above.)
+    if (expr.kind === 'TupleExpr' && (pointee?.kind === 'array' || isFramedArray)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
     if (
       this.isDataLiteralExpr(expr) &&
       (pointee?.kind === 'array' ||
@@ -3381,84 +3710,25 @@ class CheckContext {
         : shape.kind === 'array'
         ? shape
         : (pointee as ArrayRT)
-      // A literal given where a mutable pointer or slice is wanted is `mut`
-      // without the keyword: a copy of its own, shared with no other data.
+      // A literal is constant unless it is written with `mut`, which makes it
+      // a copy of its own, shared with no other data.
       const targetMut = (shape.kind === 'pointer' && shape.mutable) ||
         (shape.kind === 'slice' && shape.mutable)
+      const written = writtenMut(expr)
       if (targetMut) markMut(expr)
-      this.addLiteral(expr.span.start, expr, arrType)
-      if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
-        (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
+      // Under `mut`, what the literal lays out apart is writable too: the rows
+      // of a table, the elements of a slice of slices, a slice field. Where
+      // the literal itself lacks it, the one error for it says so for all.
+      const covering = targetMut || written
+      const reported = this.errors.length
+      if (covering) this.mutLiterals++
+      try {
+        this.checkDataLiteralParts(expr, expected, arrType, prefix)
+      } finally {
+        if (covering) this.mutLiterals--
       }
-      if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
-      // Propagate element type into array elements
-      if (expr.kind === 'ArrayExpr') {
-        const innerType = shape.kind === 'slice' ? shape.element
-          : pointee?.kind === 'array' ? this.peelArraySize(pointee)
-          : null
-        if (innerType) {
-          // A tuple that is a struct element is checked field by field, like
-          // any struct value: its literals take their fields' types. One that
-          // is a slice element is its (ptr, len), checked as any slice value.
-          const inner = unwrap(innerType).kind
-          // A string among the numbers of a *[N]T is its bytes only where a
-          // number is one byte, as among a slice's.
-          const counted = shape.kind === 'slice' ? countedElement(innerType)
-            : unwrap(innerType).kind === 'primitive' ? innerType : null
-          for (const elem of (expr as AST.ArrayExpr).elements) {
-            // A tuple is never laid out apart behind a pointer element: as
-            // for a field or a let, (1, 2) is not a *Pt.
-            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || inner === 'pointer' || (inner === 'slice' && !groupedExpr(elem)))
-            // (x) is x: a value in parentheses is checked as that value, and
-            // only a literal is laid out as one.
-            const literal = ungrouped(elem)
-            if (this.isDataLiteralExpr(literal) && !asValue) {
-              // An array is no number: [[1, 2, 3], [4, 5, 6]] for a *[3]i32
-              // is arrays, not cells to lay out flat. (A slice's literal is
-              // joined, [[1, 2], [3]] as [1, 2, 3]; a string among bytes is
-              // its bytes, which checkStringElements sees to.)
-              const scalar = shape.kind === 'pointer' && unwrap(innerType).kind === 'primitive'
-              if (scalar && (literal.kind === 'ArrayExpr' || literal.kind === 'RepeatExpr')) {
-                this.error(elem.span.start, `${prefix}cannot assign ${typeToString(this.inferExpr(elem))} to ${typeToString(innerType)}`)
-              }
-              this.validateDataLiteralRange(elem, innerType)
-              this.checkStringElements(elem, innerType, counted, prefix)
-              this.exprTypes.set(elem, innerType)
-            } else {
-              this.checkExpr(elem, innerType)
-            }
-          }
-        }
-      }
-      // The rows of a table are laid out apart from it, at compile time: a
-      // row or a cell known only at run time has no place to be stored. A
-      // framed or packed row is held as its pointer, which can be.
-      const row = tableRow(expected)
-      if (row && isValueArray(row.pointee as ArrayRT) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
-        for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-          if (!this.isConstantInitializer(row)) {
-            this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
-          }
-        }
-      }
-      if (shape.kind === 'pointer' || shape.kind === 'slice') this.checkLiteralCount(expr, expected, prefix)
-      // So are the literals among the elements of a slice of slices, or of a
-      // pointer to framed arrays: codegen fills in an element that is known
-      // only at run time, but not what is inside one of them.
-      const framings = arrType.sizes?.filter(s => s === '!' || s === '?').length ?? 0
-      const of = unwrap(arrType.element)
-      const apart = !tableRow(expected) && framings <= 1 &&
-        (of.kind === 'slice' || of.kind === 'array' || (of.kind === 'pointer' && unwrap(of.pointee).kind === 'array'))
-      if (apart && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
-        for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
-          let inner = ungrouped(element)
-          while (inner.kind === 'AnnotationExpr') inner = ungrouped(inner.expr)
-          if ((inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') && this.literalLeaves(inner).some(leaf => !this.evalComptimeExpr(leaf, true))) {
-            this.error(element.span.start, `an element of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
-          }
-        }
-      }
-      // Record the expected type so codegen knows to emit ptr+len for slices
+      // Once nothing else is wrong with it.
+      if (targetMut && !written && this.errors.length === reported) this.requireMutLiteral(expr, expected, prefix)
       this.exprTypes.set(expr, expected)
       return expected
     }
@@ -3480,8 +3750,18 @@ class CheckContext {
       }
     }
 
-    // Propagate expected type into tuple elements for bidirectional inference
+    // Propagate expected type into tuple elements for bidirectional inference.
+    // A tuple literal with names among its elements gives each field by
+    // name, as a constructor's arguments do: (y: 1, x: 2) as an (x, y) has
+    // an x of 2. One without names gives them by position.
     const unwrappedExpected = unwrap(expected)
+    if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' && expr.kind === 'TupleExpr' &&
+        expr.elements.some((element) => element.name !== null)) {
+      const given = this.checkFieldArgs(expr.elements, expr.span.start, unwrappedExpected, typeToString(expected), prefix, true)
+      this.recordFieldOrder(expr, given)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
     if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
@@ -3562,8 +3842,9 @@ class CheckContext {
       if (among) this.checkExpr(value, type)
       return
     }
+    const pointee = pointeeArray(t)
     const inner = t.kind === 'slice' ? t.element
-      : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
+      : pointee ? this.peelArraySize(pointee)
       : t.kind === 'array' ? this.peelArraySize(t)
       : type
     const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
@@ -3674,6 +3955,19 @@ class CheckContext {
 
   // typedByContext: the expression is about to meet an expected type.
   inferExprInner(expr: AST.Expr, typedByContext = false): ResolvedType {
+    // What a `mut` literal holds is writable with it (see requireMutLiteral).
+    if (expr.kind !== 'LiteralExpr' && writtenMut(expr)) {
+      this.mutLiterals++
+      try {
+        return this.inferExprOf(expr, typedByContext)
+      } finally {
+        this.mutLiterals--
+      }
+    }
+    return this.inferExprOf(expr, typedByContext)
+  }
+
+  private inferExprOf(expr: AST.Expr, typedByContext: boolean): ResolvedType {
     // Inferring afresh: whatever context marked it for widening before is gone.
     this.coercions.delete(expr)
     switch (expr.kind) {
@@ -3867,7 +4161,7 @@ class CheckContext {
   // attempt, which keeps nothing of a failure but that it was one. Only a
   // look is cut short: what the check records, it records.
   inferCall(expr: AST.CallExpr): ResolvedType {
-    if (this.trial.active) {
+    if (this.looking) {
       const settled = this.settled.get(expr)
       if (settled) return settled
       const failed = this.failed.get(expr) ?? (this.attempting && this.refused.has(expr) ? RECOVERY : undefined)
@@ -4010,6 +4304,7 @@ class CheckContext {
       // This allows log("message") to propagate *[!u8] to the string literal
       const listed = this.errors.length
       const reported = this.errorsReported
+      const mistakes = this.literalMistakes
       let argIndex = 0
       for (const arg of expr.args) {
         if (arg.value && argIndex < calleeType.params.length) {
@@ -4018,7 +4313,7 @@ class CheckContext {
           argIndex++
         }
       }
-      if (required !== null && this.errorsReported > reported && this.notAccepted(expr, required, listed)) return RECOVERY
+      if (required !== null && this.errorsReported > reported && this.literalMistakes === mistakes && this.notAccepted(expr, required, listed)) return RECOVERY
 
       // Return type of function
       const result = calleeType.returns.length === 0 ? VOID
@@ -4038,12 +4333,10 @@ class CheckContext {
     const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
     const struct = unwrap(calleeType)
     if (namesType && struct.kind === 'tuple') {
-      const given = this.checkConstructorArgs(expr, struct, (expr.callee as AST.IdentExpr).name)
-      // With names among the arguments, it compiles as the fields' values
-      // in the order of the type, as a generic type's constructor does.
-      if (expr.args.some((a) => a.name !== null) && given.every((args) => args.length === 1)) {
-        this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-      }
+      const given = this.checkFieldArgs(expr.args, expr.span.start, struct, (expr.callee as AST.IdentExpr).name)
+      // With names among the arguments, it compiles as the tuple of its
+      // arguments, each going to its field, as a generic type's does.
+      if (expr.args.some((a) => a.name !== null)) this.constructAsTuple(expr, given)
       return calleeType
     }
 
@@ -4067,18 +4360,51 @@ class CheckContext {
     return primitive('i32')
   }
 
-  // The arguments of a constructor, each against the field it is for: an
-  // argument with a name is for the field of that name, and one without is
-  // for the field at its place. Gives the arguments each field was given, in
-  // the order of the fields.
-  private checkConstructorArgs(expr: AST.CallExpr, struct: TupleRT, shown: string): AST.Arg[][] {
+  // The values of a (ptr, len) literal that is a slice, pointer first: by
+  // place, or by name where it has names (len: n, ptr: p). Null for a part
+  // that is not there; a name a slice has no part of is reported, as is a
+  // part given twice.
+  private sliceParts(expr: AST.TupleExpr, type: ResolvedType, prefix: string): (AST.Expr | null)[] {
+    const values = expr.elements.map(argValue)
+    this.fieldOrder.delete(expr)
+    if (!namedLiteral(expr)) return values
+    const names = ['ptr', 'len']
+    const order = expr.elements.map((element, i) => (element.name === null ? i : names.indexOf(element.name)))
+    const unknown = order.findIndex((part) => part < 0)
+    if (unknown >= 0) {
+      this.error(expr.elements[unknown].span.start, `${prefix}field '${expr.elements[unknown].name}' not found in ${typeToString(type)}: a slice's fields are ptr and len`)
+      return [null, null]
+    }
+    if (order[0] === order[1]) {
+      this.error(expr.elements[1].span.start, `${prefix}${typeToString(type)}: field '${names[order[1]]}' is given twice`)
+      return [null, null]
+    }
+    if (order[0] === 1) {
+      this.fieldOrder.set(expr, [1, 0])
+      return [values[1], values[0]]
+    }
+    return values
+  }
+
+  // The arguments of a constructor, or the elements of a tuple literal with
+  // names among them, each against the field it is for: an argument with a
+  // name is for the field of that name, and one without is for the field at
+  // its place. Gives the arguments each field was given, in the order of the
+  // fields. `at` is where a count that is not the struct's is reported. A
+  // constructor's arguments say which field they are checked for; a
+  // literal's elements are checked as they are where the literal is.
+  private checkFieldArgs(args: AST.Arg[], at: number, struct: TupleRT, shown: string, prefix = '', literal = false): AST.Arg[][] {
     const before = this.errorsReported
-    const args = expr.args
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
+      // Too few: the fields that no value is for are named.
+      const meant = args.map((arg, i) => (arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]))
+      const missing = struct.fields.filter((f) => !meant.includes(f)).map((f) => f.name)
+      const unnamed = missing.some((name) => name === null)
+      const hint = args.length < struct.fields.length && missing.length > 0 && !unnamed ? `: no value for ${spoken(missing as string[])}` : ''
       this.error(
-        expr.span.start,
-        `${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}`,
+        at,
+        `${prefix}${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}${hint}`,
       )
     }
     args.forEach((arg, i) => {
@@ -4088,9 +4414,16 @@ class CheckContext {
       const field = arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]
       if (field) {
         given.set(field, [...(given.get(field) ?? []), arg])
-        this.checkExpr(value, field.type, `field ${field.name ?? i}`)
+        this.checkExpr(value, field.type, literal ? undefined : `field ${field.name ?? i}`)
       } else {
-        if (arg.name) this.error(arg.span.start, `field '${arg.name}' not found in ${shown}`)
+        // A tuple whose fields have no names takes its values by position.
+        // The fields it has are named, or a tuple whose fields have no names
+        // takes its values by position.
+        const names = struct.fields.map((f) => f.name)
+        const hint = names.every((name) => name === null) ? ', whose fields have no names: give the values by position'
+          : names.length === 1 ? `, whose only field is ${names[0]}`
+          : names.every((name) => name !== null) ? `, whose fields are ${spoken(names as string[])}` : ''
+        if (arg.name) this.error(arg.span.start, `${prefix}field '${arg.name}' not found in ${shown}${hint}`)
         this.inferExpr(value)
       }
     })
@@ -4099,15 +4432,34 @@ class CheckContext {
     // field has two of them, Pt(1, q: 2), and another none.
     const twice = fields.findIndex((args) => args.length > 1)
     if (twice >= 0 && this.errorsReported === before) {
-      this.error(fields[twice][1].span.start, `${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
+      this.error(fields[twice][1].span.start, `${prefix}${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
     }
     return fields
   }
 
+  // A constructor compiles as the tuple of its arguments as written, and a
+  // tuple literal is that tuple already: where each field is given once,
+  // the element that gives it is recorded when it is not the one at its
+  // place (fieldOrder). The elements are computed in the order they are
+  // written, and each value goes to its field.
+  private recordFieldOrder(tuple: AST.TupleExpr, given: AST.Arg[][]): void {
+    const order = given.every((args) => args.length === 1) ? given.map(([arg]) => tuple.elements.indexOf(arg)) : null
+    // A literal checked again, against another type, is what the last check says.
+    if (order && order.some((element, field) => element !== field)) this.fieldOrder.set(tuple, order)
+    else this.fieldOrder.delete(tuple)
+  }
+
+  private constructAsTuple(expr: AST.CallExpr, given: AST.Arg[][]): void {
+    if (!given.every((args) => args.length === 1)) return
+    const tuple: AST.TupleExpr = { kind: 'TupleExpr', elements: expr.args, span: expr.span }
+    this.calls.set(expr, tuple)
+    this.recordFieldOrder(tuple, given)
+  }
+
   // Vec(u32)(p, 0, cap), or T(a, b) in an instance: a value of the type the
   // callee is, built from its fields by position or by name. It compiles as
-  // the fields' values in the order of the type, which is what the same
-  // struct written out as a literal compiles as.
+  // the tuple of its arguments, each going to its field, which is what the
+  // same struct written out as a literal compiles as.
   private inferConstructor(expr: AST.CallExpr, built: AST.Type): ResolvedType {
     const fail = (message?: string): ResolvedType => {
       if (message) this.error(expr.span.start, message)
@@ -4125,10 +4477,7 @@ class CheckContext {
     if (struct.kind !== 'tuple') {
       return fail(`${typeToString(type)} is not a struct or tuple type: it has no constructor; to convert a number write x as T`)
     }
-    const given = this.checkConstructorArgs(expr, struct, typeToString(type))
-    if (given.every((args) => args.length === 1)) {
-      this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-    }
+    this.constructAsTuple(expr, this.checkFieldArgs(expr.args, expr.span.start, struct, typeToString(type)))
     return type
   }
 
@@ -4203,9 +4552,10 @@ class CheckContext {
   }
 
   // Which of the functions that share a name a call means: the one whose
-  // parameter types are the argument types, or else the only one the
-  // arguments can be passed to. Null, with the error reported, when there is
-  // none or more than one.
+  // parameter types are the types of the arguments that have one, where the
+  // others (untyped literals) fit, or else the only one the arguments can be
+  // passed to. Null, with the error reported, when there is none or more
+  // than one.
   private pickOverload(expr: AST.CallExpr, name: string, members: readonly string[]): string | null {
     const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
     const fail = (message?: string): null => {
@@ -4236,8 +4586,39 @@ class CheckContext {
     // parameter asks for that very range.
     const key = (type: ResolvedType) => (hasOwnType(type) ? canonicalKey(type) : null)
     const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
-    let found = typed ? candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i]))) : []
-    if (typed && found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
+    // An argument without a type of its own (a literal, or one that is
+    // nothing by itself) is exact wherever it fits: gt(x, 10) with x a u32
+    // is gt(u32, u32), not gt(f64, f64), which would convert x. So is a
+    // tuple of typed values and literals where its typed values are exact:
+    // f((x, 1)) is f((u32, u32)). Functions that are exact alike are as
+    // ambiguous as before.
+    const own = alone.map((type) => (type && hasOwnType(type) ? type : null))
+    // A tuple literal with names gives a struct's fields by name, in any
+    // order (2.8): (y: 2, x: n) is a (x: u8, y: u8) as (x: n, y: 2) is.
+    const laid = (param: ResolvedType, i: number, type: ResolvedType) => (namedLiteral(args[i]) ? byFieldNames(param, type) : type)
+    const exactParts = (param: ResolvedType, arg: ResolvedType | null, as: (type: ResolvedType) => ResolvedType) => {
+      if (arg === null) return true
+      const filled = literalsAs(param, arg)
+      return !hasOwnType(filled) || same(param, as(filled))
+    }
+    const exact = (as: (type: ResolvedType) => ResolvedType, lay = laid) =>
+      candidates.filter(
+        (c) =>
+          c.params.every((p, i) => own[i] === null || same(p.type, as(lay(p.type, i, own[i] as ResolvedType)))) &&
+          c.params.every((p, i) => own[i] !== null ||
+            (this.fits(args[i], p.type) && exactParts(p.type, alone[i] && lay(p.type, i, alone[i]), as))),
+      )
+    let found = exact((type) => type)
+    if (found.length !== 1) found = exact(withoutRanges)
+    // A tuple literal gives a struct's fields by name or by place wherever it
+    // stands, inside another literal and behind & too, and with no names at
+    // all: s((n: k, at: (y: 1, x: 2))), k(&(y: 1, x: n)) and g((n, 1)) are
+    // exact for the function whose fields their typed parts are. Asked only
+    // where the steps before found no one function, so no call they settle
+    // changes.
+    const deep = (param: ResolvedType, i: number, type: ResolvedType) => laidLiteral(args[i], param, type)
+    if (found.length !== 1) found = exact((type) => type, deep)
+    if (found.length !== 1) found = exact(withoutRanges, deep)
     if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
     if (found.length !== 1) {
       // An argument that is nothing by itself, and that no one function gives
@@ -4459,8 +4840,17 @@ class CheckContext {
         }
         const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest', false, true))
         // memzero has no length operand: the destination's type gives it.
-        if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
+        const zeroed = pointeeArray(dest)
+        if (zeroed && zeroed.sizes !== null && byteSize(zeroed) === null) {
           this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
+        } else if (zeroed && tableRow(dest)) {
+          // A table holds pointers to its rows, not their cells (2.5): zeroing
+          // it would point every row at address 0.
+          const value = ungrouped(args[0].value)
+          const table = value.kind === 'IdentExpr' ? value.name : 't'
+          const at = args[0].value.span.start
+          const advice = at >= INSTANCE_STRIDE ? [{ offset: at, message: rowsAdvice(tableRow(dest)?.pointee ?? zeroed) }] : undefined
+          this.error(at, `memzero dest: ${typeToString(dest)} is a table, its elements pointers to rows (reference 2.5): zero each row, ${zeroRows(dest, table)}`, advice)
         }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
@@ -4702,7 +5092,7 @@ class CheckContext {
     const fallback = comparison ? primitive('bool') : stripMax(wider ? rightType : leftType)
 
     // A string is bytes in memory, never a character: next to a number its
-    // value would be its address. Quotes of either kind make a string.
+    // value would be its address. A character is written in single quotes.
     const string = (operand: AST.Expr): AST.LiteralExpr | null => {
       let e = ungrouped(operand)
       while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
@@ -4714,10 +5104,18 @@ class CheckContext {
       : null
     if (lone?.value.kind === 'string') {
       const shown = (operand: AST.Expr, type: ResolvedType) => (string(operand) === lone ? 'a string' : typeToString(type))
-      const bytes = lone.value.bytes
-      const hint = bytes.length === 1 ? `; write its byte as a number (${bytes[0]})` : ''
-      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — a string is bytes in memory, not a character${hint}`)
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notACharacter(lone.value.bytes)}`)
       return comparison ? primitive('bool') : this.concretize(stripMax(lone === string(expr.left) ? rightType : leftType))
+    }
+    // ...and a single-quoted literal is codepoints, never a string: compared
+    // with an address it would be taken for one.
+    const quoted = comparison && isAddress(right) ? quotedCodepoints(expr.left)
+      : comparison && isAddress(left) ? quotedCodepoints(expr.right)
+      : null
+    if (quoted) {
+      const shown = (operand: AST.Expr, type: ResolvedType) => (quotedCodepoints(operand) ? spellCodepoints(quoted, "'") : typeToString(type))
+      this.error(expr.span.start, `'${op}' cannot be applied to ${shown(expr.left, leftType)} and ${shown(expr.right, rightType)} — ${notAString(quoted)}`)
+      return primitive('bool')
     }
 
     if (!isScalar(left) || !isScalar(right)) {
@@ -4902,7 +5300,7 @@ class CheckContext {
     const leftOk = check(expr.left, left)
     const rightOk = check(expr.right, right)
     if (!leftOk || !rightOk) {
-      this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
+      this.error(expr.span.start, noOperator(expr.op, leftType, rightType), this.rowNote(expr.span.start, leftType, rightType))
     }
   }
 
@@ -4930,10 +5328,16 @@ class CheckContext {
     this.requireBool(expr, this.inferExpr(expr), 'condition')
   }
 
-  // `elif let x = e` tests an optional, not a bool.
+  // `elif let x = e` tests an optional, not a bool. Its names are the
+  // bindings of an `if let`, and no more free to take.
   private checkElifCondition(elif: AST.ElifBranch): void {
-    if (elif.pattern) this.inferExpr(elif.condition)
-    else this.checkCondition(elif.condition)
+    if (elif.pattern) {
+      this.inferExpr(elif.condition)
+      for (const name of patternNames(elif.pattern)) this.bindName(this.currentScope, name, null, elif.span.start, 'if let', elif)
+      this.declare(elif)
+    } else {
+      this.checkCondition(elif.condition)
+    }
   }
 
   // Report a condition or logical operand that isn't a bool: there is no
@@ -4961,7 +5365,8 @@ class CheckContext {
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${reordered(from, to, typeToString(expected))}`,
+        this.rowNote(expr.span.start, actual, expected))
       return
     }
     const grouped = groupedExpr(expr)
@@ -4992,10 +5397,14 @@ class CheckContext {
     } else if ((expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') && from.kind === 'comptime_array' && to.kind === 'array') {
       // So is an array literal held in registers. (One that goes to the data
       // section has had its elements checked against the element type.)
+      // A tuple literal among them meets a struct element as it meets any
+      // struct: field by field, by name where it has names.
       const elementType = this.peelArraySize(to)
+      const structs = unwrap(elementType).kind === 'tuple'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (type) this.coerce(element, type, elementType, prefix)
+        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
@@ -5020,6 +5429,19 @@ class CheckContext {
     }
     const to = unwrap(type)
     const from = unwrap(actual)
+    // An array of tuples with no type of its own: each element meets the
+    // element type as it would any struct, a tuple written out field by
+    // field, by name where it has names (see settleTuples).
+    if (expr.kind === 'ArrayExpr' && to.kind === 'array' && from.kind === 'comptime_array') {
+      const element = this.peelArraySize(to)
+      if (unwrap(element).kind !== 'tuple') return
+      for (const value of expr.elements) {
+        const own = this.exprTypes.get(value)
+        if (ungrouped(value).kind === 'TupleExpr') this.checkExpr(value, element)
+        else if (own) this.coerce(value, own, element)
+      }
+      return
+    }
     if (expr.kind !== 'TupleExpr' || to.kind !== 'tuple' || from.kind !== 'tuple' || to.fields.length !== expr.elements.length) return
     expr.elements.forEach((element, i) => {
       const value = argValue(element)
@@ -5328,7 +5750,7 @@ class CheckContext {
             return primitive('u32')
           }
         }
-        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
+        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}${this.subtractionHint(expr.object, expr.member.name, objType)}`)
         return primitive('i32')
       }
 
@@ -5397,6 +5819,35 @@ class CheckContext {
         return punType
       }
     }
+  }
+
+  // A member's name is a whole identifier, hyphens included, so `p.u32-1`
+  // asks for a member called u32-1. Where a part of the name before a hyphen
+  // is a member (a field, .len, or a type pun), a subtraction was likely
+  // meant, and the hint shows it written with spaces.
+  private subtractionHint(object: AST.Expr, name: string, type: ResolvedType): string {
+    for (let at = name.lastIndexOf('-'); at > 0; at = name.lastIndexOf('-', at - 1)) {
+      const head = name.slice(0, at)
+      const rest = name.slice(at + 1)
+      if (rest === '' || !(PRIMITIVE_NAMES.has(head) || hasMember(type, head))) continue
+      const text = this.textOf(object)
+      if (text === null) return `: for a subtraction write the - with spaces, as in \`${head} - ${rest}\``
+      return `: for a subtraction write \`${text}.${head} - ${rest}\``
+    }
+    return ''
+  }
+
+  // The source of an expression as written, where the checker has the source
+  // (an instance's offsets are the generic's plus a multiple of the stride);
+  // otherwise what the syntax tree says of the usual forms (names, members,
+  // indexing, calls, parentheses), or null.
+  private textOf(expr: AST.Expr): string | null {
+    if (this.source) {
+      const start = expr.span.start % INSTANCE_STRIDE
+      const end = expr.span.end - (expr.span.start - start)
+      return this.source.slice(start, end)
+    }
+    return exprText(expr)
   }
 
   // items[start..end] is a []T over the same memory. On a *[N]T, constant
@@ -5530,6 +5981,80 @@ class CheckContext {
     }
   }
 
+  // A value with no type written takes the type of what it is made of
+  // (concretize). A literal that holds slices, [three, four] for pointers to
+  // arrays of different lengths, holds each as a slice of its length (9.5),
+  // and the rows of one written out are each that type: the literals it is
+  // made of, written out or as the branches of an if or a match, are
+  // converted to it, element by element.
+  private settleLiteral(expr: AST.Expr, type: ResolvedType): void {
+    const value = ungrouped(expr)
+    if (value.kind === 'ArrayExpr' || value.kind === 'RepeatExpr' || value.kind === 'TupleExpr') {
+      const own = this.exprTypes.get(value)
+      if (own && settles(value, type) && this.rowsAlike(value, type)) this.coerce(value, own, type)
+      return
+    }
+    const bodies = value.kind === 'IfExpr' ? [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
+      : value.kind === 'MatchExpr' ? value.arms.map((arm) => arm.body)
+      : []
+    for (const body of bodies) {
+      const tail = body ? bodyValue(body) : null
+      if (tail) this.settleLiteral(tail, type)
+    }
+  }
+
+  // Rows written out with no type are of the first one's type: one of
+  // another length is no row of it, and has no type with it in registers.
+  // Data lays them out apart, as slices of their own lengths.
+  private rowsAlike(value: AST.Expr, type: ResolvedType): boolean {
+    const t = unwrap(type)
+    if (value.kind !== 'ArrayExpr' || t.kind !== 'array') return true
+    const row = unwrap(this.peelArraySize(t))
+    if (row.kind !== 'array' || row.sizes?.length !== 1 || typeof row.sizes[0] !== 'number') return true
+    for (const element of value.elements) {
+      const own = this.exprTypes.get(element)
+      if (own?.kind !== 'comptime_array' || own.count === row.sizes[0]) continue
+      const cell = unwrap(row.element)
+      const data = cell.kind === 'primitive' ? `, data rows: *[${value.elements.length}][]${typeToString(cell)} = ...` : ' with data'
+      this.error(element.span.start, `rows of different lengths: this one has ${own.count} elements and the first ${row.sizes[0]}; give the rows one length, or lay them out as slices${data}`)
+      return false
+    }
+    return true
+  }
+
+  // The row pointer an element of a table is (tableRow), remembered with the
+  // table it is an element of, for the note an error about it gets.
+  private rowsOf = new WeakMap<ResolvedType, ResolvedType>()
+
+  private rowOf(table: ResolvedType): PointerRT | null {
+    const row = tableRow(table)
+    if (row) this.rowsOf.set(row, table)
+    return row
+  }
+
+  // In an instance, a type parameter that is a fixed array makes [*]T, []T
+  // and *[N]T tables (2.5): an element is a pointer to its row, where the
+  // generic's code wants a T. The note says so and how to have rows instead.
+  private rowNote(offset: number, actual: ResolvedType, expected: ResolvedType): NonNullable<TypeError['notes']> | undefined {
+    if (offset < INSTANCE_STRIDE) return undefined
+    const tableOf = (row: ResolvedType, value: ResolvedType) => {
+      const table = this.rowsOf.get(row)
+      const pointee = pointeeArray(row)
+      return table && pointee && typeEquals(pointee, value) ? { table, pointee } : null
+    }
+    // &s[i] of a table is where the row pointer is, a **[M]T where a *T
+    // is wanted (4.7).
+    const addressOf = (address: ResolvedType, wanted: ResolvedType) => {
+      const a = unwrap(address)
+      const w = unwrap(wanted)
+      return a.kind === 'pointer' && w.kind === 'pointer' ? tableOf(a.pointee, unwrap(w.pointee)) : null
+    }
+    const found = tableOf(actual, expected) ?? tableOf(expected, actual) ?? addressOf(actual, expected) ?? addressOf(expected, actual)
+    if (!found) return undefined
+    const message = `in a ${typeToString(found.table)} each element is a pointer to its row (reference 2.5): ${rowsAdvice(found.pointee)}`
+    return [{ offset, message }]
+  }
+
   // The type of &items[i] for a slice or *[N]T: *T when the index is known to
   // be in range, otherwise ?*T (none when out of range, checked at runtime).
   // Returns null for other containers, which keep the usual rules.
@@ -5538,20 +6063,20 @@ class CheckContext {
     let elem: ResolvedType
     let mutable: boolean
     let size: number | null
+    const arr = pointeeArray(objType)
     if (objType.kind === 'slice') {
       elem = objType.element
       mutable = !!objType.mutable
       size = null
-    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' &&
-      objType.pointee.sizes?.length === 1 && typeof objType.pointee.sizes[0] === 'number') {
-      elem = objType.pointee.element
+    } else if (objType.kind === 'pointer' && arr?.sizes?.length === 1 && typeof arr.sizes[0] === 'number') {
+      elem = arr.element
       mutable = !!objType.mutable
-      size = objType.pointee.sizes[0]
-    } else if (objType.kind === 'pointer' && objType.pointee.kind === 'array' && objType.pointee.sizes === null) {
+      size = arr.sizes[0]
+    } else if (objType.kind === 'pointer' && arr && arr.sizes === null) {
       // A many-pointer has no length: its element's address is never
       // checked, as reading the element is not (4.7). In a table ([*][M]T)
       // the element is the row pointer, so &p[i] is a **[M]T.
-      const element = tableRow(objType) ?? objType.pointee.element
+      const element = this.rowOf(objType) ?? arr.element
       this.inferIndexValue(expr.index)
       this.exprTypes.set(expr, element)
       return pointer(element, false, !!objType.mutable)
@@ -5559,7 +6084,7 @@ class CheckContext {
       return null
     }
     // The element of a table is its row pointer: &m[i] is where that is.
-    elem = tableRow(objType) ?? elem
+    elem = this.rowOf(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
@@ -5649,13 +6174,14 @@ class CheckContext {
     // An element of a table is its row pointer. A row has no optional type:
     // like a value element, an index not known to be in range is resolved
     // where it is taken, with if let or ??.
-    const row = tableRow(objType)
+    const row = this.rowOf(indexed)
     const noOptional = (elem: ResolvedType) => row ? 'rows are not optional' : `no optional type for ${typeToString(elem)}`
     // An index that isn't known to be in range: the element is an optional
     // when it can be one, checked when it is read; otherwise if let or ??
     // has to resolve the index where it is taken.
     const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
       if (!row && (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice')) {
+        if (this.looking && !this.unproven.has(expr)) this.lookUnproven.push(expr)
         this.unproven.add(expr)
         return optionalOf(elem)
       }
@@ -5798,8 +6324,18 @@ class CheckContext {
       elemType = leftType
     }
 
-    // Check fallback type is compatible (checkExpr handles coercion)
-    this.checkExpr(expr.fallback, elemType)
+    // Check fallback type is compatible (checkExpr handles coercion). Given
+    // for the const pointer or slice the left side's value is the mutable one
+    // of, the fallback is given for that too: in println(rest ?? "") nothing
+    // is written through it, so "" needs no mut.
+    const target = this.coalesceTargets.get(expr)
+    this.coalesceTargets.delete(expr)
+    if (target && constOf(elemType, target)) this.checkExpr(expr.fallback, target)
+    // A look (the type of an argument that decides a type parameter) knows
+    // nothing yet of what the whole is given for: what is wrong with the
+    // fallback is for the check of it that follows to say.
+    else if (!target && this.looking > 0) this.attempt(expr.fallback, () => this.checkExpr(expr.fallback, elemType))
+    else this.checkExpr(expr.fallback, elemType)
 
     // Record element type for codegen
     this.types.set(typeKey(expr.span.start, 'CoalesceBinding'), elemType)
@@ -5832,8 +6368,10 @@ class CheckContext {
     // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
     const numbers = elemTypes.every(t => isScalar(unwrap(t)))
-    const elementType = numbers && !typedByContext
-      ? this.unifyElements(expr.elements, elemTypes)
+    const tuples = elemTypes.every(t => unwrap(t).kind === 'tuple')
+    const elementType = typedByContext ? this.unifyTypes(elemTypes)
+      : numbers ? this.unifyElements(expr.elements, elemTypes)
+      : tuples ? this.settleTuples(expr.elements, elemTypes)
       : this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
@@ -5856,6 +6394,24 @@ class CheckContext {
       this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
       return type
     }
+    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    return type
+  }
+
+  // The element type of an array literal of tuples with no declared type.
+  // Tuples that agree field by field, as the branches of an if do, are of
+  // the type they agree on, each converted where it stands: (1, 2) and
+  // (3, 5000000000) are an (i32, i64). Ones that don't agree are of the
+  // first one's type, which each tuple written out meets as it would any
+  // struct where the array gets its type (see typeDefault). A field that is
+  // a string, or a pointer to a fixed array, of other lengths in each tuple
+  // is a slice of them, as such values are as the elements of an array by
+  // themselves: ["a", "bc"] is a [2][]u8, and [("a", 1), ("bc", 2)] a
+  // [2]([]u8, i32).
+  private settleTuples(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    const settled = arraysOfOtherLengthsAsSlices(types)
+    const { type, odd } = this.commonType(settled)
+    if (odd) return this.unifyTypes(settled)
     for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
     return type
   }
@@ -5942,7 +6498,11 @@ class CheckContext {
     if (odd) {
       if (!valueUsed) return VOID
       const at = bodyValue(odd.body) ?? odd.body
-      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)} (cast one explicitly)`)
+      // A struct or tuple can't be cast: the fix is to say what it is.
+      const fix = unwrap(odd.type).kind === 'tuple' && unwrap(type).kind === 'tuple'
+        ? ': give the value its type, as in let v: T = ..., and each branch is checked against T'
+        : ' (cast one explicitly)'
+      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)}${fix}`)
       return type
     }
     for (const b of valued) {
@@ -6022,17 +6582,20 @@ class CheckContext {
     const unwrapped = elemType
     elemType = this.heldByValue(unwrapped, pattern.span.start, () => typeToString(unwrapped))
 
-    // Bind the pattern variable in a new scope for the then-branch
+    // The binding is seen in the then-branch only, which is a scope of its
+    // own: a `let` there is seen in that branch only too.
     const prevScope = this.currentScope
-    this.currentScope = { parent: prevScope, symbols: new Map() }
-    const sym: Symbol = { kind: 'local', type: elemType }
-    this.currentScope.symbols.set(pattern.name, sym)
-    this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
+    const then: Scope = { parent: prevScope, symbols: new Map() }
     // The binding is defined at its name, not at the value it is taken from
-    this.types.set(typeKey(pattern.span.start, 'Binding'), elemType)
-    this.recordDefinition(pattern.name, pattern.span.start, sym)
-    branch(expr.thenBranch)
-    this.currentScope = prevScope
+    this.bindName(then, pattern.name, elemType, expr.span.start, 'if let', expr, pattern.span.start)
+    this.declare(expr)
+    this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
+    this.currentScope = then
+    try {
+      branch(expr.thenBranch)
+    } finally {
+      this.currentScope = prevScope
+    }
 
     for (const elif of expr.elifs) {
       this.checkElifCondition(elif)
@@ -6084,7 +6647,8 @@ class CheckContext {
   }
 
   // A literal pattern is compared with the subject, so it has to be a value
-  // of the subject's type.
+  // of the subject's type. The names a pattern binds are its arm's own, and
+  // no more free to take than those of a `for`.
   private checkMatchSubject(expr: AST.MatchExpr): void {
     let subjectType = this.inferExpr(expr.subject)
     // A constant subject (1, a def, a fixed array's len) has no type for the
@@ -6097,7 +6661,18 @@ class CheckContext {
     }
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
+      for (const name of arm.patterns.flatMap(patternNames)) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
+      this.declare(arm)
       for (const pattern of arm.patterns) {
+        // Only a number, a bool or _ is compared: a tuple pattern would
+        // never match.
+        if (pattern.kind === 'tuple') {
+          const what = pattern.quoted
+            ? `${spellCodepoints(pattern.elements.map((e) => e.kind === 'positional' && e.pattern.kind === 'literal' && e.pattern.value.kind === 'int' ? Number(e.pattern.value.value) : 0), "'")} is a tuple of codepoints, and `
+            : ''
+          this.error(arm.span.start, `${what}match cannot compare a tuple pattern yet: compare one field at a time`)
+          continue
+        }
         if (pattern.kind !== 'literal') continue
         const value = pattern.value
         const type = value.kind === 'int' ? comptimeInt(value.value)
@@ -6107,7 +6682,8 @@ class CheckContext {
         const comparable = subject.kind === 'primitive' && (byteSize(subject) ?? 16) <= 8
         if (!type || !comparable || !typeAssignable(subject, type)) {
           const shown = type ? typeToString(type) : 'a string'
-          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}`)
+          const hint = value.kind === 'string' && isInteger(subject) ? ` — ${notACharacter(value.bytes)}` : ''
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}`)
         }
       }
     }
@@ -6151,6 +6727,7 @@ class CheckContext {
     }
     this.moduleScope.symbols.set(decl.ident, { kind: 'generic', decl, owner: this, instances: new Map(), valid })
     this.recordDefinition(decl.ident, decl.span.start)
+    this.replacesBuiltin(decl.ident, decl.span.start)
   }
 
   // Whether a type as written is a function type: one written out, or a name
@@ -6191,6 +6768,10 @@ class CheckContext {
           // In the instance it is a function of that name, which the other
           // parameter of the name would hide, or be hidden by.
           reject(at, `parameter '${p.ident}' is declared twice`)
+        } else if (BUILTIN_NAMES.has(p.ident) && decl.ident) {
+          // And so it is what a call of the name means in the body, in
+          // place of the builtin: said once, here, as for a declared one.
+          this.warn(at, `'${p.ident}' replaces the builtin ${p.ident} in the body of '${decl.ident}'`)
         }
       } else if (!p.comptime) {
         reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
@@ -6424,6 +7005,14 @@ class CheckContext {
       return RECOVERY
     }
     if (settled) sym.cache.set(key, resolved)
+    // For the editor, each way it was applied, once: also an application
+    // only a signature makes while declarations are collected, as it was
+    // resolved then, until it is resolved again once they are.
+    const applied = owner.applications.get(sym.decl) ?? []
+    const known = applied.findIndex((a) => a.shown === shown)
+    if (known < 0) applied.push({ shown, args, type: resolved })
+    else if (settled) applied[known] = { shown, args, type: resolved }
+    owner.applications.set(sym.decl, applied)
     return resolved
   }
 
@@ -6565,8 +7154,9 @@ class CheckContext {
 
   // The type parameters of an inferred call, found from its arguments; null,
   // with the error reported, when they cannot be. The first argument that can
-  // decide a type parameter decides it. An untyped literal never does: it takes
-  // the type the parameter turns out to have.
+  // decide a type parameter decides it, by its typed parts where some of it is
+  // untyped. An untyped literal never does: it takes the type the parameter
+  // turns out to have.
   private inferTypeArgs(
     expr: AST.CallExpr,
     name: string,
@@ -6607,6 +7197,10 @@ class CheckContext {
         match(param.type, type, bound)
         typed.push(param)
       } else {
+        // The typed parts of an argument decide as a typed argument does:
+        // keep((i, 1)) with i a u32 gives T = u32. The literals in it
+        // decide nothing (see matchType).
+        match(param.type, type, bound)
         untyped.push({ param, arg, type })
       }
     }
@@ -6656,32 +7250,45 @@ class CheckContext {
 
   // The type an expression has by itself, found without leaving a trace. An
   // argument that may decide a type parameter is looked at before the type it
-  // is checked against is known, and then checked as any argument is. Whatever
-  // the look recorded has to go: a `let` inside the argument would be declared
-  // twice, a literal it took the address of would stay marked as its own
-  // writable cell, and the call would no longer compile to what the same call
-  // of a hand-written function does. Errors stay: the check repeats them.
+  // is checked against is known, and then checked as any argument is. What
+  // the look declared and registered has to go: a `let` inside the argument
+  // would be declared twice, a literal it took the address of would stay
+  // marked as its own writable cell, and the call would no longer compile to
+  // what the same call of a hand-written function does. Errors stay: the
+  // check repeats them.
   private peek(expr: AST.Expr): ResolvedType {
     return this.untraced(expr, () => this.inferExpr(expr))
   }
 
-  // Runs a look at `expr` and takes back what it recorded. Errors stay.
+  // Runs a look at `expr` and takes back its scope and what it declared, the
+  // literals it registered and the marks it left on literals. Errors stay.
+  // What it recorded per node and per offset is not taken back: an
+  // expression that was looked at is always checked after the look, which
+  // records the same things again, over what the look left.
   private untraced<T>(expr: AST.Expr | null, look: () => T): T {
     // A call the look will not walk (see inferCall) keeps its marks.
     const literals = literalMarks(expr, (call) => this.known(call))
-    const recorded = this.trial.begin()
+    const declared = this.lookDeclared.length
+    const unproven = this.lookUnproven.length
     const registered = this.pendingLiterals.length
     const unplaced = this.unplaced.length
     const warned = this.warnings.length
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
     this.lookScopes.add(this.currentScope)
-    const found = look()
+    this.looking++
+    let found: T
+    try {
+      found = look()
+    } finally {
+      this.looking--
+    }
+    for (const node of this.lookDeclared.splice(declared)) this.declared.delete(node)
+    for (const index of this.lookUnproven.splice(unproven)) this.unproven.delete(index)
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
     this.unplaced.length = unplaced
-    this.trial.rollback(recorded)
     for (const { node, marks } of literals) {
       delete node.mut
       delete node.dataId
@@ -6893,17 +7500,24 @@ class CheckContext {
     // types this is read off the syntax: a name the generic itself declares
     // (a parameter, a let, a loop variable) is taken to be that one.
     const { names, locals } = namesIn(decl)
-    for (const { name, offset } of names) {
+    for (const { name, offset, called } of names) {
       if (locals.has(name) || !this.moduleScope.symbols.has(name)) continue
       // Which of the functions that share a name a call means is known only
-      // in an instance: all of them count as used.
-      for (const known of this.overloads.get(name) ?? [name]) this.recordReference(known, offset)
+      // in an instance: all of them count as used, until the instances say
+      // which they call (see settleGuesses).
+      for (const known of this.overloads.get(name) ?? [name]) {
+        this.recordReference(known, offset)
+        const def = this.symbolDefOffsets.get(known)
+        if (called && def !== undefined) this.guessedCalls.push({ generic: decl, def, use: offset })
+      }
     }
     // A type parameter is in no instance: the copy is made without it, and
     // with the type in the place of every use. Where it is declared and used
-    // is read off the declaration too, for the editor to find.
+    // is read off the declaration too, for the editor to find; so are the
+    // uses of a comptime function parameter, which an instance records again
+    // (and a generic nothing instantiates has no instance to record them).
     for (const param of genericParams(decl)) {
-      if (!isTypeParam(param) || !param.identSpan) continue
+      if (!param.comptime || !param.identSpan) continue
       const declared = param.identSpan.start
       const uses = names.filter((n) => n.name === param.ident).map((n) => n.offset)
       this.references.set(declared, uses)
@@ -6938,14 +7552,17 @@ class CheckContext {
 
   // An offset inside an instance, as the place in the generic's source it was
   // copied from, with the instance named in the message.
-  private atSource(offset: number, message: string): TypeError {
-    if (offset < INSTANCE_STRIDE) return { offset, message }
-    const inst = this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
-    if (!inst) return { offset: offset % INSTANCE_STRIDE, message }
+  private atSource(offset: number, message: string, own: NonNullable<TypeError['notes']> = []): TypeError {
+    const said = own.map((note) => ({ offset: note.offset % INSTANCE_STRIDE, message: note.message }))
+    const inst = offset < INSTANCE_STRIDE ? undefined : this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
+    if (!inst) {
+      const at = offset % INSTANCE_STRIDE
+      return said.length > 0 ? { offset: at, message, notes: said } : { offset: at, message }
+    }
     // The calls the instance exists for: the one that first asked for it,
     // and while that call is inside an instance, the one that asked for that.
-    const notes: NonNullable<TypeError['notes']> = []
-    for (let at = inst.requestedAt; notes.length < MAX_NOTES; ) {
+    const notes: NonNullable<TypeError['notes']> = [...said]
+    for (let at = inst.requestedAt; notes.length < said.length + MAX_NOTES; ) {
       notes.push({ offset: at % INSTANCE_STRIDE, message: 'required from' })
       const outer = this.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
       if (!outer) break
@@ -7095,16 +7712,16 @@ class CheckContext {
     return best
   }
 
-  error(offset: number, message: string): void {
+  error(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
     this.errorsReported++
-    const error = this.atSource(offset, message)
+    const error = this.atSource(offset, message, notes)
     if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
       this.errors.push(error)
     }
   }
 
-  warn(offset: number, message: string): void {
-    const warning = this.atSource(offset, message)
+  warn(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
+    const warning = this.atSource(offset, message, notes)
     if (!this.warnings.some((w) => w.offset === warning.offset && w.message === warning.message)) {
       this.warnings.push(warning)
     }
@@ -7163,13 +7780,19 @@ class CheckContext {
     // that is not the module's and has no place recorded (one a test
     // declares, from an instance) has no uses either.
     const defOffset = sym === module ? this.symbolDefOffsets.get(name) : sym && this.localDefs.get(sym)
+    const instance = refOffset >= INSTANCE_STRIDE ? this.instances[Math.floor(refOffset / INSTANCE_STRIDE) - 1] : undefined
     refOffset %= INSTANCE_STRIDE
     if (defOffset !== undefined) {
+      if (instance && sym === module) this.madeInInstances.add(`${defOffset}:${refOffset}`)
       const refs = this.references.get(defOffset)
       if (refs && !refs.includes(refOffset)) {
         refs.push(refOffset)
       }
-      this.symbolRefs.set(refOffset, defOffset)
+      // A call in a generic's body may mean one function of a name in one
+      // instance and another in the next: the use is the one the first
+      // instance means, as everything else in the body is shown.
+      if (!instance || instance.first || !this.firstUses.has(refOffset)) this.symbolRefs.set(refOffset, defOffset)
+      if (instance?.first) this.firstUses.add(refOffset)
     }
   }
 }
@@ -7239,6 +7862,38 @@ function hasMember(type: ResolvedType, name: string): boolean {
 // after a colon. Forms that only a type can have are already a TypeExpr; the
 // rest are expressions that are also types (u32, (i32, i32)). Null for
 // anything else: a variable, a literal, ().
+// An expression written out from the syntax tree, for a message: the usual
+// forms only (names, members, indexing, calls, parentheses and decimal
+// integers), null for anything else.
+function exprText(expr: AST.Expr): string | null {
+  const all = (parts: (string | null)[]) => (parts.every((p) => p !== null) ? parts.join('') : null)
+  switch (expr.kind) {
+    case 'IdentExpr':
+      return expr.name
+    case 'LiteralExpr':
+      return expr.value.kind === 'int' && expr.value.radix === 10 ? String(expr.value.value) : null
+    case 'GroupExpr':
+    case 'TupleExpr': {
+      const inner = groupedExpr(expr)
+      return inner === null ? null : all(['(', exprText(inner), ')'])
+    }
+    case 'IndexExpr':
+      return all([exprText(expr.object), '[', exprText(expr.index), ']'])
+    case 'MemberExpr': {
+      const m = expr.member
+      const member =
+        m.kind === 'field' ? m.name : m.kind === 'index' ? String(m.value) : m.kind === 'deref' ? '*' : m.type.kind === 'TypeRef' ? m.type.name : null
+      return all([exprText(expr.object), '.', member])
+    }
+    case 'CallExpr': {
+      const args = expr.args.map((a) => (a.value === null ? `${a.name}:` : all([a.name === null ? '' : `${a.name}: `, exprText(a.value)])))
+      return all([exprText(expr.callee), '(', ...args.flatMap((a, i) => (i === 0 ? [a] : [', ', a])), ')'])
+    }
+    default:
+      return null
+  }
+}
+
 function typeOfArg(expr: AST.Expr): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':
@@ -7270,6 +7925,13 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
         args.push(type)
       }
       return { kind: 'TypeApply', name: expr.callee.name, args, span: expr.span }
+    }
+    case 'GroupExpr': {
+      // (at: Pt) parses as the name `at` given the type Pt, in parentheses:
+      // as a type it is the struct of that one field, as (v: f64) is.
+      const inner = expr.expr
+      if (inner.kind !== 'AnnotationExpr' || inner.expr.kind !== 'IdentExpr') return null
+      return { kind: 'CompositeType', fields: [{ kind: 'Field', ident: inner.expr.name, type: inner.type, span: inner.span }], span: expr.span }
     }
     default:
       return null
@@ -7353,6 +8015,66 @@ function sameSignature(wanted: FuncRT, given: FuncRT): boolean {
     return canonicalKey(func(params, [field(null, only?.kind === 'tuple' ? only : tuple(returns))]))
   }
   return asStruct(wanted) === asStruct(given)
+}
+
+// The type of a tuple literal with names, as the struct `param` it meets
+// has its fields: each element with a name is the field of that name, and
+// each without one the field at its place (2.8), under the field's name.
+// (y: int(2), x: u8) for a (x: u8, y: u8) is (x: u8, y: int(2)). A tuple
+// that does not give each field once is given back as it is.
+function byFieldNames(param: ResolvedType, arg: ResolvedType): ResolvedType {
+  const p = unwrap(param)
+  const a = unwrap(arg)
+  if (p.kind !== 'tuple' || a.kind !== 'tuple' || p.fields.length !== a.fields.length) return arg
+  const given = p.fields.map((f, i) => a.fields.find((g) => g.name !== null && g.name === f.name) ?? (a.fields[i].name === null ? a.fields[i] : undefined))
+  if (given.some((g) => !g) || new Set(given).size !== given.length) return arg
+  return tuple(p.fields.map((f, i) => field(f.name, given[i]!.type)))
+}
+
+// The type of an argument as the parameter it meets lays it out: a tuple
+// literal gives a struct's fields by name, or by place where an element has
+// no name (2.8), at any depth and behind &, so each of its parts is under the
+// name of the field it gives. (n: u8, at: (y: int(1), x: int(2))) for a
+// (at: Pt, n: u8) is (at: (x: int(2), y: int(1)), n: u8). What is no tuple
+// literal, or does not give each field once, stays as it is.
+function laidLiteral(expr: AST.Expr, param: ResolvedType, type: ResolvedType): ResolvedType {
+  const value = ungrouped(expr)
+  const p = unwrap(param)
+  const t = unwrap(type)
+  if (value.kind === 'UnaryExpr' && value.op === '&' && p.kind === 'pointer' && t.kind === 'pointer') {
+    return { ...t, pointee: laidLiteral(value.operand, p.pointee, t.pointee) }
+  }
+  if (value.kind !== 'TupleExpr' || p.kind !== 'tuple' || t.kind !== 'tuple') return type
+  const n = p.fields.length
+  if (t.fields.length !== n || value.elements.length !== n) return type
+  const given = p.fields.map((f, i) => {
+    const named = value.elements.findIndex((e) => e.name !== null && e.name === f.name)
+    return named >= 0 ? named : value.elements[i].name === null ? i : -1
+  })
+  if (given.some((k) => k < 0) || new Set(given).size !== n) return type
+  return tuple(p.fields.map((f, i) => {
+    const element = value.elements[given[i]]
+    const part = t.fields[given[i]].type
+    return field(f.name, element.value ? laidLiteral(element.value, f.type, part) : part)
+  }))
+}
+
+// An argument's type with each untyped literal in it given the type of the
+// part of the parameter it would be passed for: (u32, int(1)) for a
+// (u64, u64) is (u32, u64), and the typed parts stay what they are. Only
+// tuples and pointers are looked into; anything else untyped (an array
+// literal) is the parameter's type, as a literal is. A pointer with an
+// untyped literal in it is one to a literal (&(x, 1)), whose cell is laid out
+// for the parameter: it is the parameter's kind of pointer.
+function literalsAs(param: ResolvedType, arg: ResolvedType): ResolvedType {
+  if (hasOwnType(arg)) return arg
+  const a = unwrap(arg)
+  const p = unwrap(param)
+  if (a.kind === 'tuple' && p.kind === 'tuple' && a.fields.length === p.fields.length) {
+    return { ...a, fields: a.fields.map((f, i) => ({ ...f, type: literalsAs(p.fields[i].type, f.type) })) }
+  }
+  if (a.kind === 'pointer' && p.kind === 'pointer') return { ...p, pointee: literalsAs(p.pointee, a.pointee) }
+  return param
 }
 
 // Whether a type is the recovery type, or what points to it, holds it or
@@ -7578,8 +8300,9 @@ function matchType(
   const u = unwrap(actual)
   switch (pattern.kind) {
     case 'TypeRef':
-      // A later argument never re-decides, and () decides nothing.
-      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual)) return
+      // A later argument never re-decides, and () decides nothing, nor does
+      // an untyped literal, also where it is a part of a typed tuple.
+      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual) || !hasOwnType(actual)) return
       // `value`: nothing but tuples lies between the argument and this part
       // of it, so it is a value the argument holds, not memory it points to.
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)
@@ -7595,8 +8318,7 @@ function matchType(
     case 'IndexedType': {
       const element =
         u.kind === 'slice' || u.kind === 'array' ? u.element
-        : u.kind === 'pointer' && u.pointee.kind === 'array' ? u.pointee.element
-        : null
+        : pointeeArray(u)?.element ?? null
       if (element) matchType(pattern.element, element, typeParams, bound, false, expand, expanding)
       return
     }
@@ -7604,8 +8326,12 @@ function matchType(
       if (ungroupedType(pattern) !== pattern) {
         matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand, expanding)
       } else if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
+        // A field is laid over the argument's field of its name, which a
+        // tuple literal with names gives in any order, or else over the
+        // one at its place.
         pattern.fields.forEach((f, i) => {
-          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand, expanding)
+          const named = f.ident ? u.fields.find((g) => g.name === f.ident) : undefined
+          matchType(f.type, (named ?? u.fields[i]).type, typeParams, bound, value, expand, expanding)
         })
       }
       return
@@ -7735,8 +8461,16 @@ function literalText(grouped: AST.Expr): string | null {
 }
 
 // The names a function declares for itself: parameters, results and locals.
+// The editor asks this of every name it shows in a generic: it is read off
+// the declaration once.
+const declaredNames = new WeakMap<AST.FuncDecl | AST.TypeFuncDecl, Set<string>>()
 export function localNames(decl: AST.FuncDecl): Set<string> {
-  return namesIn(decl).locals
+  let names = declaredNames.get(decl)
+  if (!names) {
+    names = namesIn(decl).locals
+    declaredNames.set(decl, names)
+  }
+  return names
 }
 
 // The generic function around `offset` that declares `name` for itself: a
@@ -7749,9 +8483,28 @@ export function genericDeclaring(module: AST.Module, offset: number, name: strin
     const item = decl.kind === 'ExportDecl' ? decl.item : decl
     if (offset < item.span.start || offset >= item.span.end) continue
     if (item.kind === 'FuncDecl' && isGenericDecl(item)) return localNames(item).has(name) ? item : null
-    if (item.kind === 'TypeFuncDecl') return fieldNames([item.params, item.body]).has(name) ? item : null
+    if (item.kind === 'TypeFuncDecl') {
+      let names = declaredNames.get(item)
+      if (!names) {
+        names = fieldNames([item.params, item.body])
+        declaredNames.set(item, names)
+      }
+      return names.has(name) ? item : null
+    }
   }
   return null
+}
+
+// Whether the name that starts at `offset` was read as a name of the module:
+// the checker recorded it as a use of one. In a generic that declares a
+// variable of that name it is still the module's outside the variable's
+// scope: a loop variable named like a function hides it in the loop's body
+// only, and after the loop the name calls the function.
+export function readAsModuleName(check: TypeCheckResult, offset: number): boolean {
+  const def = check.symbolRefs.get(offset)
+  if (def === undefined) return false
+  for (const at of check.symbolDefOffsets.values()) if (at === def) return true
+  return false
 }
 
 // Whether the name that starts at `offset` is a field's: in a type written
@@ -7799,6 +8552,44 @@ export function fieldNamedAt(module: AST.Module, offset: number): boolean {
 // the value last; alone, the value is the whole binding. They are listed
 // value first, the order they are bound in (`for i, i in xs` leaves the
 // index in scope).
+// Tuples written out with the same fields (by place, or all by name in any
+// order), with a field that is a pointer to a fixed array of other lengths in
+// each (strings of other lengths): that field as a slice of the arrays'
+// element, in each of them, writable if each pointer is (see settleTuples).
+// Other types are given back as they are.
+function arraysOfOtherLengthsAsSlices(types: ResolvedType[]): ResolvedType[] {
+  if (!types.every((t): t is TupleRT => t.kind === 'tuple')) return types
+  const tuples = types as TupleRT[]
+  const [first] = tuples
+  const names = first.fields.map((f) => f.name)
+  const byName = names.every((n) => n !== undefined && n !== null) && new Set(names).size === names.length
+  // Where each of the first tuple's fields is in each tuple.
+  const places = tuples.map((t) => first.fields.map((f, i) =>
+    t.fields.length !== first.fields.length ? -1
+      : t.fields[i].name === f.name ? i
+      : byName ? t.fields.findIndex((g) => g.name === f.name) : -1))
+  if (places.some((p) => p.includes(-1))) return types
+  const array = (t: ResolvedType) => {
+    const p = unwrap(t)
+    const a = p.kind === 'pointer' ? unwrap(p.pointee) : null
+    return p.kind === 'pointer' && a?.kind === 'array' && a.sizes?.length === 1 && typeof a.sizes[0] === 'number'
+      ? { element: a.element, size: a.sizes[0], mutable: !!p.mutable } : null
+  }
+  const sliced = first.fields.map((_, i) => {
+    const arrays = tuples.map((t, k) => array(t.fields[places[k][i]].type))
+    if (arrays.some((a) => !a)) return null
+    const [a0] = arrays as NonNullable<(typeof arrays)[number]>[]
+    if (arrays.every((a) => a!.size === a0.size) || !arrays.every((a) => typeEquals(a!.element, a0.element))) return null
+    return slice(a0.element, arrays.every((a) => a!.mutable))
+  })
+  if (sliced.every((s) => !s)) return types
+  return tuples.map((t, k) => {
+    const fields = [...t.fields]
+    sliced.forEach((s, i) => { if (s) fields[places[k][i]] = field(fields[places[k][i]].name, s) })
+    return tuple(fields)
+  })
+}
+
 export function forNames(binding: AST.ForBinding): { name: string; offset: number; index: boolean }[] {
   const { span, value, index } = binding
   if (index === null) return [{ name: value, offset: span.start, index: false }]
@@ -7834,9 +8625,12 @@ function fieldNames(node: unknown, found = new Set<string>()): Set<string> {
 }
 
 // The names a declaration refers to, with where, and the names it declares.
-function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[]; locals: Set<string> } {
-  const names: { name: string; offset: number }[] = []
+// `called`: the name is what a call is of, f in f(a) or in x.f(a), which in a
+// generic's body can be one function in one instance and another in the next.
+function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; called: boolean }[]; locals: Set<string> } {
+  const names: { name: string; offset: number; called: boolean }[] = []
   const locals = new Set<string>()
+  const callees = new Set<unknown>()
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) {
       node.forEach(visit)
@@ -7851,13 +8645,14 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number }[
       case 'IdentExpr':
       case 'TypeRef':
       case 'TypeApply':
-        if (n.span) names.push({ name: n.name as string, offset: n.span.start })
+        if (n.span) names.push({ name: n.name as string, offset: n.span.start, called: callees.has(n) })
         break
       case 'CallExpr': {
         // x.f(a) may be a call of the function f.
         const callee = n.callee as AST.Expr
+        callees.add(callee)
         if (callee.kind === 'MemberExpr' && callee.member.kind === 'field') {
-          names.push({ name: callee.member.name, offset: callee.span.end - callee.member.name.length })
+          names.push({ name: callee.member.name, offset: callee.span.end - callee.member.name.length, called: true })
         }
         break
       }
@@ -8141,11 +8936,100 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
 
+// The loops that zero each row of a table, one for each table in it: a row
+// of *[2][2][2]i32 is a table itself, whose rows are the cells.
+function zeroRows(table: ResolvedType, name: string): string {
+  let depth = 0
+  for (let row = tableRow(table); row; row = tableRow(row)) depth++
+  const binders = depth === 1 ? ['row'] : ['row', ...Array.from({ length: depth - 2 }, (_, i) => `row${i + 2}`), 'cells']
+  // A binder with the table's own name would hide it: row is r there.
+  const own = binders.map((b) => (b === name ? `${b[0]}${b.replace(/\D/g, '')}` : b))
+  let body = `memzero(${own[own.length - 1]})`
+  for (let i = own.length - 1; i >= 0; i--) body = `for ${own[i]} in ${i === 0 ? name : own[i - 1]} { ${body} }`
+  return body
+}
+
+// What to write instead where a type parameter that is a fixed array made a
+// table (2.5): rows in place are a struct's array field, or say pointers.
+function rowsAdvice(row: ResolvedType): string {
+  const text = typeToString(row)
+  return `for packed rows use a struct with an array field, (cells: ${text}), or *${text} for the pointers`
+}
+
+// Whether a literal with no type written has to be converted to the type it
+// settled on (settleLiteral): it holds slices, or it writes out rows, each of
+// which has to be a row of that type.
+function settles(expr: AST.Expr, type: ResolvedType): boolean {
+  return holdsSlice(type) || writesRows(expr)
+}
+
+// An array literal of array literals, itself or as an element of a tuple.
+function writesRows(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  if (value.kind === 'TupleExpr') return value.elements.some((e) => e.value !== null && writesRows(e.value))
+  return value.kind === 'ArrayExpr' && value.elements.some((e) => {
+    const element = ungrouped(e)
+    return element.kind === 'ArrayExpr' || element.kind === 'RepeatExpr' || writesRows(element)
+  })
+}
+
+// Whether a value of this type holds a slice in registers: is one, or has one
+// as an element of a fixed array or as a field. (A type that holds itself by
+// value is an error of its own: `seen` only keeps this from going round.)
+function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
+  const u = unwrap(t)
+  if (seen.has(u)) return false
+  seen.add(u)
+  if (u.kind === 'slice') return true
+  if (u.kind === 'array') return isValueArray(u) && holdsSlice(u.element, seen)
+  if (u.kind === 'tuple') return u.fields.some((f) => holdsSlice(f.type, seen))
+  return false
+}
+
 // The expression inside (x), which parses as a group or a one-element tuple.
 function groupedExpr(expr: AST.Expr): AST.Expr | null {
   if (expr.kind === 'GroupExpr') return expr.expr
   if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
   return null
+}
+
+// What a name a `for`, an `if let` or a match arm cannot bind is, as the
+// error says: a variable, a `def` or `data` block, or a comptime function
+// parameter. Null for a name it can hide: a function's.
+function takenName(sym: Symbol): string | null {
+  switch (sym.kind) {
+    case 'param':
+      return 'a parameter'
+    case 'return':
+      return 'a named result'
+    case 'global':
+      return 'a global'
+    case 'local':
+      return sym.binding === 'loop' ? 'a loop variable in scope'
+        : sym.binding === 'if let' ? 'an if let binding in scope'
+        : sym.binding === 'match' ? 'a match binding in scope'
+        : 'a variable in scope'
+    case 'def':
+      return sym.value.kind === 'data_ptr' ? 'a data block' : 'a def'
+    case 'func':
+      // A comptime function parameter, in an instance.
+      return sym.alias ? 'a parameter' : null
+    default:
+      return null
+  }
+}
+
+// The names a match pattern binds, wherever they are in it.
+function patternNames(pattern: AST.MatchPattern): string[] {
+  switch (pattern.kind) {
+    case 'binding':
+      return [pattern.name]
+    case 'constructor':
+    case 'tuple':
+      return pattern.elements.flatMap((e) => (e.kind === 'namedShort' ? [e.field] : patternNames(e.pattern)))
+    default:
+      return []
+  }
 }
 
 // A name that holds a value in registers, which `=` and `set` can replace.
@@ -8159,11 +9043,203 @@ function ungrouped(expr: AST.Expr): AST.Expr {
   return inner ? ungrouped(inner) : expr
 }
 
+// What to say of a struct value whose fields are those of the struct
+// wanted, in another order: only a literal gives fields by name.
+function reordered(from: ResolvedType, to: ResolvedType, shown: string): string {
+  if (from.kind !== 'tuple' || to.kind !== 'tuple' || from.fields.length !== to.fields.length) return ''
+  const names = (t: TupleRT) => t.fields.map((f) => f.name)
+  const [a, b] = [names(from), names(to)]
+  if (a.some((name) => name === null) || a.every((name, i) => name === b[i])) return ''
+  if (!a.every((name) => b.includes(name)) || new Set(a).size !== a.length) return ''
+  return `: its fields have the names of ${shown}'s in another order, and only a literal gives fields by name; give the value the type ${shown} where it is made`
+}
+
+// Names as a list is said: `x`, `x and y`, `x, y and z`.
+function spoken(names: string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('')
+}
+
+// A tuple literal with names among its elements, in parentheses or not: it
+// gives the fields of a struct by name.
+function namedLiteral(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  return value.kind === 'TupleExpr' && value.elements.some((element) => element.name !== null)
+}
+
+// Whether a named literal is the value of `expr`, or the value of one of the
+// branches of an if or a match `expr` is.
+function givesNamedLiteral(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  if (value.kind === 'IfExpr') {
+    const bodies = [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
+    return bodies.some((body) => body !== null && bodyGivesNamedLiteral(body))
+  }
+  if (value.kind === 'MatchExpr') {
+    return value.arms.some((arm) =>
+      arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody' ? bodyGivesNamedLiteral(arm.body) : givesNamedLiteral(arm.body))
+  }
+  return namedLiteral(value)
+}
+
+function bodyGivesNamedLiteral(body: AST.FuncBody): boolean {
+  if (body.kind === 'ArrowBody') return givesNamedLiteral(body.expr)
+  const last = body.stmts.at(-1)
+  return last?.kind === 'ExpressionStmt' && givesNamedLiteral(last.expr)
+}
+
 // What `&` takes the address of, through parentheses and a type annotation:
 // `&(8)` and `&(8:i32)` lay out the literal 8, as `&8` does.
 export function addressedLiteral(operand: AST.Expr): AST.Expr {
   const inner = ungrouped(operand)
   return inner.kind === 'AnnotationExpr' ? ungrouped(inner.expr) : inner
+}
+
+// The codepoints of a literal written in single quotes ('a', 'ok'), seen
+// through parentheses and a type annotation; null for anything else.
+function quotedCodepoints(expr: AST.Expr): number[] | null {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  const value = (lit: AST.Expr | null) =>
+    lit?.kind === 'LiteralExpr' && lit.value.kind === 'int' ? Number(lit.value.value) : Number.NaN
+  if (e.kind === 'LiteralExpr' && e.quoted) return [value(e)]
+  if (e.kind === 'TupleExpr' && e.quoted) return e.elements.map((arg) => value(arg.value))
+  return null
+}
+
+// The bytes of a string literal ("abc", x"61"), seen through parentheses and
+// a type annotation; null for anything else.
+function stringBytes(expr: AST.Expr): Uint8Array | null {
+  let e = ungrouped(expr)
+  while (e.kind === 'AnnotationExpr') e = ungrouped(e.expr)
+  return e.kind === 'LiteralExpr' && e.value.kind === 'string' ? e.value.bytes : null
+}
+
+// The one character a string's bytes are in UTF-8, or null when they are
+// not exactly one.
+function oneCharacter(bytes: Uint8Array): number | null {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return null
+  }
+  const codepoints = [...text]
+  return codepoints.length === 1 ? codepoints[0].codePointAt(0)! : null
+}
+
+// Codepoints written between quotes, each escaped where it has to be.
+function spellCodepoints(codepoints: number[], quote: "'" | '"'): string {
+  let out = quote
+  for (const cp of codepoints) {
+    const c = String.fromCodePoint(cp)
+    if (c === quote || c === '\\') out += `\\${c}`
+    else if (c === '\n') out += '\\n'
+    else if (c === '\t') out += '\\t'
+    else if (c === '\r') out += '\\r'
+    else if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) out += `\\u{${cp.toString(16)}}`
+    else out += c
+  }
+  return out + quote
+}
+
+// A literal written out again, for an error that shows how to write it: in
+// full when it is short, else as its brackets or quotes around an ellipsis.
+function writtenLiteral(expr: AST.Expr, typeOf: (e: AST.Expr) => ResolvedType | undefined): string {
+  const text = (e: AST.Expr | null): string => (e && writtenMut(e) && e.kind !== 'AnnotationExpr' ? `mut ${bare(e)}` : bare(e))
+  const bare = (e: AST.Expr | null): string => {
+    if (!e) return '...'
+    switch (e.kind) {
+      case 'LiteralExpr': {
+        const v = e.value
+        if (v.kind === 'string') {
+          try {
+            const chars = [...new TextDecoder('utf-8', { fatal: true }).decode(v.bytes)]
+            return spellCodepoints(chars.map((c) => c.codePointAt(0)!), '"')
+          } catch {
+            return `x"${[...v.bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}"`
+          }
+        }
+        if (v.kind === 'int' && e.quoted) return spellCodepoints([Number(v.value)], "'")
+        if (v.kind === 'int' && v.radix === 16) return `${v.value < 0n ? '-' : ''}0x${(v.value < 0n ? -v.value : v.value).toString(16)}`
+        return String(v.value)
+      }
+      case 'ArrayExpr':
+        return e.template ? spellTemplate(e, text) : `[${e.elements.map(text).join(', ')}]`
+      case 'RepeatExpr':
+        return `[${text(e.value)}; ${text(e.count)}]`
+      case 'TupleExpr':
+        return e.quoted ? spellCodepoints(e.elements.map((a) => (a.value?.kind === 'LiteralExpr' && a.value.value.kind === 'int' ? Number(a.value.value.value) : 0)), "'")
+          : `(${e.elements.map((a) => (a.name ? `${a.name}: ${text(a.value)}` : text(a.value))).join(', ')})`
+      case 'AnnotationExpr': {
+        const type = e.type.kind === 'PrimitiveType' || e.type.kind === 'TypeRef' ? e.type.name : typeOf(e) && typeToString(typeOf(e)!)
+        return type ? `${text(e.expr)}:${type}` : text(e.expr)
+      }
+      case 'GroupExpr':
+        return `(${text(e.expr)})`
+      case 'IdentExpr':
+        return e.name
+      case 'CallExpr':
+        return `${text(e.callee)}(${e.args.map((a) => (a.name ? `${a.name}: ${text(a.value)}` : text(a.value))).join(', ')})`
+      default:
+        return '...'
+    }
+  }
+  const full = text(expr)
+  if (full.length <= 40) return full
+  const inner = ungrouped(expr)
+  return inner.kind === 'LiteralExpr' ? '"..."' : inner.kind === 'TupleExpr' ? '(...)' : '[...]'
+}
+
+// A template literal written out again: its fragments as text, each value
+// in ${}.
+function spellTemplate(e: AST.ArrayExpr, text: (e: AST.Expr) => string): string {
+  let out = '`'
+  for (const element of e.elements) {
+    if (element.kind !== 'LiteralExpr' || element.value.kind !== 'string') {
+      out += `\${${text(element)}}`
+      continue
+    }
+    let chars: string[]
+    try {
+      chars = [...new TextDecoder('utf-8', { fatal: true }).decode(element.value.bytes)]
+    } catch {
+      out += [...element.value.bytes].map((b) => `\\x${b.toString(16).padStart(2, '0')}`).join('')
+      continue
+    }
+    const spelled = spellCodepoints(chars.map((c) => c.codePointAt(0)!), '"').slice(1, -1).replaceAll('\\"', '"')
+    out += spelled.replaceAll('`', '\\`').replaceAll('${', '\\${')
+  }
+  return `${out}\``
+}
+
+// What a single-quoted literal that meets an address type is told: it is no
+// string, and how the string it looks like is written.
+function notAString(codepoints: number[]): string {
+  return `a single-quoted literal is codepoints, not a string: a string is written with double quotes (${spellCodepoints(codepoints, '"')})`
+}
+
+// What a string that meets a number is told: how the character it looks like
+// is written, or its byte as a number.
+function notACharacter(bytes: Uint8Array): string {
+  const one = oneCharacter(bytes)
+  if (one !== null) return `a string is bytes in memory, not a character: a character is written in single quotes (${spellCodepoints([one], "'")})`
+  if (bytes.length === 1) return `a string is bytes in memory, not a character; write its byte as a number (${bytes[0]})`
+  return 'a string is bytes in memory, not a character'
+}
+
+// Whether `target` is `type`, a mutable pointer or slice, made const.
+function constOf(type: ResolvedType, target: ResolvedType): boolean {
+  const t = unwrap(type)
+  const to = unwrap(target)
+  if ((t.kind !== 'pointer' && t.kind !== 'slice') || !t.mutable || t.kind !== to.kind || to.mutable) return false
+  return typeEquals({ ...t, mutable: false }, to)
+}
+
+// Where an address is wanted: a pointer, a slice, a framed array.
+function wantsAddress(type: ResolvedType): boolean {
+  const t = unwrap(type)
+  return t.kind === 'pointer' || t.kind === 'slice' ||
+    (t.kind === 'array' && !!t.sizes?.some((s) => s === '!' || s === '?'))
 }
 
 // An array written out, element by element or as a repeat: passed for a
@@ -8261,11 +9337,24 @@ function literalParts(expr: AST.Expr, parts: Set<AST.Expr>): void {
   }
 }
 
+// The literals the checker flagged as mutable, which were not written so.
+const impliedMut = new WeakSet<AST.Expr>()
+
 // Flag a literal as mutable data, so the data section gives it its own bytes.
 function markMut(expr: AST.Expr): void {
   if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+    if (!expr.mut) impliedMut.add(expr)
     ;(expr as { mut?: boolean }).mut = true
   }
+}
+
+// Whether a literal is written with `mut` (mut [1, 2], mut "ab":[]mut u8).
+function writtenMut(expr: AST.Expr): boolean {
+  if (expr.kind === 'AnnotationExpr') return writtenMut(expr.expr)
+  if (expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr') {
+    return !!expr.mut && !impliedMut.has(expr)
+  }
+  return false
 }
 
 // === Control-flow termination ===

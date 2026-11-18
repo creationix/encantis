@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
-import { concretizeType, isConcreteType, typecheck, typeKey, type TypeCheckResult } from './checker'
+import { concretizeType, isConcreteType, typecheck, typecheckProgram, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
 import { parseType as parseTypeLib } from './type-lib'
 import {
@@ -1326,7 +1326,7 @@ describe('tables', () => {
     expect(errs('let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]\nlet u: *[2][3]i32 = [v, [1, 2, 3]]\nlet w: [][2]i32 = [[a; 2]; 3]', 'a: i32, v: [3]i32')).toEqual([
       row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
     ])
-    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = mut [a, 2, 3]', 'a: i32')).toEqual([])
   })
 
   test('len of a packed *[NxM]T is N, its rows; wid of a slice is the width of an element', () => {
@@ -1578,6 +1578,137 @@ describe('struct elements of an array literal', () => {
   })
 })
 
+describe('a literal for a mutable pointer or slice', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+
+  test('is written with mut, and the error shows it so', () => {
+    expect(errs('data s: []mut i32 = [20, 8]')).toEqual([constant('[20, 8]', '[]mut i32')])
+    expect(errs('data s: []mut i32 = mut [20, 8]')).toEqual([])
+    expect(errs('data s: *mut [2]u8 = "ab"')).toEqual([constant('"ab"', '*mut [2]u8')])
+    expect(errs('data s: *mut [3]u8 = mut "a\\n\\""')).toEqual([])
+    expect(errs('data s: *mut [3]u8 = "a\\n\\""')).toEqual([constant('"a\\n\\""', '*mut [3]u8')])
+    expect(errs('data s: []mut u16 = [0xff; 4]')).toEqual([constant('[0xff; 4]', '[]mut u16')])
+    expect(errs('data s: []mut u8 = x"ff 00"')).toEqual([constant('x"ff00"', '[]mut u8')])
+    // A long one is shown by its brackets.
+    expect(errs('data s: []mut u16 = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]')).toEqual([constant('[...]', '[]mut u16')])
+  })
+
+  test('mut covers what the literal lays out apart', () => {
+    const source = 'type B = (bytes: []mut u8, n: u32)\n'
+    expect(errs(`${source}data bs: *mut [2]B = mut [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([])
+    expect(errs('data ts: *mut [2][2]i32 = [mut [1, 2], [3, 4]]')).toEqual([constant('[mut [1, 2], [3, 4]]', '*mut [2][2]i32')])
+    // A constructor's arguments are checked before the literal it is in
+    // meets its type: the one keyword is the fix for both.
+    expect(errs(`${source}data bs: *mut [2]B = [([0:u8; 2], 0), B("ab", 1)]`))
+      .toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[([0:u8; 2], 0), B("ab", 1)]', '*mut [2]B')])
+    // In a value, a constructor's fields are what is checked.
+    expect(errs(`${source}func f() -> u32 {\n  let a: [2]B = [B("cd", 1), B(mut "ef", 2)]\n  let t: (B, u32) = (B("gh", 1), 2)\n  return 0\n}`))
+      .toEqual([`field bytes: ${constant('"cd"', '[]mut u8')}`, `field bytes: ${constant('"gh"', '[]mut u8')}`])
+    expect(errs(`${source}data bs: *[2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[0:u8; 2]', '[]mut u8')])
+    // Nothing else wrong with it, or the other error is the one.
+    expect(errs('data s: []mut u32 = "abcd"')).toEqual([expect.stringContaining('cannot assign a string literal to []mut u32')])
+  })
+
+  test('the function meant is found as if the literal were mut, and an instance names it', () => {
+    expect(errs('func fill(b: []mut u8) -> u32 => b.len\nfunc fill(n: u32) -> u32 => n\nfunc f() -> u32 => fill([0:u8; 4])'))
+      .toEqual([`argument 1: ${constant('[0:u8; 4]', '[]mut u8')}`])
+    expect(errs('func zeros(comptime T: type, n: T) -> u32 {\n  let b: []mut T = [n; 4]\n  return b.len\n}\nfunc f() -> u32 => zeros(u8, 1)'))
+      .toEqual([`${constant('[n; 4]', '[]mut u8')}, in zeros(T = u8)`])
+  })
+
+  test('& before a literal is a writable cell of its own', () => {
+    expect(errs('func f() -> u32 {\n  let n = &0:u32\n  n.* = 1\n  let p: *mut i32 = &5\n  return n.*\n}')).toEqual([])
+    // Also an array laid out where a pointer to an array is wanted, as it
+    // is without the & (at the merge of claude/dec-named, which lays it out
+    // so, it asked for mut): what it lays out apart is writable too.
+    const put = 'type Pt = (x: i32, y: i32)\nfunc put(p: *mut [2]i32) -> i32 => p[0]\nfunc pts(p: *mut [1]Pt) -> i32 => p[0].x\nfunc rows(p: *mut [1][]mut u8) -> u32 => p.len\n'
+    expect(errs(`${put}func f() -> i32 => put(&[1, 2]) + put(&[3; 2]) + pts(&[(y: 5, x: 6)]) + rows(&[[1:u8, 2]]) as i32`)).toEqual([])
+    expect(errs(`${put}func f() -> i32 => put([1, 2])`)).toEqual([`argument 1: ${constant('[1, 2]', '*mut [2]i32')}`])
+  })
+})
+
+describe('what a literal error says, wherever the literal is', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+  const notAString = (quoted: string, type: string) =>
+    `cannot assign '${quoted}' to ${type} — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("${quoted}")`
+
+  test('a data slice of a single-quoted literal is told to use double quotes', () => {
+    expect(errs("data d: []u8 = 'hi'")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = ('hi')")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = 'hi':[]u8")).toEqual([notAString('hi', '[]u8')])
+    // A (ptr, len) pair written as numbers is still one.
+    expect(errs('data d: []u8 = (104, 105)')).toEqual(['data value must be a literal to lay out: a (ptr, len) pair is a slice already'])
+  })
+
+  // A tuple is not an array (2.7), whether it is written in parentheses or
+  // in single quotes. At 0f1b047 one given for a row of a table, an element
+  // of a slice of arrays, an array pointer or a framed array was accepted
+  // and laid out as zeros: ['abc', 'xyz'] for a *[2][3]u8 read 0, where
+  // ["abc", "xyz"] reads the bytes (and 'xyz' was such a string before Q4).
+  test('a tuple given for an array behind a pointer or as a row is refused', () => {
+    expect(errs("data g: *[2][3]u8 = [[97, 98, 99], 'xyz']")).toEqual([notAString('xyz', '[3]u8')])
+    expect(errs("func f() -> u8 {\n  let t: *[2][3]u8 = ['abc', 'xyz']\n  return t[1][0] ?? 0\n}"))
+      .toEqual([notAString('abc', '[3]u8'), notAString('xyz', '[3]u8')])
+    expect(errs("data d: [][3]u8 = ['abc', 'xyz']\nfunc f() -> u32 => d.len")).toEqual([notAString('abc', '[3]u8'), notAString('xyz', '[3]u8')])
+    expect(errs('data g: *[2][3]u8 = [[97, 98, 99], (120, 121, 122)]')).toEqual(['cannot assign (int(120), int(121), int(122)) to [3]u8'])
+    expect(errs('data d: [][2]u8 = [(1, 2)]\nfunc f() -> u32 => d.len')).toEqual(['cannot assign (int(1), int(2)) to [2]u8'])
+    expect(errs('data r: *[3]u8 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to *[3]u8'])
+    expect(errs('func put(p: *[3]u8) -> u8 => p[0]\nfunc f() -> u8 => put((1, 2, 3))')).toEqual(['argument 1: cannot assign (int(1), int(2), int(3)) to *[3]u8'])
+    expect(errs('func f() -> u32 {\n  let s: []*[2]u8 = [(1, 2)]\n  return s.len\n}')).toEqual(['cannot assign (int(1), int(2)) to *[2]u8'])
+    expect(errs('func f() -> u32 {\n  let s: [!]u8 = (1, 2)\n  return 0\n}')).toEqual(['cannot assign (int(1), int(2)) to [!]u8'])
+    // What is right stays so: strings as rows, tuples for struct elements,
+    // a slice built from its fields.
+    expect(errs('type Pt = (x: i32, y: i32)\ndata ok: *[2][3]u8 = [[97, 98, 99], "xyz"]\ndata pts: *[2]Pt = [(1, 2), (y: 4, x: 3)]\nfunc first(p: [*]u8, n: u32) -> []u8 => (len: n, ptr: p)')).toEqual([])
+  })
+
+  test('the receiver of a method call is told to write mut in parentheses', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\n'
+    expect(errs(`${source}func f() -> u32 => "ab".fill() + [1, 2].fill() + (mut "ok").fill()`))
+      .toEqual(['receiver: a literal is constant: write `(mut "ab")` for a []mut u8', 'receiver: a literal is constant: write `(mut [1, 2])` for a []mut u8'])
+    // which is how it parses: mut before "ab".fill() is told the same.
+    const parsed = parse(`${source}func f() -> u32 => mut "ab".fill()`)
+    expect(parsed.errors.map(e => e.shortMessage)).toEqual(['mut goes on the literal itself: write (mut "ab").fill()'])
+    expect(parse('func f(x: u8) -> u8 => mut x').errors.map(e => e.shortMessage))
+      .toEqual(['mut goes before a literal (an array, a string or a tuple), not before x'])
+  })
+
+  test('a template literal is shown as it is written', () => {
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = `a${x}b\\n`\n  return t.len\n}'))
+      .toEqual([constant('`a${x}b\\n`', '[]mut []u8')])
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = mut `a${x}b`\n  return t.len\n}')).toEqual([])
+  })
+
+  test('an instance keeps the error a literal has of its own', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\nfunc greet(s: []u8) -> u32 => s.len\nfunc take(c: u8) -> u8 => c\nfunc first(p: *u8) -> u8 => p.*\n'
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => fill("ab")\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([`argument 1: ${constant('"ab"', '[]mut u8')}, in h(T = u8)`])
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet('hi') + take("a") + first('a')\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([
+        `argument 1: ${notAString('hi', '[]u8')}, in h(T = u8)`,
+        `argument 1: cannot assign *[1]u8 to u8 — a string is bytes in memory, not a character: a character is written in single quotes ('a'), in h(T = u8)`,
+        `argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a"), in h(T = u8)`,
+      ])
+    // What the type argument does not bring is still a requirement.
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet(x)\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual(["no function 'greet' accepts (u8), in h(T = u8)"])
+  })
+
+  test('the fallback of ?? is given for what the whole is given for', () => {
+    const source = 'func first(s: []u8) -> u32 => s.len\n'
+    // A const slice is wanted: "" needs no mut.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 => first(x[i..] ?? "")`)).toEqual([])
+    expect(errs(`${source}func f(t: [][]mut u8) -> u32 {\n  let s: []u8 = t[0] ?? "ab"\n  return first(s)\n}`)).toEqual([])
+    // So for a parameter whose type is inferred from the argument.
+    expect(errs('func count(comptime T: type, s: []T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => count(x[i..] ?? "")')).toEqual([])
+    // A mutable one is: it does.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s: []mut u8 = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+    expect(errs('func fill(comptime T: type, s: []mut T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => fill(x[i..] ?? "")')).toEqual([`${constant('""', '[]mut u8')}`])
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+  })
+})
+
 describe('a string literal as a slice', () => {
   const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
   const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>
@@ -1586,8 +1717,11 @@ describe('a string literal as a slice', () => {
     `cannot use a string literal among ${element} elements — a string is bytes ([]u8); write the ${element} elements as an array literal ([1, 2, 3])`
 
   test('is a slice of elements of one byte', () => {
-    for (const type of ['[]u8', '[]mut u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
+    for (const type of ['[]u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
       expect(errs(`func f() -> u32 { let s: ${type} = "abc"\n return 1 }`)).toEqual([])
+    }
+    for (const type of ['[]mut u8', '?[]mut u8', '*mut [3]u8']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = mut "abc"\n return 1 }`)).toEqual([])
     }
     expect(errs('data names: [][]u8 = ["ab", "c"]\ndata rows: [][][]u8 = [["ab"], ["c", "d"]]\ndata joined: []u8 = ["ab", "c"]')).toEqual([])
   })
@@ -1706,7 +1840,7 @@ describe('a slice from a pointer and a length', () => {
     expect(errs('global g: []i32 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to []i32'])
     expect(errs('type R = (name: []u8, n: i32)\nglobal g: R = ((0), 1)')).toEqual(['cannot assign int(0) to []u8'])
     expect(errs('func f() { let s: []i32 = () }')).toEqual(['cannot assign () to []i32'])
-    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['cannot assign (len: int(3)) to []u8'])
+    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr'])
     expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
       'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
     ])
@@ -2319,11 +2453,11 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(c: bool) -> i32 { let t = if c { (-2147483648, 1) } else { (2147483648, 2) }\n return t.0 }`)).toEqual(['cannot assign i64 to i32'])
     // Tuples that aren't alike still don't agree.
     expect(errs(`func f(c: bool) { let t = if c { (1, 2) } else { (3, 4, 5) } }`))
-      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)) (cast one explicitly)'])
+      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)): give the value its type, as in let v: T = ..., and each branch is checked against T'])
     expect(errs(`func f(c: bool) { let t = if c { (x: 1, y: 2) } else { (y: 3, x: 4) } }`))
-      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)) (cast one explicitly)'])
+      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)): give the value its type, as in let v: T = ..., and each branch is checked against T'])
     expect(errs(`func f(c: bool, x: f64) { let t = if c { (x, 2) } else { (3, true) } }`))
-      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool) (cast one explicitly)'])
+      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool): give the value its type, as in let v: T = ..., and each branch is checked against T'])
   })
 
   test('branches that cannot agree are an error where the value is used', () => {
@@ -2377,6 +2511,65 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(a: i32, b: u32) { let r = [a, b] }`)).toEqual(['elements have different types: u32 and i32 (cast one explicitly)'])
     expect(errs(`func f(a: i32, b: bool) { let r = [a, b] }`)).toEqual(['elements have different types: bool and i32 (cast one explicitly)'])
     expect(errs(`func f(a: i64, x: f64) { let r = [x, a] }`)).toEqual(['elements have different types: i64 and f64 (cast one explicitly)'])
+  })
+
+  test('tuples in an untyped array literal settle on one type as branches do', () => {
+    // 445731f took the first element's type and laid the others over it as
+    // they came: (3, 4, 5) went into two (i32, i32) slots, (x: 3, y: 4)
+    // after a (y:, x:) had an x of 4, and 300 sat in a u8.
+    const source = `
+      func f(n: i64) {
+        let wide = [(x: 1:u8, y: 2), (x: 300, y: 4)]
+        let big = [(1, 2), (3, 5000000000)]
+        let mixed = [(1, n), (2, 3)]
+        let turned = [(y: 1, x: 2), (x: 3, y: 4)]
+      }
+    `
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    const type = (name: string) => typeAt(result, source.indexOf(`let ${name} =`) + 4)
+    expect(type('wide')).toBe('[2](x: i32, y: i32)')
+    expect(type('big')).toBe('[2](i32, i64)')
+    expect(type('mixed')).toBe('[2](i32, i64)')
+    // Tuples that don't agree are of the first one's type, which each of
+    // the others meets as it would any struct.
+    expect(type('turned')).toBe('[2](y: i32, x: i32)')
+    expect(errs(`func f() { let r = [(1, 2), (3, 4, 5)] }`)).toEqual(['cannot assign (int(3), int(4), int(5)) to (i32, i32)'])
+    expect(errs(`func f() { let r = [(y: 1, x: 2), (a: 3, b: 4)] }`)).toEqual([
+      "field 'a' not found in (y: i32, x: i32), whose fields are y and x",
+      "field 'b' not found in (y: i32, x: i32), whose fields are y and x",
+    ])
+    expect(errs(`func f() { let r = [(1, 2), (x: 3, y: 4)] }`)).toEqual([
+      "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'y' not found in (i32, i32), whose fields have no names: give the values by position",
+    ])
+    expect(errs(`type Pt = (x: i32, y: i32)\ntype Rv = (y: i32, x: i32)\nfunc f(p: Pt, q: Rv) { let r = [p, q] }`)).toEqual([
+      "cannot assign Rv to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
+    ])
+    // Strings of other lengths still go together, as they did, and are
+    // slices, as they are in an array by themselves: each keeps its length
+    // (at the merge of claude/dec-named "bc" met a *[1]u8 and was refused;
+    // on either branch alone it was laid over one and read as "b").
+    expect(errs(`func f() -> i32 { let r = [("a", 1), ("bc", 2)]\n return r[1].1 }`)).toEqual([])
+    const strings = `
+      func f(x: []u8) {
+        let plain = [("a", 1), ("bc", 2)]
+        let named = [(n: 1, s: "a"), (s: "bc", n: 2)]
+        let both = [("a", "xy"), ("bc", "z")]
+        let same = [("a", 1), ("b", 2)]
+        let held = [(mut "a", 1), (mut "bc", 2)]
+      }
+    `
+    const settled = checkModule(strings)
+    expect(settled.errors).toEqual([])
+    const typeOf = (name: string) => typeAt(settled, strings.indexOf(`let ${name} =`) + 4)
+    expect(typeOf('plain')).toBe('[2]([]u8, i32)')
+    expect(typeOf('named')).toBe('[2](n: i32, s: []u8)')
+    expect(typeOf('both')).toBe('[2]([]u8, []u8)')
+    expect(typeOf('same')).toBe('[2](*[1]u8, i32)')
+    expect(typeOf('held')).toBe('[2]([]mut u8, i32)')
+    // With its type given, each element is checked against it, by name where it has names.
+    expect(errs(`type Pt = (x: i32, y: i32)\nfunc f() -> i32 { let r: [2]Pt = [(y: 1, x: 2), (x: 3, y: 4)]\n return r[1].x }`)).toEqual([])
   })
 
   test('a declared element type is what each element has to fit', () => {
@@ -2499,7 +2692,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(1)
     `)
-    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1')
+    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1: no value for y')
   })
 
   test('an unknown field name is an error', () => {
@@ -2507,7 +2700,72 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(x: 1, z: 2)
     `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point")
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point, whose fields are x and y")
+  })
+})
+
+// The name after a dot is a whole identifier, hyphens included, as it is
+// everywhere else (reference 1.2, 4.6).
+describe('members whose name holds a hyphen', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+
+  test('a field named like a type pun and a hyphen is reached as a member', () => {
+    const src = `
+      type S = (u32-count: u32, bool-ish: bool)
+      func f(x: S, p: *S) -> u32 => if x.bool-ish { x.u32-count } else { p.u32-count }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const at = src.indexOf('x.u32-count')
+    const member = [...result.exprTypes].find(([e]) => e.kind === 'MemberExpr' && e.span.start === at)
+    expect(member && typeToString(member[1])).toBe('u32')
+  })
+
+  test('a member that is not there, where a subtraction was likely meant, says how to write one', () => {
+    expect(errs(`func f(p: *u8) {
+  let q = p.u32-1
+}`)).toEqual(["no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`"])
+    expect(errs(`func f(s: []u8) {
+  let n = s.len-1
+}`)).toEqual(["no field 'len-1' on type []u8: for a subtraction write `s.len - 1`"])
+    // The longest part before a hyphen that is a member is the one meant.
+    expect(errs(`type S = (a: u32, a-b: u32)
+func f(x: S) {
+  let n = x.a-b-c
+}`))
+      .toEqual(["no field 'a-b-c' on type S: for a subtraction write `x.a-b - c`"])
+    // Nothing before a hyphen is a member: nothing to suggest.
+    expect(errs(`type S = (a: u32)
+func f(x: S) {
+  let n = x.zz-1
+}`)).toEqual(["no field 'zz-1' on type S"])
+    // An assignment to one is the same mistake.
+    expect(errs(`func f(p: *mut u8) { p.u32-1 = 3 }`)).toEqual(["no field 'u32-1' on type *mut u8: for a subtraction write `p.u32 - 1`"])
+  })
+
+  test('the hint writes out what the member is of, however that is written', () => {
+    const src = `type Pt = (x: u32, y: u32)
+func get(p: Pt) -> Pt => p
+func f(p: Pt, ps: []Pt, q: *Pt, t: (Pt, u8)) -> u32 => get(p).y-2 + ps[0].x-1 + q.*.x-1 + (p).y-1 + t.0.x-1
+`
+    const hints = (messages: string[]) => messages.filter((m) => m.startsWith('no field'))
+    const expected = [
+      "no field 'y-2' on type Pt: for a subtraction write `get(p).y - 2`",
+      "no field 'x-1' on type Pt: for a subtraction write `ps[0].x - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `q.*.x - 1`",
+      "no field 'y-1' on type Pt: for a subtraction write `(p).y - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `t.0.x - 1`",
+    ]
+    // As the command line checks a program: from its files, with their text.
+    const path = '/virtual/hint.ents'
+    const program = typecheckProgram(new Map([[path, { module: parse(src).module!, source: src }]]), path)
+    expect(hints(program.errors.map((e) => e.message))).toEqual(expected)
+    // And from the syntax tree alone.
+    expect(hints(checkModule(src).errors.map((e) => e.message))).toEqual(expected)
+    // What cannot be written out from the tree is left out of the hint.
+    expect(hints(checkModule(`type Pt = (x: u32, y: u32)
+func f(c: bool, p: Pt) -> u32 => (if c { p } else { p }).x-1
+`).errors.map((e) => e.message))).toEqual(["no field 'x-1' on type Pt: for a subtraction write the - with spaces, as in `x - 1`"])
   })
 })
 
@@ -2743,7 +3001,7 @@ describe('builtins', () => {
       export func f() -> i32 => max(1, 2, 3)
     `)
     expect(result.errors.map(e => e.message)).toEqual([])
-    expect(result.warnings.map(e => e.message)).toEqual([])
+    expect(result.warnings.map(e => e.message)).toEqual(["'max' replaces the builtin max in this module"])
     // A variable of that name is not a function to call: the builtin is still meant.
     expect(errs(`func f(a: i32, b: i32) -> i32 {
       let max = max(a, b)
@@ -2795,6 +3053,62 @@ describe('builtins', () => {
     `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
   })
 
+  test('a function that replaces a builtin is warned of once, where it is declared', () => {
+    const src = `
+      func max(a: u32, b: u32) -> u32 => a
+      func max(a: f64, b: f64) -> f64 => a
+      func min(comptime T: type, a: T, b: T) -> T => a
+      import "env" "abs" func abs(x: i32) -> i32
+      func maximum(a: u32) -> u32 => a
+      func clz-of(a: u32) -> u32 => a
+      export func f(a: u32, b: f64, sqrt: f64) -> f64 {
+        let popcnt = max(a, a) + min(a, a) + maximum(a) + clz-of(a) + abs(1) as u32
+        return max(b, b) + sqrt(sqrt) + popcnt as f64
+      }
+      test "t" {
+        func ceil(x: f64) -> f64 => x
+        assert ceil(1.5) == 1.5
+      }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    // One for each declaration, plain, shared, generic, imported or in a
+    // test, and none for a call or for a parameter or local of the name.
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual([
+      "'max' replaces the builtin max in this module",
+      "'max' replaces the builtin max in this module",
+      "'min' replaces the builtin min in this module",
+      "'abs' replaces the builtin abs in this module",
+      "'ceil' replaces the builtin ceil in this module",
+    ])
+    expect(replaced.map(w => w.offset)).toEqual([
+      src.indexOf('func max(a: u32'),
+      src.indexOf('func max(a: f64'),
+      src.indexOf('func min'),
+      src.indexOf('func abs'),
+      src.indexOf('func ceil'),
+    ])
+  })
+
+  test('a comptime function parameter that replaces a builtin in its body is warned of once, where it is declared', () => {
+    // Inside the body `max` is the function given for it, not the builtin:
+    // the same surprise as a declared function of the name, in a smaller
+    // place. Said once, not for each instance.
+    const src = `
+      func pick(a: u32, b: u32) -> u32 => a * 100 + b
+      func last(a: u32, b: u32) -> u32 => b
+      func app(comptime max: (u32, u32) -> u32, a: u32) -> u32 => max(a, 1)
+      func id(comptime f: (u32, u32) -> u32, max: u32) -> u32 => f(max, 1)
+      export func g(a: u32) -> u32 => app(pick, a) + app(last, a) + id(pick, a)
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual(["'max' replaces the builtin max in the body of 'app'"])
+    expect(replaced.map(w => w.offset)).toEqual([src.indexOf('comptime max')])
+  })
+
   test('a variable in scope hides the declared function, and the builtin is meant again', () => {
     const src = `
       func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
@@ -2822,6 +3136,20 @@ describe('builtins', () => {
   test('memzero needs a destination whose size is known', () => {
     expect(errs(`func f(p: *mut [4]u32) { memzero(p) }`)).toEqual([])
     expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])
+  })
+
+  test('memzero of a table names loops that zero each row, one for each table in it', () => {
+    const say = (type: string, loops: string) =>
+      `memzero dest: ${type} is a table, its elements pointers to rows (reference 2.5): zero each row, ${loops}`
+    expect(errs(`func f(t: *mut [2][3]i32) { memzero(t) }`)).toEqual([say('*mut [2][3]i32', 'for row in t { memzero(row) }')])
+    expect(errs(`func f(t: *mut [2][2][2]i32) { memzero(t) }`))
+      .toEqual([say('*mut [2][2][2]i32', 'for row in t { for cells in row { memzero(cells) } }')])
+    expect(errs(`func f(t: *mut [2][2][2][2]i32) { memzero(t) }`))
+      .toEqual([say('*mut [2][2][2][2]i32', 'for row in t { for row2 in row { for cells in row2 { memzero(cells) } } }')])
+    // A loop variable with the table's own name would hide the table.
+    expect(errs(`func f(row: *mut [2][3]i32) { memzero(row) }`)).toEqual([say('*mut [2][3]i32', 'for r in row { memzero(r) }')])
+    expect(errs(`func f(t: *mut [2][2][2]i32) { for row in t { memzero(row) } }`))
+      .toEqual([say('*mut [2][2]i32', 'for r in row { memzero(r) }')])
   })
 
   test('memcpy checks its source like its destination', () => {
@@ -2881,6 +3209,102 @@ describe('functions that share a name', () => {
       func len(p: *mut [4]u8) -> u32 => 5
     `
     expect(called(mut, 'func f(p: *mut [4]u8, q: *[4]u8) -> u32 => len(p) + len(q)', 'len')).toEqual(['len:*mut.\'4\'u8'])
+  })
+
+  test('a literal beside typed arguments is exact where it fits', () => {
+    const gt = `
+      func gt(a: u32, b: u32) -> bool => a > b
+      func gt(a: f64, b: f64) -> bool => a > b
+    `
+    // x is a u32: gt(u32, u32) takes it as it is and 10 fits; gt(f64, f64)
+    // would convert x. Either side, and as the receiver.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 10) || gt(10, x) || x.gt(10)', 'gt')).toEqual([])
+    expect(called(gt, 'func f(x: f64) -> bool => gt(x, 10) || gt(1.5, x)', 'gt')).toEqual(['gt:f64|f64', 'gt:f64|f64'])
+    // A loop counter in a range is exact as its type, as it is without a literal.
+    expect(called(gt, 'func f() -> (n: u32) { for i in 12 { if gt(i, 3) { n += 1 } } }', 'gt')).toEqual([])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 2.5)', 'gt')).toEqual(['gt:f64|f64'])
+    // Two that are exact alike are still ambiguous: the typed u8 is a u8 for
+    // both, and 3 fits both.
+    const put = `
+      func put(a: u8, b: u8) -> u32 => 1
+      func put(a: u8, b: u32) -> u32 => 2
+    `
+    expect(errs(`${put}\nfunc f(x: u8) -> u32 => put(x, 3)`)).toEqual(["'put' is ambiguous for (u8, int(3))"])
+    expect(called(put, 'func f(x: u8) -> u32 => put(x, 300) + put(x, 3:u32)', 'put')).toEqual(['put:u8|u32', 'put:u8|u32'])
+  })
+
+  test('a literal inside a tuple beside typed values is exact where it fits', () => {
+    // (i, 1) is a (u32, u32) for f((u32, u32)) as it stands, and a
+    // conversion of i for f((u64, u64)): the same rule as for gt(x, 10), in
+    // the parts of the argument. Also by name, nested and behind &.
+    const f = `
+      type P32 = (x: u32, y: u32)
+      type P64 = (x: u64, y: u64)
+      func f(p: (u32, u32)) -> u32 => 1
+      func f(p: (u64, u64)) -> u32 => 2
+      func g(p: P32) -> u32 => 1
+      func g(p: P64) -> u32 => 2
+      func h(p: ((u32, u32), u8)) -> u32 => 1
+      func h(p: ((f64, f64), u8)) -> u32 => 2
+      func k(p: *(u32, u32)) -> u32 => 1
+      func k(p: *(f64, f64)) -> u32 => 2
+    `
+    const exact = 'func a(i: u32) -> u32 => f((i, 1)) + f((1, i)) + g((x: i, y: 1)) + h(((i, 1), 2)) + k(&(i, 1))'
+    for (const name of ['f', 'g', 'h', 'k']) expect(called(f, exact, name)).toEqual([])
+    expect(called(f, 'func a(i: u64) -> u32 => f((i, 1))', 'f')).toEqual(['f:<u64|u64>'])
+    expect(called(f, 'func a(i: u64) -> u32 => g((x: 1, y: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(f, 'func a(i: u32) -> u32 => f((i, 5000000000))', 'f')).toEqual(['f:<u64|u64>'])
+    // Where each function converts something, as before: ambiguous.
+    const both = `
+      func m(p: (u64, u64), q: u32) -> u32 => 1
+      func m(p: (u32, u32), q: u64) -> u32 => 2
+    `
+    expect(errs(`${both}\nfunc a(i: u32, j: u32) -> u32 => m((i, 1), j)`)).toEqual(["'m' is ambiguous for ((u32, int(1)), u32)"])
+    // Nothing typed in the tuple: nothing to say which.
+    expect(errs(`${f}\nfunc a() -> u32 => f((1, 2))`)).toEqual(["'f' is ambiguous for ((int(1), int(2)))"])
+    // A tuple with names gives the fields by name in any order, so its typed
+    // parts are matched by name too: at the merge of claude/dec-named,
+    // g((y: 1, x: i)) and g((y: j, x: i)) were ambiguous where g((x: i, y: 1))
+    // was not.
+    const turned = 'func a(i: u32, j: u32) -> u32 => g((y: 1, x: i)) + g((y: j, x: i)) + g((i, y: 1)) + i.g2((y: 1, x: i))'
+    expect(called(`${f}\nfunc g2(x: u32, p: P32) -> u32 => 1\nfunc g2(x: u32, p: P64) -> u32 => 2\n`, turned, 'g')).toEqual([])
+    expect(called(f, 'func a(i: u64) -> u32 => g((y: 1, x: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
+  })
+
+  // A tuple literal gives a struct's fields by name or by place wherever it
+  // stands (2.8), so its parts are those fields there too: inside another
+  // literal, behind &, and without names. At 0f1b047 only a literal with
+  // names that was the whole argument was laid over the struct, so these
+  // were all ambiguous.
+  test('a tuple literal is laid over a struct by name or by place, however deep it stands', () => {
+    const s = `
+      type Pt = (x: i32, y: i32)
+      type P8 = (x: u8, y: u8)
+      type P32 = (x: u32, y: u32)
+      func g(p: P8) -> u32 => 1
+      func g(p: P32) -> u32 => 2
+      func k(p: *P8) -> u32 => 1
+      func k(p: *P32) -> u32 => 2
+      func s(p: (at: Pt, n: u8)) -> u32 => 1
+      func s(p: (at: Pt, n: u32)) -> u32 => 2
+    `
+    expect(called(s, 'func a(n: u8, m: u8) -> u32 => g((n, m)) + g((n, 1)) + g((1, y: n))', 'g')).toEqual([])
+    expect(called(s, 'func a(n: u32) -> u32 => g((n, 1))', 'g')).toEqual(['g:<x:u32|y:u32>'])
+    expect(called(s, 'func a(n: u8) -> u32 => k(&(y: 1, x: n)) + k(&(n, 1))', 'k')).toEqual([])
+    expect(called(s, 'func a(n: u8) -> u32 => s((at: (2, 1), n: n)) + s((n: n, at: (y: 1, x: 2))) + s(((2, 1), n))', 's')).toEqual([])
+    expect(called(s, 'func a(n: u32) -> u32 => s((n: n, at: (y: 1, x: 2)))', 's')).toEqual(['s:<at:<x:i32|y:i32>|n:u32>'])
+    // A call one function was exact for before keeps it: f(((2, 1), n)) is
+    // exact as it stands for the one whose part has no names.
+    const kept = `
+      type Pt = (x: i32, y: i32)
+      func f(p: (Pt, u8)) -> u32 => 1
+      func f(p: ((i32, i32), u8)) -> u32 => 2
+    `
+    expect(called(kept, 'func a(n: u8) -> u32 => f(((2, 1), n))', 'f')).toEqual(['f:<<i32|i32>|u8>'])
+    // Functions that are exact alike are as ambiguous as before.
+    expect(errs(`${s}\nfunc a() -> u32 => g((1, 2))`)).toEqual(["'g' is ambiguous for ((int(1), int(2)))"])
   })
 
   test('without one, the only function the arguments can be passed to', () => {
@@ -3314,6 +3738,11 @@ describe('types too large to write out', () => {
     expect(errs(`func f(p: *${big}) -> u8 {\n  let x = p.*\n  return 0\n}`)).toEqual([large(big)])
     // A pattern of it is one error, whatever names it binds
     expect(errs(`func f(p: *${big}) -> u8 {\n  let (a, b) = (p.*, 1)\n  return b\n}`)).toEqual([large(`(${big}, i32)`)])
+    // and its names are declared as a let's are: seen past a loop around the
+    // let, and never taking the name of a variable already declared
+    const named = large(`(a: ${big}, b: i32)`)
+    expect(errs(`func f(p: *${big}) -> i32 {\n  for i in 2 {\n    let (a:, b:) = (a: p.*, b: 1)\n  }\n  return b\n}`)).toEqual([named])
+    expect(errs(`func f(p: *${big}) -> i32 {\n  let b = 2\n  let (a:, b:) = (a: p.*, b: 1)\n  return b\n}`)).toEqual([named, "'b' is already declared in this scope"])
     expect(errs(`global g: ${big}\nfunc f() -> u8 => 0`)).toEqual([large(big)])
     expect(errs(`import "m" "g" global g: ${big}\nimport "m" "h" func h(x: ${big}) -> u8\nfunc f() -> u8 => 0`)).toEqual([large(big), large(big)])
     // A struct is held with its fields, and the element of a loop or an if let is held
@@ -3368,7 +3797,9 @@ func k(s: S) -> f64 {
 
   test('lays out a literal, in data or in place, and makes a pointer to it a slice', () => {
     // A data declared with the name, or a literal given for it after a colon
-    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
+    // (PA is a *mut [3]u8: its literal is written with mut, as for the
+    // pointer it names)
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = mut [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
     // A pointer to a name for an array, whatever names the pointer
     expect(errs(`${names}type B = [3]u16\ntype PB = *B\nfunc f() -> []u16 {\n  let q: *B = [1, 2, 3]\n  let r: PB = q\n  let m: [*]u16 = r\n  let s: []u16 = r\n  return q\n}`)).toEqual([])
     // Not as writable as a slice that is: the same refusal as written out
@@ -3413,6 +3844,79 @@ describe('arguments by place and by name', () => {
       func b() -> Pt => Pt(r: 2, 1)
       func c(q: i32) -> Pt => Pt(q, r: 2)
     `)).toEqual(["Pt: field 'q' is given twice", "Pt: field 'r' is given twice"])
+  })
+
+  test('a tuple literal with names gives each field of the struct once, by name or by place', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a() -> Pt => (q: 1, z: 2)
+      func b() -> Pt => (q: 1)
+      func c() -> Pt => (q: 1, q: 2)
+      func d() -> Pt => (r: 2, 1)
+      func e(q: i32) -> Pt => (q, r: 2)
+      func f(r: i32) -> Pt => (r:, q: 1)
+    `)).toEqual([
+      "field 'z' not found in Pt, whose fields are q and r",
+      'Pt expects 2 fields, got 1: no value for r',
+      "Pt: field 'q' is given twice",
+      "Pt: field 'r' is given twice",
+    ])
+    expect(errs(`
+      type One = (v: i32)
+      func a() -> One => (w: 5)
+    `)).toEqual(["field 'w' not found in One, whose only field is v"])
+    expect(errs(`
+      func a(p: [*]u8) -> []u8 => (len: 2)
+      func b(p: [*]u8) -> []u8 => (ptr: p, len: 2, wid: 3)
+    `)).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr', '[]u8 expects 2 fields, got 3'])
+    // A value keeps its order: the error says where to give it the type.
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func mk() -> (r: i32, q: i32) => (1, 2)
+      func a() -> Pt => mk()
+      func b() -> (a: i32, q: i32) => (1, 2)
+      func c() -> Pt => b()
+    `)).toEqual([
+      "cannot assign (r: i32, q: i32) to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
+      'cannot assign (a: i32, q: i32) to Pt',
+    ])
+    // A tuple type without names, a slice and named results have the
+    // fields they have.
+    expect(errs(`
+      func f() -> (i32, i32) => (y: 1, x: 2)
+      func g(p: [*]u8) -> []u8 => (len: 3, p: p)
+      func h(p: [*]u8) -> []u8 => (len: 3, len: 4)
+      func k() -> (q: i32, r: i32) => (a: 1, r: 2)
+      func m(p: [*]u8, n: i64) -> []u8 => (len: n, ptr: p)
+    `)).toEqual([
+      "field 'y' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'p' not found in []u8: a slice's fields are ptr and len",
+      "[]u8: field 'len' is given twice",
+      "field 'a' not found in (q: i32, r: i32), whose fields are q and r",
+      'slice length: cannot assign i64 to u32',
+    ])
+  })
+
+  test('branches that give named results by name, in other orders, are no different types', () => {
+    expect(errs(`
+      func orders(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        let k: u32 = n + 1
+        if c { (hi: k, lo: 3) } else { (lo: 4, hi: k) }
+      }
+      func arms(m: u32) -> (lo: u32, hi: u32) {
+        match m { 0 => (hi: m, lo: 3), _ => { (lo: m, hi: 1:u8) } }
+      }
+    `)).toEqual([])
+  })
+
+  test('a tuple laid out as a struct in data gives each field a value of its type', () => {
+    expect(errs(`
+      type Small = (b: u8, w: u32)
+      data s: Small = (300, 1)
+      data t: Small = (w: 1.5, b: 2)
+      data u: Small = (w: 1, b: 2)
+    `)).toEqual(['cannot assign int(300) to u8', 'cannot assign float(1.5) to u32'])
   })
 
   test('a value of a struct type is not a constructor', () => {
@@ -3568,5 +4072,145 @@ describe('a function named where a value is', () => {
       func a(g: (i32) -> i32, h: (i32) -> i32) -> bool => g == h
       func b(g: (i32) -> i32) -> u32 => g as u32
     `)).toEqual([])
+  })
+})
+
+describe('the variables of a for, an if let or a match arm', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const loop = (name: string, what: string) => `'${name}' is already declared: a loop variable cannot reuse the name of ${what}`
+  const ifLet = (name: string, what: string) => `'${name}' is already declared: an if let binding cannot reuse the name of ${what}`
+  const arm = (name: string, what: string) => `'${name}' is already declared: a match binding cannot reuse the name of ${what}`
+
+  test('a loop variable cannot have the name of a variable seen where the loop is', () => {
+    // Bug 11 of the board-builder port: the loop took the variable over.
+    expect(errs('func f() -> u32 {\n let c: u32 = 5\n for c in 3 { }\n return c\n}')).toEqual([loop('c', 'a variable in scope')])
+    expect(errs('func f(n: u32) -> u32 {\n let t: u32 = 0\n for n in n { t += 1 }\n return t\n}')).toEqual([loop('n', 'a parameter')])
+    expect(errs('func f() -> (n: u32) {\n for n in 3 { }\n}')).toEqual([loop('n', 'a named result')])
+    expect(errs('func f() {\n for i in 3 {\n for i in 4 { }\n }\n}')).toEqual([loop('i', 'a loop variable in scope')])
+    // A let is seen to the end of its function, past its block.
+    expect(errs('func f(c: bool) -> i64 {\n let i: i64 = 5000000000\n if c {\n for i in 3 { }\n }\n return i\n}'))
+      .toEqual([loop('i', 'a variable in scope')])
+    expect(errs('func f(c: bool) {\n if c {\n let k: u32 = 1\n }\n for k in 3 { }\n}')).toEqual([loop('k', 'a variable in scope')])
+    expect(errs('global g: u32 = 1\nfunc f() {\n for g in 3 { }\n}')).toEqual([loop('g', 'a global')])
+    // A def stands for its value wherever it is written: the loop's would never be seen.
+    expect(errs('def k = 30\nfunc f() -> u32 {\n let t: u32 = 0\n for k in 3 { t += k }\n return t\n}')).toEqual([loop('k', 'a def')])
+    // So does a data block, also in a deferred expression run inside the body.
+    expect(errs('data d = [5:u8, 6]\nfunc use(p: *[2]u8) { }\nfunc f(xs: []u8) -> u32 {\n defer use(d)\n for d in xs {\n return 1 when d == 3\n }\n return 0\n}'))
+      .toEqual([loop('d', 'a data block')])
+  })
+
+  test('both names of a loop are checked, each where it is written', () => {
+    const src = 'data xs = [1:u32, 2]\nfunc f() -> u32 {\n let v: u32 = 100\n for i, v in xs { }\n return v\n}'
+    const found = checkModule(src).errors
+    expect(found.map(e => e.message)).toEqual([loop('v', 'a variable in scope')])
+    expect(found[0].offset).toBe(src.indexOf('v in'))
+    expect(errs('data xs = [1:u32, 2]\nfunc f(i: u32) {\n for i, v in xs { }\n}')).toEqual([loop('i', 'a parameter')])
+    expect(errs('data xs = [1:u32, 2]\nfunc f() {\n for i, i in xs { }\n}')).toEqual([loop('i', 'a loop variable in scope')])
+  })
+
+  test('an if let binding cannot have the name of a variable seen where it is', () => {
+    expect(errs('func f(p: ?*u32) -> u32 {\n if let p = p {\n return p.*\n }\n return 0\n}')).toEqual([ifLet('p', 'a parameter')])
+    // Of the binding's type or another: either was a variable the branch could not see.
+    expect(errs('func f(p: ?*u32) -> u32 {\n let q: ?*u32 = 0\n if let q = p {\n return q.*\n }\n return 7\n}'))
+      .toEqual([ifLet('q', 'a variable in scope')])
+    expect(errs('func f(p: ?*u32) -> f64 {\n let q: f64 = 0.5\n if let q = p {\n return q.* as f64\n }\n return q\n}'))
+      .toEqual([ifLet('q', 'a variable in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f(i: u32) -> u32 {\n if let v = cells[i] {\n if let v = cells[0] {\n return v\n }\n }\n return 0\n}'))
+      .toEqual([ifLet('v', 'an if let binding in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f() {\n for v in 2 {\n if let v = cells[v] { }\n }\n}'))
+      .toEqual([ifLet('v', 'a loop variable in scope')])
+    expect(errs('data cells = [7:u32, 8]\nfunc f(i: u32) {\n if let v = cells[i] {\n for v in 2 { }\n }\n}'))
+      .toEqual([loop('v', 'an if let binding in scope')])
+    // An elif let binds as an if let does.
+    expect(errs('func f(c: bool, p: ?*u32) -> u32 {\n let v: u32 = 9\n if c {\n return 1\n } elif let v = p {\n return 2\n }\n return v\n}'))
+      .toEqual([ifLet('v', 'a variable in scope')])
+  })
+
+  test('a match binding cannot have the name of a variable seen where the match is', () => {
+    expect(errs('func f(n: u32, k: u32) -> u32 => match k {\n 0 => 1\n n => n + 1\n}')).toEqual([arm('n', 'a parameter')])
+    // (A tuple pattern is refused as well: match compares no tuple yet.)
+    expect(errs('func f(x: i32, p: (i32, i32)) -> i32 => match p {\n (x, 0) => 1\n _ => 0\n}')).toEqual([
+      arm('x', 'a parameter'), 'match cannot compare a tuple pattern yet: compare one field at a time',
+    ])
+    expect(errs('func f(k: u32) -> u32 {\n let t: u32 = 0\n for n in 3 {\n t += match k {\n n => 1\n _ => 0\n }\n }\n return t\n}'))
+      .toEqual([arm('n', 'a loop variable in scope')])
+  })
+
+  // An argument that decides a type parameter, or which function of a name
+  // is meant, is looked at before it is checked. What the look declares is
+  // taken back with it: at the merge of claude/dec-generics, whose looks
+  // took back only a let's patterns, an if let or a loop in an argument of
+  // an overloaded call had its name taken over without a word.
+  test('a binding in an argument that is looked at first is checked as anywhere', () => {
+    const calls = 'func id(comptime T: type, x: T) -> T => x\nfunc over(x: u32) -> u32 => x\nfunc over(x: u64) -> u64 => x\n'
+    for (const call of ['id', 'over']) {
+      expect(errs(`${calls}func f(p: ?*u32, v: u32) -> u32 => ${call}(if let v = p { v.* } else { 0 })`)).toEqual([ifLet('v', 'a parameter')])
+      expect(errs(`${calls}func f(c: bool, i: u32) -> u32 => ${call}(if c {\n let t: u32 = 0\n for i in 3 { t += i }\n t\n} else { 0 })`))
+        .toEqual([loop('i', 'a parameter')])
+      expect(errs(`${calls}func f(k: u32, n: u32) -> u32 => ${call}(match k {\n 0 => 1\n n => n\n})`)).toEqual([arm('n', 'a parameter')])
+      // And without a clash it is one declaration, however often it is looked at.
+      expect(errs(`${calls}func f(p: ?*u32) -> u32 => ${call}(if let v = p { v.* } else { 0 }) + ${call}(if let v = p { v.* } else { 1 })`)).toEqual([])
+    }
+  })
+
+  test('the names are free again after the body', () => {
+    expect(errs(`
+      data bytes = [1:u8, 2, 3]
+      data wides = [1.5, 2.5]
+      data cells = [7:u32, 8]
+      func f(p: ?*f64) -> f64 {
+        let s: f64 = 0
+        for i in 3 { s += i as f64 }
+        for i in 4 { s += i as f64 }
+        for v in bytes { s += v as f64 }
+        for v in wides { s += v }
+        if let q = cells[1] { s += q as f64 }
+        if let q = p { s += q.* }
+        let v: f64 = 1
+        let i: i64 = 5000000000
+        let q: u32 = 2
+        return s + v
+      }
+    `)).toEqual([])
+    // A function of the module has no value: a binding hides it in its body.
+    expect(errs('func b() -> u32 => 1\nfunc f(k: []u8) -> u32 {\n let t: u32 = 0\n for b in k { t += b as u32 }\n return t + b()\n}'))
+      .toEqual([])
+    // In a test, as in a function.
+    expect(errs('test "t" {\n for i in 3 { }\n let i: u32 = 4\n assert i == 4\n}')).toEqual([])
+    expect(errs('test "t" {\n let i: u32 = 4\n for i in 3 { }\n}')).toEqual([loop('i', 'a variable in scope')])
+  })
+
+  test('a let that takes its names from fields has a name of its own too', () => {
+    const P = 'type P = (x: u32, y: u32)\n'
+    const taken = (name: string) => `'${name}' is already declared in this scope`
+    // In a loop of its name it took over the loop's counter: the loop ran once.
+    expect(errs(`${P}func f(p: P) -> u32 {\n let t: u32 = 0\n for x in 3 {\n let (x:, y:) = p\n t += y\n }\n return t\n}`)).toEqual([taken('x')])
+    expect(errs(`${P}data cells = [7:u32, 8]\nfunc f(p: P, i: u32) -> u32 {\n if let v = cells[i] {\n let (x: v, y:) = p\n return v + y\n }\n return 0\n}`))
+      .toEqual([taken('v')])
+    expect(errs(`${P}func f(p: P, x: u32) -> u32 {\n let (x:, y:) = p\n return x + y\n}`)).toEqual([taken('x')])
+    expect(errs(`${P}func f(p: P) -> u32 {\n let y: u32 = 1\n let (x:, y:) = p\n return x + y\n}`)).toEqual([taken('y')])
+    // Its names are free after a loop of them, and in another function.
+    expect(errs(`${P}func f(p: P) -> u32 {\n let t: u32 = 0\n for x in 3 { t += x }\n let (x:, y: k) = p\n return t + x + k\n}\nfunc g(p: P) -> u32 {\n let (x:, y:) = p\n return x\n}`))
+      .toEqual([])
+    // Checked again as an operand of a builtin, it is the same declaration.
+    expect(errs(`${P}func f(p: P, z: i64, c: bool) -> i64 => max(if c {\n let (x:, y:) = p\n 5\n } else { 2 }, z)`)).toEqual([])
+  })
+
+  test('a let keeps its rules: in a loop body it is seen to the end of the function', () => {
+    expect(errs('func f() -> u32 {\n for i in 3 {\n let last = i\n }\n return last\n}')).toEqual([])
+    expect(errs('func f() {\n for i in 3 {\n let x = i\n }\n let x = 2\n}')).toEqual(["'x' is already declared in this scope"])
+    expect(errs('func f() {\n for i in 3 {\n let i = 2\n }\n}')).toEqual(["'i' is already declared in this scope"])
+    expect(errs('global g: u32 = 1\nfunc f() {\n let g: u32 = 2\n}')).toEqual(["'g' is already declared in this scope"])
+    // A let in the first branch of an if let is seen there alone, as it was.
+    expect(errs('func f(p: ?*u32) -> u32 {\n if let v = p {\n let x: u32 = v.*\n }\n let x: u32 = 2\n return x\n}')).toEqual([])
+  })
+
+  test('a binding checked again is the same declaration', () => {
+    // A constant operand of a builtin is checked twice, statements and all:
+    // the let after the loop is then already there.
+    expect(errs('func f(x: i64, c: bool) -> i64 => max(if c {\n for i in 3 { }\n let i = 1\n 5\n } else { 2 }, x)')).toEqual([])
+    expect(errs('func f(x: i64, c: bool, p: ?*u32) -> i64 => max(if c {\n if let v = p { }\n let v = 1\n 5\n } else { 2 }, x)')).toEqual([])
+    // And a real collision is reported once.
+    expect(errs('func f(x: i64, c: bool) -> i64 => max(if c {\n for x in 3 { }\n 5\n } else { 2 }, x)')).toEqual([loop('x', 'a parameter')])
   })
 })

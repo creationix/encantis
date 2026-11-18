@@ -497,6 +497,48 @@ export func a(xs: []u16) -> u16 => at(xs, 2)
 export func b(xs: []u8) -> u8 => at(xs, u8, 2)
 ```
 
+A tuple decides by its typed parts: here `i` decides `T` wherever it stands, also in a tuple inside the tuple, and the literals take the type `T` turns out to be. The literals by themselves decide nothing (see the errors below).
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep((i, 1)) + keep((2, i))
+export func b(i: u16) -> u16 => deep(((1, 2), i)) + deep(((i, 2), 3))
+```
+
+```ents same-wasm
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))
+export func b(i: u16) -> u16 => deep(u16, ((1, 2), i)) + deep(u16, ((i, 2), 3))
+```
+
+A struct type with named fields is written in place as a type argument as it is after a colon, also where its field types are not expressions (`[]u8`, `Pt`, `?*Pt`) and where it has one field. It is the type a `type` of it names, and compiles to the same module.
+
+```ents
+type Pt = (q: i32, r: i32)
+func size(comptime T: type) -> u32 => sizeof(T)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+
+export func f() -> u32 => size((at: Pt, n: u8)) + size((at: Pt)) + size((p: ?*Pt))
+export func g(c: bool, s: []u8, p: Pt) -> i32 => pick((name: []u8, at: Pt), c, (name: s, at: p), (name: "b", at: p)).at.r
+```
+
+```ents same-wasm
+type Pt = (q: i32, r: i32)
+type Two = (at: Pt, n: u8)
+type One = (at: Pt)
+type Ref = (p: ?*Pt)
+type Named = (name: []u8, at: Pt)
+func size(comptime T: type) -> u32 => sizeof(T)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+
+export func f() -> u32 => size(Two) + size(One) + size(Ref)
+export func g(c: bool, s: []u8, p: Pt) -> i32 => pick(Named, c, (name: s, at: p), (name: "b", at: p)).at.r
+```
+
 A struct literal is an untyped literal: it takes the type the parameter turns out to have.
 
 ```ents
@@ -867,7 +909,19 @@ func f() -> u32 {
 cannot infer T for 'zero': write the type argument, as in zero(u32)
 ```
 
-Untyped literals only. An array literal is untyped even when one of its elements has a type.
+Untyped literals only, also as the parts of a tuple.
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+
+func f() -> u32 => keep((1, 2))
+```
+
+```errors
+cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type
+```
+
+An array literal is untyped even when one of its elements has a type.
 
 ```ents
 func count(comptime T: type, xs: []T, x: T) -> u32 => xs.len
@@ -927,19 +981,6 @@ func f(x: u32) -> u32 => max(u32, x)
 
 ```errors
 'u32' is a type; a type can only be passed for a comptime parameter
-```
-
-A struct type with named fields, written in place as a type argument. Its field types are not expressions and it is not a function type, so it does not parse; give the type a name with `type` and pass the name.
-
-```ents
-type Pt = (q: i32, r: i32)
-func size(comptime T: type) -> u32 => sizeof(T)
-
-export func f() -> u32 => size((at: Pt, n: u8))
-```
-
-```errors
-Expected "->"
 ```
 
 An argument that has no value.
@@ -1153,6 +1194,49 @@ export func f() -> u32 => deep(u8, 1)
 
 ```errors
 type arguments grow without end while instantiating 'deep'
+```
+
+A fixed array for `T` makes `[*]T`, `[]T` and `*[N]T` tables (reference 2.5): an element is a pointer to its row, not a `T`, so an instance that uses one as a `T` is refused. The error has a note that names the rule and the two ways round it: a struct with an array field, `(cells: [3]i32)`, for rows packed in place, or `*[3]i32` for pointers to rows (see Generic types, Accepted).
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+export func f(v: *Vec([3]i32)) -> i32 => get(v, 1)[2]
+export func g(v: *Vec(u32)) -> u32 => get(v, 1)
+```
+
+```errors
+cannot assign *mut [3]i32 to [3]i32, in get(T = [3]i32)
+```
+
+Bytes counted with `sizeof(T)` are the rows, not a table of them. A table's bytes are its row pointers, so `memcpy` checks a length against those, and `memzero`, which would point every row at address 0, is refused. The same code is right for a `T` that is no fixed array.
+
+```ents
+data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+
+func copy(comptime T: type, d: *mut [2]T, s: *[2]T) {
+  memcpy(d, s, 2 * sizeof(T))
+}
+func clear(comptime T: type, p: *mut [2]T) {
+  memzero(p)
+}
+
+export func f() {
+  copy(a, b)
+  clear(a)
+}
+export func g() {
+  copy(n, n)
+  clear(n)
+}
+```
+
+```errors
+memcpy length 24 exceeds buffer size 8 bytes, in copy(T = [3]i32)
+memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in p { memzero(row) }, in clear(T = [3]i32)
 ```
 
 ## Generic types
@@ -1705,7 +1789,7 @@ test "data" {
 }
 ```
 
-A struct type with named fields cannot be written in place as a type argument when its field types are not expressions. A generic type names it, also where it mentions a type parameter of the generic the call is in, which a `type` cannot.
+A struct type with named fields can be written in place as a type argument, also where it mentions a type parameter of the generic the call is in, which a `type` cannot; a generic type names it too.
 
 ```ents
 func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)
@@ -1713,10 +1797,146 @@ type Pt = (q: i32, r: i32)
 
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
 func id(comptime T: type, v: T) -> T => v
-func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).at
+func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).at + id((name: T, at: u8), (name: x, at: 3)).at
 
 export func a(c: bool, n: []u8, p: Pt) -> u32 => pick(Named([]u8, Pt), c, (name: n, at: p), (name: n, at: p)).name.len
 export func b() -> u32 => wrap(7:u64)
+```
+
+A fixed array for `T` makes `[*]mut T` a table (reference 2.5), whose elements are pointers to rows; a struct with an array field lies in place instead. So a container of rows packed in place is a `Vec` of such a struct: `sizeof(T)` is 12, the stride of `v.ptr` is 12, and growing it by `len * sizeof(T)` bytes copies every row. It compiles to the same module as the container written out for the struct.
+
+```ents
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
+  return v
+}
+
+func grow(comptime T: type, v: *mut Vec(T)) {
+  let moved = alloc(v.cap * 2 * sizeof(T))
+  memcpy(moved as *mut [4096]u8, v.ptr, v.len * sizeof(T))
+  v.ptr = moved as [*]mut T
+  v.cap *= 2
+}
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  if v.len == v.cap { grow(v) }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+type Cells = (cells: [3]i32)
+
+export func rows(n: i32) -> i32 {
+  let v = vec(Cells, 1)
+  push(v, Cells([1, 2, 3]))
+  push(v, Cells([4, 5, n]))
+  push(v, Cells([7, 8, 9]))
+  return get(v, 1).cells[2] + get(v, 2).cells[0] + (v.cap as i32)
+}
+
+test "rows packed in place" {
+  assert rows(6) == 6 + 7 + 4
+  assert sizeof(Cells) == 12
+  assert sizeof(Vec(Cells)) == 12
+}
+```
+
+```ents same-wasm
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+type Cells = (cells: [3]i32)
+type VecCells = (ptr: [*]mut Cells, len: u32, cap: u32)
+
+func vec_cells(cap: u32) -> *mut VecCells {
+  let v = alloc(12) as *mut VecCells
+  v.* = VecCells(alloc(cap * 12) as [*]mut Cells, 0, cap)
+  return v
+}
+
+func grow_cells(v: *mut VecCells) {
+  let moved = alloc(v.cap * 2 * 12)
+  memcpy(moved as *mut [4096]u8, v.ptr, v.len * 12)
+  v.ptr = moved as [*]mut Cells
+  v.cap *= 2
+}
+
+func push_cells(v: *mut VecCells, x: Cells) {
+  if v.len == v.cap { grow_cells(v) }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get_cells(v: *VecCells, i: u32) -> Cells => v.ptr[i]
+
+export func rows(n: i32) -> i32 {
+  let v = vec_cells(1)
+  push_cells(v, Cells([1, 2, 3]))
+  push_cells(v, Cells([4, 5, n]))
+  push_cells(v, Cells([7, 8, 9]))
+  return get_cells(v, 1).cells[2] + get_cells(v, 2).cells[0] + (v.cap as i32)
+}
+```
+
+For the rows' addresses, the element is a pointer: `Vec(*[3]i32)` holds pointers to rows that lie elsewhere, 4 bytes each.
+
+```ents
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
+  return v
+}
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+data one: *[3]i32 = [1, 2, 3]
+data two: *[3]i32 = [4, 5, 6]
+
+test "pointers to rows" {
+  let v = vec(*[3]i32, 2)
+  push(v, one)
+  push(v, two)
+  assert get(v, 1)[2] == 6
+  assert get(v, 0) == one
+  assert sizeof(*[3]i32) == 4
+}
 ```
 
 An exported generic type gives the host nothing, and one that is never applied is only parsed.
@@ -2006,7 +2226,7 @@ func f(p: [*]mut u32) -> u32 => Vec(u32)(p, 0).len
 ```
 
 ```errors
-Vec(u32) expects 3 fields, got 2
+Vec(u32) expects 3 fields, got 2: no value for cap
 ```
 
 ```ents
@@ -2351,7 +2571,7 @@ v.push(u32, 7)
 }
 ```
 
-A member whose name only starts like a primitive type is a field or a method. The whole name is still a type pun, and what follows it is not part of it.
+A member whose name only starts like a primitive type is a field or a method. A member's name is a whole identifier, hyphens included, so `p.u32-1` is a member called `u32-1`; only a name that is a primitive type's and nothing more is a type pun. A subtraction is written with spaces, as the formatter prints it.
 
 ```ents Expr
 v.u32s()
@@ -2377,6 +2597,24 @@ v.u32s()
 
 ```ents Expr
 p.u32-1
+```
+
+```json ast
+{
+  "kind": "MemberExpr",
+  "object": {
+    "kind": "IdentExpr",
+    "name": "p"
+  },
+  "member": {
+    "kind": "field",
+    "name": "u32-1"
+  }
+}
+```
+
+```ents Expr
+p.u32 - 1
 ```
 
 ```json ast

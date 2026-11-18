@@ -124,6 +124,27 @@ export func g(q: i32, r: i32) -> i32 {
     ])
   })
 
+  test('a struct type is written in place as a type argument, whatever its fields are', async () => {
+    const PICK = 'type Pt = (q: i32, r: i32)\nfunc pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\nfunc size(comptime T: type) -> u32 => sizeof(T)\n'
+    // Fields whose types are no expressions, and one field: (at: Pt) is the
+    // name at given a type, in parentheses, and as a type argument the struct.
+    const source = `${PICK}export func f(c: bool, s: []u8, p: Pt) -> i32 => pick((name: []u8, at: Pt), c, (name: s, at: p), (name: s, at: p)).at.q
+export func g() -> u32 => size((at: Pt)) + size((p: ?*Pt)) + size((n: u8, at: Pt))
+func wrap(comptime T: type, x: T) -> u8 => pick((t: T, n: u8), true, (t: x, n: 1), (t: x, n: 2)).n
+export func h(x: u64) -> u8 => wrap(x)`
+    expect(instancesOf(source)).toEqual([
+      "pick<<name:''u8|at:<q:i32|r:i32>>>",
+      'pick<<t:u64|n:u8>>',
+      'size<<at:<q:i32|r:i32>>>',
+      'size<<n:u8|at:<q:i32|r:i32>>>',
+      'size<<p:?*<q:i32|r:i32>>>',
+      'wrap<u64>',
+    ])
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+    expect((instance.exports.g as () => number)()).toBe(8 + 4 + 9)
+    expect((instance.exports.h as (x: bigint) => number)(5n)).toBe(1)
+  })
+
   test('a type argument is written as after a colon', () => {
     const source = `type Pt = (q: i32, r: i32)
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
@@ -285,12 +306,38 @@ export func f(x: u32) -> u32 {
 }`
     expect(instancesOf(source)).toEqual(['fst<u32>', 'id<<u32|u32>>', 'keep<u32>'])
     // What an error suggests writing is that type too.
-    expect(errorsOf(`func keep(comptime T: type, p: (T, u8)) -> T => p.0
+    expect(errorsOf(`func pair(comptime T: type, comptime U: type, p: (T, U)) -> T => p.0
 export func f() -> u32 {
   let total: u32 = 0
-  for i in 3 { total += keep((i, 1)) }
+  for i in 3 { total += pair((i, 1)) }
   return total
-}`)).toEqual(["cannot infer T for 'keep' from untyped literals: write keep(u32, ...) or give a literal its type"])
+}`)).toEqual(["cannot infer U for 'pair' from untyped literals: write pair(u32, i32, ...) or give a literal its type"])
+  })
+
+  test('a tuple decides by its typed parts, and its literals by themselves never do', () => {
+    const KEEP = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\n'
+    // i decides T in either place; the literal takes the type T turns out to be.
+    expect(instancesOf(`${KEEP}export func f(i: u16) -> u16 => keep((i, 1)) + keep((2, i))`)).toEqual(['keep<u16>'])
+    // Also inside a nested tuple, behind a pointer, and with the loop counter's range dropped.
+    expect(instancesOf(`func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+func at(comptime T: type, p: *(T, T)) -> T => p.0
+export func f(i: u64) -> u64 => deep(((1, 2), i)) + at(&(i, 1))
+export func g() -> (n: u32) { for j in 4 { n += deep(((j, 2), 3)) } }`)).toEqual(['at<u64>', 'deep<u32>', 'deep<u64>'])
+    // Only literals: nothing decides.
+    expect(errorsOf(`${KEEP}export func f() -> u32 => keep((1, 2))`)).toEqual([
+      "cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type",
+    ])
+    // The first argument that decides decides: here the tuple, by i, and a
+    // later u64 is not widened to.
+    const KEEP2 = 'func keep2(comptime T: type, p: (T, T), q: T) -> T => q\n'
+    expect(errorsOf(`${KEEP2}export func f(i: u32, big: u64) -> u64 => keep2((i, 1), big)`)).toEqual(['argument 2: cannot assign u64 to u32'])
+    expect(instancesOf(`${KEEP2}export func f(big: u64) -> u64 => keep2((1, 2), big)`)).toEqual(['keep2<u64>'])
+  })
+
+  test('a tuple that decides by its typed parts compiles as the same call written out', async () => {
+    const generic = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep((i, 1)) + keep((2, i))'
+    const written = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))'
+    expect(await wasmOfSource(generic)).toEqual(await wasmOfSource(written))
   })
 
   test('a range written in a type is part of the type', () => {
@@ -1129,7 +1176,9 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 
   test('an exported generic is not reported as unused', () => {
-    expect(check(`export ${MAX}`).warnings).toEqual([])
+    // It is a function that replaces a builtin, which is said once.
+    expect(check(`export ${MAX}`).warnings.map(w => w.message)).toEqual(["'max' replaces the builtin max in this module"])
+    expect(check(`export ${MAX.replace('max', 'largest')}`).warnings).toEqual([])
   })
 
   // The import may be written as if the function were ordinary; what the
@@ -3065,9 +3114,9 @@ export func c() -> u32 => empty(u8).cap + three(7:u32).2 + (u32, u32)(1, 2).1`
   let v = ${make}
   return 0
 }`)
-    expect(f('Vec(u32)(p, 0)')).toEqual(['Vec(u32) expects 3 fields, got 2'])
+    expect(f('Vec(u32)(p, 0)')).toEqual(['Vec(u32) expects 3 fields, got 2: no value for cap'])
     expect(f('Vec(u32)(p, 0, 4.5)')).toEqual(['field cap: cannot assign float(4.5) to u32'])
-    expect(f('Vec(u32)(p, 0, size: 4)')).toEqual(["field 'size' not found in Vec(u32)"])
+    expect(f('Vec(u32)(p, 0, size: 4)')).toEqual(["field 'size' not found in Vec(u32), whose fields are ptr, len and cap"])
     expect(f('Vec(u32)(ptr: p, len: 0, ptr: p)')).toEqual(["Vec(u32): field 'ptr' is given twice"])
     expect(f('Vec(u32)(p, 0, len: 4)')).toEqual(["Vec(u32): field 'len' is given twice"])
   })
@@ -3340,6 +3389,39 @@ export func a() -> u32 => f(1:u32, inc) + f(u32, 2, inc)`
     expect(errorsOf(unknown)).toEqual(["unknown type 'Nope'"])
   })
 
+  test('a loop variable in an instance cannot have the name of a parameter or a variable', () => {
+    const source = `func each(comptime T: type, xs: []T, comptime g: (T) -> T) -> T {
+  let t: T = 0
+  for g in xs { t += g }
+  for t in xs { }
+  return t
+}
+func inc(x: u32) -> u32 => x + 1
+export func a(xs: []u32) -> u32 => each(xs, inc)`
+    expect(errorsOf(source)).toEqual([
+      "'g' is already declared: a loop variable cannot reuse the name of a parameter, in each(T = u32, g = inc)",
+      "'t' is already declared: a loop variable cannot reuse the name of a variable in scope, in each(T = u32, g = inc)",
+    ])
+  })
+
+  test('the loops of an instance leave their names free after them', async () => {
+    const source = `func twice(comptime T: type, xs: []T) -> T {
+  let t: T = 0
+  for x in xs { t += x }
+  for x in xs { t += x }
+  let x: T = 1
+  return t + x
+}
+data a = [1:u32, 2, 3]
+data b = [0.5, 1.5]
+test "both instances" {
+  assert twice(u32, a) == 13
+  assert twice(f64, b) == 5
+}`
+    expect(errorsOf(source)).toEqual([])
+    expect(await runTestsOfSource(source)).toEqual({ ran: ['both instances'], failed: [] })
+  })
+
   test('the editor finds the parameter at its name', () => {
     const source = `${SORT}export func up(xs: []mut i32) { sort(xs, ascending) }`
     const result = check(source, { source })
@@ -3520,6 +3602,154 @@ export func f(n: u32) -> u32 => clear(n, n) + nope`
     expect(result.warnings.map(w => w.notes)).toEqual([[{ offset: source.indexOf('clear(n, n)'), message: 'required from' }]])
     expect(result.errors.length).toBeGreaterThan(0)
     expect(result.errors.some(e => 'notes' in e)).toBe(false)
+  })
+})
+
+describe('a fixed array for T makes [*]T, []T and *[N]T tables', () => {
+  const VEC = 'func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)\n'
+  const rowNote = (table: string) =>
+    `in a ${table} each element is a pointer to its row (reference 2.5): for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers`
+
+  test('an element used as T is refused, with a note that names the rule and the ways round it', () => {
+    const source = `${VEC}func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func keep(comptime T: type, x: T) -> T => x
+func pass(comptime T: type, v: *Vec(T)) -> T => keep(T, v.ptr[0])
+func each(comptime T: type, s: []T) -> u32 {
+  let n: u32 = 0
+  for e in s {
+    let x: T = e
+    n += 1
+  }
+  return n
+}
+func second(comptime T: type, p: *[2]T) -> T => p[1]
+export func a(v: *Vec([3]i32)) -> i32 => get(v, 0)[1] + pass(v)[0]
+export func b(s: [][3]i32) -> u32 => each(s)
+export func c(p: *[2][3]i32) -> i32 => second(p)[0]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'cannot assign *mut [3]i32 to [3]i32, in get(T = [3]i32)',
+      'argument 2: cannot assign *mut [3]i32 to [3]i32, in pass(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in each(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in second(T = [3]i32)',
+    ])
+    expect(result.errors.map(e => e.notes?.[0])).toEqual([
+      { offset: source.indexOf('v.ptr[i]'), message: rowNote('[*]mut [3]i32') },
+      { offset: source.indexOf('v.ptr[0]'), message: rowNote('[*]mut [3]i32') },
+      { offset: source.indexOf('x: T = e') + 'x: T = '.length, message: rowNote('[][3]i32') },
+      { offset: source.indexOf('p[1]'), message: rowNote('*[2][3]i32') },
+    ])
+    // The calls the instances were required from come after it.
+    expect(result.errors.map(e => e.notes?.[1]?.message)).toEqual(Array(4).fill('required from'))
+  })
+
+  test('an element reached through its address, or compared with a T, gets the note too', () => {
+    const source = `func at(comptime T: type, s: *[2]T) -> T {
+  let p = &s[1]
+  return p.*
+}
+func first(comptime T: type, s: []T) -> T {
+  if let p = &s[0] { return p.* }
+  return s[1] ?? s[0]
+}
+func same(comptime T: type, s: *[2]T, x: T) -> bool => s[0] == x
+export func f(t: *[2][3]i32, u: [][3]i32) -> i32 => at(t)[0] + first(u)[1] + (same(t, [1, 2, 3]) as i32)`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'cannot assign *[3]i32 to [3]i32, in at(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      // A row is no optional: the fallback's index has to be resolved
+      // where it is taken (4.7), in an instance too.
+      "index 0 on [][3]i32 requires 'if let' or '??': a slice's length is only known at run time (rows are not optional), in first(T = [3]i32)",
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      "'==' cannot be applied to *[3]i32 and [3]i32, in same(T = [3]i32)",
+    ])
+    expect(result.errors.map(e => e.notes?.[0]?.message)).toEqual([
+      rowNote('*[2][3]i32'), rowNote('[][3]i32'), 'required from', rowNote('[][3]i32'), rowNote('*[2][3]i32'),
+    ])
+  })
+
+  // fix-round-2 types &p[i] of a many-pointer table as where the row pointer
+  // is, a **[M]T: at the merge of claude/dec-latetypes such an address,
+  // given where the generic wants a *T, lost the note it had on that branch.
+  test('the address of an element of a many-pointer table, where a *T is wanted, gets the note too', () => {
+    const source = `func at(comptime T: type, p: [*]T, i: u32) -> *T => &p[i]
+export func f(p: [*][3]i32) -> i32 => at(p, 1)[2]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual(['cannot assign **[3]i32 to *[3]i32, in at(T = [3]i32)'])
+    expect(result.errors[0].notes?.[0]?.message).toBe(rowNote('[*][3]i32'))
+  })
+
+  test('a pointer to a T that is no element of a table gets no such note', () => {
+    const source = `func load(comptime T: type, p: *T) -> T => p
+export func f(p: *[3]i32) -> i32 => load(p)[0]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual(['cannot assign *[3]i32 to [3]i32, in load(T = [3]i32)'])
+    expect(result.errors[0].notes).toEqual([{ offset: source.indexOf('load(p)'), message: 'required from' }])
+  })
+
+  test('bytes counted with sizeof(T) are not the table: memcpy is checked against its pointers, memzero is refused', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+func copy(comptime T: type, d: *mut [2]T, s: *[2]T) {
+  memcpy(d, s, 2 * sizeof(T))
+}
+func clear(comptime T: type, p: *mut [2]T) {
+  memzero(p)
+}
+export func f() {
+  copy(a, b)
+  clear(a)
+  copy(n, n)
+  clear(n)
+}`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'memcpy length 24 exceeds buffer size 8 bytes, in copy(T = [3]i32)',
+      'memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in p { memzero(row) }, in clear(T = [3]i32)',
+    ])
+    const advice = 'for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers'
+    expect(result.errors.map(e => e.notes?.[0])).toEqual([
+      { offset: source.indexOf('d, s, 2'), message: `a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): ${advice}` },
+      { offset: source.indexOf('p)\n}'), message: advice },
+    ])
+  })
+
+  test('a length only known when the program runs warns with the same note, for a table only', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+func fill(comptime T: type, d: *mut [2]T, s: *[2]T, k: u32) {
+  memcpy(d, s, k * sizeof(T))
+}
+export func f(k: u32) {
+  fill(a, b, k)
+  fill(n, n, k)
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map(w => w.message)).toEqual([
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = [3]i32)',
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = u32)',
+    ])
+    const advice = 'for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers'
+    expect(result.warnings.map(w => w.notes?.[0])).toEqual([
+      { offset: source.indexOf('d, s, k'), message: `a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): ${advice}` },
+      { offset: source.indexOf('fill(n, n'), message: 'required from' },
+    ])
+  })
+
+  test('outside a generic too, the note says to go row by row', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+export func f() {
+  memset(a, 0, 24)
+}`
+    expect(check(source).errors).toEqual([{
+      offset: source.indexOf('24'),
+      message: 'memset length 24 exceeds buffer size 8 bytes',
+      notes: [{ offset: source.indexOf('a, 0'), message: 'a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): set the rows one by one, as the arrays they are' }],
+    }])
   })
 })
 
@@ -3977,7 +4207,8 @@ func less(a: u8, b: u8) -> bool => a < b
   for x in xs { s += x }
 }
 export func f(v: *Vec(u32)) -> u32 => v.items().total().double()`
-    expect(compiled(source)).toEqual(['double/1', 'total/1', 'items<u32>/1'])
+    // The order the calls are recorded in says nothing: each is looked up by its node.
+    expect(compiled(source).sort()).toEqual(['double/1', 'items<u32>/1', 'total/1'])
     expect(funcWat(watOfSource(source), 'f')).toContain('(call $double (call $total (call $items<u32> (local.get $v))))')
   })
 

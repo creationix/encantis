@@ -144,7 +144,7 @@ A simple string literal:
 }
 ```
 
-Each kind of quote can hold the other one, with no escape:
+A double-quoted string holds a single quote with no escape:
 
 ```ents Expr
 "don't"
@@ -160,8 +160,10 @@ Each kind of quote can hold the other one, with no escape:
 }
 ```
 
+An escape names a byte or a character: `\xHH` is the byte HH, `\u{H..}` the UTF-8 bytes of the character with that codepoint. `"\xE9"` is one byte, `"\u{e9}"` and `"é"` are two:
+
 ```ents Expr
-'say "hi"'
+"\xE9\u{e9}é\n"
 ```
 
 ```json AST
@@ -169,7 +171,7 @@ Each kind of quote can hold the other one, with no escape:
   "kind": "LiteralExpr",
   "value": {
     "kind": "string",
-    "bytes": "say \"hi\""
+    "bytes": "x\"e9c3a9c3a90a\""
   }
 }
 ```
@@ -180,6 +182,245 @@ So can test names:
 test "it doesn't choke on quotes" {
   assert true
 }
+```
+
+## Codepoint Literals
+
+Single quotes hold codepoints, not a string. One codepoint is an integer literal of that value, as if the number were written there: `'a'` is 97.
+
+```ents Expr
+'a'
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "int",
+    "value": "97",
+    "radix": 10
+  },
+  "quoted": true
+}
+```
+
+Each character is one codepoint, never a byte of its UTF-8 encoding, and so is each escape: `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\xHH` (the codepoint HH) and `\u{H..}`. A double quote needs no escape:
+
+```ents Expr
+'é'
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "int",
+    "value": "233",
+    "radix": 10
+  },
+  "quoted": true
+}
+```
+
+```ents Expr
+'\u{1F600}'
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "int",
+    "value": "128512",
+    "radix": 10
+  },
+  "quoted": true
+}
+```
+
+```ents Expr
+'"'
+```
+
+```json AST
+{
+  "kind": "LiteralExpr",
+  "value": {
+    "kind": "int",
+    "value": "34",
+    "radix": 10
+  },
+  "quoted": true
+}
+```
+
+Several codepoints are a tuple of them: `'ok'` is `(111, 107)`.
+
+```ents Expr
+'ok'
+```
+
+```json AST
+{
+  "kind": "TupleExpr",
+  "elements": [
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "111",
+          "radix": 10
+        },
+        "quoted": true
+      }
+    },
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "107",
+          "radix": 10
+        },
+        "quoted": true
+      }
+    }
+  ],
+  "quoted": true
+}
+```
+
+As a match pattern, one codepoint is its number, and several are the tuple pattern of them.
+
+```ents Expr
+match c {
+  'a', '\n' => 1
+  'ok' => 2
+  _ => 0
+}
+```
+
+```json AST
+{
+  "kind": "MatchExpr",
+  "subject": {
+    "kind": "IdentExpr",
+    "name": "c"
+  },
+  "arms": [
+    {
+      "kind": "MatchArm",
+      "patterns": [
+        {
+          "kind": "literal",
+          "value": {
+            "kind": "int",
+            "value": "97",
+            "radix": 10
+          }
+        },
+        {
+          "kind": "literal",
+          "value": {
+            "kind": "int",
+            "value": "10",
+            "radix": 10
+          }
+        }
+      ],
+      "body": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "1",
+          "radix": 10
+        }
+      }
+    },
+    {
+      "kind": "MatchArm",
+      "patterns": [
+        {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "positional",
+              "pattern": {
+                "kind": "literal",
+                "value": {
+                  "kind": "int",
+                  "value": "111",
+                  "radix": 10
+                }
+              }
+            },
+            {
+              "kind": "positional",
+              "pattern": {
+                "kind": "literal",
+                "value": {
+                  "kind": "int",
+                  "value": "107",
+                  "radix": 10
+                }
+              }
+            }
+          ],
+          "quoted": true
+        }
+      ],
+      "body": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "2",
+          "radix": 10
+        }
+      }
+    },
+    {
+      "kind": "MatchArm",
+      "patterns": [
+        {
+          "kind": "wildcard"
+        }
+      ],
+      "body": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "0",
+          "radix": 10
+        }
+      }
+    }
+  ]
+}
+```
+
+Single quotes hold at least one character:
+
+```ents Expr
+''
+```
+
+```errors
+'' holds no character
+```
+
+A string's name for an import, an export or a test is double-quoted:
+
+```ents
+import 'env' 'f' func()
+```
+
+```errors
+Expected
 ```
 
 ## Enum Declarations

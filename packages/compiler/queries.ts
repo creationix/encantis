@@ -3,11 +3,22 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
 import { LineMap, type Position } from './position'
+import {
+  ownName,
+  callOf,
+  memberIn,
+  instancesListed,
+  applicationsListed,
+  identTypeAt,
+  memberTypeAt,
+  bindingTypeAt,
+  type PerInstance,
+} from './instances'
 import { resolve } from 'path'
 import { readdir } from 'fs/promises'
 
@@ -26,6 +37,31 @@ export interface HoverResult {
   type: string
   kind: string
   value?: string
+  // The function a call at this name calls, where the name alone does not
+  // say it: an instance of a generic (index_of(T = u32)), or the function a
+  // comptime function parameter stands for
+  calls?: string
+  // For a method call x.f(a), the call it is: f(x, a)
+  as?: string
+  // What the name is in each instance there is: in a generic's body, of the
+  // generic it is in; for a generic, its own instances; for a generic type
+  // and its own names, its applications. Instances in which it is the same
+  // are listed together, and `more` counts those past the ones listed.
+  instances?: PerInstance[]
+  more?: number
+}
+
+// A hover as one line of text, as the CLI prints it:
+// local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
+export function hoverText(r: HoverResult): string {
+  const head = `${r.kind} ${r.name}: ${r.type}${r.value !== undefined ? ` = ${r.value}` : ''}`
+  const parts = [
+    ...(r.as !== undefined ? [r.as] : []),
+    ...(r.calls !== undefined ? [`calls ${r.calls}`] : []),
+    ...(r.instances ?? []).map((i) => `in ${i.in.join(', ')}: ${i.type}`),
+    ...(r.more !== undefined ? [`and ${r.more} more instance${r.more === 1 ? '' : 's'}`] : []),
+  ]
+  return parts.length > 0 ? `${head} — ${parts.join('; ')}` : head
 }
 
 export interface SymbolInfo {
@@ -208,31 +244,16 @@ export function gotoDefinition(
 }
 
 // The type of the identifier used (not declared) at an offset.
-function identExprType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
-  for (const [expr, type] of checkResult.exprTypes) {
-    if (expr.kind === 'IdentExpr' && expr.span.start === offset) return type
-  }
-  return undefined
-}
+const identExprType = identTypeAt
 
 // What a parameter, a local or a use of one at an offset is: by the binding
 // declared there (by a let, a for, an if let or a function's signature), or
 // by the identifier used there.
-function localType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
-  return checkResult.types.get(typeKey(offset, 'IdentPattern'))
-    ?? checkResult.types.get(typeKey(offset, 'Binding'))
-    ?? identExprType(checkResult, offset)
-    ?? checkResult.types.get(typeKey(offset, 'Field'))
-}
+const localType = bindingTypeAt
 
 // The type of the field named at an offset after a point (`p.x`), as the
 // checker typed the member.
-function memberType(checkResult: TypeCheckResult, offset: number): ResolvedType | undefined {
-  for (const [expr, type] of checkResult.exprTypes) {
-    if (expr.kind === 'MemberExpr' && expr.member.kind === 'field' && expr.span.end - expr.member.name.length === offset) return type
-  }
-  return undefined
-}
+const memberType = memberTypeAt
 
 // How far the offsets of a generic's first instance lie from the generic's
 // own. What a name in a generic's body is depends on the instance; the first
@@ -263,21 +284,28 @@ export function hover(
   if (!name) return null
 
   // A generic's own names come before the module's. What one of them is
-  // depends on the instance: it is shown as it is in the first one, and not at
-  // all while nothing has called the generic.
-  const generic = genericDeclaring(module, wordStart(source, offset), name)
-  if (generic) {
-    // A generic type has no instance to show its own names by.
-    const shift = generic.kind === 'FuncDecl' ? firstInstanceShift(checkResult, generic) : undefined
-    const type = shift ? localType(checkResult, offset + shift) : undefined
-    return type ? { name, type: typeToString(type) + typeCostAnnotation(type), kind: 'local' } : null
+  // depends on the instance: it is shown with the type it is declared with,
+  // in terms of the type parameters, and with what it is in each instance (in
+  // each application, for a generic type's).
+  const start = wordStart(source, offset)
+  // A field after a point in a generic's body is a member in each instance.
+  const member = memberIn(module, checkResult, start, shown)
+  if (member?.type && member.kind) {
+    const { kind, type, ...rest } = member
+    return { name, type, kind, ...rest }
+  }
+  const generic = genericDeclaring(module, start, name)
+  if (generic && !readAsModuleName(checkResult, start)) {
+    const own = ownName(source, checkResult, generic, start, name, shown)
+    if (!own?.type || !own.kind) return null
+    const { kind, type, ...rest } = own
+    return { name, type, kind, ...rest }
   }
 
   // A parameter or a local, where it is defined or used, is what the checker
   // recorded there, or else what it was defined as (where `set` assigns it),
   // and never a name of the module spelled the same (a global the parameter
   // is named like).
-  const start = wordStart(source, offset)
   const defined = checkResult.symbolRefs.get(start) ?? (checkResult.references.has(start) ? start : undefined)
   if (defined !== undefined && localDefinedAt(checkResult, defined)) {
     const type = localType(checkResult, start) ?? localType(checkResult, defined)
@@ -297,16 +325,22 @@ export function hover(
   if (sym) {
     // A generic has a signature per instance. At a call the checker recorded
     // the one that call uses, as the type of the callee. It did the same for
-    // the function that a call of a shared name means.
+    // the function that a call of a shared name means. With it go the
+    // function called (the instance), for x.f(a) the call f(x, a), and in a
+    // generic's body what each instance calls.
     if (sym.kind === 'generic' || sym.kind === 'func') {
-      const called = calledType(module, checkResult, wordStart(source, offset))
-      if (called) return { name, type: typeToString(called), kind: sym.kind }
+      const called = calledType(module, checkResult, start)
+      if (called) return { name, type: typeToString(called), kind: sym.kind, ...callOf(source, module, checkResult, start, name) }
     }
     const result: HoverResult = {
       name,
       type: symbolTypeString(sym, source),
       kind: sym.kind,
     }
+    // A generic is shown with its instances, a generic type with its
+    // applications.
+    if (sym.kind === 'generic') Object.assign(result, instancesListed(checkResult, sym.decl))
+    if (sym.kind === 'typefunc') Object.assign(result, applicationsListed(checkResult, sym.decl, shown))
     if (sym.kind === 'def') {
       if (sym.value.kind === 'int') result.value = sym.value.value.toString()
       if (sym.value.kind === 'float') result.value = sym.value.value.toString()
@@ -568,6 +602,11 @@ async function findEntsFiles(dir: string): Promise<string[]> {
     }
   }
   return files.sort()
+}
+
+// A type as hover shows it, with what a value of it costs
+function shown(type: ResolvedType): string {
+  return typeToString(type) + typeCostAnnotation(type)
 }
 
 function typeCostAnnotation(type: ResolvedType): string {

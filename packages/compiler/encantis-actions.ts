@@ -200,12 +200,57 @@ function first<T>(iter: ohm.IterationNode): T | null {
   return iter.children[0]?.toAST() ?? null
 }
 
-// Extract text content from a template token (head/middle/tail/noSub)
+// The bytes of a template token (head/middle/tail/noSub)
 // The token has delimiters at start/end and templateChar* in between
-function templateTokenText(node: OhmNode): string {
+function templateTokenBytes(node: OhmNode): Uint8Array {
   // The second child is always the templateChar* iteration
   const charsNode = node.children[1]
-  return charsNode.children.map((c: OhmNode) => c.toAST()).join('')
+  return piecesToBytes(charsNode.children.map((c: OhmNode) => c.toAST() as Piece))
+}
+
+// A character of a quoted literal: text, or the byte a \xHH escape names.
+type Piece = string | { byte: number }
+
+// The bytes of a string: its text in UTF-8, and each \xHH escape as that byte.
+function piecesToBytes(pieces: Piece[]): Uint8Array {
+  const encoder = new TextEncoder()
+  const out: number[] = []
+  let text = ''
+  const flush = () => {
+    if (text) for (const b of encoder.encode(text)) out.push(b)
+    text = ''
+  }
+  for (const piece of pieces) {
+    if (typeof piece === 'string') text += piece
+    else {
+      flush()
+      out.push(piece.byte)
+    }
+  }
+  flush()
+  return new Uint8Array(out)
+}
+
+// A literal the grammar accepts but the language does not: '' or an escape
+// that names no character. parse() reports it where it is written.
+export class LiteralError extends Error {
+  constructor(
+    message: string,
+    readonly span: Span,
+  ) {
+    super(message)
+  }
+}
+
+// What `mut` can be written before: a literal laid out in memory.
+function isMutLiteral(expr: AST.Expr): boolean {
+  return expr.kind === 'LiteralExpr' || expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'TupleExpr'
+}
+
+// One codepoint of a single-quoted literal: exactly the int literal of that
+// value, as if it were written there as a number.
+function codepoint(value: number, at: Span): AST.LiteralExpr {
+  return { kind: 'LiteralExpr', value: { kind: 'int', value: BigInt(value), radix: 10 }, quoted: true, span: at }
 }
 
 // Set dataId on literal expressions within a def value
@@ -1425,7 +1470,19 @@ export const semanticsActions: Record<string, SemanticAction> = {
         return expr
       }
     }
-    throw new Error(`mut can only be applied to literals (arrays, strings, tuples), not ${expr.kind}`)
+    // mut "ab".fill() is mut of the call: the literal it is meant for is
+    // written in parentheses with it.
+    let receiver: AST.Expr = expr
+    while (receiver.kind === 'CallExpr' || receiver.kind === 'MemberExpr' || receiver.kind === 'IndexExpr' || receiver.kind === 'SliceExpr') {
+      receiver = receiver.kind === 'CallExpr' ? receiver.callee : receiver.object
+    }
+    const text = operand.sourceString
+    const at = span(operand).start
+    if (receiver !== expr && isMutLiteral(receiver)) {
+      const literal = text.slice(receiver.span.start - at, receiver.span.end - at)
+      throw new LiteralError(`mut goes on the literal itself: write (mut ${literal})${text.slice(receiver.span.end - at)}`, span(this))
+    }
+    throw new LiteralError(`mut goes before a literal (an array, a string or a tuple), not before ${text}`, span(this))
   },
 
   UnaryExpr(expr) {
@@ -1669,9 +1726,21 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   MatchPattern_literal(lit) {
+    const value = lit.toAST() as AST.LiteralExpr | AST.TupleExpr
+    // 'ok' matches as the tuple of its codepoints, (111, 107).
+    if (value.kind === 'TupleExpr') {
+      return {
+        kind: 'tuple',
+        elements: value.elements.map((e) => ({
+          kind: 'positional',
+          pattern: { kind: 'literal', value: (e.value as AST.LiteralExpr).value },
+        })),
+        quoted: true,
+      } as AST.MatchPattern
+    }
     return {
       kind: 'literal',
-      value: lit.toAST().value,
+      value: value.value,
     } as AST.MatchPattern
   },
 
@@ -1735,7 +1804,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return typeArg(type)
   },
 
-  Arg_funcType(type, _lookahead) {
+  Arg_otherType(type, _lookahead) {
     return typeArg(type)
   },
 
@@ -1756,11 +1825,10 @@ export const semanticsActions: Record<string, SemanticAction> = {
   // ============================================================================
 
   TemplateLiteral_plain(tmpl) {
-    const text = templateTokenText(tmpl)
-    if (text.length === 0) {
-      return { kind: 'ArrayExpr', elements: [], span: span(this) } as AST.ArrayExpr
+    const bytes = templateTokenBytes(tmpl)
+    if (bytes.length === 0) {
+      return { kind: 'ArrayExpr', elements: [], template: true, span: span(this) } as AST.ArrayExpr
     }
-    const bytes = new TextEncoder().encode(text)
     return {
       kind: 'ArrayExpr',
       elements: [{
@@ -1768,32 +1836,32 @@ export const semanticsActions: Record<string, SemanticAction> = {
         value: { kind: 'string', bytes },
         span: span(this),
       } as AST.LiteralExpr],
+      template: true,
       span: span(this),
     } as AST.ArrayExpr
   },
 
   TemplateLiteral_interpolated(head, firstExpr, middles, restExprs, tail) {
     const elements: AST.Expr[] = []
-    const pushSegment = (text: string, node: OhmNode, trimStart: number, trimEnd: number) => {
-      if (text.length > 0) {
-        const bytes = new TextEncoder().encode(text)
+    const pushSegment = (bytes: Uint8Array, node: OhmNode, trimStart: number, trimEnd: number) => {
+      if (bytes.length > 0) {
         const s = span(node)
         elements.push({ kind: 'LiteralExpr', value: { kind: 'string', bytes }, span: { start: s.start + trimStart, end: s.end - trimEnd } } as AST.LiteralExpr)
       }
     }
     // head: `text${ — skip 1 (`) at start, 2 (${) at end
-    pushSegment(templateTokenText(head), head, 1, 2)
+    pushSegment(templateTokenBytes(head), head, 1, 2)
     elements.push(firstExpr.toAST() as AST.Expr)
     const mids = middles.children
     const rests = restExprs.children
     for (let i = 0; i < mids.length; i++) {
       // middle: }text${ — skip 1 (}) at start, 2 (${) at end
-      pushSegment(templateTokenText(mids[i]), mids[i], 1, 2)
+      pushSegment(templateTokenBytes(mids[i]), mids[i], 1, 2)
       elements.push(rests[i].toAST() as AST.Expr)
     }
     // tail: }text` — skip 1 (}) at start, 1 (`) at end
-    pushSegment(templateTokenText(tail), tail, 1, 1)
-    return { kind: 'ArrayExpr', elements, span: span(this) } as AST.ArrayExpr
+    pushSegment(templateTokenBytes(tail), tail, 1, 1)
+    return { kind: 'ArrayExpr', elements, template: true, span: span(this) } as AST.ArrayExpr
   },
 
   templateChar_escapeTick(_seq) { return '`' },
@@ -1900,8 +1968,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   utf8String(_lq, chars, _rq) {
-    const str = chars.children.map((c: ohm.Node) => c.toAST()).join('')
-    const bytes = new TextEncoder().encode(str)
+    const bytes = piecesToBytes(chars.children.map((c: ohm.Node) => c.toAST() as Piece))
     return {
       kind: 'LiteralExpr',
       value: { kind: 'string', bytes },
@@ -1909,14 +1976,24 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.LiteralExpr
   },
 
-  charString(_lq, chars, _rq) {
-    const str = chars.children.map((c: ohm.Node) => c.toAST()).join('')
-    const bytes = new TextEncoder().encode(str)
+  // 'a' is the int 97, and 'ok' the tuple (111, 107): a codepoint for each
+  // character or escape, never a byte of its UTF-8 encoding. One codepoint is
+  // the value itself, as a parenthesised value is.
+  codepointLiteral(_lq, chars, _rq) {
+    const parts = chars.children.map((c: ohm.Node) => {
+      const piece = c.toAST() as Piece
+      return codepoint(typeof piece === 'string' ? piece.codePointAt(0)! : piece.byte, span(c))
+    })
+    if (parts.length === 0) {
+      throw new LiteralError(`'' holds no character: write one or more between single quotes, or "" for an empty string`, span(this))
+    }
+    if (parts.length === 1) return { ...parts[0], span: span(this) }
     return {
-      kind: 'LiteralExpr',
-      value: { kind: 'string', bytes },
+      kind: 'TupleExpr',
+      elements: parts.map((value) => ({ kind: 'Arg', name: null, value, span: value.span }) as AST.Arg),
+      quoted: true,
       span: span(this),
-    } as AST.LiteralExpr
+    } as AST.TupleExpr
   },
 
   hexString(_prefix, hexChars, _rq) {
@@ -1952,8 +2029,22 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return char.toAST()
   },
 
+  // \xHH is the byte HH in a string, and the codepoint HH in single quotes.
   escapeSeq_hex(_backslash, _x, d1, d2) {
-    return String.fromCharCode(parseInt(d1.sourceString + d2.sourceString, 16))
+    return { byte: parseInt(d1.sourceString + d2.sourceString, 16) }
+  },
+
+  // \u{H..} is a character by its codepoint: in a string, its UTF-8 bytes.
+  escapeSeq_unicode(_backslash, _u, _lb, digits, _rb) {
+    const hex = digits.sourceString
+    const value = /^0*[0-9a-fA-F]{1,6}$/.test(hex) ? parseInt(hex, 16) : Infinity
+    if (value > 0x10ffff) {
+      throw new LiteralError(`\\u{${hex}} is not a character: the last codepoint is \\u{10FFFF}`, span(this))
+    }
+    if (value >= 0xd800 && value <= 0xdfff) {
+      throw new LiteralError(`\\u{${hex}} is not a character: D800 to DFFF are UTF-16 surrogates, not codepoints`, span(this))
+    }
+    return String.fromCodePoint(value)
   },
 
   escapeSeq_simple(_backslash, char) {

@@ -1,6 +1,7 @@
 // =============================================================================
 // Encantis Language Server
-// Provides diagnostics and hover for .ents files. Shared by the desktop (Node)
+// Provides diagnostics, hover, definition and references for .ents files.
+// Shared by the desktop (Node)
 // and web (worker) entry points, which only differ in how they connect.
 // =============================================================================
 
@@ -14,6 +15,8 @@ import {
   TextDocumentSyncKind,
   type TextDocumentPositionParams,
   type Hover,
+  type Location,
+  type ReferenceParams,
   MarkupKind,
   SemanticTokensBuilder,
   SemanticTokensLegend,
@@ -25,7 +28,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { parse } from '@encantis/compiler/parser';
 import type { Module } from '@encantis/compiler/ast';
 import { fieldNamedAt, genericDeclaring } from '@encantis/compiler/checker';
-import { buildMeta, type MetaError, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import { buildMeta, type MetaError, type MetaHint, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
@@ -64,6 +67,8 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'def': return 'def';
     case 'func': return 'func';
     case 'type': return 'type';
+    case 'typeparam':
+    case 'comptime': return 'comptime';
     default: return '';
   }
 }
@@ -108,9 +113,30 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
       return symbol.value
         ? `def ${symbol.name}: ${typeStr} = ${symbol.value}`
         : `def ${symbol.name}: ${typeStr}`;
+    // A generic's comptime parameters, as they are declared
+    case 'typeparam':
+    case 'comptime':
+      return `comptime ${symbol.name}: ${typeStr}`;
     default:
       return `${symbol.name}: ${typeStr}`;
   }
+}
+
+// What a hint says beyond its type, below it: for x.f(a) the call it is, the
+// function a call calls (an instance of a generic), and what the name is in
+// each instance (each application, for a generic type).
+function hintDetails(hint: MetaHint, meta: MetaOutput): string {
+  const parts: string[] = [];
+  const call = hint.as !== undefined ? `the call \`${hint.as}\`` : '';
+  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls \`${hint.calls}\`` : `calls \`${hint.calls}\``);
+  else if (call) parts.push(call);
+  const listed = (hint.instances ?? []).map(i => {
+    const type = formatLine(meta.types[i.type]?.type ?? 'unknown');
+    return `- in ${i.in.map(n => `\`${n}\``).join(', ')}: \`${type}\``;
+  });
+  if (hint.more !== undefined) listed.push(`- and ${hint.more} more instance${hint.more === 1 ? '' : 's'}`);
+  if (listed.length > 0) parts.push(listed.join('\n'));
+  return parts.map(p => `\n\n${p}`).join('');
 }
 
 // Cache analysis results per document
@@ -152,9 +178,11 @@ function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
   switch (kind) {
     case 'type':
     case 'unique':
+    case 'typeparam':
       return 0; // type
     case 'func':
-      return 1; // function
+    case 'comptime':
+      return 1; // function (a comptime function parameter stands for one)
     case 'param':
       return 2; // parameter (input)
     case 'return':
@@ -209,6 +237,8 @@ export function startServer(connection: Connection): void {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
         hoverProvider: true,
+        definitionProvider: true,
+        referencesProvider: true,
         documentFormattingProvider: true,
         semanticTokensProvider: {
           legend: tokenLegend,
@@ -424,15 +454,17 @@ export function startServer(connection: Connection): void {
         if (symbol) {
           const display = formatLine(formatSymbolDisplay(symbol, typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
+          value += hintDetails(hint, meta);
           if (symbol.doc) {
             value += `\n\n${symbol.doc}`;
           }
           return { contents: { kind: MarkupKind.Markdown, value }, range };
         }
 
-        // Check for builtin functions
+        // Check for builtin functions: a call of one has a function's type.
+        // A field or a member named like one (`min: T`, `r.max`) is not it.
         const builtinSig = BUILTIN_SIGNATURES[word];
-        if (builtinSig) {
+        if (builtinSig && typeStr.includes('->') && hint.expr === undefined) {
           return {
             contents: {
               kind: MarkupKind.Markdown,
@@ -460,7 +492,7 @@ export function startServer(connection: Connection): void {
         return {
           contents: {
             kind: MarkupKind.Markdown,
-            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\``,
+            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\`${hintDetails(hint, meta)}`,
           },
           range,
         };
@@ -480,8 +512,10 @@ export function startServer(connection: Connection): void {
       // Fallback: look up by name in symbols. Only a name of the module is
       // found that way: a parameter or local is what the hint at its own
       // position says, and where there is none (in the body of a generic
-      // function) a name alone would find some other function's.
-      const symbol = meta.symbols.find(s => s.name === word && s.kind !== 'param' && s.kind !== 'local' && s.kind !== 'return');
+      // function) a name alone would find some other function's. So is a
+      // generic's type parameter or comptime parameter.
+      const own: MetaSymbol['kind'][] = ['param', 'local', 'return', 'typeparam', 'comptime'];
+      const symbol = meta.symbols.find(s => s.name === word && !own.includes(s.kind));
       if (symbol) {
         const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
         const display = formatLine(formatSymbolDisplay(symbol, typeStr));
@@ -517,6 +551,48 @@ export function startServer(connection: Connection): void {
     }
 
     return null;
+  });
+
+  // -----------------------------------------------------------------------------
+  // Definition and References
+  // -----------------------------------------------------------------------------
+
+  // The symbol a name at a position is, as its hint says: where it is defined
+  // and where it is used, as the checker recorded them. A call in a
+  // generic's body is a use of the functions its instances call. Only an
+  // analysis of the text as it is now answers: while the text does not parse
+  // (or is not analysed), the last analysis is of older text, where the name
+  // at this place was another one or meant something else.
+  function symbolAt(params: TextDocumentPositionParams): { symbol: MetaSymbol; uri: string } | null {
+    const document = documents.get(params.textDocument.uri);
+    const cached = analysisCache.get(params.textDocument.uri);
+    if (!document || !cached) return null;
+    const text = document.getText();
+    if (cached.text !== text) return null;
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!word) return null;
+    const at = offsetToPosition(text, word.start);
+    const hint = cached.meta.hints[`${at.line}:${at.character}`];
+    const symbol = hint?.symbol !== undefined ? cached.meta.symbols[hint.symbol] : undefined;
+    return symbol ? { symbol, uri: params.textDocument.uri } : null;
+  }
+
+  function locationOf(uri: string, symbol: MetaSymbol, key: string): Location {
+    const [line, character] = key.split(':').map(Number);
+    return { uri, range: { start: { line, character }, end: { line, character: character + symbol.name.length } } };
+  }
+
+  connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
+    const found = symbolAt(params);
+    return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+  });
+
+  connection.onReferences((params: ReferenceParams): Location[] | null => {
+    const found = symbolAt(params);
+    if (!found) return null;
+    const { symbol, uri } = found;
+    const keys = params.context?.includeDeclaration ? [symbol.def, ...symbol.refs] : symbol.refs;
+    return keys.map(key => locationOf(uri, symbol, key));
   });
 
   // -----------------------------------------------------------------------------
@@ -598,41 +674,9 @@ export function startServer(connection: Connection): void {
       return { word: '*', start: offset, end: offset + 1 };
     }
 
-    // Handle template literal segments — find the segment boundaries
-    // Look backwards for ` or }  and forwards for ${ or `
-    if (ch !== '`' && ch !== '$' && ch !== '{' && ch !== '}') {
-      const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
-      const lineEnd = text.indexOf('\n', offset);
-      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-      const col = offset - lineStart;
-
-      // Check if we're inside a template literal by scanning for unmatched backtick
-      let inTemplate = false;
-      let segStart = -1;
-      for (let i = 0; i < col; i++) {
-        if (line[i] === '`' && (i === 0 || line[i - 1] !== '\\')) {
-          inTemplate = !inTemplate;
-          if (inTemplate) segStart = i + 1;
-        } else if (inTemplate && line[i] === '$' && line[i + 1] === '{') {
-          segStart = -1; // in interpolation
-        } else if (inTemplate && line[i] === '}' && segStart === -1) {
-          segStart = i + 1; // back in text segment
-        }
-      }
-      if (inTemplate && segStart !== -1 && segStart <= col) {
-        // Find segment end: ${ or `
-        let segEnd = col;
-        for (let i = col; i < line.length; i++) {
-          if (line[i] === '`' || (line[i] === '$' && line[i + 1] === '{')) {
-            segEnd = i;
-            break;
-          }
-        }
-        if (segEnd > segStart) {
-          return { word: text.slice(lineStart + segStart, lineStart + segEnd), start: lineStart + segStart, end: lineStart + segEnd };
-        }
-      }
-    }
+    // A literal in single quotes, or a piece of a template's text, is one word.
+    const quoted = quotedAt(text, offset);
+    if (quoted) return quoted;
 
     // Handle string literals using quote counting to determine if we're inside a string
     // Count quotes from line start to current position
@@ -680,6 +724,54 @@ export function startServer(connection: Connection): void {
     while (end < text.length && isWordChar(text[end])) end++;
     if (start === end) return null;
     return { word: text.slice(start, end), start, end };
+  }
+
+  // The literal that `offset` is in or on, read from the start of its line
+  // past comments, strings and escapes: one in single quotes ('a', 'ok'),
+  // from quote to quote, or a piece of a template's text, from its backtick
+  // or the } that closes an interpolation to its closing backtick or the next
+  // ${. What a template's ${...} holds is read as code, where a quote may
+  // hold a } or a backtick.
+  function quotedAt(text: string, offset: number): { word: string; start: number; end: number } | null {
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    const lineEnd = text.indexOf('\n', offset) === -1 ? text.length : text.indexOf('\n', offset);
+    // For each ${ that is open, how many braces were open where it opened:
+    // the } that closes it is the one that leaves that many open.
+    const interpolations: number[] = [];
+    let braces = 0;
+    let i = lineStart;
+    while (i < lineEnd && i <= offset) {
+      const ch = text[i];
+      if (ch === '/' && text[i + 1] === '/') return null;
+      if (ch === '"' || ch === "'") {
+        const start = i;
+        i++;
+        while (i < lineEnd && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i + 1, lineEnd);
+        if (ch === "'" && offset >= start && offset < end) return { word: text.slice(start, end), start, end };
+        i = end;
+        continue;
+      }
+      if (ch === '`' || (ch === '}' && interpolations.at(-1) === braces)) {
+        if (ch === '}') interpolations.pop();
+        const start = i + 1;
+        i = start;
+        while (i < lineEnd && text[i] !== '`' && !(text[i] === '$' && text[i + 1] === '{')) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i, lineEnd);
+        if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
+        if (i < lineEnd && text[i] === '$') {
+          interpolations.push(braces);
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+      if (ch === '{') braces++;
+      else if (ch === '}') braces--;
+      i++;
+    }
+    return null;
   }
 
   function isWordChar(ch: string): boolean {

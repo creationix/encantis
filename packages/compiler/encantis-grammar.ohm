@@ -266,13 +266,14 @@ Encantis {
 
   LValue = ident AccessSuffix*
 
-  // A member is a type pun only when its whole name is a primitive type's:
-  // `.u32` and `.u32-1` are, `.u32s` and `.boolish` are a field or a method.
-  // The check is lexical, so that what follows on the next line is not
-  // taken for the rest of the name.
+  // A member's name is a whole identifier, hyphens included, and it is a
+  // type pun only when that whole name is a primitive type's: `.u32` is one,
+  // `.u32s`, `.boolish` and `.u32-1` are a field or a method. The check is
+  // lexical, so that what follows on the next line is not taken for the
+  // rest of the name.
   AccessSuffix = "." digit+        -- tupleIndex
                | "." "*"           -- deref
-               | "." PrimitiveType #(~(letter | digit | "_"))  -- typePun
+               | "." PrimitiveType #(~identChar)  -- typePun
                | "." ident         -- field
                | "[" Expr? ".." Expr? "]"  -- slice
                | "[" Expr "]"      -- index
@@ -427,7 +428,7 @@ Encantis {
   // - (0, y)         tuple pattern
   // - Red            unit variant (typeIdent)
   // - x              binding (ident, lowercase)
-  // - 42, "hello"    literals
+  // - 42, 'a', true  literals ('ok' is the tuple pattern (111, 107))
   // - _              wildcard
   MatchPattern = typeIdent "(" MatchPatternList ")"  -- constructor
                | "(" MatchPatternList ")"            -- tuple
@@ -450,17 +451,19 @@ Encantis {
 
   // An argument is nearly always an expression, so wherever it could be one
   // that is tried before anything else. A type comes first only when its
-  // first token says it cannot be an expression ([]u8, *T, Point), and a
-  // function type is tried only where an expression did not end the argument.
-  // This accepts exactly what "a function type, another type, an expression"
-  // in that order does, without parsing every argument as a type first; the
-  // last alternative is there for the error after an expression that is
-  // followed by something else.
+  // first token says it cannot be an expression ([]u8, *T, Point), and any
+  // other type is tried only where an expression did not end the argument:
+  // a function type, (u32) -> u32, or a struct type whose fields are not
+  // all expressions, (name: []u8, at: Point). An argument that is both an
+  // expression and a type, u32 or (q: i32, r: i32), stays an expression,
+  // which the checker reads as a type where the parameter is one. The last
+  // alternative is there for the error after an expression that is followed
+  // by something else.
   Arg = ident ":" Expr            -- named
       | ident ":"                 -- shorthand
       | TypeLit &("," | ")")      -- type
       | Expr &("," | ")")         -- positional
-      | Type_func &("," | ")")    -- funcType
+      | Type &("," | ")")         -- otherType
       | Expr                      -- unfinished
 
   // A type written as an argument, for a comptime type parameter. Only the
@@ -479,6 +482,7 @@ Encantis {
 
   literal = numberLiteral
           | stringLiteral
+          | codepointLiteral
           | boolLiteral
 
   numberLiteral = floatLiteral
@@ -506,20 +510,22 @@ Encantis {
 
   exponent = caseInsensitive<"e"> ("+" | "-")? digit+
 
+  // A string is double-quoted: bytes in memory.
   stringLiteral = utf8String
-                | charString
                 | hexString
                 | base64String
 
   utf8String = "\"" dqChar* "\""
 
-  charString = "'" sqChar* "'"
+  // Single quotes hold codepoints, not a string: 'a' is 97, 'ok' is the
+  // tuple (111, 107). Each character or escape is one codepoint.
+  codepointLiteral = "'" sqChar* "'"
 
   hexString = "x\"" (hexByte | space)* "\""
 
   base64String = "b\"" (base64Char | space)* "\""
 
-  // Each kind of string only excludes its own quote: "don't" and 'say "hi"'.
+  // Each kind of quote only excludes its own: "don't" and '"'.
   dqChar = escapeSeq
          | ~("\"" | "\\") any
 
@@ -527,6 +533,7 @@ Encantis {
          | ~("'" | "\\") any
 
   escapeSeq = "\\" "x" hexDigit hexDigit  -- hex
+            | "\\" "u" "{" hexDigit+ "}"  -- unicode
             | "\\" escapeChar             -- simple
 
   escapeChar = "n" | "t" | "r" | "\\" | "\"" | "'"

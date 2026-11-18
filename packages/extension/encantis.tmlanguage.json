@@ -171,7 +171,7 @@
           "end": "\""
         },
         {
-          "name": "string.quoted.single.encantis",
+          "name": "constant.character.encantis",
           "begin": "'",
           "end": "'",
           "patterns": [{ "include": "#escape-sequences" }]
@@ -189,6 +189,10 @@
         {
           "name": "constant.character.escape.hex.encantis",
           "match": "\\\\x[0-9a-fA-F]{2}"
+        },
+        {
+          "name": "constant.character.escape.unicode.encantis",
+          "match": "\\\\u\\{[0-9a-fA-F]+\\}"
         },
         {
           "name": "constant.character.escape.encantis",
@@ -260,7 +264,7 @@
         },
         {
           "name": "punctuation.accessor.typepun.encantis",
-          "match": "(?<=[a-zA-Z0-9_*\\]])\\.(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(?![a-zA-Z0-9_])",
+          "match": "(?<=[a-zA-Z0-9_*\\]])\\.(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(?![a-zA-Z0-9_-])",
           "captures": {
             "1": { "name": "entity.name.type.encantis" }
           }

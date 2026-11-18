@@ -35,9 +35,9 @@ export func split_once(s: []u8, c: u8) -> (head: []u8, rest: []u8) {
 // The first line of s (without its \n) and everything after it. A final line
 // with no \n counts as a line.
 export func next_line(s: []u8) -> (line: []u8, rest: []u8) {
-  let (head:, rest:) = split_once(s, 10)
+  let (head:, rest: after) = split_once(s, 10)
   line = head
-  rest = rest
+  rest = after
 }
 
 // s without leading spaces.

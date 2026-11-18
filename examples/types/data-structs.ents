@@ -1,6 +1,6 @@
 // Tuples and structs in data arrays are laid out in the data section like any
 // other literal: field after field, with no padding. A tuple gives the fields
-// by position; a constructor can name them.
+// by position, or by name where it names them, as a constructor does.
 
 type Point = (x: i32, y: i32)
 type Named = (name: []u8, at: Point, dims: [3]u16, last: u8)
@@ -29,11 +29,13 @@ test "an array of structs, a constructor's fields by name in any order" {
   assert t == 86
 }
 
-test "a tuple's fields go by position, whatever they are called" {
-  assert swapped[0].x == 8
-  assert swapped[0].y == 7
+test "a tuple with names gives each field by name, one without by position" {
+  assert swapped[0].x == 7
+  assert swapped[0].y == 8
   let local: Point = (y: 8, x: 7)
-  assert local.x == 8
+  assert local.x == 7
+  let placed: Point = (8, 7)
+  assert placed.x == 8
 }
 
 test "a slice field points at its own literal" {

@@ -26,7 +26,7 @@ merge-round64   // hyphenated
 my_var_2        // underscores and digits
 ```
 
-Hyphens in identifiers are idiomatic for constants and helper functions.
+Hyphens in identifiers are idiomatic for constants and helper functions. A name holds its hyphens wherever it stands, after a dot too (`x.u32-count` is the member `u32-count`), so a subtraction is written with spaces: `n - 1`. The formatter prints every binary `-` that way.
 
 ### 1.3 Type Identifiers
 
@@ -105,17 +105,49 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 
 ```ents
 "hello"           // UTF-8 string literal
-"line1\nline2"    // escape sequences: \n \t \r \\\ \"
-'also a string'   // single quotes work too
+"line1\nline2"    // escape sequences: \n \t \r \\ \' \"
+"\xE9"            // \xHH is the byte HH: one byte
+"\u{e9}"          // \u{H..} is a character by its codepoint: its UTF-8 bytes, two here
 x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
 b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
+A string is written in double quotes; single quotes hold codepoints ([Codepoint Literals](#codepoint-literals)). The `x` and `b` prefixes take double quotes only. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
 
-There is no character literal: `'a'` is a string of one byte, in memory like any other. It is not a byte to compare, compute with, assign or pass: with `c: u8`, `c == 'a'`, `c - 'a'`, `let b: u8 = 'a'` and `match c { 'a' => ... }` are compile errors. Write the byte as a number (`c == 97`).
+A string is never a character: next to a number, given for one or matched against one it is an error, which shows how the character is written (`'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`).
+
+#### Codepoint Literals
+
+Single quotes hold codepoints, not a string. Each character between them is one codepoint (a Unicode scalar value, never a byte of its UTF-8 encoding), and each codepoint is exactly the integer literal of its value, as if the number were written in its place:
+
+```ents
+'a'               // 97
+'é'               // 233: a u8 holds it, as it holds 233
+'ā'               // 257: too big for a u8, as 257 is
+'\n'              // 10; also \t \r \\ \' \" (and ' needs no escape in "don't")
+'\x7F'            // 127: \xHH is the codepoint HH
+'\u{1F600}'       // 128512: \u{H..} is the codepoint H..
+'ok'              // the tuple (111, 107)
+```
+
+One codepoint is the value itself, as a parenthesised value is (`'a'` is `(97)`, which is `97`), so it compares, computes, assigns, passes and matches as its number does. With `c: u8`:
+
+```ents
+def newline = '\n'
+
+func is_lower(c: u8) -> bool => c >= 'a' && c <= 'z'
+func digit(c: u8) -> u8 => c - '0'
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+```
+
+Several codepoints are the tuple of them, values in registers like any tuple: `let (x, y) = 'ok'` binds 111 and 107, and `'RIFF'` passes for a `(u8, u8, u8, u8)` as `(82, 73, 70, 70)` does. A tuple is not an array, so `'abc'` is no `[3]u8`, and neither it nor `(97, 98, 99)` is a row of a table, an element of a `[][3]u8` or what a `*[3]u8` points at: for those, write the string `"abc"` or the array `[97, 98, 99]`.
+
+A single-quoted literal is never a string, nor an address: where a pointer or a slice is wanted it is an error that shows the string (`cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")`). `''` holds no codepoint and is an error, as is an escape that names no character (`\u{D800}` to `\u{DFFF}`, past `\u{10FFFF}`).
 
 #### Template Literals
 
@@ -189,7 +221,9 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
-A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T` (or for a `*mut [N][!]T`) and the elements of a literal given for a slice of mutable slices (`[][]mut u8`).
+A literal is constant unless it is written with `mut`, wherever it is: where a mutable pointer or slice is wanted, a literal without `mut` is an error that shows it written with the keyword. `let buf: []mut u8 = [0:u8; 20]` is ``a literal is constant: write `mut [0:u8; 20]` for a []mut u8``; the same goes for `data s: []mut i32 = [20, 8]`, an argument `"abc"` for a `[]mut u8` parameter (`mut "abc"`), a slice field of a struct (`Buf(mut [0:u8; 4], 0)`), an element of a slice of mutable slices (`data q: *[2][]mut u8 = [mut "ab", mut "cd"]`), the table literal of a `*mut [N][M]T` and a template literal for a `[]mut []u8` (``mut `a${x}b` ``). The receiver of a method call is shown in parentheses, ``receiver: a literal is constant: write `(mut "abc")` for a []mut u8``, as `mut` goes on the literal itself: `mut "abc".fill()` would be `mut` of the call, and is a syntax error that says so. Only where a mutable pointer or slice is wanted: the fallback of `??` is given for what the whole is given for ([4.7](#the--operator)), so in `println(digits[i..] ?? "")`, with `digits` a `*mut [24]u8` and `println` taking a `[]u8`, `""` needs no `mut`.
+
+`mut` makes the whole literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `&` before a literal makes a writable cell of its own as well (`let n = &0:u32` is a `*mut u32`), and so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`.
 
 #### `def` — Compile-Time Constants
 
@@ -451,7 +485,8 @@ print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
 fill(text)                        // ERROR: const data → mutable param
-fill("hello")                     // OK: given for []mut u8, the literal is a mutable copy of its own
+fill("hello")                     // ERROR: a literal is constant: write `mut "hello"` for a []mut u8
+fill(mut "hello")                 // OK: a mutable copy of its own
 ```
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
@@ -480,7 +515,7 @@ In a table:
 
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
-- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself.
+- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`, and in a deeper table each row of rows: `for row in m { for cells in row { memzero(cells) } }` for a `*mut [2][2][2]T`.
 - `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
 - `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
@@ -582,7 +617,7 @@ let p = (x:, y:)             // equivalent to (x: x, y: y)
 
 <!-- spec:begin compile -->
 
-An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix. The struct is built from its fields in the order the type declares them, and that is the order their values are computed in, whatever the order they are written in:
+An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix:
 
 ```ents
 type Point = (x:f32, y:f32)
@@ -610,17 +645,65 @@ Point: field 'x' is given twice
 Point: field 'y' is given twice
 ```
 
-Only a constructor takes fields by name. A tuple literal becomes a struct field by field, by position, as any tuple does ([9.2](#structural-coercion)), whatever its elements are named: as a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 2.0. To give the fields in another order, construct the struct:
+A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value (by `let`, `=` or `set`), an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, the literal `&` lays out, a value stored through a pointer, or the value of a branch of an `if` or a `match` that is one of these. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. Only a literal is taken by name: a value made elsewhere keeps its order, and one whose fields have the struct's names in another order is not that struct ([9.2](#structural-coercion)); it is given the struct's type where it is made. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
 
 ```ents
 type Point = (x:f32, y:f32)
 
-func by_place() -> Point => (y: 2.0, x: 1.0)
-func by_name() -> Point => Point(y: 2.0, x: 1.0)
+func by_name() -> Point => (y: 2.0, x: 1.0)
+func by_place() -> Point => (2.0, 1.0)
+func first(p: [*]u8, n: u32) -> []u8 => (len: n, ptr: p)
 
-test "a tuple by position, a constructor by name" {
-  assert by_place().x == 2.0
+test "a literal with names by name, one without by position" {
   assert by_name().x == 1.0
+  assert by_place().x == 2.0
+  assert first("abc" as [*]u8, 2).len == 2
+}
+```
+
+A name the struct has no field of is an error, and so is a field given twice or not at all. A tuple type without names, such as `(f32, f32)`, has no field a name could give. The errors name the fields there are:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func a() -> Point => (x: 1.0, z: 2.0)
+func b() -> Point => (x: 1.0)
+func c() -> Point => (y: 1.0, 2.0)
+func d() -> (f32, f32) => (x: 1.0, y: 2.0)
+func e() -> Point {
+  let v = (y: 1.0:f32, x: 2.0:f32)
+  return v
+}
+```
+
+```errors
+field 'z' not found in Point, whose fields are x and y
+Point expects 2 fields, got 1: no value for y
+Point: field 'y' is given twice
+field 'x' not found in (f32, f32), whose fields have no names: give the values by position
+field 'y' not found in (f32, f32), whose fields have no names: give the values by position
+cannot assign (y: f32, x: f32) to Point: its fields have the names of Point's in another order, and only a literal gives fields by name; give the value the type Point where it is made
+```
+
+The values are computed in the order they are written, and then each goes to its field, for a constructor and a literal alike: `Point(y: f(), x: g())` calls `f` before `g`. Where the fields are written in the order the type declares them, that is all there is to it. Where they are not, a value that something written after it could change or tell apart (a call, a read of memory or of a global, anything that can trap) is computed in its turn and waits in a local until its field's place comes; a constant, a local that no other value sets, or arithmetic on them that cannot trap is computed at its field's place, as nothing can tell the difference:
+
+```ents
+type Point = (x:i32, y:i32)
+
+global seen: i32 = 0
+
+func tick(v: i32) -> i32 {
+  seen = seen * 10 + v
+  return v
+}
+
+test "values in the order written, fields by name" {
+  let p = Point(y: tick(1), x: tick(2))
+  assert seen == 12
+  assert p.x == 2
+  let q: Point = (y: tick(3), x: tick(4))
+  assert seen == 1234
+  assert q.y == 3
 }
 ```
 
@@ -848,7 +931,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
-- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s. Tuples among the elements agree field by field, as branches do: `[(1, 2), (3, 5000000000)]` is a `[2](i32, i64)`. Tuples that agree on no type (another count of fields, other names, the same names in another order) are of the first one's type, and each of the others meets it as it would any struct: `[(y: 1, x: 2), (x: 3, y: 4)]` has a second element with an `x` of 3 ([2.8](#struct-constructors)), and `(3, 4, 5)` after a `(1, 2)` is an error. A field that is a string of other lengths in each tuple is a slice, as strings of other lengths are by themselves (`["a", "bc"]` is a `[2][]u8`): `[("a", 1), ("bc", 2)]` is a `[2]([]u8, i32)`.
 
 ```ents
 type Sample = (count: i64, mean: f64)
@@ -984,7 +1067,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). A generic type applied is a name of the same kind (8.5).
 
 <!-- spec:begin compile -->
 
@@ -1123,7 +1206,7 @@ data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
 data view: []u8 = [0:u8; 1024]      // []u8 (slice, loses compile-time length)
 ```
 
-An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+An element can be a struct. A tuple gives its fields by position, or by name where it names them, as anywhere a tuple becomes a struct ([2.8](#struct-constructors)); so does a constructor. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
 
 ```ents
 type Point = (x:i32, y:i32)
@@ -1145,12 +1228,13 @@ data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, an
 
 #### Mutability
 
-Data is const unless its literal is `mut` or its declared type is a mutable pointer or slice. Const data may share its bytes with equal literals; mutable data is its own:
+Data is const unless its literal is `mut`, and a mutable type needs a `mut` literal ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). Const data may share its bytes with equal literals; mutable data is its own:
 
 ```ents
 data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
 data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
-data counts: []mut u32 = [0, 0]     // []mut u32: unique, as if written with mut
+data counts: []mut u32 = mut [0, 0] // []mut u32: unique
+data sums: []mut u32 = [0, 0]       // ERROR: a literal is constant: write `mut [0, 0]` for a []mut u32
 ```
 
 ### 3.3 Variables
@@ -1163,6 +1247,8 @@ let ptr:*u8       // uninitialized
 // Global variable (a wasm global)
 global total:i32 = 0
 ```
+
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
 
 A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
 
@@ -1238,7 +1324,7 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results it fills them in order, whatever its own fields are called. An expression body gives the results the same way.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
 
 ```ents
 func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
@@ -1252,6 +1338,12 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 }
 
 func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
+
+func named(n: u32) -> (hi: u32, lo: u32) => (lo: n & 0xffff, hi: n >> 16)  // a literal with names, by name
+
+func picked(c: bool, n: u32) -> (lo: u32, hi: u32) {
+  if c { split(n) } else { (hi: 1, lo: 2) }   // in order in one branch, by name in the other
+}
 ```
 
 <!-- spec:begin compile -->
@@ -1308,7 +1400,7 @@ test "each call reaches its own function" {
 }
 ```
 
-1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second.
+1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second. An untyped literal has no type of its own: beside typed arguments, or typed parts of a tuple, it only has to fit its parameter (see below).
 2. **Otherwise it is the only function the arguments can be passed to.** `hash("salt")` is `hash(k: []u8)`: a string is not a number. The argument is then converted as for any call.
 3. **Anything else is an error**, whether no function takes the arguments or more than one could:
 
@@ -1325,19 +1417,53 @@ no function 'hash' accepts (f64)
 'hash' is ambiguous for (int(5))
 ```
 
-`hash(5:u64)` says which. A literal has no type of its own, so a call with one among its arguments is never an exact match, whatever its other arguments are. Where the functions differ in the width or kind of their numbers, the other arguments can usually be passed to more than one of them, and the literal has to say what it is:
+`hash(5:u64)` says which. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
 
 ```ents
 func gt(a: u32, b: u32) -> bool => a > b
 func gt(a: f64, b: f64) -> bool => a > b
 
-func f(x: u32) -> bool => gt(x, 10)
-func g(x: u32) -> bool => gt(x, 10:u32)
+export func f(x: u32) -> bool => gt(x, 10)        // gt(a: u32, b: u32)
+export func g(x: f64) -> bool => gt(x, 10)        // gt(a: f64, b: f64)
+export func h(x: u32) -> bool => gt(x, 2.5)       // 2.5 is no u32: gt(a: f64, b: f64), x converted
+
+test "the typed argument says which" {
+  assert f(11)
+  assert !f(10)
+  assert g(10.5)
+  assert !h(2)
+}
+```
+
+The same holds inside a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's parts, and its literals only have to fit. `far((x, 1))` with `x: u32` is `far(p: (u32, u32))`, and `far((x, 1))` with `x: u64` is the other one. A tuple literal gives a struct's fields by name, or by place where an element has no name ([2.8](#struct-constructors)), and its parts are the fields they give, however deep the literal stands: `(y: 1, x: n)` and `(n, 1)` are as exact for a `(x: u32, y: u32)` as `(x: n, y: 1)` is, and so are `&(y: 1, x: n)` for a `*(x: u32, y: u32)` and `(n: k, at: (y: 1, x: 2))` for a `(at: (x: i32, y: i32), n: u8)`. Laying a literal out this way only settles a call that is not settled without it: where one function is exact for the literal as it is written, that one is called. An array literal is untyped as a whole, even where an element has a type.
+
+```ents
+func far(p: (u32, u32)) -> u32 => p.0 + p.1
+func far(p: (u64, u64)) -> u32 => 0
+
+export func k(x: u32) -> u32 => far((x, 1))       // far(p: (u32, u32))
+export func m(x: u64) -> u32 => far((1, x))       // far(p: (u64, u64))
+
+test "a tuple's typed parts say which" {
+  assert k(2) == 3
+  assert m(2) == 0
+}
+```
+
+Only functions that are exact alike remain ambiguous: those whose typed arguments are the same and whose literals fit each of them, as `hash(5)` above, where there is no typed argument at all, and this one, where `x` is a `u8` for both and `3` fits both:
+
+```ents
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
+
+func f(x: u8) -> u32 => put(x, 3)
 ```
 
 ```errors
-'gt' is ambiguous for (u32, int(10))
+'put' is ambiguous for (u8, int(3))
 ```
+
+`put(x, 3:u32)` says which, and `put(x, 300)` needs no help: 300 fits only a `u32`.
 
 What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 
@@ -1750,7 +1876,21 @@ ptr.([]u8)
 
 > **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
-A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)). The one exception is a name that goes on with a hyphen: `p.u32-1` is the view minus one, so `x.u32-count` is `x.u32 - count` and never a member called `u32-count`.
+A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included (§1.2), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
+
+<!-- spec:begin compile -->
+
+```ents
+func f(p: *u8) {
+  let q = p.u32-1
+}
+```
+
+```errors
+no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
+```
+
+<!-- spec:end -->
 
 ### 4.7 Bounds-Checked Indexing
 
@@ -1844,7 +1984,7 @@ let name = names[i] ?? "Unknown"     // bounds-checked index with fallback
 let ptr = optional_ptr ?? default    // null-checked pointer with fallback
 ```
 
-The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type.
+The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type. Where the whole is given for the const pointer or slice that the left side's value is the mutable one of, the fallback is given for that type: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`, and the literal there is constant ([1.5](#the-mut-keyword-on-literals)). With a mutable one wanted, or none (`let s = buf[i..] ?? mut ""`), the fallback is for the mutable type.
 
 #### `if let` Bindings
 
@@ -1871,32 +2011,53 @@ if let data = entry.dynamic {
 
 <!-- spec:begin compile -->
 
-The binding is a variable of its own, seen in the first branch only. It can have the name of a variable outside, of any type, which it hides there and leaves as it was:
+The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written, so it never hides one and never changes one:
 
 ```ents
 data cells = [7:u32, 8, 9]
 
-func pick(i: u32) -> u32 {
-  let v: u32 = 5
-  let seen: u32 = 0
-  if let v = cells[i] {
-    seen = v
+func get(p: ?*u32) -> u32 {
+  if let p = p {
+    return p.*
   }
-  return v * 100 + seen          // v is 5 again
+  return 0
 }
 
-func scaled(p: ?*u32) -> f64 {
-  let v: f64 = 0.5
-  if let v = p {
-    return v.* as f64
+func pick(i: u32) -> u32 {
+  let v: u32 = 5
+  if let v = cells[i] {
+    return v
   }
   return v
 }
+```
 
-test "an if let binding hides a variable of its name in its branch" {
-  assert pick(1) == 508
-  assert pick(7) == 500
-  assert scaled(0) == 0.5
+```errors
+'p' is already declared: an if let binding cannot reuse the name of a parameter
+'v' is already declared: an if let binding cannot reuse the name of a variable in scope
+```
+
+After the branch the name is free again: another `if let` can bind it, to a value of another type, and so can a `let`.
+
+```ents
+data cells = [7:u32, 8, 9]
+data names = ["ab", "cde"]
+
+func size(i: u32) -> u32 {
+  let n: u32 = 0
+  if let v = cells[i] {
+    n += v
+  }
+  if let v = names[i] {
+    n += v.len
+  }
+  let v: u32 = 100
+  return n + v
+}
+
+test "an if let binding is a variable of its first branch" {
+  assert size(1) == 111
+  assert size(5) == 100
 }
 ```
 
@@ -1928,7 +2089,7 @@ With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no
 
 <!-- spec:begin compile -->
 
-`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A variable is held in registers and has none, whatever type is expected of `&x`:
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
 
 ```ents
 func get(p: *i32) -> i32 => p.*
@@ -2171,6 +2332,73 @@ func total(list:[]Spot) -> i32 {
 }
 ```
 
+<!-- spec:begin compile -->
+
+The variables of a loop, its element and its index, are seen in its body only. They cannot have the name of a variable seen where the loop is: a parameter, a named result, a `let` before the loop ([3.3](#33-variables)), the variable of a loop, `if let` or match arm the loop is in, or a global. Nor can they have the name of a `def` or a `data` block, which stand for a value wherever they are written. So a loop never hides a variable, and never changes one:
+
+```ents
+func count(n: u32) -> u32 {
+  let t: u32 = 0
+  for n in n {
+    t += 1
+  }
+  return t
+}
+
+func after() -> u32 {
+  let c: u32 = 5
+  for c in 3 {
+  }
+  return c
+}
+
+func grid() -> u32 {
+  let t: u32 = 0
+  for i in 3 {
+    for i in 4 {
+      t += 1
+    }
+  }
+  return t
+}
+```
+
+```errors
+'n' is already declared: a loop variable cannot reuse the name of a parameter
+'c' is already declared: a loop variable cannot reuse the name of a variable in scope
+'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
+```
+
+After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
+
+```ents
+data bytes = [1:u8, 2, 3]
+data wides = [1.5, 2.5]
+
+func scale() -> f64 => 2.0
+
+func total() -> f64 {
+  let s: f64 = 0
+  for v in bytes {
+    s += v as f64
+  }
+  for v in wides {
+    s += v
+  }
+  for scale in 2 {
+    s += scale as f64
+  }
+  let v: f64 = 0.5
+  return s * scale() + v
+}
+
+test "a loop's variables are its body's" {
+  assert total() == 22.5
+}
+```
+
+<!-- spec:end -->
+
 ### 5.3 Control Statements
 
 All control statements support a `when` suffix for conditional execution:
@@ -2265,11 +2493,11 @@ let msg:[]u8 = match status & 3 {
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number or a bool; a string, `'a'` included, is not one ([1.5](#string-literals)):
+Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number, a codepoint (`'a'`, [1.5](#codepoint-literals)) or a bool. A string is not one, and no tuple pattern is compared yet, `'ok'` (the tuple `(111, 107)`) included: match one field at a time.
 
 ```ents
 match c {
-  97, 101, 105, 111, 117 => true   // the bytes of a, e, i, o, u
+  'a', 'e', 'i', 'o', 'u' => true   // 97, 101, 105, 111, 117
   _ => false
 }
 ```
@@ -2356,6 +2584,8 @@ The compiler enforces exhaustive matching when matching an enum — all variants
 
 #### Struct and Tuple Patterns
 
+> **Status: Not yet implemented** — `match` compares numbers, codepoints and bools; a tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`).
+
 Pattern matching works on structs and tuples too, not just enums:
 
 ```ents
@@ -2370,7 +2600,7 @@ func describe_point(p:Point) -> []u8 {
   }
 }
 
-// Anonymous tuple patterns work too
+// Anonymous tuple patterns too (not yet: the compiler refuses a tuple pattern)
 func check_pair(pair:(i32, i32)) -> bool {
   match pair {
     (0, 0) => true
@@ -2384,8 +2614,25 @@ The convention distinguishes patterns by case:
 
 - **Uppercase** (`Point`, `RGB`) — type constructor or variant
 - **lowercase** (`x`, `y`) — binding (introduces a variable)
-- **literals** (`0`, `"hello"`) — exact match
+- **literals** (`0`, `'a'`, `true`) — exact match
 - **`_`** — wildcard (match anything, don't bind)
+
+<!-- spec:begin compile -->
+
+A binding is a variable of its arm, seen in the arm's body only. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is:
+
+```ents
+func next(n: u32, k: u32) -> u32 => match k {
+  0 => 1
+  n => n + 1
+}
+```
+
+```errors
+'n' is already declared: a match binding cannot reuse the name of a parameter
+```
+
+<!-- spec:end -->
 
 ### 6.4 If-Let Bindings
 
@@ -2577,6 +2824,7 @@ export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32,
 export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
 export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
 export func f(xs: []u64) -> u64 => head(u64, xs)
+export func g(c: bool, n: []u8, p: Pt) -> []u8 => pick((name: []u8, at: Pt), c, (name: n, at: p), (name: "-", at: p)).name
 ```
 
 In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`).
@@ -2627,9 +2875,10 @@ test "inferred calls" {
    | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
    | `*Vec(T)` | a pointer to a struct of `Vec`'s shape | `T` from the field that is made of it ([8.5](#85-generic-types)) |
    | `(T) -> T` | a function, `inc` | `T` from its parameter, or else its result |
+   | `(T, T)` | a tuple with a literal in it, `(i, 1)` with `i: u32` | `T = u32`, from its typed part |
 
    Type aliases are transparent, as everywhere.
-3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide.
+3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide. A tuple decides by the parts of it that are typed, and its literals decide nothing: with `p: (T, T)`, `keep((i, 1))` for an `i: u32` gives `T = u32`, and the `1` is then a `u32`; `keep((1, 2))` decides nothing. So does a struct literal, `(x: i, y: 1)`, and `&` of either. An array literal is untyped as a whole, even where an element has a type.
 4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
 5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
 6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
@@ -2771,7 +3020,7 @@ no function 'hash' accepts (f64), in same(K = f64)
 no function 'eq' accepts (f64, f64), in same(K = f64)
 ```
 
-A call with the wrong number of arguments for the one function of its name is a mistake in the body, not a requirement on the type, and reads as it does anywhere (`'eq' expected 2 arguments, got 1, in same(K = u32)`).
+A call with the wrong number of arguments for the one function of its name is a mistake in the body, not a requirement on the type, and reads as it does anywhere (`'eq' expected 2 arguments, got 1, in same(K = u32)`). So is a literal that is wrong as it is written, whatever the type: one without `mut` for a mutable slice (``argument 1: a literal is constant: write `mut "ab"` for a []mut u8, in same(K = u32)``), single quotes where a string is wanted, or a string where a character is.
 
 ### 8.4 Instances
 
@@ -2797,6 +3046,16 @@ test "each instance has its own sizeof, and recursion ends" {
   assert b() == 2432902008176640000
 }
 ```
+
+**In the editor.** What a name in a generic's body is depends on the instance, and the editor (hover in the language server, and the `hover`, `definition` and `references` commands) shows what each instance makes of it:
+
+- A parameter, result or local shows the type it is declared with, in terms of the type parameters, and its type in each instance: `x: T — in index_of(T = u32): u32; in index_of(T = f64): f64`. A local whose type is not written is shown in terms of the type parameters where its types in the instances differ as one type parameter's arguments do, and otherwise as each type it is (`f32 or i64`); so it is also where two type parameters are bound alike in every instance, since which one it follows cannot be told. A field after a point is the member in each instance.
+- A type parameter shows what each instance binds it to; a comptime function parameter, the function each instance was given.
+- A call in the body shows the function each instance calls, where they are not all one function: `eq(y, x)` calls `eq(a: u32, b: u32)` in `index_of(T = u32)` and `eq(a: f64, b: f64)` in `index_of(T = f64)`.
+- A generic shows its instances, a call of it the instance it calls, and a method call `x.f(a)` the call `f(x, a)` it is.
+- A generic type shows its declaration and its applications (`in Pair(u32): (a: u32, b: u32)`), and its type parameters and fields what each application makes them, also a field of an element it holds (`k` in `items: [*](k: K, v: V)`).
+
+Instances that agree are listed together, and past twelve instances the rest are counted. The references of one of several functions that share a name include a call in a generic's body only where an instance calls that function, and a function no call calls is reported as never used. A generic nothing instantiates has no instance to go by: a call in its body counts as a use of every function of its name, only what is written there (a parameter's type) is shown, and its type parameters and comptime function parameters are found where they are used.
 
 What "zero cost" does not promise: no inlining (a user-declared generic `max` is a call where the builtin `max` is an inline `select`), and no merging of instances that happen to compile to the same bytes (`swap` for `u32` and for `i32` are two functions, as two hand-written functions would be).
 
@@ -2917,6 +3176,8 @@ test "one vector for each element type" {
 }
 ```
 
+**A fixed array for T.** With `T = [3]i32`, `[*]mut T` is `[*]mut [3]i32`, a table ([Nesting](#nesting)): each element is a pointer to its row, so code that uses an element as a `T`, as `get` above does, is refused in that instance, with a note that names the rule. For rows packed in place, make the element a struct with an array field, `Vec((cells: [3]i32))`: it lies in place, 12 bytes at a stride of 12, and `v.ptr[i].cells[2]` is one load (an array field is a value: its index is a constant, 2.4); for pointers to rows that lie elsewhere, say so, `Vec(*[3]i32)`.
+
 A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
 
 ```ents
@@ -3002,7 +3263,7 @@ Comptime function parameters are always written, also in the inferred form: `sor
 
 The parameter's type is a function type, written out or named: with `type Cmp = (i32, i32) -> bool`, `comptime before: Cmp` is the same parameter, and so is one typed by an applied generic type whose body is a function type.
 
-The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside. A function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
+The function's signature can decide a type parameter like any other argument, and it has to be exactly the type the parameter declares, with the names of its parameters and results left aside: names are no part of a function's type. Exact, for now: a function that a value of the declared type could be converted to is not taken, so one that takes a `u64` where the parameter says `u32`, or returns a `u8` where it says `u32`, is an error (accepting what is assignable may come later). The one relaxation: a function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
 
 ```ents
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
@@ -3025,6 +3286,35 @@ func f(xs: []mut i32) { sort(xs, inc) }
 
 ```errors
 'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
+```
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func widen(x: u64) -> u32 => x as u32
+func narrow(x: u32) -> u8 => x as u8
+
+func a(x: u32) -> u32 => twice(u32, widen, x)
+func b(x: u32) -> u32 => twice(u32, narrow, x)
+```
+
+```errors
+'widen' is (u64) -> u32, but 'twice' needs f: (u32) -> u32
+'narrow' is (u32) -> u8, but 'twice' needs f: (u32) -> u32
+```
+
+In the instance a call of the parameter is a call of the function given, and its results are that function's. A name the declared type gives a result is not there when the function's results have other names, or none, so a body that reaches a result by its name is an error in the instance:
+
+```ents
+func second(comptime f: (u32) -> (x: u32, y: u32), n: u32) {
+  let y = f(n).y
+}
+func pair(n: u32) -> (u32, u32) => (n, n + 1)
+
+func a(n: u32) { second(pair, n) }
+```
+
+```errors
+no field 'y' on type (u32, u32), in second(f = pair)
 ```
 
 Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
@@ -3054,8 +3344,6 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
 Also not in this version: generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
-
-One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
 A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
@@ -3154,7 +3442,7 @@ modify(mem_p)              // OK: mem_p points to linear memory
 
 #### Structural Coercion
 
-Structural struct types match any value with coercible fields at each position:
+Structural struct types match any value with coercible fields at each position, and with the same names. A tuple literal is matched by name where it has names, so `(y: 20, x: 10)` is a `BigPoint` with an `x` of 10, and by position where it has none ([2.8](#struct-constructors)):
 
 ```ents
 type BigPoint = (x:i32, y:i32)
@@ -3238,7 +3526,7 @@ let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
 
-`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
+`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
 ### 9.6 Structs and Slices in Memory
 
@@ -3291,7 +3579,7 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 ## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)), and so does an imported one. The compiler warns where such a function is declared, once for each declaration (each of the functions that share the name, and one a `test` declares, too): `'max' replaces the builtin max in this module`. A parameter that holds a value, or a local variable, with a builtin's name is no function and replaces nothing: `max(a, b)` beside `let max = 3` is still the builtin, and nothing is said. A comptime function parameter ([8.6](#86-comptime-function-parameters)) is a function: in the body of its generic a call of its name calls the function given for it, so `comptime max: (u32, u32) -> u32` is warned of where it is declared, once: `'max' replaces the builtin max in the body of 'app'`.
 
 ### 10.1 Numeric Builtins
 
@@ -3369,6 +3657,8 @@ let offset = u64(clz(n)) * 8
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
 `memcpy` and `memset` take pointers to sized arrays. The destination is written, so it is a `*mut` pointer, as for a write through an index: `memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+
+The size of a table (`*[N][M]T`) is its N row pointers, 4 bytes each, and `memzero` of a table is an error ([Nesting](#nesting)). A length past a table's bytes is an error, and a runtime length for a table warns, each with a note that the rows lie apart: `n * sizeof(T)` for a `T` that is a fixed array counts the rows' cells, not the table.
 
 > **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 

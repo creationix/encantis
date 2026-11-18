@@ -2,7 +2,8 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, type TypeCheckResult } from './checker'
+import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
@@ -106,7 +107,9 @@ export interface MetaType {
 
 export interface MetaSymbol {
   name: string
-  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def'
+  // typeparam: a generic's `comptime T: type`; comptime: a generic
+  // function's comptime function parameter, `comptime before: (T, T) -> bool`
+  kind: 'func' | 'type' | 'unique' | 'global' | 'local' | 'param' | 'return' | 'data' | 'def' | 'typeparam' | 'comptime'
   type: number // Index into types array
   def: string // "line:col" (0-indexed)
   refs: string[] // ["line:col", ...]
@@ -124,6 +127,18 @@ export interface MetaHint {
   exprStart?: number // Column where full expression starts (for highlight range)
   parentKind?: MetaSymbol['kind'] // For member access: kind of the base object's symbol
   inputParam?: boolean // True if this hint is for a function input parameter position
+  // The function a call at this name calls, where the name alone does not
+  // say it: an instance of a generic (index_of(T = u32)), the function a
+  // comptime function parameter stands for
+  calls?: string
+  // For a method call x.f(a), the call it is: f(x, a)
+  as?: string
+  // What the name is in each instance there is (queries.ts HoverResult): in
+  // a generic's body, in each instance of that generic; for a generic, its
+  // instances; for a generic type and its own names, its applications.
+  // `type` indexes the types array; `more` counts the instances not listed.
+  instances?: { in: string[]; type: number }[]
+  more?: number
 }
 
 export interface MetaError {
@@ -156,6 +171,13 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   // The module's names, by the name the checker knows each by
   private symbolIndexByName = new Map<string, number>()
+  // The names each test declares (a data, a def, a function). A name of the
+  // module is the module's in symbolIndexByName whatever a test declares
+  // after it, and a test's own is its own while the test's hints are made:
+  // the bodies' hints are made once every declaration is collected.
+  private testNames = new Map<AST.TestDecl, Map<string, number>>()
+  private moduleNames = new Set<string>()
+  private inTest: AST.TestDecl | null = null
   // Every symbol by where the checker recorded its definition. A parameter
   // or local is found only this way: by name it would be the last one of
   // that name, in another function or in another block of this one, and a
@@ -169,6 +191,17 @@ class MetaBuilder {
   // first one is the one that is shown.
   private copies: Map<object, object> | null = null
   private shift = 0
+  // The functions whose bodies have hints to come, with the copies to read a
+  // generic's body by
+  private bodies = new Map<AST.FuncDecl, { copies: Map<object, object> | null; shift: number }>()
+  // Where each hint is, by its key
+  private hintOffsets = new Map<string, number>()
+  // While a function's body is gone through: its span. A def's value is
+  // pasted at each use with its own offsets, and is typed there as that use
+  // needs; its hints are the def's own, from where it is declared.
+  private within: AST.Span | null = null
+  // The symbols of generic functions and types, with their declarations
+  private genericSymbols = new Map<number, AST.FuncDecl | AST.TypeFuncDecl>()
 
   constructor(
     private module: AST.Module,
@@ -187,6 +220,7 @@ class MetaBuilder {
       tolerant: this.checkResult.errors.length > 0,
       calls: this.checkResult.calls,
       constants: this.checkResult.constants,
+      fieldOrder: this.checkResult.fieldOrder,
     })
     this.literalMap = literalRefs
 
@@ -195,6 +229,11 @@ class MetaBuilder {
 
     // Pass 2: Generate hints
     this.generateHints()
+
+    // Pass 3: a generic's comptime parameters, and what the names of
+    // generics are in each of their instances
+    this.addGenericNames()
+    this.annotateInstances()
 
     // Build output
     const output: MetaOutput = {
@@ -259,6 +298,13 @@ class MetaBuilder {
   }
 
   private collectTestDecl(decl: AST.TestDecl): void {
+    const outer = this.inTest
+    this.inTest = decl
+    this.collectTestItems(decl)
+    this.inTest = outer
+  }
+
+  private collectTestItems(decl: AST.TestDecl): void {
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
@@ -337,7 +383,8 @@ class MetaBuilder {
   private collectTypeFunc(decl: AST.TypeFuncDecl): void {
     if (this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
     const offset = this.typeFuncIdentOffset(decl)
-    this.addSymbol(decl.ident, 'type', this.source.slice(offset + decl.ident.length, decl.span.end), offset)
+    const symbolIndex = this.addSymbol(decl.ident, 'type', this.source.slice(offset + decl.ident.length, decl.span.end), offset)
+    this.genericSymbols.set(symbolIndex, decl)
   }
 
   private typeFuncIdentOffset(decl: AST.TypeFuncDecl): number {
@@ -357,9 +404,12 @@ class MetaBuilder {
         const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
         const written = `${this.source.slice(input.span.start, input.span.end)}->${returns}`
         const symbolIndex = this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        if (sym.decl === decl) this.genericSymbols.set(symbolIndex, decl)
         // What its parameters and the names in its body are depends on the
-        // instance: they are shown as they are in the first one. A generic
-        // nothing has called yet has none, and no hints inside it.
+        // instance: their hints are made from the first one, and then say
+        // what they are in each (see annotateInstances). A generic nothing
+        // has called yet has none, and only its written types to show (see
+        // addGenericNames).
         const first = this.checkResult.instances.find((inst) => inst.of === decl)
         if (sym.decl !== decl || !first) return
         this.copies = instanceNodes(decl, first.decl)
@@ -368,11 +418,7 @@ class MetaBuilder {
         // function's are: a global spelled like one of its parameters is
         // still the global.
         this.collectFuncBody(decl, symbolIndex)
-        if (decl.body.kind === 'Block') {
-          this.generateHintsForBlock(decl.body)
-        } else {
-          this.generateHintsForExpr(decl.body.expr)
-        }
+        this.bodies.set(decl, { copies: this.copies, shift: this.shift })
         this.copies = null
         this.shift = 0
         return
@@ -385,23 +431,30 @@ class MetaBuilder {
 
       // Collect params and locals (also adds hints for params/returns)
       this.collectFuncBody(decl, symbolIndex)
-
-      // Generate hints for the body now, once its params and locals are collected
-      if (decl.body.kind === 'Block') {
-        this.generateHintsForBlock(decl.body)
-      } else {
-        this.generateHintsForExpr(decl.body.expr)
-      }
     } else {
       // Anonymous function - still collect locals from body
       this.collectFuncBody(decl, -1)
-      // Generate hints for anonymous function body too
-      if (decl.body.kind === 'Block') {
-        this.generateHintsForBlock(decl.body)
-      } else {
-        this.generateHintsForExpr(decl.body.expr)
-      }
     }
+    // Hints for the body come once every function is a symbol: a call of one
+    // declared further down is that one.
+    this.bodies.set(decl, { copies: null, shift: 0 })
+  }
+
+  // The hints of a function's body, in the second pass
+  private generateHintsForBody(decl: AST.FuncDecl): void {
+    const body = this.bodies.get(decl)
+    if (!body) return
+    this.copies = body.copies
+    this.shift = body.shift
+    this.within = decl.span
+    if (decl.body.kind === 'Block') {
+      this.generateHintsForBlock(decl.body)
+    } else {
+      this.generateHintsForExpr(decl.body.expr)
+    }
+    this.copies = null
+    this.shift = 0
+    this.within = null
   }
 
   private findFuncIdentOffset(decl: AST.FuncDecl): number {
@@ -710,8 +763,10 @@ class MetaBuilder {
     // Get references - use checker's recorded definition offset, not the display offset
     // A name a generic declares is no name of the module: the checker holds
     // its uses by where it is declared.
-    // A parameter or local is defined where it is displayed.
-    const local = kind === 'local' || kind === 'param' || kind === 'return'
+    // A parameter or local is defined where it is displayed. A generic's
+    // comptime parameters are its own names too, and are found by where
+    // they are defined, never by name.
+    const local = kind === 'local' || kind === 'param' || kind === 'return' || kind === 'typeparam' || kind === 'comptime'
     const checkerDefOffset = recorded ?? (this.copies || local ? offset : this.checkResult.symbolDefOffsets.get(known))
     const refs = checkerDefOffset !== undefined
       ? this.checkResult.references.get(checkerDefOffset) ?? []
@@ -731,10 +786,117 @@ class MetaBuilder {
 
     const index = this.symbols.length
     this.symbols.push(symbol)
-    if (!local) this.symbolIndexByName.set(known, index)
+    if (!local && this.inTest) {
+      const own = this.testNames.get(this.inTest) ?? new Map<string, number>()
+      own.set(known, index)
+      this.testNames.set(this.inTest, own)
+      if (!this.moduleNames.has(known)) this.symbolIndexByName.set(known, index)
+    } else if (!local) {
+      this.symbolIndexByName.set(known, index)
+      this.moduleNames.add(known)
+    }
     if (checkerDefOffset !== undefined) this.symbolIndexByDef.set(checkerDefOffset, index)
 
     return index
+  }
+
+  // === Generics ===
+
+  // Each generic function and generic type of the module, also one a test
+  // declares
+  private generics(): (AST.FuncDecl | AST.TypeFuncDecl)[] {
+    const found: (AST.FuncDecl | AST.TypeFuncDecl)[] = []
+    const visit = (items: readonly (AST.Declaration | AST.TestItem)[]): void => {
+      for (const item of items) {
+        const decl = item.kind === 'ExportDecl' ? item.item : item
+        if (decl.kind === 'TestDecl') visit(decl.children)
+        else if (decl.kind === 'TypeFuncDecl' || (decl.kind === 'FuncDecl' && isGenericDecl(decl))) found.push(decl)
+      }
+    }
+    visit(this.module.decls)
+    return found
+  }
+
+  // A generic's comptime parameters are its own names, defined where they
+  // are declared and used in its body: symbols of their own, with a hint at
+  // each place, which no instance has (an instance has its arguments in
+  // their place). A generic type's fields are shown where they are declared.
+  // A generic nothing has called has no instance to show its other names by:
+  // its parameters, its results and the locals whose type is written are
+  // shown with that type where they are declared.
+  private addGenericNames(): void {
+    const written = (type: AST.Type) => this.source.slice(type.span.start, type.span.end)
+    for (const decl of this.generics()) {
+      const own = decl.kind === 'TypeFuncDecl' ? decl.params : (decl.signature.input as AST.CompositeType).fields
+      for (const param of own) {
+        if (!param.comptime || !param.ident) continue
+        const at = param.identSpan?.start ?? param.span.start
+        const kind = param.type.kind === 'TypeType' ? 'typeparam' : 'comptime'
+        const symbol = this.addSymbol(param.ident, kind, written(param.type), at, undefined, undefined, param.ident, at)
+        for (const offset of [at, ...(this.checkResult.references.get(at) ?? [])]) {
+          this.addHint(offset, param.ident.length, this.symbols[symbol].type, symbol)
+        }
+      }
+      if (decl.kind === 'TypeFuncDecl') {
+        for (const field of fieldsUnder(decl.body)) {
+          this.addHint(field.span.start, (field.ident as string).length, this.typeRegistry.registerText(written(field.type)))
+        }
+        continue
+      }
+      if (this.checkResult.instances.some((inst) => inst.of === decl)) continue
+      const output = decl.signature.output.kind === 'CompositeType' ? decl.signature.output.fields : []
+      const results = new Set(output.flatMap((f) => (f.ident ? [f.ident] : [])))
+      for (const field of [...output, ...own.filter((f) => !f.comptime)]) {
+        if (!field.ident || this.hints[this.lineMap.positionKey(field.span.start)]) continue
+        const kind = results.has(field.ident) ? 'return' : 'param'
+        const symbol = this.addSymbol(field.ident, kind, written(field.type), field.span.start)
+        this.addHint(field.span.start, field.ident.length, this.symbols[symbol].type, symbol, undefined, undefined, undefined, kind === 'param')
+      }
+      for (const stmt of writtenLets(decl.body)) {
+        const pattern = stmt.pattern as AST.IdentPattern
+        const symbol = this.addSymbol(pattern.name, 'local', written(stmt.type as AST.Type), pattern.span.start)
+        this.addHint(pattern.span.start, pattern.name.length, this.symbols[symbol].type, symbol)
+      }
+    }
+  }
+
+  // What the names of generics are in each instance: a generic's own names
+  // are shown with the type they are declared with (written, or what it is in
+  // terms of the type parameters), and with their type in each instance; a
+  // call with the function it calls; a generic with its instances, a generic
+  // type with its applications.
+  private annotateInstances(): void {
+    const compact = (type: ResolvedType) => typeToString(type, { compact: true })
+    for (const [key, hint] of Object.entries(this.hints)) {
+      const offset = this.hintOffsets.get(key)
+      if (offset === undefined) continue
+      const name = /^[a-zA-Z_][a-zA-Z0-9_-]*/.exec(this.source.slice(offset, offset + hint.len))?.[0]
+      if (!name || name.length !== hint.len) continue
+      const info = this.genericInfo(offset, name, hint, compact)
+      if (!info) continue
+      if (info.type !== undefined) hint.type = this.typeRegistry.registerText(info.type)
+      if (info.calls !== undefined) hint.calls = info.calls
+      if (info.as !== undefined) hint.as = info.as
+      if (info.instances) hint.instances = info.instances.map((i) => ({ in: i.in, type: this.typeRegistry.registerText(i.type) }))
+      if (info.more !== undefined) hint.more = info.more
+      // A generic's own name is declared as it shows it at its declaration.
+      const symbol = hint.symbol !== undefined ? this.symbols[hint.symbol] : undefined
+      if (info.type !== undefined && symbol?.def === key && symbol.kind !== 'func') symbol.type = hint.type
+    }
+  }
+
+  private genericInfo(offset: number, name: string, hint: MetaHint, compact: (type: ResolvedType) => string): GenericInfo | null {
+    // A field after a point: in a generic's body, what it is in each instance
+    if (hint.expr !== undefined) return memberIn(this.module, this.checkResult, offset, compact, compact)
+    // Only what lies in a generic can be one of its own names.
+    const generic = genericAround(this.module, offset) && genericDeclaring(this.module, offset, name)
+    if (generic && !readAsModuleName(this.checkResult, offset)) return ownName(this.source, this.checkResult, generic, offset, name, compact, compact)
+    const call = callOf(this.source, this.module, this.checkResult, offset, name)
+    if (call) return call
+    const decl = hint.symbol !== undefined ? this.genericSymbols.get(hint.symbol) : undefined
+    if (decl?.kind === 'FuncDecl') return instancesListed(this.checkResult, decl)
+    if (decl?.kind === 'TypeFuncDecl') return applicationsListed(this.checkResult, decl, compact)
+    return null
   }
 
   // === Hints Generation ===
@@ -786,6 +948,20 @@ class MetaBuilder {
   }
 
   private generateHintsForTestDecl(decl: AST.TestDecl): void {
+    // In the test, the names it declares are its own.
+    const hidden: [string, number | undefined][] = []
+    for (const [name, index] of this.testNames.get(decl) ?? []) {
+      hidden.push([name, this.symbolIndexByName.get(name)])
+      this.symbolIndexByName.set(name, index)
+    }
+    this.generateHintsForTestItems(decl)
+    for (const [name, index] of hidden.reverse()) {
+      if (index === undefined) this.symbolIndexByName.delete(name)
+      else this.symbolIndexByName.set(name, index)
+    }
+  }
+
+  private generateHintsForTestItems(decl: AST.TestDecl): void {
     // Collect locals from test body statements
     for (const item of decl.children) {
       if (item.kind === 'LetStmt') {
@@ -842,9 +1018,12 @@ class MetaBuilder {
         const offset = this.findFuncIdentOffset(decl)
         this.addHint(offset, decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
       }
-      // Note: Hints for params/returns/body are added during collectFunc to avoid
-      // symbolIndexByName conflicts when multiple functions share param/return names
+      // Note: Hints for params/returns are added during collectFunc
     }
+    // The types its signature names: a generic type there has its applications
+    this.generateHintsForTypeExpr(decl.signature.input)
+    this.generateHintsForTypeExpr(decl.signature.output)
+    this.generateHintsForBody(decl)
   }
 
   private generateHintsForTypeFunc(decl: AST.TypeFuncDecl): void {
@@ -974,6 +1153,14 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
+        // A single-quoted literal shows the codepoint it is. A def's value
+        // is put where the def is used, quoted with it: there it is the def
+        // (def lf = '\n' at lf), found by its name below.
+        if (type && expr.quoted && expr.value.kind === 'int' && this.source[expr.span.start] === "'") {
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, expr.value.value.toString())
+          break
+        }
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
@@ -1103,6 +1290,12 @@ class MetaBuilder {
       }
 
       case 'TupleExpr':
+        // 'ok' shows the codepoints it is, (111, 107).
+        if (type && expr.quoted) {
+          const codepoints = expr.elements.map((e) => (e.value?.kind === 'LiteralExpr' && e.value.value.kind === 'int' ? e.value.value.value : '?'))
+          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
+          this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, `(${codepoints.join(', ')})`)
+        }
         for (const elem of expr.elements) {
           if (elem.value) {
             this.generateHintsForExpr(elem.value)
@@ -1374,7 +1567,9 @@ class MetaBuilder {
     inputParam?: boolean,
     exprStart?: number,
   ): void {
+    if (this.within && (offset < this.within.start || offset >= this.within.end)) return
     const key = this.lineMap.positionKey(offset)
+    this.hintOffsets.set(key, offset)
     const hint: MetaHint = { len, type: typeIndex }
     if (symbolIndex !== undefined) hint.symbol = symbolIndex
     if (value !== undefined) hint.value = value
@@ -1437,4 +1632,29 @@ class TypeRegistry {
   getTypes(): MetaType[] {
     return this.types
   }
+}
+
+// The named fields written under a type, at any depth: the fields of a
+// generic type's body, each where its name stands
+function fieldsUnder(type: unknown, found: AST.Field[] = []): AST.Field[] {
+  if (Array.isArray(type)) {
+    for (const t of type) fieldsUnder(t, found)
+  } else if (type !== null && typeof type === 'object' && !(type instanceof Uint8Array)) {
+    const n = type as { kind?: string; ident?: unknown }
+    if (n.kind === 'Field' && typeof n.ident === 'string') found.push(n as AST.Field)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') fieldsUnder(value, found)
+  }
+  return found
+}
+
+// The lets of a body that write the type of the one name they declare
+function writtenLets(node: unknown, found: AST.LetStmt[] = []): AST.LetStmt[] {
+  if (Array.isArray(node)) {
+    for (const n of node) writtenLets(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as Partial<AST.LetStmt> & { kind?: string }
+    if (n.kind === 'LetStmt' && n.type && n.pattern?.kind === 'IdentPattern') found.push(n as AST.LetStmt)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') writtenLets(value, found)
+  }
+  return found
 }

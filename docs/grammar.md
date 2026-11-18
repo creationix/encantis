@@ -62,18 +62,29 @@ Keywords are not identifiers. `comptime` is one of them: it marks the compile-ti
 
 ### Strings
 
-**UTF-8 strings:**
+**UTF-8 strings** are double-quoted:
 ```encantis
 "Hello, world!"
-'single quotes work too'
-"escape sequences: \n \t \\ \" \'"
-"\x48\x69"      // hex escapes in UTF-8
+"escape sequences: \n \t \r \\ \" \'"
+"\x48\x69"      // \xHH is the byte HH
+"\u{e9}"        // \u{H..} is the UTF-8 bytes of the character with that codepoint
 ```
 
 **Raw bytes:**
 ```encantis
 x"48 65 6C 6C 6F"              // hex bytes (spaces optional)
 b"SGVsbG8gV29ybGQh"             // base64
+```
+
+### Codepoints
+
+Single quotes hold codepoints, not a string (`codepointLiteral`): each character or escape between them is one codepoint. One codepoint is the integer literal of its value; several are a tuple of them. The escapes are a string's, with `\xHH` the codepoint HH. `''` is an error, and so is a `\u{..}` that names no character (a surrogate, or past `10FFFF`).
+
+```encantis
+'a'             // 97
+'é'             // 233
+'\u{1F600}'     // 128512
+'ok'            // (111, 107)
 ```
 
 ### Booleans
@@ -713,7 +724,7 @@ access_suffix   = "." digit+                            -- tuple index
                 | "." ident                             -- field, or the name of a method
 ```
 
-A member is a type-punned access only when its whole name is a primitive type's: `p.u32`, `p.u8[4]` and `p.u32-1` (the pun, minus one) are; `s.boolish`, `p.i8_le` and `v.u32s()` name a field or a method. The name ends at the first character that is not a letter, a digit or `_`. A hyphen ends it too, although an identifier may hold one, so that `p.u32-1` stays a subtraction: a field or a function named `u32-count` cannot be reached as a member (`x.u32-count` is `x.u32 - count`); call the function as `u32-count(x)`.
+The name after the dot is a whole identifier, by the same rule as everywhere else: letters, digits, `_` and `-`. A member is a type-punned access only when that whole name is a primitive type's: `p.u32` and `p.u8[4]` are; `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count` and `p.u32-1` name a field or a method (`u32-count`, `u32-1`). A subtraction needs spaces, `p.u32 - 1`, as it does after a name (`n-1` is one identifier), and the formatter prints every binary `-` with spaces, so the two read differently. Where a member such as `u32-1` does not exist but the part before a hyphen does, the error says `for a subtraction write \`p.u32 - 1\``.
 
 ### Indexing
 
@@ -739,7 +750,7 @@ v.items().sort(u64, less)     // Calls chain; type arguments are written after t
 
 **Type arguments.** A call of a generic function may pass a type where the parameter is `comptime T: type`:
 
-[Grammar: `Arg` type and funcType cases, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
+[Grammar: `Arg` type and otherType cases, `TypeLit`](../packages/compiler/encantis-grammar.ohm)
 
 ```encantis
 max(u32, a, b)                // u32 is an identifier, read as a type by its position
@@ -748,13 +759,14 @@ head([]u8, xs)                // []u8 can only be a type: parsed as one
 head(*mut Point, xs)
 first(Point, ps)              // a bare type name is not an expression: parsed as a type
 apply((u32) -> u32, f)        // so is a function type
+pick((name: []u8, at: Point), a, b)   // and a struct type whose fields are not all expressions
 ```
 
-An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`) or is a function type, and the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
+An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8` or `Point`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
 
 A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too.
 
-One consequence: a struct type with named fields is an argument list of named arguments, whose values are expressions. `(q: i32, r: i32)` works; `(name: []u8, at: Point)` is a syntax error. Give such a type a name, with `type` or as a generic type, and pass the name.
+So a struct type with named fields is written in place like any other type argument: `(q: i32, r: i32)` is an expression read as a type, and `(name: []u8, at: Point)` is parsed as a type because it is no expression.
 
 ### Literals and Constructors
 
@@ -762,6 +774,8 @@ One consequence: a struct type with named fields is an argument list of named ar
 42                            // Integer
 3.14                          // Float
 "hello"                       // String
+'a'                           // Codepoint: 97
+'ok'                          // Tuple of codepoints: (111, 107)
 true                          // Boolean
 ()                            // Unit
 (1, 2)                        // Tuple
@@ -773,6 +787,8 @@ Pair(u8, u16)(second: 2, first: 1)
 ```
 
 A type that is called constructs a value of it. `Vec(u32)(p, 0, 16)` parses as a call of a call; the checker reads the inner one as the type.
+
+A named argument of a constructor and a named element of a tuple literal are the same syntax and mean the same: the value of the field of that name, whatever its place, while an element without a name is the field at its place. Values are computed in the order they are written (reference [2.8](encantis.md#struct-constructors)).
 
 ### If Expression
 
