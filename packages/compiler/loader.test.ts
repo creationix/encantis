@@ -469,6 +469,24 @@ export func f() -> u32 {
 )
 `
 
+  // lib/sort's sort calls the builtin min. A builtin answers in every
+  // module, so the instance does not depend on the module that asked: two
+  // modules that sort one type with one comparator share it.
+  test("a builtin in a generic's body does not make its instance a site's own", async () => {
+    const SORT = `import "${lib}/sort" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)\nimport "./order" "descending" func descending(a: u32, b: u32) -> bool\n`
+    const files = {
+      'order.ents': 'export func descending(a: u32, b: u32) -> bool => a > b\n',
+      'other.ents': `${SORT}export func down2(xs: []mut u32) { xs.sort(descending) }\n`,
+      // A function of the module named like the builtin changes nothing.
+      'main.ents': `${SORT}import "./other" "down2" func down2(xs: []mut u32)\nfunc min(a: u32, b: u32) -> u32 => a\nexport func down(xs: []mut u32) { xs.sort(descending) }\nexport func least(a: u32) -> u32 => min(a, 1)\n`,
+    }
+    const wat = await inDir(files, (dir) => watOf(join(dir, 'main.ents')))
+    expect(funcs(wat).filter((n) => n.startsWith('sort$sort<'))).toEqual(['sort$sort<u32|descending@order>'])
+    expect(callsIn(wat, 'down')).toEqual(['sort$sort<u32|descending@order>'])
+    expect(callsIn(wat, 'other$down2')).toEqual(['sort$sort<u32|descending@order>'])
+    expect(callsIn(wat, 'sort$sort<u32|descending@order>')).not.toContain('min')
+  })
+
   test('a library file compiled alone emits no generic, and exports none', async () => {
     for (const name of ['stack', 'vec', 'set', 'map', 'sort']) {
       const wat = await watOf(join(lib, `${name}.ents`))

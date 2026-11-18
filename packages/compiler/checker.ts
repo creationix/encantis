@@ -5010,11 +5010,14 @@ class CheckContext {
     const inst = this.currentInstance
     const site = inst?.site
     if (!inst || !site || site === this) return null
+    const own = this.lookup(name)
+    // A builtin and a cast are the language's: where the generic's module
+    // has no function of the name, they answer, whatever the site declares.
+    if (!own && (BUILTIN_NAMES.has(name) || PRIMITIVE_NAMES.has(name))) return null
     const members = (site.overloads.get(name) ?? [name]).filter((member) => {
       const sym = site.moduleScope.symbols.get(member)
       return sym?.kind === 'func' && !sym.alias && !site.testOnly.has(member) && !site.testDeclared.has(sym)
     })
-    const own = this.lookup(name)
     if (members.length === 0) {
       // What the call is wanting depends on the site too: another site may
       // have the function.
