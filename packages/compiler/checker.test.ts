@@ -3041,6 +3041,18 @@ describe('arguments by place and by name', () => {
     ])
   })
 
+  test('branches that give named results by name, in other orders, are no different types', () => {
+    expect(errs(`
+      func orders(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        let k: u32 = n + 1
+        if c { (hi: k, lo: 3) } else { (lo: 4, hi: k) }
+      }
+      func arms(m: u32) -> (lo: u32, hi: u32) {
+        match m { 0 => (hi: m, lo: 3), _ => { (lo: m, hi: 1:u8) } }
+      }
+    `)).toEqual([])
+  })
+
   test('a tuple laid out as a struct in data gives each field a value of its type', () => {
     expect(errs(`
       type Small = (b: u8, w: u32)

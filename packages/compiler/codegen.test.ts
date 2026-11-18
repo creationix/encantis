@@ -3114,6 +3114,10 @@ describe('a tuple literal with names gives each field by name', () => {
       func mixed(c: bool, n: u32) -> (lo: u32, hi: u32) {
         if c { split(n) } else { (hi: 1, lo: 2) }
       }
+      func orders(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        let k: u32 = n + 1
+        if c { (hi: k, lo: 3) } else { (lo: 4, hi: k) }
+      }
       export func f() -> i32 {
         let (q: a) = trailing_if(true)
         let (q: b) = trailing_if(false)
@@ -3123,9 +3127,13 @@ describe('a tuple literal with names gives each field by name', () => {
         return a * 10000 + b * 1000 + c * 100 + d * 10 + e
       }
       export func g() -> u32 => mixed(true, 0x50006).lo * 100 + mixed(false, 0).lo * 10 + mixed(false, 0).hi
+      export func h() -> u32 => orders(true, 1).lo * 1000 + orders(true, 1).hi * 100 + orders(false, 4).lo * 10 + orders(false, 4).hi
     `)
     expect(x.f()).toBe(24244)
     expect(x.g()).toBe(521)
+    // Branches that give the same names in another order are not of
+    // different types: each fills the results by name.
+    expect(x.h()).toBe(3245)
   })
 
   test('in a generic, and to decide a type parameter', async () => {

@@ -629,6 +629,9 @@ class CheckContext {
   // The named results an expression body is being checked against, when
   // there are several: its value fills them in order.
   resultsInOrder: ResolvedType | null = null
+  // The trailing value of a block body that fills the named results by name,
+  // and those results (see checkFuncBody).
+  namedTail: { expr: AST.Expr; results: ResolvedType } | null = null
   // Loops open around the statement being checked, and the depth at the
   // innermost enclosing defer (null outside one). A deferred expression can't
   // return, or break or continue a loop outside it.
@@ -1958,22 +1961,21 @@ class CheckContext {
       const output = decl.signature.output
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
       // With named results, a trailing expression with a value supplies them.
-      this.checkBody(decl.body, named)
       const tail = named ? decl.body.stmts.at(-1) : undefined
+      // A tuple literal with names among its elements fills the results of
+      // those names, as it gives a struct its fields, also where it is the
+      // value of a branch of an if or a match. Such a value is checked
+      // against the results where it stands, as an expression body is, and
+      // a branch whose value is no such literal fills them in order.
+      const results = unwrap(this.returnValueType())
+      const byName = tail?.kind === 'ExpressionStmt' && givesNamedLiteral(tail.expr) && results.kind === 'tuple'
+      const prevTail = this.namedTail
+      this.namedTail = byName ? { expr: tail.expr, results: tuple(results.fields) } : null
+      this.checkBody(decl.body, named)
+      this.namedTail = prevTail
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
-      if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
-        // A tuple literal with names among its elements fills the results
-        // of those names, as it gives a struct its fields, also where it is
-        // the value of a branch of an if or a match: then the value is
-        // checked as an expression body's is, and a branch whose value is no
-        // such literal fills them in order.
-        const results = unwrap(this.returnValueType())
-        if (givesNamedLiteral(tail.expr) && results.kind === 'tuple') {
-          const prevResults = this.resultsInOrder
-          this.resultsInOrder = tuple(results.fields)
-          this.checkExpr(tail.expr, this.resultsInOrder)
-          this.resultsInOrder = prevResults
-        } else this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
+      if (!byName && tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
+        this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
       }
       // A block body with unnamed results has to return on every path: there
       // are no named locals to return when it falls off the end.
@@ -2050,7 +2052,14 @@ class CheckContext {
       case 'ExpressionStmt':
         if (valueUsed) this.statementExprs.delete(stmt.expr)
         else this.statementExprs.add(stmt.expr)
-        this.inferExpr(stmt.expr)
+        if (valueUsed && this.namedTail?.expr === stmt.expr) {
+          // The trailing value of a body that gives the named results by
+          // name: checked against them (see checkFuncBody).
+          const prevResults = this.resultsInOrder
+          this.resultsInOrder = this.namedTail.results
+          this.checkExpr(stmt.expr, this.namedTail.results)
+          this.resultsInOrder = prevResults
+        } else this.inferExpr(stmt.expr)
         break
       case 'DeferStmt': {
         const prev = this.deferLoopDepth
