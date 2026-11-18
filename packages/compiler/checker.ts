@@ -3909,6 +3909,7 @@ class CheckContext {
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
+    const exitsKnown = new WeakMap<object, number>()
     // A value of `n` registers, whose code is written out `copies` times
     // A def's value is copied where it is used, with its own places in the
     // source: what is counted of it is said at the use (the last expression
@@ -4098,7 +4099,14 @@ class CheckContext {
       if (place.kind === 'IdentPattern' || place.kind === 'TuplePattern') return
       value(place, n, true)
     }
+    // The exits after each statement of a list, counted once for the list
+    const exitsAfter = (stmts: readonly AST.Statement[]): number[] => {
+      const after: number[] = new Array(stmts.length).fill(0)
+      for (let i = stmts.length - 2; i >= 0; i--) after[i] = Math.min(after[i + 1] + exitsIn(stmts[i + 1], exitsKnown), Number.MAX_SAFE_INTEGER)
+      return after
+    }
     const statements = (stmts: readonly AST.Statement[], n: number): void => {
+      let after: number[] | null = null
       stmts.forEach((stmt, i) => {
         switch (stmt.kind) {
           case 'LetStmt':
@@ -4138,7 +4146,8 @@ class CheckContext {
             return
           case 'DeferStmt':
             // Written at the end of the block and at each exit after it
-            value(stmt.expr, times(n, 1 + exitsIn(stmts.slice(i + 1))), false)
+            after ??= exitsAfter(stmts)
+            value(stmt.expr, times(n, 1 + after[i]), false)
             return
         }
       })
@@ -10035,15 +10044,25 @@ const STATEMENT_KINDS: ReadonlySet<string> = new Set<AST.Statement['kind']>([
 // How many returns, breaks and continues there are in some code, at any
 // depth: at most the exits that write a deferred expression out again.
 // Types are left out: a type in an instance's copy can be a resolved type,
-// which can refer to itself.
-function exitsIn(node: unknown): number {
-  if (!node || typeof node !== 'object') return 0
-  if (Array.isArray(node)) return node.reduce((n: number, item) => n + exitsIn(item), 0)
-  const kind = (node as { kind?: unknown }).kind
-  let n = kind === 'ReturnStmt' || kind === 'BreakStmt' || kind === 'ContinueStmt' ? 1 : 0
-  for (const [key, child] of Object.entries(node)) {
-    if (key !== 'span' && key !== 'type' && key !== 'signature' && typeof child === 'object') n += exitsIn(child)
+// which can refer to itself; and so are the bytes of a literal. `known`
+// holds the counts of the nodes counted already, so that each node of a
+// function is counted once however many defers it follows.
+function exitsIn(node: unknown, known: WeakMap<object, number>): number {
+  if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return 0
+  const seen = known.get(node)
+  if (seen !== undefined) return seen
+  let n = 0
+  if (Array.isArray(node)) {
+    for (const item of node) n += exitsIn(item, known)
+  } else {
+    const kind = (node as { kind?: unknown }).kind
+    if (kind === 'ReturnStmt' || kind === 'BreakStmt' || kind === 'ContinueStmt') n = 1
+    for (const [key, child] of Object.entries(node)) {
+      if (key !== 'span' && key !== 'type' && key !== 'signature' && typeof child === 'object') n += exitsIn(child, known)
+    }
   }
+  n = Math.min(n, Number.MAX_SAFE_INTEGER)
+  known.set(node, n)
   return n
 }
 

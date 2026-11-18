@@ -3819,6 +3819,12 @@ describe('the size of a function', () => {
     expect(errs(src(48))).toEqual([over('[1000]u8, written out 50 times, is 50000')])
   })
 
+  test('the exits after a defer are counted in time linear in the function', () => {
+    // Each defer counted what follows it again, the bytes of a literal among them: this took 15 s
+    const src = `func k() -> u8 => 1\nfunc f() -> u8 {\n${'  defer k()\n'.repeat(2000)}  let t = "${'y'.repeat(20000)}"\n  return t[0]\n}`
+    expect(errs(src)).toEqual([])
+  }, 4000)
+
   test('an if, a match or a ?? gives at most 1000 registers', () => {
     const value = (n: number) => `func f(c: bool, p: *[${n}]u8, q: *[${n}]u8) -> u8 => (if c { p.* } else { q.* })[3]`
     expect(errs(value(1000))).toEqual([])
