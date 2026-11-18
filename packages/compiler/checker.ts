@@ -2997,15 +2997,8 @@ class CheckContext {
         // type, and there is nothing more to say.
         if (type === RECOVERY) {
           for (const element of pattern.elements) {
-            if (element.kind === 'positional') {
-              this.bindPattern(element.pattern, RECOVERY)
-              continue
-            }
-            const sym: Symbol = { kind: 'local', type: RECOVERY }
-            const at = namedPartAt(element)
-            this.currentScope.symbols.set(element.binding ?? element.field, sym)
-            this.types.set(typeKey(at, 'Binding'), RECOVERY)
-            this.recordDefinition(element.binding ?? element.field, at, sym)
+            if (element.kind === 'positional') this.bindPattern(element.pattern, RECOVERY)
+            else this.bindNamedPart(pattern, element, RECOVERY)
           }
           break
         }
@@ -3027,19 +3020,7 @@ class CheckContext {
               this.error(pattern.span.start, `field '${element.field}' not found in ${typeToString(type)}`)
               continue
             }
-            // binding is null for shorthand (x:) - use field name as variable name
-            const varName = element.binding ?? element.field
-            // Its name is its own, as a plain let's is: taking a variable's
-            // would change that variable (a loop's counter, say).
-            if (this.lookup(varName) && !this.declared.has(element)) {
-              this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
-            }
-            this.declare(element)
-            const sym: Symbol = { kind: 'local', type: tupleField.type }
-            this.letScope().symbols.set(varName, sym)
-            const at = namedPartAt(element)
-            this.types.set(typeKey(at, 'Binding'), tupleField.type)
-            this.recordDefinition(varName, at, sym)
+            this.bindNamedPart(pattern, element, tupleField.type)
           } else {
             // Positional pattern: (a, b) - match by index
             const index = pattern.elements.indexOf(element)
@@ -3054,6 +3035,23 @@ class CheckContext {
         break
       }
     }
+  }
+
+  // The variable of a named part of a let's pattern, (x: a) or (x:)
+  private bindNamedPart(pattern: AST.Pattern, element: AST.PatternElement & { kind: 'named' }, type: ResolvedType): void {
+    // binding is null for shorthand (x:) - use field name as variable name
+    const varName = element.binding ?? element.field
+    // Its name is its own, as a plain let's is: taking a variable's
+    // would change that variable (a loop's counter, say).
+    if (this.lookup(varName) && !this.declared.has(element)) {
+      this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
+    }
+    this.declare(element)
+    const sym: Symbol = { kind: 'local', type }
+    this.letScope().symbols.set(varName, sym)
+    const at = namedPartAt(element)
+    this.types.set(typeKey(at, 'Binding'), type)
+    this.recordDefinition(varName, at, sym)
   }
 
   private patternIdent(pattern: AST.Pattern): string | null {

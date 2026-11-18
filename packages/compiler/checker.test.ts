@@ -3738,6 +3738,11 @@ describe('types too large to write out', () => {
     expect(errs(`func f(p: *${big}) -> u8 {\n  let x = p.*\n  return 0\n}`)).toEqual([large(big)])
     // A pattern of it is one error, whatever names it binds
     expect(errs(`func f(p: *${big}) -> u8 {\n  let (a, b) = (p.*, 1)\n  return b\n}`)).toEqual([large(`(${big}, i32)`)])
+    // and its names are declared as a let's are: seen past a loop around the
+    // let, and never taking the name of a variable already declared
+    const named = large(`(a: ${big}, b: i32)`)
+    expect(errs(`func f(p: *${big}) -> i32 {\n  for i in 2 {\n    let (a:, b:) = (a: p.*, b: 1)\n  }\n  return b\n}`)).toEqual([named])
+    expect(errs(`func f(p: *${big}) -> i32 {\n  let b = 2\n  let (a:, b:) = (a: p.*, b: 1)\n  return b\n}`)).toEqual([named, "'b' is already declared in this scope"])
     expect(errs(`global g: ${big}\nfunc f() -> u8 => 0`)).toEqual([large(big)])
     expect(errs(`import "m" "g" global g: ${big}\nimport "m" "h" func h(x: ${big}) -> u8\nfunc f() -> u8 => 0`)).toEqual([large(big), large(big)])
     // A struct is held with its fields, and the element of a loop or an if let is held
