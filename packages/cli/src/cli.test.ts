@@ -109,6 +109,25 @@ export func f(x: f64) -> u32 => bucket(x, 16)
     }
   })
 
+  // A function of this module that another module's generic calls by its
+  // name is found there, and renaming it here would leave that call with
+  // nothing to find.
+  test("references find another module's instance calling the function, and rename refuses", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n')
+      await writeFile(join(dir, 'main.ents'), 'import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nfunc hash(k: f64) -> u32 => 7\nexport func f(x: f64) -> u32 => bucket(x, 16)\n')
+      const at = `${join(dir, 'main.ents')}:2:6`
+      const references = Bun.spawnSync([process.execPath, CLI, 'references', at, '--json'], { cwd: dir })
+      expect(JSON.parse(references.stdout.toString())).toEqual([{ file: 'lib.ents', line: 1, col: 62 }])
+      const rename = Bun.spawnSync([process.execPath, CLI, 'rename', at, '--json'], { cwd: dir })
+      expect(rename.exitCode).toBe(1)
+      expect(rename.stderr.toString()).toBe("'hash' is called by its name from instances of other modules' generics (bucket(K = f64) in lib.ents): renamed, they would no longer find it\n")
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
   for (const command of ['compile', 'wasm']) {
     test(`${command} stops at the error in the module checked first`, async () => {
       const { exitCode, stdout, stderr } = await run(command)

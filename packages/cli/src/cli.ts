@@ -11,7 +11,7 @@ import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { createTestHost } from '@encantis/compiler/test-host'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import wabt from 'wabt'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
@@ -312,7 +312,7 @@ switch (command) {
       console.error(qResult.errors[0].message)
       process.exit(1)
     }
-    const { module: qModule, check: qCheck } = await checkedInProgram(pos.file, qResult.module!)
+    const { module: qModule, check: qCheck, sources: qSources } = await checkedInProgram(pos.file, qResult.module!)
     qResult.module = qModule
     const lineMap = new LineMap(qSource)
     const offset = lineMap.positionToOffset({ line: pos.line, col: pos.col })
@@ -337,17 +337,24 @@ switch (command) {
     } else if (command === 'references') {
       const r = findReferences(qSource, qResult.module!, qCheck, offset)
       if (!r) { console.log('No references found'); process.exit(1) }
+      // Calls in other modules' instances that find the function by its
+      // name here, in those modules' files
+      const elsewhere = (r.elsewhere ?? []).map(ref => {
+        const p = new LineMap(qSources?.get(ref.path) ?? '').offsetToPosition(ref.offset)
+        return { file: relative(process.cwd(), ref.path), line: p.line + 1, col: p.col + 1 }
+      })
       if (jsonOutput) {
         const locs = r.references.map(ref => {
           const p = lineMap.offsetToPosition(ref.offset)
           return { file: pos.file, line: p.line + 1, col: p.col + 1 }
         })
-        console.log(JSON.stringify(locs))
+        console.log(JSON.stringify([...locs, ...elsewhere]))
       } else {
         for (const ref of r.references) {
           const p = lineMap.offsetToPosition(ref.offset)
           console.log(`${pos.file}:${p.line + 1}:${p.col + 1}`)
         }
+        for (const ref of elsewhere) console.log(`${ref.file}:${ref.line}:${ref.col}`)
       }
     } else if (command === 'signature') {
       const r = signatureHelp(qSource, qResult.module!, qCheck, offset)
@@ -361,6 +368,7 @@ switch (command) {
     } else if (command === 'rename') {
       const r = rename(qSource, qResult.module!, qCheck, offset)
       if (!r) { console.log('No symbol found'); process.exit(1) }
+      if (r.refused) { console.error(r.refused); process.exit(1) }
       if (jsonOutput) {
         const locs = r.locations.map(loc => {
           const p = lineMap.offsetToPosition(loc.offset)

@@ -302,10 +302,21 @@ export interface TypeCheckResult {
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
   externs: Map<string, Extern>
+  // The functions of this module that instances of other modules' generics
+  // call by their name, with each such call (see callAtSite)
+  calledFromInstances: Map<string, InstanceCall[]>
   // The module's name where the names of several modules meet: its file's
   // name, numbered from the second file of the program with that name
   // (lib, lib~2). Codegen prefixes the module's functions with it.
   tag: string
+}
+
+// A call in an instance of another module's generic, at its place in the
+// source of the module that declares the generic
+export interface InstanceCall {
+  path: string
+  offset: number
+  label: string // the instance's, as messages name it
 }
 
 export interface Extern {
@@ -455,6 +466,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
     externs: ctx.externs,
+    calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
   }
 }
@@ -848,8 +860,9 @@ class CheckContext {
   symbolDefOffsets = new Map<string, number>() // name → defOffset
 
   // The functions of this module that instances of other modules' generics
-  // call (see callAtSite): used, though nothing in this module calls them.
-  calledFromInstances = new Set<string>()
+  // call (see callAtSite), with the calls: used, though nothing in this
+  // module calls them, and named in another module's source.
+  calledFromInstances = new Map<string, InstanceCall[]>()
   // Where the module first imports a generic type while it is checked on its
   // own: what that type is, and so what anything of it is, is known only
   // when the program is checked (see finalize).
@@ -5036,7 +5049,10 @@ class CheckContext {
       const sym = site.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
       const alias = this.externFunc(site, member)
       if (!this.moduleScope.symbols.has(alias)) this.moduleScope.symbols.set(alias, { kind: 'func', type: sym.type, inline: sym.inline })
-      site.calledFromInstances.add(member)
+      const calls = site.calledFromInstances.get(member) ?? []
+      const call = { path: this.filePath ?? '', offset: expr.callee.span.start % INSTANCE_STRIDE, label: inst.label }
+      if (!calls.some((c) => c.path === call.path && c.offset === call.offset)) calls.push(call)
+      site.calledFromInstances.set(member, calls)
       return alias
     })
   }
