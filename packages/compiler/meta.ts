@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import { typecheck, typeKey, type TypeCheckResult } from './checker'
-import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap } from './types'
+import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
 import { LineMap } from './position'
 import { extractComments, findDocComment, type Comment } from './comments'
 import { buildDataSection, type DataRef } from './data-pack'
@@ -166,7 +166,11 @@ class MetaBuilder {
   build(srcPath: string): MetaOutput {
     // Build data section to get literal addresses for hover hints
     // Use the checker's pending literals which include all def data (arrays, strings, repeats)
-    const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types)
+    // A module with errors still gets its metadata: a literal the checker
+    // rejected may have no layout, and then has no address to show.
+    const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types, {
+      tolerant: this.checkResult.errors.length > 0,
+    })
     this.literalMap = literalRefs
 
     // Pass 1: Collect symbols (populates typeRegistry)
@@ -961,7 +965,7 @@ class MetaBuilder {
                   }
                   // Slices have runtime length, no comptime value
                 } else if (expr.member.name === 'wid') {
-                  const elemSize = byteSize(arrayType.element)
+                  const elemSize = byteSize(tableRow(objType) ?? arrayType.element)
                   if (elemSize !== null) {
                     comptimeValue = String(elemSize)
                   }

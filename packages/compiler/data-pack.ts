@@ -2,7 +2,7 @@
 // Collects string literals, deduplicates, and calculates memory offsets
 
 import type * as AST from './ast'
-import { byteSize, isOptional, type ArrayRT, type ArraySize, type ResolvedType } from './types'
+import { byteSize, isOptional, isValueArray, manyPointer, primitive, unwrap, type ArrayRT, type ArraySize, type ResolvedType, type SliceRT, type TupleRT } from './types'
 import {
   bytesToHex,
   concatBytes,
@@ -419,6 +419,16 @@ function serializeSortedParts(
   return refMap
 }
 
+// (x) is x: parentheses around one expression parse as a group or a
+// one-element tuple, and what is laid out is the expression inside.
+function ungroup(expr: AST.Expr): AST.Expr {
+  if (expr.kind === 'GroupExpr') return ungroup(expr.expr)
+  if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name && expr.elements[0].value) {
+    return ungroup(expr.elements[0].value)
+  }
+  return expr
+}
+
 /**
  * Serialize a literal expression to bytes based on target type.
  * Handles both merged brackets (*[![!u8]] - single contiguous write) and
@@ -440,8 +450,9 @@ export function serializeLiteral(
   targetType: ArrayRT,
   builder: DataSectionBuilder,
   childRefs?: Map<number, DataRef>,
+  mutable = false,
 ): DataRef {
-  const skipDedup = isMutExpr(expr)
+  const skipDedup = mutable || isMutExpr(expr)
   if (isMergedBrackets(targetType) || (targetType.element.kind !== 'array' && targetType.element.kind !== 'slice')) {
     return serializeMerged(expr, targetType, builder, skipDedup)
   } else {
@@ -456,7 +467,7 @@ function serializeMerged(
   builder: DataSectionBuilder,
   skipDedup: boolean,
 ): DataRef {
-  const bytes = buildMergedBytes(expr, targetType)
+  const bytes = buildMergedBytes(expr, targetType, builder)
   const optional = isOptional(targetType.element)
   return builder.internBytes(bytes, skipDedup, optional)
 }
@@ -464,7 +475,7 @@ function serializeMerged(
 // Build the complete byte sequence for merged brackets
 // Framing order: leftmost is outermost, rightmost is innermost
 // e.g., [?,!]u8 means: ! applies to each element, ? applies to whole array
-function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
+function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSectionBuilder): Uint8Array {
   const framings = getFramings(targetType.sizes)
   const elementType = targetType.element
 
@@ -484,7 +495,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     const innerFramings = framings.slice(1)
 
     for (const elem of expr.elements) {
-      const elemBytes = buildElementBytes(elem, elementType, innerFramings)
+      const elemBytes = buildElementBytes(elem, elementType, innerFramings, builder)
       elementParts.push(elemBytes)
     }
 
@@ -512,7 +523,7 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     const innerFramings = framings.slice(1)
 
     // Serialize the value once
-    const elemBytes = buildElementBytes(expr.value, elementType, innerFramings)
+    const elemBytes = buildElementBytes(expr.value, elementType, innerFramings, builder)
 
     // Repeat it count times
     const elementParts: Uint8Array[] = []
@@ -530,21 +541,54 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT): Uint8Array {
     return combined
   }
 
-  // For tuple expressions, serialize each element according to the tuple field types
-  if (expr.kind === 'TupleExpr' && elementType.kind === 'tuple') {
-    const parts: Uint8Array[] = []
-    for (let i = 0; i < expr.elements.length; i++) {
-      const elemExpr = expr.elements[i].value ?? expr.elements[i]
-      const fieldType = elementType.fields[i]?.type ?? elementType.fields[0]?.type
-      if (!fieldType) throw new Error('Tuple field type mismatch in data packer')
-      const elemBytes = buildElementBytes(elemExpr as AST.Expr, fieldType, [])
-      parts.push(elemBytes)
-    }
-    return concatBytes(parts)
+  // A single tuple (data origin = (0.0, 0.0)): its fields, as for an element
+  if (expr.kind === 'TupleExpr' && unwrap(elementType).kind === 'tuple') {
+    return buildElementBytes(expr, elementType, [], builder)
   }
 
   // Runtime expression — emit zero placeholder, filled at runtime
   return new Uint8Array(getElementSize(elementType))
+}
+
+// The expressions that give a struct's fields, in the order of the type, when
+// `expr` writes the struct out: a tuple gives them by position, as any tuple
+// that becomes a struct does; a constructor (Point(y: 2, x: 1)) can name them.
+// Type names are the identifiers that start with a capital letter.
+function structFieldValues(expr: AST.Expr, struct: TupleRT): (AST.Expr | null)[] | null {
+  let args: AST.Arg[]
+  if (expr.kind === 'TupleExpr') {
+    args = expr.elements
+  } else if (expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name)) {
+    args = expr.args
+    if (args.some((a) => a.name)) return struct.fields.map((f) => args.find((a) => a.name === f.name)?.value ?? null)
+  } else {
+    return null
+  }
+  return struct.fields.map((_, i) => args[i]?.value ?? null)
+}
+
+// The bytes of one field of a struct. A slice or array-pointer field given as
+// a literal points at that literal, which is laid out on its own.
+function buildFieldBytes(expr: AST.Expr, fieldType: ResolvedType, builder: DataSectionBuilder): Uint8Array {
+  const t = unwrap(fieldType)
+  let lit = ungroup(expr)
+  while (lit.kind === 'AnnotationExpr') lit = ungroup(lit.expr)
+  const isString = lit.kind === 'LiteralExpr' && lit.value.kind === 'string'
+  if (isString || lit.kind === 'ArrayExpr' || lit.kind === 'RepeatExpr') {
+    const count = lit.kind === 'ArrayExpr' ? lit.elements.length
+      : lit.kind === 'RepeatExpr' ? getRepeatCount(lit)
+      : lit.kind === 'LiteralExpr' && lit.value.kind === 'string' ? lit.value.bytes.length : 0
+    if (t.kind === 'slice') {
+      const ref = serializeLiteral(lit, { kind: 'array', element: t.element, sizes: [count] }, builder)
+      return concatBytes([serializeI32(ref.ptr), serializeI32(count)])
+    }
+    if (t.kind === 'pointer' && t.pointee.kind === 'array') {
+      // A many-pointer has no count of its own: the literal's.
+      const target = t.pointee.sizes === null ? { ...t.pointee, sizes: [count] } : t.pointee
+      return serializeI32(serializeLiteral(lit, target, builder).ptr)
+    }
+  }
+  return buildElementBytes(expr, fieldType, [], builder)
 }
 
 // Build bytes for a single element with inner framings
@@ -553,10 +597,11 @@ function buildElementBytes(
   expr: AST.Expr,
   elementType: ResolvedType,
   framings: ArraySize[],
+  builder: DataSectionBuilder,
 ): Uint8Array {
   // Unwrap AnnotationExpr (e.g., 0:u32 in [0:u32;12])
   if (expr.kind === 'AnnotationExpr') {
-    return buildElementBytes(expr.expr, elementType, framings)
+    return buildElementBytes(expr.expr, elementType, framings, builder)
   }
 
   if (expr.kind === 'LiteralExpr') {
@@ -573,20 +618,20 @@ function buildElementBytes(
 
   if (expr.kind === 'ArrayExpr') {
     const parts: Uint8Array[] = []
-    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
+    const innerElementType = arrayElementType(elementType)
 
     if (framings.length > 0) {
       const outerFraming = framings[0]
       const innerFramings = framings.slice(1)
       for (const elem of expr.elements) {
-        parts.push(buildElementBytes(elem, innerElementType, innerFramings))
+        parts.push(buildElementBytes(elem, innerElementType, innerFramings, builder))
       }
       const combined = concatBytes(parts)
       return applyFraming(combined, outerFraming, getElementSize(innerElementType), parts.length)
     }
 
     for (const elem of expr.elements) {
-      parts.push(buildElementBytes(elem, innerElementType, []))
+      parts.push(buildElementBytes(elem, innerElementType, [], builder))
     }
     return concatBytes(parts)
   }
@@ -594,8 +639,8 @@ function buildElementBytes(
   if (expr.kind === 'RepeatExpr') {
     // [value; count] - repeat the value bytes count times
     // If elementType is a slice, unwrap it for the inner elements
-    const innerElementType = elementType.kind === 'slice' ? elementType.element : elementType
-    const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1))
+    const innerElementType = arrayElementType(elementType)
+    const valueBytes = buildElementBytes(expr.value, innerElementType, framings.slice(1), builder)
     const count = getRepeatCount(expr)
     const parts: Uint8Array[] = []
     for (let i = 0; i < count; i++) {
@@ -608,11 +653,64 @@ function buildElementBytes(
     return combined
   }
 
+  // (x) is grouping: the element itself, whatever its type is.
+  const struct = unwrap(elementType)
+  const inner = ungroup(expr)
+  if (inner !== expr) return buildElementBytes(inner, elementType, framings, builder)
+
+  // A slice written as its two parts, (ptr, len).
+  if (struct.kind === 'slice' && isSlicePair(expr)) return slicePairBytes(expr, struct, builder)
+
+  // A struct written out, as a tuple or a constructor: its fields one after
+  // another, as they lie in memory. A field only known when the program runs
+  // stays zero here.
+  const values = struct.kind === 'tuple' ? structFieldValues(expr, struct) : null
+  if (values && struct.kind === 'tuple') {
+    return concatBytes(struct.fields.map((f, i) => {
+      const value = values[i]
+      return value ? buildFieldBytes(value, f.type, builder) : new Uint8Array(byteSize(f.type) ?? 0)
+    }))
+  }
+
   // Runtime expressions (calls, identifiers, etc.) — emit zero placeholder
   // The actual value will be filled in at runtime via i32.store
   const size = byteSize(elementType)
   if (size !== null) return new Uint8Array(size)
   return new Uint8Array(8) // default: ptr + len for slice
+}
+
+// (ptr, len) where a slice is expected is that slice, built from its parts.
+function isSlicePair(expr: AST.Expr): expr is AST.TupleExpr {
+  return expr.kind === 'TupleExpr' && expr.elements.length === 2
+}
+
+// The eight bytes of a slice given as (ptr, len): the address, a number or a
+// literal that is laid out on its own, and the count of elements. A part only
+// known when the program runs stays zero here.
+function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Uint8Array {
+  const [ptr, len] = expr.elements.map((part) => part.value)
+  return concatBytes([
+    ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : new Uint8Array(4),
+    len ? buildElementBytes(len, primitive('u32'), [], builder) : new Uint8Array(4),
+  ])
+}
+
+// What the elements of an array literal are, for a target that is a slice or a
+// fixed array ([N]T, as a field of a struct); anything else is the leaf type
+// of merged brackets, which nested literals share.
+function arrayElementType(type: ResolvedType): ResolvedType {
+  if (type.kind === 'slice') return type.element
+  if (type.kind === 'array' && isValueArray(type)) return type.element
+  return type
+}
+
+// How many elements a literal has, from the reference to it. A reference
+// counts bytes, except for a literal that is an array of pointers to its own
+// literals (separate brackets), where it already counts elements.
+export function literalLength(ref: DataRef, element: ResolvedType): number {
+  if (element.kind === 'array' || element.kind === 'slice') return ref.len
+  const size = byteSize(element)
+  return size ? ref.len / size : ref.len
 }
 
 // Serialize separate brackets (e.g., [!][!]u8) - depth-first with pointer arrays
@@ -623,7 +721,11 @@ function serializeSeparate(
   skipDedup: boolean,
   refsMap?: Map<number, DataRef>,
 ): DataRef {
-  if (expr.kind !== 'ArrayExpr') {
+  // [row; n] is n rows, each laid out like a row written out.
+  const elements = expr.kind === 'RepeatExpr' ? Array<AST.Expr>(getRepeatCount(expr)).fill(expr.value)
+    : expr.kind === 'ArrayExpr' ? expr.elements
+    : null
+  if (!elements) {
     throw new Error(`Expected ArrayExpr for separate brackets, got ${expr.kind}`)
   }
 
@@ -631,22 +733,39 @@ function serializeSeparate(
   const innerType: ArrayRT = elem.kind === 'slice'
     ? { kind: 'array', element: elem.element, sizes: ['_'] }
     : elem as ArrayRT
+  // A many-pointer to fixed arrays ([*][M]T) is a table like *[N][M]T: its
+  // elements are row pointers, not (ptr, len) pairs.
+  const rows = elem.kind === 'array' && isValueArray(elem)
   const childRefs: DataRef[] = []
+  // The elements given as (ptr, len): what they hold is what was written.
+  const pairs = new Set<DataRef>()
 
-  for (const elem of expr.elements) {
-    if (isSerializableExpr(elem)) {
-      const ref = serializeLiteral(elem, innerType, builder)
+  for (const element of elements) {
+    const child = ungroup(element)
+    if (isSerializableExpr(child)) {
+      // The rows of a mutable table are written through it: each is its own,
+      // shared with no other data.
+      const ref = serializeLiteral(child, innerType, builder, undefined, rows && skipDedup)
       childRefs.push(ref)
-      if (refsMap && elem.span.start !== 0) {
-        refsMap.set(elem.span.start, ref)
+      if (refsMap && child.span.start !== 0) {
+        refsMap.set(child.span.start, ref)
       }
+    } else if (elem.kind === 'slice' && isSlicePair(child)) {
+      const words = new DataView(slicePairBytes(child, elem, builder).buffer)
+      const ref = { ptr: words.getUint32(0, true), len: words.getUint32(4, true) }
+      childRefs.push(ref)
+      pairs.add(ref)
     } else {
       childRefs.push({ ptr: 0, len: 0 })
     }
   }
 
-  const isSlice = elem.kind === 'slice' || targetType.sizes === null || (targetType.sizes.length === 0)
-  const pointerBytes = encodePointerArray(childRefs, getFramings(targetType.sizes), isSlice)
+  const isSlice = elem.kind === 'slice' || (!rows && (targetType.sizes === null || targetType.sizes.length === 0))
+  // A (ptr, len) element holds its child's length in elements, not bytes.
+  const elementRefs = isSlice
+    ? childRefs.map((ref) => pairs.has(ref) ? ref : { ptr: ref.ptr, len: literalLength(ref, innerType.element) })
+    : childRefs
+  const pointerBytes = encodePointerArray(elementRefs, getFramings(targetType.sizes), isSlice)
 
   const optional = isOptional(targetType.element)
   const ref = builder.internBytes(pointerBytes, skipDedup, optional)
@@ -710,6 +829,11 @@ function literalToBytes(expr: AST.LiteralExpr, elementType: ResolvedType): Uint8
     // Default comptime_int to i32
     if (elementType.kind === 'comptime_int') {
       const bytes = serializeInt(lit.value, 'i32')
+      if (bytes) return bytes
+    }
+    // A pointer given as a number is that address: four bytes in memory.
+    if (elementType.kind === 'pointer') {
+      const bytes = serializeInt(lit.value, 'u32')
       if (bytes) return bytes
     }
     throw new TypeError(`Cannot serialize int literal to type ${elementType.kind}`)
@@ -1012,7 +1136,11 @@ export interface DataSectionResult {
  * Build the data section from pending literals collected during type checking.
  * Serialization types are looked up from the types map at typeKey(id, 'DataTarget').
  */
-export function buildDataSection(literals: PendingLiteral[], types: Map<string, ResolvedType>): DataSectionResult {
+export function buildDataSection(
+  literals: PendingLiteral[],
+  types: Map<string, ResolvedType>,
+  options: { tolerant?: boolean } = {},
+): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
@@ -1033,8 +1161,15 @@ export function buildDataSection(literals: PendingLiteral[], types: Map<string, 
 
   // Serialize each literal
   for (const lit of sorted) {
-    const ref = serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs)
-    literalRefs.set(lit.id, ref)
+    try {
+      literalRefs.set(lit.id, serializeLiteral(lit.expr, lit.type, dataBuilder, literalRefs))
+    } catch (e) {
+      // Laying a literal out takes for granted that it passed the checker. In
+      // a module that didn't (the editor asks for metadata as it is typed), a
+      // literal with an element of the wrong type has no layout: it is left
+      // without an address, and the others keep theirs.
+      if (!options.tolerant) throw e
+    }
   }
 
   return { dataBuilder, literalRefs }

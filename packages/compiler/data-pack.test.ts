@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  buildDataSection,
   layoutLiterals,
   type LiteralValue,
   type QualifiedLiteral,
   DataSectionBuilder,
 } from './data-pack'
+import { typecheck } from './checker'
 import { array, primitive, type ArraySize } from './types'
 import { parse } from './parser'
 
@@ -302,5 +304,51 @@ describe('layoutLiterals', () => {
       // Total size is just 6 bytes
       expect(result.totalSize).toBe(6)
     })
+  })
+})
+
+describe('buildDataSection', () => {
+  // A module the checker rejects: the second literal has a float for an i32.
+  const check = typecheck(parse('data ok = [1, 2]\ndata bad: *[2]i32 = [1, 2.5]').module!)
+
+  test('a literal that cannot be laid out stops the build', () => {
+    expect(check.errors.map(e => e.message)).toEqual(['cannot assign float(2.5) to i32'])
+    expect(() => buildDataSection(check.literals, check.types)).toThrow('Cannot serialize float literal')
+  })
+
+  test('tolerant, it is left out and the others are laid out', () => {
+    const { literalRefs } = buildDataSection(check.literals, check.types, { tolerant: true })
+    expect([...literalRefs.values()]).toEqual([{ ptr: 8, len: 8 }])
+  })
+})
+
+describe('tables', () => {
+  // The bytes of a module's data section, as 32-bit words from address 8.
+  const words = (source: string): number[] => {
+    const check = typecheck(parse(source).module!)
+    expect(check.errors.map(e => e.message)).toEqual([])
+    const section = buildDataSection(check.literals, check.types).dataBuilder.result()
+    const memory = new Uint8Array(section.totalSize)
+    for (const entry of section.entries) memory.set(entry.bytes, entry.offset)
+    return Array.from(new Uint32Array(memory.buffer.slice(8)))
+  }
+
+  test('the rows lie apart, and the table holds their addresses', () => {
+    expect(words('data m: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]')).toEqual([7, 1, 2, 3, 4, 5, 8, 20])
+    expect(words('data s: [][2]i32 = [[7, 1], [3, 4]]')).toEqual([7, 1, 3, 4, 8, 16])
+  })
+
+  test('a many-pointer to rows holds row pointers too, not (ptr, len) pairs', () => {
+    expect(words('data p: [*][2]i32 = [[7, 1], [3, 4]]')).toEqual([7, 1, 3, 4, 8, 16])
+  })
+
+  test('a repeated row is a row for each element', () => {
+    expect(words('data c: *[3][2]i32 = [[1, 2]; 3]')).toEqual([1, 2, 8, 8, 8])
+  })
+
+  test('the rows of a mutable table are its own', () => {
+    // Each row of `mut` has an address of its own, even where the bytes are
+    // the same as another row's or another literal's.
+    expect(words('data a: *[2]i32 = [0, 0]\ndata b: *mut [2][2]i32 = mut [[0; 2]; 2]')).toEqual([0, 0, 0, 0, 0, 0, 16, 24])
   })
 })

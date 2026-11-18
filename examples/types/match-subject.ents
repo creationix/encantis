@@ -140,6 +140,25 @@ test "a match statement on a slice" {
   assert calls == 1
 }
 
+// A tuple read from memory is several values too: each field is loaded, once.
+data pairs = mut [(1:u8, 2:u64), (3:u8, 4:u64)]
+
+func stored(at: u32) -> u32 {
+  calls += 1
+  return at
+}
+
+func any_element() -> i32 => match pairs[stored(1)] ?? (0, 0) { _ => 6 }
+
+func any_behind(pair: *(u8, u64)) -> i32 => match pair.* { _ => 7 }
+
+test "a subject of several values loaded from memory" {
+  reset()
+  assert any_element() == 6
+  assert calls == 1
+  assert any_behind(&pairs[0]) == 7
+}
+
 // A constant subject has no type of its own: it is compared in its default
 // type, i32 or i64 by its size, f64 for a float.
 def level = 1

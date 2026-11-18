@@ -52,3 +52,54 @@ test "64-bit elements" {
   for x in wide { hi = x }
   assert hi == 0xFFFFFFFFFFFFFFFF
 }
+
+// A slice written as an array literal has as many elements as the literal,
+// whatever their size.
+type Pair = (a: i32, b: i32)
+
+data lists: [][]i32 = [[1, 2], [3]]
+
+func sum-of(s: []i32) -> i32 {
+  let t = 0
+  for x in s { t += x }
+  return t
+}
+func pairs(s: []Pair) -> i32 {
+  let t = 0
+  for p in s { t += p.a * p.b }
+  return t
+}
+
+test "a slice literal of wider elements" {
+  let s: []i32 = [1, 2, 3]
+  assert s.len == 3
+  assert sum-of(s) == 6
+  assert sum-of([4, 5, 6, 7]) == 22
+  let wides: []u64 = [1, 2]
+  assert wides.len == 2
+  let zeros: []i32 = [0:i32; 5]
+  assert zeros.len == 5
+}
+test "a slice literal with a runtime element" {
+  let n = 10
+  let s: []i32 = [1, n, 3]
+  assert s.len == 3
+  assert sum-of(s) == 14
+}
+test "a slice literal of structs" {
+  let n = 3
+  let s: []Pair = [(1, 2), Pair(n, 4), (5, 6)]
+  assert s.len == 3
+  assert pairs(s) == 44
+}
+test "slices of slices of wider elements" {
+  assert lists.len == 2
+  let t = 0
+  let n: u32 = 0
+  for l in lists {
+    n += l.len
+    t += sum-of(l)
+  }
+  assert n == 3
+  assert t == 6
+}

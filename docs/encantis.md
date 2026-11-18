@@ -95,6 +95,8 @@ b"SGVsbG8="       // base64 bytes
 
 Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. The default type when no annotation is provided is `[_]u8` (fat slice with inferred length).
 
+A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
+
 #### Template Literals
 
 Template literals use backticks and `${expr}` interpolation to combine static text with runtime values:
@@ -333,14 +335,15 @@ Use fixed arrays for small data that benefits from register access: cryptographi
 
 All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
 
-| Type      | Meaning                    | `.len`          | `.wid`             | Indexing            |
-|-----------|----------------------------|-----------------|---------------------|---------------------|
-| `*T`      | pointer to one T           | N/A             | `sizeof(T)`         | `.*` to dereference |
-| `*[N]T`   | pointer to N elements      | N (comptime)    | `sizeof(T)`         | `[i]`               |
-| `*[!]T`   | pointer to null-terminated | scans, O(n)     | `sizeof(T)`         | `[i]`               |
-| `*[NxM]T` | pointer to N×M packed 2D   | N, M (comptime) | `sizeof(T)`         | `[i]` → `*[M]T`     |
-| `[*]T`    | many-pointer (no bounds)   | N/A             | `sizeof(T)`         | `[i]` (unchecked)   |
-| `[]T`     | slice (fat pointer)        | runtime         | `sizeof(T)`         | `[i]`               |
+| Type       | Meaning                          | `.len`          | `.wid`              | Indexing                         |
+|------------|----------------------------------|-----------------|---------------------|----------------------------------|
+| `*T`       | pointer to one T                 | N/A             | `sizeof(T)`         | `.*` to dereference              |
+| `*[N]T`    | pointer to N elements            | N (comptime)    | `sizeof(T)`         | `[i]`                            |
+| `*[!]T`    | pointer to null-terminated       | scans, O(n)     | `sizeof(T)`         | `[i]`                            |
+| `*[N][M]T` | pointer to a table of N rows     | N (comptime)    | 4 (a row pointer)   | `[i]` → `*[M]T`, loaded          |
+| `*[NxM]T`  | pointer to N×M packed 2D         | N (comptime)    | `sizeof(T)`         | `[i]` → `*[M]T`, computed        |
+| `[*]T`     | many-pointer (no bounds)         | N/A             | `sizeof(T)`         | `[i]` (unchecked)                |
+| `[]T`      | slice (fat pointer)              | runtime         | `sizeof(T)`         | `[i]`                            |
 
 `.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`.
 
@@ -426,6 +429,29 @@ See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` 
 *[N][M]T    // pointer to N pointers to M-element arrays
 *[NxM]T     // pointer to N×M packed elements (contiguous 2D)
 ```
+
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]   // a slice of three row pointers
+
+func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
+```
+
+In a table:
+
+- `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
+- Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
+- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself.
+- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([8.6](#86-structs-and-slices-in-memory)) or in registers.
+- `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
+- `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
+- `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
+- `&m[i]` is the address of the row pointer: a `**[M]T`, or `*mut *mut [M]T` in a mutable table (optional, as in [4.7](#element-addresses-and-writes), when `i` isn't proven).
+- `m.*` is an error: the rows lie apart, so there is no `[N][M]T` to load or store whole.
+- A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants. With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
 
 ### 2.6 Slices
 
@@ -521,6 +547,26 @@ let p:Point = Point(3.0, 4.0)
 let x = p.x              // field read
 p.y = 5.0                // field write
 ```
+
+A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call. Fields of fields chain.
+
+```ents
+type Point = (x:f32, y:f32)
+type Rect = (origin:Point, size:(w:f32, h:f32))
+
+func bounds() -> Rect => Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
+
+func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
+  p.x = 0.0                    // a field of the Point that p points to
+  p.y += 1.0
+  list[i].origin.x = p.x       // a field of a field of an element
+  let r = bounds()
+  r.size.w = 2.0               // a field of a field of a variable
+  return bounds().size.h       // a field of a call's result
+}
+```
+
+`p.x` through a pointer reads or writes memory (§8.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
 
 ### 2.9 Enum Types (Algebraic Data Types)
 
@@ -675,7 +721,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
-- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s.
 
 ```ents
 type Sample = (count: i64, mean: f64)
@@ -844,6 +890,7 @@ data key = x"9d61b19deffd5a60"      // key: *[8]u8
 data table = [1:u64, 2, 3, 4]       // table: *[4]u64
 data msg = "hello"                   // msg: *[5]u8
 data origin = (0.0, 0.0)            // origin: *(f64, f64)
+data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
 ```
 
 The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` at call sites. Annotate the LHS to force a specific type:
@@ -851,6 +898,15 @@ The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T`
 ```ents
 data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
 data buf: []u8 = [0:u8; 1024]       // []u8 (slice, loses compile-time length)
+```
+
+An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+
+```ents
+type Point = (x:i32, y:i32)
+type City = (name:[]u8, at:Point)
+
+data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
 ```
 
 #### Mutability
@@ -869,8 +925,25 @@ data buffer = mut [0:u8; 1024]      // unique, never deduplicated
 let count:i32 = 0
 let ptr:*u8       // uninitialized
 
-// Global variable (stored in linear memory)
+// Global variable (a wasm global)
 global total:i32 = 0
+```
+
+A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+
+```ents
+type Size = (w:i32, h:i32)
+
+global order:[]i32 = (0, 0)        // two wasm globals: the pointer and the length
+global size:Size = Size(3, 4)      // one per field
+global scratch:Size                // zero until it's set
+
+func keep(list:[]i32) -> u32 {
+  order = list
+  size.h += 1
+  scratch = size
+  return order.len
+}
 ```
 
 Type annotations are optional when the type can be inferred from the initializer:
@@ -881,7 +954,7 @@ let result = compute()           // type inferred from return type
 let pair = (1.0, 2.0)            // type inferred as (f64, f64)
 ```
 
-A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. The compiler works out its value, so it can be written as it's meant:
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
 
 ```ents
 def page = 64 * 1024
@@ -890,6 +963,7 @@ data table = [1:u16, 2, 3]
 global limit: u32 = 4 * page     // 262144
 global ratio: f64 = 2 / 3.0
 global mask: u32 = ~0 << 12
+global span: (u32, f64) = (4 * page, 1 / 4.0)
 global bits: u32 = -1 as u32     // 4294967295
 global low: u8 = 300 as u8       // 44, as the cast gives at run time
 global bytes: [*]u8 = table as [*]u8
@@ -1148,6 +1222,24 @@ Assignment targets (lvalues) can be:
 | `(a, b, ...)` | Positional destructuring |
 | `(x:, y:, ...)` | Named destructuring (trailing colon) |
 
+> **Status: the type-punned write is not implemented.** `ptr.T` is the pointer as a `[*]T` (see [Type-Punned Memory Access](#type-punned-memory-access)), so `ptr.u32 = value` is a compile error: write `ptr.u32[0] = value`.
+
+An assignment reads its whole value before it writes any of it, so a value can be rebuilt from itself, in a variable or in memory:
+
+```ents
+type Point = (x:i32, y:i32)
+
+func flip(p:Point, q:*mut Point) -> Point {
+  p = Point(p.y, p.x)          // swaps the fields
+  q.* = Point(q.y, q.x)        // and so does this, in memory
+  return p
+}
+```
+
+The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from, and for a value that writes on its way: after `q.* = Point(1, if c { q.x = 9 ... })`, `q.x` is 1. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
+
+The target's address is evaluated once, and before the value, also for a compound assignment: `xs[next()] += 1` calls `next` one time, and `p.* = if c { p = q ... }` writes where `p` pointed before.
+
 > **Status: Destructuring is not yet fully implemented in codegen.**
 
 Positional destructuring unpacks multiple values in a single assignment:
@@ -1246,6 +1338,8 @@ ptr.(MyStruct)
 ptr.([]u8)
 ```
 
+> **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
+
 ### 4.7 Bounds-Checked Indexing
 
 Array and slice indexing follows strict rules based on whether the index is known at compile time:
@@ -1259,7 +1353,7 @@ let y = table[3]                  // OK: 3 < 4
 let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
 ```
 
-**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds:
+**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds (the row pointers of a table are the exception, see [Nesting](#nesting)):
 
 ```ents
 data names:[][]u8 = ["Alice", "Bob", "Charlie"]
@@ -1504,6 +1598,20 @@ loop {                   // infinite loop
 ```
 
 An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
+
+The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func total(list:[]Spot) -> i32 {
+  let t = 0
+  for s in list {
+    t += s.c + s.di + s.room
+  }
+  return t
+}
+```
 
 ### 5.3 Control Statements
 
@@ -1838,6 +1946,8 @@ export "mem" memory 8 256  // explicit name, 8 min, 256 max
 export global counter:i32 = 0
 ```
 
+A global of several wasm values is exported (and imported from the host) as one wasm global per value, each named for its part the way a local's registers are: `export global order:[]i32` exports `order_ptr` and `order_len`, and a struct global `size:(w:i32, h:i32)` exports `size_w` and `size_h`.
+
 ### 7.3 Memory Declarations
 
 ```ents
@@ -1867,6 +1977,7 @@ Encantis distinguishes between register storage (WASM locals/globals) and linear
 | `let p:Point` | Multiple WASM locals | Fields are separate registers |
 | `let ptr:*[64]u8` | Single WASM local (i32) | Holds a pointer, doesn't allocate |
 | `global g:i32` | WASM global | Module-scoped register |
+| `global s:[]u8` | Two WASM globals (ptr, len) | One per value, like a local |
 | `def buffer = [0:u8; 64]` | Linear memory | Allocates 64 bytes in data section |
 
 Primitives and structs are stored in WASM locals/globals—fast registers with no memory address. Pointer variables are single i32 values that reference memory allocated via `def`.
@@ -1913,7 +2024,7 @@ length(ptr.*)              // OK: dereference to get by-value Point
 For by-reference semantics, explicitly accept a pointer. The caller must ensure the data is serialized in linear memory:
 
 ```ents
-func modify(p:*Point) {
+func modify(p:*mut Point) {
   p.x = 0.0
   p.y = 0.0
 }
@@ -1921,7 +2032,7 @@ func modify(p:*Point) {
 let p = Point(3.0, 4.0)
 modify(&p)                 // ERROR: p has no address (stack-allocated)
 
-let mem_p:*Point = allocate_point()
+let mem_p:*mut Point = allocate_point()
 modify(mem_p)              // OK: mem_p points to linear memory
 ```
 
@@ -2010,6 +2121,53 @@ let slice:[]u8 = (ptr, 64)     // OK: provide length
 let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
+
+### 8.6 Structs and Slices in Memory
+
+Any value type can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+
+| Type | Bytes in memory |
+|------|-----------------|
+| `i8`, `u8`, `bool` | 1 |
+| `i16`, `u16` | 2 |
+| `i32`, `u32`, `f32` | 4 |
+| `i64`, `u64`, `f64` | 8 |
+| `i128` ... `u512` | 16 ... 64, as 64-bit limbs, least significant first |
+| `*T`, `[*]T`, `*[N]T` | 4 |
+| `[]T` | 8: the pointer, then the length |
+| `[N]T` | N × `sizeof(T)` |
+| `(a:T1, b:T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+
+`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset. The one exception is a fixed array that is the element of a pointer or slice (`*[N][M]T`, `[][M]T`, `[*][M]T`): there each element is a 4-byte pointer to its row, which lies apart ([Nesting](#nesting)).
+
+```ents
+type Lane = (cells:[]i32, free:i32)       // 12 bytes: cells.ptr 0, cells.len 4, free 8
+type Option = (d:i32, lane:Lane)          // 16 bytes: d 0, lane 4
+type Mixed = (a:u8, b:i16, c:u64)         // 11 bytes: a 0, b 1, c 3
+```
+
+A value in memory is read and written whole or part by part. Each wasm value of it is one load or store at its offset, so there is nothing to pay for the struct: `list[k] = Spot(a, b, c)` is three stores, and `list[k].di` is one load.
+
+```ents
+type Spot = (c:i32, di:i32, room:i32)
+
+func sum(s:Spot) -> i32 => s.c + s.di + s.room
+
+func demo(list:[*]mut Spot, k:u32, p:*mut Spot, all:[]Spot) -> i32 {
+  list[k] = Spot(20, 1, 2)       // store a whole struct
+  let s = list[k]                // load one: s is a copy, in registers
+  p.* = s                        // through a pointer to one struct
+  p.di += 1                      // one field through the pointer (p.* is implied)
+  list[k + 1] = list[k]          // copy from one place to another
+  let t = sum(p.*) + sum(list[k])   // pass by value
+  for spot in all {              // each element in turn
+    t += spot.room
+  }
+  return t
+}
+```
+
+The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opts[i].lane.cells.len`, `for x in opts[i].lane.cells { ... }`.
 
 ---
 

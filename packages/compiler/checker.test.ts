@@ -1022,15 +1022,15 @@ describe('globals', () => {
       global name: [*]u8 = "name"
     `)
     expect(result.errors).toEqual([])
-    const init = (name: string) => {
-      const sym = result.symbols.get(name)
-      return sym?.kind === 'global' ? sym.init : undefined
-    }
-    expect(init('size')).toEqual({ kind: 'int', value: 262144n })
-    expect(init('ratio')).toEqual({ kind: 'float', value: 1.5 })
-    expect(init('count')).toEqual({ kind: 'int', value: 3n })
-    // As a u8 holds it.
-    expect(init('mask')).toEqual({ kind: 'int', value: 240n })
+    // The values go to codegen by initializer, in the order written.
+    expect([...result.constants.values()].slice(0, 5)).toEqual([
+      { kind: 'int', value: 262144n },
+      { kind: 'float', value: 1.5 },
+      { kind: 'int', value: 3n },
+      { kind: 'int', value: 5n },
+      // As a u8 holds it.
+      { kind: 'int', value: 240n },
+    ])
   })
 
   test('a constant is worked out in its type, as it would be at run time', () => {
@@ -1050,26 +1050,24 @@ describe('globals', () => {
       global big: i64 = 1 << 40
     `)
     expect(result.errors).toEqual([])
-    const init = (name: string) => {
-      const sym = result.symbols.get(name)
-      return sym?.kind === 'global' ? sym.init : undefined
-    }
-    // A float division where the literals are floats, an integer one where they're integers.
-    expect(init('real')).toEqual({ kind: 'float', value: 3.5 })
-    expect(init('third')).toEqual({ kind: 'float', value: Math.fround(1 / 3) })
-    expect(init('named')).toEqual({ kind: 'float', value: 3.5 })
-    expect(init('whole')).toEqual({ kind: 'int', value: 3n })
-    // Arithmetic wraps to its operands' width before the result widens.
-    expect(init('byte')).toEqual({ kind: 'int', value: 44n })
-    expect(init('word')).toEqual({ kind: 'int', value: 0n })
-    expect(init('under')).toEqual({ kind: 'int', value: 2147483647n })
-    // A shift uses the low bits of its count.
-    expect(init('count')).toEqual({ kind: 'int', value: 256n })
-    expect(init('down')).toEqual({ kind: 'int', value: -4n })
-    // A wide integer's too: 130 is 2 in the 128 bits of a u128.
-    expect(init('far')).toEqual({ kind: 'int', value: 1n })
-    expect(init('single')).toEqual({ kind: 'float', value: Math.fround(Math.fround(0.1) + Math.fround(0.2)) })
-    expect(init('big')).toEqual({ kind: 'int', value: 1099511627776n })
+    expect([...result.constants.values()]).toEqual([
+      // A float division where the literals are floats, an integer one where they're integers.
+      { kind: 'float', value: 3.5 },
+      { kind: 'float', value: Math.fround(1 / 3) },
+      { kind: 'float', value: 3.5 },
+      { kind: 'int', value: 3n },
+      // Arithmetic wraps to its operands' width before the result widens.
+      { kind: 'int', value: 44n },
+      { kind: 'int', value: 0n },
+      { kind: 'int', value: 2147483647n },
+      // A shift uses the low bits of its count.
+      { kind: 'int', value: 256n },
+      { kind: 'int', value: -4n },
+      // A wide integer's too: 130 is 2 in the 128 bits of a u128.
+      { kind: 'int', value: 1n },
+      { kind: 'float', value: Math.fround(Math.fround(0.1) + Math.fround(0.2)) },
+      { kind: 'int', value: 1099511627776n },
+    ])
   })
 
   test('a division that traps at run time is not a constant', () => {
@@ -1105,23 +1103,21 @@ describe('globals', () => {
       global again: i64 = (-1 as u8) as i64
     `)
     expect(result.errors).toEqual([])
-    const init = (name: string) => {
-      const sym = result.symbols.get(name)
-      return sym?.kind === 'global' ? sym.init : undefined
-    }
-    expect(init('same')).toEqual({ kind: 'int', value: 5n })
-    expect(init('bits')).toEqual({ kind: 'int', value: 4294967295n })
-    expect(init('wide')).toEqual({ kind: 'int', value: 7n })
-    expect(init('byte')).toEqual({ kind: 'int', value: 44n })
-    expect(init('small')).toEqual({ kind: 'int', value: -56n })
-    expect(init('whole')).toEqual({ kind: 'int', value: 2n })
-    expect(init('down')).toEqual({ kind: 'int', value: -2n })
-    expect(init('real')).toEqual({ kind: 'float', value: 7 })
-    expect(init('single')).toEqual({ kind: 'float', value: Math.fround(0.1) })
-    // Rounded once, as f32.convert_i64_s does: by way of a double it would be 2^53.
-    expect(init('nearest')).toEqual({ kind: 'float', value: 9007200328482816 })
-    expect(init('flag')).toEqual({ kind: 'int', value: 1n })
-    expect(init('again')).toEqual({ kind: 'int', value: 255n })
+    expect([...result.constants.values()]).toEqual([
+      { kind: 'int', value: 5n },
+      { kind: 'int', value: 4294967295n },
+      { kind: 'int', value: 7n },
+      { kind: 'int', value: 44n },
+      { kind: 'int', value: -56n },
+      { kind: 'int', value: 2n },
+      { kind: 'int', value: -2n },
+      { kind: 'float', value: 7 },
+      { kind: 'float', value: Math.fround(0.1) },
+      // Rounded once, as f32.convert_i64_s does: by way of a double it would be 2^53.
+      { kind: 'float', value: 9007200328482816 },
+      { kind: 'int', value: 1n },
+      { kind: 'int', value: 255n },
+    ])
   })
 
   test('an address cast to a pointer or a 32-bit integer is still the address', () => {
@@ -1155,6 +1151,18 @@ describe('globals', () => {
     expect(errs(`global a: i32 = 1\nglobal pair: (i32, i32) = (a, 2)`)).toEqual([message])
   })
 
+  test('each part of a tuple, struct or array of constants has its value', () => {
+    const result = checkModule(`
+      type Size = (w: i32, h: f64)
+      global size: Size = Size(1 + 2, 4:i32)
+      global span: (i64, u128) = (1 << 40, 5)
+      global row: [2]i32 = [2 * 3, 7]
+    `)
+    expect(result.errors).toEqual([])
+    expect([...result.constants.values()].map(v => v.kind === 'int' && v.value)).toEqual([3n, 4n, 1n << 40n, 5n, 6n, 7n])
+    expect(errs(`func one() -> i32 => 1\nglobal row: [2]i32 = [one(), 2]`)).toEqual(['global initializer must be a compile-time constant'])
+  })
+
   test('a global keeps its pointer annotation over a literal initializer', () => {
     const result = checkModule(`
       type Slot = (key: u32, value: u32)
@@ -1171,6 +1179,368 @@ describe('globals', () => {
     expect(result.errors).toHaveLength(0)
     const words = result.symbols.get('words')
     expect(words?.kind === 'global' && typeToString(words.type)).toBe('[*]mut u32')
+  })
+})
+
+describe('writes through pointers', () => {
+  const errs = (body: string, params = 'p: *Spot, m: *mut Spot') =>
+    checkModule(`
+      type Spot = (c: i32, di: i32)
+      type Row = (tag: u8, v: [3]i32, at: Spot)
+      func f(${params}) {
+        ${body}
+      }
+    `).errors.map(e => e.message)
+  const constPointer = 'cannot write through const pointer — use *mut for mutable access'
+
+  test('a field of the struct a pointer points to needs a mutable pointer', () => {
+    expect(errs('p.c = 5')).toEqual([constPointer])
+    expect(errs('p.di += 1')).toEqual([constPointer])
+    expect(errs('m.c = 5\nm.di += 1')).toEqual([])
+  })
+
+  test('a field of a field goes through whatever holds the outermost struct', () => {
+    expect(errs('rows[1].at.c = 5', 'rows: [*]Row')).toEqual([constPointer])
+    expect(errs('rows[1].at.c = 5', 'rows: [*]mut Row')).toEqual([])
+    expect(errs('r.at.c = 5\nr.at = Spot(1, 2)', 'r: *Row')).toEqual([constPointer, constPointer])
+    expect(errs('r.at.c = 5\nr.at = Spot(1, 2)', 'r: *mut Row')).toEqual([])
+    expect(errs('rows[1].at.c = 5', 'rows: []Row')).toContain('cannot write through const slice — use []mut for mutable access')
+  })
+
+  test('an element of a fixed array in a struct goes through the struct', () => {
+    expect(errs('r.v[0] = 1', 'r: *Row')).toEqual([constPointer])
+    expect(errs('r.v[0] = 1', 'r: *mut Row')).toEqual([])
+    expect(errs('rows[0].v[2] += 1', 'rows: [*]Row')).toEqual([constPointer])
+  })
+
+  test('a struct in a variable is written without a pointer', () => {
+    expect(errs('r.at.c = 5\nr.v[0] = 1\nr.at = Spot(1, 2)', 'r: Row')).toEqual([])
+    // A pointer held in a field of a variable still gates writes through it.
+    expect(errs('h.p.c = 5', 'h: (p: *Spot)')).toEqual([constPointer])
+    expect(errs('h.p.c = 5', 'h: (p: *mut Spot)')).toEqual([])
+  })
+
+  test('a type pun is the pointer, not a place: the place is its element', () => {
+    const pun = (type: string, pointer: string) =>
+      `cannot assign to .${type}: it is the pointer as ${pointer}, not the ${type} it points at — write .${type}[0] = value to store one`
+    for (const type of ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64', 'bool']) {
+      const value = type === 'bool' ? 'true' : '1'
+      expect(errs(`b.${type} = ${value}`, 'b: [*]mut u8')).toEqual([pun(type, `[*]mut ${type}`)])
+      expect(errs(`b.${type}[0] = ${value}`, 'b: [*]mut u8')).toEqual([])
+    }
+    // Whatever is punned and whatever is assigned, also with an operator.
+    expect(errs('s.u16 = 1', 's: []mut u8')).toEqual([pun('u16', '[*]mut u16')])
+    expect(errs('m.u32 = m.u32', 'm: *mut Spot')).toEqual([pun('u32', '[*]mut u32')])
+    expect(errs('b.u32 += 1', 'b: [*]mut u8')).toEqual([pun('u32', '[*]mut u32')])
+    expect(errs('b.u32 = 1', 'b: [*]u8')).toEqual([pun('u32', '[*]u32')])
+    expect(errs('n.u8 = 1', 'n: u32')).toEqual(['cannot assign to .u8: a type pun is not a place a value can be stored to'])
+    // The value is still checked.
+    expect(errs('b.u32 = nothing', 'b: [*]mut u8')).toEqual([pun('u32', '[*]mut u32'), "unknown identifier 'nothing'"])
+  })
+})
+
+describe('tables', () => {
+  // *[N][M]T, [][M]T and [*][M]T hold pointers to rows laid out apart: an
+  // element is a row pointer, *[M]T.
+  const tables = `
+    data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+    data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+    data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]
+    data many: [*][2]i32 = [[7, 1], [3, 4]]
+    data cube: *[2][2][2]i32 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+    data spare: *mut [3]i32 = mut [1, 2, 3]
+    data fixed: *[3]i32 = [1, 2, 3]
+  `
+  const check = (body: string, params = '') => checkModule(`${tables}\nfunc f(${params}) {\n${body}\n}`)
+  const errs = (body: string, params = '') => check(body, params).errors.map(e => e.message)
+  const letType = (value: string, params = '') => {
+    const source = `${tables}\nfunc f(${params}) {\nlet r = ${value}\n}`
+    const result = checkModule(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    return typeAt(result, source.indexOf('let r =') + 4)
+  }
+
+  test('an element is a pointer to its row', () => {
+    expect(letType('grid[1]')).toBe('*[3]i32')
+    expect(letType('board[1]')).toBe('*mut [3]i32')
+    expect(letType('rows[0]')).toBe('*[2]i32')
+    expect(letType('many[5]')).toBe('*[2]i32')
+    expect(letType('cube[1]')).toBe('*[2][2]i32')
+    expect(letType('cube[1][0]')).toBe('*[2]i32')
+    expect(letType('grid[1][2]')).toBe('i32')
+    expect(letType('grid[i][j]', 'i: u32#2, j: u32#3')).toBe('i32')
+    expect(letType('&grid[1]')).toBe('**[3]i32')
+    // A fixed array that is a field of a struct lies in place.
+    expect(letType('ps[1].v', 'ps: *[2](k: u8, v: [2]i32)')).toBe('[2]i32')
+    // A packed block is not a table: its row is an address in the block.
+    expect(letType('p[1]', 'p: *[2x3]i32')).toBe('*[3]i32')
+  })
+
+  test('a run-time index works on both, each checked on its own', () => {
+    expect(errs('let a = grid[i][j]\nlet b = cube[i][k][k]', 'i: u32#2, j: u32#3, k: u32#2')).toEqual([])
+    expect(errs('let a = grid[i][j]', 'i: u32#3, j: u32#3')).toEqual([
+      'index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2) — narrow the index range to fit',
+    ])
+    expect(errs('let a = grid[0][j]', 'j: u32#4')).toEqual([
+      'index type u32#4 may exceed *[3]i32 bounds (max index 3 >= 3) — narrow the index range to fit',
+    ])
+    expect(errs('let a = grid[2][0]')).toEqual(['index 2 out of bounds for *[2][3]i32'])
+  })
+
+  test('a row has no optional type: an unproven row index is resolved where it is taken', () => {
+    const unresolved = (table: string) => `runtime index on ${table} requires 'if let' or '??' (rows are not optional)`
+    expect(errs('let r = grid[i]', 'i: u32')).toEqual([unresolved('*[2][3]i32')])
+    expect(errs('let r = rows[i][0]', 'i: u32')).toEqual([unresolved('[][2]i32')])
+    // ?? and if let resolve the index they are given, not the row it is taken from.
+    expect(errs('let r = grid[i][0] ?? 0', 'i: u32')).toEqual([unresolved('*[2][3]i32')])
+    expect(errs('let r = grid[0][j] ?? 0\nlet s = grid[i] ?? spare', 'i: u32, j: u32')).toEqual([])
+    expect(errs('if let r = rows[i] { let x = r[1] }', 'i: u32')).toEqual([])
+    // A many-pointer has no length: its rows are never checked.
+    expect(errs('let r = many[i][1]', 'i: u32')).toEqual([])
+  })
+
+  test('writes go through the row pointer', () => {
+    const constPointer = 'cannot write through const pointer — use *mut for mutable access'
+    expect(errs('board[i][j] = 5\nboard[1][0] += 1', 'i: u32#2, j: u32#3')).toEqual([])
+    expect(errs('grid[1][0] = 5')).toEqual([constPointer])
+    expect(errs('rows[0][0] = 5')).toEqual([constPointer])
+    // m[i] = r points row i at r.
+    expect(errs('board[1] = spare')).toEqual([])
+    expect(errs('grid[1] = fixed')).toEqual([constPointer])
+    expect(errs('board[1] = fixed')).toEqual(['cannot assign *[3]i32 to *mut [3]i32'])
+  })
+
+  test('the rows of a table literal are constants: they are laid out apart, at compile time', () => {
+    const row = (type: string) => `a row of ${type} is laid out at compile time: its values must be constants`
+    expect(errs('let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]\nlet u: *[2][3]i32 = [v, [1, 2, 3]]\nlet w: [][2]i32 = [[a; 2]; 3]', 'a: i32, v: [3]i32')).toEqual([
+      row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
+    ])
+    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+  })
+
+  test('len and wid are constants', () => {
+    // A constant has to fit a ranged type, which pins it down: n < 3, w < 5.
+    expect(errs('let n: u32#3 = grid.len\nlet w: u32#5 = grid.wid\nlet c: u32#5 = cube.wid\nlet r: u32#4 = grid[0].len')).toEqual([])
+    expect(errs('let n: u32#2 = grid.len\nlet w: u32#4 = grid.wid\nlet c: u32#4 = cube.wid')).toEqual([
+      'cannot assign int(2) to u32#2',
+      'cannot assign int(4) to u32#4',
+      'cannot assign int(4) to u32#4',
+    ])
+  })
+
+  test('each element of a loop is a row pointer', () => {
+    const source = `${tables}\nfunc f() {\nfor r in grid { let a = r[2] }\nfor s in rows { let b = s[1] }\nfor w in board { w[0] = 1 }\n}`
+    const result = checkModule(source)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(typeAt(result, source.indexOf('r in grid'), 'ForBinding')).toBe('*[3]i32')
+    expect(typeAt(result, source.indexOf('s in rows'), 'ForBinding')).toBe('*[2]i32')
+    expect(typeAt(result, source.indexOf('w in board'), 'ForBinding')).toBe('*mut [3]i32')
+  })
+
+  test('a row passes as a pointer or a slice; the table cannot be loaded whole', () => {
+    const fns = 'func sum(r: *[3]i32) -> i32 => r[0]\nfunc total(s: []i32) -> i32 => s[0] ?? 0\n'
+    const source = (body: string) => `${tables}\n${fns}func f() {\n${body}\n}`
+    expect(checkModule(source('let a = sum(grid[1]) + total(grid[1])\nlet v = grid[1].*')).errors.map(e => e.message)).toEqual([])
+    expect(errs('let v = grid.*')).toEqual([
+      'cannot use .* on *[2][3]i32: a table holds pointers to rows that lie apart — load one row with [i].*',
+    ])
+  })
+})
+
+describe('struct elements of an array literal', () => {
+  const check = (decl: string) =>
+    checkModule(`
+      type Mixed = (a: u64, b: u8, name: []u8)
+      ${decl}
+    `)
+
+  test('a tuple element is checked field by field', () => {
+    expect(check('data ok: *[2]Mixed = [(1, 2, "x"), Mixed(3, 4, "yz")]').errors).toEqual([])
+    expect(check('data bad: *[1]Mixed = [(1.5, 2, "x")]').errors.map(e => e.message)).toEqual([
+      'cannot assign float(1.5) to u64',
+    ])
+    expect(check('data bad: *[1]Mixed = [(1, 300, "x")]').errors.length).toBe(1)
+    expect(check('func f(n: u8) { let l: *[1]Mixed = [(1, n, "x")] }').errors).toEqual([])
+    expect(check('func f(n: u64) { let l: *[1]Mixed = [(1, n, "x")] }').errors.map(e => e.message)).toEqual([
+      'cannot assign u64 to u8',
+    ])
+  })
+
+  test('its literals take the types of their fields', () => {
+    const result = check('func f(n: u8) { let l: *[1]Mixed = [(5, n, "x")] }')
+    const five = [...result.exprTypes].find(([expr]) => expr.kind === 'LiteralExpr')
+    expect(five && typeToString(five[1])).toBe('u64')
+  })
+})
+
+describe('a string literal as a slice', () => {
+  const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
+  const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>
+    `cannot assign a string literal to ${to} — a string is bytes ([]u8); write the ${element} elements as an array literal${/^[iuf]\d+$/.test(element) ? ' ([1, 2, 3])' : ''}`
+  const among = (element: string) =>
+    `cannot use a string literal among ${element} elements — a string is bytes ([]u8); write the ${element} elements as an array literal ([1, 2, 3])`
+
+  test('is a slice of elements of one byte', () => {
+    for (const type of ['[]u8', '[]mut u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = "abc"\n return 1 }`)).toEqual([])
+    }
+    expect(errs('data names: [][]u8 = ["ab", "c"]\ndata rows: [][][]u8 = [["ab"], ["c", "d"]]\ndata joined: []u8 = ["ab", "c"]')).toEqual([])
+  })
+
+  test('is not a slice of anything wider: its bytes are not that many elements', () => {
+    for (const type of ['[]u16', '[]u32', '[]mut u32', '?[]u32', '[]u64', '[]f32', '[]f64', '[]Pt', '[][]u8']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = "abcd"\n return 1 }`)).toEqual([assign(type)])
+    }
+  })
+
+  test('wherever it meets the slice type', () => {
+    const take = 'func take(xs: []u32) -> u32 => xs.len\n'
+    expect(errs(`${take}func f() -> u32 => take("str")`)).toEqual([`argument 1: ${assign('[]u32')}`])
+    expect(errs('func f() -> []u32 => "str"')).toEqual([assign('[]u32')])
+    expect(errs('func f() -> []u32 { return "str" }')).toEqual([assign('[]u32')])
+    expect(errs('func f(c: bool) -> []u16 => if c { "ab" } else { "abcd" }')).toEqual([assign('[]u16'), assign('[]u16')])
+    expect(errs('func f(s: []u32) -> u32 { s = "str"\n return s.len }')).toEqual([assign('[]u32')])
+    expect(errs('func f(s: []u32) -> u32 { let t: []u32 = s[0..1] ?? "str"\n return t.len }')).toEqual([assign('[]u32')])
+    expect(errs('func f() -> u32 { let s = "str":[]u32\n return s.len }')).toEqual([assign('[]u32')])
+    expect(errs('data d: []u32 = "str"')).toEqual([assign('[]u32')])
+    expect(errs('global g: []u32 = "str"')).toEqual([assign('[]u32')])
+    expect(errs('type R = (name: []u32, n: i32)\nfunc f() -> u32 { let r = R("str", 1)\n return r.n as u32 }')).toEqual([
+      `field name: ${assign('[]u32')}`,
+    ])
+    expect(errs('type R = (name: []u32, n: i32)\ndata rs: []R = [("str", 1)]')).toEqual([assign('[]u32')])
+  })
+
+  test('nor one of the elements of a slice of anything wider', () => {
+    expect(errs('data d: []i32 = [1, "ab"]')).toEqual([among('i32')])
+    expect(errs('data d: []u32 = ["abc"; 2]')).toEqual([among('u32')])
+    expect(errs('data d: []u32 = [[1, 2], ["abc"]]')).toEqual([among('u32')])
+    expect(errs('data d: []u32 = [("abc")]')).toEqual([among('u32')])
+    expect(errs('data d: [][]u16 = ["ab", [1, 2]]')).toEqual([assign('[]u16')])
+    expect(errs('data d: [][]u32 = [["abc"], [1, 2]]')).toEqual([among('u32')])
+    expect(errs('data d: *[2][]u32 = ["abc", "de"]')).toEqual([assign('[]u32'), assign('[]u32')])
+    // A struct inside a nested literal is checked as any struct is.
+    expect(errs('data d: []Pt = [[(1, 2)], [(3, 4)]]')).toEqual([])
+    expect(errs('data d: []Pt = [[("abc", 1)]]')).toEqual(['cannot assign *[3]u8 to i32'])
+  })
+
+  test('behind a pointer there is no length to get wrong', () => {
+    expect(errs('data a: *[2]u16 = "abcd"\ndata b: [*]u32 = "abcd"\ndata c: *[2x2]u8 = ["ab", "cd"]\ndata d: *[!]u8 = "abc"')).toEqual([])
+  })
+
+  test('the same bytes are rejected when they come from a variable', () => {
+    expect(errs('data s = "str"\nfunc take(xs: []u32) -> u32 => xs.len\nfunc f() -> u32 => take(s)')).toEqual([
+      'argument 1: cannot assign *[3]u8 to []u32',
+    ])
+  })
+})
+
+describe('the values in a literal that is laid out', () => {
+  const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
+
+  test('the value of a repeat literal meets the element type, as an element of an array literal does', () => {
+    // These were laid out as they came: three bytes as three u32s, 300 as 44.
+    expect(errs('data d: []u32 = [true; 3]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data d: *[3]u32 = [1.5; 3]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: []u8 = [300; 3]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: []Pt = [5; 3]')).toEqual(['cannot assign int(5) to Pt'])
+    expect(errs('func f() -> u32 { let d: []u32 = [true; 3]\n return d.len }')).toEqual(['cannot assign bool to u32'])
+    expect(errs('type R = (v: []u32, n: i32)\ndata rs: []R = [([true; 3], 1)]')).toEqual(['cannot assign bool to u32'])
+    expect(errs('data z: *mut [4]u8 = mut [0; 4]\ndata w: []f32 = [1; 2]\ndata t: []u32 = [7:u8; 3]\ndata b: []bool = [true; 2]\ndata p: []Pt = [(1, 2); 2]')).toEqual([])
+  })
+
+  test('a value known at run time widens to the element type or is an error', () => {
+    const result = checkModule('func f(n: i32) -> i64 { let d: *[3]i64 = [n; 3]\n return d[2] }')
+    expect(result.errors).toEqual([])
+    const widened = [...result.coercions].find(([expr]) => expr.kind === 'IdentExpr' && expr.name === 'n')
+    expect(widened && typeToString(widened[1])).toBe('i64')
+    expect(errs('func take(s: []f64) -> u32 => s.len\nfunc f(n: i32) -> u32 => take([n; 3])')).toEqual([])
+    expect(errs('func f(n: i32) -> u8 { let d: *[3]u8 = [n; 3]\n return d[2] }')).toEqual(['cannot assign i32 to u8'])
+    expect(errs('func f(x: f64) -> u32 { let d: []i32 = [x; 3]\n return d.len }')).toEqual(['cannot assign f64 to i32'])
+  })
+
+  test('so do the elements of a literal inside another', () => {
+    expect(errs('data d: [][]u32 = [[true, false], [3, 4]]')).toEqual(['cannot assign bool to u32', 'cannot assign bool to u32'])
+    expect(errs('data d: [][]u32 = [[1.5, 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: *[2][2]u32 = [[1.5; 2], [3, 4]]')).toEqual(['cannot assign float(1.5) to u32'])
+    expect(errs('data d: [][]u8 = [[300, 1], [3, 4]]')).toEqual(['cannot assign int(300) to u8'])
+    expect(errs('data d: [][]u32 = [[1, 2], [3, 4]]\ndata e: *[2][2]u8 = [[1, 2], [3, 4]]')).toEqual([])
+  })
+})
+
+describe('a slice from a pointer and a length', () => {
+  test('is a value, not a literal for the data section', () => {
+    const result = checkModule(`
+      type Spot = (c: i32, di: i32)
+      type Lane = (cells: []i32, at: Spot)
+      global lanes: []Lane = (0, 0)
+      global rows: [][]i32 = (0, 0)
+      func f(p: [*]u8, q: [*][]i32, n: u32) -> u32 {
+        let s: []u8 = (p, n)
+        let all: [][]i32 = (q, n)
+        return s.len + all.len
+      }
+    `)
+    expect(result.errors).toEqual([])
+    expect(result.literals).toEqual([])
+  })
+
+  test('its parts are a pointer to the elements and a length an i32 holds', () => {
+    const errs = (body: string) =>
+      checkModule(`func f(p: [*]i32, m: [*]mut i32, n: u32, w: u64, b: u8, i: i32) {\n${body}\n}`).errors.map(e => e.message)
+    expect(errs('let s: []i32 = (p, n)\nlet t: []i32 = (m, b)\nlet u: []mut i32 = (m, i)\nlet z: []i32 = (0, 0)')).toEqual([])
+    expect(errs('let s: []mut i32 = (p, n)')).toEqual(['slice pointer: cannot assign [*]i32 to [*]mut i32'])
+    expect(errs('let s: []u8 = (p, n)')).toEqual(['slice pointer: cannot assign [*]i32 to [*]u8'])
+    expect(errs('let s: []i32 = (n, n)')).toEqual(['slice pointer: cannot assign u32 to [*]i32'])
+    expect(errs('let s: []i32 = (p, w)')).toEqual(['slice length: cannot assign u64 to u32'])
+    expect(errs('let s: []i32 = (p, 2.5)')).toEqual(['slice length: cannot assign float(2.5) to u32'])
+  })
+
+  test('no other tuple is a slice, in a variable or in a global', () => {
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    expect(errs('global g: []mut i32 = (0)')).toEqual(['cannot assign int(0) to []mut i32'])
+    expect(errs('global g: []i32 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to []i32'])
+    expect(errs('type R = (name: []u8, n: i32)\nglobal g: R = ((0), 1)')).toEqual(['cannot assign int(0) to []u8'])
+    expect(errs('func f() { let s: []i32 = () }')).toEqual(['cannot assign () to []i32'])
+    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['cannot assign (len: int(3)) to []u8'])
+    expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
+      'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
+    ])
+  })
+
+  test('is not the value of a data declaration: there is nothing to lay out', () => {
+    // These built invalid wasm, or threw while the data section was laid out.
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    const message = 'data value must be a literal to lay out: a (ptr, len) pair is a slice already'
+    expect(errs('data s: []i32 = (64, 3)')).toEqual([message])
+    expect(errs('data s = ((64, 3)):[]i32')).toEqual([message])
+    expect(errs('type Bytes = []u8\ndata s: Bytes = (64, 3)')).toEqual([message])
+    // A struct of two fields is a literal, and so is an array of pairs.
+    expect(errs('type Point = (x: i32, y: i32)\ndata p: Point = (1, 2)\ndata q = (1, 2)\ndata lists: [][]i32 = [(64, 3)]')).toEqual([])
+  })
+
+  test('an element of an array of slices is checked as a slice too', () => {
+    const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+    expect(errs('data lists: [][]i32 = [(64, 3), [1, 2], ((0, 0))]')).toEqual([])
+    expect(errs('data lists: [][]i32 = [(1.5, 2.5)]')).toEqual([
+      'slice pointer: cannot assign float(1.5) to [*]i32',
+      'slice length: cannot assign float(2.5) to u32',
+    ])
+    expect(errs('data lists: [][]i32 = [(0, 3, 4)]')).toEqual(['cannot assign (int(0), int(3), int(4)) to []i32'])
+    expect(errs('func f(n: u64) { let lists: [][]u8 = [("ab", n)] }')).toEqual(['slice length: cannot assign u64 to u32'])
+  })
+
+  test('(x) is x: a slice, a string, an array literal or a pair in parentheses is that slice', () => {
+    const result = checkModule(`
+      global g: []u8 = ("abc")
+      func take(s: []u8) -> u32 => s.len
+      func f(s: []u8, p: [*]u8) -> u32 {
+        let a: []u8 = (s)
+        let b: []i32 = ([1, 2, 3])
+        let c: []u8 = ((p, 2))
+        return take((s)) + take(("ab")) + a.len + b.len + c.len
+      }
+    `)
+    expect(result.errors).toEqual([])
   })
 })
 
@@ -1573,6 +1943,35 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(a: i64) { let x: f64 = a }`)).toEqual(['cannot assign i64 to f64'])
     expect(errs(`func f(a: f64) { let x: f32 = 0.0\n x += a }`)).toEqual(['cannot assign f64 to f32'])
     expect(errs(`func f(a: i64) { let x: i32 = 0\n set x = a }`)).toEqual(['cannot assign i64 to i32'])
+  })
+
+  test('(x) is x: a struct in parentheses meets a type as the struct does', () => {
+    // One element, whatever the type inside has: this threw in the checker.
+    expect(errs(`
+      type Point = (x: i32, y: i32)
+      type Wide = (a: i64, b: f32)
+      type Seg = (a: Point, b: Point)
+      data points: *[2]Point = [(Point(1, 2)), ((3, 4))]
+      global g: Wide = ((1, 2))
+      func mk(n: i32) -> Point { return (Point(n, 2)) }
+      func sum(p: Point) -> i32 => p.x + p.y
+      func f(c: bool, p: *mut Point) -> i32 {
+        let a: Point = (Point(1, 2))
+        let w: Wide = (((1, 2)))
+        let s: Seg = ((Point(1, 2)), ((3, 4)))
+        let b: Point = if c { (Point(1, 2)) } else { ((3, 4)) }
+        let d = ((1, 2)):Point
+        p.* = (Point(5, 6))
+        return sum((Point(1, 2))) + sum(((3, 4)))
+      }
+    `)).toEqual([])
+    // What is inside still has to be that type.
+    expect(errs('type Point = (x: i32, y: i32)\nfunc f() { let p: Point = ((1, 2, 3)) }')).toEqual([
+      'cannot assign (int(1), int(2), int(3)) to Point',
+    ])
+    expect(errs('type Point = (x: i32, y: i32)\ndata points: *[1]Point = [((1, 2.5))]')).toEqual([
+      'cannot assign float(2.5) to i32',
+    ])
   })
 
   test('the branches of an if or match settle on one type', () => {

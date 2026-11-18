@@ -42,6 +42,8 @@ import {
   isBool,
   byteSize,
   isFixedSizes,
+  isValueArray,
+  tableRow,
   totalElements,
   optionalOf,
   isOptional,
@@ -62,8 +64,7 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean }
-  // init: the value of the initializer, when it's a constant expression
-  | { kind: 'global'; type: ResolvedType; init?: ComptimeValue }
+  | { kind: 'global'; type: ResolvedType }
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
   | { kind: 'local'; type: ResolvedType }
   | { kind: 'param'; type: ResolvedType }
@@ -110,6 +111,9 @@ export interface TypeCheckResult {
   // (an i32 operand of an i64 addition, an f32 argument for an f64 parameter).
   // Its entry in exprTypes stays the type it's computed in.
   coercions: Map<AST.Expr, ResolvedType>
+  // The value of each constant in a global's initializer: the whole of it, or
+  // one for each part of a tuple, struct or array of constants.
+  constants: Map<AST.Expr, ComptimeValue>
   // Symbol table (module scope)
   symbols: Map<string, Symbol>
   // Type errors
@@ -215,6 +219,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     types: ctx.types,
     exprTypes: ctx.exprTypes,
     coercions: ctx.coercions,
+    constants: ctx.constants,
     symbols: ctx.moduleScope.symbols,
     errors: ctx.errors,
     warnings: ctx.warnings,
@@ -420,6 +425,7 @@ class CheckContext {
   types = new Map<string, ResolvedType>()
   exprTypes = new Map<AST.Expr, ResolvedType>()
   coercions = new Map<AST.Expr, ResolvedType>()
+  constants = new Map<AST.Expr, ComptimeValue>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
   statementExprs = new Set<AST.Expr>()
@@ -724,12 +730,24 @@ class CheckContext {
       ? decl.ident
       : `${decl.ident}$${decl.span.start}`
 
+    // (x) is x: the literal laid out is the one inside the parentheses.
+    const value = ungrouped(decl.value)
+
+    // A (ptr, len) pair is a slice already: there is no literal to lay out,
+    // and so nothing for the name to point at.
+    const literal = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
+    const literalType = declaredType ?? (value.kind === 'AnnotationExpr' ? inferredType : null)
+    if (literal.kind === 'TupleExpr' && literal.elements.length === 2 && literalType && unwrap(literalType).kind === 'slice') {
+      this.error(decl.span.start, `data value must be a literal to lay out: a (ptr, len) pair is a slice already`)
+      return
+    }
+
     // Check if literal has mut flag
-    const isMut = this.exprHasMut(decl.value)
+    const isMut = this.exprHasMut(value)
     const dataIdentOff = this.findIdentOffset(decl.span.start, 'data')
 
     // data ALWAYS produces a pointer. Reuse extractDataLiteral to get the array type.
-    const dataLiteral = this.extractDataLiteral(decl.value, inferredType, declaredType)
+    const dataLiteral = this.extractDataLiteral(value, inferredType, declaredType)
     if (dataLiteral) {
       // Determine the pointer type with mutability
       let ptrType = dataLiteral.ptrType
@@ -766,7 +784,7 @@ class CheckContext {
 
     // For non-array data (scalars, tuples), still serialize to data section
     const type = declaredType ?? this.concretize(inferredType)
-    const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
+    const expr = value.kind === 'AnnotationExpr' ? ungrouped(value.expr) : value
     const dataId = expr.span.start
     if (expr.kind === 'LiteralExpr' || expr.kind === 'TupleExpr') {
       if (expr.kind === 'LiteralExpr') {
@@ -802,7 +820,7 @@ class CheckContext {
   } | null {
     // Handle annotation on RHS: [0;12]:*[_]u32 or [1,2,3]:[]u8
     if (expr.kind === 'AnnotationExpr') {
-      const innerExpr = expr.expr
+      const innerExpr = ungrouped(expr.expr)
       if (this.isDataLiteralExpr(innerExpr)) {
         if (inferredType.kind === 'pointer' && inferredType.pointee.kind === 'array') {
           return { expr: innerExpr, indexedType: inferredType.pointee, ptrType: inferredType }
@@ -962,10 +980,19 @@ class CheckContext {
   // For `arr[i] = x`, it's arr's type.
   // For `arr[i].field = x`, it's the element type of arr (the inner pointer/slice).
   // For `p.* = x`, it's p's type.
-  private findWritePointerType(target: AST.LValue): ResolvedType | null {
+  private findWritePointerType(target: AST.LValue | AST.Expr): ResolvedType | null {
+    // Parentheses: (p.*).x = v
+    if (target.kind === 'GroupExpr') return this.findWritePointerType(target.expr)
+    if (target.kind === 'TupleExpr' && target.elements.length === 1 && target.elements[0].value) {
+      return this.findWritePointerType(target.elements[0].value)
+    }
     // Direct index: arr[i] = x — the write goes through arr's pointer
     if (target.kind === 'IndexExpr') {
-      return this.inferExpr(target.object)
+      const objType = this.inferExpr(target.object)
+      // An element of a fixed array is part of whatever holds the array.
+      const u = unwrap(objType)
+      if (u.kind === 'array' && isValueArray(u)) return this.findWritePointerType(target.object)
+      return objType
     }
     // Deref: p.* = x — the write goes through p
     if (target.kind === 'MemberExpr' && target.member.kind === 'deref') {
@@ -979,14 +1006,13 @@ class CheckContext {
     // requires the container holding that struct to be mutable.
     // arr[i].field = x → check arr's mutability (we're modifying arr's element)
     // BUT: arr[i].field[j] = x → check field's type mutability (writing through a pointer in the field)
-    if (target.kind === 'MemberExpr' && target.member.kind === 'field') {
-      if (target.object.kind === 'IndexExpr') {
-        // arr[i].field = x — modifying element struct, check outer container
-        return this.inferExpr(target.object.object)
-      }
-      if (target.object.kind === 'MemberExpr' && target.object.member.kind === 'deref') {
-        return this.inferExpr(target.object.object)
-      }
+    // p.field = x with p a pointer to a struct writes through p. A field of a
+    // struct that is itself a field (arr[i].b.c = x) goes through whatever
+    // holds the outermost struct; one in a variable needs no pointer at all.
+    if (target.kind === 'MemberExpr' && (target.member.kind === 'field' || target.member.kind === 'index')) {
+      const objType = this.inferExpr(target.object)
+      if (unwrap(objType).kind === 'pointer') return objType
+      return this.findWritePointerType(target.object)
     }
     return null
   }
@@ -1194,7 +1220,7 @@ class CheckContext {
             return { kind: 'int', value: BigInt(arrType.sizes[0]) }
           }
           if (expr.member.name === 'wid') {
-            const elemSize = byteSize(arrType.element)
+            const elemSize = byteSize(tableRow(objType) ?? arrType.element)
             if (elemSize !== null) return { kind: 'int', value: BigInt(elemSize) }
           }
         }
@@ -1249,27 +1275,26 @@ class CheckContext {
       type = primitive('i32')
     }
 
-    const init = decl.value ? this.globalInitializer(decl.value) : undefined
-    this.moduleScope.symbols.set(name, init ? { kind: 'global', type, init } : { kind: 'global', type })
+    if (decl.value && !this.isConstantInitializer(decl.value)) {
+      this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
+    }
+    this.moduleScope.symbols.set(name, { kind: 'global', type })
     this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
     this.recordDefinition(name, decl.pattern.span.start)
   }
 
   // A wasm global starts as a constant, so its initializer has to be one: a
   // number or bool the compiler can work out, the address of data or of a
-  // function, or a tuple or struct of those. A number's value goes to
-  // codegen, which emits it when the expression as written would need an
-  // instruction (1 + 1, a literal that widens, a cast that narrows).
-  private globalInitializer(expr: AST.Expr): ComptimeValue | undefined {
-    const value = this.evalComptimeExpr(expr, true)
-    if (!value && !this.isConstantInitializer(expr)) {
-      this.error(expr.span.start, 'global initializer must be a compile-time constant')
-    }
-    return value ?? undefined
-  }
-
+  // function, or a tuple, struct or array of those, which is one wasm global
+  // for each. Each value goes to codegen, which emits it where the
+  // expression as written would need an instruction (1 + 1, a literal that
+  // widens, a cast that narrows).
   private isConstantInitializer(expr: AST.Expr): boolean {
-    if (this.evalComptimeExpr(expr, true)) return true
+    const value = this.evalComptimeExpr(expr, true)
+    if (value) {
+      this.constants.set(expr, value)
+      return true
+    }
     // An address cast to another pointer type or to a 32-bit integer is the
     // same i32, so the same constant.
     const castee = castOperand(expr)
@@ -1289,8 +1314,14 @@ class CheckContext {
           && expr.args.every(a => a.value !== null && this.isConstantInitializer(a.value))
       case 'IdentExpr':
         return this.lookup(expr.name)?.kind === 'func'
+      case 'ArrayExpr':
+      case 'RepeatExpr':
+        // An array behind a pointer or a slice lives in the data section,
+        // like a string. One held in registers is its elements.
+        if (expr.dataId !== undefined) return true
+        return (expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]).every(e => this.isConstantInitializer(e))
       default:
-        // A string or an array literal lives in the data section.
+        // A string lives in the data section.
         return this.isDataLiteralExpr(expr)
     }
   }
@@ -1358,8 +1389,7 @@ class CheckContext {
       // against the type it's used at, as the argument of a function is. So
       // does one in an arm of an `if` or a `match`. Parentheses around the
       // operand change nothing.
-      let value = expr
-      for (let inner = groupedExpr(value); inner; inner = groupedExpr(value)) value = inner
+      const value = ungrouped(expr)
       if (value.kind === 'LiteralExpr' || value.kind === 'IfExpr' || value.kind === 'MatchExpr') this.checkExpr(value, type)
       return type
     }
@@ -1555,6 +1585,17 @@ class CheckContext {
         if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
           targetType = this.inferExpr(stmt.target)
         }
+        // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
+        // so there is no place behind it to store to. The place is p.u32[0].
+        if (stmt.target.kind === 'MemberExpr' && stmt.target.member.kind === 'type') {
+          const pun = typeToString(this.resolveType(stmt.target.member.type))
+          const pointer = targetType && unwrap(targetType).kind === 'pointer'
+          this.error(stmt.span.start, pointer
+            ? `cannot assign to .${pun}: it is the pointer as ${typeToString(targetType as ResolvedType)}, not the ${pun} it points at — write .${pun}[0] = value to store one`
+            : `cannot assign to .${pun}: a type pun is not a place a value can be stored to`)
+          this.inferExpr(stmt.value)
+          break
+        }
         this.checkMutability(stmt.target, stmt.span.start)
         if (targetType && stmt.op === '=') {
           this.checkExpr(stmt.value, targetType)
@@ -1581,9 +1622,9 @@ class CheckContext {
           const rangeMax = Number(iterableType.value)
           elemType = primitive('u32', rangeMax > 0 ? rangeMax : undefined)
         } else if (iterableType.kind === 'slice') {
-          elemType = iterableType.element
+          elemType = tableRow(iterableType) ?? iterableType.element
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
-          elemType = pointee.element
+          elemType = tableRow(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
           this.error(stmt.iterable.span.start,
             `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
@@ -2116,6 +2157,16 @@ class CheckContext {
   // This allows comptime types to resolve based on context
   // Optional errorContext is prepended to error messages (e.g., "argument 1: ")
   checkExpr(expr: AST.Expr, expected: ResolvedType, errorContext?: string): ResolvedType {
+    // (x) is x, and meets the type as x does: it has one element whatever
+    // the type of x is, so nothing below may take it for a tuple of x's fields.
+    const grouped = groupedExpr(expr)
+    if (grouped) {
+      this.coercions.delete(expr)
+      const type = this.checkExpr(grouped, expected, errorContext)
+      this.exprTypes.set(expr, this.exprTypes.get(grouped) ?? type)
+      return type
+    }
+
     // Bidirectional: propagate expected type through & (ref) expressions
     if (expr.kind === 'UnaryExpr' && expr.op === '&' && expected.kind === 'pointer') {
       const operand = expr.operand.kind === 'AnnotationExpr' ? expr.operand.expr : expr.operand
@@ -2267,6 +2318,34 @@ class CheckContext {
       return resolvedExpected
     }
 
+    // (ptr, len) against a slice is that slice, built from its two parts: a
+    // value like any other tuple, with nothing to lay out in the data section.
+    if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && expected.kind === 'slice') {
+      // Its parts are checked like any value that meets a type: a pointer to
+      // the slice's elements, as writable as the slice, and a length that an
+      // i32 holds (an i64 or a float would be the wrong wasm value).
+      const [ptr, len] = expr.elements.map(argValue)
+      const ptrType = ptr && this.exprTypes.get(ptr)
+      if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(expected.element, expected.mutable), 'slice pointer: ')
+      const lenType = len && this.exprTypes.get(len)
+      if (len && lenType) {
+        const type = unwrap(lenType)
+        if (isComptimeNumber(type)) this.coerce(len, lenType, primitive('u32'), 'slice length: ')
+        else if (type.kind !== 'primitive' || !isInteger(type) || (byteSize(type) ?? 8) > 4) {
+          this.error(len.span.start, `slice length: cannot assign ${typeToString(lenType)} to u32`)
+        }
+      }
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+
+    // No other tuple is a slice.
+    if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
+
     // Array/string literals against pointer/slice/framed-array target: allocate in data section
     const isFramedArray = expected.kind === 'array' && expected.sizes?.some(s => s === '!' || s === '?')
     if (
@@ -2291,19 +2370,36 @@ class CheckContext {
       if (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr' || expr.kind === 'LiteralExpr') {
         (expr as AST.ArrayExpr | AST.RepeatExpr | AST.LiteralExpr).dataId = expr.span.start
       }
+      if (expr.kind !== 'ArrayExpr') this.checkStringElements(expr, expected, null, prefix)
       // Propagate element type into array elements
       if (expr.kind === 'ArrayExpr') {
         const innerType = expected.kind === 'slice' ? expected.element
           : expected.kind === 'pointer' && expected.pointee.kind === 'array' ? this.peelArraySize(expected.pointee)
           : null
         if (innerType) {
+          // A tuple that is a struct element is checked field by field, like
+          // any struct value: its literals take their fields' types. One that
+          // is a slice element is its (ptr, len), checked as any slice value.
+          const inner = unwrap(innerType).kind
+          const counted = expected.kind === 'slice' ? countedElement(innerType) : null
           for (const elem of (expr as AST.ArrayExpr).elements) {
-            if (this.isDataLiteralExpr(elem)) {
+            const asValue = elem.kind === 'TupleExpr' && (inner === 'tuple' || (inner === 'slice' && !groupedExpr(elem)))
+            if (this.isDataLiteralExpr(elem) && !asValue) {
               this.validateDataLiteralRange(elem, innerType)
+              this.checkStringElements(elem, innerType, counted, prefix)
               this.exprTypes.set(elem, innerType)
             } else {
               this.checkExpr(elem, innerType)
             }
+          }
+        }
+      }
+      // The rows of a table are laid out apart from it, at compile time: a
+      // row or a cell known only at run time has no place to be stored.
+      if (tableRow(expected) && (expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr')) {
+        for (const row of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+          if (!this.isConstantInitializer(row)) {
+            this.error(row.span.start, `a row of ${typeToString(expected)} is laid out at compile time: its values must be constants`)
           }
         }
       }
@@ -2329,17 +2425,8 @@ class CheckContext {
       }
     }
 
-    // (e) is e, not a tuple literal of one field: what's expected of a
-    // tuple in parentheses is expected of the tuple itself.
-    const unwrappedExpected = unwrap(expected)
-    const grouped = groupedExpr(expr)
-    if (grouped && unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple') {
-      const type = this.checkExpr(grouped, expected, errorContext)
-      this.exprTypes.set(expr, this.exprTypes.get(grouped) ?? type)
-      return type
-    }
-
     // Propagate expected type into tuple elements for bidirectional inference
+    const unwrappedExpected = unwrap(expected)
     if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
@@ -2380,6 +2467,58 @@ class CheckContext {
   // [N,M]u8 -> [M]u8 (peel first dimension, remaining is M)
   // [N]u8 -> u8 (single dimension, inner type is element)
   // [N][M]u8 -> [M]u8 (element is already an array type)
+  // A string literal is bytes, and a slice is counted in elements. So a string
+  // can only be a slice, or lie among the elements of one, where an element is
+  // one byte: three bytes are not three u32s, nor three quarters of one.
+  // `expr` is laid out as a `type`; `counted` is the element type of the slice
+  // whose length the bytes of `expr` count towards, if there is one. The array
+  // and repeat literals inside a literal are followed from here because they
+  // are laid out with it, not checked one by one.
+  //
+  // What they hold in the end is a value, and it meets the element type as an
+  // element of the outermost literal does (`among` says `expr` is one): it
+  // widens to it or is an error. So `[true; 3]` is not three u32s, and the
+  // i32 of `[n; 3]` is extended before it is stored into i64 slots.
+  private checkStringElements(expr: AST.Expr, type: ResolvedType, counted: ResolvedType | null, prefix: string, among = false): void {
+    const value = expr
+    while (expr.kind === 'AnnotationExpr' || expr.kind === 'GroupExpr') expr = expr.expr
+    const t = unwrap(type)
+    if (expr.kind === 'LiteralExpr' && expr.value.kind === 'string') {
+      const element = t.kind === 'slice' ? t.element : counted
+      if (!element || byteSize(element) === 1) return
+      const elements = typeToString(element)
+      const what = t.kind === 'slice'
+        ? `cannot assign a string literal to ${typeToString(type)}`
+        : `cannot use a string literal among ${elements} elements`
+      const example = isNumeric(element) ? ' ([1, 2, 3])' : ''
+      this.error(expr.span.start, `${prefix}${what} — a string is bytes ([]u8); write the ${elements} elements as an array literal${example}`)
+      return
+    }
+    if (expr.kind === 'TupleExpr' || expr.kind === 'CallExpr') {
+      // A struct inside a nested literal is checked as any struct value is;
+      // (x) around anything else is grouping.
+      if (t.kind === 'tuple') this.checkExpr(expr, type)
+      else if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && expr.elements[0].value) {
+        this.checkStringElements(expr.elements[0].value, type, counted, prefix, among)
+      } else if (among) this.checkExpr(value, type)
+      return
+    }
+    if (expr.kind !== 'ArrayExpr' && expr.kind !== 'RepeatExpr') {
+      if (among) this.checkExpr(value, type)
+      return
+    }
+    const inner = t.kind === 'slice' ? t.element
+      : t.kind === 'pointer' && t.pointee.kind === 'array' ? this.peelArraySize(t.pointee)
+      : t.kind === 'array' ? this.peelArraySize(t)
+      : type
+    const innerCounted = t.kind === 'slice' ? countedElement(inner) : t.kind === 'pointer' ? null : counted
+    // Only where the literal is laid out as elements is `inner` their type.
+    const elements = inner !== type
+    for (const elem of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
+      this.checkStringElements(elem, inner, innerCounted, prefix, elements)
+    }
+  }
+
   peelArraySize(t: ArrayRT): ResolvedType {
     // If element is already an array type (nested brackets), use it directly
     if (t.element.kind === 'array') {
@@ -3395,7 +3534,7 @@ class CheckContext {
             return primitive('u32')
           }
           if (expr.member.name === 'wid') {
-            const ws = byteSize(arrayType.element)
+            const ws = byteSize(tableRow(objType) ?? arrayType.element)
             if (ws !== null) return comptimeInt(BigInt(ws))
             return primitive('u32')
           }
@@ -3430,6 +3569,11 @@ class CheckContext {
         // Pointer dereference: p.* - only valid for basic pointers *T
         // Many-pointers [*]T and slices []T should use [0] syntax instead
         if (objType.kind === 'pointer') {
+          // A table is row pointers, not the rows: there is no [N][M]T in
+          // memory to load or store whole.
+          if (tableRow(objType)) {
+            this.error(expr.span.start, `cannot use .* on ${typeToString(objType)}: a table holds pointers to rows that lie apart — load one row with [i].*`)
+          }
           return objType.pointee
         }
         if (objType.kind === 'array' || objType.kind === 'slice') {
@@ -3617,6 +3761,8 @@ class CheckContext {
     } else {
       return null
     }
+    // The element of a table is its row pointer: &m[i] is where that is.
+    elem = tableRow(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
@@ -3656,8 +3802,19 @@ class CheckContext {
   }
 
   inferIndex(expr: AST.IndexExpr): ResolvedType {
+    // if let and ?? resolve the index they are given, not one it is taken
+    // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
+    const resolvable = this.insideIfLetCondition
+    this.insideIfLetCondition = false
     const objType = this.inferExpr(expr.object)
+    this.insideIfLetCondition = resolvable
     this.inferIndexValue(expr.index)
+
+    // An element of a table is its row pointer. A row has no optional type:
+    // like a value element, an index not known to be in range is resolved
+    // where it is taken, with if let or ??.
+    const row = tableRow(objType)
+    const noOptional = (elem: ResolvedType) => row ? 'rows are not optional' : `no optional type for ${typeToString(elem)}`
 
     if (objType.kind === 'slice') {
       const idx = this.evalComptimeExpr(expr.index)
@@ -3668,10 +3825,10 @@ class CheckContext {
           return optionalOf(elem)
         }
         if (!this.insideIfLetCondition) {
-          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+          this.error(expr.index.span.start, `runtime index on []${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
         }
       }
-      return objType.element
+      return row ?? objType.element
     }
 
     if (objType.kind === 'comptime_array') {
@@ -3727,7 +3884,7 @@ class CheckContext {
                   return optionalOf(elem)
                 }
                 if (!this.insideIfLetCondition) {
-                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (no optional type for ${typeToString(elem)})`)
+                  this.error(expr.index.span.start, `runtime index on *[${n}]${typeToString(elem)} requires 'if let' or '??' (${noOptional(elem)})`)
                 }
               }
             }
@@ -3735,7 +3892,7 @@ class CheckContext {
             this.error(expr.index.span.start, `index ${idx.value} out of bounds for *[${n}]${typeToString(arrayType.element)}`)
           }
         }
-        return arrayType.element
+        return row ?? arrayType.element
       }
       return objType.pointee
     }
@@ -4393,6 +4550,14 @@ function holdsAddress(type: ResolvedType | undefined): boolean {
   return t?.kind === 'pointer' || (t?.kind === 'primitive' && (t.name === 'i32' || t.name === 'u32'))
 }
 
+// The type a slice literal's bytes are counted in, to give its length: its
+// element. Null when each element is a literal of its own (a slice, an array
+// or a pointer), and the literal is the list of them.
+function countedElement(element: ResolvedType): ResolvedType | null {
+  const kind = unwrap(element).kind
+  return kind === 'slice' || kind === 'array' || kind === 'pointer' ? null : element
+}
+
 // The integer type a constant has as an address or an offset from one: 32
 // bits, signed only when it's negative.
 function addressType(constant: ResolvedType & { kind: 'comptime_int' }): ResolvedType {
@@ -4440,6 +4605,12 @@ function groupedExpr(expr: AST.Expr): AST.Expr | null {
   if (expr.kind === 'GroupExpr') return expr.expr
   if (expr.kind === 'TupleExpr' && expr.elements.length === 1 && !expr.elements[0].name) return expr.elements[0].value
   return null
+}
+
+// `expr` without the parentheses around it, however many there are.
+function ungrouped(expr: AST.Expr): AST.Expr {
+  const inner = groupedExpr(expr)
+  return inner ? ungrouped(inner) : expr
 }
 
 // How far from zero a constant integer is.

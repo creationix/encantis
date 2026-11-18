@@ -509,6 +509,27 @@ global words: [*]u16 = table as [*]u16
 global start: u32 = table as u32
 ```
 
+A global can be a slice, a struct, an array or a wide integer. Each of its parts starts as a constant.
+
+```ents
+type Size = (w: i32, h: f64)
+
+data table = [1:i32, 2, 3]
+
+global order: []i32 = (0, 0)
+global view: []i32 = (table as [*]i32, 2:u32)
+global size: Size = Size(3, 2 + 2)
+global row: [2]i64 = [1 << 40, 5:i32]
+global total: u128 = 1 << 100
+
+func f(s: []i32) -> u32 {
+  order = s
+  size.h += 1
+  total += 1
+  return order.len
+}
+```
+
 A value that only exists at run time can't start one: assign it in a function. Nor can a float cast to an integer type it doesn't fit, which traps at run time.
 
 ```ents
@@ -559,6 +580,197 @@ func f() {
     }
   }
 }
+```
+
+## Structs in memory
+
+A struct, tuple or slice can be an element or a pointee, and is read and written whole or field by field. A field of the struct a pointer points to is written `p.x`.
+
+```ents
+type Spot = (c: i32, di: i32, room: i32)
+type Lane = (cells: []i32, free: i32)
+type Option = (d: i32, lane: Lane)
+
+func third(list: [*]mut Spot, opts: [*]mut Option, p: *mut Spot) -> i32 {
+  list[2] = Spot(20, 1, 2)
+  let s = list[2]
+  p.* = s
+  p.c += 1
+  opts[1].lane.free = p.c
+  opts[1].lane.cells = opts[0].lane.cells
+  let t = opts[1].lane.free
+  for x in opts[1].lane.cells { t += x }
+  let all: []Spot = (list, 3:u32)
+  for spot in all { t += spot.room }
+  return t
+}
+```
+
+A write to a field goes through whatever holds the outermost struct, so that has to be mutable: the pointer `p` in `p.x = v`, the array in `rows[i].at.x = v`. A struct in a variable is written without one.
+
+```ents
+type Spot = (c: i32, di: i32)
+type Row = (tag: u8, v: [3]i32, at: Spot)
+
+func a(p: *Spot) { p.c = 5 }
+func b(rows: [*]Row) { rows[1].at.c = 5 }
+func c(r: *Row) { r.v[0] = 1 }
+func d(rows: []Row) { rows[0] = Row(1, [1, 2, 3], Spot(4, 5)) }
+func e(r: Row, m: *mut Row) {
+  r.at.c = 5
+  m.at.c = 5
+  m.v[2] = r.v[0]
+}
+```
+
+```errors
+cannot write through const pointer
+cannot write through const pointer
+cannot write through const pointer
+cannot write through const slice
+```
+
+A type pun (`p.u32`) is the pointer itself, seen as a pointer to `u32` values: it loads nothing, so there is no place behind it to assign to. Its element is the place.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(p: [*]mut u8) -> u32 {
+  p.u32[0] = 0x01020304
+  buf.u16[1] = 7
+  return p.u32[0]
+}
+```
+
+```ents
+data buf = mut [0:u8; 16]
+
+func a(p: [*]mut u8) { p.u32 = 0x01020304 }
+func b(s: []mut u8) { s.f64 += 1.5 }
+func c() { buf.u16 = 7 }
+```
+
+```errors
+cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value
+cannot assign to .f64: it is the pointer as [*]mut f64
+cannot assign to .u16: it is the pointer as [*]mut u16
+```
+
+## Structs in array literals
+
+An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.
+
+```ents
+type Mixed = (a: u64, b: u8, name: []u8)
+
+data table: *[2]Mixed = [(1, 2, "x"), Mixed(name: "yz", a: 3, b: 4)]
+
+func f(n: u8) -> u64 {
+  let local: *[2]Mixed = [(1, n, "x"), (5, 6, "y")]
+  return local[0].a + table[1].a
+}
+```
+
+```ents
+type Mixed = (a: u64, b: u8, name: []u8)
+
+data table: *[2]Mixed = [(1.5, 2, "x"), (1, 300, "y")]
+```
+
+```errors
+cannot assign float(1.5) to u64
+300
+```
+
+## Values in a literal in memory
+
+The value of a repeat literal, and each element of an array literal inside another, meets the element type as an element of the outer literal does: it widens to it, or it is an error.
+
+```ents
+data zeros: *mut [4]u8 = mut [0; 4]
+data rows: [][]u32 = [[1, 2], [3, 4]]
+
+func f(n: i32) -> i64 {
+  let wide: *[3]i64 = [n; 3]
+  return wide[2]
+}
+```
+
+```ents
+data flags: []u32 = [true; 3]
+data rows: [][]u8 = [[300, 1], [2, 3]]
+
+func f(n: i32) -> u8 {
+  let bytes: *[3]u8 = [n; 3]
+  return bytes[0]
+}
+```
+
+```errors
+cannot assign bool to u32
+cannot assign int(300) to u8
+cannot assign i32 to u8
+```
+
+## Slices from a pointer and a length
+
+A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
+
+```ents
+type Spot = (c: i32, di: i32)
+type Lane = (cells: []i32, at: Spot)
+
+global lanes: []Lane = (0, 0)
+global rows: [][]i32 = (0, 0)
+
+func f(p: [*]Lane, q: [*][]i32, n: u32) -> u32 {
+  lanes = (p, n)
+  let all: [][]i32 = (q, n)
+  rows = all
+  return lanes.len + rows.len
+}
+```
+
+Its two parts are checked like any value that meets a type: a pointer to the slice's elements, as writable as the slice, and a length that an i32 holds.
+
+```ents
+func f(p: [*]i32, n: u64) {
+  let a: []mut i32 = (p, 2)
+  let b: []u8 = (p, 2)
+  let c: []i32 = (p, n)
+}
+```
+
+```errors
+slice pointer: cannot assign [*]i32 to [*]mut i32
+slice pointer: cannot assign [*]i32 to [*]u8
+slice length: cannot assign u64 to u32
+```
+
+No other tuple is a slice. One value in parentheses is that value, so it has to be a slice itself.
+
+```ents
+global word: []u8 = ("abc")
+
+func f(s: []u8) -> u32 {
+  let t: []u8 = (s)
+  return t.len + word.len
+}
+```
+
+```ents
+global a: []mut i32 = (0)
+global b: []i32 = (1, 2, 3)
+
+func f() {
+  let c: []i32 = ()
+}
+```
+
+```errors
+cannot assign int(0) to []mut i32
+cannot assign (int(1), int(2), int(3)) to []i32
+cannot assign () to []i32
 ```
 
 ## Bounds
@@ -705,6 +917,87 @@ func put_buf(i: u32, v: u8) {
 }
 ```
 
+## Tables
+
+In a pointer or slice whose element is a fixed array (`*[N][M]T`, `[][M]T`, `[*][M]T`), each element is a pointer to its row. `m[i]` is that row pointer, a `*[M]T`, and `m[i][j]` indexes the row. Each index is checked on its own, and both can be known only at run time.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+
+func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+
+func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+
+func put(i: u32#2, j: u32#3, v: i32) {
+  board[i][j] = v
+}
+
+func rows(i: u32#2) -> i32 {
+  let r = grid[i]
+  return sum(r) + sum(board[i])
+}
+```
+
+A row has no optional type. A row index that isn't known to be in range is resolved where it is taken, with `if let` or `??`, against `N` or a slice's length. `??` and `if let` resolve only the index they are given, so the row in `m[i][j] ?? 0` still has to be in range.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data rows: [][2]i32 = [[7, 1], [3, 4]]
+
+func a(i: u32, j: u32#3) -> i32 => grid[i][j]
+func b(i: u32, j: u32#2) -> i32 => rows[i][j] ?? 0
+func c(i: u32#3, j: u32#3) -> i32 => grid[i][j]
+```
+
+```errors
+runtime index on *[2][3]i32 requires 'if let' or '??' (rows are not optional)
+runtime index on [][2]i32 requires 'if let' or '??' (rows are not optional)
+index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2)
+```
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data rows: [][2]i32 = [[7, 1], [3, 4]]
+
+func a(i: u32, j: u32#3) -> i32 => if let r = grid[i] { r[j] } else { 0 }
+func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? rows[0])[j]
+```
+
+A write goes through the row pointer, so the table has to be mutable. Assigning to `m[i]` points the row elsewhere; there is no `[N][M]T` in the table to load or store whole.
+
+```ents
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+data spare: *mut [3]i32 = mut [1, 2, 3]
+
+func f() {
+  grid[0][0] = 1
+  board[1] = spare
+  board[0] = grid[0]
+  let all = grid.*
+}
+```
+
+```errors
+cannot write through const pointer
+cannot assign *[3]i32 to *mut [3]i32
+cannot use .* on *[2][3]i32
+```
+
+A table literal is laid out when the program is compiled, its rows apart from it, so every value in it is a constant.
+
+```ents
+func f(a: i32) -> i32 {
+  let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]
+  return t[0][0]
+}
+```
+
+```errors
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+```
+
 ## Ranges
 
 `items[a..b]` is a slice of the elements from `a` up to (not including) `b`. Either bound can be left out. On a `*[N]T`, constant bounds are checked at compile time, and so are ranged ones whose types prove the range fits.
@@ -812,6 +1105,38 @@ func b() -> u32 => total(raw)
 ```errors
 argument 1: cannot assign []u8 to []u16
 argument 1: cannot assign *[3]u8 to []u16
+```
+
+A string literal is bytes, so the same holds for one written where the slice is wanted: it is a slice of one-byte elements, and no other. Inside an array literal a string stands for its bytes or, where the elements are slices, for one of them.
+
+```ents
+data names: [][]u8 = ["ab", "c"]
+data joined: []u8 = ["ab", "c"]
+
+func bytes(s: []u8) -> u32 => s.len
+
+func a() -> u32 => bytes("str")
+func b() -> u32 {
+  let signed: []i8 = "str"
+  return signed.len
+}
+```
+
+```ents
+data words: []u32 = [1, "ab"]
+data lists: [][]u16 = ["ab", [1, 2]]
+
+func total(s: []u32) -> u32 => s.len
+
+func a() -> u32 => total("str")
+func b() -> []u16 => "abcd"
+```
+
+```errors
+cannot use a string literal among u32 elements
+cannot assign a string literal to []u16
+argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8); write the u32 elements as an array literal ([1, 2, 3])
+cannot assign a string literal to []u16
 ```
 
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
