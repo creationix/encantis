@@ -1,0 +1,19 @@
+func join_3_2(x: *[3]u8, y: *[2]u8, out: *mut [5]u8) {
+  for i in 3 {
+    out[i] = x[i]
+  }
+  for j in 2 {
+    out[3 + j] = y[j]
+  }
+}
+
+data buf = mut [0:u8; 5]
+
+export func hello() -> u8 {
+  join_3_2("hel", "lo", buf)
+  return buf[4]
+}
+
+test "joined" {
+  assert hello() == 111
+}

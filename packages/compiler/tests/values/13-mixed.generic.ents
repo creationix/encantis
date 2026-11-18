@@ -1,0 +1,57 @@
+// A value, a type and a function parameter together; explicit and inferred
+// calls of one instance; a value passed on in arithmetic; u8, i32 and u64
+// value parameters; a generic type with value parameters only.
+func sort(comptime n: u32, comptime T: type, xs: *mut [n]T, comptime before: (T, T) -> bool) {
+  for i in n {
+    for j in n {
+      if before(xs[j], xs[i]) {
+        let t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+      }
+    }
+  }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+
+func fill(comptime n: u32, xs: *mut [n]u8, v: u8) {
+  for i in n {
+    xs[i] = v
+  }
+}
+func half(comptime n: u32, xs: *mut [n * 2]u8) {
+  fill(n * 2, xs, 7)
+}
+
+func shift(comptime k: i32, x: i32) -> i32 => x + k
+func mask(comptime m: u8, x: u8) -> u8 => x & m
+func big(comptime n: u64, x: u64) -> u64 => x + n
+
+func Words(comptime w: u32) -> type => (bits: *mut [w]u32, count: u32#(w * 32 + 1))
+func words(comptime w: u32, b: *Words(w)) -> u32 => w
+
+data nums = mut [5:i32, 3, 8, 1, 9, 2, 7, 4]
+data bytes = mut [0:u8; 8]
+data ws = mut [0:u32; 3]
+data seen: Words(3) = mut (ws, 0)
+
+export func up() { nums.sort(ascending) }
+export func up2() { sort(8, i32, nums, ascending) }
+export func f() { fill(bytes, 1) }
+export func g() { fill(8, bytes, 2) }
+export func h() { half(4, bytes) }
+export func s(x: i32) -> i32 => shift(0 - 3, x) + shift(3, x)
+export func m(x: u8) -> u8 => mask(~0, x) & mask(15, x)
+export func b(x: u64) -> u64 => big(5000000000, x)
+export func w() -> u32 => seen.words()
+
+test "sorted" {
+  up()
+  assert nums[0] == 9
+  assert nums[7] == 1
+  h()
+  assert bytes[7] == 7
+  assert s(10) == 20
+  assert m(0xFF) == 15
+  assert w() == 3
+}

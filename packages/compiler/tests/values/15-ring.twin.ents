@@ -1,0 +1,30 @@
+// The instances 15-ring.uses.ents makes of the functions of lib/ring.ents, written by
+// hand, in the order the instances take: the order of their generics.
+
+type Ring8 = (head: u32#8, count: u32, items: *mut [8]u32)
+
+func push_8_u32(r: *mut Ring8, x: u32) {
+  r.items[(r.head + r.count) % 8] = x
+  if r.count < 8 {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % 8
+  }
+}
+func oldest_8_u32(r: *Ring8, i: u32#8) -> u32 => r.items[(r.head + i) % 8]
+func newest_8_u32(r: *Ring8) -> u32 {
+  assert r.count > 0
+  return r.items[(r.head + r.count + (8 - 1)) % 8]
+}
+func clear_8_u32(r: *mut Ring8) {
+  r.head = 0
+  r.count = 0
+}
+
+data slots = mut [0:u32; 8]
+data log: Ring8 = mut (0, 0, slots)
+
+export func h(x: u32) { push_8_u32(log, x) }
+export func i(k: u32) -> u32 => oldest_8_u32(log, k & 7)
+export func j() -> u32 => newest_8_u32(log)
+export func k() { clear_8_u32(log) }

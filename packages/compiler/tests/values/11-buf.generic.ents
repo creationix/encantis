@@ -1,0 +1,14 @@
+func Buf(comptime n: u32, comptime T: type) -> type => (len: u32#(n + 1), items: [n]T)
+
+func third(b: Buf(3, u8)) -> u8 => b.items[2]
+data held: Buf(3, u8) = (3, [1, 2, 3])
+
+export func size() -> u32 => sizeof(Buf(3, u8))            // 4 + 3
+export func t() -> u8 => third(Buf(3, u8)(0, [7, 8, 9]))
+export func h() -> u8 => held.items[1]
+
+test "an array held in place" {
+  assert size() == 7
+  assert t() == 9
+  assert h() == 2
+}

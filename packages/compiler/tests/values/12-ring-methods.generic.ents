@@ -1,0 +1,37 @@
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+
+func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
+  r.items[(r.head + r.count) % n] = x
+  if r.count < n {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % n
+  }
+}
+
+func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) -> T => r.items[(r.head + i) % n]
+
+data cells = mut [0:u32; 8]
+data log: Ring(8, u32) = mut (0, 0, cells)
+data cells4 = mut [0:u64; 4]
+data log4: Ring(2 + 2, u64) = mut (0, 0, cells4)
+
+export func record(x: u32) { log.push(x) }
+export func record2(x: u32) { log.push(8, u32, x) }
+export func record3(x: u32) { push(log, x) }
+export func record4(x: u64) { log4.push(x) }
+export func first() -> u32 => log.oldest(0)
+export func size() -> u32 => sizeof(Ring(8, u32))
+export func build(p: *mut [8]u32) -> u32 {
+  let r = Ring(8, u32)(0, 0, p)
+  return r.count
+}
+export func same(r: *mut (head: u32#8, count: u32, items: *mut [8]u32)) { r.push(5) }
+
+test "the ring keeps the last eight" {
+  for i in 10 {
+    record(i)
+  }
+  assert log.count == 8
+  assert first() == 2
+}

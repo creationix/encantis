@@ -1,0 +1,5 @@
+func scratch_16() -> *mut [16]u8 => mut [0:u8; 16]
+func scratch_64() -> *mut [64]u8 => mut [0:u8; 64]
+
+export func a() -> u32 => (scratch_16() as u32) + (scratch_64() as u32)
+export func b() -> bool => scratch_16() == scratch_16()

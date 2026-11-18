@@ -7990,7 +7990,20 @@ class CheckContext {
     argTypes: ReadonlyMap<AST.Field, ResolvedType>,
     expand: ExpandTypeApply,
   ): void {
-    const fail = (why: string) => this.error(expr.span.start, `cannot infer ${missing} for '${name}'${why}`)
+    const why = this.whyNotInferred(expr, name, missing, pairs, typeParams, values, argTypes, expand)
+    this.error(expr.span.start, `cannot infer ${missing} for '${name}'${why}`)
+  }
+
+  private whyNotInferred(
+    expr: AST.CallExpr,
+    name: string,
+    missing: string,
+    pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
+    typeParams: string[],
+    values: ReadonlySet<string>,
+    argTypes: ReadonlyMap<AST.Field, ResolvedType>,
+    expand: ExpandTypeApply,
+  ): string {
     const example = (n: string) => this.written(expr, name, typeParams.map((p) => (p === missing ? n : values.has(p) ? '8' : 'u32')), pairs.length)
     const what = comptimeArgsText(typeParams.length - values.size, values.size, 'the')
     const mentioning = pairs.filter(({ param }) => lengthUses(param.type, missing, expand).length > 0)
@@ -7998,13 +8011,13 @@ class CheckContext {
     const literal = mentioning.find(({ arg }) => literalCount(ungrouped(arg), (e) => this.evalComptimeExpr(e)) !== null)
     if (literal) {
       const count = literalCount(ungrouped(literal.arg), (e) => this.evalComptimeExpr(e)) as bigint
-      return fail(` from an array literal: write ${example(String(count))}`)
+      return ` from an array literal: write ${example(String(count))}`
     }
     // A slice (or another type with no length) where the length decides
     for (const { param } of mentioning) {
       const type = argTypes.get(param)
       const decides = lengthUses(param.type, missing, expand).some((u) => u.alone)
-      if (type && decides && hasNoLength(type)) return fail(`: a ${typeToString(type)} has no length in its type; write ${what}, as in ${example('8')}`)
+      if (type && decides && hasNoLength(type)) return `: a ${typeToString(type)} has no length in its type; write ${what}, as in ${example('8')}`
     }
     if (mentioning.length > 0 && !mentioning.some(({ param }) => lengthUses(param.type, missing, expand).some((u) => u.alone))) {
       const uses = mentioning.flatMap(({ param }) => lengthUses(param.type, missing, expand))
@@ -8013,12 +8026,12 @@ class CheckContext {
         const owner = this.lookup(name)
         const ctx = owner?.kind === 'generic' ? owner.owner : this
         const text = ctx.textOf(arithmetic.length) ?? lengthText(arithmetic.length)
-        return fail(`: [${text}] does not decide ${missing}, only a length that is ${missing} alone does; write ${what}, as in ${example('8')}`)
+        return `: [${text}] does not decide ${missing}, only a length that is ${missing} alone does; write ${what}, as in ${example('8')}`
       }
       const applied = uses.find((u) => u.applied)?.applied
-      if (applied) return fail(`: '${typeText(applied)}' has no length that is ${missing} alone; write ${what}`)
+      if (applied) return `: '${typeText(applied)}' has no length that is ${missing} alone; write ${what}`
     }
-    fail(`: write ${what}, as in ${example('8')}`)
+    return `: write ${what}, as in ${example('8')}`
   }
 
   // The type an expression has by itself, found without leaving a trace. An

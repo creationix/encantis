@@ -1,0 +1,102 @@
+// The last n elements of a stream: a ring buffer that, when full, takes the
+// place of its oldest element for each new one.
+//
+//   let r = ring(8, u32)         // *mut Ring(8, u32), on the stack
+//   r.push(x)
+//   r.oldest(0), r.newest()
+//
+// Where an element goes is (head + i) % n, a u32#n, so every store and load
+// through items is proven and unchecked: `% n` is a remainder by a
+// constant, which engines turn into multiplications (and wasm-opt into one
+// `and` for a power of two). The number held is the field `count`; a
+// function of that name would be hidden by the field.
+//
+// The names are lib/vec's where they mean the same (push, clear): a module
+// that imports both renames one on import.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+  "alloc" func alloc(n: u32) -> u32
+)
+
+export func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+
+// An empty Ring of n elements: the header and the elements in one
+// allocation on the stack.
+export func ring(comptime n: u32, comptime T: type) -> *mut Ring(n, T) {
+  let at = alloc(sizeof(Ring(n, T)) + n * sizeof(T))
+  let r = at as *mut Ring(n, T)
+  r.* = Ring(n, T)(0, 0, (at + sizeof(Ring(n, T))) as *mut [n]T)
+  return r
+}
+
+// Adds x after the newest element; when the ring is full, x takes the
+// oldest one's place.
+export func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) {
+  r.items[(r.head + r.count) % n] = x
+  if r.count < n {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % n
+  }
+}
+
+// The i-th oldest element. An i at or past count is an element that was
+// pushed and has been replaced, or none at all (a zero of the allocation).
+export func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) -> T => r.items[(r.head + i) % n]
+
+// The newest element. Traps when there is none.
+export func newest(comptime n: u32, comptime T: type, r: *Ring(n, T)) -> T {
+  assert r.count > 0
+  return r.items[(r.head + r.count + (n - 1)) % n]
+}
+
+// Empties it.
+export func clear(comptime n: u32, comptime T: type, r: *mut Ring(n, T)) {
+  r.head = 0
+  r.count = 0
+}
+
+test "the ring keeps the last n" {
+  let scope = mark()
+  defer reset(scope)
+  let r = ring(4, u32)
+  for i in 3 {
+    r.push(i)
+  }
+  assert r.count == 3
+  assert r.oldest(0) == 0
+  assert r.newest() == 2
+  for i in 10 {
+    r.push(100 + i)
+  }
+  assert r.count == 4
+  assert r.oldest(0) == 106
+  assert r.oldest(3) == 109
+  assert r.newest() == 109
+  r.clear()
+  assert r.count == 0
+  r.push(7)
+  assert r.oldest(0) == 7
+  assert r.newest() == 7
+}
+
+test "a capacity that is no power of two, and a Ring laid out as data" {
+  let scope = mark()
+  defer reset(scope)
+  let r = ring(3, u64)
+  for i in 7 {
+    r.push((i * i) as u64)
+  }
+  assert r.oldest(0) == 16
+  assert r.oldest(1) == 25
+  assert r.oldest(2) == 36
+  log.push(1)
+  log.push(2)
+  assert log.newest() == 2
+  assert log.oldest(0) == 1
+}
+
+data cells = mut [0:i32; 2]
+data log: Ring(2, i32) = mut (0, 0, cells)

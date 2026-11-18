@@ -4,6 +4,7 @@ Small helpers written in Encantis. They're plain source files: import them by re
 
 - `io.ents` and `text.ents` are for programs that read text and print results (Advent of Code style). They don't allocate: input goes into a buffer you provide, and parsing returns slices of it.
 - `stack.ents`, `vec.ents`, `set.ents`, `map.ents` and `sort.ents` are generic containers, for any element or key type (a narrow integer key is widened, see below), on a bump stack. Each element type is its own copy of the functions that use it, so a container costs what the same code written for that one type would.
+- `fixedvec.ents`, `ring.ents` and `bits.ents` are containers of a fixed capacity, which is in their type (a comptime value parameter, reference 8.7): `FixedVec(8, u32)`, `Ring(8, u32)`, a bitset over a `*mut [4]u32`. Every index into them is proven by the capacity and compiles to a plain load or store. Each capacity is its own copy of the functions, as each element type is.
 
 ## io.ents
 
@@ -48,6 +49,45 @@ A bump stack of 256 KiB. Nothing is freed one by one: a scope takes a mark and r
 | `v.clear()` | Empties it |
 
 An element that is a fixed array is a table of rows (reference 2.5): `Vec([3]i32)` holds row pointers, and a push of a `[3]i32` is refused. A struct with an array field lies in place: `Vec((cells: [3]i32))` holds packed rows.
+
+## fixedvec.ents
+
+`FixedVec(n, T)` is `(len: u32#(n + 1), buf: *mut [n]T)`: at most `n` elements, never grown or copied. The length reaches `n` when it is full, so `return false when i >= n` leaves `i` below `n` and the store needs no check.
+
+| Function | What it does |
+| --- | --- |
+| `fixedvec(n, T) -> *mut FixedVec(n, T)` | An empty one, the header and the `n` elements in one allocation on the stack |
+| `v.push(x) -> bool` | At the end; false, with nothing changed, when it is full |
+| `v.pop() -> T`, `v.last() -> T` | At the end. Traps when there is none |
+| `v.items() -> []T`, `v.items_mut() -> []mut T` | The elements |
+| `v.clear()`, `v.full() -> bool` | Empties it; whether it is full |
+
+The names are `vec.ents`' own. A module's generics have names of their own, so a module that imports both renames one on import: `"push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool`, called as `v.fixed_push(x)` ([`examples/containers/fixed.ents`](../examples/containers/fixed.ents)). The elements are in `buf`, not `items`: a field wins over a function of its name. As for a Vec, an element that is a fixed array makes `buf` a table; a struct with an array field lies in place.
+
+## ring.ents
+
+`Ring(n, T)` is `(head: u32#n, count: u32, items: *mut [n]T)`: the last `n` elements of a stream. When it is full, a push takes the oldest one's place.
+
+| Function | What it does |
+| --- | --- |
+| `ring(n, T) -> *mut Ring(n, T)` | An empty one, in one allocation on the stack |
+| `r.push(x)` | After the newest; when full, in the oldest one's place |
+| `r.oldest(i) -> T`, `r.newest() -> T`, `r.count` | The `i`-th oldest (`i: u32#n`); the newest (traps when there is none); how many it holds |
+| `r.clear()` | Empties it |
+
+Where an element goes is `(head + i) % n`, a `u32#n`: a remainder by a constant, one `and` after wasm-opt when `n` is a power of two.
+
+## bits.ents
+
+A bitset of `w * 32` bits over a `*mut [w]u32`, such as `data seen = mut [0:u32; 4]`. The words decide `w`, so `seen.set_bit(k & 127)` needs nothing written.
+
+| Function | What it does |
+| --- | --- |
+| `b.set_bit(i)`, `b.clear_bit(i)` | Sets or clears bit `i`, a `u32#(w * 32)` |
+| `b.has_bit(i) -> bool` | Whether bit `i` is set |
+| `b.count_bits() -> u32` | How many are set |
+
+`set` is a keyword, hence `set_bit`.
 
 ## set.ents and map.ents
 

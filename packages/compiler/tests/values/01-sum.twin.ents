@@ -1,0 +1,23 @@
+func sum_4(xs: *[4]u32) -> (total: u32) {
+  for i in 4 {
+    total += xs[i]
+  }
+}
+func sum_8(xs: *[8]u32) -> (total: u32) {
+  for i in 8 {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum_4(primes)
+export func b() -> u32 => sum_8(squares)
+export func c() -> u32 => sum_4(primes)
+
+test "each length is its own function" {
+  assert a() == 17
+  assert b() == 204
+  assert c() == 17
+}

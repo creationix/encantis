@@ -1,0 +1,56 @@
+func sort_8(xs: *mut [8]i32) {
+  for i in 8 {
+    for j in 8 {
+      if ascending(xs[j], xs[i]) {
+        let t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+      }
+    }
+  }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+
+func fill_8(xs: *mut [8]u8, v: u8) {
+  for i in 8 {
+    xs[i] = v
+  }
+}
+func half_4(xs: *mut [8]u8) {
+  fill_8(xs, 7)
+}
+
+func shift_m3(x: i32) -> i32 => x + -3
+func shift_3(x: i32) -> i32 => x + 3
+func mask_15(x: u8) -> u8 => x & 15
+func mask_255(x: u8) -> u8 => x & 255
+func big_5(x: u64) -> u64 => x + 5000000000
+
+type Words3 = (bits: *mut [3]u32, count: u32#97)
+func words_3(b: *Words3) -> u32 => 3
+
+data nums = mut [5:i32, 3, 8, 1, 9, 2, 7, 4]
+data bytes = mut [0:u8; 8]
+data ws = mut [0:u32; 3]
+data seen: Words3 = mut (ws, 0)
+
+export func up() { sort_8(nums) }
+export func up2() { sort_8(nums) }
+export func f() { fill_8(bytes, 1) }
+export func g() { fill_8(bytes, 2) }
+export func h() { half_4(bytes) }
+export func s(x: i32) -> i32 => shift_m3(x) + shift_3(x)
+export func m(x: u8) -> u8 => mask_255(x) & mask_15(x)
+export func b(x: u64) -> u64 => big_5(x)
+export func w() -> u32 => words_3(seen)
+
+test "sorted" {
+  up()
+  assert nums[0] == 9
+  assert nums[7] == 1
+  h()
+  assert bytes[7] == 7
+  assert s(10) == 20
+  assert m(0xFF) == 15
+  assert w() == 3
+}
