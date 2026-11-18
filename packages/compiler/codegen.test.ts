@@ -2038,6 +2038,21 @@ describe('filling a range', () => {
     expect((await run(code)).zero()).toBe(1010)
   })
 
+  test('a value that is an element fills, though it is an array of elements too', async () => {
+    // A Node points to two Nodes: other is an element of cells and an array
+    // of them. It is an element, so every element of the range is other.
+    const code = `
+      type Node = *[2]Node
+      data cells: *mut [2]Node = mut [0; 2]
+      data other: *mut [2]Node = mut [0; 2]
+      export func fill() -> i32 {
+        cells[0..2] = other
+        return if cells[0] == other && cells[1] == other { 1 } else { 0 }
+      }
+    `
+    expect(modWat(code)).not.toContain('memory.copy')
+    expect((await run(code)).fill()).toBe(1)
+  })
 })
 
 describe('indexes not known to be in range', () => {

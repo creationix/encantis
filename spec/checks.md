@@ -2286,7 +2286,7 @@ test "a generic fills with a value of its type parameter" {
 
 <!-- spec:end -->
 
-A fill value that is no element, or a copy whose elements are not the range's, is refused for what it is. A table's elements are its row pointers: rows of a const table are not copied into a mutable one, as `m[i] = r` is refused for them, and an array in registers has no rows to point to.
+A fill value that is no element, or a copy whose elements are not the range's, is refused for what it is. A table's elements are its row pointers: rows of a const table are not copied into a mutable one, as `m[i] = r` is refused for them, and an array in registers has no rows to point to. A value of the element type as it is written, a row in registers, or a const row for a mutable table, is meant to fill, and is refused as `m[i] = r` is.
 
 ```ents
 type Pt = (x: i32, y: i32)
@@ -2309,6 +2309,10 @@ func e() {
   let v: [2][2]i32 = [[1, 2], [3, 4]]
   board[0..2] = v
 }
+func f(row: [2]i32) { board[0..2] = row }
+func g() { board[0..2] = grid[1] }
+func h(comptime T: type, p: *mut [2]T, v: T) { p[0..2] = v }
+func k(row: [2]i32) { h([2]i32, board, row) }
 ```
 
 ```errors
@@ -2317,6 +2321,9 @@ cannot copy []u8 into a range of []i32
 cannot copy *[2][2]i32 into a range of *mut [2]i32: its rows are *[2]i32
 a literal is constant: write `mut [[1, 2], [3, 4]]` for a *mut [2][2]i32
 cannot copy [2][2]i32 into a range of *mut [2]i32: its rows are held in registers
+fill value: cannot assign [2]i32 to *mut [2]i32
+fill value: cannot assign *[2]i32 to *mut [2]i32
+fill value: cannot assign [2]i32 to *mut [2]i32, in h(T = [2]i32)
 ```
 
 ## Builtins

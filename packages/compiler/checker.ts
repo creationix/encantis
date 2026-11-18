@@ -6360,7 +6360,7 @@ class CheckContext {
   // dst[a..b] = v fills the range with v, a value of its element type (a
   // number, a struct, a slice, a pointer: anything an element can be
   // assigned); dst[a..b] = src copies the elements of src into it, a slice
-  // or an array of that element type. The range is written, so it must be
+  // or an array of that element type that is no element itself. The range is written, so it must be
   // in bounds without a runtime check, like an indexed write. A copy also
   // needs both lengths known at compile time and equal; memcpy is the
   // explicit form for a runtime length.
@@ -6407,16 +6407,28 @@ class CheckContext {
       lengths(BigInt(valueType.count))
       return
     }
-    // A copy: the source is a slice or pointer to an array of the same
-    // elements. Nothing is both that and an element itself.
+    // A value that can be assigned to an element fills, even where it is an
+    // array of elements as well (a Node of `type Node = *[2]Node`). Anything
+    // else is a copy: the source is a slice or pointer to an array of the
+    // same elements.
     const srcElem = valueType.kind === 'slice' ? valueType.element
       : valueType.kind === 'pointer' && unwrap(valueType.pointee).kind === 'array' ? (unwrap(valueType.pointee) as ArrayRT).element
       : valueType.kind === 'array' ? valueType.element
       : null
-    if (!srcElem || !typeEquals(unwrap(srcElem), unwrap(elem))) {
-      // Anything else is a fill, if it is an element: a value that is no
-      // array is said to be no element, one that is an array no source.
-      if (!srcElem || this.fits(value, cell)) {
+    // (Its type says it where it is an array of elements: looking at it as
+    // an element would leave its type taken for one.)
+    const elements = !!srcElem && typeEquals(unwrap(srcElem), unwrap(elem))
+    if (!srcElem || (elements ? typeAssignable(cell, valueType) : this.fits(value, cell))) {
+      // A value that is no array is said to be no element.
+      fill()
+      return
+    }
+    if (!elements) {
+      // Neither. A value of the element type as it is written, or a row a
+      // table's rows can't be (a const one in a mutable table), was meant
+      // to fill: the fill says why it can't, as `m[i] = r` would.
+      const row = tableRow(dst)
+      if (typeAssignable(elem, valueType) || (row && typeAssignable(pointer(row.pointee), valueType))) {
         fill()
         return
       }
