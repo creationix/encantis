@@ -66,10 +66,10 @@ const BUILTIN_SIGNATURES: Record<string, ResolvedType> = {
     [{ name: null, type: primitive('i32') }],
   ),
 
-  // Integer bit operations (i32/i64/u32/u64)
-  clz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
-  ctz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
-  popcnt: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('i32') }]),
+  // Integer bit operations (i32/i64/u32/u64): the count is a u8
+  clz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
+  ctz: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
+  popcnt: func([{ name: 'x', type: primitive('i32') }], [{ name: null, type: primitive('u8') }]),
 }
 
 // Build a simplified expression string for hover hints

@@ -2015,21 +2015,21 @@ let (ptr:, len:) = slice         // by name
 
 ## 9. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Their names are not reserved: a function the program declares with the name of a builtin takes its place.
 
-### 9.1 Float Builtins
+### 9.1 Numeric Builtins
 
 | Function | Input | Returns | Description |
 |----------|-------|---------|-------------|
 | `sqrt(x)` | f32/f64 | same | Square root |
-| `abs(x)` | f32/f64 | same | Absolute value |
 | `ceil(x)` | f32/f64 | same | Ceiling (round up) |
 | `floor(x)` | f32/f64 | same | Floor (round down) |
 | `trunc(x)` | f32/f64 | same | Truncate toward zero |
 | `nearest(x)` | f32/f64 | same | Round to nearest even (banker's rounding) |
-| `min(a, b)` | f32/f64 | same | Minimum of two values |
-| `max(a, b)` | f32/f64 | same | Maximum of two values |
 | `copysign(x, y)` | f32/f64 | same | Copy sign of y to x |
+| `abs(x)` | any numeric | same | Absolute value |
+| `min(a, b)` | any numeric | same | Minimum of two values |
+| `max(a, b)` | any numeric | same | Maximum of two values |
 
 ```ents
 let x:f64 = -3.7
@@ -2042,6 +2042,19 @@ min(3.0, 5.0)          // 3.0
 copysign(5.0, -1.0)    // -5.0
 ```
 
+The operands of a builtin are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type (§2.10). With only literals, the operands take their default type (`i32`, `f64`).
+
+```ents
+let x:f32 = 0.25
+let n:i32 = -7
+let big:i64 = 5000000000
+max(1.0, x)            // f32, the same as max(x, 1.0)
+max(n, big)            // i64: n widens
+abs(n - 10)            // 17
+```
+
+On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min` and `max` return one of their operands, so when every operand is in a range (§2.2), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`.
+
 ### 9.2 Integer Builtins
 
 | Function | Input | Returns | Description |
@@ -2049,8 +2062,9 @@ copysign(5.0, -1.0)    // -5.0
 | `clz(x)` | i32/i64/u32/u64 | u8 | Count leading zeros (0 to bit width) |
 | `ctz(x)` | i32/i64/u32/u64 | u8 | Count trailing zeros (0 to bit width) |
 | `popcnt(x)` | i32/i64/u32/u64 | u8 | Population count (0 to bit width) |
+| `mul_hi(a, b)` | u64, u64 | u64 | High 64 bits of the 128-bit product |
 
-These functions return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type.
+The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error: convert it first (`clz(b as u32) - 24` for a `u8`).
 
 ```ents
 let n:u32 = 0b00001000
@@ -2060,7 +2074,12 @@ popcnt(n)              // 1:u8 (number of 1 bits)
 
 // Result implicitly widens to target type
 let count:u32 = popcnt(n)    // u8 → u32 implicit
-let offset:u64 = clz(n) * 8  // u8 → u64 implicit
+let big:u64 = 0x500000000
+let odd = big >> ctz(big)    // the count widens to the u64 it shifts: 5
+
+// Arithmetic on the count alone is u8 arithmetic: widen it first if the
+// result can pass 255
+let offset = u64(clz(n)) * 8
 ```
 
 ### 9.3 Memory Builtins
@@ -2069,10 +2088,13 @@ let offset:u64 = clz(n) * 8  // u8 → u64 implicit
 |----------|-------|---------|-------------|
 | `memcpy(dest, src, len)` | *[N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
 | `memset(dest, value, len)` | *[N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
+| `memzero(dest)` | *[N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
 | `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
-`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. Range assignment (§4.8) is the checked form for compile-time sizes.
+`memcpy` and `memset` take pointers to sized arrays. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+
+> **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 
 ```ents
 let pages = memory-size()    // current page count

@@ -842,3 +842,197 @@ writing to a range needs bounds known to fit
 cannot copy 4 elements into a range of 8
 copying into a range needs both lengths known at compile time; use memcpy
 ```
+
+## Builtins
+
+The operands of a numeric builtin are typed together, as the operands of a binary operator are. A literal takes the type of the other operand, whichever of them comes first; with only literals, they take their default type.
+
+```ents
+func at_least_one(x: f64) -> f64 => max(1.0, x)
+func at_most_one(x: f32) -> f32 => min(x, 1.0)
+func not_negative(n: i64) -> i64 => max(0, n)
+func sign_of(x: f32) -> f32 => copysign(1.0, x)
+func constants() -> f64 => sqrt(2.0) + nearest(2.5) + min(3.0, 5.0) + copysign(5.0, -1.0)
+func whole() -> i32 => abs(-5) + max(1, 2)
+```
+
+```ents
+func f(x: u8) -> u8 => max(300, x)
+func g(x: i32) -> i32 => min(x, 1.5)
+```
+
+```errors
+max: cannot assign int(300) to u8
+min: cannot assign float(1.5) to i32
+```
+
+Typed operands meet at the wider of their types. Types that neither widen to the other don't mix.
+
+```ents
+func widest(a: i32, b: i64) -> i64 => max(a, b)
+func least(a: u64, b: u8) -> u64 => min(a, b)
+func with_sign(x: f32, y: f64) -> f64 => copysign(x, y)
+```
+
+```ents
+func f(a: u32, b: i32) -> u32 => max(a, b)
+func g(a: f32, b: i64) -> f32 => min(a, b)
+```
+
+```errors
+max: cannot assign i32 to u32
+min: cannot assign i64 to f32
+```
+
+`sqrt`, `ceil`, `floor`, `trunc`, `nearest` and `copysign` take floats; `min`, `max` and `abs` take any numeric type.
+
+```ents
+func f(n: i32) -> f64 => sqrt(n)
+func g(b: bool) -> bool => max(b, b)
+```
+
+```errors
+sqrt requires a float type, got i32
+max requires a numeric type, got bool
+cannot assign i32 to bool
+```
+
+`clz`, `ctz` and `popcnt` take an `i32`, `u32`, `i64` or `u64` and return a `u8`, which widens to any integer type.
+
+```ents
+func leading(x: u32) -> u8 => clz(x)
+func ones(x: u64) -> u32 => popcnt(x)
+func strip(x: u64) -> u64 => x >> ctz(x)
+```
+
+```ents
+func f(x: u8) -> u8 => clz(x)
+func g(x: u128) -> u8 => popcnt(x)
+func h(x: f64) -> u8 => ctz(x)
+```
+
+```errors
+clz requires i32, u32, i64 or u64, got u8
+popcnt requires i32, u32, i64 or u64, got u128
+ctz requires an integer type, got f64
+```
+
+`min` and `max` return one of their operands, so the result is in a range when every operand is.
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func clamped(i: u32#4) -> u8 => table[min(i, 2)]
+func either(i: u32#4, j: u32#2) -> u8 => table[max(i, j)]
+```
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func f(i: u32#4) -> u8 => table[max(i, 9)]
+```
+
+```errors
+runtime index on *[4]u8 requires 'if let' or '??'
+```
+
+A constant operand counts by its value. An `if` is not one, and it has no range either: it can be any of its arms.
+
+```ents
+data table = [10:u8, 20, 30, 40]
+def last = 3
+
+func capped(i: u32#4) -> u8 => table[min(i, last)]
+```
+
+```ents
+data table = [10:u8, 20, 30, 40]
+
+func f(i: u32#4, far: bool) -> u8 => table[max(i, if far { 100 } else { 1 })]
+func g(i: u32#4, far: bool) -> u8 => table[max(if far { 1 } else { 100 }, i)]
+func h(i: u32#4, j: u32#4, far: bool) -> u8 => table[max(i, if far { j } else { 9 })]
+```
+
+```errors
+runtime index on *[4]u8 requires 'if let' or '??'
+runtime index on *[4]u8 requires 'if let' or '??'
+runtime index on *[4]u8 requires 'if let' or '??'
+```
+
+An `if` or a `match` operand has the type its arms widen to, like any `if`, and then widens to the other operand's as a whole. One of constants alone takes the other operand's type, arm by arm.
+
+```ents
+func mirror(x: i64, flip: bool) -> i64 => max(x, if flip { 0 - x } else { x })
+func stepped(x: i64, k: i32) -> i64 => max(x, match k {
+  0 => x + 1
+  _ => 5
+})
+func widened(x: i64, a: i32, small: bool) -> i64 => max(x, if small { a } else { 5 })
+```
+
+An arm can have statements before its value. A `let` among them is declared once, also where the operand is checked a second time to give its constants the other operand's type.
+
+```ents
+func floored(x: i64, strict: bool) -> i64 => max(x, if strict {
+  let margin = 3
+  5
+} else { 2 })
+```
+
+```ents
+func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })
+```
+
+```errors
+cannot assign f64 to f32
+```
+
+`mul_hi` multiplies two `u64`s: a narrower unsigned operand widens, a signed one doesn't.
+
+```ents
+func high(a: u32, b: u64) -> u64 => mul_hi(a, b)
+func scaled(a: u64) -> u64 => mul_hi(a, 0x8000000000000000)
+```
+
+```ents
+func f(a: i64, b: u64) -> u64 => mul_hi(a, b)
+func g(a: u64) -> u64 => mul_hi(a, -1)
+```
+
+```errors
+mul_hi: cannot assign i64 to u64
+mul_hi: cannot assign int(-1) to u64
+```
+
+A function the program declares takes the builtin's name. A variable in scope hides that function, and the name is the builtin's again.
+
+```ents
+func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+
+func all() -> i32 => max(1, 2, 3)
+func either(max: i32, other: i32) -> i32 => max(max, other)
+```
+
+```ents
+func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+
+func f() -> i32 => max(1, 2)
+```
+
+```errors
+'max' expected 3 arguments, got 2
+```
+
+`memcpy` reads from a pointer to an array; `memzero` needs a destination whose size is known.
+
+```ents
+data buf = mut [0:u8; 16]
+
+func from_slice(s: []u8) { memcpy(buf, s, 8) }
+func zero(p: *mut [!]u8) { memzero(p) }
+```
+
+```errors
+memcpy src: expected *[N]T, got []u8
+memzero dest: *mut [!]u8 has no size known at compile time
+```

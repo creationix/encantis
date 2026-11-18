@@ -1873,3 +1873,231 @@ describe('struct constructors', () => {
     expect(result.errors.map(e => e.message)).toContain("field 'z' not found in (x: i32, y: i32)")
   })
 })
+
+describe('builtins', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  // The type the builtin call `call` computes in, and the type it returns.
+  const types = (params: string, call: string) => {
+    const src = `func f(${params}) { let r = ${call} }`
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    return [typeAt(result, src.indexOf(call), 'BuiltinCall'), typeAt(result, src.indexOf('r ='))]
+  }
+
+  test('a literal takes the type of the other operand, in either position', () => {
+    expect(types('x: f64', 'max(1.0, x)')).toEqual(['f64', 'f64'])
+    expect(types('x: f64', 'max(x, 1.0)')).toEqual(['f64', 'f64'])
+    expect(types('x: f32', 'min(0.5, x)')).toEqual(['f32', 'f32'])
+    expect(types('x: i64', 'max(0, x)')).toEqual(['i64', 'i64'])
+    expect(types('x: u8', 'min(200, x)')).toEqual(['u8', 'u8'])
+    expect(types('x: f32', 'copysign(1.0, x)')).toEqual(['f32', 'f32'])
+  })
+
+  test('a literal that does not fit the other operand is an error in either position', () => {
+    expect(errs(`func f(x: u8) -> u8 => max(x, 300)`)).toEqual(['max: cannot assign int(300) to u8'])
+    expect(errs(`func f(x: u8) -> u8 => max(300, x)`)).toEqual(['max: cannot assign int(300) to u8'])
+    expect(errs(`func f(x: i32) -> i32 => min(1.5, x)`)).toEqual(['min: cannot assign float(1.5) to i32'])
+  })
+
+  test('with only literals the operands take their default type', () => {
+    expect(types('', 'sqrt(2.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'nearest(2.5)')).toEqual(['f64', 'f64'])
+    expect(types('', 'min(3.0, 5.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'copysign(5.0, -1.0)')).toEqual(['f64', 'f64'])
+    expect(types('', 'abs(-5.5)')).toEqual(['f64', 'f64'])
+    expect(types('', 'abs(-5)')).toEqual(['i32', 'i32'])
+    expect(types('', 'max(1, 2)')).toEqual(['i32', 'i32'])
+    expect(types('', 'max(1, 5000000000)')).toEqual(['i64', 'i64'])
+  })
+
+  test('with only literals the default type is the one the options give', () => {
+    const typed = (call: string, options: { defaultInt?: 'i32' | 'i64'; defaultFloat?: 'f32' | 'f64' }) => {
+      const src = `func f() { let r = ${call} }`
+      const result = typecheck(parse(src).module!, options)
+      expect(result.errors.map(e => e.message)).toEqual([])
+      return typeAt(result, src.indexOf(call), 'BuiltinCall')
+    }
+    expect(typed('sqrt(2.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('copysign(5.0, -1.0)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2.5)', { defaultFloat: 'f32' })).toBe('f32')
+    expect(typed('max(1, 2)', { defaultInt: 'i64' })).toBe('i64')
+    expect(typed('abs(-5)', { defaultInt: 'i64', defaultFloat: 'f32' })).toBe('i64')
+    expect(typed('max(1, 2)', { defaultFloat: 'f32' })).toBe('i32')
+    // Too big for an i32, they are an i64 whichever is the default.
+    expect(typed('max(1, 5000000000)', { defaultInt: 'i32' })).toBe('i64')
+    // The result is of that type too: an f32 where an f32 is wanted.
+    const result = typecheck(parse('func f() -> f32 => sqrt(2.0)').module!, { defaultFloat: 'f32' })
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(errs('func f() -> f32 => sqrt(2.0)')).toEqual(['cannot assign f64 to f32'])
+  })
+
+  test('typed operands meet at the wider type', () => {
+    expect(types('a: i32, b: i64', 'max(a, b)')).toEqual(['i64', 'i64'])
+    expect(types('a: i64, b: i32', 'max(a, b)')).toEqual(['i64', 'i64'])
+    expect(types('a: u8, b: u16', 'min(a, b)')).toEqual(['u16', 'u16'])
+    expect(types('a: f32, b: f64', 'min(a, b)')).toEqual(['f64', 'f64'])
+    expect(types('a: f32, b: f64', 'copysign(a, b)')).toEqual(['f64', 'f64'])
+    expect(types('a: i128, b: i64', 'min(a, b)')).toEqual(['i128', 'i128'])
+  })
+
+  test('a narrower operand is marked for widening, as the operand of an operator is', () => {
+    const widened = (src: string) => [...checkModule(src).coercions].map(([expr, type]) => [expr.kind === 'IdentExpr' ? expr.name : expr.kind, typeToString(type)])
+    expect(widened(`func f(a: i32, b: i64) -> i64 => max(a, b)`)).toEqual([['a', 'i64']])
+    expect(widened(`func f(a: f32, b: f64) -> f64 => copysign(a, b)`)).toEqual([['a', 'f64']])
+    expect(widened(`func f(a: u32, b: u8) -> u64 => mul_hi(a, b)`)).toEqual([['a', 'u64'], ['b', 'u64']])
+    expect(widened(`func f(a: i64, b: i64) -> i64 => max(a, b)`)).toEqual([])
+    // An if with a type of its own is widened as a whole.
+    expect(widened(`func f(x: i64, a: i32, c: bool) -> i64 => max(x, if c { a } else { 5 })`)).toEqual([['IfExpr', 'i64']])
+    // So is a constant that is not a literal: the length of an array is an i32.
+    expect(widened(`func f(x: i64, p: *[4]i32) -> i64 => max(x, p.len)`)).toEqual([['MemberExpr', 'i64']])
+  })
+
+  test('operands that share no type are an error', () => {
+    expect(errs(`func f(a: u32, b: i32) -> u32 => max(a, b)`)).toEqual(['max: cannot assign i32 to u32'])
+    expect(errs(`func f(a: i32, b: u32) -> i32 => max(a, b)`)).toEqual(['max: cannot assign u32 to i32'])
+    expect(errs(`func f(a: f32, b: i64) -> f32 => min(a, b)`)).toEqual(['min: cannot assign i64 to f32'])
+  })
+
+  test('each builtin takes only its own kind of operand', () => {
+    expect(errs(`func f(x: i32) -> f64 => sqrt(x)`)).toContain('sqrt requires a float type, got i32')
+    expect(errs(`func f(x: f64, n: i32) -> f64 => copysign(x, n)`)).toContain('copysign requires a float type, got i32')
+    expect(errs(`func f(x: bool) -> bool => max(x, x)`)).toContain('max requires a numeric type, got bool')
+    expect(errs(`func f(p: *u8) -> *u8 => abs(p)`)).toContain('abs requires a numeric type, got *u8')
+  })
+
+  test('clz, ctz and popcnt return u8', () => {
+    expect(types('x: u32', 'clz(x)')).toEqual(['u32', 'u8'])
+    expect(types('x: i64', 'ctz(x)')).toEqual(['i64', 'u8'])
+    expect(types('x: u64', 'popcnt(x)')).toEqual(['u64', 'u8'])
+    expect(types('', 'clz(1)')).toEqual(['i32', 'u8'])
+  })
+
+  test('clz, ctz and popcnt take 32- and 64-bit integers only', () => {
+    expect(errs(`func f(x: u8) -> u8 => clz(x)`)).toEqual(['clz requires i32, u32, i64 or u64, got u8'])
+    expect(errs(`func f(x: i16) -> u8 => ctz(x)`)).toEqual(['ctz requires i32, u32, i64 or u64, got i16'])
+    expect(errs(`func f(x: u128) -> u8 => popcnt(x)`)).toEqual(['popcnt requires i32, u32, i64 or u64, got u128'])
+    expect(errs(`func f(x: f64) -> u8 => clz(x)`)).toEqual(['clz requires an integer type, got f64'])
+    expect(errs(`func f() -> u8 => popcnt(1.5)`)).toEqual(['popcnt requires an integer type, got float(1.5)'])
+  })
+
+  test('min and max keep a range only when every operand is inside it', () => {
+    expect(types('i: u32#8, j: u32#4', 'max(i, j)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8, j: u32', 'min(i, j)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8', 'min(3, i)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8', 'max(i, 3)')).toEqual(['u32', 'u32#8'])
+    expect(types('i: u32#8', 'max(i, 100)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#4, b: u8', 'max(i, b)')).toEqual(['u32', 'u32'])
+  })
+
+  test('a range is kept through a constant operand only', () => {
+    // A def is a constant like a literal.
+    const withDef = 'def two = 2\nfunc f(i: u32#8) { let r = max(i, two) }'
+    expect(typeAt(checkModule(withDef), withDef.indexOf('r ='))).toBe('u32#8')
+    // An if or a match of literals has a literal's type, and any of their values.
+    expect(types('i: u32#8, c: bool', 'max(i, if c { 1 } else { 100 })')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8, c: bool', 'max(if c { 1 } else { 100 }, i)')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#8, k: i32', 'max(i, match k {\n 0 => 1\n _ => 100\n })')).toEqual(['u32', 'u32'])
+    expect(errs(`
+      data table = [10:u8, 20, 30, 40]
+      func f(i: u32#4, c: bool) -> u8 => table[max(i, if c { 1 } else { 100 })]
+    `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
+  test('a declared function takes the place of the builtin of the same name', () => {
+    const result = checkModule(`
+      func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+      export func f() -> i32 => max(1, 2, 3)
+    `)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    expect(result.warnings.map(e => e.message)).toEqual([])
+    // A variable of that name is not a function to call: the builtin is still meant.
+    expect(errs(`func f(a: i32, b: i32) -> i32 {
+      let max = max(a, b)
+      return max(max, 0)
+    }`)).toEqual([])
+  })
+
+  test('an if or a match operand is checked arm by arm', () => {
+    // Its arms give it the type of the other operand, or widen to it as a whole.
+    expect(types('x: i64, c: bool', 'max(x, if c { 0 - x } else { x })')).toEqual(['i64', 'i64'])
+    expect(types('x: i64, c: bool', 'max(if c { 0 - x } else { x }, x)')).toEqual(['i64', 'i64'])
+    expect(types('x: f32, c: bool', 'copysign(x, if c { x - 1.0 } else { 1.0 })')).toEqual(['f32', 'f32'])
+    expect(types('x: u64, c: bool', 'mul_hi(x, if c { x - 1 } else { x })')).toEqual(['u64', 'u64'])
+    expect(errs(`func f(x: i32, c: bool) -> i32 {
+      let m = max(x, if c { return -1 } else { 1 })
+      return m
+    }`)).toEqual([])
+    // Its literals take the type of its other arms.
+    expect(types('x: i64, k: i32', 'max(x, match k {\n 0 => x + 1\n _ => 5\n })')).toEqual(['i64', 'i64'])
+    expect(types('x: i64, a: i32, c: bool', 'max(x, if c { a } else { 5 })')).toEqual(['i64', 'i64'])
+    expect(types('a: i32, b: i64, c: bool', 'max(a, if c { b } else { 5 })')).toEqual(['i64', 'i64'])
+    expect(errs(`func f(x: f32, c: bool) -> f32 => max(x, if c { x } else { 1.5:f64 })`)).toEqual(['cannot assign f64 to f32'])
+  })
+
+  test('a let in a branch of an operand is declared once, however often the operand is checked', () => {
+    // A constant operand is checked again against the type of the others,
+    // and a pointer operand of memcpy against its own.
+    expect(errs(`func f(x: u64, c: bool) -> u64 => mul_hi(if c { let k = 1\n 5 } else { 2 }, x)`)).toEqual([])
+    expect(errs(`func f(x: i64, k: i32) -> i64 => max(match k {\n 0 => { let one = 1\n 5 }\n _ => 2\n }, x)`)).toEqual([])
+    expect(errs(`func f(x: f32, c: bool) -> f32 => copysign(if c { let k = 1\n 5.0 } else { 2.0 }, x)`)).toEqual([])
+    expect(errs(`
+      data buf = mut [0:u8; 8]
+      func f(c: bool) { memcpy(buf, if c { let k = 1\n "ABCD" } else { "abcd" }, 4) }
+    `)).toEqual([])
+    // A second let of the name is still one too many.
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let k = 1\n let k = 2\n 5 } else { 2 }, x)`))
+      .toEqual(["'k' is already declared in this scope"])
+    expect(errs(`func f(x: i64, c: bool) -> i64 => max(if c { let x = 1\n 5 } else { 2 }, x)`))
+      .toEqual(["'x' is already declared in this scope"])
+  })
+
+  test('an if or a match operand takes the range away', () => {
+    // The range of one arm is not the range of the others.
+    expect(types('i: u32#4, j: u32#4, c: bool', 'max(i, if c { j } else { 9 })')).toEqual(['u32', 'u32'])
+    expect(types('i: u32#4, j: u32#4, c: bool', 'max(if c { j } else { 9 }, i)')).toEqual(['u32', 'u32'])
+    expect(errs(`
+      data table = [10:u8, 20, 30, 40]
+      func f(i: u32#4, j: u32#4, c: bool) -> u8 => table[max(i, if c { j } else { 9 })]
+    `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
+  test('a variable in scope hides the declared function, and the builtin is meant again', () => {
+    const src = `
+      func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
+      func f(max: i32) -> i32 => max(max, 2)
+      export func g() -> i32 => max(1, 2, 3) + f(4)
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    // Only the call the checker typed as the builtin is marked for codegen.
+    expect(typeAt(result, src.indexOf('max(max, 2)'), 'BuiltinCall')).toBe('i32')
+    expect(typeAt(result, src.indexOf('max(1, 2, 3)'), 'BuiltinCall')).toBeUndefined()
+  })
+
+  test('mul_hi takes operands that widen to u64', () => {
+    expect(types('a: u64, b: u64', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])
+    expect(types('a: u32, b: u8', 'mul_hi(a, b)')).toEqual(['u64', 'u64'])
+    expect(types('a: u32', 'mul_hi(a, 3)')).toEqual(['u64', 'u64'])
+    expect(types('', 'mul_hi(0x8000000000000000, 4)')).toEqual(['u64', 'u64'])
+    expect(errs(`func f(a: i64, b: u64) -> u64 => mul_hi(a, b)`)).toEqual(['mul_hi: cannot assign i64 to u64'])
+    expect(errs(`func f(a: u64, b: u128) -> u64 => mul_hi(a, b)`)).toEqual(['mul_hi: cannot assign u128 to u64'])
+    expect(errs(`func f(a: u64) -> u64 => mul_hi(-1, a)`)).toEqual(['mul_hi: cannot assign int(-1) to u64'])
+    expect(errs(`func f(a: u64, x: f64) -> u64 => mul_hi(a, x)`)).toEqual(['mul_hi requires an integer type, got f64'])
+  })
+
+  test('memzero needs a destination whose size is known', () => {
+    expect(errs(`func f(p: *mut [4]u32) { memzero(p) }`)).toEqual([])
+    expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])
+  })
+
+  test('memcpy checks its source like its destination', () => {
+    const src = (param: string) => `
+      data buf = mut [0:u8; 16]
+      func f(${param}) { memcpy(buf, s, 8) }
+    `
+    expect(errs(src('s: *[8]u8'))).toEqual([])
+    expect(errs(src('s: [*]u8'))).toEqual([])
+    expect(errs(src('s: []u8'))).toEqual(['memcpy src: expected *[N]T, got []u8'])
+    expect(errs(src('s: i32'))).toEqual(['memcpy src: expected *[N]T, got i32'])
+  })
+})

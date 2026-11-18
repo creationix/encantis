@@ -221,15 +221,19 @@ function flattenType(t: ResolvedType): Array<{ suffix: string; wasmType: string 
 // === Expression Codegen ===
 
 export function exprToWat(expr: AST.Expr, ctx: CodegenContext): string {
-  const wat = exprValueToWat(expr, ctx)
-  // Every implicit widening happens here: the checker says which expressions
-  // meet a wider type (as an operand, an argument, an initializer, a branch).
+  return wideningOf(expr, ctx)(exprValueToWat(expr, ctx))
+}
+
+// Every implicit widening happens here: the checker says which expressions
+// meet a wider type (as an operand, an argument, an initializer, a branch).
+// Gives what takes an expression's value from its own type to that one.
+function wideningOf(expr: AST.Expr, ctx: CodegenContext): (wat: string) => string {
   const to = ctx.coercions.get(expr)
   const from = to && lookupExprType(expr, ctx)
   // An integer up to 32 bits already fills its i32: widening one within that
   // costs nothing.
-  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return wat
-  return emitConversion(wat, from, to)
+  if (!to || !from || typeToWasm(from).join() === typeToWasm(to).join()) return (wat) => wat
+  return (wat) => emitConversion(wat, from, to)
 }
 
 function exprValueToWat(expr: AST.Expr, ctx: CodegenContext): string {
@@ -687,17 +691,44 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
   }
 }
 
+// The type a numeric builtin computes in, as the checker settled it from all
+// of the operands.
+function builtinOperandType(expr: AST.CallExpr, ctx: CodegenContext): ResolvedType {
+  const type = ctx.types.get(typeKey(expr.span.start, 'BuiltinCall'))
+  if (!type) throw new Error(`Missing operand type for builtin call at offset ${expr.span.start}`)
+  return type
+}
+
+// The scratch local a builtin keeps operand `index` in when it needs the
+// value twice.
+function builtinScratchLocal(name: string, index: number, expr: AST.CallExpr): string {
+  return `__${name}_${index}_${expr.span.start}`
+}
+
+// A read of a local, a global or a constant: free to repeat.
+const PLAIN_READ = /^\((?:(local|global)\.get (\$[^\s()]+)|(?:i32|i64|f32|f64)\.const [^\s()]+)\)$/
+
+// An operand's code for its first use and for its second, each in the type
+// `widen` gives it. A plain read is repeated, unless `between` (what runs
+// between the two uses) can change what it reads; anything else is evaluated
+// once, into the scratch local.
+function useTwice(wat: string, widen: (wat: string) => string, scratch: string, between: string): [string, string] {
+  const read = PLAIN_READ.exec(wat)
+  if (read) {
+    const [, scope, name] = read
+    const writes = (op: string) => new RegExp(`\\(${op} ${name.replace(/[^\w-]/g, '\\$&')}[\\s)]`).test(between)
+    // A local changes only where this function sets it; a global, in any call too.
+    const changed = scope === 'local' ? writes('local\\.(?:set|tee)')
+      : scope === 'global' && (writes('global\\.set') || /\((?:call|call_indirect) /.test(between))
+    if (!changed) return [widen(wat), widen(wat)]
+  }
+  return [`(local.tee $${scratch} ${widen(wat)})`, `(local.get $${scratch})`]
+}
+
 // Handle builtin functions
 // Returns null if not a builtin
 function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): string | null {
   const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
-
-  // Helper to get the wasm type for the first argument
-  const getArgType = (): string => {
-    if (args.length === 0) return 'i32'
-    const argType = lookupExprType(args[0].value, ctx)
-    return argType ? typeToWasmSingle(argType) : 'i32'
-  }
 
   switch (name) {
     case 'memzero': {
@@ -735,60 +766,58 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'trunc':
     case 'nearest': {
       if (args.length !== 1) return null
-      const arg = exprToWat(args[0].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.${name} ${arg})`
+      const type = builtinOperandType(expr, ctx)
+      return `(${typeToWasmSingle(type)}.${name} ${exprToWat(args[0].value, ctx)})`
     }
 
     // Float-only binary: copysign
     case 'copysign': {
       if (args.length !== 2) return null
+      const type = builtinOperandType(expr, ctx)
       const a = exprToWat(args[0].value, ctx)
       const b = exprToWat(args[1].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.copysign ${a} ${b})`
+      return `(${typeToWasmSingle(type)}.copysign ${a} ${b})`
     }
 
     // min/max: native for floats, select for integers
     case 'min':
     case 'max': {
       if (args.length !== 2) return null
-      const a = exprToWat(args[0].value, ctx)
-      const b = exprToWat(args[1].value, ctx)
-      const argType = lookupExprType(args[0].value, ctx)
-      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
+      // Each operand's own value, and the widening that takes a narrower one
+      // to the type computed in: a plain read is cheaper widened twice than kept.
+      const [a, b] = args.map((arg) => exprValueToWat(arg.value, ctx))
+      const [widenA, widenB] = args.map((arg) => wideningOf(arg.value, ctx))
+      if (isFloat(type)) return `(${wt}.${name} ${widenA(a)} ${widenB(b)})`
 
-      if (argType && isFloat(argType)) {
-        // Native float min/max
-        return `(${wt}.${name} ${a} ${b})`
-      } else {
-        // Integer min/max using select
-        const signed = argType ? isSigned(argType) : true
-        const cmp = name === 'min'
-          ? (signed ? `${wt}.lt_s` : `${wt}.lt_u`)
-          : (signed ? `${wt}.gt_s` : `${wt}.gt_u`)
-        return `(select ${a} ${b} (${cmp} ${a} ${b}))`
-      }
+      const sign = isSigned(type) ? 's' : 'u'
+      const nWide = wideIntParts(type)
+      if (nWide > 1) return wideCall(nWide, `${name}_${sign}`, widenA(a), widenB(b))
+      // select takes both values and the comparison takes them again: a b (a < b).
+      // b runs between the two uses of a; nothing runs between the two of b.
+      const [a1, a2] = useTwice(a, widenA, builtinScratchLocal(name, 0, expr), b)
+      const [b1, b2] = useTwice(b, widenB, builtinScratchLocal(name, 1, expr), '')
+      return `(select ${a1} ${b1} (${wt}.${name === 'min' ? 'lt' : 'gt'}_${sign} ${a2} ${b2}))`
     }
 
     // abs: native for floats, conditional negate for signed integers
     case 'abs': {
       if (args.length !== 1) return null
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
       const arg = exprToWat(args[0].value, ctx)
-      const argType = lookupExprType(args[0].value, ctx)
-      const wt = argType ? typeToWasmSingle(argType) : 'i32'
+      if (isFloat(type)) return `(${wt}.abs ${arg})`
+      // Unsigned integer: abs is identity
+      if (!isSigned(type)) return arg
 
-      if (argType && isFloat(argType)) {
-        // Native float abs
-        return `(${wt}.abs ${arg})`
-      } else if (argType && isInteger(argType) && isSigned(argType)) {
-        // Signed integer abs: select(x, -x, x >= 0)
-        // -x = 0 - x
-        return `(select ${arg} (${wt}.sub (${wt}.const 0) ${arg}) (${wt}.ge_s ${arg} (${wt}.const 0)))`
-      } else {
-        // Unsigned integer: abs is identity
-        return arg
-      }
+      const nWide = wideIntParts(type)
+      if (nWide > 1) return wideCall(nWide, 'abs', arg)
+      // select(x, -x, x >= 0). The most negative value has no positive in its
+      // type: -x wraps back to it, as negation does.
+      const [x, again] = useTwice(arg, (wat) => wat, builtinScratchLocal(name, 0, expr), '')
+      const negated = truncateSubWord(`(${wt}.sub (${wt}.const 0) ${again})`, type)
+      return `(select ${x} ${negated} (${wt}.ge_s ${again} (${wt}.const 0)))`
     }
 
     // Integer-only unary: clz, ctz, popcnt
@@ -796,9 +825,11 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
     case 'ctz':
     case 'popcnt': {
       if (args.length !== 1) return null
-      const arg = exprToWat(args[0].value, ctx)
-      const wt = getArgType()
-      return `(${wt}.${name} ${arg})`
+      const type = builtinOperandType(expr, ctx)
+      const wt = typeToWasmSingle(type)
+      const count = `(${wt}.${name} ${exprToWat(args[0].value, ctx)})`
+      // The result is a u8, an i32 on the stack, whatever the operand's width.
+      return wt === 'i64' ? `(i32.wrap_i64 ${count})` : count
     }
 
     case 'mul_hi': {
@@ -824,8 +855,11 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
     return `(call_indirect ${exprToWat(expr.callee, ctx)})`
   }
 
-  // Handle builtin functions
-  const builtin = builtinToWat(funcName, expr, ctx)
+  // Handle builtin functions. The checker decides which calls are to one (a
+  // function the program declares takes the builtin's name, unless a variable
+  // in scope hides that function), and marks them.
+  const isBuiltin = ctx.types.has(typeKey(expr.span.start, 'BuiltinCall'))
+  const builtin = isBuiltin ? builtinToWat(funcName, expr, ctx) : null
   if (builtin !== null) return builtin
 
   // Primitive type cast: u64(x), f32(x), etc.
@@ -1535,6 +1569,25 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   return parts.filter(Boolean).join(' ')
 }
 
+// Whether `wat` is one parenthesized expression, not several side by side.
+function isSingleExpr(wat: string): boolean {
+  let depth = 0
+  for (let i = 0; i < wat.length; i++) {
+    if (wat[i] === '(') depth++
+    else if (wat[i] === ')' && --depth === 0) return i === wat.length - 1
+  }
+  return false
+}
+
+// An i32 widened to i64. The bit count of an i64 (clz, ctz, popcnt) is computed
+// in 64 bits and wrapped to its u8 result: widening it again is the count
+// itself, so `x >> ctz(x)` on a u64 stays two instructions.
+function extendToI64(wat: string, signed: boolean): string {
+  const count = /^\(i32\.wrap_i64 (\(i64\.(?:clz|ctz|popcnt) [\s\S]*\))\)$/.exec(wat)
+  if (count && isSingleExpr(count[1])) return count[1]
+  return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+}
+
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
@@ -1547,7 +1600,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
   if ((fromWide > 0 || toWide > 0) && !isFloat(fromType) && !isFloat(toType)) {
     const fromParts = Math.max(fromWide, 1)
     const toParts = Math.max(toWide, 1)
-    let wat = fromWasm === 'i32' ? `(i64.extend_i32_${isSigned(fromType) ? 's' : 'u'} ${inner})` : inner
+    let wat = fromWasm === 'i32' ? extendToI64(inner, isSigned(fromType)) : inner
     if (toParts < fromParts) {
       // Narrowing keeps the low parts: drop the high ones off the top of the stack.
       wat += ' ' + Array(fromParts - toParts).fill('(drop)').join(' ')
@@ -1596,7 +1649,7 @@ function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedT
     }
   }
   if (fromWasm === 'i32' && toWasm === 'i64') {
-    return `(i64.extend_i32_${fromSigned ? 's' : 'u'} ${inner})`
+    return extendToI64(inner, fromSigned)
   }
   if (fromWasm === 'i64' && toWasm === 'i32') {
     return truncateSubWord(`(i32.wrap_i64 ${inner})`, toType)
@@ -1996,7 +2049,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
 
 function coerceWasmType(wat: string, fromWt: string, toWt: string, signed: boolean): string {
   if (fromWt === toWt) return wat
-  if (fromWt === 'i32' && toWt === 'i64') return `(i64.extend_i32_${signed ? 's' : 'u'} ${wat})`
+  if (fromWt === 'i32' && toWt === 'i64') return extendToI64(wat, signed)
   if (fromWt === 'i64' && toWt === 'i32') return `(i32.wrap_i64 ${wat})`
   return wat
 }
@@ -2731,6 +2784,13 @@ function collectLocals(
       }
     }
     if (expr.kind === 'CallExpr') {
+      // Integer min, max and abs use an operand twice: one that isn't a plain
+      // read is kept in a scratch local.
+      const operandType = checkResult.types.get(typeKey(expr.span.start, 'BuiltinCall'))
+      if (expr.callee.kind === 'IdentExpr' && ['min', 'max', 'abs'].includes(expr.callee.name) && operandType && isInteger(operandType)) {
+        const wasmType = typeToWasm(operandType)[0]
+        for (const i of expr.args.keys()) locals.push({ name: builtinScratchLocal(expr.callee.name, i, expr), type: wasmType })
+      }
       for (const arg of expr.args) {
         if (arg.value) visitExpr(arg.value)
       }

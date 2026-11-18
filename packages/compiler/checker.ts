@@ -37,6 +37,8 @@ import {
   isInteger,
   isSigned,
   isNumeric,
+  isComptime,
+  intBitWidth,
   isBool,
   byteSize,
   isFixedSizes,
@@ -424,6 +426,10 @@ class CheckContext {
   // The constant each branch of an if or match of constants is by itself.
   // The branches share one type, and each has to be a value of it.
   branchConstants = new Map<AST.Expr, ResolvedType>()
+  // The patterns that have declared their local. An operand of a builtin is
+  // checked again once its type is settled, statements and all: a `let` in
+  // one of its branches is then the same declaration, not a second one.
+  declared = new WeakSet<AST.Pattern>()
   errors: TypeError[] = []
   warnings: TypeError[] = []
   moduleScope: Scope = { parent: null, symbols: new Map() }
@@ -1340,16 +1346,25 @@ class CheckContext {
     this.currentScope = prevScope
   }
 
-  private checkMemOpPtr(expr: AST.Expr, context: string): void {
+  // A many-pointer is refused where it's written through; memcpy may read from one.
+  private checkMemOpPtr(expr: AST.Expr, context: string, allowManyPointer = false): ResolvedType {
     const type = this.inferExpr(expr)
     const u = unwrap(type)
     if (u.kind === 'pointer' && u.pointee.kind === 'array') {
-      if (u.pointee.sizes === null) {
+      if (u.pointee.sizes === null && !allowManyPointer) {
         this.error(expr.span.start, `${context}: many-pointer has no bounds — use a sized pointer for safe memory operations`)
       }
-      return
+      // A string literal gets its bytes in the data section when it's checked
+      // against the type it's used at, as the argument of a function is. So
+      // does one in an arm of an `if` or a `match`. Parentheses around the
+      // operand change nothing.
+      let value = expr
+      for (let inner = groupedExpr(value); inner; inner = groupedExpr(value)) value = inner
+      if (value.kind === 'LiteralExpr' || value.kind === 'IfExpr' || value.kind === 'MatchExpr') this.checkExpr(value, type)
+      return type
     }
     this.error(expr.span.start, `${context}: expected *[N]T, got ${typeToString(type)}`)
+    return type
   }
 
   private checkMemOpBounds(ptrExpr: AST.Expr, lenExpr: AST.Expr, op: string): void {
@@ -1751,9 +1766,10 @@ class CheckContext {
     switch (pattern.kind) {
       case 'IdentPattern': {
         const existing = this.lookup(pattern.name)
-        if (existing) {
+        if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
+        this.declared.add(pattern)
         this.currentScope.symbols.set(pattern.name, { kind: 'local', type })
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start)
@@ -2552,9 +2568,11 @@ class CheckContext {
   }
 
   inferCall(expr: AST.CallExpr): ResolvedType {
-    // Check for builtin functions first
+    // Check for builtin functions first. A function the program declares takes
+    // the place of the builtin of the same name.
     if (expr.callee.kind === 'IdentExpr') {
-      const builtinResult = this.inferBuiltin(expr, expr.callee.name)
+      const declared = this.lookup(expr.callee.name)?.kind === 'func'
+      const builtinResult = declared ? null : this.inferBuiltin(expr, expr.callee.name)
       if (builtinResult !== null) return builtinResult
 
       // Primitive type cast: u64(x), f32(x), etc.
@@ -2637,7 +2655,9 @@ class CheckContext {
   }
 
   // Handle builtin functions: memset, memcpy, zero
-  // Returns null if not a builtin, otherwise returns the result type
+  // Returns null if not a builtin, otherwise returns the result type.
+  // The BuiltinCall entry each one records is what tells codegen that the call
+  // is to the builtin: the name alone could be a function of the program's.
   inferBuiltin(expr: AST.CallExpr, name: string): ResolvedType | null {
     const args = expr.args.filter((a): a is AST.Arg & { value: AST.Expr } => a.value !== null)
 
@@ -2648,7 +2668,11 @@ class CheckContext {
           this.error(expr.span.start, `memzero expects 1 argument (dest), got ${args.length}`)
           return VOID
         }
-        this.checkMemOpPtr(args[0].value, 'memzero dest')
+        const dest = unwrap(this.checkMemOpPtr(args[0].value, 'memzero dest'))
+        // memzero has no length operand: the destination's type gives it.
+        if (dest.kind === 'pointer' && dest.pointee.kind === 'array' && dest.pointee.sizes !== null && byteSize(dest.pointee) === null) {
+          this.error(args[0].value.span.start, `memzero dest: ${typeToString(dest)} has no size known at compile time`)
+        }
         this.types.set(typeKey(expr.span.start, 'BuiltinCall'), VOID)
         return VOID
       }
@@ -2677,7 +2701,7 @@ class CheckContext {
         }
 
         this.checkMemOpPtr(args[0].value, 'memcpy dest')
-        this.inferExpr(args[1].value)
+        this.checkMemOpPtr(args[1].value, 'memcpy src', true)
         this.checkExpr(args[2].value, primitive('u32'), 'memcpy len')
         this.checkMemOpBounds(args[0].value, args[2].value, 'memcpy')
         this.checkMemOpBounds(args[1].value, args[2].value, 'memcpy')
@@ -2686,39 +2710,19 @@ class CheckContext {
         return VOID
       }
 
-      // Float-only unary operations: sqrt, ceil, floor, trunc, nearest
+      // Float-only: sqrt, ceil, floor, trunc, nearest, copysign
       case 'sqrt':
       case 'ceil':
       case 'floor':
       case 'trunc':
-      case 'nearest': {
-        if (args.length !== 1) {
-          this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('f64')
-        }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a float type, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
-      }
-
-      // Float-only binary: copysign
+      case 'nearest':
       case 'copysign': {
-        if (args.length !== 2) {
-          this.error(expr.span.start, `copysign expects 2 arguments, got ${args.length}`)
+        const arity = name === 'copysign' ? 2 : 1
+        if (args.length !== arity) {
+          this.error(expr.span.start, `${name} expects ${arity} argument${arity === 1 ? '' : 's'}, got ${args.length}`)
           return primitive('f64')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isFloat(argType)) {
-          this.error(args[0].value.span.start, `copysign requires float types, got ${typeToString(argType)}`)
-          return primitive('f64')
-        }
-        this.checkExpr(args[1].value, argType, 'copysign')
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'float')
       }
 
       // Numeric binary: min, max (works for all numeric types)
@@ -2728,47 +2732,33 @@ class CheckContext {
           this.error(expr.span.start, `${name} expects 2 arguments, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `${name} requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        this.checkExpr(args[1].value, argType, name)
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Numeric unary: abs (works for floats and signed integers)
+      // Numeric unary: abs (works for floats and integers; an unsigned value is its own abs)
       case 'abs': {
         if (args.length !== 1) {
           this.error(expr.span.start, `abs expects 1 argument, got ${args.length}`)
           return primitive('i32')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isNumeric(argType)) {
-          this.error(args[0].value.span.start, `abs requires a numeric type, got ${typeToString(argType)}`)
-          return primitive('i32')
-        }
-        // For unsigned types, abs is a no-op but we still allow it
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return this.builtinOperandType(expr, name, args, 'numeric')
       }
 
-      // Integer-only unary: clz, ctz, popcnt
+      // Integer-only unary: clz, ctz, popcnt. The count fits a u8 whatever the
+      // operand's width, so it widens to any integer type.
       case 'clz':
       case 'ctz':
       case 'popcnt': {
         if (args.length !== 1) {
           this.error(expr.span.start, `${name} expects 1 argument, got ${args.length}`)
-          return primitive('i32')
+          return primitive('u8')
         }
-        const argType = this.inferExpr(args[0].value)
-        if (!isInteger(argType)) {
-          this.error(args[0].value.span.start, `${name} requires an integer type, got ${typeToString(argType)}`)
-          return primitive('i32')
+        const operandType = this.builtinOperandType(expr, name, args, 'integer')
+        // The count is of the operand's own bits, and wasm counts in 32 or 64.
+        if (intBitWidth(operandType) !== 32 && intBitWidth(operandType) !== 64) {
+          this.error(args[0].value.span.start, `${name} requires i32, u32, i64 or u64, got ${typeToString(operandType)}`)
         }
-        this.types.set(typeKey(expr.span.start, 'BuiltinCall'), argType)
-        return argType
+        return primitive('u8')
       }
 
       // sizeof(T) - returns byte size of a type as comptime u32
@@ -2809,14 +2799,94 @@ class CheckContext {
           this.error(expr.span.start, `mul_hi expects 2 arguments, got ${args.length}`)
           return primitive('u64')
         }
-        this.checkExpr(args[0].value, primitive('u64'), 'mul_hi a')
-        this.checkExpr(args[1].value, primitive('u64'), 'mul_hi b')
+        // The product is of two u64s, so that is the type the operands meet at.
+        this.builtinOperandType(expr, name, args, 'integer', primitive('u64'))
         return primitive('u64')
       }
 
       default:
         return null // Not a builtin
     }
+  }
+
+  // Types the operands of a numeric builtin together, the way a binary operator
+  // types its own: typed operands meet at the wider type, and a literal takes
+  // that type wherever it stands, so max(1.0, x) is max(x, 1.0). With only
+  // literals it's their default type. A builtin that computes in one type
+  // only (mul_hi) gives it as `fixed`: every operand has to widen to it.
+  // A narrower operand is marked to be widened like any other value (coerce).
+  // Records the type the builtin computes in for codegen and returns the type
+  // of its result, for a builtin that returns one of its operands.
+  private builtinOperandType(
+    expr: AST.CallExpr,
+    name: string,
+    args: { value: AST.Expr }[],
+    kind: 'float' | 'integer' | 'numeric',
+    fixed: ResolvedType | null = null,
+  ): ResolvedType {
+    const accepts = kind === 'float' ? isFloat : kind === 'integer' ? isInteger : isNumeric
+    const wanted = kind === 'float' ? 'a float type' : kind === 'integer' ? 'an integer type' : 'a numeric type'
+    // What checking goes on with after an operand of the wrong kind.
+    const fallback = primitive(kind === 'float' ? 'f64' : 'i32')
+    const types = args.map((arg) => this.inferExpr(arg.value))
+    // Inference types an `if` or a `match` from all of its arms, and leaves it
+    // without a type when one of them has no value. Checking it against the
+    // type of the other operands is what says which arm that is.
+    const branching = args.map((arg) => arg.value.kind === 'IfExpr' || arg.value.kind === 'MatchExpr')
+    // An operand that takes its type from the others: a constant, and a
+    // branching one that inference left without a type.
+    const hasTyped = fixed !== null || types.some((t) => !isComptime(t) && accepts(t))
+    const fromOthers = types.map((t, i) => isComptime(t) || (hasTyped && branching[i] && t.kind === 'void'))
+
+    let common = fixed
+    for (const [i, type] of types.entries()) {
+      if (fromOthers[i]) continue
+      if (!accepts(type)) {
+        this.error(args[i].value.span.start, `${name} requires ${wanted}, got ${typeToString(type)}`)
+        return fallback
+      }
+      const plain = stripMax(type)
+      if (common === null || (!fixed && !typeAssignable(common, plain) && typeAssignable(plain, common))) {
+        common = plain
+      } else if (!typeAssignable(common, plain)) {
+        this.error(args[i].value.span.start, `${name}: cannot assign ${typeToString(type)} to ${typeToString(common)}`)
+        return common
+      }
+    }
+    if (common === null) {
+      const floatLiteral = types.find((t) => t.kind === 'comptime_float')
+      if (floatLiteral && kind === 'integer') {
+        this.error(args[0].value.span.start, `${name} requires ${wanted}, got ${typeToString(floatLiteral)}`)
+        return fallback
+      }
+      // The default type is the configured one (TypecheckOptions). Integers
+      // too big for an i32 are an i64 whichever that is.
+      const sized = this.unifyTypes(types)
+      common = floatLiteral || kind === 'float' ? concretizeType(comptimeFloat(0), this.options)
+        : typeEquals(sized, primitive('i32')) ? concretizeType(comptimeInt(0n), this.options)
+        : sized
+    }
+    for (const [i, type] of types.entries()) {
+      if (fromOthers[i]) this.checkExpr(args[i].value, common, name)
+      else this.coerce(args[i].value, type, common, `${name}: `)
+    }
+    this.types.set(typeKey(expr.span.start, 'BuiltinCall'), common)
+
+    // A result that is one of the operands is in a range when they all are: the
+    // widest of their ranges. A literal only has to fit the type to be an
+    // operand, but has to be inside that range for the result to be. Only a
+    // constant whose value is known counts as one, and a branching operand
+    // never does: no one arm's value or range speaks for the others.
+    const ranges = types.flatMap((t) => (t.kind === 'primitive' && t.max !== undefined ? [t.max] : []))
+    if (common.kind !== 'primitive' || ranges.length === 0) return common
+    const widest = Math.max(...ranges)
+    const inRange = types.every((t, i) => {
+      if (branching[i]) return false
+      if (t.kind === 'primitive') return t.max !== undefined
+      const constant = isComptime(t) ? this.evalComptimeExpr(args[i].value) : null
+      return constant?.kind === 'int' && constant.value >= 0n && constant.value < BigInt(widest)
+    })
+    return inRange ? primitive(common.name, widest) : common
   }
 
   inferBinary(expr: AST.BinaryExpr): ResolvedType {
@@ -4211,6 +4281,7 @@ function isScalar(t: ResolvedType): boolean {
   return t.kind === 'primitive' || isComptimeNumber(t)
 }
 
+// A ranged integer type (u32#8) as the plain type its values are held in (u32).
 function stripMax(t: ResolvedType): ResolvedType {
   return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 }
