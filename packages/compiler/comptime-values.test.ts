@@ -192,6 +192,70 @@ describe('instances', () => {
   })
 })
 
+describe('generic types with value parameters', () => {
+  const RING = 'func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)\n'
+  const errorsWithNotes = (source: string) => check(source).result.errors.map((e) => ({ offset: e.offset, message: e.message, notes: e.notes?.map((n) => n.offset) }))
+
+  test('an error a number makes in the body is the application\'s: named, with the use it was required from, once for each', () => {
+    const source = `${RING}export func f(r: *Ring(0, u32)) -> u32 => r.count\nexport func g(r: *Ring(0, u8)) -> u32 => r.count\nexport func h(r: *Ring(0, u8)) -> u32 => r.count\n`
+    const bound = source.indexOf('u32#n') + 'u32#'.length
+    expect(errorsWithNotes(source)).toEqual([
+      { offset: bound, message: 'range bound must be at least 1: u32#0 has no values, in Ring(0, u32)', notes: [source.indexOf('Ring(0, u32)')] },
+      { offset: bound, message: 'range bound must be at least 1: u32#0 has no values, in Ring(0, u8)', notes: [source.indexOf('Ring(0, u8)')] },
+    ])
+    // And what is made of it says nothing more: Ring(0, u32) is no type.
+    expect(errorsOf(`${RING}func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T) { r.count = 1 }\ndata cells = mut [0:u32; 0]\ndata log: Ring(0, u32) = mut (0, 0, cells)\nexport func f(x: u32) { log.push(x) }\nexport func g(x: u32, r: *mut Ring(0, u32)) { r.push(x) }`)).toEqual([
+      'range bound must be at least 1: u32#0 has no values, in Ring(0, u32)',
+    ])
+  })
+
+  test('so is one inside an instance, with the calls it was required from', () => {
+    const source = `${RING}func g(comptime n: u32, p: *mut [8]u32) -> u32 {\n  let r: Ring(n - 8, u32) = (0, 0, p)\n  return r.count\n}\nexport func a(p: *mut [8]u32) -> u32 => g(8, p)\n`
+    expect(errorsWithNotes(source)).toEqual([
+      { offset: source.indexOf('u32#n') + 'u32#'.length, message: 'range bound must be at least 1: u32#0 has no values, in Ring(0, u32)', notes: [source.indexOf('Ring(n - 8'), source.indexOf('g(8, p)')] },
+    ])
+  })
+
+  test('a mistake of the declaration is said once, where it is, and only once the type is applied', () => {
+    expect(errorsOf('func S(comptime n: u32) -> type => (items: *[n-1]u8, i: u32#n-1)\nexport func h(s: *S(4)) -> u32 => 0\nexport func k(s: *S(5)) -> u32 => 0')).toEqual([
+      "unknown identifier 'n-1': a hyphen joins a name; for subtraction write n - 1",
+      "unknown identifier 'n-1': a hyphen joins a name; for subtraction write n - 1",
+    ])
+    // No type is suggested for a length
+    expect(errorsOf('func R(comptime n: u32) -> type => (items: *[m]u8)\nexport func f(r: *R(3)) -> u32 => 0')).toEqual(["unknown identifier 'm'"])
+    expect(errorsOf('func R(comptime n: u32) -> type => (items: *[m]u8)\nexport func f() -> u32 => 0')).toEqual([])
+  })
+
+  test('one that applies itself to numbers that grow is stopped at once', () => {
+    expect(errorsOf('func T3(comptime n: u32) -> type => (a: *T3(n + 1), b: *T3(n + 2), c: u32)\nexport func f(t: *T3(1)) -> u32 => t.c')).toEqual([
+      "generic types are nested more than 1000 deep in 'T3(1)'",
+    ])
+    expect(errorsOf('func T2(comptime n: u32) -> type => (a: *T2(n * 2), b: *T2(n * 2 + 1))\nexport func f(t: *T2(1)) -> u32 => 0')).toEqual([
+      "argument 1 of 'T2': cannot assign int(4294967296) to u32, in T2(2147483648)",
+    ])
+    // Numbers that come round make each type once, also while the module's
+    // types are collected
+    expect(errorsOf('func T(comptime n: u32) -> type => (a: *T((n + 1) % 4), b: *T((n + 2) % 4), c: B)\ntype A = *T(1)\ntype B = u32\nexport func f(t: A) -> u32 => t.a.b.a.c')).toEqual([])
+  })
+
+  test('a value argument is a constant like any other: a def declared further down, a typed one by its type', () => {
+    expect(errorsOf(`${RING}data cells = mut [0:u32; 8]\ndata log: Ring(cap, u32) = mut (0, 0, cells)\ntype R = Ring(cap, u32)\nexport func f(r: *R) -> *Ring(8, u32) => r\ndef cap = 8`)).toEqual([])
+    const SMALL = 'func Small(comptime n: u8) -> type => (items: *[n]u8)\n'
+    expect(errorsOf(`${SMALL}export func b(s: Small(4:u32)) -> u32 => 0\nexport func d(s: Small(sizeof(u64))) -> u32 => 0\nexport func e(s: Small(300)) -> u32 => 0`)).toEqual([
+      "argument 1 of 'Small': cannot assign u32 to u8",
+      "argument 1 of 'Small': cannot assign u32 to u8",
+      "argument 1 of 'Small': cannot assign int(300) to u8",
+    ])
+    expect(errorsOf(`${SMALL}export func f(s: Small(~0)) -> Small(255) => s\nexport func g(s: Small(4:u8)) -> Small(4) => s`)).toEqual([])
+  })
+
+  test('cannot infer: the arithmetic of a generic type\'s body is that generic type\'s', () => {
+    expect(errorsOf(`${RING}func f(comptime n: u32, r: *Ring(n + 1, u32)) -> u32 => n\ndata cells = mut [0:u32; 8]\ndata log: Ring(8, u32) = mut (0, 0, cells)\nexport func a() -> u32 => f(log)`)).toEqual([
+      "cannot infer n for 'f': 'Ring(n + 1, u32)' has no length that is n alone; write the value argument",
+    ])
+  })
+})
+
 describe('a value parameter in the instance', () => {
   test('is declared, so that its name is not bound again, nor assigned to, in each instance', () => {
     const body = 'func f(comptime n: u32) -> u32 {\n  n = 3\n  return 0\n}\n'
@@ -201,6 +265,12 @@ describe('a value parameter in the instance', () => {
     ])
     // A generic nobody calls is only parsed.
     expect(errorsOf(body)).toEqual([])
+  })
+
+  test('is not a def a test declares before it', async () => {
+    const source = 'test "t" {\n  def n = 99\n  assert n == 99\n}\nfunc f(comptime n: u32) -> u32 => n\nfunc Buf(comptime n: u32) -> type => (items: [n]u8)\nexport func a() -> u32 => f(4) + sizeof(Buf(4))\ntest "u" {\n  assert a() == 8\n}\n'
+    expect(errorsOf(source)).toEqual([])
+    expect((await runTestsOfSource(source)).failed).toEqual([])
   })
 
   test('the shorthand (n:) is the number', async () => {
@@ -389,6 +459,46 @@ describe('lengths and bounds in hand-written code', () => {
     expect(errorsOf('export func f(p: *[h]u8) -> u32 => 0\nfunc h() -> u32 => 1')).toEqual(['array length must be a compile-time constant'])
     expect(errorsOf('export func f(p: *[zz + 1]u8) -> u32 => 0')).toEqual(["unknown identifier 'zz'"])
     expect(errorsOf('type B = *[k]u8\ndef k = 2\nexport func f(b: B) -> u32 => b.len')).toEqual([])
+  })
+
+  test('a typed constant is what it is in any expression', async () => {
+    expect(errorsOf('export func f(p: *[300:u8]u8) -> u32 => p.len')).toEqual(['cannot assign int(300) to u8'])
+    await expectSameWasm('def m = ~0:u8\nexport func a(p: *[m]u8) -> u32 => p.len\nexport func b(i: u32#(~0:u8)) -> u32 => i\n', 'export func a(p: *[255]u8) -> u32 => p.len\nexport func b(i: u32#255) -> u32 => i\n')
+    expect(instancesOf('func len(comptime n: u32, p: *[n]u8) -> u32 => n\ndef m = ~0:u8\nexport func e(p: *[m]u8) -> u32 => len(~0:u8, p) + len(p)')).toEqual(['len<255>'])
+  })
+
+  test('behind a pointer, an array of arrays is a table of row pointers, and its size is theirs', () => {
+    expect(errorsOf('export func f(t: *[65536][65537]u8, i: u32#65536) -> u32 => t[i].len\nfunc tr(comptime n: u32, comptime T: type, t: *[n]T) -> u32 => t.len\nexport func g(t: *[65536][65537]u8) -> u32 => tr(t)')).toEqual([])
+    // Held by value, it is n rows of m; n row pointers are 4 bytes each.
+    expect(errorsOf('export func f() -> u32 => sizeof([65536][65537]u8)\nexport func g(t: *[1073741824][2]u8) -> u32 => t.len')).toEqual([
+      'array [1073741824][2]u8 is too large: 4294967296 bytes, more than the 4294967295 a 32-bit memory addresses',
+      'array [65536][65537]u8 is too large: 4295032832 bytes, more than the 4294967295 a 32-bit memory addresses',
+    ])
+  })
+
+  test('one error for each mistake', () => {
+    // A parameter's .len is no constant in its signature
+    expect(errorsOf('export func c(p: *[4]u32, r: *[p.len]u32) -> u32 => 0\nexport func d(p: *[4]u32, i: u32#(p.len)) -> u32 => 0')).toEqual([
+      'array length must be a compile-time constant',
+      'range bound must be a compile-time constant',
+    ])
+    // A name in a round of defs, met again once a name like it is declared
+    expect(errorsOf('export func f(p: *[k]u8) -> u32 => p.len\ndef k = j + 1\ndef j = k + 1')).toEqual([
+      "unknown identifier 'j'",
+      'def value must be a compile-time constant',
+      'def value must be a compile-time constant',
+    ])
+  })
+
+  test('a division by zero says so', () => {
+    expect(errorsOf('func chunk(comptime n: u32, p: *[64 / n]u8) -> u32 => p.len\nexport func a(p: *[8]u8) -> u32 => chunk(0, p)\nexport func h(p: *[7 % 0]u8) -> u32 => p.len')).toEqual([
+      'array length divides by zero',
+      'array length divides by zero, in chunk(n = 0)',
+    ])
+    expect(errorsOf('func Ring(comptime n: u32) -> type => (head: u32#n)\nfunc s(comptime n: u32) -> u32 => n\nexport func k(r: *Ring(8 / 0)) -> u32 => s(1 % 0)')).toEqual([
+      "argument 1 of 'Ring' divides by zero",
+      "argument 1 of 's' divides by zero",
+    ])
   })
 
   test('[0x10]u8 is sixteen bytes', () => {

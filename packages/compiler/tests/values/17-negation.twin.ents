@@ -1,0 +1,25 @@
+// -k is the negative number, as the parser makes -3 of -k where `def k = 3`
+// puts 3 for k: in an expression of any type, through an annotation, and
+// twice for --k.
+func f_m3(x: i32) -> i32 => x * 3
+func f_3(x: i32) -> i32 => x * -3
+func g_5(x: i32) -> i32 => x - 5
+func c_7(x: i32) -> i32 => x + -7:i32
+func h_5e9(x: i64) -> i64 => x * -5000000000
+func d_3(x: f64) -> f64 => x * -3
+func b_128() -> i8 {
+  let y: i8 = -128
+  return y
+}
+
+export func a1(x: i32) -> i32 => f_3(x) + f_m3(x) + g_5(x) + c_7(x)
+export func a2(x: i64) -> i64 => h_5e9(x)
+export func a3(x: f64) -> f64 => d_3(x)
+export func a4() -> i8 => b_128()
+
+test "the negative numbers" {
+  assert a1(2) == 2 * -3 + 2 * 3 + 2 - 5 + 2 - 7
+  assert a2(1) == -5000000000
+  assert a3(2.0) == -6.0
+  assert a4() == -128
+}

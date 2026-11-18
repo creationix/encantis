@@ -45,6 +45,7 @@ import {
   pointeeArray,
   isFloat,
   isInteger,
+  isRowArray,
   isSigned,
   isNumeric,
   isComptime,
@@ -114,6 +115,8 @@ export type Symbol =
       // comes round again while its body is resolved is that type, referred
       // to by itself.
       applying?: Map<string, ForwardRefRT[]>
+      // Its body's names are checked, at its first application (checkNamesOf)
+      named?: true
     }
 
 // One generic function with its comptime arguments fixed: a copy of the
@@ -953,6 +956,25 @@ class CheckContext {
   // Set where an application inside another's body made a type too large to
   // write out (MAX_TYPE_PARTS), until the application that began it reports it
   applyTooLarge = false
+  // The applications made for the one that began them, each once, with the
+  // type each made once it is made. A type with more than MAX_TYPE_PARTS of
+  // them is too large to write out, and is known to be before they are all
+  // made. One made again inside the same one is the same type, also while
+  // declarations are collected, when nothing is kept for longer: a body
+  // that applies its type to two numbers that come round, T(n * 2 % 64) and
+  // T((n * 2 + 1) % 64), would otherwise make each of the 64 types once for
+  // every path to it.
+  applyMade = new Map<string, ResolvedType | null>()
+  // Set where an application inside another's body had an error, until the
+  // application that began it is done: nothing more of that type is applied
+  applyFailed = false
+  // The applications of this module's generic types whose bodies are being
+  // resolved, innermost last. An error in a body is one of the application:
+  // its message names it, and its notes are the uses it was required from.
+  applyStack: { shown: string; from: { offset: number; in: CheckContext }[] }[] = []
+  // The first error in the body of the application being made, as it was
+  // said there, for another module that applied it
+  applyError: { offset: number; message: string } | null = null
   // Set while a type written in place is resolved, and while the body of a
   // `type` is: a written type is measured once, as a whole (resolveType)
   resolvingType = false
@@ -2314,9 +2336,12 @@ class CheckContext {
   }
 
   private comptimeValue(expr: AST.Expr, typed: boolean): ComptimeValue | null {
-    // Handle annotation expression (e.g., 42:u32)
+    // Handle annotation expression (e.g., 42:u32). An integer it has been
+    // checked as is the value that type holds: ~0:u8 is 255.
     if (expr.kind === 'AnnotationExpr') {
-      return this.evalComptimeExpr(expr.expr, typed)
+      const value = this.evalComptimeExpr(expr.expr, typed)
+      const type = this.exprTypes.get(expr)
+      return !typed && value?.kind === 'int' && type && isInteger(unwrap(type)) ? constantIn(value, type) : value
     }
 
     // Handle literal expression
@@ -2354,7 +2379,11 @@ class CheckContext {
     if (expr.kind === 'UnaryExpr' && expr.op === '~') {
       const operand = this.evalComptimeExpr(expr.operand, typed)
       if (operand?.kind === 'int') {
-        return { kind: 'int', value: ~operand.value }
+        // The bits of a typed constant are its type's: ~0:u8 is 255.
+        const inner = ungrouped(expr.operand)
+        const type = !typed && inner.kind === 'AnnotationExpr' ? this.exprTypes.get(inner) : undefined
+        const value: ComptimeValue = { kind: 'int', value: ~operand.value }
+        return type && isInteger(unwrap(type)) ? constantIn(value, type) : value
       }
     }
 
@@ -2710,7 +2739,9 @@ class CheckContext {
     if (decl.signature.input.kind !== 'CompositeType') return
     for (const field of decl.signature.input.fields) {
       if (!field.ident) continue
-      const type = this.resolveType(field.type)
+      // As the signature resolves it: a length there that names a parameter
+      // is the error it is there, and nothing more here
+      const type = this.inSignature(decl.signature, () => this.resolveType(field.type))
       if (this.isManyPointer(type)) {
         const inner = type as PointerRT
         const mut = inner.mutable ? 'mut ' : ''
@@ -3626,8 +3657,15 @@ class CheckContext {
         return primitive(type.name, Number(bound))
       }
 
-      case 'PointerType':
-        return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
+      case 'PointerType': {
+        const outer = this.pointee
+        this.pointee = type.pointee
+        try {
+          return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
+        } finally {
+          this.pointee = outer
+        }
+      }
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
@@ -3680,8 +3718,10 @@ class CheckContext {
         const result = array(element, sizes.length > 0 ? sizes : null)
         // An array has at most 4294967295 bytes, wherever it is: its size is
         // a u32 (sizeof), and so is the byte offset of every element a proven
-        // index reaches.
-        const bytes = arrayBytes(result)
+        // index reaches. Behind a pointer, an array of fixed arrays is a
+        // table, n row pointers (Nesting), each row an array of its own.
+        const table = this.pointee === type && sizes.length === 1 && typeof sizes[0] === 'number' && isRowArray(unwrap(element))
+        const bytes = table ? (sizes[0] as number) * 4 : arrayBytes(result)
         if (bytes !== null && bytes > MAX_ARRAY_BYTES) {
           this.error(type.span.start, arrayTooLarge(result, bytes))
           return RECOVERY
@@ -3760,6 +3800,11 @@ class CheckContext {
   // operands). Null, with the error reported, for anything else.
   private typeNumber(expr: AST.Expr, what: 'array length' | 'range bound'): bigint | null {
     this.collectDefsIn(expr)
+    // A typed constant is what it is in any expression: 300:u8 is an error,
+    // and ~0:u8 is 255 (see comptimeValue).
+    const before = this.errorsReported
+    for (const annotated of annotationsIn(expr)) if (this.evalComptimeExpr(annotated)) this.inferExpr(annotated)
+    if (this.errorsReported > before) return null
     const value = this.evalComptimeExpr(expr)
     if (value?.kind === 'int') return value.value
     if (value?.kind === 'float' || value?.kind === 'bool') {
@@ -3773,8 +3818,12 @@ class CheckContext {
     // A name the module declares further down is no unknown one.
     const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
     if (unknown) {
-      if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name))
+      if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
       this.unknownInTypes.add(unknown.span.start)
+      return null
+    }
+    if (this.dividesByZero(expr)) {
+      this.error(expr.span.start, `${what} divides by zero`)
       return null
     }
     const name = ungrouped(expr)
@@ -3785,6 +3834,22 @@ class CheckContext {
   }
 
   private unknownInTypes = new Set<number>()
+
+  // The type a pointer being resolved points to (see the D9 size of a table)
+  private pointee: AST.Type | null = null
+
+  // Whether a constant is none because it divides by zero: 64 / n with n = 0
+  private dividesByZero(expr: unknown): boolean {
+    if (Array.isArray(expr)) return expr.some((e) => this.dividesByZero(e))
+    if (expr === null || typeof expr !== 'object' || expr instanceof Uint8Array) return false
+    const n = expr as AST.Expr
+    if (n.kind === 'SizeofExpr') return false
+    if (n.kind === 'BinaryExpr' && (n.op === '/' || n.op === '%')) {
+      const divisor = this.evalComptimeExpr(n.right)
+      if (divisor?.kind === 'int' && divisor.value === 0n && this.evalComptimeExpr(n.left)) return true
+    }
+    return Object.entries(n).some(([key, value]) => key !== 'span' && this.dividesByZero(value))
+  }
 
   // A def can size a type wherever it is declared: one a type names before
   // its declaration is collected there, ahead of its turn.
@@ -3809,12 +3874,14 @@ class CheckContext {
 
   // The message for a name nothing declares. `n-1` is one name (1.2): where
   // `n` is one, a subtraction was meant.
-  unknownIdentifier(name: string): string {
+  // `constant`: the name is in a length, a bound or a value argument, where
+  // no type is meant.
+  unknownIdentifier(name: string, constant = false): string {
     const hyphen = /^(.+)-([0-9]+)$/.exec(name)
     if (hyphen && (this.lookup(hyphen[1]) || this.signatureNames?.has(hyphen[1]))) {
       return `unknown identifier '${name}': a hyphen joins a name; for subtraction write ${hyphen[1]} - ${hyphen[2]}`
     }
-    const similar = this.findSimilar(name)
+    const similar = this.findSimilar(name, constant)
     return `unknown identifier '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`
   }
 
@@ -7397,7 +7464,7 @@ class CheckContext {
     this.signatureNames = new Map(params.flatMap((p) => (p.ident ? [[p.ident, isValueParam(p) ? 'value' : 'param'] as const] : [])))
     for (const length of signatureLengths(decl.signature)) {
       const unknown = unknownNames(length).find((n) => !known(n.name))
-      if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name))
+      if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name, true))
     }
     this.signatureNames = prevNames
     // What the declaration says of generic types is checked here, by name
@@ -7586,16 +7653,25 @@ class CheckContext {
       return null
     }
     if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
+    // As in a length: a def declared further down is a number here too
+    this.collectDefsIn(arg.value)
     const value = this.evalComptimeExpr(arg.value)
     if (value === null) {
       const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
-      if (unknown) return fail(this.unknownIdentifier(unknown.name))
+      if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
+      if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
       return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
     }
     const wanted = owner.resolveType(param.type)
     if (value.kind !== 'int') return fail(`${place}: cannot assign ${value.kind === 'float' ? `float(${value.value})` : value.kind === 'bool' ? 'bool' : 'a value'} to ${typeToString(wanted)}`)
-    if (!typeAssignable(wanted, comptimeInt(value.value))) return fail(`${place}: cannot assign int(${value.value}) to ${typeToString(wanted)}`)
-    const held = constantIn(value, wanted)
+    // Checked as the argument of a generic function's value parameter is: a
+    // typed constant by its type (4:u32 and sizeof(u64) are no u8), an
+    // untyped one by its value, and given as its type holds it.
+    const before = this.errorsReported
+    this.checkExpr(arg.value, wanted, place)
+    if (this.errorsReported > before) return null
+    const typed = this.evalComptimeExpr(arg.value, true) ?? value
+    const held = constantIn(typed, wanted)
     return held.kind === 'int' ? held.value : value.value
   }
 
@@ -7605,18 +7681,21 @@ class CheckContext {
     const { name } = type
     const at = type.span.start
     this.recordReference(name, at, false)
+    // Inside the body of an application that is cut short (below)
+    if (this.applyDepth > 0 && (this.applyTooDeep || this.applyTooLarge || this.applyFailed)) return RECOVERY
     const before = this.errorsReported
     const problem = this.typeFuncProblem(type)
     const sym = this.moduleScope.symbols.get(name)
+    if (sym?.kind === 'typefunc' && sym.valid && !sym.named) sym.owner.checkNamesOf(sym)
     const typefunc = sym?.kind === 'typefunc' && sym.valid ? sym : null
     const args = typefunc
       ? this.typeFuncArgs(type, typefunc.decl.params, typefunc.owner)
       : type.args.map((a) => (a.kind === 'ValueArg' ? 0n : this.resolveType(a)))
     if (problem) this.error(at, problem)
     // Where the generic type's declaration has the error, that is all.
-    if (problem || !typefunc || !args) return RECOVERY
+    if (problem || !typefunc || !args) return this.applicationFailed(typefunc?.owner)
     const params = typefunc.decl.params
-    if (this.errorsReported > before) return RECOVERY
+    if (this.errorsReported > before) return this.applicationFailed(typefunc.owner)
     const vague = args.findIndex((a) => typeof a !== 'bigint' && !hasOwnType(a))
     if (vague >= 0) {
       this.error(type.args[vague].span.start, `type argument ${params[vague].ident} of '${name}' must be a concrete type`)
@@ -7643,8 +7722,27 @@ class CheckContext {
       applying.push(ref)
       return ref
     }
+    if (owner.applyDepth === 0) {
+      owner.applyTooDeep = false
+      owner.applyTooLarge = false
+      owner.applyFailed = false
+      owner.applyMade.clear()
+    }
+    // Once one application has gone too deep, made the type too large or had
+    // an error, the whole type is cut short and nothing else of it is
+    // applied: a body that applies itself twice, T(n + 1) and T(n + 2), would
+    // otherwise go too deep once for every path down the tree it makes, and
+    // T(n * 2) and T(n * 2 + 1) would refuse 2^32 arguments.
+    if (owner.applyTooDeep || owner.applyTooLarge || owner.applyFailed || this.applyFailed) return RECOVERY
     if (owner.applyDepth >= MAX_APPLY_DEPTH) {
       owner.applyTooDeep = true
+      return RECOVERY
+    }
+    const made = owner.applyMade.get(`${name} ${key}`)
+    if (made) return made
+    owner.applyMade.set(`${name} ${key}`, null)
+    if (owner.applyMade.size > MAX_TYPE_PARTS) {
+      owner.applyTooLarge = true
       return RECOVERY
     }
     const bound = new Map(params.map((p, i): [string, ResolvedType] => {
@@ -7653,17 +7751,26 @@ class CheckContext {
     }))
     const body = cloneAst(typefunc.decl.body, 0, boundSubst(bound)) as AST.Type
     owner.applyDepth++
+    owner.applyStack.push({ shown, from: this.usesOf(at) })
     const refs: ForwardRefRT[] = []
     typefunc.applying ??= new Map()
     typefunc.applying.set(key, refs)
+    const beforeBody = owner.errorsReported
+    const outerError = owner.applyError
+    owner.applyError = null
     const resolved = named(shown, owner.resolveType(body))
+    const bodyError = owner.applyError
+    owner.applyError = outerError ?? bodyError
     typefunc.applying.delete(key)
+    owner.applyStack.pop()
     owner.applyDepth--
+    const failed = owner.errorsReported > beforeBody || owner.applyFailed
+    if (owner.applyDepth === 0) owner.applyFailed = false
     // Holding itself, not through a pointer or a slice, it has no size. That
     // is so whatever its arguments are: one error, where it is declared.
     if (refs.length > 0 && containsByValue(resolved.type, refs)) {
       for (const ref of refs) ref.target = RECOVERY
-      if (typefunc.valid) owner.error(typefunc.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      if (typefunc.valid) owner.declarationError(typefunc.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
       typefunc.valid = false
       return RECOVERY
     }
@@ -7685,7 +7792,21 @@ class CheckContext {
       if (owner.applyDepth === 0) this.error(at, tooLarge(shown))
       return RECOVERY
     }
+    // A body with an error makes no type: what is made of it says nothing
+    // more. The error was reported once, for the first use; another use of
+    // the same application gets the same nothing.
+    if (failed) {
+      if (settled) typefunc.cache.set(key, RECOVERY)
+      // Another module that applied it is told too, at its use, as it is
+      // of an instance it asked for (reportToRequesters)
+      if (owner !== this && bodyError) {
+        const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, bodyError.offset)})` : ''
+        this.error(at, `${shown} cannot be applied: ${bodyError.message}${where}`)
+      }
+      return this.applicationFailed(owner)
+    }
     if (settled) typefunc.cache.set(key, resolved)
+    owner.applyMade.set(`${name} ${key}`, resolved)
     // For the editor, each way it was applied, once: also an application
     // only a signature makes while declarations are collected, as it was
     // resolved then, until it is resolved again once they are. A number is
@@ -7697,6 +7818,72 @@ class CheckContext {
     else if (settled) applied[known] = { shown, args: held, type: resolved }
     owner.applications.set(typefunc.decl, applied)
     return resolved
+  }
+
+  // A name in the body of a generic type that names nothing is a mistake of
+  // the declaration, said once, where it is, when the type is first applied:
+  // each application would say it for its own arguments, and one nobody
+  // applies is only parsed. Every type name a body can use is known by then.
+  checkNamesOf(sym: Symbol & { kind: 'typefunc' }): void {
+    sym.named = true
+    const { decl } = sym
+    const params = new Map(decl.params.map((p) => [p.ident as string, isTypeParam(p) ? 'param' : 'value'] as const))
+    const reject = (offset: number, message: string) => {
+      sym.valid = false
+      this.declarationError(offset, message)
+    }
+    for (const used of typeUses(decl.body)) {
+      if (used.kind !== 'TypeRef' || params.has(used.name) || this.pendingTypeNames.has(used.name)) continue
+      const known = this.moduleScope.symbols.get(used.name)
+      if (known?.kind === 'type' || known?.kind === 'typefunc') continue
+      const similar = this.findSimilar(used.name)
+      reject(used.span.start, `unknown type '${used.name}'${similar ? ` — did you mean '${similar}'?` : ''}`)
+    }
+    const prevNames = this.signatureNames
+    this.signatureNames = params
+    try {
+      for (const length of signatureLengths(decl.body)) {
+        const unknown = unknownNames(length).find((n) => !params.has(n.name) && !this.defNames.has(n.name) && !this.valueNames.has(n.name) && !this.lookup(n.name))
+        if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+      }
+    } finally {
+      this.signatureNames = prevNames
+    }
+  }
+
+  // An application that had an error: RECOVERY, and where it is inside the
+  // body of another, that one is cut short (see applyFailed).
+  private applicationFailed(owner: CheckContext | undefined): ResolvedType {
+    if (this.applyDepth > 0) this.applyFailed = true
+    if (owner && owner.applyDepth > 0) owner.applyFailed = true
+    return RECOVERY
+  }
+
+  // The uses an application at `at` of this module's text is required from:
+  // that one, and where it is in the body of another application or in an
+  // instance, what that one was required from in turn.
+  private usesOf(at: number): { offset: number; in: CheckContext }[] {
+    const uses = [{ offset: at % INSTANCE_STRIDE, in: this as CheckContext }]
+    const outer = this.applyStack.at(-1)
+    if (outer) return [...uses, ...outer.from].slice(0, MAX_NOTES)
+    let inst = at >= INSTANCE_STRIDE ? this.instances[Math.floor(at / INSTANCE_STRIDE) - 1] : undefined
+    while (inst && uses.length < MAX_NOTES) {
+      const { requestedAt, requestedIn } = inst
+      uses.push({ offset: requestedAt % INSTANCE_STRIDE, in: requestedIn })
+      inst = requestedIn.instances[Math.floor(requestedAt / INSTANCE_STRIDE) - 1]
+    }
+    return uses
+  }
+
+  // An error of a declaration, said once whatever application found it
+  private declarationError(offset: number, message: string): void {
+    const stack = this.applyStack
+    this.applyStack = []
+    try {
+      this.error(offset, message)
+    } finally {
+      this.applyStack = stack
+    }
   }
 
   // The body of a generic type as one application of it reads: the parameters
@@ -7892,9 +8079,11 @@ class CheckContext {
       }
       // An argument with an error of its own decides nothing: the type it
       // was given is a guess, and the call would add errors about the guess.
+      // So does one whose type had the error, also behind a pointer: a
+      // *mut Ring(0, u32) whose Ring(0, u32) is no type.
       const reported = this.errorsReported
       const type = this.peek(arg)
-      if (type === RECOVERY || this.errorsReported > reported) return null
+      if (unresolved(type) || this.errorsReported > reported) return null
       if (isUnit(type)) {
         this.error(arg.span.start, `${this.place(expr, index)} of '${name}' has no value`)
         return null
@@ -8022,7 +8211,10 @@ class CheckContext {
     }
     if (mentioning.length > 0 && !mentioning.some(({ param }) => lengthUses(param.type, missing, expand).some((u) => u.alone))) {
       const uses = mentioning.flatMap(({ param }) => lengthUses(param.type, missing, expand))
-      const arithmetic = uses.find((u) => u.length !== null)
+      // One written in the parameter's type is shown as written there. One
+      // in a generic type's body, with the argument put in, is that generic
+      // type's: its text is in no source.
+      const arithmetic = uses.find((u) => u.length !== null && u.applied === null)
       if (arithmetic?.length) {
         const owner = this.lookup(name)
         const ctx = owner?.kind === 'generic' ? owner.owner : this
@@ -8139,7 +8331,11 @@ class CheckContext {
       if (constant === null || constant.kind === 'data_ptr' || constant.kind === 'type' || constant.kind === 'func') {
         const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name)) : undefined
         if (unknown && !this.typeApplied(arg)) {
-          this.error(unknown.span.start, this.unknownIdentifier(unknown.name))
+          this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+          return null
+        }
+        if (constant === null && this.dividesByZero(arg)) {
+          this.error(arg.span.start, `${place} of '${callee}' divides by zero`)
           return null
         }
         this.error(arg.span.start, `${place} of '${callee}' must be a compile-time constant: ${param.ident} is a comptime value parameter`)
@@ -8523,7 +8719,7 @@ class CheckContext {
   // An offset inside an instance, as the place in the generic's source it was
   // copied from, with the instance named in the message.
   private atSource(offset: number, message: string, own: NonNullable<TypeError['notes']> = []): TypeError {
-    const said = own.map((note) => ({ offset: note.offset % INSTANCE_STRIDE, message: note.message }))
+    const said = own.map((note) => ({ ...note, offset: note.offset % INSTANCE_STRIDE }))
     const inst = offset < INSTANCE_STRIDE ? undefined : this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
     if (!inst) {
       const at = offset % INSTANCE_STRIDE
@@ -8667,25 +8863,28 @@ class CheckContext {
 
   // === Error Reporting ===
 
-  private findSimilar(name: string): string | null {
+  // `values`: no type is meant, nor a generic type
+  private findSimilar(name: string, values = false): string | null {
     let best: string | null = null
     let bestDist = 3
+    const meant = (sym: Symbol) => !values || (sym.kind !== 'type' && sym.kind !== 'typefunc')
     // What a look at an expression declares goes into a scope of its own,
     // which is no reason to suggest another name than the check will.
     let local = this.currentScope
     while (local.parent && this.lookScopes.has(local)) local = local.parent
-    for (const [candidate] of local.symbols) {
+    for (const [candidate, sym] of local.symbols) {
+      if (!meant(sym)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
         best = candidate
       }
     }
-    for (const [candidate] of this.moduleScope.symbols) {
+    for (const [candidate, sym] of this.moduleScope.symbols) {
       // Not a name that could have been meant: an instance's, the one a
       // function that shares its name is known by, another module's function
       // an instance calls, or one the code being checked cannot see.
-      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate)) continue
+      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate) || !meant(sym)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
@@ -8697,8 +8896,19 @@ class CheckContext {
 
   error(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
     this.errorsReported++
+    // In the body of a generic type, an error of the application being made
+    const applying = offset < INSTANCE_STRIDE ? this.applyStack.at(-1) : undefined
+    if (applying) {
+      this.applyError ??= { offset, message }
+      message = `${message}, in ${applying.shown}`
+      const uses = applying.from.map((use) => ({ offset: use.offset, message: 'required from', ...(use.in === this || !use.in.filePath ? {} : { path: use.in.filePath }) }))
+      notes = [...(notes ?? []), ...uses]
+    }
     const error = this.atSource(offset, message, notes)
-    if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
+    // One error for one mistake, also where a name nothing declares is met
+    // again once a name like it is declared, and a hint comes with it.
+    const said = withoutHint(error.message)
+    if (!this.errors.some((e) => e.offset === error.offset && withoutHint(e.message) === said)) {
       this.errors.push(error)
     }
     const inst = offset >= INSTANCE_STRIDE ? this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1] : undefined
@@ -9904,7 +10114,21 @@ function cloneAst(node: unknown, delta: number, subst: Subst, put?: Set<object>)
     const to = subst(n.name)
     if (to && !isTypeNode(to)) out.value = { ...(cloneAst(to, 0, NO_SUBST) as AST.Expr), span: shift(n.span) }
   }
+  // -n is the negative number, as the parser makes -8 of it where a def puts
+  // 8 for n (UnaryExpr_neg): through an annotation or a cast too, and again
+  // for --n.
+  if (n.kind === 'UnaryExpr' && n.op === '-') return negatedNumber(out as unknown as AST.UnaryExpr) ?? out
   return out
+}
+
+// A negation of a number a value parameter was given, as one literal
+function negatedNumber(expr: AST.UnaryExpr): AST.Expr | null {
+  const inner = expr.operand
+  const lit = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.expr : inner
+  if (lit.kind !== 'LiteralExpr' || lit.param === undefined || (lit.value.kind !== 'int' && lit.value.kind !== 'float')) return null
+  const negated: AST.LiteralExpr = { ...lit, value: { ...lit.value, value: -lit.value.value } as AST.LiteralValue, span: { start: expr.span.start, end: lit.span.end } }
+  if (inner === lit) return { ...negated, span: expr.span }
+  return { ...inner, expr: negated, span: expr.span } as AST.Expr
 }
 
 // What cloneAst puts in place of a comptime parameter's name: a type for a
@@ -10040,6 +10264,28 @@ function arrayBytes(t: ResolvedType & { kind: 'array' }): number | null {
 
 function arrayTooLarge(t: ResolvedType, bytes: number): string {
   return `array ${typeToString(t)} is too large: ${bytes} bytes, more than the 4294967295 a 32-bit memory addresses`
+}
+
+// A message without the name it suggests (' — did you mean 'k'?')
+function withoutHint(message: string): string {
+  return message.replace(/ — did you mean '[^']*'\?/, '')
+}
+
+// The outermost annotations of an expression (42:u8), but for those of a type
+// in it (sizeof)
+function annotationsIn(expr: unknown, found: AST.AnnotationExpr[] = []): AST.AnnotationExpr[] {
+  if (Array.isArray(expr)) {
+    for (const e of expr) annotationsIn(e, found)
+  } else if (expr !== null && typeof expr === 'object' && !(expr instanceof Uint8Array)) {
+    const n = expr as { kind?: string }
+    if (n.kind === 'AnnotationExpr') {
+      found.push(n as AST.AnnotationExpr)
+      return found
+    }
+    if (n.kind === 'SizeofExpr') return found
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') annotationsIn(value, found)
+  }
+  return found
 }
 
 // The names an expression reads, for the one it cannot be computed without

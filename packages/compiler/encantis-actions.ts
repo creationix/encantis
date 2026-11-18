@@ -695,7 +695,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   TestBlock(_open, items, _close) {
-    return items.children.map((i: any) => i.toAST())
+    // A def inside a test is the test's (the checker declares it in the
+    // test's scope): put in for its name there, and nowhere after the test.
+    const outer = currentDefs
+    currentDefs = new Map(outer)
+    try {
+      return items.children.map((i: any) => i.toAST())
+    } finally {
+      currentDefs = outer
+    }
   },
 
   TestItem(item) {
