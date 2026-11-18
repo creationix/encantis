@@ -533,6 +533,23 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     })
   })
 
+  // Messages name a function given for a comptime parameter as its module
+  // does, with the file, not by the name the generic's module calls it.
+  test("an instance for another module's function names it with its file", async () => {
+    const files = {
+      'lib.ents': 'export func apply(comptime T: type, x: T, comptime f: (T) -> T) -> u32 => f(x).len\n',
+      'main.ents': 'import "./lib" ("apply" func apply(comptime T: type, x: T, comptime f: (T) -> T) -> u32)\nfunc twice(x: i32) -> i32 => x * 2\nexport func g(x: i32) -> u32 => apply(x, twice)\n',
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'main.ents'))
+      expect(check.errors.map((e) => e.message)).toEqual([
+        "no field 'len' on type i32, in apply(T = i32, f = twice (main.ents))",
+        "cannot assign i32 to u32, in apply(T = i32, f = twice (main.ents))",
+        "apply(T = i32, f = twice (main.ents)) cannot be instantiated: no field 'len' on type i32 (lib.ents:1:75)",
+      ])
+    })
+  })
+
   // Two modules with one file name are two modules in the output too: their
   // functions and instances have a prefix each.
   test('two modules with one file name have their own functions and instances', async () => {

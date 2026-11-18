@@ -7752,9 +7752,15 @@ class CheckContext {
     const decl = bindTypes(of, comptimeParams, held, index * INSTANCE_STRIDE)
     decl.ident = instanceName(of.ident as string, key, copyKey === null ? null : site.moduleTag(), (name) => owner.moduleScope.symbols.has(name))
 
+    // A function of another module is named as it is there, with its file:
+    // inc (b.ents), not by the name the generic's module calls it.
+    const funcText = (name: string) => {
+      const extern = owner.externs.get(name)
+      return extern ? `${extern.name} (${fileName(extern.module)})` : name
+    }
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
-      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? value.name : ''
+      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? funcText(value.name) : ''
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
     const label = `${of.ident}(${shown.join(', ')})`
