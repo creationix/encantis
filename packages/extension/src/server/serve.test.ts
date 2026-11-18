@@ -518,6 +518,21 @@ export func s() -> []u8 => "abc"
     expect(start(server.at('onDefinition', at('two()')))).toBe('3:5')
   })
 
+  // A line that goes on with the declaration before it (the parser read on
+  // into it) was left out alone, and that declaration was answered for as
+  // the part before the line: def k as 1, where the text says 1 + 2 and more.
+  test('a declaration that goes on into a line that does not parse is not answered for', () => {
+    const before = 'def k = 1\n  + 2.5\nexport func f() -> f64 => k\nexport func g(x: u32) -> u32 => x\n'
+    const server = editedServer(before)
+    expect(shown(server.at('onHover', before.lastIndexOf('k')))).toBe('```encantis\ndef k:f64 = 3.5\n```')
+    const broken = before.replace('2.5', '2.5 x')
+    server.change(broken)
+    expect(server.at('onHover', broken.lastIndexOf('k'))).toBeNull()
+    expect(server.at('onDefinition', broken.lastIndexOf('k'))).toBeNull()
+    expect(server.at('onHover', broken.indexOf('k'))).toBeNull()
+    expect(shown(server.at('onHover', broken.lastIndexOf('x')))).toBe('```encantis\ninput x:u32\n```')
+  })
+
   // Checked on its own (the web's editor reads no files), a module that
   // imports a generic type lists no errors: nothing says what depends on
   // what is left out, and nothing is answered for.

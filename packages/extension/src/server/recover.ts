@@ -61,7 +61,7 @@ export function recoverParse(text: string, parse: (text: string) => ParseResult,
     // declaration a runaway literal or comment starts in; the declaration
     // before, where it stopped at the start of the next one (it did not
     // end); the line it stopped on, to the next declaration (a line between
-    // declarations); the declaration it stopped in; and that with the one
+    // declarations, see ownLine); the declaration it stopped in; and that with the one
     // before it.
     const own = declared ? line : before(stopped);
     const candidates: Span[] = [];
@@ -76,7 +76,12 @@ export function recoverParse(text: string, parse: (text: string) => ParseResult,
     }
     if (runaway !== undefined) candidates.push({ start: before(runaway + 1) ?? lineOf(runaway), end: after(runaway) });
     if (declared && stopped === line && before(line) !== undefined) candidates.push({ start: before(line) as number, end: line });
-    if (!declared) candidates.push({ start: line, end: after(stopped) });
+    // A line on its own only where the parser stopped at its first word:
+    // where it read on into the line, the line goes on with the declaration
+    // before it (`def k = 1` and a line `  + 2 3`), which without it would
+    // be another (k = 1), and is left out with it.
+    const ownLine = current.slice(line, stopped).trim() === '' || before(line) === undefined;
+    if (!declared && ownLine) candidates.push({ start: line, end: after(stopped) });
     if (own !== undefined) {
       candidates.push({ start: own, end: after(stopped) });
       const earlier = before(own);

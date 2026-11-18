@@ -28,6 +28,16 @@ describe('text that does not parse', () => {
     expect(recovered(`fucn a() -> u32 => 1\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['fucn a() -> u32 => 1\n'] })
   })
 
+  // Where the parser read on into the line, the line goes on with the
+  // declaration before it: without the line that one would be another
+  // (k = 1 where the text says 1 + 2 and more), so it is left out with it.
+  test('a line that goes on with the declaration before it is left out with that', () => {
+    expect(recovered(`def k = 1\n  + 2 3\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['def k = 1\n  + 2 3\n'] })
+    expect(recovered(`func a() -> u32 => 1\n  + 2 3\n${b}`)).toEqual({ declared: ['b'], leftOut: ['func a() -> u32 => 1\n  + 2 3\n'] })
+    // A line before the first declaration goes on with none.
+    expect(recovered(`  2 3\n${b}`)).toEqual({ declared: ['b'], leftOut: ['  2 3\n'] })
+  })
+
   test('a declaration that does not end, or is broken inside, is left out', () => {
     expect(recovered(`func a() -> u32 {\n  let x = 1\n\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['func a() -> u32 {\n  let x = 1\n\n'] })
     expect(recovered(`func a() -> u32 {\n  let x = \n  return 1\n}\n${b}${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['func a() -> u32 {\n  let x = \n  return 1\n}\n'] })
