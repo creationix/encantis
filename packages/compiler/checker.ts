@@ -5275,6 +5275,10 @@ class CheckContext {
           // In the instance it is a function of that name, which the other
           // parameter of the name would hide, or be hidden by.
           reject(at, `parameter '${p.ident}' is declared twice`)
+        } else if (BUILTIN_NAMES.has(p.ident) && decl.ident) {
+          // And so it is what a call of the name means in the body, in
+          // place of the builtin: said once, here, as for a declared one.
+          this.warn(at, `'${p.ident}' replaces the builtin ${p.ident} in the body of '${decl.ident}'`)
         }
       } else if (!p.comptime) {
         reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)

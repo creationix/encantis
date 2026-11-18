@@ -2660,6 +2660,24 @@ describe('builtins', () => {
     ])
   })
 
+  test('a comptime function parameter that replaces a builtin in its body is warned of once, where it is declared', () => {
+    // Inside the body `max` is the function given for it, not the builtin:
+    // the same surprise as a declared function of the name, in a smaller
+    // place. Said once, not for each instance.
+    const src = `
+      func pick(a: u32, b: u32) -> u32 => a * 100 + b
+      func last(a: u32, b: u32) -> u32 => b
+      func app(comptime max: (u32, u32) -> u32, a: u32) -> u32 => max(a, 1)
+      func id(comptime f: (u32, u32) -> u32, max: u32) -> u32 => f(max, 1)
+      export func g(a: u32) -> u32 => app(pick, a) + app(last, a) + id(pick, a)
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual(["'max' replaces the builtin max in the body of 'app'"])
+    expect(replaced.map(w => w.offset)).toEqual([src.indexOf('comptime max')])
+  })
+
   test('a variable in scope hides the declared function, and the builtin is meant again', () => {
     const src = `
       func max(a: i32, b: i32, c: i32) -> i32 => a + b + c
