@@ -2914,6 +2914,33 @@ describe('arguments by place and by name', () => {
     expect(body('Pt(r: g, q: two())')).toBe('(local.set $__tmp_0 (global.get $g)) (call $two) (local.get $__tmp_0)')
   })
 
+  test('a local that a value written after it sets, and a value that can trap, wait too', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      global seen: i32 = 0
+      func tick(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      export func local() -> i32 {
+        let k = 1
+        let p: Pt = (r: k, q: if true { k = 4
+          k } else { 0 })
+        return p.q * 10 + p.r
+      }
+      export func trap(z: i32) -> i32 {
+        let p: Pt = (r: 10 / z, q: tick(9))
+        return p.q + p.r
+      }
+      export func calls() -> i32 => seen
+    `)
+    expect(x.local()).toBe(41)
+    expect(() => x.trap(0)).toThrow()
+    expect(x.calls()).toBe(0)
+    expect(x.trap(2)).toBe(14)
+    expect(x.calls()).toBe(9)
+  })
+
   test('a value of several wasm values waits in as many scratch locals', async () => {
     const x = await run(`
       type Wide = (a: u128, b: u8)
