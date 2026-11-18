@@ -1723,8 +1723,11 @@ function rangeAssignToWat(target: AST.SliceExpr, value: AST.Expr, ctx: CodegenCo
 
   const v = exprToWat(value, ctx)
   const wasm = typeToWasm(cell)
-  const isZero = /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(v)
-  if (wasm.length === 1 && (stride === 1 || isZero)) {
+  // Zeros: every value the element is held in is a constant 0 (a struct, a
+  // wide integer or none for an optional slice all of zeros, too).
+  const parts = wasm.length === 1 ? [v] : trySplitMultiValue(v, wasm.length)
+  const isZero = !!parts && parts.every((part) => /^\((i32|i64|f32|f64)\.const (0|0x0|-?0\.0+|0e0)\)$/.test(part))
+  if ((wasm.length === 1 && stride === 1) || isZero) {
     // Bytes, or zeros of any width: one memory.fill.
     return `${setDst}\n(memory.fill (local.get ${p}) ${isZero ? '(i32.const 0)' : v} ${bytes})`
   }

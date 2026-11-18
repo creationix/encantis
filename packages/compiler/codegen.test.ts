@@ -2017,6 +2017,29 @@ describe('tables', () => {
   })
 })
 
+describe('filling a range', () => {
+  test('a fill of zeros is one memory.fill, whatever the element is held in', async () => {
+    const code = `
+      type Pt = (x: i32, y: i32)
+      data pts: *mut [3]Pt = mut [(x: 1, y: 1); 3]
+      data wide = mut [1:u128; 4]
+      data names: *mut [2]?[]u8 = mut ["a", "b"]
+      export func zero() -> i32 {
+        pts[0..3] = Pt(0, 0)
+        wide[1..4] = 0
+        names[0..2] = 0
+        let none = if names[1] == 0 { 1 } else { 0 }
+        return pts[2].y + (wide[0] as i32) * 10 + (wide[3] as i32) * 100 + none * 1000
+      }
+    `
+    const wat = modWat(code)
+    expect(wat.match(/memory\.fill/g)?.length).toBe(3)
+    expect(wat).not.toContain('loop')
+    expect((await run(code)).zero()).toBe(1010)
+  })
+
+})
+
 describe('indexes not known to be in range', () => {
   test('an optional element read at an unproven index is none when the index is out of range', async () => {
     const code = `
