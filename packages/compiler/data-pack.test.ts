@@ -5,6 +5,7 @@ import {
   type LiteralValue,
   type QualifiedLiteral,
   DataSectionBuilder,
+  dataToWat,
 } from './data-pack'
 import { typecheck } from './checker'
 import { array, primitive, type ArraySize } from './types'
@@ -350,5 +351,43 @@ describe('tables', () => {
     // Each row of `mut` has an address of its own, even where the bytes are
     // the same as another row's or another literal's.
     expect(words('data a: *[2]i32 = [0, 0]\ndata b: *mut [2][2]i32 = mut [[0; 2]; 2]')).toEqual([0, 0, 0, 0, 0, 0, 16, 24])
+  })
+})
+
+describe('zeros', () => {
+  const sectionOf = (source: string) => {
+    const check = typecheck(parse(source).module!)
+    expect(check.errors.map(e => e.message)).toEqual([])
+    return buildDataSection(check.literals, check.types).dataBuilder.result()
+  }
+
+  test('a buffer of zeros costs nothing to lay out, however large', () => {
+    // 2 GiB: as bytes, more memory than the compiler has. It keeps its place
+    // and size, and has no bytes to write.
+    const section = sectionOf('data space = mut [0:u8; 2147483648]\ndata tail = [7:u8]\ndata table = [0:u32; 1073741824]')
+    expect(section.entries.map((e) => [e.offset, e.length, e.head.length])).toEqual([
+      [8, 2147483648, 0],
+      [2147483656, 1, 1],
+      [2147483657, 4294967296, 0],
+    ])
+    expect(dataToWat(section)).toEqual([
+      '  ;; 2147483648 zero bytes at 0x8 — 2147483648 zero bytes',
+      '(data (i32.const 2147483656) "\\07")  ;; 1 bytes',
+      '  ;; 4294967296 zero bytes at 0x80000009 — 4294967296 zero bytes',
+    ])
+  })
+
+  test('a segment stops at the last byte that is not zero, and the zeros after it still hold their place', () => {
+    const source = 'data a = [1:u32, 2, 0]\ndata b = [0:u8, 0, 0]\ndata c = [2:u8, 0]\ndata d: *[2]u16 = [0, 3]\ndata e = [0:u8; 9]'
+    expect(dataToWat(sectionOf(source))).toEqual([
+      '(data (i32.const 8) "\\01\\00\\00\\00\\02")  ;; [1, 2, 0]',
+      '(data (i32.const 20) "\\00\\00\\03")  ;; [196608]',
+    ])
+    // b is three of a's zeros, c is a's 2 and the zero after it, and e the
+    // last seven of a's zeros and the first two of d's: found in the zeros
+    // that are only counted, as in bytes written out.
+    const check = typecheck(parse(source).module!)
+    const refs = [...buildDataSection(check.literals, check.types).literalRefs.values()]
+    expect(refs.map((r) => r.ptr)).toEqual([8, 9, 12, 20, 13])
   })
 })

@@ -2,8 +2,8 @@
 // Generates S-expression format WAT from AST + TypeCheckResult
 
 import type * as AST from './ast'
-import { argValue } from './ast'
-import { typeKey, isGenericDecl, INSTANCE_STRIDE, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
+import { argValue, ungroupedType } from './ast'
+import { typeKey, isGenericDecl, INSTANCE_STRIDE, addressedLiteral, type ComptimeValue, type TypeCheckResult, type ProgramCheckResult, type Symbol as CheckSymbol } from './checker'
 import { isSourceImport, resolveModulePath } from './loader'
 import type { LoadedModule } from './loader'
 import {
@@ -18,7 +18,7 @@ import {
   totalElements,
 } from './types'
 import * as RT from './types'
-import { dataToWat, buildDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
+import { dataToWat, buildDataSection, buildProgramDataSection, literalLength, type DataRef, type DataSectionBuilder } from './data-pack'
 import { wideCall, wideHelperName, wideHelpersFor, type WideBinaryOp } from './wide-int'
 
 // === Context ===
@@ -64,6 +64,20 @@ export interface CodegenContext {
   funcNames: TypeCheckResult['funcNames']
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
+  // The current function's wasm locals and params, each with the variable
+  // part it holds (see claimLocals).
+  claimed?: Map<string, string>
+  // The locals of the variable an `if let` binds, which is seen only in its
+  // then-branch (see withBinding).
+  bindings?: Map<AST.IfExpr, string[]>
+  // The locals of the `if let` bindings whose then-branch collectLocals is in.
+  busy?: Set<string>
+  // The variables a `let` or a `for` declares, with their locals: from there
+  // on its names stand for them (see letToWat, forToWat).
+  declared?: Map<AST.LetStmt | AST.ForStmt, [string, string[]][]>
+  // Indexes that aren't known to be in range, read as an optional (see
+  // TypeCheckResult.unproven): checked, none when out of range.
+  unproven: Set<AST.IndexExpr>
 }
 
 function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { ptr: number; len: number }>, nameMap?: Map<string, string>, dataSectionSize?: number): CodegenContext {
@@ -82,6 +96,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     dataSectionSize,
     calls: checkResult.calls,
     funcNames: checkResult.funcNames,
+    unproven: checkResult.unproven,
   }
 }
 
@@ -346,7 +361,7 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
         throw new Error(`Missing type for float literal at offset ${expr.span.start}`)
       }
       const wt = typeToWasmSingle(type)
-      return `(${wt}.const ${lit.value})`
+      return `(${wt}.const ${numberText(lit.value)})`
     }
 
     case 'bool':
@@ -365,6 +380,11 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       return `(i32.const 0)`
     }
   }
+}
+
+// A number as WAT writes it. -0 is a float of its own: `${-0}` is "0".
+function numberText(value: number | bigint): string {
+  return Object.is(value, -0) ? '-0' : `${value}`
 }
 
 // A literal that lies in the data section, as the slice over all of it.
@@ -404,7 +424,7 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
       }
       if (val.kind === 'float') {
         const wt = typeToWasmSingle(sym.type)
-        return `(${wt}.const ${val.value})`
+        return `(${wt}.const ${numberText(val.value)})`
       }
       if (val.kind === 'bool') {
         return `(i32.const ${val.value ? 1 : 0})`
@@ -856,7 +876,7 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
         return operand
       }
       // Anonymous data allocation: look up data section ref
-      const innerExpr = expr.operand.kind === 'AnnotationExpr' ? (expr.operand as AST.AnnotationExpr).expr : expr.operand
+      const innerExpr = addressedLiteral(expr.operand)
       const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
       const ref = ctx.literalRefs.get(dataId)
       if (ref) {
@@ -1062,57 +1082,24 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   }
 
   // Struct constructor: a type used as a function. Structs are register-flattened,
-  // so constructing one pushes its fields' values in declaration order. Arguments
-  // match fields by position or by name (Point(y: 2, x: 1)); `x:` is shorthand
-  // for `x: x`.
+  // so constructing one pushes its fields' values in declaration order. One
+  // with names among its arguments (Point(y: 2, x: 1)) the checker recorded
+  // above as the tuple of its fields in order; here each argument is the
+  // field at its place.
   const typeSym = ctx.symbols.get(funcName)
   if (typeSym?.kind === 'type') {
     const structType = RT.unwrap(typeSym.type)
     if (structType.kind === 'tuple') {
-      const argWat = (arg: AST.Arg) => {
-        const value = argValue(arg)
-        return value ? exprToWat(value, ctx) : ''
-      }
-      const named = expr.args.some((a) => a.name)
-      return structType.fields
-        .map((field, i) => {
-          const arg = named ? expr.args.find((a) => a.name === field.name) : expr.args[i]
-          return arg ? argWat(arg) : ''
-        })
-        .join(' ')
+      return expr.args.map((arg) => (arg.value ? exprToWat(arg.value, ctx) : '')).join(' ')
     }
   }
 
-  // Get callee type for param coercions
-  const calleeSym = ctx.symbols.get(funcName)
-  const paramTypes = calleeSym?.kind === 'func' ? calleeSym.type.params : null
-
-  // Generate argument expressions with array→slice coercion
-  const args = expr.args.map((arg, i) => {
-    let wat: string
-    if (arg.value) {
-      wat = exprToWat(arg.value, ctx)
-    } else if (arg.name) {
-      wat = identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
-    } else {
-      return ''
-    }
-    // Coerce array → slice: emit ptr + compile-time length
-    if (paramTypes && i < paramTypes.length) {
-      const paramType = paramTypes[i].type
-      const argExpr = arg.value ?? { kind: 'IdentExpr' as const, name: arg.name!, span: arg.span }
-      const argType = lookupExprType(argExpr, ctx)
-      const innerArray = argType?.kind === 'array' ? argType
-        : (argType?.kind === 'pointer' && argType.pointee.kind === 'array') ? argType.pointee
-        : null
-      if (innerArray && paramType.kind === 'slice') {
-        const len = totalElements(innerArray.sizes)
-        if (len !== null) {
-          return `${wat} (i32.const ${len})`
-        }
-      }
-    }
-    return wat
+  // The arguments, each converted to its parameter's type where the checker
+  // says (a pointer to an array to a slice, a widening)
+  const args = expr.args.map((arg) => {
+    if (arg.value) return exprToWat(arg.value, ctx)
+    if (arg.name) return identToWat({ kind: 'IdentExpr', name: arg.name, span: arg.span }, ctx)
+    return ''
   }).filter(Boolean).join(' ')
 
   const watName = ctx.nameMap.get(funcName) ?? funcName
@@ -1138,8 +1125,11 @@ function ungroup(expr: AST.Expr): AST.Expr {
 // Which of a value's wasm values one member of it covers: a field of a struct
 // or tuple (p.y, t.1), the ptr or len of a slice, or an element of a fixed
 // array at a constant index (v[2]). Null for anything else, such as a field
-// reached through a pointer.
-function memberValues(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; start: number; count: number } | null {
+// reached through a pointer. The values are worked out only when asked for,
+// once the object is known to be held: it may be a value in memory, never
+// laid out (p.a[1] in p.a[1][0] for a p: *S), and only a value that is held
+// is within MAX_TYPE_PARTS counted by value.
+function memberOf(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; values: () => { start: number; count: number } } | null {
   if (expr.kind !== 'MemberExpr' && expr.kind !== 'IndexExpr') return null
   const object = ungroup(expr.object)
   const objType = lookupExprType(object, ctx)
@@ -1149,17 +1139,19 @@ function memberValues(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; 
   if (expr.kind === 'IndexExpr') {
     const index = evalComptimeIndex(expr.index)
     if (u.kind !== 'array' || !RT.isValueArray(u) || index === null) return null
-    return { object, start: index * width(u.element), count: width(u.element) }
+    return { object, values: () => ({ start: index * width(u.element), count: width(u.element) }) }
   }
   const member = expr.member
   if (u.kind === 'slice' && member.kind === 'field' && (member.name === 'ptr' || member.name === 'len')) {
-    return { object, start: member.name === 'ptr' ? 0 : 1, count: 1 }
+    return { object, values: () => ({ start: member.name === 'ptr' ? 0 : 1, count: 1 }) }
   }
   if (u.kind !== 'tuple' || (member.kind !== 'field' && member.kind !== 'index')) return null
   const index = member.kind === 'index' ? member.value : u.fields.findIndex((f) => f.name === member.name)
   if (index < 0 || index >= u.fields.length) return null
-  const start = u.fields.slice(0, index).reduce((n, f) => n + width(f.type), 0)
-  return { object, start, count: width(u.fields[index].type) }
+  return {
+    object,
+    values: () => ({ start: u.fields.slice(0, index).reduce((n, f) => n + width(f.type), 0), count: width(u.fields[index].type) }),
+  }
 }
 
 interface Registers {
@@ -1176,10 +1168,53 @@ function flatSuffixes(type: ResolvedType): string[] {
 }
 
 // The wasm globals that hold a module global: one per wasm value, so a slice
-// or struct global is several, named like a local's parts.
+// or struct global is several, named like a local's parts (see claimGlobals).
 function globalNames(name: string, type: ResolvedType, ctx: CodegenContext): string[] {
   const watName = ctx.nameMap.get(name) ?? name
-  return flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
+  return programGlobals.get(ctx.symbols)?.get(watName) ?? flatSuffixes(type).map((suffix) => `${watName}${suffix}`)
+}
+
+// The wasm globals of the globals of a program, by the name each global is
+// known by in the WAT (its module's prefix and its name), for the symbols of
+// each of its modules.
+const programGlobals = new WeakMap<object, Map<string, string[]>>()
+
+// Names the wasm globals of the globals a module declares or imports from
+// the host, into `into`. As with locals (claimLocals), the parts of a global
+// `g` of a struct with a field `x` would be named like a global `g_x`; a
+// name goes to the first global that asks for it, in the order of the
+// module, and a later one gets all its names with a prefix, `_1_`, `_2_`.
+// Two modules' globals never meet: a module's names carry its prefix.
+function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nameMap: Map<string, string>, into: Map<string, string[]>): void {
+  const claimed = new Set<string>()
+  const claim = (name: string) => {
+    const sym = symbols.get(name)
+    if (sym?.kind !== 'global') return
+    const watName = nameMap.get(name) ?? name
+    const modulePrefix = watName.slice(0, watName.length - name.length)
+    const suffixes = flatSuffixes(sym.type)
+    for (let n = 0; ; n++) {
+      const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
+      // Two parts of one global named alike take names apart, as a local's do.
+      for (let i = 1; i < names.length; i++) {
+        for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+          const w = `_${k}_${name}${suffixes[i]}`
+          if (!claimed.has(w) && !names.includes(w)) names[i] = w
+        }
+      }
+      if (names.some((w) => claimed.has(w))) continue
+      for (const w of names) claimed.add(w)
+      into.set(watName, names.map((w) => `${modulePrefix}${w}`))
+      return
+    }
+  }
+  for (const decl of module.decls) {
+    const item = decl.kind === 'ExportDecl' ? decl.item : decl
+    if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') claim(item.pattern.name)
+    if (item.kind === 'ImportDecl' && !isSourceImport(item.module)) {
+      for (const imported of item.items) if (imported.item.kind === 'ImportGlobal') claim(imported.item.ident)
+    }
+  }
 }
 
 // The registers that hold an expression's value, in order, when it names a
@@ -1194,9 +1229,12 @@ function registersOf(expr: AST.Expr, ctx: CodegenContext): Registers | null {
     if (sym?.kind === 'global') return { names: globalNames(expr.name, sym.type, ctx), global: true }
     return null
   }
-  const member = memberValues(expr, ctx)
-  const object = member && registersOf(member.object, ctx)
-  if (!member || !object || member.start + member.count > object.names.length) return null
+  // The variable first: only then is the value in registers to be counted
+  const of = memberOf(expr, ctx)
+  const object = of && registersOf(of.object, ctx)
+  if (!of || !object) return null
+  const member = of.values()
+  if (member.start + member.count > object.names.length) return null
   return { names: object.names.slice(member.start, member.start + member.count), global: object.global }
 }
 
@@ -1322,17 +1360,20 @@ function selectValues(wat: string, types: string[], start: number, count: number
 // value and keeps the wasm values the last one covers. Null when there is no
 // such struct; a slice on the stack (f().len) has its own form in memberToWat.
 function memberOfStackValue(expr: AST.Expr, ctx: CodegenContext): string | null {
-  let member = memberValues(ungroup(expr), ctx)
-  if (!member) return null
-  let { object, start } = member
-  const count = member.count
-  for (member = memberValues(object, ctx); member; member = memberValues(object, ctx)) {
+  // Down to the value the members are of, and only then, where it is on the
+  // stack, which of its values they cover (see memberOf)
+  const members: { values: () => { start: number; count: number } }[] = []
+  let object = ungroup(expr)
+  for (let member = memberOf(object, ctx); member; member = memberOf(object, ctx)) {
+    members.push(member)
     object = member.object
-    start += member.start
   }
+  if (members.length === 0) return null
   const type = lookupExprType(object, ctx)
   if (!type || unwrap(type).kind === 'slice' || registersOf(object, ctx) || memoryPlace(object, ctx)) return null
-  return selectValues(exprToWat(object, ctx), typeToWasm(type), start, count, ctx)
+  const covered = members.map((m) => m.values())
+  const start = covered.reduce((n, m) => n + m.start, 0)
+  return selectValues(exprToWat(object, ctx), typeToWasm(type), start, covered[0].count, ctx)
 }
 
 function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
@@ -1390,6 +1431,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1413,7 +1455,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         return `(i32.load offset=4 ${exprToWat(expr.object, ctx)})`
       }
       if (member.name === 'wid') {
-        const elemSize = byteSize(sliceType.element)
+        const elemSize = byteSize(RT.tableRow(sliceType) ?? sliceType.element)
         if (elemSize === null) {
           throw new Error(`Cannot determine element size for ${sliceType.element.kind}`)
         }
@@ -1434,6 +1476,7 @@ function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
         if (typeof size === 'number') {
           return `(i32.const ${size})`
         }
+        if (RT.framedArray(objType)) return scannedLength(exprToWat(expr.object, ctx), objType, ctx)
         throw new Error('Array length must be compile-time known')
       }
       if (member.name === 'wid') {
@@ -1518,9 +1561,55 @@ function indexToWat(expr: AST.IndexExpr, ctx: CodegenContext): string {
   }
   // Multi-dim indexing returns a pointer — just compute address, don't load
   if (isRowIndex(expr, ctx)) return elementAddress(expr, ctx)
+  if (ctx.unproven.has(expr)) return checkedIndexToWat(expr, type, ctx)
   const addr = lvalueAddressOf(expr, ctx)
   if (addr === null) throw new Error(`Cannot index this expression at offset ${expr.span.start}`)
   return loadFromMemory(type, addr, ctx)
+}
+
+// xs[i] with an index not known to be in range, on a slice or a *[N]T of
+// pointers or slices: the element, an optional, is none (0) when i is out of
+// range. The container and the index are evaluated once, in that order; parts
+// that are locals or constants are used as they are.
+function checkedIndexToWat(expr: AST.IndexExpr, type: ResolvedType, ctx: CodegenContext): string {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const setup: string[] = []
+  const keep = (wat: string): string => {
+    if (isSimple(wat)) return wat
+    const local = scratchLocal(ctx, 'i32')
+    setup.push(`(local.set ${local} ${wat})`)
+    return `(local.get ${local})`
+  }
+  const obj = exprToWat(expr.object, ctx)
+  let base: string
+  let len: string
+  if (u?.kind === 'slice') {
+    const parts = trySplitMultiValue(obj, 2)
+    if (parts) {
+      base = keep(parts[0])
+      len = keep(parts[1])
+    } else {
+      const [ptr, length] = [scratchLocal(ctx, 'i32'), scratchLocal(ctx, 'i32')]
+      setup.push(obj, `(local.set ${length})`, `(local.set ${ptr})`)
+      base = `(local.get ${ptr})`
+      len = `(local.get ${length})`
+    }
+  } else if (u?.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
+    base = keep(obj)
+    len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u && RT.framedArray(u)) {
+    base = keep(obj)
+    len = keep(scannedLength(base, u, ctx))
+  } else {
+    throw new Error(`Cannot check this index at offset ${expr.span.start}`)
+  }
+  const index = keep(exprToWat(expr.index, ctx))
+  const results = typeToWasm(type).join(' ')
+  const { offset } = indexOffset(expr.object, base, index, ctx)
+  const none = typeToWasm(type).map((t) => `(${t}.const 0)`).join(' ')
+  const value = `(if (result ${results}) (i32.lt_u ${index} ${len}) (then ${loadFromMemory(type, offset, ctx)}) (else ${none}))`
+  return setup.length === 0 ? value : `(block (result ${results})\n${setup.join('\n')}\n${value})`
 }
 
 // items[start..end]: (ptr + start * stride, end - start). Parts that are
@@ -1644,6 +1733,9 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
     ;[base, len] = parts
   } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && typeof u.pointee.sizes?.[0] === 'number') {
     len = `(i32.const ${u.pointee.sizes[0]})`
+  } else if (u.kind === 'pointer' && u.pointee.kind === 'array' && u.pointee.sizes === null) {
+    // A many-pointer's element: its address, unchecked.
+    return indexOffset(target.object, base, exprToWat(target.index, ctx), ctx).offset
   } else {
     return null
   }
@@ -1657,12 +1749,50 @@ function addressOfIndexToWat(expr: AST.UnaryExpr, target: AST.IndexExpr, ctx: Co
   return `(if (result i32) (i32.lt_u (local.tee ${idx} ${exprToWat(target.index, ctx)}) ${len}) (then ${offset}) (else (i32.const 0)))`
 }
 
+// The length of a null-terminated *[!]T (or [!]T): how many elements come
+// before the first one whose bytes are all zero, as the data packer ends it.
+// Each element is read as one integer of its width (the checker allows 1, 2,
+// 4 or 8 bytes); a row of a table is its pointer. `ptr` is evaluated once.
+function scannedLength(ptr: string, objType: ResolvedType, ctx: CodegenContext): string {
+  const framed = RT.framedArray(objType)
+  if (!framed) throw new Error(`no length to scan for in ${RT.typeToString(objType)}`)
+  const width = byteSize(RT.tableRow(objType) ?? framed.element)
+  const load = width === 1 ? 'i32.load8_u' : width === 2 ? 'i32.load16_u' : width === 4 ? 'i32.load' : width === 8 ? 'i64.load' : null
+  if (!load) throw new Error(`cannot scan for the end of ${RT.typeToString(objType)}`)
+  const zero = width === 8 ? 'i64.eqz' : 'i32.eqz'
+  const at = scratchLocal(ctx, 'i32')
+  const n = scratchLocal(ctx, 'i32')
+  const label = `$__scan${at.slice(1)}`
+  const element = width === 1 ? `(i32.add (local.get ${at}) (local.get ${n}))` : `(i32.add (local.get ${at}) (i32.mul (local.get ${n}) (i32.const ${width})))`
+  return `(block (result i32) (local.set ${at} ${ptr}) (local.set ${n} (i32.const 0)) (block ${label} (loop ${label}_next (br_if ${label} (${zero} (${load} ${element}))) (local.set ${n} (i32.add (local.get ${n}) (i32.const 1))) (br ${label}_next))) (local.get ${n}))`
+}
+
 function evalComptimeIndex(expr: AST.Expr): number | null {
   if (expr.kind === 'LiteralExpr' && expr.value.kind === 'int') {
     return Number(expr.value.value)
   }
   if (expr.kind === 'AnnotationExpr') return evalComptimeIndex(expr.expr)
   return null
+}
+
+// How many times a repeat literal repeats its value: a count written as a
+// constant expression ([0; k]) has the value the checker worked out.
+function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
+  const constant = ctx.constants.get(expr.count)
+  return evalComptimeIndex(expr.count) ?? (constant?.kind === 'int' ? Number(constant.value) : null)
+}
+
+// Whether the elements an index expression reads are optionals themselves
+// (in a []?*T): then if let and ?? check the element as well as the index,
+// as for any optional, reading it none when the index is out of range. An
+// array value ([3]?*T, also a field of a struct in memory) is indexed only by
+// a constant in range, so only its element is checked.
+function holdsOptionals(expr: AST.IndexExpr, ctx: CodegenContext): boolean {
+  const objType = lookupExprType(expr.object, ctx)
+  const u = objType && unwrap(objType)
+  const pointee = u?.kind === 'pointer' ? unwrap(u.pointee) : null
+  const element = u?.kind === 'slice' || u?.kind === 'array' ? u.element : pointee?.kind === 'array' ? pointee.element : null
+  return element !== null && RT.isOptional(unwrap(element))
 }
 
 function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
@@ -1674,7 +1804,7 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
   const resultStr = `(result ${resultTypes.join(' ')})`
 
   // Check if this is a bounds-checked index expression
-  if (expr.expr.kind === 'IndexExpr') {
+  if (expr.expr.kind === 'IndexExpr' && !holdsOptionals(expr.expr, ctx)) {
     return coalesceIndexToWat(expr.expr, elemType, fallbackVal, resultStr, scratchId(expr.span.start), ctx)
   }
 
@@ -1712,9 +1842,15 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
     parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
     const arrayType = objType.pointee
-    if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+    // N, also of a packed *[NxM]T, whose rows are counted the same way
+    if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
       parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+    } else if (RT.framedArray(objType)) {
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     }
+  } else if (objType && RT.framedArray(objType)) {
+    parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+    parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
   }
 
   const elemSize = byteSize(elemType) ?? 1
@@ -1722,7 +1858,9 @@ function coalesceIndexToWat(indexExpr: AST.IndexExpr, elemType: ResolvedType, fa
   const offset = elemSize === 1
     ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
     : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-  const loadVal = loadFromMemory(elemType, offset, ctx)
+  const loadVal = isRowIndex(indexExpr, ctx)
+    ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+    : loadFromMemory(elemType, offset, ctx)
 
   return `${parts.join('\n')}\n(if ${resultStr} ${boundsCheck} (then ${loadVal}) (else ${fallbackVal}))`
 }
@@ -1740,13 +1878,12 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   const type = lookupExprType(expr, ctx)
   const resultTypes = type ? typeToWasm(type) : []
   const resultStr = resultTypes.length > 0 ? `(result ${resultTypes.join(' ')})` : ''
-  const thenBody = bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0)
-  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
-
-  // Bind helper
-  const found = ctx.locals.get(pattern.name)
+  // The binding is seen in the then-branch only.
+  const found = ctx.bindings?.get(expr)
   if (!found) throw new Error(`Missing local for if-let binding '${pattern.name}'`)
   const bindingNames = found
+  const thenBody = withBinding(ctx, pattern.name, bindingNames, () => bodyToWat(expr.thenBranch, ctx, resultTypes.length > 0))
+  const elseBody = elseToWat(expr, ctx, resultTypes.length > 0, resultStr)
   function makeBind(loadVal: string): string {
     if (bindingNames.length === 1) {
       return `(local.set $${bindingNames[0]} ${loadVal})`
@@ -1756,7 +1893,7 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
   }
 
   // Index expression: bounds check
-  if (expr.condition.kind === 'IndexExpr') {
+  if (expr.condition.kind === 'IndexExpr' && !holdsOptionals(expr.condition, ctx)) {
     const indexExpr = expr.condition
     const uid = scratchId(expr.span.start)
     const idxLocal = `__iflet_idx_${uid}`
@@ -1774,11 +1911,17 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     } else if (objType?.kind === 'pointer' && objType.pointee.kind === 'array') {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       const arrayType = objType.pointee
-      if (arrayType.sizes && arrayType.sizes.length === 1 && typeof arrayType.sizes[0] === 'number') {
+      // N, also of a packed *[NxM]T, whose rows are counted the same way
+      if (arrayType.sizes && typeof arrayType.sizes[0] === 'number') {
         parts.push(`(local.set $${lenLocal} (i32.const ${arrayType.sizes[0]}))`)
+      } else if (RT.framedArray(objType)) {
+        parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
       } else {
         parts.push(`(local.set $${lenLocal} (i32.const 0))`)
       }
+    } else if (objType && RT.framedArray(objType)) {
+      parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
+      parts.push(`(local.set $${lenLocal} ${scannedLength(`(local.get $${ptrLocal})`, objType, ctx)})`)
     } else {
       parts.push(`(local.set $${ptrLocal} ${exprToWat(indexExpr.object, ctx)})`)
       parts.push(`(local.set $${lenLocal} (i32.const 0))`)
@@ -1789,7 +1932,9 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
     const offset = elemSize === 1
       ? `(i32.add (local.get $${ptrLocal}) (local.get $${idxLocal}))`
       : `(i32.add (local.get $${ptrLocal}) (i32.mul (local.get $${idxLocal}) (i32.const ${elemSize})))`
-    const loadVal = loadFromMemory(elemType, offset, ctx)
+    const loadVal = isRowIndex(indexExpr, ctx)
+      ? indexOffset(indexExpr.object, `(local.get $${ptrLocal})`, `(local.get $${idxLocal})`, ctx).offset
+      : loadFromMemory(elemType, offset, ctx)
     const bindWat = makeBind(loadVal)
 
     if (elseBody) {
@@ -1891,6 +2036,11 @@ function extendToI64(wat: string, signed: boolean): string {
 }
 
 function emitConversion(inner: string, fromType: ResolvedType, toType: ResolvedType): string {
+  // A pointer to an array into a slice: the length the array has
+  if (unwrap(toType).kind === 'slice') {
+    const len = RT.arrayLength(fromType)
+    return len === null ? inner : `${inner} (i32.const ${len})`
+  }
   const fromWasm = typeToWasmSingle(fromType)
   const toWasm = typeToWasmSingle(toType)
 
@@ -1989,64 +2139,97 @@ function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: numb
   if (!type) return ''
   // Get the element type to determine stride
   const elemType = type.kind === 'slice' ? type.element
-    : type.kind === 'pointer' && type.pointee.kind === 'array' ? type.pointee.element
+    : type.kind === 'pointer' && type.pointee.kind === 'array' ? packedRow(type.pointee)
     : null
   if (!elemType) return ''
-  const elemSize = byteSize(elemType) ?? 0
-  if (elemSize === 0) return ''
-
-  // A repeat literal has its value in every slot, computed once per slot as
-  // it is for a repeat that is a value.
-  const elements = expr.kind === 'ArrayExpr' ? expr.elements
-    : Array<AST.Expr>(evalComptimeIndex(expr.count) ?? 0).fill(expr.value)
   const parts: string[] = []
+  runtimeStores(expr, elemType, ref.ptr, ctx, parts)
+  return parts.length > 0 ? parts.join('\n') + '\n' : ''
+}
+
+// What one element of an array literal is: a row of [NxM]T is a [M]T, which
+// lies in place.
+function packedRow(t: RT.ArrayRT): ResolvedType {
+  const sizes = t.sizes
+  if (sizes && sizes.length > 1 && sizes.every((s) => typeof s === 'number')) return { kind: 'array', element: t.element, sizes: sizes.slice(1) }
+  return t.element
+}
+
+// The stores of the values of a literal that are only known when the program
+// runs, each at its place from `base`. A row written out in place (in a
+// [NxM]T) has its own, at their places in the row.
+function runtimeStores(expr: AST.ArrayExpr | AST.RepeatExpr, elemType: ResolvedType, base: number, ctx: CodegenContext, parts: string[]): void {
+  const elemSize = byteSize(elemType) ?? 0
+  if (elemSize === 0) return
   const u = unwrap(elemType)
+  const inPlace = (elem: AST.Expr): AST.ArrayExpr | AST.RepeatExpr | null => {
+    let inner = ungroup(elem)
+    while (inner.kind === 'AnnotationExpr') inner = ungroup(inner.expr)
+    const row = u.kind === 'array' && u.sizes !== null && u.sizes.every((s) => typeof s === 'number')
+    return row && (inner.kind === 'ArrayExpr' || inner.kind === 'RepeatExpr') ? inner : null
+  }
+  // A repeat literal has its value in every slot, computed once per slot as
+  // it is for a repeat that is a value. One with nothing to store has no slot
+  // to visit, however many it has.
+  if (expr.kind === 'RepeatExpr' && !inPlace(expr.value) && !isRuntimeExpr(expr.value, ctx)) return
+  const elements = expr.kind === 'ArrayExpr' ? expr.elements
+    : Array<AST.Expr>(repeatCount(expr, ctx) ?? 0).fill(expr.value)
   for (let i = 0; i < elements.length; i++) {
     const elem = elements[i]
-    if (isRuntimeExpr(elem, ctx.calls)) {
-      const base = ref.ptr + i * elemSize
+    const at = base + i * elemSize
+    const row = inPlace(elem)
+    if (row && u.kind === 'array') {
+      runtimeStores(row, packedRow(u), at, ctx, parts)
+    } else if (isRuntimeExpr(elem, ctx)) {
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
         try {
           const valParts = splitMultiValue(value, 2)
-          parts.push(`(i32.store (i32.const ${base}) ${valParts[0]})`)
-          parts.push(`(i32.store (i32.const ${base + 4}) ${valParts[1]})`)
+          parts.push(`(i32.store (i32.const ${at}) ${valParts[0]})`)
+          parts.push(`(i32.store (i32.const ${at + 4}) ${valParts[1]})`)
         } catch {
-          parts.push(`(i32.const ${base})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${base + 4}) (local.get $__slot_len))`)
+          parts.push(`(i32.const ${at})\n${value}\n(local.set $__slot_len)\n(i32.store)\n(i32.store (i32.const ${at + 4}) (local.get $__slot_len))`)
         }
       } else {
-        parts.push(storeToMemory(elemType, `(i32.const ${base})`, value, ctx))
+        parts.push(storeToMemory(elemType, `(i32.const ${at})`, value, ctx))
       }
     }
   }
-  return parts.length > 0 ? parts.join('\n') + '\n' : ''
 }
 
-function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
+function isRuntimeExpr(expr: AST.Expr, ctx: CodegenContext): boolean {
   if (expr.kind === 'LiteralExpr') return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
-  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, calls)
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, ctx)
+  // (x) is x
+  const inner = ungroup(expr)
+  if (inner !== expr) return isRuntimeExpr(inner, ctx)
+  // A value the checker worked out (1 + 1, sizeof(u64), a def, the name of
+  // data) is laid out with the literal.
+  if (ctx.constants.has(expr)) return false
   // A type that is called, Vec(u32)(p, 0, cap), is the struct of its arguments.
-  const built = expr.kind === 'CallExpr' ? calls.get(expr) : undefined
-  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, calls)
+  const built = expr.kind === 'CallExpr' ? ctx.calls.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, ctx)
   // A struct written out from literals, as a tuple or a constructor, is data
   // too; one runtime field makes the whole struct runtime. A type's name is
   // the identifier that starts with a capital letter.
   const fields = expr.kind === 'TupleExpr' ? expr.elements
     : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
     : null
-  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, calls))
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, ctx))
   return true
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
 // that points at it): runtime when one of its elements is, or the value it
 // repeats.
-function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
-  if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
-  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value, calls)
-  return isRuntimeExpr(expr, calls)
+function isRuntimeField(expr: AST.Expr, ctx: CodegenContext): boolean {
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  if (e.kind === 'ArrayExpr') return e.elements.some((x) => isRuntimeField(x, ctx))
+  if (e.kind === 'RepeatExpr') return isRuntimeField(e.value, ctx)
+  return isRuntimeExpr(e, ctx)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -2062,7 +2245,7 @@ function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
     return `${stores}(i32.const ${ref.ptr})`
   }
   // Value repeat literal: emit element N times
-  const countVal = evalComptimeIndex(expr.count)
+  const countVal = repeatCount(expr, ctx)
   if (countVal !== null) {
     const elem = exprToWat(expr.value, ctx)
     return Array(countVal).fill(elem).join(' ')
@@ -2118,7 +2301,7 @@ function matchToWat(expr: AST.MatchExpr, ctx: CodegenContext): string {
         if (p.kind === 'literal') {
           const litValue =
             p.value.kind === 'int' || p.value.kind === 'float'
-              ? `(${wt}.const ${p.value.value})`
+              ? `(${wt}.const ${numberText(p.value.value)})`
               : p.value.kind === 'bool'
                 ? `(i32.const ${p.value.value ? 1 : 0})`
                 : '(i32.const 0)'
@@ -2230,63 +2413,72 @@ function framesToLoop(ctx: CodegenContext): number {
 // tuple pattern's variables. Elements match fields by name (x:, x: y) or by
 // position (a, b); a field no element names is dropped. Values come off the
 // stack last field first, and a field that flattens to several wasm values
-// fills (or drops) that many.
-function tuplePatternSets(pattern: AST.TuplePattern, tupleType: RT.TupleRT, ctx: CodegenContext): string {
-  const varFor = new Map<number, string>()
+// fills (or drops) that many. An element that is a tuple pattern itself takes
+// its field the same way. `registers` says where a variable is held: a `let`
+// declares locals, and a `set` writes the locals or globals that are there.
+function tuplePatternSets(
+  pattern: AST.TuplePattern,
+  tupleType: RT.TupleRT,
+  ctx: CodegenContext,
+  registers: (name: string) => Registers | null = (name) => ({ names: ctx.locals.get(name) ?? [name], global: false }),
+): string {
+  const partFor = new Map<number, AST.Pattern>()
   pattern.elements.forEach((elem, position) => {
     if (elem.kind === 'named') {
       const index = tupleType.fields.findIndex((f) => f.name === elem.field)
-      if (index >= 0) varFor.set(index, elem.binding ?? elem.field)
-    } else if (elem.pattern.kind === 'IdentPattern') {
-      varFor.set(position, elem.pattern.name)
+      if (index >= 0) partFor.set(index, { kind: 'IdentPattern', name: elem.binding ?? elem.field, span: pattern.span })
+    } else {
+      partFor.set(position, elem.pattern)
     }
   })
   const sets: string[] = []
   for (let i = tupleType.fields.length - 1; i >= 0; i--) {
-    const slots = typeToWasm(tupleType.fields[i].type).length
-    const name = varFor.get(i)
-    const locals = name ? (ctx.locals.get(name) ?? [name]) : []
+    const fieldType = tupleType.fields[i].type
+    const part = partFor.get(i)
+    const inner = unwrap(fieldType)
+    if (part?.kind === 'TuplePattern' && inner.kind === 'tuple') {
+      sets.push(tuplePatternSets(part, inner, ctx, registers))
+      continue
+    }
+    const slots = typeToWasm(fieldType).length
+    const regs = part?.kind === 'IdentPattern' ? registers(part.name) : null
     for (let k = slots - 1; k >= 0; k--) {
-      sets.push(name && locals[k] ? `(local.set $${locals[k]})` : '(drop)')
+      const name = regs?.names[k]
+      sets.push(regs && name ? `(${regs.global ? 'global' : 'local'}.set $${name})` : '(drop)')
     }
   }
   return sets.join('\n')
 }
 
-// *[N]T into a slice: add the compile-time length, as call arguments do.
-function withSliceLength(value: string, valueExpr: AST.Expr, target: ResolvedType, ctx: CodegenContext): string {
-  if (unwrap(target).kind !== 'slice') return value
-  valueExpr = ungroup(valueExpr)
-  const valueType = lookupExprType(valueExpr, ctx)
-  const array = valueType?.kind === 'pointer' && valueType.pointee.kind === 'array' ? valueType.pointee : null
-  const len = array ? totalElements(array.sizes) : null
-  return len === null ? value : `${value} (i32.const ${len})`
+// From a `let` or a `for` on, the names it declares stand for its variables,
+// as the checker has them: a `for` of a name in one branch and a `let` of it
+// in another are two variables.
+function enterDeclared(stmt: AST.LetStmt | AST.ForStmt, ctx: CodegenContext): void {
+  for (const [name, names] of ctx.declared?.get(stmt) ?? []) ctx.locals.set(name, names)
 }
 
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
-  if (!stmt.value) return '' // Declaration only, no initialization
+  if (!stmt.value) {
+    enterDeclared(stmt, ctx)
+    return '' // Declaration only, no initialization
+  }
+  // The value is computed before the variable is there.
+  const valueWat = exprToWat(stmt.value, ctx)
+  enterDeclared(stmt, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
     const name = stmt.pattern.name
-    let value = exprToWat(stmt.value, ctx)
+    const value = valueWat
 
     // Get type from pattern offset (where checker stores it) - must be concretized
     const type = ctx.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
     if (!type) {
       throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
     }
-    value = withSliceLength(value, stmt.value, type, ctx)
-    const wasmTypes = typeToWasm(type)
-
-    if (wasmTypes.length === 1) {
-      ctx.locals.set(name, [name])
-      return `(local.set $${name} ${value})`
-    }
-
-    // Multiple values - flatten using field names from type
-    const flattened = flattenType(type)
-    const names = flattened.map(f => f.suffix ? `${name}_${f.suffix}` : `${name}_${flattened.indexOf(f)}`)
-    ctx.locals.set(name, names)
+    // The locals collectLocals gave the variable.
+    const names = ctx.locals.get(name)
+    if (!names) throw new Error(`Missing locals for '${name}' at offset ${stmt.pattern.span.start}`)
+    if (names.length === 1) return `(local.set $${names[0]} ${value})`
     // If value is a single expression producing multiple results (e.g. a function call),
     // emit the call then assign from the stack in reverse order
     // Try to split value into components (works for multi-expression values)
@@ -2308,8 +2500,7 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    const value = exprToWat(stmt.value, ctx)
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${valueWat}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
   }
 
   return ''
@@ -2317,14 +2508,14 @@ function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
 
 function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
   const value = exprToWat(stmt.value, ctx)
+  // set names variables that are there already: locals or globals.
+  const registers = (name: string) => registersOf({ kind: 'IdentExpr', name, span: stmt.pattern.span }, ctx)
 
   if (stmt.pattern.kind === 'IdentPattern') {
-    const name = stmt.pattern.name
-    const localNames = ctx.locals.get(name)
-    if (localNames && localNames.length === 1) {
-      return `(local.set $${localNames[0]} ${value})`
-    }
-    return `(local.set $${name} ${value})`
+    // set x = v is x = v.
+    const regs = registers(stmt.pattern.name)
+    if (regs) return setRegisters(regs, value)
+    return `(local.set $${stmt.pattern.name} ${value})`
   }
 
   if (stmt.pattern.kind === 'TuplePattern') {
@@ -2335,7 +2526,7 @@ function setToWat(stmt: AST.SetStmt, ctx: CodegenContext): string {
       throw new Error(`Missing tuple type for set pattern at offset ${stmt.pattern.span.start}`)
     }
 
-    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx)}`
+    return `${value}\n${tuplePatternSets(stmt.pattern, tupleType, ctx, registers)}`
   }
 
   return ''
@@ -2380,8 +2571,7 @@ function assignToWat(stmt: AST.AssignmentStmt, ctx: CodegenContext): string {
     return assign(result)
   }
 
-  if (!placeType) return assignLvalue(stmt.target, value, ctx)
-  return assignLvalue(stmt.target, withSliceLength(value, stmt.value, placeType, ctx), ctx)
+  return assignLvalue(stmt.target, value, ctx)
 }
 
 function lvalueToWat(target: AST.LValue, ctx: CodegenContext): string {
@@ -2465,25 +2655,89 @@ function loopToWat(stmt: AST.LoopStmt, ctx: CodegenContext): string {
   )`
 }
 
+// Whether anything in a subtree may give the variable `name` a new value: an
+// assignment to it or to a part of it (p.n = 0 changes the p_n local a count
+// p.n is read from), or a declaration of that name, which shares the
+// variable's wasm local (a let, a loop or if-let binding, a pattern).
+function mayChange(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) return node.some((n) => mayChange(n, name))
+  if (!node || typeof node !== 'object') return false
+  const n = node as Record<string, unknown> & { kind?: string; target?: AST.LValue }
+  if (n.kind === 'AssignmentStmt' && n.target && assignedRoot(n.target) === name) return true
+  if (n.kind !== 'IdentExpr' && ['name', 'binding', 'field', 'value', 'index'].some((k) => n[k] === name)) return true
+  return Object.entries(n).some(([k, v]) => k !== 'span' && typeof v === 'object' && mayChange(v, name))
+}
+
+// The variable whose registers an assignment target is, or is a field of:
+// p for p, p.n, p.a.b. A target with an index or a dereference in it is an
+// element (in memory, or of an array, which no count is read from).
+function assignedRoot(target: AST.LValue): string | null {
+  let t: AST.LValue | AST.Expr = target
+  while ((t.kind === 'MemberExpr' && t.member.kind === 'field') || t.kind === 'GroupExpr') {
+    t = t.kind === 'GroupExpr' ? t.expr : t.object
+  }
+  return t.kind === 'IdentExpr' ? t.name : null
+}
+
+// Whether a loop count read as one register (a local, or a global) is still
+// the count where the loop compares with it: nothing in the body may change
+// the variable it is read from (a slice's length is part of the slice), and
+// for a global, the body calls nothing that could.
+function steadyRead(stmt: AST.ForStmt, wat: string): boolean {
+  const body = stmt.body
+  let root = ungroup(stmt.iterable)
+  while (root.kind === 'MemberExpr' && root.member.kind === 'field') root = ungroup(root.object)
+  if (root.kind !== 'IdentExpr' || mayChange(body, root.name)) return false
+  // for n in n: the loop variable takes the local the count is read from.
+  if (stmt.binding.value === root.name || stmt.binding.index === root.name) return false
+  if (/^\(local\.get \$[\w-]+\)$/.test(wat)) return true
+  return /^\(global\.get \$[\w-]+\)$/.test(wat) && !makesCall(body)
+}
+
+function makesCall(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(makesCall)
+  if (!node || typeof node !== 'object') return false
+  if ((node as { kind?: string }).kind === 'CallExpr') return true
+  return Object.entries(node).some(([k, v]) => k !== 'span' && typeof v === 'object' && makesCall(v))
+}
+
 function forToWat(stmt: AST.ForStmt, ctx: CodegenContext): string {
-  const valueName = stmt.binding.value
-  const indexName = stmt.binding.index
-  const valueLocals = ctx.locals.get(valueName) ?? [valueName]
+  // The locals collectLocals gave the loop's variables, which its names stand
+  // for in the body and after the loop, but not in the iterable.
+  const outside = [stmt.binding.value, stmt.binding.index].flatMap((n) => (n ? [[n, ctx.locals.get(n)] as const] : []))
+  enterDeclared(stmt, ctx)
+  const valueLocals = ctx.locals.get(stmt.binding.value) ?? [stmt.binding.value]
+  const valueName = valueLocals[0]
+  const indexName = stmt.binding.index ? (ctx.locals.get(stmt.binding.index) ?? [stmt.binding.index])[0] : undefined
 
   const body = bodyToWat(stmt.body, ctx, false, true)
 
   // Check if iterable is a comptime integer (for i in N)
   const iterType = lookupExprType(stmt.iterable, ctx)
+  for (const [name, names] of outside) {
+    if (names) ctx.locals.set(name, names)
+    else ctx.locals.delete(name)
+  }
   const iterWat = exprToWat(stmt.iterable, ctx)
+  enterDeclared(stmt, ctx)
 
   if (iterType && (iterType.kind === 'primitive' || iterType.kind === 'comptime_int')) {
     // Range loop: for value in N → value = 0; while value < N { ...; value += 1 }
     // The body sits in its own $continue block so that continue still reaches
-    // the increment.
-    return `(local.set $${valueName} (i32.const 0))
+    // the increment. The count is evaluated once, before the loop: a constant,
+    // or a variable the body doesn't change, is read where it is compared.
+    // A signed count is compared signed, so a negative one runs the loop zero
+    // times; value counts up from 0 and stops at the count, so it never
+    // reaches the values where the two comparisons differ.
+    const constant = /^\(i32\.const (-?\d+)\)$/.exec(iterWat)
+    const steady = constant !== null || steadyRead(stmt, iterWat)
+    const count = steady ? iterWat : scratchLocal(ctx, 'i32')
+    const negative = iterType.kind === 'primitive' && RT.isSigned(iterType) && !(constant && Number(constant[1]) >= 0)
+    const compare = negative ? 'i32.ge_s' : 'i32.ge_u'
+    return `${steady ? '' : `(local.set ${count} ${iterWat})\n`}(local.set $${valueName} (i32.const 0))
 (block $break
     (loop $next
-      (br_if $break (i32.ge_u (local.get $${valueName}) ${iterWat}))
+      (br_if $break (${compare} (local.get $${valueName}) ${steady ? count : `(local.get ${count})`}))
       (block $continue
         ${body}
       )
@@ -2633,19 +2887,11 @@ export function funcToWat(
   for (const param of paramTypes) {
     const paramName = param.name
     if (!paramName) continue
-    const flattened = flattenType(param.type)
-    if (flattened.length === 1 && flattened[0].suffix === '') {
-      params.push(`(param $${paramName} ${flattened[0].wasmType})`)
-      ctx.params.set(paramName, [paramName])
-    } else {
-      // Flatten struct/slice params with proper field names
-      const names = flattened.map((f) => {
-        const fieldName = f.suffix ? `${paramName}_${f.suffix}` : paramName
-        params.push(`(param $${fieldName} ${f.wasmType})`)
-        return fieldName
-      })
-      ctx.params.set(paramName, names)
-    }
+    // A struct or slice param is a wasm param per part, named like a local's.
+    const wasmTypes = typeToWasm(param.type)
+    const names = claimLocals(ctx, paramName, param.type, null)
+    for (const [i, n] of names.entries()) params.push(`(param $${n} ${wasmTypes[i]})`)
+    ctx.params.set(paramName, names)
   }
 
   // Flatten returns and add named returns as locals
@@ -2659,22 +2905,10 @@ export function funcToWat(
   const namedReturns: { name: string; types: string[] }[] = []
   for (const ret of funcType.type.returns) {
     if (ret.name) {
-      const wasmTypes = typeToWasm(ret.type)
-      if (wasmTypes.length === 1) {
-        locals.push({ name: ret.name, type: wasmTypes[0] })
-        ctx.locals.set(ret.name, [ret.name])
-        namedReturns.push({ name: ret.name, types: wasmTypes })
-      } else {
-        // Name the parts the way params and lets are flattened (tuple field
-        // names, ptr/len for slices), so member access finds them.
-        const names = flattenType(ret.type).map((f, i) => {
-          const fieldName = f.suffix ? `${ret.name}_${f.suffix}` : `${ret.name}_${i}`
-          locals.push({ name: fieldName, type: f.wasmType })
-          return fieldName
-        })
-        ctx.locals.set(ret.name, names)
-        namedReturns.push({ name: ret.name, types: wasmTypes })
-      }
+      // Its parts are named the way params and lets are flattened (tuple
+      // field names, ptr/len for slices), so member access finds them.
+      ctx.locals.set(ret.name, claimLocals(ctx, ret.name, ret.type, locals, true))
+      namedReturns.push({ name: ret.name, types: typeToWasm(ret.type) })
     }
   }
   // Make named return locals available for early return statements
@@ -2728,6 +2962,71 @@ export function funcToWat(
 )`
 }
 
+// The wasm locals (or params) a variable is held in. A variable of one wasm
+// value is its own name; one of several has a local per part, named after
+// the variable and the part (`p_x`, `s_ptr`, `t_0`). Two variables can ask
+// for one name: a struct `a` with a field `x` and a variable `a_x`, or two
+// `if let` bindings of one name and different types. A name goes to the
+// first variable that asks for it in the function (params, then the body in
+// order, then named results), and is shared only by another variable of the
+// same name whose part there has the same wasm type, as the variables of two
+// loops of `i` are. Any other variable gets all its names with a prefix,
+// `_1_`, `_2_`, ...: no identifier starts with `_`, and the compiler's own
+// locals start with `__`. So the names depend on the function alone.
+// `locals` gets a declaration for each name that is new. With `plainIfOne`,
+// a value of one wasm value is the variable's own name even where it is a
+// part (a struct of one field), as a `let`, an `if let` and a named result
+// have always named it.
+//
+// An `if let` binding is a variable of its own, seen in its then-branch
+// only, so it shares a name only with another `if let` binding (`kind`),
+// and not with one whose then-branch it is in (`ctx.busy`).
+function claimLocals(
+  ctx: Pick<CodegenContext, 'claimed' | 'busy'>, name: string, type: ResolvedType, locals: LocalDecl[] | null, plainIfOne = false, kind = '',
+): string[] {
+  ctx.claimed ??= new Map()
+  const claimed = ctx.claimed
+  const flat = flattenType(type)
+  const parts = flat.length === 1 && (flat[0].suffix === '' || plainIfOne)
+    ? [{ suffix: '', wasmType: flat[0].wasmType }]
+    : flat.map((f, i) => ({ suffix: f.suffix || String(i), wasmType: f.wasmType }))
+  const owners = parts.map((p) => `${kind}${name} ${p.suffix} ${p.wasmType}`)
+  for (let n = 0; ; n++) {
+    const prefix = n === 0 ? '' : `_${n}_`
+    const names = parts.map((p) => `${prefix}${name}${p.suffix ? `_${p.suffix}` : ''}`)
+    // Two parts of one variable can be named alike: a field `x_y`, and the
+    // field `y` of a field `x`. The later one takes the next prefix whose
+    // name is free, or is the same part's of a variable like this one.
+    for (let i = 1; i < names.length; i++) {
+      for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
+        const w = `_${k}_${name}_${parts[i].suffix}`
+        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !ctx.busy?.has(w) && !names.includes(w)) names[i] = w
+      }
+    }
+    if (names.some((w, i) => (claimed.has(w) && claimed.get(w) !== owners[i]) || ctx.busy?.has(w))) continue
+    names.forEach((w, i) => {
+      if (claimed.has(w)) return
+      claimed.set(w, owners[i])
+      locals?.push({ name: w, type: parts[i].wasmType })
+    })
+    return names
+  }
+}
+
+// Compiles `emit` with `name` standing for the locals of a binding that only
+// a branch sees, and the name as it was outside.
+function withBinding<T>(ctx: CodegenContext, name: string, names: string[] | undefined, emit: () => T): T {
+  if (!names) return emit()
+  const outside = ctx.locals.get(name)
+  ctx.locals.set(name, names)
+  try {
+    return emit()
+  } finally {
+    if (outside) ctx.locals.set(name, outside)
+    else ctx.locals.delete(name)
+  }
+}
+
 // Local declarations, leaving out compiler scratch locals (named __...) that
 // the code never uses.
 function declareUsedLocals(locals: LocalDecl[], code: string, sep: string): string {
@@ -2750,6 +3049,38 @@ function collectLocals(
 ): LocalDecl[] {
   const locals: LocalDecl[] = []
 
+  // A variable `stmt` declares: its locals, which its name stands for from
+  // `stmt` on when the code is emitted (enterDeclared). A `let`'s name is
+  // the one variable of that name in its function (the checker refuses a
+  // second), so it stands for it everywhere already; a `for` can take over
+  // the name of a param or a variable before it, which keeps its locals
+  // until the loop.
+  function declare(stmt: AST.LetStmt | AST.ForStmt, name: string, names: string[]) {
+    ctx.declared ??= new Map()
+    ctx.declared.set(stmt, [...(ctx.declared.get(stmt) ?? []), [name, names]])
+    if (stmt.kind === 'LetStmt') ctx.locals.set(name, names)
+  }
+
+  // Declare locals for each element of a tuple pattern, and for the elements
+  // of an element that is a tuple pattern itself.
+  function declarePattern(stmt: AST.LetStmt, pattern: AST.TuplePattern, tupleType: RT.TupleRT) {
+    for (const [position, elem] of pattern.elements.entries()) {
+      // Named elements find their field by name, positional ones by position.
+      const field = elem.kind === 'named'
+        ? tupleType.fields.find((f) => f.name === elem.field)
+        : tupleType.fields[position]
+      if (!field) continue
+      if (elem.kind === 'positional' && elem.pattern.kind === 'TuplePattern') {
+        const inner = unwrap(field.type)
+        if (inner.kind === 'tuple') declarePattern(stmt, elem.pattern, inner)
+        continue
+      }
+      const name = elem.kind === 'named' ? elem.binding ?? elem.field : (elem.pattern as AST.IdentPattern).name
+      // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
+      declare(stmt, name, claimLocals(ctx, name, field.type, locals))
+    }
+  }
+
   function visitStmt(stmt: AST.Statement) {
     if (stmt.kind === 'LetStmt') {
       if (stmt.pattern.kind === 'IdentPattern') {
@@ -2759,20 +3090,7 @@ function collectLocals(
         if (!type) {
           throw new Error(`Missing type for local '${name}' at offset ${stmt.pattern.span.start}`)
         }
-        const wasmTypes = typeToWasm(type)
-
-        if (wasmTypes.length === 1) {
-          locals.push({ name, type: wasmTypes[0] })
-          ctx.locals.set(name, [name])
-        } else {
-          const flattened = flattenType(type)
-          const names = flattened.map((f, i) => {
-            const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-            locals.push({ name: fieldName, type: f.wasmType })
-            return fieldName
-          })
-          ctx.locals.set(name, names)
-        }
+        declare(stmt, name, claimLocals(ctx, name, type, locals, true))
       } else if (stmt.pattern.kind === 'TuplePattern') {
         // Get the overall tuple type from the pattern
         const tupleType = checkResult.types.get(typeKey(stmt.pattern.span.start, stmt.pattern.kind))
@@ -2780,40 +3098,7 @@ function collectLocals(
           throw new Error(`Missing or invalid tuple type for pattern at offset ${stmt.pattern.span.start}`)
         }
 
-        // Declare locals for each tuple pattern element
-        for (const elem of stmt.pattern.elements) {
-          let name: string
-          let fieldName: string
-          if (elem.kind === 'named') {
-            name = elem.binding ?? elem.field
-            fieldName = elem.field
-          } else if (elem.pattern.kind === 'IdentPattern') {
-            name = elem.pattern.name
-            fieldName = ''
-          } else {
-            continue // Nested patterns not yet supported
-          }
-
-          // Named elements find their field by name, positional ones by position.
-          const field = elem.kind === 'named'
-            ? tupleType.fields.find((f) => f.name === fieldName)
-            : tupleType.fields[stmt.pattern.elements.indexOf(elem)]
-          if (!field) continue
-
-          // Multi-value fields (slices, tuples) flatten like lets: rest_ptr, rest_len.
-          const flat = flattenType(field.type)
-          if (flat.length === 1 && flat[0].suffix === '') {
-            locals.push({ name, type: flat[0].wasmType })
-            ctx.locals.set(name, [name])
-          } else {
-            const names = flat.map((f, i) => {
-              const localName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-              locals.push({ name: localName, type: f.wasmType })
-              return localName
-            })
-            ctx.locals.set(name, names)
-          }
-        }
+        declarePattern(stmt, stmt.pattern, tupleType)
       }
     }
     // Recurse into nested blocks
@@ -2826,21 +3111,12 @@ function collectLocals(
     }
     if (stmt.kind === 'ForStmt') {
       visitExpr(stmt.iterable)
-      // Collect loop binding variable
+      // The loop's variables. The checker keeps them in the enclosing
+      // scope, after the loop too, and so does this. Multi-value elements
+      // (slices, tuples) flatten like lets.
       const bindingType = ctx.types.get(typeKey(stmt.binding.span.start, stmt.binding.kind))
-      if (bindingType) {
-        // Multi-value elements (slices, tuples) flatten like lets.
-        const flat = flattenType(bindingType)
-        const names = flat.length === 1 && flat[0].suffix === ''
-          ? [stmt.binding.value]
-          : flat.map((f, i) => (f.suffix ? `${stmt.binding.value}_${f.suffix}` : `${stmt.binding.value}_${i}`))
-        for (const [i, f] of flat.entries()) locals.push({ name: names[i], type: f.wasmType })
-        ctx.locals.set(stmt.binding.value, names)
-      }
-      if (stmt.binding.index) {
-        locals.push({ name: stmt.binding.index, type: 'i32' })
-        ctx.locals.set(stmt.binding.index, [stmt.binding.index])
-      }
+      if (bindingType) declare(stmt, stmt.binding.value, claimLocals(ctx, stmt.binding.value, bindingType, locals))
+      if (stmt.binding.index) declare(stmt, stmt.binding.index, claimLocals(ctx, stmt.binding.index, RT.primitive('u32'), locals))
       // Element loops walk a pointer up to an end address.
       const uid = scratchId(stmt.span.start)
       locals.push({ name: `__for_ptr_${uid}`, type: 'i32' }, { name: `__for_end_${uid}`, type: 'i32' })
@@ -2884,20 +3160,10 @@ function collectLocals(
       if (expr.pattern && expr.pattern.kind === 'binding') {
         const elemType = checkResult.types.get(typeKey(expr.condition.span.start, 'IfLetBinding'))
         if (elemType) {
-          const name = expr.pattern.name
-          const wasmTypes = typeToWasm(elemType)
-          if (wasmTypes.length === 1) {
-            locals.push({ name, type: wasmTypes[0] })
-            ctx.locals.set(name, [name])
-          } else {
-            const flattened = flattenType(elemType)
-            const names = flattened.map((f, i) => {
-              const fieldName = f.suffix ? `${name}_${f.suffix}` : `${name}_${i}`
-              locals.push({ name: fieldName, type: f.wasmType })
-              return fieldName
-            })
-            ctx.locals.set(name, names)
-          }
+          // The binding's locals, seen in the then-branch only (ifLetToWat):
+          // its name can be another variable's outside it.
+          ctx.bindings ??= new Map()
+          ctx.bindings.set(expr, claimLocals(ctx, expr.pattern.name, elemType, locals, true, 'if let '))
           const uid = scratchId(expr.span.start)
           if (expr.condition.kind === 'IndexExpr') {
             // Temporary locals for bounds checking
@@ -2912,7 +3178,12 @@ function collectLocals(
         }
       }
       visitExpr(expr.condition)
+      // A binding of the same name in the then-branch is another variable.
+      const bound = ctx.bindings?.get(expr)?.filter((n) => !ctx.busy?.has(n)) ?? []
+      ctx.busy ??= new Set()
+      for (const n of bound) ctx.busy.add(n)
       visitBody(expr.thenBranch)
+      for (const n of bound) ctx.busy.delete(n)
       for (const elif of expr.elifs) {
         visitExpr(elif.condition)
         visitBody(elif.thenBranch)
@@ -2960,7 +3231,7 @@ function collectLocals(
       for (const elem of expr.elements) {
         // Any runtime slice element that doesn't split into (ptr, len) parts
         // (a call, a ?? fallback, ...) goes through the scratch local.
-        if (isRuntimeExpr(elem, checkResult.calls)) needsSlotLocal = true
+        if (isRuntimeExpr(elem, ctx)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -3064,13 +3335,28 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   }
 }
 
+// A wasm memory has at most 65536 pages of 64 KiB: 4 GiB. Laying out zeros
+// costs nothing, so data can be declared that no memory can hold, and its
+// addresses would not be i32s.
+const MEMORY_LIMIT = 65536 * 65536
+
+function memoryHolds(size: number): void {
+  if (size > MEMORY_LIMIT) {
+    throw new Error(`the data takes ${size} bytes of memory, more than the ${MEMORY_LIMIT} (4 GiB) a wasm memory can hold`)
+  }
+}
+
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls, constants: checkResult.constants })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   const ctx = createContext(checkResult, literalRefs, undefined, dataSection.totalSize)
+  const globals = new Map<string, string[]>()
+  claimGlobals(module, checkResult.symbols, ctx.nameMap, globals)
+  programGlobals.set(checkResult.symbols, globals)
   const parts: string[] = ['(module']
   let hasMemory = dataSection.totalSize > 0 || hasMemoryDecl(module) || usesMemory(checkResult)
 
@@ -3188,6 +3474,10 @@ function usesMemory(checkResult: TypeCheckResult): boolean {
   for (const [key, type] of checkResult.types) {
     // The operand of a sizeof is a type the program names, not a value it has.
     if (key.endsWith(':SizeofType')) continue
+    // The type of a name where a for, an if let or a pattern's named part
+    // binds it is there for the editor: the value it is bound to is
+    // recorded where it is.
+    if (key.endsWith(':Binding')) continue
     const u = unwrap(type)
     if (u.kind === 'pointer' || u.kind === 'slice') return true
   }
@@ -3252,6 +3542,10 @@ function emitTestDecl(
     // Leaf test: emit as a function
     ctx.testMode = true
     const safeName = myPrefix.replace(/[^a-zA-Z0-9_]/g, '_')
+    // Its locals are its own, named as a function's are (claimLocals).
+    ctx.locals = new Map()
+    ctx.claimed = new Map()
+    ctx.bindings = new Map()
     // Collect locals first: codegen looks up how multi-value locals flatten.
     const rawLocals = collectTestLocals(stmts, ctx, checkResult)
     const testBody: AST.Block = { kind: 'Block', stmts, span: decl.span }
@@ -3318,19 +3612,16 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     }
 
     // Parse input type for params
+    const own: Pick<CodegenContext, 'claimed' | 'busy'> = {}
     if (imp.signature.input.kind === 'CompositeType') {
       const fields = imp.signature.input.fields
       for (const [index, field] of fields.entries()) {
         const resolved = checked('params', index, fields.length, field.type)
         const flattened = flattenType(resolved)
         if (field.ident) {
-          if (flattened.length === 1) {
-            params.push(`(param $${field.ident} ${flattened[0].wasmType})`)
-          } else {
-            for (const f of flattened) {
-              params.push(`(param $${field.ident}_${f.suffix} ${f.wasmType})`)
-            }
-          }
+          // Named as a function's params are, so that no two are named alike.
+          const names = claimLocals(own, field.ident, resolved, null, true)
+          for (const [i, f] of flattened.entries()) params.push(`(param $${names[i]} ${f.wasmType})`)
         } else {
           for (const f of flattened) {
             params.push(`(param ${f.wasmType})`)
@@ -3366,8 +3657,9 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     const sym = ctx.symbols.get(imp.ident)
     const type = sym?.kind === 'global' ? sym.type : resolveAstType(imp.type)
     const wasmTypes = typeToWasm(type)
+    const names = globalNames(imp.ident, type, ctx)
     return flatSuffixes(type)
-      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${imp.ident}${suffix} ${wasmTypes[i]}))`)
+      .map((suffix, i) => `  (import "${moduleName}" "${item.name}${suffix}" (global $${names[i]} ${wasmTypes[i]}))`)
       .join('\n')
   }
 
@@ -3386,7 +3678,7 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   // The initializer is one constant instruction for each wasm value: exprToWat
   // emits the checker's value for each constant in it.
   const init = decl.value
-    ? withSliceLength(exprToWat(decl.value, ctx), decl.value, type, ctx)
+    ? exprToWat(decl.value, ctx)
     : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
   const inits = trySplitMultiValue(init, wasmTypes.length)
   if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
@@ -3433,7 +3725,8 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
     const type = ctx.types.get(typeKey(item.pattern.span.start, item.pattern.kind))
     const suffixes = type ? flatSuffixes(type) : ['']
     const watName = ctx.nameMap.get(globalName) ?? globalName
-    return suffixes.map((suffix) => `  (export "${name}${suffix}" (global $${watName}${suffix}))`).join('\n')
+    const names = type ? globalNames(globalName, type, ctx) : [watName]
+    return suffixes.map((suffix, i) => `  (export "${name}${suffix}" (global $${names[i]}))`).join('\n')
   }
 
   if (item.kind === 'MemoryDecl') {
@@ -3476,6 +3769,8 @@ function resolveAstType(type: AST.Type): ResolvedType {
       return { kind: 'array', element, sizes }
     }
     case 'CompositeType':
+      // (u32) is u32
+      if (ungroupedType(type) !== type) return resolveAstType(ungroupedType(type))
       return {
         kind: 'tuple',
         fields: type.fields.map((f) => ({
@@ -3528,22 +3823,28 @@ export function programToWat(
 ): string {
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
-  const allLiterals: import('./checker').PendingLiteral[] = []
-  const allTypes = new Map<string, import('./types').ResolvedType>()
   const allCalls: TypeCheckResult['calls'] = new Map()
+  const allConstants: TypeCheckResult['constants'] = new Map()
 
-  // Collect all literals and types for a unified data section
+  // One data section for the literals of all modules. A literal is known by
+  // its offset in its own module's source, so each module has its own map
+  // into the section: two modules with a literal at the same offset (or two
+  // instances at the same private offset) must not read each other's data.
+  const sources: { path: string; result: TypeCheckResult }[] = []
   for (const [path, result] of checkResults) {
-    allLiterals.push(...result.literals)
-    for (const [k, v] of result.types) allTypes.set(k, v)
+    sources.push({ path, result })
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
+    for (const [expr, value] of result.constants) allConstants.set(expr, value)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
-  for (const [, loaded] of modules) {
-    const result = checkResults.get(loaded.path)
-    if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls, constants: allConstants })
+  const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
+  const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (result) labelDataEntries(loaded.module, result, dataBuilder, refsOf(path))
   }
   const dataSection = dataBuilder.result()
+  memoryHolds(dataSection.totalSize)
 
   // Build per-module name mappings
   const perModuleNameMap = new Map<string, Map<string, string>>()
@@ -3583,6 +3884,14 @@ export function programToWat(
     perModuleNameMap.set(path, modNameMap)
     perModuleExports.set(path, modExports)
   }
+  // Each module names the wasm globals of its own globals; a global imported
+  // from another module is known by that module's names.
+  const globals = new Map<string, string[]>()
+  for (const [path, loaded] of modules) {
+    const result = checkResults.get(path)
+    if (result) claimGlobals(loaded.module, result.symbols, perModuleNameMap.get(path) ?? new Map(), globals)
+  }
+  for (const result of checkResults.values()) programGlobals.set(result.symbols, globals)
 
   function collectAllImports(decls: readonly { kind: string }[]): AST.ImportDecl[] {
     const imports: AST.ImportDecl[] = []
@@ -3629,7 +3938,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'ImportDecl' && !isSourceImport(decl.module)) {
         for (const item of decl.items) {
@@ -3694,7 +4003,7 @@ export function programToWat(
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
-      parts.push(funcToWat(fn, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
+      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
     }
   }
 
@@ -3703,7 +4012,7 @@ export function programToWat(
     const result = checkResults.get(path)
     if (!result) continue
     const modNameMap = buildFullNameMap(path)
-    const ctx = createContext(result, globalLiteralRefs, modNameMap, dataSection.totalSize)
+    const ctx = createContext(result, refsOf(path), modNameMap, dataSection.totalSize)
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'GlobalDecl') {
         parts.push(globalToWat(decl, ctx))
@@ -3719,7 +4028,7 @@ export function programToWat(
   if (entryModule) {
     const entryNameMap = buildFullNameMap(entryPath)
     const entryResult = checkResults.get(entryPath)!
-    const ctx = createContext(entryResult, globalLiteralRefs, entryNameMap, dataSection.totalSize)
+    const ctx = createContext(entryResult, refsOf(entryPath), entryNameMap, dataSection.totalSize)
     for (const decl of entryModule.module.decls) {
       if (decl.kind === 'ExportDecl' && decl.item.kind !== 'MemoryDecl' && !isGenericExport(decl)) {
         parts.push(exportToWat(decl, ctx))
@@ -3735,10 +4044,10 @@ export function programToWat(
       const testResult = checkResults.get(testFilePath)
       if (!testModule || !testResult) continue
       const testNameMap = buildFullNameMap(testFilePath)
-      const ctx = createContext(testResult, globalLiteralRefs, testNameMap, dataSection.totalSize)
+      const ctx = createContext(testResult, refsOf(testFilePath), testNameMap, dataSection.totalSize)
       for (const decl of testModule.module.decls) {
         if (decl.kind !== 'TestDecl') continue
-        emitTestDecl(decl, '', ctx, testResult, globalLiteralRefs, testNameMap, parts)
+        emitTestDecl(decl, '', ctx, testResult, refsOf(testFilePath), testNameMap, parts)
       }
     }
   }

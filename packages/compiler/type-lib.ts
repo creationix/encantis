@@ -3,6 +3,7 @@
 
 import { grammar, semantics } from './encantis-grammar'
 import type * as AST from './ast'
+import { ungroupedType } from './ast'
 import {
   type ResolvedType,
   type ArraySize,
@@ -71,6 +72,8 @@ export function astToResolved(ast: AST.Type): ResolvedType {
     }
 
     case 'CompositeType':
+      // (u32) is u32
+      if (ungroupedType(ast) !== ast) return astToResolved(ungroupedType(ast))
       return tuple(
         ast.fields.map((f) => field(f.ident, astToResolved(f.type))),
       )

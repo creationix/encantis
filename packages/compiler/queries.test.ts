@@ -736,3 +736,191 @@ describe('rename', () => {
     expect(result).toBeNull()
   })
 })
+
+// Names a function declares for itself were recorded by name, one place per
+// name for the whole module: from where one is defined the editor found the
+// last of its name (another loop's, another function's parameter), a
+// parameter took over the global it is spelled like, the binding of an if
+// let was defined at the value it is taken from, and the index and value of
+// a for were one name. The fields of a type, after a point and in a named
+// argument were looked up by name too.
+describe('each name where it is defined', () => {
+  const code = `global x: u32 = 7
+type Pt = (x: i32, y: i32)
+func scale(y: u32) -> u32 => y * x
+export func f(p: Pt, xs: []u32, o: ?*u32, w: ?*u64) -> u64 {
+  let s: u64 = (p.x + Pt(x: 1, y: 2).y) as u64
+  for i, /* each */ v in xs {
+    s += (v * i) as u64
+  }
+  for i in 3 {
+    s += i as u64
+  }
+  if let q = o {
+    s += q.* as u64
+  }
+  if let q = w {
+    s += q.*
+  }
+  let (x: a, y:) = p
+  return s + (a + y) as u64 + scale(2) as u64
+}
+export func g(x: u8, i: u64) -> u64 => x as u64 + i
+`
+  const { source, module, check } = setup(code)
+  // The offset of `text`, or of `name` in it, from the n-th line on
+  const at = (line: number, text: string, name = text) => {
+    const from = code.split('\n').slice(0, line - 1).join('\n').length
+    const found = code.indexOf(text, from)
+    expect(found).toBeGreaterThanOrEqual(0)
+    return found + text.indexOf(name)
+  }
+  const offsets = (r: { locations: { offset: number }[] } | null) => r?.locations.map(l => l.offset)
+  // A local or parameter: found from its definition and from each use
+  const local = (name: string, def: number, uses: number[], type: string) => {
+    for (const offset of [def, ...uses]) {
+      expect(gotoDefinition(source, module, check, offset)).toEqual({ name, location: { offset: def, length: name.length } })
+      expect(findReferences(source, module, check, offset)?.references.map(r => r.offset)).toEqual(uses)
+      expect(offsets(rename(source, module, check, offset))).toEqual([def, ...uses])
+      expect(hover(source, module, check, offset)).toEqual({ name, type, kind: 'local' })
+    }
+  }
+
+  test('a local is itself, and not the last of its name in the module', () => {
+    local('i', at(6, 'for i', 'i'), [at(7, 'i)')], 'u32')
+    local('i', at(9, 'for i', 'i'), [at(10, 'i as')], 'u32#3')
+    local('i', at(21, 'i: u64'), [at(21, '+ i', 'i')], 'u64')
+    local('s', at(5, 's: u64'), [7, 10, 13, 16, 19].map(line => at(line, 's ')), 'u64')
+  })
+
+  test('the binding of an if let is defined at its name, not at the value', () => {
+    local('q', at(12, 'q = o'), [at(13, 'q.*')], '*u32')
+    local('q', at(15, 'q = w'), [at(16, 'q.*')], '*u64')
+    local('o', at(4, 'o: ?'), [at(12, 'o {')], '?*u32')
+  })
+
+  test('the index and the value of a for are two names', () => {
+    local('i', at(6, 'for i', 'i'), [at(7, 'i)')], 'u32')
+    local('v', at(6, 'v in'), [at(7, 'v *')], 'u32')
+  })
+
+  test('the variables of a pattern with named parts are each its own', () => {
+    local('a', at(18, 'a, y:'), [at(19, 'a +')], 'i32')
+    local('y', at(18, 'y:)'), [at(19, 'y)')], 'i32')
+  })
+
+  test('a parameter named like a global is the parameter, and the global stays the global', () => {
+    local('x', at(21, 'x: u8'), [at(21, 'x as')], 'u8')
+    const global = at(1, 'x')
+    for (const offset of [global, at(3, 'x\n')]) {
+      expect(hover(source, module, check, offset)).toEqual({ name: 'x', type: 'u32', kind: 'global' })
+      expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(global)
+      expect(offsets(rename(source, module, check, offset))).toEqual([global, at(3, 'x\n')])
+    }
+    local('y', at(3, 'y: u32'), [at(3, 'y *')], 'u32')
+  })
+
+  // A set wrote to the variable with no record of it: with the module's
+  // names looked up by name, its targets were the last variable of their
+  // name anywhere, and a rename from the variable left them as they were.
+  test('the variables a set assigns are uses of them', () => {
+    const program = `func pair(n: u32) -> (u32, u32) => (n, n + 1)
+export func f(n: u32) -> u32 {
+  let a: u32 = 0
+  let b: u32 = 0
+  set a, b = pair(n)
+  set (x: a, y: b) = (x: b, y: a)
+  return a + b
+}
+export func g(a: u32) -> u32 => a
+`
+    const { source, module, check } = setup(program)
+    const a = program.indexOf('a: u32 = 0')
+    const uses = [program.indexOf('a, b ='), program.indexOf('a, y: b)'), program.indexOf('a)\n'), program.indexOf('a + b')]
+    for (const offset of [a, ...uses]) {
+      expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(a)
+      expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([a, ...uses])
+      expect(hover(source, module, check, offset)).toEqual({ name: 'a', type: 'u32', kind: 'local' })
+    }
+  })
+
+  // A result named like a parameter is that parameter: one local, which holds
+  // the argument and then the result. With each recorded apart, a rename from
+  // the parameter left the result and every use as they were, and one from
+  // the result left the parameter: either way the argument was lost.
+  test('a parameter that is also a result is one name with it', () => {
+    const program = `func step(acc: u64, v: u64) -> (acc: u64) {
+  acc += v
+  acc *= 3
+}
+export func f(acc: u64) -> u64 => step(acc, 1)
+`
+    const { source, module, check } = setup(program)
+    const param = program.indexOf('acc: u64, v')
+    const result = program.indexOf('acc: u64)')
+    const uses = [program.indexOf('acc +='), program.indexOf('acc *=')]
+    for (const offset of [param, result, ...uses]) {
+      expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(result)
+      expect(findReferences(source, module, check, offset)?.references.map(r => r.offset)).toEqual([param, ...uses])
+      expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([result, param, ...uses])
+      expect(hover(source, module, check, offset)).toEqual({ name: 'acc', type: 'u64', kind: 'local' })
+    }
+    // The other function's parameter of that name is its own
+    const other = program.indexOf('acc: u64) -> u64')
+    expect(rename(source, module, check, other)?.locations.map(l => l.offset)).toEqual([other, program.indexOf('acc, 1')])
+  })
+
+  // Each test may declare a data or a def of a name another test declares
+  // (examples/crypto/ed25519/point.ents: eleven tests, each with its `data b`).
+  // From its name, by name, each one was the last of them in the module.
+  test('a data a test declares is its own, also from its name', () => {
+    const program = `export func f() -> u32 => 1
+test "one" {
+  data b: *[2]u32 = [1, 2]
+  assert b[0] == 1
+}
+test "two" {
+  data b: *[2]u32 = [3, 4]
+  assert b[1] == 4
+}
+`
+    const { source, module, check } = setup(program)
+    const first = program.indexOf('data b')
+    const second = program.lastIndexOf('data b')
+    for (const [decl, use] of [[first, program.indexOf('b[0]')], [second, program.indexOf('b[1]')]]) {
+      for (const offset of [decl + 'data '.length, use]) {
+        expect(gotoDefinition(source, module, check, offset)?.location.offset).toBe(decl)
+        expect(rename(source, module, check, offset)?.locations.map(l => l.offset)).toEqual([decl, use])
+      }
+    }
+  })
+
+  test('a field is not a name of the module or a parameter spelled the same', () => {
+    // In the type, in a named argument, in a pattern: no answer
+    for (const field of [at(2, 'x: i32'), at(2, 'y: i32'), at(5, 'x: 1'), at(5, 'y: 2'), at(18, 'x: a')]) {
+      expect(hover(source, module, check, field)).toBeNull()
+      expect(gotoDefinition(source, module, check, field)).toBeNull()
+      expect(findReferences(source, module, check, field)).toBeNull()
+      expect(rename(source, module, check, field)).toBeNull()
+    }
+    // After a point: the member's type, and nothing to go to
+    expect(hover(source, module, check, at(5, 'p.x', 'x'))).toEqual({ name: 'x', type: 'i32', kind: 'field' })
+    expect(hover(source, module, check, at(5, ').y', 'y'))).toEqual({ name: 'y', type: 'i32', kind: 'field' })
+    expect(gotoDefinition(source, module, check, at(5, 'p.x', 'x'))).toBeNull()
+    expect(rename(source, module, check, at(5, ').y', 'y'))).toBeNull()
+  })
+})
+
+describe('a value too large to hold', () => {
+  test('is one error, and the editor shows its name without laying it out', () => {
+    // s would be 2^30 registers: its hover counted them to say how many slots it takes.
+    const code = 'func f(s: (a: (b: [1073741824]u8), c: u8)) -> u8 => s.c\n'
+    const result = parse(code)
+    const check = typecheck(result.module!)
+    expect(check.errors.map((e) => e.message)).toEqual([
+      "type '(a: (b: [1073741824]u8), c: u8)' is too large: written out in full it has more than 65536 parts",
+    ])
+    expect(hover(code, result.module!, check, code.indexOf('s:'))?.name).toBe('s')
+    expect(hover(code, result.module!, check, code.indexOf('s.c'))?.name).toBe('s')
+  })
+})

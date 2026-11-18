@@ -24,7 +24,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import type { Module } from '@encantis/compiler/ast';
-import { genericDeclaring } from '@encantis/compiler/checker';
+import { fieldNamedAt, genericDeclaring } from '@encantis/compiler/checker';
 import { buildMeta, type MetaError, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
@@ -471,6 +471,11 @@ export function startServer(connection: Connection): void {
       // It is that name all the same, before anything else spelled like it:
       // by name it would be shown as a global, a type or a builtin.
       if (genericDeclaring(cached.module, wordInfo.start, word)) return null;
+
+      // A field's name (`type Pt = (x: i32)`, `Pt(x: 1)`) is no name of the
+      // module either, and by name it would be shown as a global spelled
+      // like it. After a point it has a hint of its own.
+      if (fieldNamedAt(cached.module, wordInfo.start)) return null;
 
       // Fallback: look up by name in symbols. Only a name of the module is
       // found that way: a parameter or local is what the hint at its own

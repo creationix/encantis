@@ -472,6 +472,28 @@ func f(c: bool, n: i32) {
 }
 ```
 
+## Destructuring
+
+A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.
+
+```ents
+type Spot = (c: i32, di: i32, room: i32)
+
+func f(s: Spot) -> i32 {
+  let q: i32 = 0
+  let room: i32 = 0
+  set (room:, di: q) = s
+  set (room:, q:) = s
+  set (nope: q, room: room) = s
+  return q + room
+}
+```
+
+```errors
+field 'q' not found in Spot
+field 'nope' not found in Spot
+```
+
 ## Globals
 
 A global starts as a constant: a literal, a constant expression, or the address of data. An integer constant can start a float or a wider global.
@@ -627,6 +649,7 @@ func e(r: Row, m: *mut Row) {
 cannot write through const pointer
 cannot write through const pointer
 cannot write through const pointer
+writing to an element of a slice needs its index checked: use if let on its address (&s[i])
 cannot write through const slice
 ```
 
@@ -712,6 +735,165 @@ cannot assign int(300) to u8
 cannot assign i32 to u8
 ```
 
+Data is laid out when the program is compiled, and nothing fills it in later: each value in it is a literal, a constant expression, or the name of data declared before it. In a function, a literal's values known only at run time are stored into it when it is evaluated, except in a literal laid out apart from it: an element of a slice of slices or a row of a table.
+
+```ents
+def k = 4
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data xs: *[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]
+data refs: *[2]Ref = [(ones, 3), Ref(ones, k)]
+data names: [][]i32 = [ones, [k, 1]]
+
+func f(x: i32) -> i32 {
+  let a: *[2]i32 = [x, 2]
+  let p: *[2x2]i32 = [[x, 1], [2, 3]]
+  let s: [][]i32 = [ones, [x, 1]]
+  return a[0] + p[0][0]
+}
+```
+
+```errors
+an element of [][]i32 is laid out at compile time: its values must be constants
+```
+
+```ents
+global g: i32 = 3
+func one() -> i32 => 1
+type Ref = (p: *[3]i32, n: u32)
+
+data ones: *[3]i32 = [1, 1, 1]
+data a: *[2]i32 = [g, 1]
+data b: *[2]i32 = [one(), 1]
+data c: *[1]Ref = [(ones, g as u32)]
+data d: [][]i32 = [[g, 1], [2]]
+data e: *[2][2]i32 = [[g, 1], [2, 3]]
+data f = (g, 1)
+```
+
+```errors
+data 'a' is laid out at compile time: its values must be constants
+data 'b' is laid out at compile time: its values must be constants
+data 'c' is laid out at compile time: its values must be constants
+an element of [][]i32 is laid out at compile time: its values must be constants
+a row of *[2][2]i32 is laid out at compile time: its values must be constants
+data 'f' is laid out at compile time: its values must be constants
+```
+
+An array literal for a `*[N]T` has N elements, and each row of a table or of a `*[NxM]T` has M. Behind a pointer a string is the bytes of all the elements; the rows of a table are laid out apart, so a string cannot be them.
+
+```ents
+data a: *[3]i32 = [1, 2, 3]
+data b: *[2]u16 = "abcd"
+data c: *[2x2]u8 = ["ab", "cd"]
+data d: *[2][2]i32 = [[1, 2], [3, 4]]
+data e: *[4]u8 = [7; 4]
+data f: *[!]u8 = "abc"
+data g: [*]u32 = "abcd"
+```
+
+```ents
+data a: *[3]i32 = [1, 2]
+data b: *[2]i32 = [1, 2, 3]
+data c: *[3]i32 = [1; 2]
+data d: *[2][2]i32 = [[1, 2], [3]]
+data e: [][2]i32 = [[1, 2], [3, 4, 5]]
+data f: *[8]u8 = "abcd"
+data g: *[4]u32 = "abcd"
+data h: *[2][2]u8 = "abcd"
+
+func row() -> *mut [4][]u8 => mut "abcd"
+```
+
+```errors
+cannot assign 2 elements to *[3]i32
+cannot assign 3 elements to *[2]i32
+cannot assign 2 elements to *[3]i32
+cannot assign 1 element to [2]i32
+cannot assign 3 elements to [2]i32
+cannot assign a string of 4 bytes to *[8]u8
+cannot assign a string of 4 bytes to *[4]u32
+cannot assign a string literal to *[2][2]u8 — a string is bytes ([]u8); write the [2]u8 elements as an array literal
+cannot assign a string of 4 bytes to *mut [4][]u8
+```
+
+So does a type given by its name: a name for the pointer, for the array it points to, or for an element of a literal laid out apart is the type it names.
+
+```ents
+type Three = [3]i32
+type Triple = *[3]i32
+type Row = []i32
+type Pair = *[2]i32
+
+data a: *Three = [1, 2]
+data b: Triple = [1, 2, 3, 4]
+data c: *Three = "ab"
+
+func first(p: *Three) -> i32 => p[0]
+func short() -> i32 => first([1, 2])
+
+func rows(x: i32) -> i32 {
+  let s: []Row = [[x, 2], [3]]
+  let t: *[2]Pair = [[x, 2], [3, 4]]
+  return 0
+}
+```
+
+```errors
+cannot assign 2 elements to *Three
+cannot assign 4 elements to Triple
+cannot assign a string of 2 bytes to *Three
+argument 1: cannot assign 2 elements to *Three
+an element of []Row is laid out at compile time: its values must be constants
+an element of *[2]Pair is laid out at compile time: its values must be constants
+```
+
+An element of an array of pointers given a literal is the address of that literal, laid out apart: it has the count its pointer says, its values are constants, and a tuple is not a pointer to a struct.
+
+```ents
+type Pt = (x: i32, y: i32)
+data ones: *[2]i32 = [1, 1]
+data a: *[2]*[2]i32 = [[1, 2], ones]
+data b: *[2][*]u8 = ["ab", "cde"]
+data c: *[2]*[2]i32 = [[1, 2, 3], [4, 5]]
+data d: *[2]*[2]u8 = ["abc", "de"]
+data e: *[1]*Pt = [(1, 2)]
+
+func f(x: i32) -> i32 {
+  let p: *[2]*[2]i32 = [[x, 2], ones]
+  return p[0][0]
+}
+```
+
+```errors
+cannot assign 3 elements to *[2]i32
+cannot assign a string of 3 bytes to *[2]u8
+cannot assign (int(1), int(2)) to *Pt
+an element of *[2]*[2]i32 is laid out at compile time: its values must be constants
+```
+
+`memcpy`, `memset` and `memzero` write their destination, as a write through an index does: it is a `*mut` pointer.
+
+```ents
+data src = [1:u8, 2, 3, 4]
+data dst = [0:u8; 4]
+data out = mut [0:u8; 4]
+
+func a() { memcpy(dst, src, 4) }
+func b() { memset(dst, 7, 4) }
+func c() { memzero(dst) }
+func d(p: *[4]u8) { memcpy(p, src, 4) }
+func e() { memcpy(out, src, 4) }
+```
+
+```errors
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memset dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memzero dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+```
+
 ## Slices from a pointer and a length
 
 A pair `(ptr, len)` where a slice is expected is that slice, whatever its elements are.
@@ -773,6 +955,110 @@ cannot assign (int(1), int(2), int(3)) to []i32
 cannot assign () to []i32
 ```
 
+So is an element of a literal of slices: a value in parentheses is that value, and a many-pointer has no length to be one.
+
+```ents
+data room = mut [0:u8; 64]
+
+func f() -> u32 {
+  let xs: [][]u8 = [(room as [*]u8)]
+  let ys: [][]mut u8 = [((room as [*]mut u8)), room]
+  return xs.len + ys.len
+}
+```
+
+```errors
+cannot assign [*]u8 to []u8
+cannot assign [*]mut u8 to []mut u8
+```
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+
+func total(xs: [][]u8) -> u32 {
+  let n: u32 = 0
+  for x in xs { n += x.len }
+  return n
+}
+
+test "values in parentheses among slices" {
+  let s: []u8 = more
+  let xs: [][]u8 = [(text), ("ab"), (s), ((text as [*]u8, 2))]
+  assert total(xs) == 3 + 2 + 5 + 2
+}
+```
+
+<!-- spec:end -->
+
+## Slices from a pointer to an array
+
+A `*[N]T` is a `[]T` of length `N` wherever it meets one: an argument, an initializer, an assignment, a returned value, an expression body, a branch, a field of a struct or tuple literal, and under a name for the slice type.
+
+<!-- spec:begin compile -->
+
+```ents
+data text = "abc"
+data more = "hello"
+type S = []u8
+type Holder = (s: []u8, n: u32)
+
+global g: []u8 = text
+
+func ret() -> []u8 { return text }
+func arrow() -> []u8 => text
+func pick(c: bool) -> []u8 => if c { text } else { more }
+func arm(k: u32) -> []u8 => match k { 0 => text, _ => more }
+func built() -> Holder => Holder(text, 1)
+func literal() -> Holder => (s: more, n: 2)
+func pair() -> ([]u8, u32) => (text, 3)
+func named() -> u32 {
+  let s: S = "abcd"
+  s = more
+  return s.len
+}
+func fields() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h = Holder(t.s, t.n)
+  return h.s.len
+}
+
+test "each has the length of its array" {
+  assert g.len == 3
+  assert ret().len == 3
+  assert arrow().len == 3
+  assert pick(false).len == 5
+  assert arm(0).len == 3
+  assert built().s.len == 3
+  assert literal().s.len == 5
+  let (p, n) = pair()
+  assert p.len == 3
+  assert named() == 5
+  assert fields() == 3
+}
+```
+
+<!-- spec:end -->
+
+A struct or tuple that is already a value holds a pointer, one wasm value where the slice is two: it is not converted as a whole. Built from its fields, as a literal is, each field converts (`fields` above).
+
+```ents
+data text = "abc"
+type Holder = (s: []u8, n: u32)
+
+func f() -> u32 {
+  let t = (s: text, n: 1:u32)
+  let h: Holder = t
+  return h.s.len
+}
+```
+
+```errors
+cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.
@@ -800,8 +1086,8 @@ func b(x: u32) { buf[x & ~15] = 2 }
 ```
 
 ```errors
-runtime index on *[16]u8 requires 'if let' or '??'
-runtime index on *[16]u8 requires 'if let' or '??'
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
 ```
 
 A shift takes its count modulo the width it's done in, 32 bits for a `u32` or anything narrower. So `x >> 32` is `x`, not 0, and bounds nothing, while `x >> 60` shifts by 28. A constant with a shift inside it has the value the shift gives it: `65535 >> 32` is 65535 as a `u32`, and 16 is no index into 16 elements.
@@ -894,9 +1180,9 @@ func d(x: u32) { if x < 12 || x == 50 { buf[x] = 1 } }
 
 ```errors
 index type u32#13 may exceed *[12]u8 bounds
-runtime index on *[12]u8 requires 'if let' or '??'
-runtime index on *[12]u8 requires 'if let' or '??'
-runtime index on *[12]u8 requires 'if let' or '??'
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
+writing to an element needs an index known to be in range
 ```
 
 For an index that can't be proven, `&items[i]` is an optional pointer, so the check is written out.
@@ -959,9 +1245,10 @@ index type u32#3 may exceed *[2][3]i32 bounds (max index 2 >= 2)
 ```ents
 data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
 data rows: [][2]i32 = [[7, 1], [3, 4]]
+data zeros: *[2]i32 = [0, 0]
 
 func a(i: u32, j: u32#3) -> i32 => if let r = grid[i] { r[j] } else { 0 }
-func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? rows[0])[j]
+func b(i: u32, j: u32#2) -> i32 => (rows[i] ?? zeros)[j]
 ```
 
 A write goes through the row pointer, so the table has to be mutable. Assigning to `m[i]` points the row elsewhere; there is no `[N][M]T` in the table to load or store whole.
@@ -1137,6 +1424,30 @@ cannot use a string literal among u32 elements
 cannot assign a string literal to []u16
 argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8); write the u32 elements as an array literal ([1, 2, 3])
 cannot assign a string literal to []u16
+```
+
+A string in single quotes is a string too, never a character: not a byte to compare, compute with, assign or pass. Next to a pointer it is the address of its bytes.
+
+```ents
+func is_a(c: u8) -> bool => c == 'a'
+func is_b(c: u8) -> bool => ('b') != c
+func offset(c: u8) -> u8 => c - 'a'
+func before(c: u32) -> bool => c < "ab"
+func next() -> bool => 'a' + 1 == 98
+func put() { let c: u8 = 'a' }
+func take(c: u8) -> u8 => c
+func give() -> u8 => take('a')
+func same(p: *[2]u8) -> bool => p == "ab"
+```
+
+```errors
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'!=' cannot be applied to a string and u8 — a string is bytes in memory, not a character; write its byte as a number (98)
+'-' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+'<' cannot be applied to u32 and a string — a string is bytes in memory, not a character
+'+' cannot be applied to a string and int(1) — a string is bytes in memory, not a character; write its byte as a number (97)
+cannot assign *[1]u8 to u8
+argument 1: cannot assign *[1]u8 to u8
 ```
 
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.
@@ -1591,4 +1902,35 @@ func apply(f: (u32) -> u32, x: f64) -> u32 => f(x)
 ```errors
 calling a function value is not supported yet
 argument 1: cannot assign f64 to u32
+```
+
+## Types in parentheses
+
+One type without a name in parentheses is that type, wherever it is written: there is no tuple of one element.
+
+```ents
+type W = (u32)
+type Q = (x: i32, y: i32)
+
+func id(comptime T: type, a: T) -> T => a
+func twice(a: (u32)) -> ((u32)) => a * 2
+func f(a: W, b: u32) -> u32 {
+  let c: (u32) = twice(a) + id((u32), b)
+  return c as (u32)
+}
+func g(a: i32, b: i32) -> i32 => (Q)(a, b).y
+```
+
+A name makes a struct of one field, which is not the type of its field.
+
+```ents
+func h(a: f64) -> f64 {
+  let s: (v: f64) = a
+  return s
+}
+```
+
+```errors
+cannot assign f64 to (v: f64)
+cannot assign (v: f64) to f64
 ```

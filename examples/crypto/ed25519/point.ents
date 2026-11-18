@@ -215,7 +215,9 @@ export func scalar-mult(buf: *mut[120]u64, out: u32#6, base: u32#6, scalar: *[32
       bit -= 1
     }
     break when byte-idx == 0
-    byte-idx -= 1
+    // byte-idx is above 0 here, but its range can't show that: the & keeps
+    // the result a u32#32, as scalar[byte-idx] needs.
+    byte-idx = (byte-idx - 1) & 31
   }
 }
 
@@ -289,7 +291,7 @@ export func point-encode(out: *mut[32]u8, buf: *mut[120]u64, i: u32#6) {
 
 def mask51 = 0x7FFFFFFFFFFFF:u64
 
-func load-le64(ptr: *u8, offset: u32) -> u64 {
+func load-le64(ptr: [*]u8, offset: u32) -> u64 {
   let p = ptr + offset
   return p[0] as u64
     | (p[1] as u64 << 8)
@@ -302,11 +304,11 @@ func load-le64(ptr: *u8, offset: u32) -> u64 {
 }
 
 export func fe-frombytes(s: *[32]u8) -> Fe {
-  let h0 = load-le64(s as *u8, 0) & mask51
-  let h1 = (load-le64(s as *u8, 6) >> 3) & mask51
-  let h2 = (load-le64(s as *u8, 12) >> 6) & mask51
-  let h3 = (load-le64(s as *u8, 19) >> 1) & mask51
-  let h4 = (load-le64(s as *u8, 24) >> 12) & mask51
+  let h0 = load-le64(s as [*]u8, 0) & mask51
+  let h1 = (load-le64(s as [*]u8, 6) >> 3) & mask51
+  let h2 = (load-le64(s as [*]u8, 12) >> 6) & mask51
+  let h3 = (load-le64(s as [*]u8, 19) >> 1) & mask51
+  let h4 = (load-le64(s as [*]u8, 24) >> 12) & mask51
   return (h0, h1, h2, h3, h4)
 }
 

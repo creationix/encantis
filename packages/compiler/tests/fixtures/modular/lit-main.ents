@@ -1,0 +1,7 @@
+import "./lit-util" ("ustamp" func ustamp() -> u8 "uword" func uword() -> u8)
+data mbuf = mut [0:u8; 4]
+export func mstamp() -> u8 { memcpy(mbuf, "ABCD", 4)
+  return mbuf[0] }
+func mpick(comptime T: type, x: T) -> []u8 => "MAIN"
+export func mword() -> u8 => mpick(u8, 1)[0] ?? 0
+export func both() -> u32 => (mstamp() as u32) << 24 | (ustamp() as u32) << 16 | (mword() as u32) << 8 | uword() as u32

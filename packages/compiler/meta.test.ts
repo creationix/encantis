@@ -200,8 +200,9 @@ test "find" {
       const line = Number(key.split(':')[0])
       return line >= 1 && line <= 6
     })
+    // `for i, v in xs`: the index i and the value v each at its name
     expect(inFind.map(([key, hint]) => `${key} ${hint.type}`)).toEqual([
-      '1:28 []u32', '1:37 u32', '2:6 u32', '2:14 []u32', '3:11 u32', '3:18 u32', '3:23 u32', '5:9 []u32', '5:12 u32',
+      '1:28 []u32', '1:37 u32', '2:6 u32', '2:9 u32', '2:14 []u32', '3:11 u32', '3:18 u32', '3:23 u32', '5:9 []u32', '5:12 u32',
       '1:5 (comptime T: type, xs: []T, x: T)->u32',
     ])
     // A call in it is the instance that instance calls.
@@ -270,18 +271,20 @@ describe('a module with errors', () => {
   const addressOf = (out: MetaOutput, name: string) => out.symbols.find(s => s.name === name)?.value
 
   test('a data literal with an element of the wrong type has no address, the others keep theirs', () => {
+    // (A Pt that held a Pt is no type at all: see checker.test.ts.)
     const out = meta(`
-type Pt = (q: i32, r: Pt)
+type In = (a: u8, b: u8)
+type Pt = (q: i32, r: In)
 data ok = [1, 2]
 data dp = [Pt(1, 2), Pt(3, 4)]
 export func a() -> u32 => 1`)
     expect(out.errors?.map(e => e.message)).toEqual([
-      'field r: cannot assign int(2) to Pt',
-      'field r: cannot assign int(4) to Pt',
+      'field r: cannot assign int(2) to In',
+      'field r: cannot assign int(4) to In',
     ])
     expect(addressOf(out, 'ok')).toBe('0x8')
     expect(addressOf(out, 'dp')).toBeUndefined()
-    expect(out.symbols.map(s => s.name)).toEqual(['Pt', 'ok', 'dp', 'a'])
+    expect(out.symbols.map(s => s.name)).toEqual(['In', 'Pt', 'ok', 'dp', 'a'])
   })
 
   // Each of these is rejected by the checker with a literal that can't be laid out.
@@ -360,4 +363,79 @@ describe('meta.json generation', () => {
       expect(actual).toEqual(expectedWithoutSchema)
     })
   }
+})
+
+// Each parameter and local is a symbol of its own, with its own uses, and
+// the hint at each use names it. By name, every use named the last symbol of
+// its name (another loop's variable, a global's hint named a parameter), and
+// a symbol's uses were those of the last definition of its name anywhere.
+describe('each name where it is defined', () => {
+  const source = `global x: u32 = 7
+export func f(xs: []u32, o: ?*u32, w: ?*u64) -> u64 {
+  let s: u64 = 0
+  for i, v in xs {
+    s += (v * i) as u64
+  }
+  for i in 3 {
+    s += i as u64
+  }
+  if let q = o {
+    s += q.* as u64
+  }
+  if let q = w {
+    s += q.*
+  }
+  return s + x as u64
+}
+export func g(x: u8, i: u64) -> u64 => x as u64 + i
+`
+  const result = parse(source)
+  const built = buildMeta(result.module!, source)
+  const lines = source.split('\n')
+  // The line:column key of `name` in `text` on a line (0-based)
+  const key = (line: number, text: string, name = text) => `${line}:${lines[line].indexOf(text) + text.indexOf(name)}`
+  const symbolAt = (k: string) => built.symbols[built.hints[k]?.symbol ?? -1]
+
+  test('a symbol per definition, with its own uses', () => {
+    const named = (name: string) => built.symbols.filter(s => s.name === name).map(s => `${s.kind} ${s.def} -> ${s.refs.join(' ')}`)
+    expect(named('i')).toEqual([
+      `local ${key(3, 'i,')} -> ${key(4, 'i)')}`,
+      `local ${key(6, 'i in')} -> ${key(7, 'i as')}`,
+      `param ${key(17, 'i:')} -> 17:${lines[17].lastIndexOf('i')}`,
+    ])
+    expect(named('v')).toEqual([`local ${key(3, 'v in')} -> ${key(4, 'v *')}`])
+    expect(named('q')).toEqual([`local ${key(9, 'q =')} -> ${key(10, 'q.*')}`, `local ${key(12, 'q =')} -> ${key(13, 'q.*')}`])
+    expect(named('x')).toEqual([`global 0:7 -> ${key(15, 'x as')}`, `param ${key(17, 'x:')} -> ${key(17, 'x as')}`])
+  })
+
+  test('the hint at each use names the symbol defined there', () => {
+    for (const [use, def] of [[key(4, 'i)'), key(3, 'i,')], [key(7, 'i as'), key(6, 'i in')], [key(10, 'q.*'), key(9, 'q =')], [key(13, 'q.*'), key(12, 'q =')], [key(15, 'x as'), '0:7']]) {
+      expect(symbolAt(use)?.def).toBe(def)
+    }
+    expect(symbolAt('0:7')?.kind).toBe('global')
+    expect(built.types[symbolAt('0:7')?.type ?? -1]?.type).toBe('u32')
+    expect(symbolAt(key(9, 'q ='))?.name).toBe('q')
+  })
+
+  // By name, every test's `data b` was the last one: its uses and its name
+  // were shown with the last one's address.
+  test('a data a test declares is its own symbol, at its own address', () => {
+    const program = `export func f() -> u32 => 1
+test "one" {
+  data b: *[2]u32 = [1, 2]
+  assert b[0] == 1
+}
+test "two" {
+  data b: *[2]u32 = [3, 4]
+  assert b[1] == 4
+}
+`
+    const meta = buildMeta(parse(program).module!, program)
+    const datas = meta.symbols.filter(s => s.name === 'b')
+    expect(datas.map(s => `${s.kind} ${s.def} -> ${s.refs.join(' ')}`)).toEqual(['data 2:7 -> 3:9', 'data 6:7 -> 7:9'])
+    expect(datas[0].value).not.toBe(datas[1].value)
+    for (const [at, index] of [['2:7', 0], ['3:9', 0], ['6:7', 1], ['7:9', 1]] as const) {
+      expect(meta.symbols[meta.hints[at]?.symbol ?? -1]).toBe(datas[index])
+    }
+  })
 })

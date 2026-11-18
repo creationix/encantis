@@ -163,11 +163,16 @@ export interface NamedRT {
   type: ResolvedType // The underlying resolved type
 }
 
-// Forward reference - placeholder for recursive type definitions
-// These are resolved after all types are collected
+// Forward reference - a type named before it is resolved: one declared further
+// down, or one that refers to itself. `target` is set once the type is
+// resolved, and unwrap() follows it. A type that refers to itself is a cycle
+// that always passes through one of these, so a walk that goes into what a
+// pointer points to stops here (unwrapToCut) or remembers where it has been
+// (typeEquals, typeAssignResult, canonicalKey).
 export interface ForwardRefRT {
   kind: 'forward_ref'
   name: string // The type name being referenced
+  target?: ResolvedType
 }
 
 // Field in a tuple/struct or function signature
@@ -219,17 +224,21 @@ export function slice(element: ResolvedType, mutable?: boolean, optional?: boole
   return result
 }
 
+// A name for a pointer or a slice is the type it names: these see through it.
 export function optionalOf(type: ResolvedType): ResolvedType {
-  if (type.kind === 'pointer') return { ...type, optional: true }
-  if (type.kind === 'slice') return { ...type, optional: true }
+  const u = unwrap(type)
+  if (u.kind === 'pointer') return { ...u, optional: true }
+  if (u.kind === 'slice') return { ...u, optional: true }
   return type
 }
 
 export function isOptional(type: ResolvedType): boolean {
-  return (type.kind === 'pointer' || type.kind === 'slice') && !!type.optional
+  const u = unwrap(type)
+  return (u.kind === 'pointer' || u.kind === 'slice') && !!u.optional
 }
 
-export function unwrapOptional(type: ResolvedType): ResolvedType {
+export function unwrapOptional(written: ResolvedType): ResolvedType {
+  const type = isOptional(written) ? unwrap(written) : written
   if (type.kind === 'pointer' && type.optional) {
     const result: PointerRT = { ...type }
     delete result.optional
@@ -286,12 +295,13 @@ export function isValueArray(t: ArrayRT): boolean {
   return t.sizes !== null && t.sizes.length === 1 && typeof t.sizes[0] === 'number'
 }
 
-// A pointer or slice whose element is a fixed array (*[N][M]T, [][M]T,
-// [*][M]T) is a table: each element is a pointer to its row, which is laid out
-// on its own, as the data packer lays out the literal. A fixed array that is a
-// field of a struct, or a value in registers, lies in place instead. Returns
-// the row pointer an element is (*[M]T, *mut [M]T in a mutable table), or
-// null when the type isn't a table. *[NxM]T is one packed block, not a table.
+// A pointer or slice whose element is an array (*[N][M]T, [][M]T, [*][M]T,
+// and rows that are framed or packed: *[N][!]T, *[N][AxB]T) is a table: each
+// element is a pointer to its row, which is laid out on its own, as the data
+// packer lays out the literal. A fixed array that is a field of a struct, or a
+// value in registers, lies in place instead. Returns the row pointer an
+// element is (*[M]T, *mut [M]T in a mutable table), or null when the type
+// isn't a table. *[NxM]T is one packed block, not a table.
 export function tableRow(t: ResolvedType): PointerRT | null {
   const u = unwrap(t)
   let element: ResolvedType
@@ -303,8 +313,23 @@ export function tableRow(t: ResolvedType): PointerRT | null {
     return null
   }
   const row = unwrap(element)
-  if (row.kind !== 'array' || !isValueArray(row)) return null
+  if (!isRowArray(row)) return null
   return pointer(row, false, u.mutable)
+}
+
+// An array type that, as the element of a pointer or slice, is a row laid
+// out on its own: one with a size, fixed ([M]T), framed ([!]T) or packed
+// ([AxB]T). The size of a row a literal gives ([_]T) is still to be known.
+export function isRowArray(t: ResolvedType): t is ArrayRT {
+  return t.kind === 'array' && t.sizes !== null && t.sizes.length > 0 && !t.sizes.includes('_')
+}
+
+// The array a null-terminated pointer reads (the [!]T of a *[!]T, or the
+// [!]T itself, which is held as its pointer), or null for any other type.
+export function framedArray(t: ResolvedType): ArrayRT | null {
+  const u = unwrap(t)
+  const array = u.kind === 'pointer' ? unwrap(u.pointee) : u
+  return array.kind === 'array' && array.sizes?.length === 1 && array.sizes[0] === '!' ? array : null
 }
 
 // Helper to check if a size is a framing specifier
@@ -468,11 +493,15 @@ function sizesCompatible(target: ArraySize[] | null, source: ArraySize[] | null)
   return sizesEqual(target, source)
 }
 
-export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
+export function typeEquals(a: ResolvedType, b: ResolvedType, assumed?: Assumed): boolean {
+  if (a === b) return true
   // Aliases are transparent on either side, at any depth (e.g. the pointee of
   // [*]mut Slot): compare the underlying types.
-  if (a.kind === 'named') return typeEquals(a.type, b)
-  if (b.kind === 'named') return typeEquals(a, b.type)
+  if (a.kind === 'named') return typeEquals(a.type, b, assumed)
+  if (b.kind === 'named') return typeEquals(a, b.type, assumed)
+  const followed = followRefs(a, b, assumed)
+  if (followed === 'assumed') return true
+  if (followed) return typeEquals(followed.a, followed.b, followed.assumed)
   if (a.kind !== b.kind) return false
 
   switch (a.kind) {
@@ -481,23 +510,23 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
 
     case 'pointer': {
       const bPtr = b as PointerRT
-      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && !!a.optional === !!bPtr.optional && typeEquals(a.pointee, bPtr.pointee)
+      return !!a.boundary === !!bPtr.boundary && !!a.mutable === !!bPtr.mutable && !!a.optional === !!bPtr.optional && typeEquals(a.pointee, bPtr.pointee, assumed)
     }
 
     case 'slice': {
       const bSlice = b as SliceRT
-      return !!a.mutable === !!bSlice.mutable && !!a.optional === !!bSlice.optional && typeEquals(a.element, bSlice.element)
+      return !!a.mutable === !!bSlice.mutable && !!a.optional === !!bSlice.optional && typeEquals(a.element, bSlice.element, assumed)
     }
 
     case 'array': {
       const bArr = b as ArrayRT
-      return sizesEqual(a.sizes, bArr.sizes) && typeEquals(a.element, bArr.element)
+      return sizesEqual(a.sizes, bArr.sizes) && typeEquals(a.element, bArr.element, assumed)
     }
 
     case 'tuple': {
       const bTuple = b as TupleRT
       if (a.fields.length !== bTuple.fields.length) return false
-      return a.fields.every((f, i) => fieldEquals(f, bTuple.fields[i]))
+      return a.fields.every((f, i) => fieldEquals(f, bTuple.fields[i], assumed))
     }
 
     case 'func': {
@@ -505,8 +534,8 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
       if (a.params.length !== bFunc.params.length) return false
       if (a.returns.length !== bFunc.returns.length) return false
       return (
-        a.params.every((p, i) => fieldEquals(p, bFunc.params[i])) &&
-        a.returns.every((r, i) => fieldEquals(r, bFunc.returns[i]))
+        a.params.every((p, i) => fieldEquals(p, bFunc.params[i], assumed)) &&
+        a.returns.every((r, i) => fieldEquals(r, bFunc.returns[i], assumed))
       )
     }
 
@@ -522,12 +551,12 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
     case 'comptime_list': {
       const bList = b as ComptimeListRT
       if (a.elements.length !== bList.elements.length) return false
-      return a.elements.every((e, i) => typeEquals(e, bList.elements[i]))
+      return a.elements.every((e, i) => typeEquals(e, bList.elements[i], assumed))
     }
 
     case 'comptime_array': {
       const bArr = b as ComptimeArrayRT
-      return a.count === bArr.count && typeEquals(a.element, bArr.element)
+      return a.count === bArr.count && typeEquals(a.element, bArr.element, assumed)
     }
 
     case 'forward_ref':
@@ -536,8 +565,8 @@ export function typeEquals(a: ResolvedType, b: ResolvedType): boolean {
   }
 }
 
-function fieldEquals(a: ResolvedField, b: ResolvedField): boolean {
-  return a.name === b.name && typeEquals(a.type, b.type)
+function fieldEquals(a: ResolvedField, b: ResolvedField, assumed?: Assumed): boolean {
+  return a.name === b.name && typeEquals(a.type, b.type, assumed)
 }
 
 // === Type Assignability ===
@@ -567,9 +596,31 @@ function mutCompatible(targetMut: boolean | undefined, sourceMut: boolean | unde
   return true
 }
 
+// Whether unwrap() goes through a forward reference on its way
+function throughRef(t: ResolvedType): boolean {
+  while (t.kind === 'named') t = t.type
+  return t.kind === 'forward_ref' && t.target !== undefined
+}
+
+// The pairs of types whose assignability is being decided, where one of them
+// is a type that refers to itself. Coming round to one again, it holds: what
+// is still to be compared on the way is compared elsewhere.
+const assigning: (readonly [ResolvedType, ResolvedType])[] = []
+
 // Check if source type can be assigned to target type
 // Returns lossiness and reinterpretability
 export function typeAssignResult(target: ResolvedType, source: ResolvedType): AssignResult {
+  if (!throughRef(target) && !throughRef(source)) return assignResult(target, source)
+  if (assigning.some(([t, s]) => t === target && s === source)) return lossless(true)
+  assigning.push([target, source])
+  try {
+    return assignResult(target, source)
+  } finally {
+    assigning.pop()
+  }
+}
+
+function assignResult(target: ResolvedType, source: ResolvedType): AssignResult {
   const t = unwrap(target)
   const s = unwrap(source)
 
@@ -716,8 +767,11 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     return lossless(false)
   }
 
+  // An array that is a value ([N]T, held in registers) has no address, so it
+  // is no pointer and no slice: only an array held as its pointer (a [!]T)
+  // coerces to one.
   // Fixed array coerces to pointer-to-array: [N]T → *[N]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array') {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array') {
     if (!s.sizes?.includes('_')) {
       const elemResult = typeAssignResult(t.pointee.element, s.element)
       if (elemResult.compatible && elemResult.lossiness === 'lossless') {
@@ -726,14 +780,12 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
-  // Fixed array coerces to slice: [N]T → []T
-  if (s.kind === 'array' && t.kind === 'slice' && !s.sizes?.includes('_')) {
-    const elemResult = typeAssignResult(t.element, s.element)
-    if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
-  }
+  // No array without its pointer coerces to a slice: a [N]T is a value, and
+  // one held as its pointer ([!]T, [?]T, a packed [NxM]T) has no length to
+  // give it here: (s.ptr, s.len) is the slice (9.5). A pointer to it does.
 
   // Fixed array coerces to many-pointer: [N]T → [*]T
-  if (s.kind === 'array' && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
+  if (s.kind === 'array' && !isValueArray(s) && t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null) {
     const elemResult = typeAssignResult(t.pointee.element, s.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless') return lossless(false)
   }
@@ -815,12 +867,15 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
     }
   }
 
+  // What a pointer points to, under its name as well: *A for A = [3]u16
+  const sPointee = s.kind === 'pointer' ? unwrap(s.pointee) : null
+
   // Pointer-to-array can coerce to slice: *[N]T -> []T (respects mutability).
   // The slice's length is N: a many-pointer [*]T has none to give, and a
   // *[!]T would have to be scanned for it.
-  if (t.kind === 'slice' && s.kind === 'pointer' && s.pointee.kind === 'array' && isFixedSizes(s.pointee.sizes)) {
+  if (t.kind === 'slice' && s.kind === 'pointer' && sPointee?.kind === 'array' && isFixedSizes(sPointee.sizes)) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
-    const elemResult = typeAssignResult(t.element, s.pointee.element)
+    const elemResult = typeAssignResult(t.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
@@ -828,8 +883,8 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Pointer-to-array can coerce to framed array: *[N]T -> [!]T, [?]T
   if (t.kind === 'array' && t.sizes?.some(s => s === '!' || s === '?') &&
-      s.kind === 'pointer' && s.pointee.kind === 'array') {
-    const elemResult = typeAssignResult(t.element, s.pointee.element)
+      sPointee?.kind === 'array') {
+    const elemResult = typeAssignResult(t.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
@@ -837,9 +892,9 @@ export function typeAssignResult(target: ResolvedType, source: ResolvedType): As
 
   // Pointer-to-array can coerce to many-pointer: *[N]T -> [*]T (respects mutability)
   if (t.kind === 'pointer' && t.pointee.kind === 'array' && t.pointee.sizes === null &&
-      s.kind === 'pointer' && s.pointee.kind === 'array' && s.pointee.sizes !== null) {
+      s.kind === 'pointer' && sPointee?.kind === 'array' && sPointee.sizes !== null) {
     if (!mutCompatible(t.mutable, s.mutable)) return INCOMPATIBLE
-    const elemResult = typeAssignResult(t.pointee.element, s.pointee.element)
+    const elemResult = typeAssignResult(t.pointee.element, sPointee.element)
     if (elemResult.compatible && elemResult.lossiness === 'lossless' && elemResult.reinterpret) {
       return lossless(true)
     }
@@ -1019,7 +1074,30 @@ function fieldToString(f: ResolvedField, opts?: { compact?: boolean }): string {
 
 // Unwrap named types to get the underlying type
 export function unwrap(t: ResolvedType): ResolvedType {
-  return t.kind === 'named' ? unwrap(t.type) : t
+  while (t.kind === 'named' || (t.kind === 'forward_ref' && t.target)) {
+    t = t.kind === 'named' ? t.type : (t.target as ResolvedType)
+  }
+  return t
+}
+
+// unwrap(), stopping at a forward reference: what a walk over the parts of a
+// type uses, where going on into a type that refers to itself would never end.
+export function unwrapToCut(t: ResolvedType): ResolvedType {
+  while (t.kind === 'named') t = t.type
+  return t
+}
+
+// What a forward reference's walk goes on to, once it is resolved. The pair
+// of types being compared is remembered first, so that a comparison that
+// comes round to it again holds: two types that refer to themselves are equal
+// when nothing on the way round tells them apart.
+type Assumed = readonly (readonly [ResolvedType, ResolvedType])[]
+function followRefs(a: ResolvedType, b: ResolvedType, assumed: Assumed | undefined): { a: ResolvedType; b: ResolvedType; assumed: Assumed } | 'assumed' | null {
+  const through = (t: ResolvedType) => (t.kind === 'forward_ref' && t.target ? t.target : t)
+  const [na, nb] = [through(a), through(b)]
+  if (na === a && nb === b) return null
+  if (assumed?.some(([x, y]) => x === a && y === b)) return 'assumed'
+  return { a: na, b: nb, assumed: [...(assumed ?? []), [a, b]] }
 }
 
 export function isInteger(t: ResolvedType): boolean {
@@ -1295,6 +1373,117 @@ export function byteSize(t: ResolvedType): number | null {
   }
 }
 
+// The length of the array a pointer points to, where that is known: what a
+// pointer to an array adds to become a slice
+export function arrayLength(type: ResolvedType): number | null {
+  const t = unwrap(type)
+  const array = t.kind === 'pointer' ? unwrap(t.pointee) : null
+  return array?.kind === 'array' && isFixedSizes(array.sizes) ? totalElements(array.sizes) : null
+}
+
+// === Size of a type written out ===
+
+// The most parts a type can have, written out in full: every name replaced by
+// what it names, each field, element, pointer and number counted where it
+// stands, and an array held by value counted once for each of its elements.
+// Names let a type double at every level (type D2 = (a: D1, b: D1)), and an
+// array held by value is that many values ([2][2][2]u8 is eight): what is
+// done with a type written out (an instance key, the registers of a value)
+// would then not fit in memory.
+export const MAX_TYPE_PARTS = 1 << 16
+
+// How many parts a type has, written out in full, counted once for each place
+// it stands. A type that refers to itself is cut where it comes round, as
+// canonicalKey cuts it. `counted` holds what is known already, so a type that
+// names the same type many times is counted in a time of its own size.
+//
+// `byValue`: the type is held by value, as a parameter, a result, a variable
+// or a global is, and a field or an element of one. It is then laid out in
+// registers, an array [N]T as N of T (typeToWasm): N times what T counts.
+// What a pointer or a slice points to is in memory, written out once whatever
+// its length, and the parameters and results of a function type are held by
+// value wherever the function type is.
+export function typeParts(root: ResolvedType, counted: Map<ResolvedType, number> = new Map(), byValue = false): number {
+  // A walk with a stack of its own: a type can be deeper than the call stack,
+  // through names that each add a level (type T0 = (n: ?*T1), ...).
+  type Frame = { t: ResolvedType; byValue: boolean; parts: readonly Part[]; next: number; n: number }
+  const stack: Frame[] = []
+  // What is known, and what is being counted, held by value and not
+  const known = [counted, new Map<ResolvedType, number>()]
+  const open = [new Set<ResolvedType>(), new Set<ResolvedType>()]
+  const mode = (held: boolean) => (held ? 1 : 0)
+  // The count of a type known already, or one cut where it comes round, or
+  // null where it is to be counted from its parts (pushed)
+  const enter = (t: ResolvedType, held: boolean): number | null => {
+    const n = known[mode(held)].get(t)
+    if (n !== undefined) return n
+    if (open[mode(held)].has(t)) return 1
+    open[mode(held)].add(t)
+    const [parts, own] = partsOf(t, held)
+    stack.push({ t, byValue: held, parts, next: 0, n: own })
+    return null
+  }
+  // A count past any limit stays a number: it is only ever compared
+  const add = (a: number, b: number) => Math.min(a + b, Number.MAX_SAFE_INTEGER)
+  const first = enter(root, byValue)
+  if (first !== null) return first
+  for (;;) {
+    const frame = stack[stack.length - 1]
+    if (frame.next < frame.parts.length) {
+      const part = frame.parts[frame.next]
+      const n = enter(part.t, part.byValue)
+      // Counted now, or when its frame is done (below)
+      if (n === null) continue
+      frame.n = add(frame.n, Math.min(n * part.times, Number.MAX_SAFE_INTEGER))
+      frame.next++
+      continue
+    }
+    stack.pop()
+    open[mode(frame.byValue)].delete(frame.t)
+    known[mode(frame.byValue)].set(frame.t, frame.n)
+    if (stack.length === 0) return frame.n
+    const parent = stack[stack.length - 1]
+    const part = parent.parts[parent.next++]
+    parent.n = add(parent.n, Math.min(frame.n * part.times, Number.MAX_SAFE_INTEGER))
+  }
+}
+
+// A type a type is made of where it stands: whether it is held by value
+// there, and how many times it is (an element of an array held by value)
+type Part = { t: ResolvedType; byValue: boolean; times: number }
+
+// The types a type is made of where it stands, and what it counts for itself:
+// a name or a resolved reference is the type it names, and counts nothing.
+function partsOf(t: ResolvedType, byValue: boolean): [readonly Part[], number] {
+  const at = (type: ResolvedType, held = byValue, times = 1): Part => ({ t: type, byValue: held, times })
+  switch (t.kind) {
+    case 'named':
+      return [[at(t.type)], 0]
+    case 'forward_ref':
+      return t.target ? [[at(t.target)], 0] : [[], 1]
+    case 'pointer':
+      return [[at(t.pointee, false)], 1]
+    case 'slice':
+      return [[at(t.element, false)], 1]
+    case 'array': {
+      // Held by value, an array of one known length is its elements (none
+      // still writes its element out once). Any other is held as a pointer.
+      const length = t.sizes?.length === 1 && typeof t.sizes[0] === 'number' ? t.sizes[0] : null
+      return [[byValue && length !== null ? at(t.element, true, Math.max(length, 1)) : at(t.element, false)], 1]
+    }
+    case 'comptime_array':
+      return [[byValue ? at(t.element, true, Math.max(t.count, 1)) : at(t.element, false)], 1]
+    case 'tuple':
+      return [t.fields.map((f) => at(f.type)), 1]
+    case 'func':
+      return [[...t.params, ...t.returns].map((f) => at(f.type, true)), 1]
+    case 'comptime_list':
+      return [t.elements.map((e) => at(e)), 1]
+    default:
+      return [[], 1]
+  }
+}
+
 // === Instance keys ===
 
 // A string that is the same for two types exactly when they are the same type:
@@ -1316,7 +1505,10 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
     case 'forward_ref': {
       const back = open.find((o) => o.name === t.name)
       if (back) return `@${back.depth}`
-      return t.kind === 'named' ? canonicalKey(t.type, [...open, { name: t.name, depth }], depth) : `@${t.name}`
+      // A resolved forward reference is the type it names: its target is
+      // that type under its name.
+      if (t.kind === 'forward_ref') return t.target ? canonicalKey(t.target, open, depth) : `@${t.name}`
+      return canonicalKey(t.type, [...open, { name: t.name, depth }], depth)
     }
     case 'primitive':
       return t.max !== undefined ? `${t.name}#${t.max}` : t.name
