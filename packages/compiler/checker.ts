@@ -719,6 +719,8 @@ class CheckContext {
   lookScopes = new WeakSet<Scope>()
   // How many attempts are open (see attempt)
   attempting = 0
+  // How many looks are open (see untraced)
+  looking = 0
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
@@ -5191,7 +5193,12 @@ class CheckContext {
     // is written through it, so "" needs no mut.
     const target = this.coalesceTargets.get(expr)
     this.coalesceTargets.delete(expr)
-    this.checkExpr(expr.fallback, target && constOf(elemType, target) ? target : elemType)
+    if (target && constOf(elemType, target)) this.checkExpr(expr.fallback, target)
+    // A look (the type of an argument that decides a type parameter) knows
+    // nothing yet of what the whole is given for: what is wrong with the
+    // fallback is for the check of it that follows to say.
+    else if (!target && this.looking > 0) this.attempt(expr.fallback, () => this.checkExpr(expr.fallback, elemType))
+    else this.checkExpr(expr.fallback, elemType)
 
     // Record element type for codegen
     this.types.set(typeKey(expr.span.start, 'CoalesceBinding'), elemType)
@@ -6034,7 +6041,13 @@ class CheckContext {
     const scope = this.currentScope
     this.currentScope = { parent: scope, symbols: new Map() }
     this.lookScopes.add(this.currentScope)
-    const found = look()
+    this.looking++
+    let found: T
+    try {
+      found = look()
+    } finally {
+      this.looking--
+    }
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered

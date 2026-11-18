@@ -1468,8 +1468,11 @@ describe('what a literal error says, wherever the literal is', () => {
     // A const slice is wanted: "" needs no mut.
     expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 => first(x[i..] ?? "")`)).toEqual([])
     expect(errs(`${source}func f(t: [][]mut u8) -> u32 {\n  let s: []u8 = t[0] ?? "ab"\n  return first(s)\n}`)).toEqual([])
+    // So for a parameter whose type is inferred from the argument.
+    expect(errs('func count(comptime T: type, s: []T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => count(x[i..] ?? "")')).toEqual([])
     // A mutable one is: it does.
     expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s: []mut u8 = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+    expect(errs('func fill(comptime T: type, s: []mut T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => fill(x[i..] ?? "")')).toEqual([`${constant('""', '[]mut u8')}`])
     expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
   })
 })
