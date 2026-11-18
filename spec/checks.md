@@ -948,7 +948,7 @@ test "in the branches of an if or a match, in rows, and in a global" {
 
 <!-- spec:end -->
 
-Rows of different lengths have no type together: each is checked against the first one's.
+Rows of different lengths have no type together in registers: data lays them out as slices of their own lengths (`data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]`).
 
 ```ents
 data three: *[3]i32 = [1, 2, 3]
@@ -962,8 +962,8 @@ func f() -> u32 {
 ```
 
 ```errors
-cannot assign [2][]i32 to [1]*[3]i32
-cannot assign [3]i32 to [2]i32
+rows of different lengths: this one has 2 elements and the first 1; give the rows one length, or lay them out as slices with data
+rows of different lengths: this one has 3 elements and the first 2; give the rows one length, or lay them out as slices, data rows: *[2][]i32 = ...
 ```
 
 ## Bounds

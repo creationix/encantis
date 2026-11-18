@@ -4982,7 +4982,7 @@ class CheckContext {
     const value = ungrouped(expr)
     if (value.kind === 'ArrayExpr' || value.kind === 'RepeatExpr' || value.kind === 'TupleExpr') {
       const own = this.exprTypes.get(value)
-      if (own && settles(value, type)) this.coerce(value, own, type)
+      if (own && settles(value, type) && this.rowsAlike(value, type)) this.coerce(value, own, type)
       return
     }
     const bodies = value.kind === 'IfExpr' ? [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
@@ -4992,6 +4992,25 @@ class CheckContext {
       const tail = body ? bodyValue(body) : null
       if (tail) this.settleLiteral(tail, type)
     }
+  }
+
+  // Rows written out with no type are of the first one's type: one of
+  // another length is no row of it, and has no type with it in registers.
+  // Data lays them out apart, as slices of their own lengths.
+  private rowsAlike(value: AST.Expr, type: ResolvedType): boolean {
+    const t = unwrap(type)
+    if (value.kind !== 'ArrayExpr' || t.kind !== 'array') return true
+    const row = unwrap(this.peelArraySize(t))
+    if (row.kind !== 'array' || row.sizes?.length !== 1 || typeof row.sizes[0] !== 'number') return true
+    for (const element of value.elements) {
+      const own = this.exprTypes.get(element)
+      if (own?.kind !== 'comptime_array' || own.count === row.sizes[0]) continue
+      const cell = unwrap(row.element)
+      const data = cell.kind === 'primitive' ? `, data rows: *[${value.elements.length}][]${typeToString(cell)} = ...` : ' with data'
+      this.error(element.span.start, `rows of different lengths: this one has ${own.count} elements and the first ${row.sizes[0]}; give the rows one length, or lay them out as slices${data}`)
+      return false
+    }
+    return true
   }
 
   // The row pointer an element of a table is (tableRow), remembered with the
