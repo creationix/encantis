@@ -4289,3 +4289,14 @@ describe('data larger than memory', () => {
     expect(modWat('data a = mut [0:u8; 4294967287]\ndata c = [7:u8]\nexport func f() -> u8 => c[0]')).toContain('(memory 65536)')
   })
 })
+
+describe('a value in memory', () => {
+  test('is not counted out in registers to reach a member of it', () => {
+    // p.a[1] is an array in memory, 2^29 values were it held: working out which
+    // of them p.a[1][0] would be ran out of memory, where it is only an address.
+    const at = Array.from({ length: 30 }, (_, i) => (i % 2 ? '[0]' : '[1]')).join('')
+    const wat = modWat(`type S = (b: u8, a: ${'[2]'.repeat(30)}u8)\nexport func f(p: *S) -> u8 => p.a${at}`)
+    // b, then 1 at each even level: 1 + 2^29 + 2^27 + ... + 2^1
+    expect(wat).toContain('(i32.load8_u (i32.add (local.get $p) (i32.const 715827883)))')
+  })
+})

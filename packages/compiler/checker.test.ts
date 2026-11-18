@@ -3710,6 +3710,59 @@ describe('types too large to write out', () => {
     expect(errs(`${doubling(15)}func id(comptime T: type, p: *T) -> u32 => 1\nfunc f(p: *D15) -> u32 => id((D15, D15), p)`)).toEqual([large('(D15, D15)')])
     expect(errs(`${doubling(15)}func g(comptime T: type, x: T) -> u32 {\n  let q = 0 as *(a: T, b: T)\n  return 1\n}\nfunc f(d: *D15) -> u32 => g(D15, d.*)`)).toEqual([`${large('*(a: D15, b: D15)')}, in g(T = D15)`])
   })
+
+  // [2][2]...[2]u8, thirty deep: 61 parts written once, 2^30 values held by value
+  const halves = `${'[2]'.repeat(30)}u8`
+  const at = (i: number) => (i % 2 ? '[0]' : '[1]')
+  const reach = Array.from({ length: 30 }, (_, i) => at(i)).join('')
+
+  test('held by value, an array counts each of its elements', () => {
+    // The parameter would be 2^30 registers: codegen ran out of memory laying them out.
+    expect(errs(`func f(x: ${halves}) -> u8 => 0`)).toEqual([large(halves)])
+    expect(errs(`type T = ${halves}\nfunc f(x: T) -> u8 => 0`)).toEqual([large('T')])
+    expect(errs('func f(x: [1073741824]u8) -> u8 => 0')).toEqual([large('[1073741824]u8')])
+    // [N]T is the array and N of T: 65535 bytes are 65536 parts, the limit.
+    expect(errs('func f(x: [65535]u8) -> u8 => x[0]')).toEqual([])
+    expect(errs('func f(x: [65536]u8) -> u8 => x[0]')).toEqual([large('[65536]u8')])
+    // An array of none still writes out its element once.
+    expect(errs(`func f(x: [0]${halves}) -> u8 => 0`)).toEqual([large(`[0]${halves}`)])
+  })
+
+  test('so is a result, a variable, a global, and a field or element of one', () => {
+    const big = '[1048576]u8'
+    const S = `type S = (a: ${big}, b: u8)\n`
+    expect(errs(`func f(p: *${big}) -> ${big} => p.*`)).toEqual([large(big)])
+    expect(errs(`func f(p: *${big}) -> (a: ${big}, b: u8) => (p.*, 1)`)).toEqual([large(big)])
+    // Said where the type is written, or else at the variable
+    expect(errs(`func f(p: *${big}) -> u8 {\n  let x: ${big} = p.*\n  return 0\n}`)).toEqual([large(big)])
+    expect(errs(`func f(p: *${big}) -> u8 {\n  let x = p.*\n  return 0\n}`)).toEqual([large(big)])
+    // A pattern of it is one error, whatever names it binds
+    expect(errs(`func f(p: *${big}) -> u8 {\n  let (a, b) = (p.*, 1)\n  return b\n}`)).toEqual([large(`(${big}, i32)`)])
+    // and its names are declared as a let's are: seen past a loop around the
+    // let, and never taking the name of a variable already declared
+    const named = large(`(a: ${big}, b: i32)`)
+    expect(errs(`func f(p: *${big}) -> i32 {\n  for i in 2 {\n    let (a:, b:) = (a: p.*, b: 1)\n  }\n  return b\n}`)).toEqual([named])
+    expect(errs(`func f(p: *${big}) -> i32 {\n  let b = 2\n  let (a:, b:) = (a: p.*, b: 1)\n  return b\n}`)).toEqual([named, "'b' is already declared in this scope"])
+    expect(errs(`global g: ${big}\nfunc f() -> u8 => 0`)).toEqual([large(big)])
+    expect(errs(`import "m" "g" global g: ${big}\nimport "m" "h" func h(x: ${big}) -> u8\nfunc f() -> u8 => 0`)).toEqual([large(big), large(big)])
+    // A struct is held with its fields, and the element of a loop or an if let is held
+    expect(errs(`${S}func f(s: S) -> u8 => s.b`)).toEqual([large('S')])
+    expect(errs(`${S}func f(p: *[2]S) -> u8 {\n  for s in p { }\n  return 0\n}`)).toEqual([large('S')])
+    expect(errs(`${S}func f(q: []S, i: u32) -> u8 {\n  if let s = q[i] { return 1 }\n  return 0\n}`)).toEqual([large('S')])
+    // The parameters of a function type are held whenever it is called
+    expect(errs(`func f(g: (x: ${big}) -> u8) -> u8 => 0`)).toEqual([large(`(x: ${big}) -> u8`)])
+    expect(errs(`type Op = (x: ${big}) -> u8\nfunc f() -> u8 => 0`)).toEqual([large('Op')])
+    // And those of an instance, once it is made
+    expect(errs(`func id(comptime T: type, x: T) -> u32 => 1\nfunc f(p: *${big}) -> u32 => id(p.*)`)).toEqual([`${large(big)}, in id(T = ${big})`])
+  })
+
+  test('a pointer to an array, or a slice of it, is in memory: its length counts nothing', () => {
+    expect(errs(`func f(p: *${halves}) -> u8 => p${reach}`)).toEqual([])
+    expect(errs(`type T = ${halves}\nfunc f(p: *T, s: []T) -> u32 => s.len`)).toEqual([])
+    expect(errs(`type S = (b: u8, a: ${halves})\nfunc f(p: *S) -> u8 => p.a${reach}`)).toEqual([])
+    expect(errs('type Page = [65536]u8\ndata page = mut [0:u8; 65536]\ndata buf = mut [0:u8; 1048576]\nfunc f(p: *mut Page) -> u8 => p[65535] + buf[1048575]\nfunc g() -> u8 => f(page)')).toEqual([])
+    expect(errs('func first(comptime T: type, p: *T) -> *T => p\nfunc f(p: *[1048576]u8) -> u8 => first(p)[7]')).toEqual([])
+  })
 })
 
 describe('a name for a pointer, a slice, an array or an optional', () => {

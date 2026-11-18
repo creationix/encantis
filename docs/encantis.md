@@ -1105,7 +1105,7 @@ test "names are the types they name" {
 
 ### 2.12 Limits
 
-A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
+A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round), with an array held by value counted once for each of its elements (below). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
 
 <!-- spec:begin compile -->
 
@@ -1134,6 +1134,27 @@ func f(p: *D17) -> u8 => p.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a.b.a
 
 ```errors
 type 'D16' is too large: written out in full it has more than 65536 parts
+```
+
+<!-- spec:end -->
+
+A value held by value — a parameter, a result, a variable or a global, with each field and element of it — is laid out in registers, so there an array counts each of its elements: `[N]T` is one part and N times what `T` counts (at least once, for `[0]T`), and `[2][2][2]u8` is fifteen parts where it is eight bytes. What a pointer or a slice points to is in memory and counts once, whatever its length: `*[1048576]u8`, `[][4096]u8`, a name for a large array behind a pointer and `data buf = mut [0:u8; 1048576]` are each a few parts, while a parameter `x: [65536]u8` is over the limit. The parameters and results of a function type are held by value wherever the function type is. A value over the limit is one error where its type is written, or, where none is (`let x = p.*`, `for v in rows`, `if let v = ...`), at the variable.
+
+<!-- spec:begin compile -->
+
+```ents
+type Page = [65536]u8
+data page = mut [0:u8; 65536]
+data buf = mut [0:u8; 1048576]
+
+func first(p: *Page) -> u8 => p[0]
+func last(s: []u8) -> u8 => s[s.len - 1] ?? 0
+func both() -> u8 => first(page) + last(buf)
+func whole(x: [65536]u8) -> u8 => x[0]
+```
+
+```errors
+type '[65536]u8' is too large: written out in full it has more than 65536 parts
 ```
 
 <!-- spec:end -->
