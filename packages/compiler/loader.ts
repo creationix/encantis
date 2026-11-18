@@ -31,7 +31,9 @@ function resolveModulePath(importPath: string, fromFile: string): string {
   return resolved
 }
 
-function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
+// The imports of other source files a module has, with those of its tests
+// where they are included
+export function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
   const imports: ImportDecl[] = []
   function collect(decls: readonly { kind: string }[]) {
     for (const d of decls) {

@@ -2,10 +2,10 @@
 
 import { parse } from '@encantis/compiler/parser'
 import { typecheck, typecheckProgram, type ProgramCheckResult, type TypeCheckResult } from '@encantis/compiler/checker'
-import type { ImportDecl, Module, TestDecl } from '@encantis/compiler/ast'
+import type { Module } from '@encantis/compiler/ast'
 import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
-import { isSourceImport, loadModule } from '@encantis/compiler/loader'
+import { getSourceImports, loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
@@ -686,9 +686,7 @@ async function checkedInProgram(
   file: string,
   parsed: Module,
 ): Promise<{ module: Module; check: TypeCheckResult; sources?: Map<string, string> }> {
-  const imports = (decls: readonly { kind: string }[]): boolean =>
-    decls.some((d) => (d.kind === 'ImportDecl' && isSourceImport((d as ImportDecl).module)) || (d.kind === 'TestDecl' && imports((d as TestDecl).children)))
-  if (imports(parsed.decls)) {
+  if (getSourceImports(parsed, true).length > 0) {
     const load = await loadModule(file, { includeTests: true })
     const check = load.errors.length === 0 ? typecheckProgram(load.modules, load.entry.path, { includeTests: true }) : null
     const result = check?.results.get(load.entry.path)

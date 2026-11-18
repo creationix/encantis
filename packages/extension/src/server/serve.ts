@@ -26,9 +26,9 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { ImportDecl, Module, TestDecl } from '@encantis/compiler/ast';
+import type { Module } from '@encantis/compiler/ast';
 import { fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
-import { isSourceImport, loadModule } from '@encantis/compiler/loader';
+import { getSourceImports, loadModule } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
@@ -245,11 +245,6 @@ function uriOf(path: string): string {
   return `file://${slashed.startsWith('/') ? '' : '/'}${encodeURI(slashed)}`;
 }
 
-// Whether declarations name another source file, at their level or in a test
-function importsSource(decls: readonly { kind: string }[]): boolean {
-  return decls.some(d => (d.kind === 'ImportDecl' && isSourceImport((d as ImportDecl).module)) || (d.kind === 'TestDecl' && importsSource((d as TestDecl).children)));
-}
-
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
   const documents = new TextDocuments(TextDocument);
 
@@ -335,7 +330,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     let module = parseResult.module;
     try {
       // A document with no source import is checked at once, as it always was.
-      const program = importsSource(parseResult.module.decls) ? await programOf(textDocument.uri, text) : null;
+      const program = getSourceImports(parseResult.module, true).length > 0 ? await programOf(textDocument.uri, text) : null;
       // Changed while its program was read: the newer text is checked.
       const latest = documents.get(textDocument.uri);
       if (latest && latest.version !== textDocument.version) return;
