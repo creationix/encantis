@@ -432,15 +432,14 @@ export function ownName(
   // use, it is what the use is in each instance (a loop may know more of a
   // value than its declaration says).
   const definition = check.symbolRefs.get(offset) ?? offset
-  const type = writtenAt(generic, definition, source) ?? declared(views.map((v) => bindingTypeAt(check, offset + v.shift)), views, write)
+  const types = views.map((v) => bindingTypeAt(check, offset + v.shift))
+  const type = writtenAt(generic, definition, source) ?? declared(types, views, write)
   if (type === undefined) return null
+  const each = views.map((view, i) => ({ view, type: types[i] }))
   return {
     kind: 'local',
     type,
-    ...listed(listing(views, (v) => v.info.label, (v) => {
-      const at = bindingTypeAt(check, offset + v.shift)
-      return at && show(at)
-    })),
+    ...listed(listing(each, (e) => e.view.info.label, (e) => e.type && show(e.type))),
   }
 }
 
