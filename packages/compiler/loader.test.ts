@@ -6,9 +6,9 @@ import { resolve } from 'path'
 import { compileToWasm, instantiate } from './test-utils'
 import { createTestHost } from './test-host'
 import wabt from 'wabt'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
 
@@ -369,7 +369,10 @@ describe('generics across modules', () => {
   async function inDir<T>(files: Record<string, string>, run: (dir: string) => Promise<T>): Promise<T> {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-modules-'))
     try {
-      for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+      for (const [name, source] of Object.entries(files)) {
+        await mkdir(dirname(join(dir, name)), { recursive: true })
+        await writeFile(join(dir, name), source)
+      }
       return await run(dir)
     } finally {
       await rm(dir, { recursive: true })
@@ -527,6 +530,22 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
       expect(errors('b.ents')).toEqual(["'*' cannot be applied to Pt and Pt, in g(T = Pt)"])
       expect(errors('a.ents')).toEqual([])
       expect(errors('main.ents')).toEqual(["f(T = Pt) cannot be instantiated: '*' cannot be applied to Pt and Pt, in g(T = Pt) (b.ents:1:47)"])
+    })
+  })
+
+  // Two modules with one file name are two modules in the output too: their
+  // functions and instances have a prefix each.
+  test('two modules with one file name have their own functions and instances', async () => {
+    const files = {
+      'x/lib.ents': 'export func big(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }\nexport func tag() -> u32 => 1\n',
+      'y/lib.ents': 'export func big(comptime T: type, a: T, b: T) -> T => if a < b { a } else { b }\nexport func tag() -> u32 => 2\n',
+      'main.ents': 'import "./x/lib" ("big" func xbig(comptime T: type, a: T, b: T) -> T  "tag" func xtag() -> u32)\nimport "./y/lib" ("big" func ybig(comptime T: type, a: T, b: T) -> T  "tag" func ytag() -> u32)\nexport func run() -> u32 => xbig(3:u32, 5) * 1000 + ybig(3:u32, 5) * 100 + xtag() * 10 + ytag()\n',
+    }
+    await inDir(files, async (dir) => {
+      const wat = await watOf(join(dir, 'main.ents'))
+      expect(funcs(wat)).toEqual(['run', 'lib$big<u32>', 'lib$tag', 'lib~2$big<u32>', 'lib~2$tag'])
+      const instance = await instantiate(join(dir, 'main.ents'))
+      expect((instance.exports.run as () => number)()).toBe(5312)
     })
   })
 

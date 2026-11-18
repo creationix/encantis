@@ -302,6 +302,10 @@ export interface TypeCheckResult {
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
   externs: Map<string, Extern>
+  // The module's name where the names of several modules meet: its file's
+  // name, numbered from the second file of the program with that name
+  // (lib, lib~2). Codegen prefixes the module's functions with it.
+  tag: string
 }
 
 export interface Extern {
@@ -451,6 +455,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
     externs: ctx.externs,
+    tag: ctx.moduleTag(),
   }
 }
 

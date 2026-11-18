@@ -3936,7 +3936,9 @@ export function programToWat(
   // and for functions that share a name never the same for two of them.
   const perModuleExports = new Map<string, Map<string, string>>()
   for (const [path, loaded] of modules) {
-    const prefix = path === entryPath ? '' : modulePrefix(path)
+    // Two modules with one file name have two prefixes: the checker
+    // numbers the second (lib~2), and names it so in its own names.
+    const prefix = path === entryPath ? '' : (checkResults.get(path)?.tag || modulePrefix(path))
     const modNameMap = new Map<string, string>()
     const modExports = new Map<string, string>()
     const funcNames = checkResults.get(path)?.funcNames
