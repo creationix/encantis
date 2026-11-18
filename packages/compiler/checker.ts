@@ -298,6 +298,9 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+  // Ranges assigned one value that every element of them gets (a fill,
+  // `p[a..b] = v`), as opposed to the elements of an array to copy in.
+  fills: Set<AST.SliceExpr>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -474,6 +477,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
+    fills: ctx.fills,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -830,6 +834,8 @@ class CheckContext {
   // ends, as a declaration is (`lookUnproven`).
   unproven = new Set<AST.IndexExpr>()
   lookUnproven: AST.IndexExpr[] = []
+  // Range assignments that fill (see TypeCheckResult.fills)
+  fills = new Set<AST.SliceExpr>()
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -6327,10 +6333,13 @@ class CheckContext {
     return start !== null && end !== null && end >= start ? end - start : null
   }
 
-  // dst[a..b] = v fills the range with v; dst[a..b] = src copies src into it.
-  // The range is written, so it must be in bounds without a runtime check, like
-  // an indexed write. A copy also needs both lengths known at compile time and
-  // equal; memcpy is the explicit form for a runtime length.
+  // dst[a..b] = v fills the range with v, a value of its element type (a
+  // number, a struct, a slice, a pointer: anything an element can be
+  // assigned); dst[a..b] = src copies the elements of src into it, a slice
+  // or an array of that element type. The range is written, so it must be
+  // in bounds without a runtime check, like an indexed write. A copy also
+  // needs both lengths known at compile time and equal; memcpy is the
+  // explicit form for a runtime length.
   checkRangeAssignment(target: AST.SliceExpr, op: string, value: AST.Expr): void {
     if (op !== '=') {
       this.error(target.span.start, `a range can only be assigned with =`)
@@ -6346,24 +6355,47 @@ class CheckContext {
       this.error(target.span.start, `cannot write through a const range — use *mut or []mut for mutable access`)
     }
     const elem = dst.element
+    // An element as it lies in memory: in a table, the pointer to its row.
+    const cell = tableRow(dst) ?? elem
+    const fill = (): void => {
+      this.checkExpr(value, cell, 'fill value')
+      this.fills.add(target)
+    }
+    const dstLen = this.rangeLength(target)
+    const lengths = (srcLen: bigint | null): void => {
+      if (dstLen === null || srcLen === null) {
+        this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
+      } else if (dstLen !== srcLen) {
+        this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
+      }
+    }
     const valueType = unwrap(this.inferExpr(value))
     const isScalar = valueType.kind === 'primitive' || valueType.kind === 'comptime_int' || valueType.kind === 'comptime_float'
     if (isScalar) {
-      const e = unwrap(elem)
-      const oneValue = (e.kind === 'primitive' && !/^[iu](128|256|512)$/.test(e.name)) || e.kind === 'pointer'
-      if (!oneValue) {
-        this.error(value.span.start, `filling a range needs an element of one value, not ${typeToString(elem)}`)
-        return
-      }
-      this.checkExpr(value, elem, 'fill value: ')
+      fill()
       return
     }
-    // A copy: the source is a slice or pointer to an array of the same elements.
+    // An array literal that is no element is the elements to copy, laid out
+    // as the range's are: `buf[0..2] = [1, 2]`. Rows copied into a mutable
+    // table are rows of its own, `mut` like any rows of a *mut table.
+    if (valueType.kind === 'comptime_array' && !this.fits(value, cell)) {
+      this.checkExpr(value, pointer(array(elem, [valueType.count]), false, !!tableRow(dst) && dst.mutable))
+      lengths(BigInt(valueType.count))
+      return
+    }
+    // A copy: the source is a slice or pointer to an array of the same
+    // elements. Nothing is both that and an element itself.
     const srcElem = valueType.kind === 'slice' ? valueType.element
       : valueType.kind === 'pointer' && unwrap(valueType.pointee).kind === 'array' ? (unwrap(valueType.pointee) as ArrayRT).element
       : valueType.kind === 'array' ? valueType.element
       : null
     if (!srcElem || !typeEquals(unwrap(srcElem), unwrap(elem))) {
+      // Anything else is a fill, if it is an element: a value that is no
+      // array is said to be no element, one that is an array no source.
+      if (!srcElem || this.fits(value, cell)) {
+        fill()
+        return
+      }
       this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(elem)}`)
       return
     }
@@ -6371,18 +6403,26 @@ class CheckContext {
       this.error(value.span.start, `the source range may be out of bounds: resolve it with ?? or if let first`)
       return
     }
-    const dstLen = this.rangeLength(target)
+    // A table's elements are pointers to its rows: the rows of a const table
+    // are not to be written through a mutable one (as m[i] = r is refused).
+    const rows = tableRow(valueType)
+    if (rows && !typeAssignable(cell, rows)) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are ${typeToString(rows)}`)
+      return
+    }
+    // An array held in registers is stored element by element; its rows are
+    // values, which no row pointer can point to.
+    if (valueType.kind === 'array' && cell !== elem) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are held in registers`)
+      return
+    }
     let srcLen: bigint | null = null
     if (value.kind === 'SliceExpr') srcLen = this.rangeLength(value)
     else {
       const arr = valueType.kind === 'pointer' ? unwrap(valueType.pointee) : valueType
       if (arr.kind === 'array' && arr.sizes?.length === 1 && typeof arr.sizes[0] === 'number') srcLen = BigInt(arr.sizes[0])
     }
-    if (dstLen === null || srcLen === null) {
-      this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
-    } else if (dstLen !== srcLen) {
-      this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
-    }
+    lengths(srcLen)
   }
 
   // A value with no type written takes the type of what it is made of

@@ -1977,6 +1977,7 @@ describe('tables', () => {
   test('len, wid, sizeof, loops, lets, arguments and ranges', async () => {
     const { lens, loops, pass, addr, range, copy } = await run(`${TABLES}
       data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+      data rowsOf: *mut [2][3]i32 = mut [[7, 1, 2], [3, 4, 5]]
       func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
       func total(s: []i32) -> i32 {
         let t = 0
@@ -2003,7 +2004,7 @@ describe('tables', () => {
         return (s.len as i32) * 100 + s.ptr[0][2]
       }
       export func copy() -> i32 {
-        board[0..2] = grid[0..2]
+        board[0..2] = rowsOf[0..2]
         return board[1][2] * 10 + board[0][0]
       }
     `)

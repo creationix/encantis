@@ -2055,6 +2055,115 @@ cannot copy 4 elements into a range of 8
 copying into a range needs both lengths known at compile time; use memcpy
 ```
 
+A value that can be assigned to one element fills the range, whatever the element is: a struct, a slice, a string where the elements are slices, a wide integer, a row pointer of a table. Anything else is copied in: an array literal is laid out as the range's elements are, and an array held in registers is stored element by element. A generic fills with a value of its type parameter for any type.
+
+<!-- spec:begin compile -->
+
+```ents
+type Pt = (x: i32, y: i32)
+
+data cells = mut [0:u8; 64]
+data grid: *mut [3][2]i32 = mut [[1, 2], [3, 4], [5, 6]]
+data spare: *mut [2]i32 = mut [9, 8]
+data wide = mut [0:u128; 4]
+data ints = mut [0:i32; 4]
+
+func points(v: Pt) {
+  let p = cells as [*]mut Pt
+  p[0..3] = v
+}
+func lists(xs: []i32) {
+  let p = cells as [*]mut []i32
+  p[0..3] = xs
+}
+func names() {
+  let p = cells as [*]mut []u8
+  p[1..3] = "abc"
+}
+func rows() { grid[0..2] = spare }
+func big() { wide[1..3] = 5 }
+func literal(x: i32) { ints[1..4] = [x, 7, 8] }
+func held() {
+  let a: [2]i32 = [5, 6]
+  ints[0..2] = a
+}
+func table(comptime T: type, n: u32, v: T) -> [*]mut T {
+  let p = cells as [*]mut T
+  p[0..n] = v
+  return p
+}
+
+test "a range is filled with a struct, a slice, a row pointer, a wide integer" {
+  points((x: 3, y: -4))
+  assert (cells as [*]Pt)[2].y == -4
+  assert (cells as [*]i32)[6] == 0
+  lists([1, 2, 3, 4])
+  assert (cells as [*][]i32)[2].len == 4
+  assert ((cells as [*][]i32)[2].ptr)[3] == 4
+  names()
+  assert (cells as [*][]u8)[2].len == 3
+  assert (cells as [*][]u8)[0].len == 4
+  rows()
+  grid[0][0] = 1
+  assert grid[1][0] == 1
+  assert grid[2][0] == 5
+  big()
+  assert wide[0] == 0
+  assert wide[2] == 5
+  assert wide[3] == 0
+}
+
+test "an array literal or an array in registers is copied in" {
+  literal(9)
+  held()
+  assert ints[0] == 5
+  assert ints[1] == 6
+  assert ints[2] == 7
+  assert ints[3] == 8
+}
+
+test "a generic fills with a value of its type parameter" {
+  assert table(i32, 4, -2)[3] == -2
+  assert table([]u8, 4, "xy")[3].len == 2
+  assert table(Pt, 4, (x: 1, y: 2))[3].x == 1
+}
+```
+
+<!-- spec:end -->
+
+A fill value that is no element, or a copy whose elements are not the range's, is refused for what it is. A table's elements are its row pointers: rows of a const table are not copied into a mutable one, as `m[i] = r` is refused for them, and an array in registers has no rows to point to.
+
+```ents
+type Pt = (x: i32, y: i32)
+
+data cells = mut [0:u8; 64]
+data grid: *[2][2]i32 = [[1, 2], [3, 4]]
+data board: *mut [2][2]i32 = mut [[0, 0], [0, 0]]
+
+func a() {
+  let p = cells as [*]mut Pt
+  p[0..3] = 0
+}
+func b(xs: []u8) {
+  let p = cells as [*]mut []i32
+  p[0..3] = xs
+}
+func c() { board[0..2] = grid }
+func d() { board[0..2] = [[1, 2], [3, 4]] }
+func e() {
+  let v: [2][2]i32 = [[1, 2], [3, 4]]
+  board[0..2] = v
+}
+```
+
+```errors
+fill value: cannot assign int(0) to Pt
+cannot copy []u8 into a range of []i32
+cannot copy *[2][2]i32 into a range of *mut [2]i32: its rows are *[2]i32
+a literal is constant: write `mut [[1, 2], [3, 4]]` for a *mut [2][2]i32
+cannot copy [2][2]i32 into a range of *mut [2]i32: its rows are held in registers
+```
+
 ## Builtins
 
 The operands of a numeric builtin are typed together, as the operands of a binary operator are. A literal takes the type of the other operand, whichever of them comes first; with only literals, they take their default type.
