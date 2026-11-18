@@ -3,7 +3,7 @@
 Small helpers written in Encantis. They're plain source files: import them by relative path, or copy them next to your program.
 
 - `io.ents` and `text.ents` are for programs that read text and print results (Advent of Code style). They don't allocate: input goes into a buffer you provide, and parsing returns slices of it.
-- `stack.ents`, `vec.ents`, `set.ents`, `map.ents` and `sort.ents` are generic containers, for any element or key type, on a bump stack. Each element type is its own copy of the functions that use it, so a container costs what the same code written for that one type would.
+- `stack.ents`, `vec.ents`, `set.ents`, `map.ents` and `sort.ents` are generic containers, for any element or key type (a narrow integer key is widened, see below), on a bump stack. Each element type is its own copy of the functions that use it, so a container costs what the same code written for that one type would.
 
 ## io.ents
 
@@ -61,7 +61,7 @@ An element that is a fixed array is a table of rows (reference 2.5): `Vec([3]i32
 | `m.insert(k, v) -> bool` | Set `k`'s value (true where `k` is new) |
 | `m.lookup(k) -> ?*mut V`, `m.get_or(k, fallback) -> V` | `k`'s value, to change in place or to read |
 
-A set or a map calls `hash(k)` and `eq(a, b)` for its key type. `set.ents` has them for `u32`, `u64`, `i32`, `i64`, `[]u8` and `[]u32` (exported as `hash_u32`, `eq_u32`, ...). For a key type of your own, write them in the module that makes the set: a call in a generic's body that its own module has no function for is looked up in the module whose code made the instance.
+A set or a map calls `hash(k)` and `eq(a, b)` for its key type. `set.ents` has them for `u32`, `u64`, `i32`, `i64`, `[]u8` and `[]u32` (exported as `hash_u32`, `eq_u32`, ...). For a key type of your own, write them in the module that makes the set: a call in a generic's body that its own module has no function for is looked up in the module whose code made the instance. A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' own, so `hash` is ambiguous for it, and a library's functions come first, so one written in your module is not used: keep such keys widened, in a `Set(u32)` or `Set(i32)`.
 
 ```text
 type Cell = (x: i32, y: i32)

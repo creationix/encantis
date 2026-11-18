@@ -724,4 +724,26 @@ export func f(n: i32) -> i32 {
       expect((instance.exports.f as (n: number) => number)(5)).toBe(57)
     })
   })
+
+  // As lib/README.md says: a u16 fits several of set.ents' own hash
+  // functions, and those come first, so a hash(u16) of the module's own is
+  // not used; widened, the key is a u32.
+  test("a narrow integer key is ambiguous in lib/set's hash, and is widened", async () => {
+    const SET = `import "${join(lib, 'set')}" (
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "Set" func Set(comptime K: type) -> type
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+`
+    const files = {
+      'narrow.ents': `${SET}func hash(k: u16) -> u32 => k as u32\nfunc eq(a: u16, b: u16) -> bool => a == b\nexport func f(k: u16) -> bool => hashset(u16, 2).add(k)\n`,
+      'wide.ents': `${SET}export func f(k: u16) -> bool => hashset(u32, 2).add(k as u32)\n`,
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'narrow.ents'))
+      expect(check.results.get(join(lib, 'set.ents'))?.errors.map((e) => e.message)).toContain("'hash' is ambiguous for (u16), in add(K = u16)")
+      const instance = await instantiate(join(dir, 'wide.ents'))
+      expect((instance.exports.f as (k: number) => number)(7)).toBe(1)
+    })
+  })
 })

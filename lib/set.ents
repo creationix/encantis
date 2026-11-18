@@ -8,7 +8,10 @@
 //
 // The set calls hash(k) and eq(a, b) for its key type. This file has them for
 // u32, u64, i32, i64, []u8 and []u32 (exported as hash_u32, eq_u32 and so
-// on). For any other key type, the module that makes the set writes them:
+// on). A narrower integer (u8, u16, i8, i16) fits several of them, which
+// makes the call ambiguous, and functions of this file's come first: keep
+// such keys widened, in a Set(u32) or Set(i32). For any other key type, the
+// module that makes the set writes them:
 //
 //   type Cell = (x: i32, y: i32)
 //   func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
