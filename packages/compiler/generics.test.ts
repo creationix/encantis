@@ -3561,6 +3561,29 @@ export func c(p: *[2][3]i32) -> i32 => second(p)[0]`
     expect(result.errors.map(e => e.notes?.[1]?.message)).toEqual(Array(4).fill('required from'))
   })
 
+  test('an element reached through its address, or compared with a T, gets the note too', () => {
+    const source = `func at(comptime T: type, s: *[2]T) -> T {
+  let p = &s[1]
+  return p.*
+}
+func first(comptime T: type, s: []T) -> T {
+  if let p = &s[0] { return p.* }
+  return s[1] ?? s[0]
+}
+func same(comptime T: type, s: *[2]T, x: T) -> bool => s[0] == x
+export func f(t: *[2][3]i32, u: [][3]i32) -> i32 => at(t)[0] + first(u)[1] + (same(t, [1, 2, 3]) as i32)`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'cannot assign *[3]i32 to [3]i32, in at(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      "'==' cannot be applied to *[3]i32 and [3]i32, in same(T = [3]i32)",
+    ])
+    expect(result.errors.map(e => e.notes?.[0]?.message)).toEqual([
+      rowNote('*[2][3]i32'), rowNote('[][3]i32'), rowNote('[][3]i32'), rowNote('*[2][3]i32'),
+    ])
+  })
+
   test('a pointer to a T that is no element of a table gets no such note', () => {
     const source = `func load(comptime T: type, p: *T) -> T => p
 export func f(p: *[3]i32) -> i32 => load(p)[0]`

@@ -4431,7 +4431,7 @@ class CheckContext {
     const leftOk = check(expr.left, leftType)
     const rightOk = check(expr.right, rightType)
     if (!leftOk || !rightOk) {
-      this.error(expr.span.start, noOperator(expr.op, leftType, rightType))
+      this.error(expr.span.start, noOperator(expr.op, leftType, rightType), this.rowNote(expr.span.start, leftType, rightType))
     }
   }
 
@@ -5038,7 +5038,7 @@ class CheckContext {
       return null
     }
     // The element of a table is its row pointer: &m[i] is where that is.
-    elem = tableRow(objType) ?? elem
+    elem = this.rowOf(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
     const idx = this.evalComptimeExpr(expr.index)
