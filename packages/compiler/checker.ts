@@ -7432,10 +7432,15 @@ class CheckContext {
     // read off the declaration, as for a generic function's, for the editor
     // to find.
     const used = typeUses(decl.body)
+    // A value parameter is used by name in the lengths, bounds and value
+    // arguments of the body.
+    const named = signatureLengths(decl.body).flatMap((e) => unknownNames(e))
     for (const param of decl.params) {
-      if (!isTypeParam(param) || !param.identSpan) continue
+      if (!param.comptime || !param.identSpan) continue
       const declared = param.identSpan.start
-      const uses = used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+      const uses = isTypeParam(param)
+        ? used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+        : named.filter((n) => n.name === param.ident).map((n) => n.span.start)
       this.references.set(declared, uses)
       for (const use of uses) this.symbolRefs.set(use, declared)
     }
@@ -8407,9 +8412,8 @@ class CheckContext {
       const value = inst.args[i]
       if (value.kind !== 'int') return
       const name = param.ident as string
-      const sym: Symbol = { kind: 'def', type: comptimeInt(value.value), value, valueParam: true }
-      scope.symbols.set(name, sym)
-      if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start, sym)
+      // Its uses, numbers in the copy, are the generic's (see skipGenericBody).
+      scope.symbols.set(name, { kind: 'def', type: comptimeInt(value.value), value, valueParam: true })
     })
   }
 

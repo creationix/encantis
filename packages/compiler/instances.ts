@@ -414,6 +414,15 @@ export function ownName(
     const applied = check.applications.get(generic) ?? []
     const shownApp = (a: Application) => a.shown
     const param = generic.params.findIndex((p) => p.ident === name)
+    if (param >= 0 && generic.params[param].type.kind !== 'TypeType') {
+      // A value parameter: each application gave it a number.
+      const declared = generic.params[param].type
+      const number = (a: Application) => {
+        const arg = a.args[param]
+        return arg?.kind === 'comptime_int' ? String(arg.value) : undefined
+      }
+      return { kind: 'value parameter', type: source.slice(declared.span.start, declared.span.end), ...listed(listing(applied, shownApp, number)) }
+    }
     if (param >= 0) {
       return { kind: 'type parameter', type: 'type', ...listed(listing(applied, shownApp, (a) => show(a.args[param]))) }
     }
@@ -438,6 +447,14 @@ export function ownName(
         return value?.kind === 'type' ? show(value.type) : undefined
       })),
     }
+  }
+  if (param && views.some((v) => v.bound.get(name)?.kind === 'int')) {
+    // A value parameter: each instance was given a number.
+    const list = listing(views, (v) => v.info.label, (v) => {
+      const value = v.bound.get(name)
+      return value?.kind === 'int' ? String(value.value) : undefined
+    })
+    return { kind: 'value parameter', type: source.slice(param.type.span.start, param.type.span.end), ...listed(list) }
   }
   if (param) {
     // A comptime function parameter: each instance was given a function.
