@@ -2953,9 +2953,15 @@ class CheckContext {
       return expected
     }
 
-    // No other tuple is a slice.
+    // No other tuple is a slice. One with names is the struct a slice is,
+    // given the wrong number of fields.
     if (expr.kind === 'TupleExpr' && expected.kind === 'slice') {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      const given = expr.elements.map((element, i) => element.name ?? ['ptr', 'len'][i])
+      const missing = ['ptr', 'len'].filter((part) => !given.includes(part))
+      const count = `${typeToString(expected)} expects 2 fields, got ${expr.elements.length}`
+      const why = !namedLiteral(expr) ? `cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`
+        : expr.elements.length < 2 && missing.length > 0 ? `${count}: no value for ${spoken(missing)}` : count
+      this.error(expr.span.start, `${prefix}${why}`)
       this.exprTypes.set(expr, expected)
       return expected
     }

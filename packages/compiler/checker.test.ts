@@ -1510,7 +1510,7 @@ describe('a slice from a pointer and a length', () => {
     expect(errs('global g: []i32 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to []i32'])
     expect(errs('type R = (name: []u8, n: i32)\nglobal g: R = ((0), 1)')).toEqual(['cannot assign int(0) to []u8'])
     expect(errs('func f() { let s: []i32 = () }')).toEqual(['cannot assign () to []i32'])
-    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['cannot assign (len: int(3)) to []u8'])
+    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr'])
     expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
       'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
     ])
@@ -3008,6 +3008,10 @@ describe('arguments by place and by name', () => {
       type One = (v: i32)
       func a() -> One => (w: 5)
     `)).toEqual(["field 'w' not found in One, whose only field is v"])
+    expect(errs(`
+      func a(p: [*]u8) -> []u8 => (len: 2)
+      func b(p: [*]u8) -> []u8 => (ptr: p, len: 2, wid: 3)
+    `)).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr', '[]u8 expects 2 fields, got 3'])
     // A value keeps its order: the error says where to give it the type.
     expect(errs(`
       type Pt = (q: i32, r: i32)
