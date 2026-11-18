@@ -2025,19 +2025,22 @@ class CheckContext {
     if (elemSize === null) return
     const bufferSize = totalCount * elemSize
 
+    // A length counted in rows (n * sizeof(T) for a T that is a fixed array)
+    // is past a table's bytes: the note says why, and what to write instead.
+    const advice = ptrExpr.span.start >= INSTANCE_STRIDE ? rowsAdvice(row?.pointee ?? arrType)
+      : `${op === 'memset' ? 'set' : 'copy'} the rows one by one, as the arrays they are`
+    const notes = row
+      ? [{ offset: ptrExpr.span.start, message: `a ${typeToString(srcType)} is a table of ${totalCount} pointers to rows, which lie apart (reference 2.5): ${advice}` }]
+      : undefined
+
     // Length must be a comptime constant to verify bounds
     const len = this.constantInType(lenExpr)
     if (!len || len.kind !== 'int') {
-      this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`)
+      this.warn(lenExpr.span.start, `${op} length is not a compile-time constant — cannot verify bounds (buffer is ${bufferSize} bytes)`, notes)
       return
     }
 
     if (Number(len.value) > bufferSize) {
-      const advice = ptrExpr.span.start >= INSTANCE_STRIDE ? rowsAdvice(row?.pointee ?? arrType)
-        : `${op === 'memset' ? 'set' : 'copy'} the rows one by one, as the arrays they are`
-      const notes = row
-        ? [{ offset: ptrExpr.span.start, message: `a ${typeToString(srcType)} is a table of ${totalCount} pointers to rows, which lie apart (reference 2.5): ${advice}` }]
-        : undefined
       this.error(lenExpr.span.start, `${op} length ${len.value} exceeds buffer size ${bufferSize} bytes`, notes)
     }
   }
@@ -6496,8 +6499,8 @@ class CheckContext {
     }
   }
 
-  warn(offset: number, message: string): void {
-    const warning = this.atSource(offset, message)
+  warn(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
+    const warning = this.atSource(offset, message, notes)
     if (!this.warnings.some((w) => w.offset === warning.offset && w.message === warning.message)) {
       this.warnings.push(warning)
     }

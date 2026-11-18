@@ -3620,6 +3620,30 @@ export func f() {
     ])
   })
 
+  test('a length only known when the program runs warns with the same note, for a table only', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+func fill(comptime T: type, d: *mut [2]T, s: *[2]T, k: u32) {
+  memcpy(d, s, k * sizeof(T))
+}
+export func f(k: u32) {
+  fill(a, b, k)
+  fill(n, n, k)
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map(w => w.message)).toEqual([
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = [3]i32)',
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = u32)',
+    ])
+    const advice = 'for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers'
+    expect(result.warnings.map(w => w.notes?.[0])).toEqual([
+      { offset: source.indexOf('d, s, k'), message: `a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): ${advice}` },
+      { offset: source.indexOf('fill(n, n'), message: 'required from' },
+    ])
+  })
+
   test('outside a generic too, the note says to go row by row', () => {
     const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
 export func f() {
