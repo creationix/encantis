@@ -57,6 +57,12 @@ describe('check errors on the command line', () => {
   }
 })
 
+// meta.json names the file it is of by the file's name, on every platform.
+test('meta names its file', async () => {
+  const { stdout } = await encantis('meta')
+  expect(JSON.parse(stdout).src).toBe('file://./shapes.ents')
+})
+
 // A library that checks on its own, used by a module whose type it cannot
 // serve: the error is in the library's generic, found only once the other
 // module asks for the instance, after the library was checked. It stops the

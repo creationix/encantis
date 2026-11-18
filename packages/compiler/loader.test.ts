@@ -59,10 +59,11 @@ describe('loadModule', () => {
     expect(result.modules.has(resolve(fixtures, 'util.ents'))).toBe(true)
   })
 
+  // The files of the cycle are named by their names, on every platform
   test('detects import cycles', async () => {
     const result = await loadModule(resolve(fixtures, 'cycle-a.ents'))
     expect(result.errors.length).toBe(1)
-    expect(result.errors[0].message).toContain('cycle')
+    expect(result.errors[0].message).toBe('Import cycle detected: cycle-a.ents → cycle-b.ents → cycle-a.ents')
   })
 
   test('reports missing modules', async () => {
