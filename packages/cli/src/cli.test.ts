@@ -3,7 +3,7 @@
 // What the checker reports is tested in the compiler package.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -111,9 +111,14 @@ export func f(x: f64) -> u32 => bucket(x, 16)
 
   // A function of this module that another module's generic calls by its
   // name is found there, and renaming it here would leave that call with
-  // nothing to find.
+  // nothing to find. The other file is named relative to the working
+  // directory also where that directory is reached through a symbolic link,
+  // as macOS's temporary directory is (/var is /private/var): the file was
+  // named from the root.
   test("references find another module's instance calling the function, and rename refuses", async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    const real = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    const dir = `${real}-link`
+    await symlink(real, dir, 'junction')
     try {
       await writeFile(join(dir, 'lib.ents'), 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n')
       await writeFile(join(dir, 'main.ents'), 'import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nfunc hash(k: f64) -> u32 => 7\nexport func f(x: f64) -> u32 => bucket(x, 16)\n')
@@ -124,7 +129,8 @@ export func f(x: f64) -> u32 => bucket(x, 16)
       expect(rename.exitCode).toBe(1)
       expect(rename.stderr.toString()).toBe("'hash' is called by its name from instances of other modules' generics (bucket(K = f64) in lib.ents): renamed, they would no longer find it\n")
     } finally {
-      await rm(dir, { recursive: true })
+      await unlink(dir)
+      await rm(real, { recursive: true })
     }
   })
 

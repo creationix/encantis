@@ -11,6 +11,7 @@ import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { createTestHost } from '@encantis/compiler/test-host'
+import { realpathSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import wabt from 'wabt'
 
@@ -341,7 +342,7 @@ switch (command) {
       // name here, in those modules' files
       const elsewhere = (r.elsewhere ?? []).map(ref => {
         const p = new LineMap(qSources?.get(ref.path) ?? '').offsetToPosition(ref.offset)
-        return { file: relative(process.cwd(), ref.path), line: p.line + 1, col: p.col + 1 }
+        return { file: relativeToCwd(ref.path), line: p.line + 1, col: p.col + 1 }
       })
       if (jsonOutput) {
         const locs = r.references.map(ref => {
@@ -675,6 +676,22 @@ function printCheckErrors(check: ProgramCheckResult, modules: Map<string, { sour
     console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
     for (const note of d.notes ?? []) console.error(`  ${note.message} ${note.file}:${note.line}:${note.col}`)
   }
+}
+
+// A path as it is printed for the working directory: relative to it. Both
+// are taken with their symbolic links resolved, since the working directory
+// is (macOS's temporary directory /var is /private/var) and a path given on
+// the command line need not be: made relative to the other, one was named
+// by way of the root.
+function relativeToCwd(path: string): string {
+  const real = (p: string) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  return relative(real(process.cwd()), real(path))
 }
 
 // A file and its check for the queries: as part of its program where it
