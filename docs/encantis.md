@@ -1049,7 +1049,7 @@ test "each call reaches its own function" {
 }
 ```
 
-1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second. An untyped literal has no type of its own: beside typed arguments it only has to fit its parameter (see below).
+1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second. An untyped literal has no type of its own: beside typed arguments, or typed parts of a tuple, it only has to fit its parameter (see below).
 2. **Otherwise it is the only function the arguments can be passed to.** `hash("salt")` is `hash(k: []u8)`: a string is not a number. The argument is then converted as for any call.
 3. **Anything else is an error**, whether no function takes the arguments or more than one could:
 
@@ -1081,6 +1081,21 @@ test "the typed argument says which" {
   assert !f(10)
   assert g(10.5)
   assert !h(2)
+}
+```
+
+The same holds inside a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's parts, and its literals only have to fit. `far((x, 1))` with `x: u32` is `far(p: (u32, u32))`, and `far((x, 1))` with `x: u64` is the other one. An array literal is untyped as a whole, even where an element has a type.
+
+```ents
+func far(p: (u32, u32)) -> u32 => p.0 + p.1
+func far(p: (u64, u64)) -> u32 => 0
+
+export func k(x: u32) -> u32 => far((x, 1))       // far(p: (u32, u32))
+export func m(x: u64) -> u32 => far((1, x))       // far(p: (u64, u64))
+
+test "a tuple's typed parts say which" {
+  assert k(2) == 3
+  assert m(2) == 0
 }
 ```
 

@@ -2771,6 +2771,38 @@ describe('functions that share a name', () => {
     expect(called(put, 'func f(x: u8) -> u32 => put(x, 300) + put(x, 3:u32)', 'put')).toEqual(['put:u8|u32', 'put:u8|u32'])
   })
 
+  test('a literal inside a tuple beside typed values is exact where it fits', () => {
+    // (i, 1) is a (u32, u32) for f((u32, u32)) as it stands, and a
+    // conversion of i for f((u64, u64)): the same rule as for gt(x, 10), in
+    // the parts of the argument. Also by name, nested and behind &.
+    const f = `
+      type P32 = (x: u32, y: u32)
+      type P64 = (x: u64, y: u64)
+      func f(p: (u32, u32)) -> u32 => 1
+      func f(p: (u64, u64)) -> u32 => 2
+      func g(p: P32) -> u32 => 1
+      func g(p: P64) -> u32 => 2
+      func h(p: ((u32, u32), u8)) -> u32 => 1
+      func h(p: ((f64, f64), u8)) -> u32 => 2
+      func k(p: *(u32, u32)) -> u32 => 1
+      func k(p: *(f64, f64)) -> u32 => 2
+    `
+    const exact = 'func a(i: u32) -> u32 => f((i, 1)) + f((1, i)) + g((x: i, y: 1)) + h(((i, 1), 2)) + k(&(i, 1))'
+    for (const name of ['f', 'g', 'h', 'k']) expect(called(f, exact, name)).toEqual([])
+    expect(called(f, 'func a(i: u64) -> u32 => f((i, 1))', 'f')).toEqual(['f:<u64|u64>'])
+    expect(called(f, 'func a(i: u64) -> u32 => g((x: 1, y: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(f, 'func a(i: u32) -> u32 => f((i, 5000000000))', 'f')).toEqual(['f:<u64|u64>'])
+    // Where each function converts something, as before: ambiguous.
+    const both = `
+      func m(p: (u64, u64), q: u32) -> u32 => 1
+      func m(p: (u32, u32), q: u64) -> u32 => 2
+    `
+    expect(errs(`${both}\nfunc a(i: u32, j: u32) -> u32 => m((i, 1), j)`)).toEqual(["'m' is ambiguous for ((u32, int(1)), u32)"])
+    // Nothing typed in the tuple: nothing to say which.
+    expect(errs(`${f}\nfunc a() -> u32 => f((1, 2))`)).toEqual(["'f' is ambiguous for ((int(1), int(2)))"])
+  })
+
   test('without one, the only function the arguments can be passed to', () => {
     const two = `
       func hash(k: u64) -> u32 => 1

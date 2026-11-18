@@ -3513,14 +3513,21 @@ class CheckContext {
     const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
     // An argument without a type of its own (a literal, or one that is
     // nothing by itself) is exact wherever it fits: gt(x, 10) with x a u32
-    // is gt(u32, u32), not gt(f64, f64), which would convert x. Functions
-    // that are exact alike are as ambiguous as before.
+    // is gt(u32, u32), not gt(f64, f64), which would convert x. So is a
+    // tuple of typed values and literals where its typed values are exact:
+    // f((x, 1)) is f((u32, u32)). Functions that are exact alike are as
+    // ambiguous as before.
     const own = alone.map((type) => (type && hasOwnType(type) ? type : null))
+    const exactParts = (param: ResolvedType, arg: ResolvedType | null, as: (type: ResolvedType) => ResolvedType) => {
+      if (arg === null) return true
+      const filled = literalsAs(param, arg)
+      return !hasOwnType(filled) || same(param, as(filled))
+    }
     const exact = (as: (type: ResolvedType) => ResolvedType) =>
       candidates.filter(
         (c) =>
           c.params.every((p, i) => own[i] === null || same(p.type, as(own[i] as ResolvedType))) &&
-          c.params.every((p, i) => own[i] !== null || this.fits(args[i], p.type)),
+          c.params.every((p, i) => own[i] !== null || (this.fits(args[i], p.type) && exactParts(p.type, alone[i], as))),
       )
     let found = exact((type) => type)
     if (found.length !== 1) found = exact(withoutRanges)
@@ -6426,6 +6433,24 @@ function sameSignature(wanted: FuncRT, given: FuncRT): boolean {
     return canonicalKey(func(params, [field(null, only?.kind === 'tuple' ? only : tuple(returns))]))
   }
   return asStruct(wanted) === asStruct(given)
+}
+
+// An argument's type with each untyped literal in it given the type of the
+// part of the parameter it would be passed for: (u32, int(1)) for a
+// (u64, u64) is (u32, u64), and the typed parts stay what they are. Only
+// tuples and pointers are looked into; anything else untyped (an array
+// literal) is the parameter's type, as a literal is. A pointer with an
+// untyped literal in it is one to a literal (&(x, 1)), whose cell is laid out
+// for the parameter: it is the parameter's kind of pointer.
+function literalsAs(param: ResolvedType, arg: ResolvedType): ResolvedType {
+  if (hasOwnType(arg)) return arg
+  const a = unwrap(arg)
+  const p = unwrap(param)
+  if (a.kind === 'tuple' && p.kind === 'tuple' && a.fields.length === p.fields.length) {
+    return { ...a, fields: a.fields.map((f, i) => ({ ...f, type: literalsAs(p.fields[i].type, f.type) })) }
+  }
+  if (a.kind === 'pointer' && p.kind === 'pointer') return { ...p, pointee: literalsAs(p.pointee, a.pointee) }
+  return param
 }
 
 // Whether a type is the recovery type, or what points to it, holds it or
