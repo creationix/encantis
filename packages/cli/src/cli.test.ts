@@ -97,6 +97,18 @@ export func f(x: f64) -> u32 => bucket(x, 16)
     ])
   })
 
+  test('a query on a file that imports a generic answers from its program', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), LIB)
+      await writeFile(join(dir, 'main.ents'), `${MAIN}export func g(x: u32) -> u32 => x.bucket(16)\n`)
+      const run = Bun.spawnSync([process.execPath, CLI, 'hover', `${join(dir, 'main.ents')}:3:35`])
+      expect(run.stdout.toString()).toBe('generic bucket: func(k: u32, n: u32) -> u32 — bucket(x, 16); calls bucket(K = u32)\n')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
   for (const command of ['compile', 'wasm']) {
     test(`${command} stops at the error in the module checked first`, async () => {
       const { exitCode, stdout, stderr } = await run(command)

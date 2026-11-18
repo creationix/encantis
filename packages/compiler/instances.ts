@@ -282,7 +282,7 @@ function signed(name: string, type: ResolvedType): string {
 // How a function the module knows by `known` is named for the editor: an
 // instance as messages name it, a function that shares its name by that name.
 function shownName(check: TypeCheckResult, known: string): string {
-  return check.instances.find((inst) => inst.name === known)?.label ?? declaredName(known)
+  return check.instances.find((inst) => inst.name === known)?.label ?? check.externs.get(known)?.label ?? declaredName(known)
 }
 
 // The call written at an offset, and what it is in the end: f(x, a) for

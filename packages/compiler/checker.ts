@@ -306,6 +306,8 @@ export interface TypeCheckResult {
 export interface Extern {
   module: string
   name: string
+  // For an instance, how messages name it: push(T = u32)
+  label?: string
 }
 
 export interface InstanceInfo {
@@ -7781,7 +7783,7 @@ class CheckContext {
   private calleeOf(inst: Instance, sym: Symbol & { kind: 'generic' }, name: string): string {
     if (sym.owner === this || !sym.owner.filePath) return inst.name
     const known = `${name}${inst.name.slice((inst.of.ident as string).length)}`
-    this.externs.set(known, { module: sym.owner.filePath, name: inst.name })
+    this.externs.set(known, { module: sym.owner.filePath, name: inst.name, label: inst.label })
     return known
   }
 

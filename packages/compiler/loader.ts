@@ -48,12 +48,22 @@ function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
 
 export interface LoadOptions {
   includeTests?: boolean
+  // Reads a source file: its text, or null where there is no such file. The
+  // file system by default; the editor reads the documents it has open, and
+  // where it has no file system, only those.
+  readFile?: (path: string) => Promise<string | null>
+}
+
+async function readFromDisk(path: string): Promise<string | null> {
+  const file = Bun.file(path)
+  return (await file.exists()) ? file.text() : null
 }
 
 export async function loadModule(entryPath: string, options?: LoadOptions): Promise<LoadResult> {
   const absEntry = resolve(entryPath)
   const modules = new Map<string, LoadedModule>()
   const errors: LoadError[] = []
+  const readFile = options?.readFile ?? readFromDisk
 
   async function load(filePath: string, importedFrom: string | undefined, chain: Set<string>): Promise<boolean> {
     if (chain.has(filePath)) {
@@ -68,8 +78,8 @@ export async function loadModule(entryPath: string, options?: LoadOptions): Prom
 
     if (modules.has(filePath)) return true
 
-    const file = Bun.file(filePath)
-    if (!(await file.exists())) {
+    const source = await readFile(filePath)
+    if (source === null) {
       errors.push({
         message: `Module not found: ${filePath}`,
         filePath,
@@ -78,7 +88,6 @@ export async function loadModule(entryPath: string, options?: LoadOptions): Prom
       return false
     }
 
-    const source = await file.text()
     const result = parse(source, { filePath })
 
     if (result.errors.length > 0 || !result.module) {

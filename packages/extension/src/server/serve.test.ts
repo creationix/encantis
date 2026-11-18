@@ -266,3 +266,66 @@ test "t" {
     expect(value(server('onHover', program.indexOf('f(x)')))).toStartWith('```encantis\ncomptime f:(T) -> T\n```')
   })
 })
+
+// A document that imports other source files is checked as part of its
+// program, read from the open documents and, where the server can, from
+// disk. Where an import cannot be read the document is checked on its own.
+describe('a document with source imports', () => {
+  const LIB = 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\nfunc hash(k: u32) -> u32 => k * 0x45d9f3b\n'
+  const MAIN = 'import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nexport func f(x: f64) -> u32 => bucket(x, 16)\nexport func g(x: u32) -> u32 => bucket(x, 16)\n'
+  const libUri = 'file:///project/lib.ents'
+  const mainUri = 'file:///project/main.ents'
+
+  type Sent = { uri: string; diagnostics: { message: string; relatedInformation?: { location: { uri: string } }[] }[] }
+
+  // Opens the documents in order, with the reader given, and returns what
+  // the server says of the last one.
+  async function open(documents: [string, string][], readFile?: (path: string) => Promise<string | null>) {
+    const handlers = new Map<string, Handler>()
+    const sent: Sent[] = []
+    const connection = new Proxy({}, {
+      get(_target, name: string) {
+        if (name === 'languages') return { semanticTokens: { on: () => {} } }
+        if (name === 'listen') return () => {}
+        if (name === 'sendDiagnostics') return (params: Sent) => sent.push(params)
+        return (handler: Handler) => {
+          handlers.set(name, handler)
+          return { dispose() {} }
+        }
+      },
+    }) as Connection
+    startServer(connection, { readFile })
+    for (const [uri, text] of documents) {
+      handlers.get('onDidOpenTextDocument')?.({ textDocument: { uri, languageId: 'encantis', version: 1, text } })
+    }
+    const [uri, text] = documents[documents.length - 1]
+    for (let i = 0; i < 100 && !sent.some((s) => s.uri === uri); i++) await Bun.sleep(5)
+    const hover = (offset: number) => {
+      const before = text.slice(0, offset)
+      const position = { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 }
+      const shown = handlers.get('onHover')?.({ textDocument: { uri }, position }) as Hover | null
+      return shown ? (shown.contents as MarkupContent).value : null
+    }
+    return { diagnostics: sent.filter((s) => s.uri === uri).at(-1)?.diagnostics ?? [], hover }
+  }
+
+  const failed = "bucket(K = f64) cannot be instantiated: no function 'hash' accepts (f64) (lib.ents:1:62)"
+
+  test('an import the server reads from disk', async () => {
+    const files = new Map([['/project/lib.ents', LIB]])
+    const { diagnostics, hover } = await open([[mainUri, MAIN]], async (path) => files.get(path) ?? null)
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+    // The call shows the instance it calls, with its signature.
+    expect(hover(MAIN.lastIndexOf('bucket('))).toBe('```encantis\nbucket:(k:u32, n:u32) -> u32\n```\n\ncalls `bucket(K = u32)`')
+  })
+
+  test('an import that is open, with no disk to read', async () => {
+    const { diagnostics } = await open([[libUri, LIB], [mainUri, MAIN]])
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+  })
+
+  test('an import that cannot be read: the document is checked by the signatures its imports write', async () => {
+    const { diagnostics } = await open([[mainUri, MAIN]])
+    expect(diagnostics).toEqual([])
+  })
+})

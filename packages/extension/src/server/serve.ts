@@ -26,9 +26,10 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { Module } from '@encantis/compiler/ast';
-import { fieldNamedAt, genericDeclaring } from '@encantis/compiler/checker';
-import { buildMeta, type MetaError, type MetaHint, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import type { ImportDecl, Module, TestDecl } from '@encantis/compiler/ast';
+import { fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
+import { isSourceImport, loadModule } from '@encantis/compiler/loader';
+import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
@@ -225,8 +226,61 @@ function symbolKindToModifiers(kind: MetaSymbol['kind'], isDef: boolean, isInput
 // Connection Setup
 // -----------------------------------------------------------------------------
 
-export function startServer(connection: Connection): void {
+export interface ServerOptions {
+  // Reads a source file the editor does not have open: its text, or null.
+  // The desktop server reads the file system; the web one has none, and
+  // sees only the documents that are open.
+  readFile?: (path: string) => Promise<string | null>;
+}
+
+// The path of a file: URI, or null for a document that is no file
+function pathOf(uri: string): string | null {
+  if (!uri.startsWith('file://')) return null;
+  const path = decodeURIComponent(new URL(uri).pathname);
+  return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path;
+}
+
+function uriOf(path: string): string {
+  const slashed = path.replace(/\\/g, '/');
+  return `file://${slashed.startsWith('/') ? '' : '/'}${encodeURI(slashed)}`;
+}
+
+// Whether declarations name another source file, at their level or in a test
+function importsSource(decls: readonly { kind: string }[]): boolean {
+  return decls.some(d => (d.kind === 'ImportDecl' && isSourceImport((d as ImportDecl).module)) || (d.kind === 'TestDecl' && importsSource((d as TestDecl).children)));
+}
+
+export function startServer(connection: Connection, options: ServerOptions = {}): void {
   const documents = new TextDocuments(TextDocument);
+
+  // A document that imports other source files is checked as part of its
+  // program, so that what it imports is known: its generics are
+  // instantiated and checked, and the instances' errors that concern this
+  // document reach it. The files are the open documents where they are
+  // open, and else what the server can read. Where one cannot be read the
+  // document is checked on its own, by the signatures its imports write.
+  async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
+    const path = pathOf(uri);
+    if (!path) return null;
+    const readFile = async (file: string): Promise<string | null> => {
+      if (file === path) return text;
+      const open = documents.get(uriOf(file));
+      if (open) return open.getText();
+      return options.readFile ? options.readFile(file) : null;
+    };
+    try {
+      const load = await loadModule(path, { includeTests: true, readFile });
+      if (load.errors.length > 0) return null;
+      const check = typecheckProgram(load.modules, load.entry.path, { includeTests: true });
+      const checkResult = check.results.get(load.entry.path);
+      if (!checkResult) return null;
+      // The checker's tables are keyed by the nodes of the module it checked.
+      const sources = new Map([...load.modules].map(([file, loaded]) => [file, loaded.source]));
+      return { module: load.entry.module, checkResult, sources };
+    } catch {
+      return null;
+    }
+  }
 
   // -----------------------------------------------------------------------------
   // Initialization
@@ -278,8 +332,15 @@ export function startServer(connection: Connection): void {
 
     // Build meta info (includes type checking)
     let meta: MetaOutput;
+    let module = parseResult.module;
     try {
-      meta = buildMeta(parseResult.module, text, { srcPath: textDocument.uri });
+      // A document with no source import is checked at once, as it always was.
+      const program = importsSource(parseResult.module.decls) ? await programOf(textDocument.uri, text) : null;
+      // Changed while its program was read: the newer text is checked.
+      const latest = documents.get(textDocument.uri);
+      if (latest && latest.version !== textDocument.version) return;
+      if (program) module = program.module;
+      meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program });
     } catch (e) {
       // Never crash on partially written code — show the error as a diagnostic
       diagnostics.push({
@@ -292,7 +353,7 @@ export function startServer(connection: Connection): void {
       return;
     }
 
-    analysisCache.set(textDocument.uri, { text, meta, module: parseResult.module });
+    analysisCache.set(textDocument.uri, { text, meta, module });
 
     // Convert meta errors and warnings to diagnostics
     const tokenLen = (line: number, col: number): number => {
@@ -303,6 +364,11 @@ export function startServer(connection: Connection): void {
       return m ? m[0].length : Math.max(1, rest.match(/^\S+/)?.[0]?.length ?? 1);
     };
 
+    // A place in another file, whose text is not at hand here
+    const rangeIn = (pos: string) => {
+      const [line, col] = pos.split(':').map(Number);
+      return { start: { line, character: col }, end: { line, character: col + 1 } };
+    };
     const rangeAt = (pos: string) => {
       const [line, col] = pos.split(':').map(Number);
       return {
@@ -316,7 +382,7 @@ export function startServer(connection: Connection): void {
       notes && notes.length > 0
         ? {
             relatedInformation: notes.map(note => ({
-              location: { uri: textDocument.uri, range: rangeAt(note.pos) },
+              location: note.path ? { uri: uriOf(note.path), range: rangeIn(note.pos) } : { uri: textDocument.uri, range: rangeAt(note.pos) },
               message: note.message,
             })),
           }

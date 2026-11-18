@@ -145,22 +145,33 @@ export interface MetaError {
   pos: string // "line:col"
   message: string
   // For an error inside an instance of a generic: the calls that asked for
-  // the instance, innermost first
-  notes?: { pos: string; message: string }[]
+  // the instance, innermost first. A call in another module of the program
+  // has that module's path, and its position is in that module's source.
+  notes?: { pos: string; message: string; path?: string }[]
 }
 
 // === Main Entry Point ===
 
+export interface MetaOptions {
+  srcPath?: string
+  // The module's result where it was checked as part of its program (see
+  // typecheckProgram): it is then not checked again on its own.
+  checkResult?: TypeCheckResult
+  // The sources of the program's other modules by path, for the notes of
+  // its errors that are in them
+  sources?: Map<string, string>
+}
+
 export function buildMeta(
   module: AST.Module,
   source: string,
-  options?: { srcPath?: string },
+  options?: MetaOptions,
 ): MetaOutput {
   const lineMap = new LineMap(source)
   const comments = extractComments(source)
-  const checkResult = typecheck(module, { source })
+  const checkResult = options?.checkResult ?? typecheck(module, { source })
 
-  const builder = new MetaBuilder(module, source, lineMap, comments, checkResult)
+  const builder = new MetaBuilder(module, source, lineMap, comments, checkResult, options?.sources)
   return builder.build(options?.srcPath ?? 'file://./source.ents')
 }
 
@@ -209,6 +220,7 @@ class MetaBuilder {
     private lineMap: LineMap,
     private comments: Comment[],
     private checkResult: TypeCheckResult,
+    private sources?: Map<string, string>,
   ) {}
 
   build(srcPath: string): MetaOutput {
@@ -246,7 +258,13 @@ class MetaBuilder {
 
     const report = (e: TypeCheckResult['errors'][number]): MetaError => {
       const reported: MetaError = { pos: this.lineMap.positionKey(e.offset), message: e.message }
-      if (e.notes) reported.notes = e.notes.map((n) => ({ pos: this.lineMap.positionKey(n.offset), message: n.message }))
+      if (e.notes) {
+        reported.notes = e.notes.map((n) => {
+          const elsewhere = n.path === undefined ? undefined : this.sources?.get(n.path)
+          if (n.path === undefined || elsewhere === undefined) return { pos: this.lineMap.positionKey(n.offset), message: n.message }
+          return { pos: new LineMap(elsewhere).positionKey(n.offset), message: n.message, path: n.path }
+        })
+      }
       return reported
     }
     if (this.checkResult.errors.length > 0) output.errors = this.checkResult.errors.map(report)

@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
 import { parse } from '@encantis/compiler/parser'
-import { typecheck, typecheckProgram, type ProgramCheckResult } from '@encantis/compiler/checker'
+import { typecheck, typecheckProgram, type ProgramCheckResult, type TypeCheckResult } from '@encantis/compiler/checker'
+import type { ImportDecl, Module, TestDecl } from '@encantis/compiler/ast'
 import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
-import { loadModule } from '@encantis/compiler/loader'
+import { isSourceImport, loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
@@ -228,7 +229,8 @@ switch (command) {
 
     // Generate meta.json
     const srcPath = `file://./${inputFile.split('/').pop()}`
-    const meta = buildMeta(result.module, source, { srcPath })
+    const { module: metaModule, check: metaCheck, sources } = await checkedInProgram(inputFile, result.module)
+    const meta = buildMeta(metaModule, source, { srcPath, checkResult: metaCheck, sources })
     const json = JSON.stringify(meta, bigintReplacer, 2)
     await output(json)
     break
@@ -310,7 +312,8 @@ switch (command) {
       console.error(qResult.errors[0].message)
       process.exit(1)
     }
-    const qCheck = typecheck(qResult.module!)
+    const { module: qModule, check: qCheck } = await checkedInProgram(pos.file, qResult.module!)
+    qResult.module = qModule
     const lineMap = new LineMap(qSource)
     const offset = lineMap.positionToOffset({ line: pos.line, col: pos.col })
 
@@ -387,7 +390,8 @@ switch (command) {
         console.error(sResult.errors[0].message)
         process.exit(1)
       }
-      const sCheck = typecheck(sResult.module!)
+      const { module: sModule, check: sCheck } = await checkedInProgram(target, sResult.module!)
+      sResult.module = sModule
       const lineMap = new LineMap(sSource)
       const syms = documentSymbols(sSource, sResult.module!, sCheck)
       if (jsonOutput) {
@@ -663,6 +667,26 @@ function printCheckErrors(check: ProgramCheckResult, modules: Map<string, { sour
     console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
     for (const note of d.notes ?? []) console.error(`  ${note.message} ${note.file}:${note.line}:${note.col}`)
   }
+}
+
+// A file and its check for the queries: as part of its program where it
+// imports other source files and they can be read, so that what it imports
+// is known; else on its own, by the signatures its imports write. The
+// checker's tables are keyed by the nodes of the module it checked, which is
+// then the loader's.
+async function checkedInProgram(
+  file: string,
+  parsed: Module,
+): Promise<{ module: Module; check: TypeCheckResult; sources?: Map<string, string> }> {
+  const imports = (decls: readonly { kind: string }[]): boolean =>
+    decls.some((d) => (d.kind === 'ImportDecl' && isSourceImport((d as ImportDecl).module)) || (d.kind === 'TestDecl' && imports((d as TestDecl).children)))
+  if (imports(parsed.decls)) {
+    const load = await loadModule(file, { includeTests: true })
+    const check = load.errors.length === 0 ? typecheckProgram(load.modules, load.entry.path, { includeTests: true }) : null
+    const result = check?.results.get(load.entry.path)
+    if (result) return { module: load.entry.module, check: result, sources: new Map([...load.modules].map(([path, loaded]) => [path, loaded.source])) }
+  }
+  return { module: parsed, check: typecheck(parsed) }
 }
 
 // Convert byte offset to line:column

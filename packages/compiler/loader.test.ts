@@ -70,6 +70,28 @@ describe('loadModule', () => {
     expect(result.errors[0].message).toContain('not found')
   })
 
+  test('reads files through the reader it is given', async () => {
+    // The editor gives the documents it has open, which can differ from
+    // what is on disk, and has no disk at all in a browser.
+    const files = new Map([
+      [resolve('/memory/main.ents'), 'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nexport func f(a: u32) -> u32 => max(a, 1)\n'],
+      [resolve('/memory/lib.ents'), 'export func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }\n'],
+    ])
+    const read: string[] = []
+    const readFile = async (path: string) => {
+      read.push(path)
+      return files.get(path) ?? null
+    }
+    const result = await loadModule('/memory/main.ents', { readFile })
+    expect(result.errors).toEqual([])
+    expect([...result.modules.keys()]).toEqual([resolve('/memory/main.ents'), resolve('/memory/lib.ents')])
+    expect(read).toEqual([resolve('/memory/main.ents'), resolve('/memory/lib.ents')])
+    const check = typecheckProgram(result.modules, resolve('/memory/main.ents'))
+    expect(check.errors).toEqual([])
+    const missing = await loadModule('/memory/other.ents', { readFile })
+    expect(missing.errors.map((e) => e.message)).toEqual([`Module not found: ${resolve('/memory/other.ents')}`])
+  })
+
   test('caches modules loaded via multiple paths', async () => {
     // main.ents imports util.ents — loading util directly and via main
     // should result in the same cached module
