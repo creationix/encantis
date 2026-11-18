@@ -515,7 +515,7 @@ In a table:
 
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
-- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself.
+- `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`, and in a deeper table each row of rows: `for row in m { for cells in row { memzero(cells) } }` for a `*mut [2][2][2]T`.
 - `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
 - `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
@@ -1067,7 +1067,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). A generic type applied is a name of the same kind (8.5).
 
 <!-- spec:begin compile -->
 
@@ -3145,6 +3145,8 @@ test "one vector for each element type" {
 }
 ```
 
+**A fixed array for T.** With `T = [3]i32`, `[*]mut T` is `[*]mut [3]i32`, a table ([Nesting](#nesting)): each element is a pointer to its row, so code that uses an element as a `T`, as `get` above does, is refused in that instance, with a note that names the rule. For rows packed in place, make the element a struct with an array field, `Vec((cells: [3]i32))`: it lies in place, 12 bytes at a stride of 12, and `v.ptr[i].cells[2]` is one load (an array field is a value: its index is a constant, 2.4); for pointers to rows that lie elsewhere, say so, `Vec(*[3]i32)`.
+
 A generic type may refer to itself through a pointer or a slice, directly or through another generic type, as any type may (2.8): `List(u32)` inside the body of `List(u32)` is the type being made.
 
 ```ents
@@ -3493,7 +3495,7 @@ let (ptr, len) = slice           // by position
 let (ptr:, len:) = slice         // by name
 ```
 
-`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
+`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
 ### 9.6 Structs and Slices in Memory
 
@@ -3624,6 +3626,8 @@ let offset = u64(clz(n)) * 8
 | `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
 
 `memcpy` and `memset` take pointers to sized arrays. The destination is written, so it is a `*mut` pointer, as for a write through an index: `memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+
+The size of a table (`*[N][M]T`) is its N row pointers, 4 bytes each, and `memzero` of a table is an error ([Nesting](#nesting)). A length past a table's bytes is an error, and a runtime length for a table warns, each with a note that the rows lie apart: `n * sizeof(T)` for a `T` that is a fixed array counts the rows' cells, not the table.
 
 > **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
 

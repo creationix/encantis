@@ -3605,6 +3605,143 @@ export func f(n: u32) -> u32 => clear(n, n) + nope`
   })
 })
 
+describe('a fixed array for T makes [*]T, []T and *[N]T tables', () => {
+  const VEC = 'func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)\n'
+  const rowNote = (table: string) =>
+    `in a ${table} each element is a pointer to its row (reference 2.5): for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers`
+
+  test('an element used as T is refused, with a note that names the rule and the ways round it', () => {
+    const source = `${VEC}func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func keep(comptime T: type, x: T) -> T => x
+func pass(comptime T: type, v: *Vec(T)) -> T => keep(T, v.ptr[0])
+func each(comptime T: type, s: []T) -> u32 {
+  let n: u32 = 0
+  for e in s {
+    let x: T = e
+    n += 1
+  }
+  return n
+}
+func second(comptime T: type, p: *[2]T) -> T => p[1]
+export func a(v: *Vec([3]i32)) -> i32 => get(v, 0)[1] + pass(v)[0]
+export func b(s: [][3]i32) -> u32 => each(s)
+export func c(p: *[2][3]i32) -> i32 => second(p)[0]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'cannot assign *mut [3]i32 to [3]i32, in get(T = [3]i32)',
+      'argument 2: cannot assign *mut [3]i32 to [3]i32, in pass(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in each(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in second(T = [3]i32)',
+    ])
+    expect(result.errors.map(e => e.notes?.[0])).toEqual([
+      { offset: source.indexOf('v.ptr[i]'), message: rowNote('[*]mut [3]i32') },
+      { offset: source.indexOf('v.ptr[0]'), message: rowNote('[*]mut [3]i32') },
+      { offset: source.indexOf('x: T = e') + 'x: T = '.length, message: rowNote('[][3]i32') },
+      { offset: source.indexOf('p[1]'), message: rowNote('*[2][3]i32') },
+    ])
+    // The calls the instances were required from come after it.
+    expect(result.errors.map(e => e.notes?.[1]?.message)).toEqual(Array(4).fill('required from'))
+  })
+
+  test('an element reached through its address, or compared with a T, gets the note too', () => {
+    const source = `func at(comptime T: type, s: *[2]T) -> T {
+  let p = &s[1]
+  return p.*
+}
+func first(comptime T: type, s: []T) -> T {
+  if let p = &s[0] { return p.* }
+  return s[1] ?? s[0]
+}
+func same(comptime T: type, s: *[2]T, x: T) -> bool => s[0] == x
+export func f(t: *[2][3]i32, u: [][3]i32) -> i32 => at(t)[0] + first(u)[1] + (same(t, [1, 2, 3]) as i32)`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'cannot assign *[3]i32 to [3]i32, in at(T = [3]i32)',
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      // A row is no optional: the fallback's index has to be resolved
+      // where it is taken (4.7), in an instance too.
+      "index 0 on [][3]i32 requires 'if let' or '??': a slice's length is only known at run time (rows are not optional), in first(T = [3]i32)",
+      'cannot assign *[3]i32 to [3]i32, in first(T = [3]i32)',
+      "'==' cannot be applied to *[3]i32 and [3]i32, in same(T = [3]i32)",
+    ])
+    expect(result.errors.map(e => e.notes?.[0]?.message)).toEqual([
+      rowNote('*[2][3]i32'), rowNote('[][3]i32'), 'required from', rowNote('[][3]i32'), rowNote('*[2][3]i32'),
+    ])
+  })
+
+  test('a pointer to a T that is no element of a table gets no such note', () => {
+    const source = `func load(comptime T: type, p: *T) -> T => p
+export func f(p: *[3]i32) -> i32 => load(p)[0]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual(['cannot assign *[3]i32 to [3]i32, in load(T = [3]i32)'])
+    expect(result.errors[0].notes).toEqual([{ offset: source.indexOf('load(p)'), message: 'required from' }])
+  })
+
+  test('bytes counted with sizeof(T) are not the table: memcpy is checked against its pointers, memzero is refused', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+func copy(comptime T: type, d: *mut [2]T, s: *[2]T) {
+  memcpy(d, s, 2 * sizeof(T))
+}
+func clear(comptime T: type, p: *mut [2]T) {
+  memzero(p)
+}
+export func f() {
+  copy(a, b)
+  clear(a)
+  copy(n, n)
+  clear(n)
+}`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual([
+      'memcpy length 24 exceeds buffer size 8 bytes, in copy(T = [3]i32)',
+      'memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in p { memzero(row) }, in clear(T = [3]i32)',
+    ])
+    const advice = 'for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers'
+    expect(result.errors.map(e => e.notes?.[0])).toEqual([
+      { offset: source.indexOf('d, s, 2'), message: `a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): ${advice}` },
+      { offset: source.indexOf('p)\n}'), message: advice },
+    ])
+  })
+
+  test('a length only known when the program runs warns with the same note, for a table only', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+func fill(comptime T: type, d: *mut [2]T, s: *[2]T, k: u32) {
+  memcpy(d, s, k * sizeof(T))
+}
+export func f(k: u32) {
+  fill(a, b, k)
+  fill(n, n, k)
+}`
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map(w => w.message)).toEqual([
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = [3]i32)',
+      'memcpy length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes), in fill(T = u32)',
+    ])
+    const advice = 'for packed rows use a struct with an array field, (cells: [3]i32), or *[3]i32 for the pointers'
+    expect(result.warnings.map(w => w.notes?.[0])).toEqual([
+      { offset: source.indexOf('d, s, k'), message: `a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): ${advice}` },
+      { offset: source.indexOf('fill(n, n'), message: 'required from' },
+    ])
+  })
+
+  test('outside a generic too, the note says to go row by row', () => {
+    const source = `data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+export func f() {
+  memset(a, 0, 24)
+}`
+    expect(check(source).errors).toEqual([{
+      offset: source.indexOf('24'),
+      message: 'memset length 24 exceeds buffer size 8 bytes',
+      notes: [{ offset: source.indexOf('a, 0'), message: 'a *mut [2][3]i32 is a table of 2 pointers to rows, which lie apart (reference 2.5): set the rows one by one, as the arrays they are' }],
+    }])
+  })
+})
+
 const ZC2_GENERIC = `data heap = mut [0:u8; 4096]
 global top: u32 = 0
 func alloc(n: u32) -> u32 {

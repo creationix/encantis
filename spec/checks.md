@@ -1291,6 +1291,95 @@ func f() -> u32 {
 cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
 ```
 
+A table converts the same way, to a slice of rows (`[][2]u16`), in a constructor as in a literal, and in a generic type's constructor. Pointers to arrays of different lengths in one literal are slices of their own lengths, with no type written for it (`[three, four]` is a `[2][]i32`), in a tuple, in rows, in the branches of an `if` or `match` and in a global too.
+
+<!-- spec:begin compile -->
+
+```ents
+type Rows = (rows: [][2]u16, base: u32)
+type Outer = (inner: Rows, k: u32)
+func Of(comptime R: type) -> type => (rows: []R, base: u32)
+
+data table: *[2][2]u16 = [[100, 200], [300, 400]]
+data three: *[3]i32 = [1, 2, 3]
+data four: *[4]i32 = [4, 5, 6, 7]
+
+func count(r: Rows) -> u32 => r.rows.len
+func cell(r: Rows) -> u16 => if let row = r.rows[1] { row[1] } else { 0 }
+func any(comptime R: type, r: Of(R)) -> u32 => r.rows.len
+
+test "a table is a slice of its rows" {
+  assert count(Rows(table, 0)) == 2
+  assert count(Rows(rows: table, base: 0)) == 2
+  assert count((table, 0)) == 2
+  assert cell(Rows(table, 0)) == 400
+  let o = Outer(Rows(table, 0), 1)
+  assert o.inner.rows.len == 2
+  let p: Outer = ((table, 0), 1)
+  assert p.inner.rows.len == 2
+  assert any(Of([2]u16)(table, 0)) == 2
+  assert any(Of(i32)(four, 0)) == 4
+}
+
+test "pointers to arrays of different lengths in one literal" {
+  let both = [three, four]
+  assert both[0].len == 3
+  assert both[1].len == 4
+  let words = ["ab", "cde"]
+  assert words[1].len == 3
+  let some: []i32 = four
+  let mixed = [some, three]
+  assert mixed[1].len == 3
+  let t = ([three, four], 9)
+  assert t.0[1].len == 4
+  let nested = [[three, four], [four, three]]
+  assert nested[1][0].len == 4
+  assert nested[1][1].len == 3
+}
+
+global names = ["ab", "cde"]
+global pair = ([three, four], 9:u32)
+
+test "in the branches of an if or a match, in rows, and in a global" {
+  let x = if three[0] == 1 { [three, four] } else { [four, three] }
+  assert x[1].len == 4
+  let w = if four[0] == 4 { ["ab", "cde"] } else { ["x", "yz"] }
+  assert w[0].len == 2
+  assert w[1].len == 3
+  let m = match three[0] { 1 => [four, three], _ => [three, four] }
+  assert m[0].len == 4
+  let rows = [[three, three], [four, four]]
+  assert rows[0][1].len == 3
+  assert rows[1][0].len == 4
+  let pairs = [(three, 1), (four, 2)]
+  assert pairs[1].0.len == 4
+  assert pairs[1].1 == 2
+  assert names[1].len == 3
+  assert pair.0[1].len == 4
+  assert pair.1 == 9
+}
+```
+
+<!-- spec:end -->
+
+Rows of different lengths have no type together in registers: data lays them out as slices of their own lengths (`data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]`).
+
+```ents
+data three: *[3]i32 = [1, 2, 3]
+data four: *[4]i32 = [4, 5, 6, 7]
+
+func f() -> u32 {
+  let rows = [[three], [four, three]]
+  let cells = [[1, 2], [3, 4, 5]]
+  return rows[1][0].len
+}
+```
+
+```errors
+rows of different lengths: this one has 2 elements and the first 1; give the rows one length, or lay them out as slices with data
+rows of different lengths: this one has 3 elements and the first 2; give the rows one length, or lay them out as slices, data rows: *[2][]i32 = ...
+```
+
 ## Bounds
 
 An index into a `*[N]T` needs no check when its type proves it's below `N`. Ranges come from `for i in N`, from `&` and `%` with a constant, from `>>` on a fixed-width value, and from the width of `u8` and `u16`.
@@ -1516,6 +1605,140 @@ func f(a: i32) -> i32 {
 ```errors
 a row of *[2][3]i32 is laid out at compile time: its values must be constants
 ```
+
+A table's own bytes are its row pointers, 4 for each row: `memcpy` and `memset` check a length against them, and `memzero` of a table is refused, since it would point every row at address 0. A row is zeroed, or copied, as the array it is.
+
+```ents
+data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+
+data cube: *mut [2][2][2]i32 = mut [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
+func f() {
+  memcpy(board, grid, 24)
+  memzero(board)
+  memzero(cube)
+}
+```
+
+```errors
+memcpy length 24 exceeds buffer size 8 bytes
+memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in board { memzero(row) }
+memzero dest: *mut [2][2][2]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in cube { for cells in row { memzero(cells) } }
+```
+
+<!-- spec:begin compile -->
+
+```ents
+data board: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]
+data after: *[2]i32 = [77, 88]
+data cube: *mut [2][2][2]i32 = mut [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
+func clear() {
+  for row in board { memzero(row) }
+  for row in cube { for cells in row { memzero(cells) } }
+}
+func fill(i: u32#2) {
+  memcpy(board[i], grid[i], 12)
+}
+
+test "rows are zeroed and copied one by one" {
+  clear()
+  assert board[1][2] == 0
+  assert cube[1][1][1] == 0
+  assert cube[0][1][0] == 0
+  fill(1)
+  assert board[1][0] == 3
+  assert board[0][0] == 0
+  assert after[0] == 77
+}
+```
+
+<!-- spec:end -->
+
+A name for the array is the array (reference 2.11): with `type Grid = [2][3]i32`, a `*Grid` is a `*[2][3]i32`, a table, and a `*Row` is a `*[3]i32`. They compile to the module written without the names.
+
+<!-- spec:begin compile -->
+
+```ents
+type Row = [3]i32
+type Grid = [2]Row
+type Tab = *[2]Row
+
+data grid: *Grid = [[1, 2, 3], [4, 5, 6]]
+data tab: Tab = [[0, 1, 2], [3, 4, 5]]
+data spare: *mut Row = mut [0, 0, 0]
+data four: *[4]i32 = [7, 8, 9, 10]
+
+func at(g: *Grid, i: u32, j: u32) -> i32 => if let r = g[i] { r[j] ?? -1 } else { -2 }
+func total(g: *Grid) -> i32 {
+  let n = 0
+  for row in g {
+    for x in row { n += x }
+  }
+  return n
+}
+func second(g: *Grid) -> i32 => (&g[1]).*[0]
+func first(g: *Grid) -> i32 => if let r = g[1] { r[0] } else { 0 }
+func last(r: *Row) -> i32 => r[r.len - 1]
+func count(comptime T: type, s: []T) -> u32 => s.len
+func copy(r: *Row) -> i32 {
+  memcpy(spare, r, 12)
+  return spare[2]
+}
+func lengths(r: *Row) -> u32 {
+  let both = [r, four]
+  return both[0].len + both[1].len
+}
+func rows(t: Tab) -> u32 => t.len + t[1].len
+
+test "a pointer to a name for an array is a pointer to the array" {
+  assert at(grid, 1, 2) == 6
+  assert at(grid, 2, 0) == -2
+  assert total(grid) == 21
+  assert second(grid) == 4
+  assert first(grid) == 4
+  assert last(grid[1]) == 6
+  assert count(grid) == 2
+  assert count(grid[0]) == 3
+  assert copy(grid[1]) == 6
+  assert lengths(grid[0]) == 7
+  assert rows(tab) == 5
+  assert total(tab) == 15
+}
+```
+
+```ents same-wasm
+data grid: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]
+data tab: *[2][3]i32 = [[0, 1, 2], [3, 4, 5]]
+data spare: *mut [3]i32 = mut [0, 0, 0]
+data four: *[4]i32 = [7, 8, 9, 10]
+
+func at(g: *[2][3]i32, i: u32, j: u32) -> i32 => if let r = g[i] { r[j] ?? -1 } else { -2 }
+func total(g: *[2][3]i32) -> i32 {
+  let n = 0
+  for row in g {
+    for x in row { n += x }
+  }
+  return n
+}
+func second(g: *[2][3]i32) -> i32 => (&g[1]).*[0]
+func first(g: *[2][3]i32) -> i32 => if let r = g[1] { r[0] } else { 0 }
+func last(r: *[3]i32) -> i32 => r[r.len - 1]
+func count(comptime T: type, s: []T) -> u32 => s.len
+func copy(r: *[3]i32) -> i32 {
+  memcpy(spare, r, 12)
+  return spare[2]
+}
+func lengths(r: *[3]i32) -> u32 {
+  let both = [r, four]
+  return both[0].len + both[1].len
+}
+func rows(t: *[2][3]i32) -> u32 => t.len + t[1].len
+```
+
+<!-- spec:end -->
 
 ## Ranges
 

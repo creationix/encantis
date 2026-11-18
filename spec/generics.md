@@ -1196,6 +1196,49 @@ export func f() -> u32 => deep(u8, 1)
 type arguments grow without end while instantiating 'deep'
 ```
 
+A fixed array for `T` makes `[*]T`, `[]T` and `*[N]T` tables (reference 2.5): an element is a pointer to its row, not a `T`, so an instance that uses one as a `T` is refused. The error has a note that names the rule and the two ways round it: a struct with an array field, `(cells: [3]i32)`, for rows packed in place, or `*[3]i32` for pointers to rows (see Generic types, Accepted).
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+export func f(v: *Vec([3]i32)) -> i32 => get(v, 1)[2]
+export func g(v: *Vec(u32)) -> u32 => get(v, 1)
+```
+
+```errors
+cannot assign *mut [3]i32 to [3]i32, in get(T = [3]i32)
+```
+
+Bytes counted with `sizeof(T)` are the rows, not a table of them. A table's bytes are its row pointers, so `memcpy` checks a length against those, and `memzero`, which would point every row at address 0, is refused. The same code is right for a `T` that is no fixed array.
+
+```ents
+data a: *mut [2][3]i32 = mut [[1, 2, 3], [4, 5, 6]]
+data b: *[2][3]i32 = [[7, 8, 9], [10, 11, 12]]
+data n: *mut [2]u32 = mut [1, 2]
+
+func copy(comptime T: type, d: *mut [2]T, s: *[2]T) {
+  memcpy(d, s, 2 * sizeof(T))
+}
+func clear(comptime T: type, p: *mut [2]T) {
+  memzero(p)
+}
+
+export func f() {
+  copy(a, b)
+  clear(a)
+}
+export func g() {
+  copy(n, n)
+  clear(n)
+}
+```
+
+```errors
+memcpy length 24 exceeds buffer size 8 bytes, in copy(T = [3]i32)
+memzero dest: *mut [2][3]i32 is a table, its elements pointers to rows (reference 2.5): zero each row, for row in p { memzero(row) }, in clear(T = [3]i32)
+```
+
 ## Generic types
 
 A generic type is declared like a function whose result is `type` and whose body is a type. It is a declaration of its own kind, with its parameters and its body.
@@ -1758,6 +1801,142 @@ func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).a
 
 export func a(c: bool, n: []u8, p: Pt) -> u32 => pick(Named([]u8, Pt), c, (name: n, at: p), (name: n, at: p)).name.len
 export func b() -> u32 => wrap(7:u64)
+```
+
+A fixed array for `T` makes `[*]mut T` a table (reference 2.5), whose elements are pointers to rows; a struct with an array field lies in place instead. So a container of rows packed in place is a `Vec` of such a struct: `sizeof(T)` is 12, the stride of `v.ptr` is 12, and growing it by `len * sizeof(T)` bytes copies every row. It compiles to the same module as the container written out for the struct.
+
+```ents
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
+  return v
+}
+
+func grow(comptime T: type, v: *mut Vec(T)) {
+  let moved = alloc(v.cap * 2 * sizeof(T))
+  memcpy(moved as *mut [4096]u8, v.ptr, v.len * sizeof(T))
+  v.ptr = moved as [*]mut T
+  v.cap *= 2
+}
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  if v.len == v.cap { grow(v) }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+type Cells = (cells: [3]i32)
+
+export func rows(n: i32) -> i32 {
+  let v = vec(Cells, 1)
+  push(v, Cells([1, 2, 3]))
+  push(v, Cells([4, 5, n]))
+  push(v, Cells([7, 8, 9]))
+  return get(v, 1).cells[2] + get(v, 2).cells[0] + (v.cap as i32)
+}
+
+test "rows packed in place" {
+  assert rows(6) == 6 + 7 + 4
+  assert sizeof(Cells) == 12
+  assert sizeof(Vec(Cells)) == 12
+}
+```
+
+```ents same-wasm
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+type Cells = (cells: [3]i32)
+type VecCells = (ptr: [*]mut Cells, len: u32, cap: u32)
+
+func vec_cells(cap: u32) -> *mut VecCells {
+  let v = alloc(12) as *mut VecCells
+  v.* = VecCells(alloc(cap * 12) as [*]mut Cells, 0, cap)
+  return v
+}
+
+func grow_cells(v: *mut VecCells) {
+  let moved = alloc(v.cap * 2 * 12)
+  memcpy(moved as *mut [4096]u8, v.ptr, v.len * 12)
+  v.ptr = moved as [*]mut Cells
+  v.cap *= 2
+}
+
+func push_cells(v: *mut VecCells, x: Cells) {
+  if v.len == v.cap { grow_cells(v) }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get_cells(v: *VecCells, i: u32) -> Cells => v.ptr[i]
+
+export func rows(n: i32) -> i32 {
+  let v = vec_cells(1)
+  push_cells(v, Cells([1, 2, 3]))
+  push_cells(v, Cells([4, 5, n]))
+  push_cells(v, Cells([7, 8, 9]))
+  return get_cells(v, 1).cells[2] + get_cells(v, 2).cells[0] + (v.cap as i32)
+}
+```
+
+For the rows' addresses, the element is a pointer: `Vec(*[3]i32)` holds pointers to rows that lie elsewhere, 4 bytes each.
+
+```ents
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+}
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(cap * sizeof(T)) as [*]mut T, 0, cap)
+  return v
+}
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  assert v.len < v.cap
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+
+data one: *[3]i32 = [1, 2, 3]
+data two: *[3]i32 = [4, 5, 6]
+
+test "pointers to rows" {
+  let v = vec(*[3]i32, 2)
+  push(v, one)
+  push(v, two)
+  assert get(v, 1)[2] == 6
+  assert get(v, 0) == one
+  assert sizeof(*[3]i32) == 4
+}
 ```
 
 An exported generic type gives the host nothing, and one that is never applied is only parsed.

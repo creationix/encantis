@@ -3117,6 +3117,20 @@ describe('builtins', () => {
     expect(errs(`func f(p: *mut [!]u8) { memzero(p) }`)).toEqual(['memzero dest: *mut [!]u8 has no size known at compile time'])
   })
 
+  test('memzero of a table names loops that zero each row, one for each table in it', () => {
+    const say = (type: string, loops: string) =>
+      `memzero dest: ${type} is a table, its elements pointers to rows (reference 2.5): zero each row, ${loops}`
+    expect(errs(`func f(t: *mut [2][3]i32) { memzero(t) }`)).toEqual([say('*mut [2][3]i32', 'for row in t { memzero(row) }')])
+    expect(errs(`func f(t: *mut [2][2][2]i32) { memzero(t) }`))
+      .toEqual([say('*mut [2][2][2]i32', 'for row in t { for cells in row { memzero(cells) } }')])
+    expect(errs(`func f(t: *mut [2][2][2][2]i32) { memzero(t) }`))
+      .toEqual([say('*mut [2][2][2][2]i32', 'for row in t { for row2 in row { for cells in row2 { memzero(cells) } } }')])
+    // A loop variable with the table's own name would hide the table.
+    expect(errs(`func f(row: *mut [2][3]i32) { memzero(row) }`)).toEqual([say('*mut [2][3]i32', 'for r in row { memzero(r) }')])
+    expect(errs(`func f(t: *mut [2][2][2]i32) { for row in t { memzero(row) } }`))
+      .toEqual([say('*mut [2][2]i32', 'for r in row { memzero(r) }')])
+  })
+
   test('memcpy checks its source like its destination', () => {
     const src = (param: string) => `
       data buf = mut [0:u8; 16]
