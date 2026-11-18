@@ -847,6 +847,7 @@ function buildElementBytes(
   // A name, or a reference to a type declared further down (also where a
   // type refers to itself), is laid out as the type it names.
   elementType = unwrap(elementType)
+  if (framings.length === 0 && isNone(expr, elementType, builder)) return zerosOf(8)
 
   // An element that is a pointer to an array, given as a literal
   // (*[2]*[3]i32 = [[1, 2, 3], [4, 5, 6]], *[2][*]u8 = ["ab", "cd"]): the
@@ -1006,7 +1007,11 @@ function serializeSeparate(
   const mutableChildren = elem.kind === 'slice' ? elem.mutable : writable
   for (const element of elements) {
     const child = ungroup(element)
-    if (isSerializableExpr(child)) {
+    if (isNone(child, elem, builder)) {
+      const ref = { ptr: 0, len: 0 }
+      childRefs.push(ref)
+      pairs.add(ref)
+    } else if (isSerializableExpr(child)) {
       const ref = serializeLiteral(child, innerType, builder, undefined, mutableChildren)
       childRefs.push(ref)
       if (refsMap && child.span.start !== 0) {
@@ -1037,6 +1042,17 @@ function serializeSeparate(
   const optional = isOptional(targetType.element)
   const ref = builder.internBytes(pointerBytes, skipDedup, optional)
   return { ptr: ref.ptr, len: childRefs.length }
+}
+
+// 0 where an optional slice is wanted: none, a pointer and a length of 0.
+function isNone(expr: AST.Expr, type: ResolvedType, builder: DataSectionBuilder): boolean {
+  const t = unwrap(type)
+  if (t.kind !== 'slice' || !t.optional) return false
+  let e = ungroup(expr)
+  while (e.kind === 'AnnotationExpr') e = ungroup(e.expr)
+  if (e.kind === 'LiteralExpr') return e.value.kind === 'int' && BigInt(e.value.value) === 0n
+  const value = constantOf(e, builder)
+  return value?.kind === 'int' && value.value === 0n
 }
 
 // The value the checker worked out for an element, through an annotation.

@@ -37,6 +37,13 @@ import {
   arrayLength,
   typeParts,
   MAX_TYPE_PARTS,
+  typeRegisters,
+  MAX_PARAM_REGISTERS,
+  MAX_RESULT_REGISTERS,
+  MAX_FUNCTION_REGISTERS,
+  MAX_MODULE_GLOBALS,
+  MAX_MODULE_IMPORTS,
+  MAX_MODULE_EXPORTS,
   watSafe,
   comptimeIntFits,
   typeAssignable,
@@ -303,6 +310,9 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+  // Ranges assigned one value that every element of them gets (a fill,
+  // `p[a..b] = v`), as opposed to the elements of an array to copy in.
+  fills: Set<AST.SliceExpr>
   // Functions of other source modules that this module's code calls by a
   // name of its own (see CheckContext.externs): by that name, the path of
   // the module that has the function and the name it is known by there.
@@ -379,7 +389,36 @@ const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultF
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
   const ctx = contextFor(options)
   ctx.checkModule(module)
+  checkModuleSize([{ ctx, module, entry: true }])
   return finalize(ctx, module)
+}
+
+// A place in a module that adds `n` to one of the counts its wasm module is
+// held to (moduleSizeUses), with what to say of it
+type ModuleSizeUse = { at: number; n: number; shown: string | null }
+
+// The wasm module of a program has at most 1000000 globals, 100000 imports
+// and 100000 exports (MAX_MODULE_GLOBALS ..., the limits of the WebAssembly
+// JS API). Going over is
+// one error for each, where the count goes over, in the order the modules
+// were checked.
+function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
+  const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
+  const fix = 'share a large value through memory, behind a pointer'
+  const limits = [
+    { of: 'globals', most: MAX_MODULE_GLOBALS, said: `the program has more than ${MAX_MODULE_GLOBALS} wasm globals`, fix: 'keep a large value in memory, as data' },
+    { of: 'imports', most: MAX_MODULE_IMPORTS, said: `the program imports more than ${MAX_MODULE_IMPORTS} wasm functions and globals`, fix },
+    { of: 'exports', most: MAX_MODULE_EXPORTS, said: `the program exports more than ${MAX_MODULE_EXPORTS} wasm functions, globals and memories`, fix },
+  ] as const
+  for (const limit of limits) {
+    let total = 0
+    for (const { ctx, use } of counted.flatMap(({ ctx, uses }) => [...uses[limit.of]].sort((a, b) => a.at - b.at).map((use) => ({ ctx, use })))) {
+      total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      if (total <= limit.most) continue
+      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
+      break
+    }
+  }
 }
 
 function contextFor(options?: TypecheckOptions): CheckContext {
@@ -479,6 +518,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
+    fills: ctx.fills,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
     tag: ctx.moduleTag(),
@@ -608,6 +648,7 @@ export function typecheckProgram(
   }
 
   visit(entryPath)
+  checkModuleSize(checked.map(({ path, ctx, module }) => ({ ctx, module, entry: path === entryPath })))
   return { results, errors: [...results.values()].flatMap((result) => result.errors) }
 }
 
@@ -835,6 +876,8 @@ class CheckContext {
   // ends, as a declaration is (`lookUnproven`).
   unproven = new Set<AST.IndexExpr>()
   lookUnproven: AST.IndexExpr[] = []
+  // Range assignments that fill (see TypeCheckResult.fills)
+  fills = new Set<AST.SliceExpr>()
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -1141,6 +1184,25 @@ class CheckContext {
     this.settleLiterals()
     this.placeInstanceLiterals()
     this.settleGuesses()
+    this.recordDefUses(module)
+  }
+
+  // A def's value is put where its name is written when the module is
+  // parsed (Module.defUses), and the checker sees only the value there: each
+  // of those places is a use of the def, as a name it checks is. Not in a
+  // test that is not checked, where nothing is used.
+  private recordDefUses(module: AST.Module): void {
+    const unchecked: AST.Span[] = []
+    if (this.options.includeTests === false) {
+      for (const decl of module.decls) if (decl.kind === 'TestDecl') unchecked.push(decl.span)
+    }
+    for (const { decl, at } of module.defUses ?? []) {
+      if (unchecked.some((span) => at >= span.start && at < span.end)) continue
+      const refs = this.references.get(decl)
+      if (!refs) continue
+      if (!refs.includes(at)) refs.push(at)
+      this.symbolRefs.set(at, decl)
+    }
   }
 
   // A call in a generic's body was taken, before any instance existed, for a
@@ -2611,6 +2673,8 @@ class CheckContext {
     const testScope: Scope = { parent: this.currentScope, symbols: new Map() }
     const prevScope = this.currentScope
     this.currentScope = testScope
+    const prevVariables = this.variables
+    this.variables = new Map()
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
@@ -2664,6 +2728,11 @@ class CheckContext {
     }
     this.currentScope = prevScope
     this.settleLiterals()
+    // A test of statements is a function of its own (nested tests and the
+    // functions it declares are theirs).
+    const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
+    this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
+    this.variables = prevVariables
   }
 
   // A many-pointer is refused where it's written through; memcpy may read from one.
@@ -2752,6 +2821,8 @@ class CheckContext {
   }
 
   checkFuncBody(decl: AST.FuncDecl): void {
+    const prevVariables = this.variables
+    this.variables = new Map()
     // Create function scope with params and named returns
     const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
@@ -2823,6 +2894,9 @@ class CheckContext {
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
     this.settleLiterals()
+    const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
+    this.checkSize(`function '${name ?? 'anonymous'}'`, decl.span, decl.body.kind === 'Block' ? decl.body.stmts : decl.body.expr)
+    this.variables = prevVariables
   }
 
   // The type a returned value is checked against: for a single named result
@@ -2858,6 +2932,7 @@ class CheckContext {
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
+        if (param?.kind !== 'param') this.noteVariable(field.span.start, field.ident, resolvedType, kind)
         if (param?.kind === 'param') this.recordInOut(param, sym)
       }
     }
@@ -3344,6 +3419,7 @@ class CheckContext {
     scope.symbols.set(name, sym)
     this.types.set(typeKey(defAt, 'Binding'), type)
     this.recordDefinition(name, defAt, sym)
+    this.noteVariable(defAt, name, type)
   }
 
   bindPattern(pattern: AST.Pattern, type: ResolvedType): void {
@@ -3358,6 +3434,7 @@ class CheckContext {
         this.letScope().symbols.set(pattern.name, sym)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
+        this.noteVariable(pattern.span.start, pattern.name, type)
         break
       }
       case 'TuplePattern': {
@@ -3421,6 +3498,7 @@ class CheckContext {
     const at = namedPartAt(element)
     this.types.set(typeKey(at, 'Binding'), type)
     this.recordDefinition(varName, at, sym)
+    this.noteVariable(at, varName, type)
   }
 
   private patternIdent(pattern: AST.Pattern): string | null {
@@ -3777,7 +3855,10 @@ class CheckContext {
         // Function type: input -> output
         const params = this.typeToFields(type.input)
         const returns = this.typeToFields(type.output)
-        return func(params, returns)
+        const made = func(params, returns)
+        // One too large to write out has that error (resolveType).
+        if (typeParts(made) <= MAX_TYPE_PARTS) this.checkSignatureSize(type.input, params, type.output, returns)
+        return made
       }
 
       case 'TypeApply':
@@ -3889,6 +3970,7 @@ class CheckContext {
     return this.inSignature(sig, () => {
       const params = this.typeToFields(sig.input, true)
       const returns = this.typeToFields(sig.output, true)
+      this.checkSignatureSize(sig.input, params, sig.output, returns)
       return func(params, returns)
     })
   }
@@ -3908,6 +3990,27 @@ class CheckContext {
     } finally {
       this.signatureNames = prev
     }
+  }
+
+  // The parameters of a function, and its results, are those of a wasm
+  // function: at most 1000 registers each (MAX_PARAM_REGISTERS,
+  // MAX_RESULT_REGISTERS), counted as a value held by value is. Said at the
+  // parameter or the result that goes over.
+  private checkSignatureSize(input: AST.Type, params: ResolvedField[], output: AST.Type, returns: ResolvedField[]): void {
+    const memo = new Map<ResolvedType, number>()
+    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number) => string) => {
+      const counts = fields.map((f) => (f.type === RECOVERY ? 0 : typeRegisters(f.type, memo)))
+      const total = counts.reduce((a, b) => Math.min(a + b, Number.MAX_SAFE_INTEGER), 0)
+      if (total <= limit) return
+      const at = written.kind === 'CompositeType' && written.fields.length === fields.length ? written.fields : null
+      let index = 0
+      for (let sum = counts[0]; sum <= limit; sum += counts[index]) index++
+      this.error(at ? at[index].span.start : written.span.start, message(total))
+    }
+    over(input, params, MAX_PARAM_REGISTERS, (n) =>
+      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer`)
+    over(output, returns, MAX_RESULT_REGISTERS, (n) =>
+      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
   }
 
   // Convert a Type to a list of fields (for function params/returns)
@@ -3947,6 +4050,370 @@ class CheckContext {
     if (type === RECOVERY || typeParts(type, new Map(), true) <= MAX_TYPE_PARTS) return type
     this.error(at, tooLarge(shown()))
     return RECOVERY
+  }
+
+  // === The size of a function ===
+
+  // The variables of the function or test being checked, by where each is
+  // defined: its named parameters and results, and what a let, a for, an
+  // if let or a match arm binds (checkSize).
+  private variables: Map<number, { name: string; type: ResolvedType; of?: 'param' | 'return' }> | null = null
+
+  // `of`: the variable is a parameter or a named result
+  private noteVariable(at: number, name: string, type: ResolvedType, of?: 'param' | 'return'): void {
+    this.variables?.set(at, { name, type, of })
+  }
+
+  // What a module adds to the one wasm module of its program, by the limits
+  // of the WebAssembly JS API: a wasm global for each register of each of its
+  // globals (at most 1000000 in a module), an import for each function and
+  // each register of each global it imports from the host, and, for the
+  // entry module, an export for each function and memory and each register
+  // of each global it exports (at most 100000 each). Each where it is
+  // declared, with what to say of it.
+  moduleSizeUses(module: AST.Module, entry: boolean): Record<'globals' | 'imports' | 'exports', ModuleSizeUse[]> {
+    const uses: Record<'globals' | 'imports' | 'exports', ModuleSizeUse[]> = { globals: [], imports: [], exports: [] }
+    const memo = new Map<ResolvedType, number>()
+    const held = (at: number, name: string, type: ResolvedType | undefined): ModuleSizeUse => {
+      const n = type ? typeRegisters(type, memo) : 1
+      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null }
+    }
+    for (const decl of module.decls) {
+      const item = decl.kind === 'ExportDecl' ? decl.item : decl
+      if (item.kind === 'GlobalDecl') {
+        const name = this.patternIdent(item.pattern) ?? ''
+        const use = held(item.pattern.span.start, name, this.types.get(typeKey(item.pattern.span.start, item.pattern.kind)))
+        uses.globals.push(use)
+        if (decl.kind === 'ExportDecl' && entry) uses.exports.push(use)
+      } else if (decl.kind === 'ExportDecl' && entry && !(item.kind === 'FuncDecl' && isGenericDecl(item)) && item.kind !== 'TypeFuncDecl') {
+        uses.exports.push({ at: decl.span.start, n: 1, shown: null })
+      } else if (item.kind === 'ImportDecl' && !isSourceImport(item.module)) {
+        for (const imported of item.items) {
+          if (imported.item.kind === 'ImportGlobal') {
+            const sym = this.moduleScope.symbols.get(imported.item.ident)
+            uses.imports.push(held(imported.item.span.start, imported.item.ident, sym?.kind === 'global' ? sym.type : undefined))
+          } else if (imported.item.kind === 'ImportFunc') {
+            uses.imports.push({ at: imported.span.start, n: 1, shown: null })
+          }
+        }
+      }
+    }
+    return uses
+  }
+
+  // The call a call is compiled as: a method call's f(x, a), an instance's
+  // plain call, a type's struct of its arguments; with the type of the
+  // function it calls, where that is known.
+  private compiledCall(expr: AST.CallExpr): { call: AST.CallExpr | AST.TupleExpr; callee: ResolvedType | undefined } {
+    let call: AST.CallExpr | AST.TupleExpr = expr
+    let callee = this.exprTypes.get(expr.callee)
+    for (let next = this.calls.get(expr); next && next !== call; next = next.kind === 'CallExpr' ? this.calls.get(next) : undefined) {
+      call = next
+      if (next.kind === 'CallExpr') callee = this.exprTypes.get(next.callee) ?? callee
+    }
+    return { call, callee }
+  }
+
+  // A function is one wasm function, and an engine takes one of at most
+  // 50000 locals and a body of at most 7654321 bytes (MAX_FUNCTION_REGISTERS).
+  // What a function holds and computes is counted in registers, the wasm
+  // values a value is laid out in: each register of its parameters and
+  // variables, and each register of each value its code computes, as often as
+  // the code is written out (a fill [x; N] writes x N times, a deferred
+  // expression is written at each exit, a return without a value reads the
+  // named results again). A value computes as much code as it
+  // has registers, so this bounds the body as well; and a value an if, an if
+  // let, a match or a ?? gives is a wasm block's results, at most 1000
+  // (MAX_RESULT_REGISTERS). One error where the count goes over, at the value
+  // or the variable that takes it over, and one for each block that gives
+  // too much, where the count is then not said; nothing is said of a function
+  // that has errors already, in its signature or its body (`span`), which is
+  // not compiled. The errors of an instance are where they are in the
+  // generic, which is where its copy is, less its own offset.
+  private checkSize(owner: string, span: AST.Span, body: readonly AST.Statement[] | AST.Expr): void {
+    const from = span.start % INSTANCE_STRIDE
+    const to = from + (span.end - span.start)
+    const hasErrors = () => this.errors.some((e) => e.offset >= from && e.offset < to)
+    const clean = !hasErrors()
+    const memo = new Map<ResolvedType, number>()
+    const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
+    // What adds to the count, where, and what to say of it if it goes over there
+    type Use = { at: number; n: number; shown: () => string | null }
+    const uses: Use[] = []
+    // A signature over its own limits has its error (checkSignatureSize).
+    const signature = { param: 0, return: 0 }
+    for (const [at, { name, type, of }] of this.variables ?? []) {
+      const n = registers(type)
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null) })
+      if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
+    }
+    const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
+    const exitsKnown = new WeakMap<object, number>()
+    // A value of `n` registers, whose code is written out `copies` times
+    // A def's value is copied where it is used, with its own places in the
+    // source: what is counted of it is said at the use (the last expression
+    // of the function's own met before it).
+    let site = span.start
+    const count = (expr: AST.Expr, n: number, copies: number) => {
+      const type = this.exprTypes.get(expr)
+      const own = times(n, copies)
+      const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
+      uses.push({ at: site, n: own, shown })
+    }
+    // A block's value, which a wasm block gives back
+    const blockValue = (expr: AST.Expr, what: string) => {
+      const type = this.exprTypes.get(expr)
+      const n = registers(type)
+      if (type && n > MAX_RESULT_REGISTERS && clean) {
+        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — let it give a pointer to the value instead`)
+      }
+    }
+    // Where a value is stored or read in part, the place it names is not
+    // computed: of p.*[3] only the element is read, of p.* = v nothing.
+    const isPlace = (expr: AST.Expr): boolean => {
+      const inner = groupedExpr(expr)
+      if (inner) return isPlace(inner)
+      switch (expr.kind) {
+        case 'IdentExpr':
+          return true
+        case 'AnnotationExpr':
+          return isPlace(expr.expr)
+        case 'MemberExpr':
+        case 'IndexExpr': {
+          if (expr.kind === 'MemberExpr' && expr.member.kind === 'deref') return true
+          if (expr.kind === 'MemberExpr' && expr.member.kind === 'type') return false
+          const object = this.exprTypes.get(expr.object)
+          const u = object && unwrap(object)
+          return u?.kind === 'pointer' || u?.kind === 'slice' || (u?.kind === 'array' && !isValueArray(u)) || isPlace(expr.object)
+        }
+        default:
+          return false
+      }
+    }
+    const repeats = (expr: AST.RepeatExpr): number => {
+      const written = ungrouped(expr.count)
+      const literal = written.kind === 'LiteralExpr' && written.value.kind === 'int' ? written.value.value : null
+      const constant = this.constants.get(expr.count)
+      const value = literal ?? (constant?.kind === 'int' ? constant.value : null)
+      if (value !== null) return Number(value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : value < 0n ? 0 : value)
+      const type = this.exprTypes.get(expr)
+      const u = type && unwrap(type)
+      const array = u?.kind === 'pointer' ? unwrap(u.pointee) : u
+      if (array?.kind === 'comptime_array') return array.count
+      return array?.kind === 'array' && typeof array.sizes?.[0] === 'number' ? array.sizes[0] : 1
+    }
+    // An element of a literal laid out in memory: a constant one is data,
+    // and only one known when the program runs is stored, by code.
+    const inMemory = (expr: AST.Expr, n: number): void => {
+      const written = ungrouped(expr.kind === 'AnnotationExpr' ? expr.expr : expr)
+      const built = written.kind === 'CallExpr' ? this.calls.get(written) : undefined
+      const e = built?.kind === 'TupleExpr' ? built : written
+      if (e.kind === 'LiteralExpr' || this.constants.has(e) || this.constants.has(expr)) return
+      if (e.kind === 'AnnotationExpr') inMemory(e.expr, n)
+      else if (e.kind === 'ArrayExpr') for (const element of e.elements) inMemory(element, n)
+      else if (e.kind === 'RepeatExpr') inMemory(e.value, times(n, repeats(e)))
+      else if (e.kind === 'TupleExpr') {
+        for (const field of e.elements) {
+          const v = argValue(field)
+          if (v) inMemory(v, n)
+        }
+      }
+      else value(e, n, false)
+    }
+    // An expression, its code written out `n` times; `part` when only part
+    // of it is used (an object of a member or an index, what & takes the
+    // address of, where an assignment stores)
+    const value = (written: AST.Expr, n: number, part: boolean): void => {
+      // (x) and x: T are x
+      let expr = ungrouped(written)
+      while (expr.kind === 'AnnotationExpr') expr = ungrouped(expr.expr)
+      if (expr.span.start >= span.start && expr.span.start < span.end) site = expr.span.start
+      const type = this.exprTypes.get(expr)
+      const own = () => {
+        if (!(part && isPlace(expr))) count(expr, Math.max(1, registers(type)), n)
+      }
+      switch (expr.kind) {
+        case 'BinaryExpr':
+          own()
+          value(expr.left, n, false)
+          value(expr.right, n, false)
+          return
+        case 'UnaryExpr':
+          own()
+          value(expr.operand, n, expr.op === '&')
+          return
+        case 'CastExpr':
+          own()
+          value(expr.expr, n, false)
+          return
+        case 'CallExpr': {
+          const { call, callee } = this.compiledCall(expr)
+          if (call.kind === 'TupleExpr') {
+            value(call, n, false)
+            return
+          }
+          own()
+          if (call.callee.kind !== 'IdentExpr') value(call.callee, n, false)
+          // A parameter too large to hold has its error where it is declared,
+          // and what is passed for it says nothing more.
+          const params = callee?.kind === 'func' && callee.params.length === call.args.length ? callee.params : null
+          call.args.forEach((arg, i) => {
+            const v = argValue(arg)
+            if (v && v.kind !== 'TypeExpr' && params?.[i].type !== RECOVERY) value(v, n, false)
+          })
+          return
+        }
+        case 'MemberExpr':
+          own()
+          value(expr.object, n, true)
+          return
+        case 'IndexExpr':
+          own()
+          value(expr.object, n, true)
+          value(expr.index, n, false)
+          return
+        case 'SliceExpr':
+          own()
+          value(expr.object, n, true)
+          if (expr.start) value(expr.start, n, false)
+          if (expr.end) value(expr.end, n, false)
+          return
+        case 'CoalesceExpr':
+          own()
+          blockValue(expr, 'a ??')
+          value(expr.expr, n, false)
+          value(expr.fallback, n, false)
+          return
+        case 'TupleExpr':
+          // A literal is its elements.
+          for (const e of expr.elements) {
+            const v = argValue(e)
+            if (v) value(v, n, false)
+          }
+          return
+        case 'ArrayExpr':
+        case 'RepeatExpr': {
+          const u = type && unwrap(type)
+          if (u?.kind === 'pointer' || u?.kind === 'slice') {
+            own()
+            inMemory(expr, n)
+          } else if (expr.kind === 'ArrayExpr') {
+            for (const e of expr.elements) value(e, n, false)
+          } else {
+            value(expr.value, times(n, repeats(expr)), false)
+          }
+          return
+        }
+        case 'IfExpr':
+          own()
+          blockValue(expr, expr.pattern ? 'an if let' : 'an if')
+          value(expr.condition, n, false)
+          block(expr.thenBranch, n)
+          for (const elif of expr.elifs) {
+            value(elif.condition, n, false)
+            block(elif.thenBranch, n)
+          }
+          if (expr.else_) block(expr.else_, n)
+          return
+        case 'MatchExpr':
+          own()
+          blockValue(expr, 'a match')
+          value(expr.subject, n, false)
+          for (const arm of expr.arms) {
+            if (arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody') block(arm.body, n)
+            else value(arm.body, n, false)
+          }
+          return
+        case 'TypeExpr':
+          return
+        default:
+          // A name, a literal, sizeof
+          own()
+      }
+    }
+    const block = (body: AST.FuncBody, n: number) => (body.kind === 'Block' ? statements(body.stmts, n) : value(body.expr, n, false))
+    // Where a value is stored, the place is not computed: what picks it
+    // out of memory or a variable is.
+    const target = (place: AST.LValue, n: number) => {
+      if (place.kind === 'IdentPattern' || place.kind === 'TuplePattern') return
+      value(place, n, true)
+    }
+    // The exits after each statement of a list, counted once for the list
+    const exitsAfter = (stmts: readonly AST.Statement[]): number[] => {
+      const after: number[] = new Array(stmts.length).fill(0)
+      for (let i = stmts.length - 2; i >= 0; i--) after[i] = Math.min(after[i + 1] + exitsIn(stmts[i + 1], exitsKnown), Number.MAX_SAFE_INTEGER)
+      return after
+    }
+    const statements = (stmts: readonly AST.Statement[], n: number): void => {
+      let after: number[] | null = null
+      stmts.forEach((stmt, i) => {
+        switch (stmt.kind) {
+          case 'LetStmt':
+            if (stmt.value) value(stmt.value, n, false)
+            return
+          case 'SetStmt':
+            value(stmt.value, n, false)
+            return
+          case 'AssignmentStmt':
+            target(stmt.target, n)
+            value(stmt.value, n, false)
+            return
+          case 'ExpressionStmt':
+            value(stmt.expr, n, false)
+            return
+          case 'AssertStmt':
+            value(stmt.expr, n, false)
+            return
+          case 'ReturnStmt':
+            if (stmt.value) value(stmt.value, n, false)
+            if (stmt.when) value(stmt.when, n, false)
+            // Without a value it gives back the named results, each of
+            // their registers read again
+            if (!stmt.value && signature.return > 0) {
+              if (stmt.span.start >= span.start && stmt.span.start < span.end) site = stmt.span.start
+              const given = signature.return
+              const own = times(given, n)
+              uses.push({ at: site, n: own, shown: () => (given > 1 || n > 1 ? `the named results a return gives back${n > 1 ? `, written out ${n} times,` : ''} are ${own}` : null) })
+            }
+            return
+          case 'BreakStmt':
+          case 'ContinueStmt':
+            if (stmt.when) value(stmt.when, n, false)
+            return
+          case 'WhileStmt':
+            value(stmt.condition, n, false)
+            block(stmt.body, n)
+            return
+          case 'ForStmt':
+            value(stmt.iterable, n, false)
+            block(stmt.body, n)
+            return
+          case 'LoopStmt':
+            block(stmt.body, n)
+            return
+          case 'DeferStmt':
+            // Written at the end of the block and at each exit after it
+            after ??= exitsAfter(stmts)
+            value(stmt.expr, times(n, 1 + after[i]), false)
+            return
+        }
+      })
+    }
+    if (Array.isArray(body)) statements(body as readonly AST.Statement[], 1)
+    else value(body as AST.Expr, 1, false)
+
+    // Over the limit: said once, where it goes over
+    if (hasErrors() || signature.param > MAX_PARAM_REGISTERS || signature.return > MAX_RESULT_REGISTERS) return
+    uses.sort((a, b) => a.at - b.at)
+    let total = 0
+    for (const use of uses) {
+      total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      if (total <= MAX_FUNCTION_REGISTERS) continue
+      const shown = use.shown()
+      const here = shown ? ` (here ${shown})` : ''
+      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)`)
+      return
+    }
   }
 
   // === Expression Type Inference ===
@@ -5900,6 +6367,23 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
+    // An optional slice is none where its pointer is 0: it is compared with
+    // 0, and only for equality, as an optional pointer is.
+    const optionalSlice = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'slice' && !!t.optional
+    }
+    const zero = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'comptime_int' && t.value === 0n
+    }
+    const none = optionalSlice(leftType) && zero(rightType) ? expr.right
+      : zero(leftType) && optionalSlice(rightType) ? expr.left
+      : null
+    if (none && (expr.op === '==' || expr.op === '!=')) {
+      this.coerce(none, none === expr.left ? leftType : rightType, primitive('u32'))
+      return
+    }
     const check = (operand: AST.Expr, type: ResolvedType): boolean => {
       const t = unwrap(type)
       if (t.kind === 'pointer' || t.kind === 'func') return true
@@ -5993,6 +6477,10 @@ class CheckContext {
       // A constant address is a 32-bit value, whatever it's computed from.
       this.coerce(expr, actual, addressType(from), prefix)
       this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'slice' && from.kind === 'comptime_int') {
+      // 0 for an optional slice: the address 0, and a length of 0.
+      this.coerce(expr, actual, addressType(from), prefix)
+      this.coercions.set(expr, expected)
     } else if (to.kind === 'primitive' && from.kind === 'primitive') {
       if (from.name !== to.name) {
         this.exprTypes.set(expr, actual)
@@ -6016,12 +6504,17 @@ class CheckContext {
       // section has had its elements checked against the element type.)
       // A tuple literal among them meets a struct element as it meets any
       // struct: field by field, by name where it has names.
+      // So is an array literal among them where the element is an array:
+      // its own elements meet the inner element type as they would alone.
       const elementType = this.peelArraySize(to)
       const structs = unwrap(elementType).kind === 'tuple'
+      const rows = unwrap(elementType).kind === 'array'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
-        else if (type) this.coerce(element, type, elementType, prefix)
+        const inner = ungrouped(element).kind
+        if ((structs && inner === 'TupleExpr') || (rows && (inner === 'ArrayExpr' || inner === 'RepeatExpr'))) {
+          this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        } else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
@@ -6474,13 +6967,11 @@ class CheckContext {
   // checked at runtime.
   inferSlice(expr: AST.SliceExpr): ResolvedType {
     const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'take a range of'))
+    // A bound is what an index is: an integer of at most 32 bits, signed or
+    // not. A negative one is, as an unsigned number, past any length.
     const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
       if (!e) return { value: null, max: null }
-      const t = unwrap(this.inferExpr(e))
-      if (t.kind === 'comptime_int') this.checkExpr(e, primitive('u32'))
-      else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
-        this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
-      }
+      const t = unwrap(this.inferIndexValue(e, 'a range bound'))
       const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
       const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
@@ -6513,7 +7004,7 @@ class CheckContext {
       const endFits = e.max !== null && e.max <= n + 1n
       const startFits = s.value === 0n || (e.value !== null && s.max !== null && s.max <= e.value + 1n)
       proven = endFits && startFits
-      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
+      if (s.value !== null && e.value !== null && (s.value < 0n || s.value > e.value || e.value > n)) {
         this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
         proven = true // already reported; don't add a second error
       }
@@ -6540,10 +7031,13 @@ class CheckContext {
     return start !== null && end !== null && end >= start ? end - start : null
   }
 
-  // dst[a..b] = v fills the range with v; dst[a..b] = src copies src into it.
-  // The range is written, so it must be in bounds without a runtime check, like
-  // an indexed write. A copy also needs both lengths known at compile time and
-  // equal; memcpy is the explicit form for a runtime length.
+  // dst[a..b] = v fills the range with v, a value of its element type (a
+  // number, a struct, a slice, a pointer: anything an element can be
+  // assigned); dst[a..b] = src copies the elements of src into it, a slice
+  // or an array of that element type that is no element itself. The range is written, so it must be
+  // in bounds without a runtime check, like an indexed write. A copy also
+  // needs both lengths known at compile time and equal; memcpy is the
+  // explicit form for a runtime length.
   checkRangeAssignment(target: AST.SliceExpr, op: string, value: AST.Expr): void {
     if (op !== '=') {
       this.error(target.span.start, `a range can only be assigned with =`)
@@ -6559,24 +7053,59 @@ class CheckContext {
       this.error(target.span.start, `cannot write through a const range — use *mut or []mut for mutable access`)
     }
     const elem = dst.element
+    // An element as it lies in memory: in a table, the pointer to its row.
+    const cell = tableRow(dst) ?? elem
+    const fill = (): void => {
+      this.checkExpr(value, cell, 'fill value')
+      this.fills.add(target)
+    }
+    const dstLen = this.rangeLength(target)
+    const lengths = (srcLen: bigint | null): void => {
+      if (dstLen === null || srcLen === null) {
+        this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
+      } else if (dstLen !== srcLen) {
+        this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
+      }
+    }
     const valueType = unwrap(this.inferExpr(value))
     const isScalar = valueType.kind === 'primitive' || valueType.kind === 'comptime_int' || valueType.kind === 'comptime_float'
     if (isScalar) {
-      const e = unwrap(elem)
-      const oneValue = (e.kind === 'primitive' && !/^[iu](128|256|512)$/.test(e.name)) || e.kind === 'pointer'
-      if (!oneValue) {
-        this.error(value.span.start, `filling a range needs an element of one value, not ${typeToString(elem)}`)
-        return
-      }
-      this.checkExpr(value, elem, 'fill value: ')
+      fill()
       return
     }
-    // A copy: the source is a slice or pointer to an array of the same elements.
+    // An array literal that is no element is the elements to copy, laid out
+    // as the range's are: `buf[0..2] = [1, 2]`. Rows copied into a mutable
+    // table are rows of its own, `mut` like any rows of a *mut table.
+    if (valueType.kind === 'comptime_array' && !this.fits(value, cell)) {
+      this.checkExpr(value, pointer(array(elem, [valueType.count]), false, !!tableRow(dst) && dst.mutable))
+      lengths(BigInt(valueType.count))
+      return
+    }
+    // A value that can be assigned to an element fills, even where it is an
+    // array of elements as well (a Node of `type Node = *[2]Node`). Anything
+    // else is a copy: the source is a slice or pointer to an array of the
+    // same elements.
     const srcElem = valueType.kind === 'slice' ? valueType.element
       : valueType.kind === 'pointer' && unwrap(valueType.pointee).kind === 'array' ? (unwrap(valueType.pointee) as ArrayRT).element
       : valueType.kind === 'array' ? valueType.element
       : null
-    if (!srcElem || !typeEquals(unwrap(srcElem), unwrap(elem))) {
+    // (Its type says it where it is an array of elements: looking at it as
+    // an element would leave its type taken for one.)
+    const elements = !!srcElem && typeEquals(unwrap(srcElem), unwrap(elem))
+    if (!srcElem || (elements ? typeAssignable(cell, valueType) : this.fits(value, cell))) {
+      // A value that is no array is said to be no element.
+      fill()
+      return
+    }
+    if (!elements) {
+      // Neither. A value of the element type as it is written, or a row a
+      // table's rows can't be (a const one in a mutable table), was meant
+      // to fill: the fill says why it can't, as `m[i] = r` would.
+      const row = tableRow(dst)
+      if (typeAssignable(elem, valueType) || (row && typeAssignable(pointer(row.pointee), valueType))) {
+        fill()
+        return
+      }
       this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(elem)}`)
       return
     }
@@ -6584,18 +7113,26 @@ class CheckContext {
       this.error(value.span.start, `the source range may be out of bounds: resolve it with ?? or if let first`)
       return
     }
-    const dstLen = this.rangeLength(target)
+    // A table's elements are pointers to its rows: the rows of a const table
+    // are not to be written through a mutable one (as m[i] = r is refused).
+    const rows = tableRow(valueType)
+    if (rows && !typeAssignable(cell, rows)) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are ${typeToString(rows)}`)
+      return
+    }
+    // An array held in registers is stored element by element; its rows are
+    // values, which no row pointer can point to.
+    if (valueType.kind === 'array' && cell !== elem) {
+      this.error(value.span.start, `cannot copy ${typeToString(valueType)} into a range of ${typeToString(cell)}: its rows are held in registers`)
+      return
+    }
     let srcLen: bigint | null = null
     if (value.kind === 'SliceExpr') srcLen = this.rangeLength(value)
     else {
       const arr = valueType.kind === 'pointer' ? unwrap(valueType.pointee) : valueType
       if (arr.kind === 'array' && arr.sizes?.length === 1 && typeof arr.sizes[0] === 'number') srcLen = BigInt(arr.sizes[0])
     }
-    if (dstLen === null || srcLen === null) {
-      this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
-    } else if (dstLen !== srcLen) {
-      this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
-    }
+    lengths(srcLen)
   }
 
   // A value with no type written takes the type of what it is made of
@@ -6704,7 +7241,7 @@ class CheckContext {
     elem = this.rowOf(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
-    const idx = this.evalComptimeExpr(expr.index)
+    const idx = this.constantInType(expr.index)
     let proven = false
     if (size !== null) {
       if (idx && idx.kind === 'int') {
@@ -6729,13 +7266,17 @@ class CheckContext {
   }
 
   // An index is an offset in 32-bit memory: an integer no wider than that.
-  private inferIndexValue(index: AST.Expr): ResolvedType {
+  // A range's bounds are the same.
+  private inferIndexValue(index: AST.Expr, what = 'an index'): ResolvedType {
     const type = this.inferExpr(index)
     const t = unwrap(type)
-    if (t.kind === 'comptime_int') {
+    if (t.kind === 'comptime_int' && t.bits) {
+      // A bit pattern is the u32 it stands for: ~4294967280 is 15.
+      this.checkExpr(index, primitive('u32'))
+    } else if (t.kind === 'comptime_int') {
       this.coerce(index, type, addressType(t))
     } else if (!isInteger(t) || (byteSize(t) ?? 8) > 4) {
-      this.error(index.span.start, `an index must be an integer of at most 32 bits, not ${typeToString(type)}`)
+      this.error(index.span.start, `${what} must be an integer of at most 32 bits, not ${typeToString(type)}`)
     }
     return type
   }
@@ -6874,7 +7415,7 @@ class CheckContext {
         // Fixed-size pointer array *[N]T: check bounds
         if (sizes && typeof sizes[0] === 'number') {
           const n = sizes[0]
-          const idx = this.evalComptimeExpr(expr.index)
+          const idx = this.constantInType(expr.index)
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
@@ -7137,7 +7678,11 @@ class CheckContext {
     }
     for (const b of valued) {
       const value = bodyValue(b.body)
-      if (value) this.coerce(value, b.type, type)
+      if (!value) continue
+      // An array literal next to a pointer or a slice is laid out as one, as
+      // it is wherever it meets that type: `if c { xs } else { [] }`.
+      if (laidOutLiteral(value, b.type, type)) this.checkExpr(value, type)
+      else this.coerce(value, b.type, type)
     }
     return type
   }
@@ -9047,7 +9592,7 @@ class CheckContext {
 
 // The names inferBuiltin answers to. What is asked of a name before a call
 // of it is inferred (whether x.sqrt() can be the call sqrt(x)) is asked here.
-const BUILTIN_NAMES: ReadonlySet<string> = new Set([
+export const BUILTIN_NAMES: ReadonlySet<string> = new Set([
   'memzero', 'memset', 'memcpy',
   'sqrt', 'ceil', 'floor', 'trunc', 'nearest', 'copysign',
   'min', 'max', 'abs',
@@ -10341,6 +10886,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const t = unwrap(to)
   const single = (x: ResolvedType) => x.kind === 'primitive' || x.kind === 'pointer' || x.kind === 'func' || isComptimeNumber(x)
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
+  // 0 is none for an optional slice, as it is for an optional pointer.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot
@@ -10474,6 +11021,17 @@ function unsignedLimit(t: ResolvedType): bigint | null {
 // One branch of an if or match, with the type of its value.
 type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
 
+// Whether a branch's value is an array literal with no type of its own that
+// is to be laid out in memory as the pointer or slice the branches are.
+function laidOutLiteral(value: AST.Expr, own: ResolvedType, type: ResolvedType): boolean {
+  const literal = ungrouped(value)
+  const to = unwrap(type)
+  const from = unwrap(own)
+  return (literal.kind === 'ArrayExpr' || literal.kind === 'RepeatExpr')
+    && (from.kind === 'comptime_array' || from.kind === 'comptime_list')
+    && (to.kind === 'slice' || to.kind === 'pointer')
+}
+
 // The loops that zero each row of a table, one for each table in it: a row
 // of *[2][2][2]i32 is a table itself, whose rows are the cells.
 function zeroRows(table: ResolvedType, name: string): string {
@@ -10522,6 +11080,37 @@ function holdsSlice(t: ResolvedType, seen = new Set<ResolvedType>()): boolean {
   if (u.kind === 'array') return isValueArray(u) && holdsSlice(u.element, seen)
   if (u.kind === 'tuple') return u.fields.some((f) => holdsSlice(f.type, seen))
   return false
+}
+
+// The kinds of statement, which a test's body holds among its declarations
+const STATEMENT_KINDS: ReadonlySet<string> = new Set<AST.Statement['kind']>([
+  'LetStmt', 'SetStmt', 'WhileStmt', 'ForStmt', 'LoopStmt', 'ReturnStmt', 'BreakStmt',
+  'DeferStmt', 'ContinueStmt', 'AssertStmt', 'AssignmentStmt', 'ExpressionStmt',
+])
+
+// How many returns, breaks and continues there are in some code, at any
+// depth: at most the exits that write a deferred expression out again.
+// Types are left out: a type in an instance's copy can be a resolved type,
+// which can refer to itself; and so are the bytes of a literal. `known`
+// holds the counts of the nodes counted already, so that each node of a
+// function is counted once however many defers it follows.
+function exitsIn(node: unknown, known: WeakMap<object, number>): number {
+  if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return 0
+  const seen = known.get(node)
+  if (seen !== undefined) return seen
+  let n = 0
+  if (Array.isArray(node)) {
+    for (const item of node) n += exitsIn(item, known)
+  } else {
+    const kind = (node as { kind?: unknown }).kind
+    if (kind === 'ReturnStmt' || kind === 'BreakStmt' || kind === 'ContinueStmt') n = 1
+    for (const [key, child] of Object.entries(node)) {
+      if (key !== 'span' && key !== 'type' && key !== 'signature' && typeof child === 'object') n += exitsIn(child, known)
+    }
+  }
+  n = Math.min(n, Number.MAX_SAFE_INTEGER)
+  known.set(node, n)
+  return n
 }
 
 // The expression inside (x), which parses as a group or a one-element tuple.

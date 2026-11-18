@@ -906,6 +906,41 @@ describe('findReferences', () => {
     expect(result!.references.length).toBeGreaterThanOrEqual(2)
   })
 
+  // A def's value is put where its name is written when the module is
+  // parsed, and the checker sees only the value there: its uses were not
+  // recorded, so a def was found at its declaration alone, could not be
+  // renamed, and was reported as never used.
+  test('a def is used where its name is written, also one whose value is an expression', () => {
+    const code = "def n = 1 + 2\ndef nxt = 'a' + 1\nexport func f(c: u8) -> bool => c == nxt || n + n == 6\n"
+    const { source, module, check } = setup(code)
+    const uses = [code.indexOf('n + n'), code.indexOf('n == 6')]
+    for (const at of [code.indexOf('n ='), ...uses]) {
+      expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'n', location: { offset: 0, length: 1 } })
+      expect(findReferences(source, module, check, at)?.references.map(r => r.offset)).toEqual(uses)
+      expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual([0, ...uses])
+    }
+    const nxt = code.indexOf('== nxt') + 3
+    expect(gotoDefinition(source, module, check, nxt)?.location.offset).toBe(code.indexOf('def nxt'))
+    expect(findReferences(source, module, check, nxt)?.references.map(r => r.offset)).toEqual([nxt])
+    expect(check.warnings).toEqual([])
+  })
+
+  test('a negated use of a def is the def', () => {
+    const code = 'def k = 5\nexport func f() -> i32 => -k + k\n'
+    const { source, module, check } = setup(code)
+    const negated = code.indexOf('-k') + 1
+    expect(gotoDefinition(source, module, check, negated)).toEqual({ name: 'k', location: { offset: 0, length: 1 } })
+    expect(hover(source, module, check, negated)).toEqual({ name: 'k', type: 'i32', kind: 'def', value: '5' })
+    expect(findReferences(source, module, check, code.indexOf('k ='))?.references.map(r => r.offset)).toEqual([negated, code.lastIndexOf('k')])
+  })
+
+  test('a def used only in a test that is not checked is never used', () => {
+    const code = 'def k = 5\nfunc f(x: u32) -> u32 => x\ntest "k" {\n  assert(f(k) == 5)\n}\n'
+    const module = parse(code).module!
+    expect(typecheck(module, { includeTests: true }).warnings).toEqual([])
+    expect(typecheck(module, { includeTests: false }).warnings.map(w => w.message)).toEqual(["'k' is never used", "'f' is never used"])
+  })
+
   test('returns empty refs for unused symbol', () => {
     const code = `func unused() -> i32 => 42`
     const { source, module, check } = setup(code)

@@ -1977,6 +1977,7 @@ describe('tables', () => {
   test('len, wid, sizeof, loops, lets, arguments and ranges', async () => {
     const { lens, loops, pass, addr, range, copy } = await run(`${TABLES}
       data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+      data rowsOf: *mut [2][3]i32 = mut [[7, 1, 2], [3, 4, 5]]
       func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
       func total(s: []i32) -> i32 {
         let t = 0
@@ -2003,7 +2004,7 @@ describe('tables', () => {
         return (s.len as i32) * 100 + s.ptr[0][2]
       }
       export func copy() -> i32 {
-        board[0..2] = grid[0..2]
+        board[0..2] = rowsOf[0..2]
         return board[1][2] * 10 + board[0][0]
       }
     `)
@@ -2013,6 +2014,44 @@ describe('tables', () => {
     expect([addr(0), addr(1)]).toEqual([1, 4])
     expect(range()).toBe(105)
     expect(copy()).toBe(57)
+  })
+})
+
+describe('filling a range', () => {
+  test('a fill of zeros is one memory.fill, whatever the element is held in', async () => {
+    const code = `
+      type Pt = (x: i32, y: i32)
+      data pts: *mut [3]Pt = mut [(x: 1, y: 1); 3]
+      data wide = mut [1:u128; 4]
+      data names: *mut [2]?[]u8 = mut ["a", "b"]
+      export func zero() -> i32 {
+        pts[0..3] = Pt(0, 0)
+        wide[1..4] = 0
+        names[0..2] = 0
+        let none = if names[1] == 0 { 1 } else { 0 }
+        return pts[2].y + (wide[0] as i32) * 10 + (wide[3] as i32) * 100 + none * 1000
+      }
+    `
+    const wat = modWat(code)
+    expect(wat.match(/memory\.fill/g)?.length).toBe(3)
+    expect(wat).not.toContain('loop')
+    expect((await run(code)).zero()).toBe(1010)
+  })
+
+  test('a value that is an element fills, though it is an array of elements too', async () => {
+    // A Node points to two Nodes: other is an element of cells and an array
+    // of them. It is an element, so every element of the range is other.
+    const code = `
+      type Node = *[2]Node
+      data cells: *mut [2]Node = mut [0; 2]
+      data other: *mut [2]Node = mut [0; 2]
+      export func fill() -> i32 {
+        cells[0..2] = other
+        return if cells[0] == other && cells[1] == other { 1 } else { 0 }
+      }
+    `
+    expect(modWat(code)).not.toContain('memory.copy')
+    expect((await run(code)).fill()).toBe(1)
   })
 })
 
@@ -3746,6 +3785,21 @@ describe('the wasm names of variables', () => {
     expect(x.walk()).toBe(90)
     expect(x.bound(1)).toBe(56)
   })
+
+  // The parts of a value are named in time linear in their count: a global of
+  // 65535 bytes took 9.5 seconds, a variable of 49990 six.
+  test('the registers of a large value are named as fast as there are many', () => {
+    const wat = modWat(`
+      global g: [65535]u8
+      export func f() -> u8 {
+        let x: [49990]u8
+        x[49989] = g[65534]
+        return x[49989]
+      }
+    `)
+    expect(wat).toContain('(global $g_65534 (mut i32) (i32.const 0))')
+    expect(wat).toContain('(local.set $x_49989 (global.get $g_65534))')
+  }, 4000)
 
   test('a name goes to the first variable that asks, and another gets it with a prefix', () => {
     const wat = modWat(`

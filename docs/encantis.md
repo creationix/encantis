@@ -449,6 +449,56 @@ Pointers and slices can be **optional** using the `?` prefix. An optional pointe
 
 Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
 
+None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
+
+<!-- spec:begin compile -->
+
+```ents
+type Entry = (key: u32, name: ?[]u8)
+
+data entries: *[2]Entry = [(key: 1, name: 0), (key: 2, name: "two")]
+global last: ?[]u8 = 0
+
+func find(key: u32) -> ?[]u8 {
+  for e in entries {
+    return e.name when e.key == key
+  }
+  return 0
+}
+func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
+func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
+func unnamed() -> Entry => Entry(9, 0 as ?[]u8)
+
+test "none is 0 for an optional pointer and an optional slice" {
+  assert find(1) == 0
+  assert find(2) != 0
+  assert size(find(2)) == 3
+  assert size(find(3)) == 99
+  assert size(0) == 99
+  assert last == 0
+  assert cell(0) == 0
+  assert unnamed().name == 0
+}
+```
+
+Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none:
+
+```ents
+func f(s: ?[]u8) -> bool {
+  let a: ?[]u8 = 5
+  let b: []u8 = 0
+  return s < 0
+}
+```
+
+```errors
+cannot assign int(5) to ?[]u8
+cannot assign int(0) to []u8
+'<' cannot be applied to ?[]u8 and int(0)
+```
+
+<!-- spec:end -->
+
 Optional values cannot be used directly where non-optional values are expected. You must resolve them using `if let` or `??`:
 
 ```ents
@@ -458,7 +508,7 @@ if let val = p { val.* }         // OK: unwrapped inside if-let
 p ?? default_ptr                 // OK: resolved with fallback
 ```
 
-Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared, with `0` too, and passed where an optional is expected.
+Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared (an optional slice only with `0`), and passed where an optional is expected.
 
 **Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
 
@@ -1071,7 +1121,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte. A generic type applied is a name of the same kind (8.5).
 
 <!-- spec:begin compile -->
 
@@ -1142,7 +1192,7 @@ type 'D16' is too large: written out in full it has more than 65536 parts
 
 <!-- spec:end -->
 
-A value held by value — a parameter, a result, a variable or a global, with each field and element of it — is laid out in registers, so there an array counts each of its elements: `[N]T` is one part and N times what `T` counts (at least once, for `[0]T`), and `[2][2][2]u8` is fifteen parts where it is eight bytes. What a pointer or a slice points to is in memory and counts once, whatever its length: `*[1048576]u8`, `[][4096]u8`, a name for a large array behind a pointer and `data buf = mut [0:u8; 1048576]` are each a few parts, while a parameter `x: [65536]u8` is over the limit. The parameters and results of a function type are held by value wherever the function type is. A value over the limit is one error where its type is written, or, where none is (`let x = p.*`, `for v in rows`, `if let v = ...`), at the variable.
+A value held by value — a parameter, a result, a variable or a global, with each field and element of it — is laid out in registers, so there an array counts each of its elements: `[N]T` is one part and N times what `T` counts (at least once, for `[0]T`), and `[2][2][2]u8` is fifteen parts where it is eight bytes. What a pointer or a slice points to is in memory and counts once, whatever its length: `*[1048576]u8`, `[][4096]u8`, a name for a large array behind a pointer and `data buf = mut [0:u8; 1048576]` are each a few parts, while a global `g: [65536]u8` or a parameter `x: [65536]u8` is over the limit (a function holds its values to far less, below). The parameters and results of a function type are held by value wherever the function type is. A value over the limit is one error where its type is written, or, where none is (`let x = p.*`, `for v in rows`, `if let v = ...`), at the variable.
 
 <!-- spec:begin compile -->
 
@@ -1159,6 +1209,59 @@ func whole(x: [65536]u8) -> u8 => x[0]
 
 ```errors
 type '[65536]u8' is too large: written out in full it has more than 65536 parts
+```
+
+<!-- spec:end -->
+
+A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool or a pointer is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
+
+- The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
+- The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
+- A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
+
+A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)).
+
+<!-- spec:begin compile -->
+
+```ents
+func copy(p: *mut [4000]u8, q: *[4000]u8) { p.* = q.* }                    // 4002 registers
+func move(p: *mut [65536]u8, q: *[65536]u8) { p[..] = q[..] }              // memory.copy
+func clear(p: *mut [65536]u8) { p[..] = 0 }                                // memory.fill
+func pick(c: bool, p: *[1000]u8, q: *[1000]u8) -> u8 => (if c { p.* } else { q.* })[0]
+func first(p: *[65536]u8) -> u8 => p.*[0]                                  // one element is read
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func copy(p: *mut [65536]u8, q: *[65536]u8) { p.* = q.* }
+func fill(p: *mut [60000]u8) { p.* = [0; 60000] }
+func pick(c: bool, p: *[1001]u8, q: *[1001]u8) -> u8 => (if c { p.* } else { q.* })[0]
+func pass(x: [1000]u8, n: u32) -> u8 => x[0]
+```
+
+```errors
+the parameters are 1001 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+function 'copy' needs more than 50000 registers, the most a wasm function has (here [65536]u8 is 65536)
+function 'fill' needs more than 50000 registers, the most a wasm function has (here u8, written out 60000 times, is 60000)
+an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block gives back
+```
+
+<!-- spec:end -->
+
+The modules of a program are one wasm module, which every engine takes with at most 1000000 globals, 100000 imports and 100000 exports. A global held by value is a wasm global for each of its registers; one imported from the host is an import for each, and one the entry module exports an export for each ([7.2](#72-exports)). So the globals of a program are at most 1000000 registers in all, and its imports (a function, or each register of a global) and the exports of its entry module (a function, a memory, or each register of a global) at most 100000 each. Going over is one error, at the global, the import or the export that goes over, the modules taken in the order they are checked, an imported one before the one that imports it.
+
+<!-- spec:begin compile -->
+
+```ents
+export global a: [65535]u8
+export global b: [65535]u8
+```
+
+```errors
+the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has (here b: [65535]u8 is 65535)
 ```
 
 <!-- spec:end -->
@@ -1189,6 +1292,8 @@ let hash: u32 = seed + prime32-1
 def max-size = 1024              // inferred i32
 def max-len: u32 = 1024          // explicit u32
 ```
+
+Each place the name is written is a use of the def, also where its value is an expression (`def next = 'a' + 1`): the editor shows the def there and goes from there to it, its references are those places, and a def used nowhere is reported as never used.
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
@@ -1900,6 +2005,8 @@ no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
 
 ### 4.7 Bounds-Checked Indexing
 
+An index is an integer of at most 32 bits, signed or not (`an index must be an integer of at most 32 bits, not i64`); a constant bit pattern is the `u32` it stands for (`~4294967293` is 2, [4.2](#42-bitwise-operators)). It is an offset into 32-bit memory, read as an unsigned number, so a negative one is past any length: `xs[i] ?? 0` with `i: i32` equal to `-1` is `0`, and a negative constant index into a `*[N]T` is an error. A many-pointer checks nothing, and there `p[-1]` is the element before the one `p` points to.
+
 Array and slice indexing follows strict rules based on whether the index is known at compile time:
 
 **Compile-time constant indices** are statically verified against the known array length:
@@ -2123,7 +2230,7 @@ arr[..4]        // []u8 from 0 to 3
 arr[..]         // []u8 whole array as slice
 ```
 
-Ranges follow the same bounds rules as indexing:
+Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not, and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
 
 - On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
 - Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
@@ -2133,13 +2240,17 @@ A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
 
 #### Filling and Copying
 
-Assigning to a range fills it or copies into it, as `memory.fill` and `memory.copy`:
+Assigning to a range fills it or copies into it:
 
 ```ents
 buffer[0..1024] = 0       // fill: every element gets the value
 cv[0..8] = hs[0..8]       // copy 8 elements
 cv[8..16] = iv            // a *[8]T copies all of its elements
 ```
+
+What is assigned says which. A value that can be assigned to one element is a fill, whatever the element is, and even where it is an array of elements as well (a `Node` of `type Node = *[2]Node`): a number, a struct (`points[0..n] = origin`), a slice (`names[0..3] = "?"` makes each of three `[]u8` the same one-byte string), a pointer, and in a table a row pointer, so every row of the range then points at the same cells. Anything else is the elements to copy: a slice or a pointer to an array of the element type, an array literal (`buf[0..2] = [1, 2]`, laid out as the range's elements are), or an array held in registers, which is stored element by element. A table's rows are copied as its row pointers, so rows of a const table do not go into a mutable one (`cannot copy *[2][3]i32 into a range of *mut [3]i32: its rows are *[3]i32`), as `m[i] = r` is refused for them; an array literal copied there is written `mut`. A value that is neither is refused as the one it was meant as: a value of the element type as written, a `[3]i32` in registers or a const row for a `*mut [2][3]i32`, as a fill (`fill value: cannot assign [3]i32 to *mut [3]i32`, as `m[i] = r` says), anything else as a copy (`cannot copy []u8 into a range of []i32`).
+
+A fill of bytes, or of zeros of any element (a struct of zeros, a wide integer 0, none for an optional slice), is one `memory.fill`; any other fill computes the value once and stores it into each element in a loop. A copy is one `memory.copy`, or the stores of an array held in registers.
 
 The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§10.3), where the length is written out.
 
@@ -2283,7 +2394,7 @@ if flag { ... }   // OK: flag is bool
 
 The same goes for `while`, `when`, `assert`, and the operands of `&&`, `||` and `!`.
 
-An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)).
+An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)). A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. A branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Write the type where the value is given (`let ys: []i32 = ...`), or use `elif`.
 
 ```ents
 func sign(x: i32) -> i32 => if x < 0 { -1 } elif x > 0 { 1 } else { 0 }

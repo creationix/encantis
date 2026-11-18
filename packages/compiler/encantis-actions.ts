@@ -4,8 +4,11 @@ import type { Span } from './ast'
 import { hexToBytes } from './utils'
 
 // Per-parse defs map used to inline def values during parsing
-// Stores both the value and optional type annotation for wrapping inlined expressions
-let currentDefs: Map<string, { value: AST.Expr; type: AST.Type | undefined }> = new Map()
+// Stores both the value and optional type annotation for wrapping inlined
+// expressions, and where the def's declaration starts
+let currentDefs: Map<string, { value: AST.Expr; type: AST.Type | undefined; decl: number }> = new Map()
+// Where each def was inlined: the uses of the defs (Module.defUses)
+let currentDefUses: AST.DefUse[] = []
 
 
 // Types for access suffixes parsed from grammar
@@ -33,8 +36,10 @@ function span(node: ohm.Node): Span {
 function identOrDef(name: string, at: Span): AST.Expr {
   const def = currentDefs.get(name)
   if (!def) return { kind: 'IdentExpr', name, span: at } as AST.IdentExpr
-  // Inline the def value, retargeting the span to the identifier's span
+  // Inline the def value, retargeting the span to the identifier's span, and
+  // record the place as a use of the def (Module.defUses)
   const clonedValue = cloneExprWithSpan(def.value, at)
+  currentDefUses.push({ decl: def.decl, at: at.start })
   // If def has a type annotation, wrap in AnnotationExpr so type propagates
   if (def.type) {
     return { kind: 'AnnotationExpr', expr: clonedValue, type: def.type, span: at } as AST.AnnotationExpr
@@ -302,11 +307,14 @@ export const semanticsActions: Record<string, SemanticAction> = {
   Module(decls): AST.Module {
     // Reset defs for this module parse
     currentDefs = new Map()
-    return {
+    currentDefUses = []
+    const module: AST.Module = {
       kind: 'Module',
       decls: decls.children.map((d: OhmNode) => d.toAST()),
       span: span(this),
     }
+    if (currentDefUses.length > 0) module.defUses = currentDefUses
+    return module
   },
 
   // Declaration(decl: Type | Func | Global | ...) -> any (union of all declaration types)
@@ -595,7 +603,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     const value = assign.toAST() as AST.Expr
     const typeAnnotation = type.toAST() as AST.Type
     setDataIdOnLiteral(value)
-    currentDefs.set(ident.toAST() as string, { value, type: typeAnnotation })
+    currentDefs.set(ident.toAST() as string, { value, type: typeAnnotation, decl: this.source.startIdx })
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),
@@ -608,7 +616,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
   DefDecl_bare(_def, ident, assign) {
     const value = assign.toAST() as AST.Expr
     setDataIdOnLiteral(value)
-    currentDefs.set(ident.toAST() as string, { value, type: undefined })
+    currentDefs.set(ident.toAST() as string, { value, type: undefined, decl: this.source.startIdx })
     return {
       kind: 'DefDecl',
       ident: ident.toAST(),

@@ -20,6 +20,17 @@ interface BaseNode {
 export interface Module extends BaseNode {
   kind: 'Module'
   decls: Declaration[]
+  // Where a def's name is written in an expression after the def: the
+  // parser puts a copy of the def's value there, and each is a use of the
+  // def. Present only where there is one.
+  defUses?: DefUse[]
+}
+
+// The def declared at `decl` (where its declaration starts) is used at `at`
+// (where its name is written).
+export interface DefUse {
+  decl: number
+  at: number
 }
 
 // ============================================================================

@@ -1,5 +1,6 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
+import { resolve } from 'node:path'
 import { concretizeType, isConcreteType, typecheck, typecheckProgram, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
 import { parseType as parseTypeLib } from './type-lib'
@@ -3708,7 +3709,7 @@ describe('types too large to write out', () => {
     expect(errs(`${doubling(15)}func f(p: *D15) -> u32 {\n  let q = p as *(${many})\n  return 1\n}`)).toEqual([large(`*(${many})`)])
     // As a type argument, and inside a generic, once for each instance it is in
     expect(errs(`${doubling(15)}func id(comptime T: type, p: *T) -> u32 => 1\nfunc f(p: *D15) -> u32 => id((D15, D15), p)`)).toEqual([large('(D15, D15)')])
-    expect(errs(`${doubling(15)}func g(comptime T: type, x: T) -> u32 {\n  let q = 0 as *(a: T, b: T)\n  return 1\n}\nfunc f(d: *D15) -> u32 => g(D15, d.*)`)).toEqual([`${large('*(a: D15, b: D15)')}, in g(T = D15)`])
+    expect(errs(`${doubling(15)}func g(comptime T: type, x: *T) -> u32 {\n  let q = 0 as *(a: T, b: T)\n  return 1\n}\nfunc f(d: *D15) -> u32 => g(D15, d)`)).toEqual([`${large('*(a: D15, b: D15)')}, in g(T = D15)`])
   })
 
   // [2][2]...[2]u8, thirty deep: 61 parts written once, 2^30 values held by value
@@ -3722,7 +3723,9 @@ describe('types too large to write out', () => {
     expect(errs(`type T = ${halves}\nfunc f(x: T) -> u8 => 0`)).toEqual([large('T')])
     expect(errs('func f(x: [1073741824]u8) -> u8 => 0')).toEqual([large('[1073741824]u8')])
     // [N]T is the array and N of T: 65535 bytes are 65536 parts, the limit.
-    expect(errs('func f(x: [65535]u8) -> u8 => x[0]')).toEqual([])
+    // (A parameter is held to 1000 registers besides: see the size of a function.)
+    expect(errs('global x: [65535]u8\nfunc f() -> u8 => x[0]')).toEqual([])
+    expect(errs('global x: [65536]u8\nfunc f() -> u8 => x[0]')).toEqual([large('[65536]u8')])
     expect(errs('func f(x: [65536]u8) -> u8 => x[0]')).toEqual([large('[65536]u8')])
     // An array of none still writes out its element once.
     expect(errs(`func f(x: [0]${halves}) -> u8 => 0`)).toEqual([large(`[0]${halves}`)])
@@ -3762,6 +3765,132 @@ describe('types too large to write out', () => {
     expect(errs(`type S = (b: u8, a: ${halves})\nfunc f(p: *S) -> u8 => p.a${reach}`)).toEqual([])
     expect(errs('type Page = [65536]u8\ndata page = mut [0:u8; 65536]\ndata buf = mut [0:u8; 1048576]\nfunc f(p: *mut Page) -> u8 => p[65535] + buf[1048575]\nfunc g() -> u8 => f(page)')).toEqual([])
     expect(errs('func first(comptime T: type, p: *T) -> *T => p\nfunc f(p: *[1048576]u8) -> u8 => first(p)[7]')).toEqual([])
+  })
+})
+
+describe('the size of a function', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  // The errors with what they are said at
+  const at = (src: string) => checkModule(src).errors.map(e => `${src.slice(e.offset, e.offset + 3)}: ${e.message}`)
+  const fix = 'keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)'
+  const over = (here: string | null, owner = "function 'f'") =>
+    `${owner} needs more than 50000 registers, the most a wasm function has${here ? ` (here ${here})` : ''} — ${fix}`
+  const params = (n: number) => `the parameters are ${n} registers, more than the 1000 a wasm function takes — pass a large value by pointer`
+  const results = (n: number) => `the results are ${n} registers, more than the 1000 a wasm function gives back — give a large value back through a pointer`
+  const block = (what: string, type: string, n: number) =>
+    `${what} that gives ${type} gives ${n} registers, more than the 1000 a wasm block gives back — let it give a pointer to the value instead`
+
+  test('a value no variable holds counts: a copy, a value statement, a fill', () => {
+    // p and q are a register each, the copy of q.* 49998: 50000 in all
+    expect(errs('func f(p: *mut [49998]u8, q: *[49998]u8) { p.* = q.* }')).toEqual([])
+    expect(at('func f(p: *mut [49999]u8, q: *[49999]u8) { p.* = q.* }')).toEqual([`q.*: ${over('[49999]u8 is 49999')}`])
+    // A whole value 2^30 bytes long: compiling it ran out of memory
+    expect(errs('func f(p: *mut [1073741824]u8, q: *[1073741824]u8) { p.* = q.* }')).toEqual([over('[1073741824]u8 is 1073741824')])
+    expect(errs('func f(p: *[1073741824]u8) { p.* }')).toEqual([over('[1073741824]u8 is 1073741824')])
+    expect(errs('type S = (b: u8, a: [1073741824]u8)\nfunc f(p: *mut S, q: *S) { p.a = q.a }')).toEqual([over('[1073741824]u8 is 1073741824')])
+    expect(errs('type S = (n: u32, body: [1073741824]u8)\nfunc f(p: *mut S, q: *S) { p.* = q.* }')).toEqual([over('S is 1073741825')])
+    // A fill writes its value out once for each element
+    expect(errs('func f(p: *mut [1073741824]u8) { p.* = [0:u8; 1073741824] }')).toEqual([over('u8, written out 1073741824 times, is 1073741824')])
+    expect(errs('func f(p: *mut [49998]u8) { p.* = [0; 49998] }')).toEqual([])
+    expect(errs('func k(x: u32) -> u8 => x as u8\nfunc f(p: *mut [25000]u8, a: u32) { p.* = [k(a); 25000] }')).toEqual([over('u32, written out 25000 times, is 25000')])
+    // The values of a function add up, the variables with them
+    expect(at('func f(p: *mut [20000]u8, q: *[20000]u8) {\n  p.* = q.*\n  p.* = q.*\n  p.* = q.* // the third\n}')).toEqual([`q.*: ${over('[20000]u8 is 20000')}`])
+    expect(at('func f(p: *[30000]u8) -> u8 {\n  let x: [30000]u8 = p.*\n  return x[1]\n}')).toEqual([`p.*: ${over('[30000]u8 is 30000')}`])
+    expect(at('func f() -> u8 {\n  let x: [30000]u8\n  let y: [30000]u8\n  return x[1] + y[1]\n}')).toEqual([`y: : ${over('y: [30000]u8 is 30000')}`])
+  })
+
+  test('a place read in part is not computed, nor one written', () => {
+    const S = 'type S = (n: u32, body: [1073741824]u8)\n'
+    expect(errs(`${S}func f(p: *[1073741824]u8, s: *S) -> u8 => (p.*)[3] + p.*[4] + s.body[5] + s.*.body[6]`)).toEqual([])
+    expect(errs(`${S}func f(p: *mut [1073741824]u8, s: *mut S) {\n  p.*[3] = 1\n  s.body[4] = 2\n  &p[5]\n  p[..] = 0\n}`)).toEqual([])
+    // Nor is a literal laid out in memory, unless a value in it is only known when the program runs
+    expect(errs('func sum(p: *[100000]u8) -> u8 => p[0]\nfunc f() -> u8 => sum([0; 100000])')).toEqual([])
+    expect(errs('func sum(p: *[100000]u8) -> u8 => p[0]\nfunc k(x: u32) -> u8 => x as u8\nfunc f(a: u32) -> u8 => sum([k(a); 100000])')).toEqual([over('u8, written out 100000 times, is 100000')])
+    // What a def is copied in with is said where the def is used
+    expect(at('def t = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)\nfunc f() -> u8 {\n  let x: [49995]u8\n  return t.3\n}').at(-1)).toEqual(`t.3: ${over(null)}`)
+    // A field written (a:) is the variable a
+    expect(errs('func f() -> u8 {\n  let a: [20000]u8\n  let p: *[2](a: [20000]u8) = [(a:), (a:)]\n  return p[1].a[0]\n}')).toEqual([over('[20000]u8 is 20000')])
+  })
+
+  test('a deferred expression counts at each exit that writes it out', () => {
+    const body = (returns: number) => Array.from({ length: returns }, (_, i) => `  return ${i} when a == ${i}\n`).join('')
+    const src = (returns: number) => `func k(p: [1000]u8) -> u8 => p[0]\nfunc f(p: *[1000]u8, a: u32) -> u8 {\n  defer k(p.*)\n${body(returns)}  return 99\n}`
+    // 1001 registers each time (the call and p.*), written out at each return and at the end
+    expect(errs(src(47))).toEqual([])
+    expect(errs(src(48))).toEqual([over('[1000]u8, written out 50 times, is 50000')])
+  })
+
+  test('a return without a value gives the named results back, each time', () => {
+    // 1000 registers each time (the results read again) and 3 for the condition
+    const src = (returns: number) => `func f(a: u32, p: *[1000]u8) -> (r: [1000]u8) {\n  r = p.*\n${Array.from({ length: returns }, (_, i) => `  return when a == ${i}\n`).join('')}}`
+    expect(errs(src(47))).toEqual([])
+    expect(at(src(48))).toEqual([`ret: ${over('the named results a return gives back are 1000')}`])
+    // 3000 of them built a body of 8.6 MB, which no engine takes
+    expect(errs(src(3000))).toEqual([over('the named results a return gives back are 1000')])
+    // Written out as often as the code around it is
+    const fill = (n: number) => `func f(a: u32, p: *[1000]u8, q: *mut [${n}]u8) -> (r: [1000]u8) {\n  r = p.*\n  q.* = [(if a == 0 { return } else { 1 }); ${n}]\n}`
+    expect(errs(fill(40))).toEqual([])
+    expect(errs(fill(60))).toEqual([over('the named results a return gives back, written out 60 times, are 60000')])
+  })
+
+  test('the exits after a defer are counted in time linear in the function', () => {
+    // Each defer counted what follows it again, the bytes of a literal among them: this took 15 s
+    const src = `func k() -> u8 => 1\nfunc f() -> u8 {\n${'  defer k()\n'.repeat(2000)}  let t = "${'y'.repeat(20000)}"\n  return t[0]\n}`
+    expect(errs(src)).toEqual([])
+  }, 4000)
+
+  test('an if, a match or a ?? gives at most 1000 registers', () => {
+    const value = (n: number) => `func f(c: bool, p: *[${n}]u8, q: *[${n}]u8) -> u8 => (if c { p.* } else { q.* })[3]`
+    expect(errs(value(1000))).toEqual([])
+    expect(errs(value(1001))).toEqual([block('an if', '[1001]u8', 1001)])
+    expect(errs(value(1073741824))).toEqual([block('an if', '[1073741824]u8', 1073741824)])
+    expect(errs('func f(c: u32, p: *[1001]u8, q: *[1001]u8) -> u8 => (match c { 0 => p.*, _ => q.* })[2]')).toEqual([block('a match', '[1001]u8', 1001)])
+    expect(errs('type R = (a: [1001]u8)\nfunc f(s: []R, q: *R, i: u32) -> u8 => (s[i] ?? q.*).a[2]')).toEqual([block('a ??', 'R', 1001)])
+  })
+
+  test('the parameters and the results are at most 1000 registers each', () => {
+    expect(errs('func f(x: [999]u8, y: u32) -> u8 => x[0]\nfunc g(p: *[1000]u8) -> [1000]u8 => p.*')).toEqual([])
+    // Said at the parameter that goes over
+    expect(at('func f(x: [1000]u8, y: u32) -> u8 => x[0]')).toEqual([`y: : ${params(1001)}`])
+    expect(errs('func g(p: *[1001]u8) -> [1001]u8 => p.*')).toEqual([results(1001)])
+    expect(errs('func g(p: *[600]u8) -> (a: [600]u8, b: [401]u8) => (p.*, [0; 401])')).toEqual([results(1001)])
+    // 40 parameters of 65535 bytes each: compiling it took minutes
+    const many = Array.from({ length: 40 }, (_, i) => `a${i}: [65535]u8`).join(', ')
+    expect(errs(`func f(${many}) -> u8 => 0`)).toEqual([params(2621400)])
+    // A function type, an imported function, an instance
+    expect(errs('type Op = (x: [1001]u8) -> u8\nfunc f(o: *Op) -> u8 => 0')).toEqual([params(1001)])
+    expect(errs('import "m" "h" func h(x: [600]u8, y: [401]u8) -> u8\nfunc f() -> u8 => 0')).toEqual([params(1001)])
+    expect(errs('func id(comptime T: type, x: T) -> u32 => 1\nfunc f(p: *[1001]u8) -> u32 => id(p.*)')).toEqual([`${params(1001)}, in id(T = [1001]u8)`])
+  })
+
+  test('the globals, imports and exports of a program are those of one wasm module', () => {
+    const globals = (n: number) => Array.from({ length: n }, (_, i) => `global g${i}: [65535]u8\n`).join('')
+    // 15 are 983025 wasm globals, 16 more than the 1000000 a module has
+    expect(errs(globals(15))).toEqual([])
+    expect(at(globals(16))).toEqual(['g15: the program has more than 1000000 wasm globals, the most a wasm module has (here g15: [65535]u8 is 65535) — keep a large value in memory, as data'])
+    const share = 'share a large value through memory, behind a pointer'
+    expect(errs('export global a: [65535]u8\nexport global b: [65535]u8')).toEqual([`the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has (here b: [65535]u8 is 65535) — ${share}`])
+    expect(errs('import "m" "a" global a: [65535]u8\nimport "m" "b" global b: [65535]u8')).toEqual([`the program imports more than 100000 wasm functions and globals, the most a wasm module has (here b: [65535]u8 is 65535) — ${share}`])
+    // The modules of a program are one wasm module: their globals add up, in
+    // the order the modules are checked, the imported one first. Only the
+    // entry module's exports are the module's. A module is named by the path
+    // the loader resolves its import to (on Windows with a drive and
+    // backslashes).
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
+    const modules = new Map([
+      [lib, `${globals(8)}export global big: [65535]u8\nexport global more: [65535]u8\n`],
+      [main, `import "./lib" "big" global big: [65535]u8\n${globals(8)}export func f() -> u8 => big[0]\n`],
+    ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
+    const program = typecheckProgram(modules, main)
+    expect(program.errors.map((e) => e.message)).toEqual(['the program has more than 1000000 wasm globals, the most a wasm module has (here g5: [65535]u8 is 65535) — keep a large value in memory, as data'])
+    expect(program.results.get(main)!.errors.length).toBe(1)
+  })
+
+  test('a test is a function, and so is an instance', () => {
+    expect(errs('test "big" {\n  let p = 0 as *mut [60000]u8\n  p.* = [0; 60000]\n}')).toEqual([over('u8, written out 60000 times, is 60000', 'test "big"')])
+    const copy = 'func copy(comptime T: type, p: *mut T, q: *T) { p.* = q.* }\n'
+    expect(errs(`${copy}func f(p: *mut [600]u8, q: *[600]u8) { copy(p, q) }`)).toEqual([])
+    expect(errs(`${copy}func f(p: *mut [60000]u8, q: *[60000]u8) { copy(p, q) }`)).toEqual([`${over('[60000]u8 is 60000', "function 'copy'")}, in copy(T = [60000]u8)`])
   })
 })
 
