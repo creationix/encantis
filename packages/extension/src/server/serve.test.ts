@@ -2,7 +2,7 @@
 // the handlers the server registers.
 
 import { describe, expect, test } from 'bun:test'
-import type { Connection, Hover, MarkupContent } from 'vscode-languageserver/lib/common/api'
+import type { Connection, Hover, Location, MarkupContent } from 'vscode-languageserver/lib/common/api'
 import { startServer } from './serve'
 
 type Handler = (params: unknown) => unknown
@@ -300,13 +300,16 @@ describe('a document with source imports', () => {
     }
     const [uri, text] = documents[documents.length - 1]
     for (let i = 0; i < 100 && !sent.some((s) => s.uri === uri); i++) await Bun.sleep(5)
-    const hover = (offset: number) => {
+    // A place in the last document, as a request names it
+    const at = (offset: number) => {
       const before = text.slice(0, offset)
-      const position = { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 }
-      const shown = handlers.get('onHover')?.({ textDocument: { uri }, position }) as Hover | null
+      return { textDocument: { uri }, position: { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 } }
+    }
+    const hover = (offset: number) => {
+      const shown = handlers.get('onHover')?.(at(offset)) as Hover | null
       return shown ? (shown.contents as MarkupContent).value : null
     }
-    return { diagnostics: sent.filter((s) => s.uri === uri).at(-1)?.diagnostics ?? [], hover }
+    return { diagnostics: sent.filter((s) => s.uri === uri).at(-1)?.diagnostics ?? [], hover, at, handlers, sent }
   }
 
   const failed = "bucket(K = f64) cannot be instantiated: no function 'hash' accepts (f64) (lib.ents:1:62)"
@@ -316,12 +319,21 @@ describe('a document with source imports', () => {
     const { diagnostics, hover } = await open([[mainUri, MAIN]], async (path) => files.get(path) ?? null)
     expect(diagnostics.map((d) => d.message)).toEqual([failed])
     // The call shows the instance it calls, with its signature.
-    expect(hover(MAIN.lastIndexOf('bucket('))).toBe('```encantis\nbucket:(k:u32, n:u32) -> u32\n```\n\ncalls `bucket(K = u32)`')
+    expect(hover(MAIN.lastIndexOf('bucket('))).toBe('```encantis\nfunc bucket(k:u32, n:u32) -> u32\n```\n\ncalls `bucket(K = u32)`')
   })
 
   test('an import that is open, with no disk to read', async () => {
     const { diagnostics } = await open([[libUri, LIB], [mainUri, MAIN]])
     expect(diagnostics.map((d) => d.message)).toEqual([failed])
+  })
+
+  test('an imported generic is defined at its import, and used at its calls', async () => {
+    const { at, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
+    const call = MAIN.lastIndexOf('bucket(')
+    const line = (location: Location) => `${location.range.start.line}:${location.range.start.character}`
+    expect(line(handlers.get('onDefinition')?.(at(call)) as Location)).toBe('0:29')
+    const references = handlers.get('onReferences')?.({ ...at(call), context: { includeDeclaration: false } }) as Location[]
+    expect(references.map(line)).toEqual(['1:32', '2:32'])
   })
 
   test('an import that cannot be read: the document is checked by the signatures its imports write', async () => {

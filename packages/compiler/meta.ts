@@ -355,22 +355,33 @@ class MetaBuilder {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
           this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known)
+        } else if (sym?.kind === 'generic') {
+          // Another module's generic is listed as one of this module's is,
+          // with the signature written here: the editor then finds its name
+          // at the import and at its calls.
+          this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
         }
+      } else if (item.item.kind === 'ImportTypeFunc') {
+        const name = item.item.ident
+        if (this.checkResult.symbols.get(name)?.kind !== 'typefunc') continue
+        const offset = this.findImportFuncOffset(item, name)
+        this.addSymbol(name, 'type', this.source.slice(offset + name.length, item.item.span.end), offset)
       }
     }
   }
 
   private findImportFuncOffset(item: AST.ImportItem, name: string): number {
-    // If ident is specified, use its position in the ImportFunc
+    // If ident is specified, use its position in the item
     // Otherwise, the name comes from item.name
-    if (item.item.kind === 'ImportFunc' && item.item.ident) {
+    const ident = item.item.kind === 'ImportGlobal' ? undefined : item.item.ident
+    if (ident) {
       // Search for the ident after "func" keyword
       const funcStart = item.item.span.start
       const searchText = this.source.slice(funcStart, item.item.span.end)
       const funcIdx = searchText.indexOf('func')
       if (funcIdx !== -1) {
         const afterFunc = funcStart + funcIdx + 4
-        const identIdx = this.source.indexOf(item.item.ident, afterFunc)
+        const identIdx = this.source.indexOf(ident, afterFunc)
         if (identIdx !== -1) return identIdx
       }
     }
@@ -410,6 +421,12 @@ class MetaBuilder {
     return this.findKeywordIdentOffset(decl.span.start, decl.body.span.start, 'func')
   }
 
+  // A generic's signature as it is written, comptime parameters included
+  private writtenSignature({ input, output }: AST.FuncSignature): string {
+    const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
+    return `${this.source.slice(input.span.start, input.span.end)}->${returns}`
+  }
+
   private collectFunc(decl: AST.FuncDecl): void {
     if (decl.ident) {
       const known = this.checkResult.funcNames.get(decl) ?? decl.ident
@@ -419,10 +436,7 @@ class MetaBuilder {
         // was written with, so that its name is found where a function's is:
         // at its declaration and at its calls, where the hint carries the
         // signature of the instance.
-        const { input, output } = decl.signature
-        const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
-        const written = `${this.source.slice(input.span.start, input.span.end)}->${returns}`
-        const symbolIndex = this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        const symbolIndex = this.addSymbol(decl.ident, 'func', this.writtenSignature(decl.signature), this.findFuncIdentOffset(decl))
         if (sym.decl === decl) this.genericSymbols.set(symbolIndex, decl)
         // What its parameters and the names in its body are depends on the
         // instance: their hints are made from the first one, and then say
@@ -1023,6 +1037,12 @@ class MetaBuilder {
         if (symbolIndex !== undefined) {
           const offset = this.findImportFuncOffset(item, name)
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
+        }
+      } else if (item.item.kind === 'ImportTypeFunc') {
+        const name = item.item.ident
+        const symbolIndex = this.symbolIndexByName.get(name)
+        if (symbolIndex !== undefined && this.checkResult.symbols.get(name)?.kind === 'typefunc') {
+          this.addHint(this.findImportFuncOffset(item, name), name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
       }
     }
