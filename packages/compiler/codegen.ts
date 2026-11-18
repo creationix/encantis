@@ -59,6 +59,9 @@ export interface CodegenContext {
   // Calls the checker resolved to something else: the written call → what
   // to compile in its place (see TypeCheckResult.calls)
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // The name a function that shares its name is known by (see
+  // TypeCheckResult.funcNames)
+  funcNames: TypeCheckResult['funcNames']
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
 }
@@ -78,6 +81,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     namedReturnLocals: [],
     dataSectionSize,
     calls: checkResult.calls,
+    funcNames: checkResult.funcNames,
   }
 }
 
@@ -418,8 +422,9 @@ function identToWat(expr: AST.IdentExpr, ctx: CodegenContext): string {
     }
   }
 
-  // Unknown - emit error comment
-  return `(i32.const 0)`
+  // The checker refuses a name it does not know, so nothing that is compiled
+  // comes here. Emitting a zero instead would hide the day something does.
+  throw new Error(`Unknown identifier '${name}' at offset ${expr.span.start}`)
 }
 
 function truncateSubWord(wat: string, type: ResolvedType): string {
@@ -1032,8 +1037,9 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   if (expr.callee.kind === 'IdentExpr') {
     funcName = expr.callee.name
   } else {
-    // Indirect call - not yet supported
-    return `(call_indirect ${exprToWat(expr.callee, ctx)})`
+    // The checker refuses the call of a function value, and a method call
+    // comes here as the call it stands for.
+    throw new Error(`Cannot call this expression at offset ${expr.span.start}: only a named function is called`)
   }
 
   // Handle builtin functions. The checker decides which calls are to one (a
@@ -2613,7 +2619,7 @@ export function funcToWat(
   if (extraSymbols) {
     for (const [k, v] of extraSymbols) ctx.symbols.set(k, v)
   }
-  const name = decl.ident ?? 'anonymous'
+  const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
 
   // Get function type from checker
   const funcType = checkResult.symbols.get(name)
@@ -2989,6 +2995,13 @@ function collectLocals(
       }
     }
     if (expr.kind === 'CallExpr') {
+      // x.f(a) is compiled as the call f(x, a) the checker recorded for it:
+      // its receiver is an argument of that call, and none of this one.
+      const lowered = expr.callee.kind === 'MemberExpr' ? checkResult.calls.get(expr) : undefined
+      if (lowered) {
+        visitExpr(lowered)
+        return
+      }
       // Integer min, max and abs use an operand twice: one that isn't a plain
       // read is kept in a scratch local.
       const operandType = checkResult.types.get(typeKey(expr.span.start, 'BuiltinCall'))
@@ -3291,7 +3304,7 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
   const imp = item.item
 
   if (imp.kind === 'ImportFunc') {
-    const name = imp.ident ?? item.name
+    const name = ctx.funcNames.get(imp) ?? imp.ident ?? item.name
     // Get function type from signature
     const params: string[] = []
     const results: string[] = []
@@ -3408,7 +3421,7 @@ function exportToWat(decl: AST.ExportDecl, ctx: CodegenContext): string {
   const item = decl.item
 
   if (item.kind === 'FuncDecl') {
-    const funcName = item.ident ?? 'anonymous'
+    const funcName = ctx.funcNames.get(item) ?? item.ident ?? 'anonymous'
     const watName = ctx.nameMap.get(funcName) ?? funcName
     return `  (export "${name}" (func $${watName}))`
   }
@@ -3534,17 +3547,25 @@ export function programToWat(
 
   // Build per-module name mappings
   const perModuleNameMap = new Map<string, Map<string, string>>()
+  // Each module's exported functions by the name they are exported under,
+  // which is what an importer names: not always the name of the function,
+  // and for functions that share a name never the same for two of them.
+  const perModuleExports = new Map<string, Map<string, string>>()
   for (const [path, loaded] of modules) {
     const prefix = path === entryPath ? '' : modulePrefix(path)
     const modNameMap = new Map<string, string>()
+    const modExports = new Map<string, string>()
+    const funcNames = checkResults.get(path)?.funcNames
     for (const decl of loaded.module.decls) {
       if (decl.kind === 'FuncDecl' && decl.ident) {
-        const mangled = prefix ? `${prefix}$${decl.ident}` : decl.ident
-        modNameMap.set(decl.ident, mangled)
+        const known = funcNames?.get(decl) ?? decl.ident
+        modNameMap.set(known, prefix ? `${prefix}$${known}` : known)
       }
       if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && decl.item.ident) {
-        const mangled = prefix ? `${prefix}$${decl.item.ident}` : decl.item.ident
-        modNameMap.set(decl.item.ident, mangled)
+        const known = funcNames?.get(decl.item) ?? decl.item.ident
+        const mangled = prefix ? `${prefix}$${known}` : known
+        modNameMap.set(known, mangled)
+        modExports.set(decl.name, mangled)
       }
       if (decl.kind === 'GlobalDecl' && decl.pattern.kind === 'IdentPattern') {
         const mangled = prefix ? `${prefix}$${decl.pattern.name}` : decl.pattern.name
@@ -3560,6 +3581,7 @@ export function programToWat(
       modNameMap.set(name, prefix ? `${prefix}$${name}` : name)
     }
     perModuleNameMap.set(path, modNameMap)
+    perModuleExports.set(path, modExports)
   }
 
   function collectAllImports(decls: readonly { kind: string }[]): AST.ImportDecl[] {
@@ -3579,6 +3601,7 @@ export function programToWat(
 
     const loaded = modules.get(path)
     if (!loaded) return full
+    const funcNames = checkResults.get(path)?.funcNames
     for (const decl of collectAllImports(loaded.module.decls)) {
       if (!isSourceImport(decl.module)) continue
       const depPath = resolveModulePath(decl.module, path)
@@ -3586,8 +3609,8 @@ export function programToWat(
       if (!depNames) continue
       for (const item of decl.items) {
         if (item.item.kind === 'ImportFunc') {
-          const localName = item.item.ident ?? item.name
-          const mangled = depNames.get(item.name)
+          const localName = funcNames?.get(item.item) ?? item.item.ident ?? item.name
+          const mangled = perModuleExports.get(depPath)?.get(item.name) ?? depNames.get(item.name)
           if (mangled) full.set(localName, mangled)
         }
         if (item.item.kind === 'ImportGlobal') {
@@ -3669,7 +3692,8 @@ export function programToWat(
     const modNameMap = buildFullNameMap(path)
     for (const fn of funcsInOrder(loaded.module.decls, result)) {
       if (!fn.ident) continue
-      const watName = modNameMap.get(fn.ident) ?? fn.ident
+      const known = result.funcNames.get(fn) ?? fn.ident
+      const watName = modNameMap.get(known) ?? known
       parts.push(funcToWat(fn, result, globalLiteralRefs, modNameMap, watName, undefined, dataSection.totalSize))
     }
   }

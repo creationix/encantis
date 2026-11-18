@@ -358,11 +358,13 @@ export func index_of(xs: []u32, x: u32) -> u32 => find(u32, xs, x)`
 
   for (const [what, program] of [['never instantiated', `global x: u32 = 0\n${id}`], ['instantiated', `global x: u32 = 0\n${id}${user}`]]) {
     test(`hover on a generic's own name is not that of a module name spelled the same (${what})`, () => {
-      // By name, the parameter x was shown as the global x. A generic's own
-      // names have no hover: what they are depends on the instance.
+      // By name, the parameter x was shown as the global x. What a generic's
+      // own name is depends on the instance: it is shown as the first one has
+      // it, and not at all while there is none.
       const { source, module, check } = setup(program)
-      expect(hover(source, module, check, program.indexOf('x: T'))).toBeNull()
-      expect(hover(source, module, check, program.indexOf('=> x\n') + 3)).toBeNull()
+      const own = what === 'instantiated' ? { name: 'x', type: 'f64', kind: 'local' } : null
+      expect(hover(source, module, check, program.indexOf('x: T'))).toEqual(own)
+      expect(hover(source, module, check, program.indexOf('=> x\n') + 3)).toEqual(own)
       expect(hover(source, module, check, program.indexOf('T: type'))).toBeNull()
       expect(hover(source, module, check, program.indexOf('-> T') + 3)).toBeNull()
       // The global is still itself, and the generic its own name.
@@ -444,6 +446,152 @@ func both(comptime A: type, comptime B: type, a: A, b: B) -> (A, B) => (keep(A, 
       expect(location.offset).toBeGreaterThan(swap)
       expect(location.offset).toBeLessThan(end)
     }
+  })
+})
+
+describe('inside a generic function', () => {
+  const code = `func find(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, v in xs {
+    let same = v == x
+    return i when same
+  }
+  return xs.len
+}
+func never(comptime T: type, a: T) -> T => a
+export func index_of(xs: []u64, x: u64) -> u32 => find(xs, x)
+export func has_byte(xs: []u8, x: u8) -> bool => find(xs, x) < xs.len`
+
+  test('hover shows a parameter, a local and their uses as they are in the first instance', () => {
+    const { source, module, check } = setup(code)
+    const at = (text: string, from = 0) => hover(source, module, check, code.indexOf(text, from))
+    expect(at('xs: []T')).toEqual({ name: 'xs', type: '[]u64', kind: 'local' })
+    expect(at('x: T')).toEqual({ name: 'x', type: 'u64', kind: 'local' })
+    expect(at('same =')).toEqual({ name: 'same', type: 'bool', kind: 'local' })
+    expect(at('x\n', code.indexOf('v == x'))).toEqual({ name: 'x', type: 'u64', kind: 'local' })
+    expect(at('xs.len')).toEqual({ name: 'xs', type: '[]u64', kind: 'local' })
+  })
+
+  test('a generic nothing has called shows nothing inside: there is no instance to go by', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('a: T'))).toBeNull()
+    expect(hover(source, module, check, code.indexOf('=> a') + 3)).toBeNull()
+  })
+
+  test('outside a generic nothing is looked up in an instance', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('xs: []u8'))).toEqual({ name: 'xs', type: '[]u8', kind: 'local' })
+  })
+})
+
+describe('method calls and functions that share a name', () => {
+  const code = `func hash(k: u32) -> u32 => k
+func hash(k: []u8) -> u32 => k.len
+func slot(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n
+func double(n: u32) -> u32 => n * 2
+export func f(xs: []u8) -> u32 => xs.slot(4).double() + hash(7:u32) + hash(xs)`
+
+  test('hover on a call shows the function it means', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('hash(7'))).toEqual({ name: 'hash', type: 'func(k: u32) -> u32', kind: 'func' })
+    expect(hover(source, module, check, code.indexOf('hash(xs)'))).toEqual({ name: 'hash', type: 'func(k: []u8) -> u32', kind: 'func' })
+  })
+
+  test('hover on the name of a method shows the function called', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('slot(4)'))).toEqual({ name: 'slot', type: 'func(k: []u8, n: u32) -> u32', kind: 'generic' })
+    expect(hover(source, module, check, code.indexOf('double()') + 3)).toEqual({ name: 'double', type: 'func(n: u32) -> u32', kind: 'func' })
+  })
+
+  test('a call goes to the declaration of the function it means, and a method to its function', () => {
+    const { source, module, check } = setup(code)
+    const def = (text: string) => gotoDefinition(source, module, check, code.indexOf(text))?.location.offset
+    expect(def('hash(7')).toBe(0)
+    expect(def('hash(xs)')).toBe(code.indexOf('func hash(k: []u8)'))
+    expect(def('slot(4)')).toBe(code.indexOf('func slot'))
+    expect(def('double()')).toBe(code.indexOf('func double'))
+  })
+
+  test('the uses of each function of a shared name are its own', () => {
+    const { source, module, check } = setup(code)
+    const refs = (at: number) => findReferences(source, module, check, at)?.references.map(r => r.offset).sort((a, b) => a - b)
+    // In a generic's body a call may mean either: it is a use of both.
+    expect(refs(code.indexOf('hash(xs)'))).toEqual([code.indexOf('hash() %'), code.indexOf('hash(xs)')])
+    expect(refs(code.indexOf('hash(7'))).toEqual([code.indexOf('hash() %'), code.indexOf('hash(7')])
+    expect(refs(code.indexOf('double()'))).toEqual([code.indexOf('double()')])
+  })
+
+  test('each is listed with its own signature, under the name it was declared with', () => {
+    const { source, module, check } = setup(code)
+    expect(documentSymbols(source, module, check).map(s => [s.name, s.type])).toEqual([
+      ['hash', 'func(k: u32) -> u32'],
+      ['hash', 'func(k: []u8) -> u32'],
+      ['slot', 'generic func(comptime K: type, k: K, n: u32) -> u32'],
+      ['double', 'func(n: u32) -> u32'],
+      ['f', 'func(xs: []u8) -> u32'],
+    ])
+  })
+
+  test('a function that shares its name is itself at its own declaration', () => {
+    // By name alone each of them was the first one declared.
+    const { source, module, check } = setup(code)
+    const second = code.indexOf('hash(k: []u8)')
+    expect(hover(source, module, check, second)).toEqual({ name: 'hash', type: 'func(k: []u8) -> u32', kind: 'func' })
+    expect(hover(source, module, check, code.indexOf('hash(k: u32)'))).toEqual({ name: 'hash', type: 'func(k: u32) -> u32', kind: 'func' })
+    expect(gotoDefinition(source, module, check, second)?.location.offset).toBe(code.indexOf('func hash(k: []u8)'))
+    expect(findReferences(source, module, check, second)?.references.map(r => r.offset).sort((a, b) => a - b)).toEqual([
+      code.indexOf('hash() %'),
+      code.indexOf('hash(xs)'),
+    ])
+  })
+
+  test('in a generic\'s body a call is shown and found as the first instance means it', () => {
+    // The only instance of slot has K = []u8. The body's own call is recorded
+    // as a use of both functions, and by that alone it was the last of them
+    // for one question and the first for another.
+    const { source, module, check } = setup(code)
+    const call = code.indexOf('hash() %')
+    expect(hover(source, module, check, call)).toEqual({ name: 'hash', type: 'func(k: []u8) -> u32', kind: 'func' })
+    expect(signatureHelp(source, module, check, call)?.params).toEqual([{ name: 'k', type: '[]u8' }])
+    expect(gotoDefinition(source, module, check, call)?.location.offset).toBe(code.indexOf('func hash(k: []u8)'))
+    // With the other type first, the same body's call is the other function.
+    const other = code.replace('xs.slot(4)', '(7:u32).slot(4) + xs.slot(4)')
+    const first = setup(other)
+    expect(hover(first.source, first.module, first.check, other.indexOf('hash() %'))?.type).toBe('func(k: u32) -> u32')
+    expect(gotoDefinition(first.source, first.module, first.check, other.indexOf('hash() %'))?.location.offset).toBe(0)
+    // A plain call in the body, and a generic nothing has called.
+    const plain = code.replace('k.hash() % n', 'hash(k) % n')
+    const p = setup(plain)
+    expect(hover(p.source, p.module, p.check, plain.indexOf('hash(k) %'))?.type).toBe('func(k: []u8) -> u32')
+    expect(gotoDefinition(p.source, p.module, p.check, plain.indexOf('hash(k) %'))?.location.offset).toBe(plain.indexOf('func hash(k: []u8)'))
+  })
+
+  test('a name that functions share is renamed for all of them', () => {
+    // A call spells the name, not which function: renaming one function
+    // and its calls would leave the generic's body calling a name that the
+    // other instances no longer find.
+    const { source, module, check } = setup(code)
+    const all = [
+      code.indexOf('func hash(k: u32)'),
+      code.indexOf('func hash(k: []u8)'),
+      code.indexOf('hash() %'),
+      code.indexOf('hash(7'),
+      code.indexOf('hash(xs)'),
+    ]
+    for (const at of [code.indexOf('hash(k: u32)'), code.indexOf('hash(k: []u8)'), code.indexOf('hash() %'), code.indexOf('hash(7'), code.indexOf('hash(xs)')]) {
+      expect(rename(source, module, check, at)?.locations.map(l => l.offset)).toEqual(all)
+    }
+    // A name one function has is renamed as before.
+    expect(rename(source, module, check, code.indexOf('double()'))?.locations.map(l => l.offset)).toEqual([code.indexOf('func double'), code.indexOf('double()')])
+  })
+
+  test('the signature offered at a call is that of the function it means', () => {
+    const { source, module, check } = setup(code)
+    expect(signatureHelp(source, module, check, code.indexOf('hash(xs)'))).toEqual({
+      name: 'hash',
+      params: [{ name: 'k', type: '[]u8' }],
+      returnType: 'u32',
+    })
+    expect(signatureHelp(source, module, check, code.indexOf('slot(4)'))?.params.map(p => p.type)).toEqual(['[]u8', 'u32'])
   })
 })
 

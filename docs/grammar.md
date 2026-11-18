@@ -701,6 +701,15 @@ ptr.*                         // Dereference
 value.i32                     // Type-punned access
 ```
 
+```ebnf
+access_suffix   = "." digit+                            -- tuple index
+                | "." "*"                               -- dereference
+                | "." primitive_type                    -- type-punned access: the whole name is the type's
+                | "." ident                             -- field, or the name of a method
+```
+
+A member is a type-punned access only when its whole name is a primitive type's: `p.u32`, `p.u8[4]` and `p.u32-1` (the pun, minus one) are; `s.boolish`, `p.i8_le` and `v.u32s()` name a field or a method. The name ends at the first character that is not a letter, a digit or `_`. A hyphen ends it too, although an identifier may hold one, so that `p.u32-1` stays a subtraction: a field or a function named `u32-count` cannot be reached as a member (`x.u32-count` is `x.u32 - count`); call the function as `u32-count(x)`.
+
 ### Indexing
 
 ```encantis
@@ -716,7 +725,12 @@ matrix[i][j]                  // Multi-dimensional
 add(1, 2)                     // Positional args
 Point(x: 1.0, y: 2.0)         // Named args
 Point(x:, y:)                 // Shorthand (x=x, y=y)
+p.scale(2.0)                  // Method call: scale(p, 2.0), where p has no member `scale`
+v.items().sort(u64, less)     // Calls chain; type arguments are written after the receiver
+(4:u32).double()              // A literal with its type written on it is a receiver in parentheses
 ```
+
+**Method calls.** `x.f(a)` is a member access followed by a call: no rule of its own. The checker reads it as `f(x, a)` where `x` has no member `f`, so whether it is a method call depends on the type of `x`, not on how it is written. A type annotation binds more loosely than a member access, so `4:u32.double()` is no method call on `4:u32`: what follows the colon is read as a type, and `u32.double()` is none, which is a syntax error. Write the receiver in parentheses, `(4:u32).double()`.
 
 **Type arguments.** A call of a generic function may pass a type where the parameter is `comptime T: type`:
 

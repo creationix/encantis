@@ -40,8 +40,9 @@ describe('hover', () => {
     expect(hover(source.indexOf('n +'))).toContain('n:u32')
   })
 
-  // A generic's parameters and body have no hints. By name alone, one of its
-  // own names was shown as whatever else is spelled the same.
+  // A generic's parameters and body are shown as its first instance has them,
+  // and not at all while nothing has called it. By name alone, one of its own
+  // names was shown as whatever else is spelled the same.
   const generic = `global x: u32 = 0
 func id(comptime T: type, x: T, max: T) -> T {
   let sqrt = x
@@ -56,14 +57,18 @@ func twice(n: u32) -> u32 => n * 2
     test(`a generic's own names are not the module's or a builtin's (${what})`, () => {
       const hover = hoverIn(source)
       const at = (text: string) => source.indexOf(text, source.indexOf('func id'))
+      const own = (offset: number, shown: string) => {
+        if (what === 'instantiated') expect(hover(offset)).toContain(shown)
+        else expect(hover(offset)).toBeNull()
+      }
       // The parameter x and its uses: not the global x.
-      expect(hover(at('x: T'))).toBeNull()
-      expect(hover(at('= x') + 2)).toBeNull()
-      expect(hover(at('twice(x)') + 6)).toBeNull()
+      own(at('x: T'), 'input x:u32')
+      own(at('= x') + 2, 'input x:u32')
+      own(at('twice(x)') + 6, 'input x:u32')
       // A parameter and a local named like builtins.
-      expect(hover(at('max: T'))).toBeNull()
-      expect(hover(at('> max') + 2)).toBeNull()
-      expect(hover(at('sqrt = x'))).toBeNull()
+      own(at('max: T'), 'input max:u32')
+      own(at('> max') + 2, 'input max:u32')
+      own(at('sqrt = x'), 'let sqrt:u32')
       // The type parameter.
       expect(hover(at('T: type'))).toBeNull()
       expect(hover(at('x: T') + 3)).toBeNull()

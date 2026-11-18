@@ -2545,3 +2545,121 @@ describe('module codegen', () => {
     expect(wat).toContain('(export "_start" (func $main))')
   })
 })
+
+// Where a value is a call, or the last expression of a block is not a plain
+// name, its type is the one recorded for that expression itself. These were
+// miscompiled while types were found by where an expression starts.
+describe('a call, a member or an operator wherever a value stands', () => {
+  // The body of the first function of a module that checks and assembles.
+  const body = (code: string) => {
+    const wat = modWat(code)
+    const start = wat.indexOf('(func ')
+    return wat.slice(start, wat.indexOf('\n  )', start)).split('\n').slice(1).map(l => l.trim()).filter(l => l && !l.startsWith('(local ')).join(' ')
+  }
+  const validates = async (code: string) => {
+    const wabt = await (await import('wabt')).default()
+    const module = wabt.parseWat('t.wat', modWat(code), { multi_value: true, bulk_memory: true })
+    try {
+      module.validate()
+    } finally {
+      module.destroy()
+    }
+  }
+  const pair = 'func two(a: i64) -> (i64, i64) => (a, a + 1)\n'
+
+  test('set (a, b) = f()', async () => {
+    const code = `func f(x: i64) -> i64 {\n  let a: i64 = 0\n  let b: i64 = 0\n  set (a, b) = two(x)\n  return a + b\n}\n${pair}`
+    expect(body(code)).toContain('(call $two (local.get $x)) (local.set $b) (local.set $a)')
+    await validates(code)
+  })
+
+  test('a call as an arrow body is converted to the result type', async () => {
+    const code = 'func f(x: u32) -> u64 => g(x)\nfunc g(x: u32) -> u32 => x'
+    expect(body(code)).toBe('(i64.extend_i32_u (call $g (local.get $x)))')
+    await validates(code)
+  })
+
+  test('a call as the value of a compound assignment', async () => {
+    const code = 'func f(x: u32) -> (n: u64) {\n  n += g(x)\n  n *= g(x) + g(x)\n}\nfunc g(x: u32) -> u32 => x'
+    expect(body(code)).toContain('(local.set $n (i64.add (local.get $n) (i64.extend_i32_u (call $g (local.get $x)))))')
+    await validates(code)
+  })
+
+  test('min(a.len, b.len) on u32 compares unsigned', async () => {
+    const code = 'func f(a: []u8, b: []u8) -> u32 => min(a.len, b.len)'
+    expect(body(code)).toContain('i32.lt_u')
+    expect(body(code)).not.toContain('i32.lt_s')
+    await validates(code)
+  })
+
+  test('abs(a - b) on f64 keeps f64.abs', async () => {
+    const code = 'func f(a: f64, b: f64) -> f64 => abs(a - b)'
+    expect(body(code)).toBe('(f64.abs (f64.sub (local.get $a) (local.get $b)))')
+    await validates(code)
+  })
+
+  test('let z = if c { p.x } else { p.y }', async () => {
+    const code = 'func f(c: bool, p: (x: f64, y: f64)) -> f64 {\n  let z = if c { p.x } else { p.y }\n  return z\n}'
+    expect(body(code)).toContain('(local.set $z (if (result f64) (local.get $c) (then (local.get $p_x)) (else (local.get $p_y))))')
+    await validates(code)
+  })
+
+  test('the same where the call is written with a receiver', async () => {
+    const code = `func f(x: i64) -> (n: i64) {\n  let a: i64 = 0\n  let b: i64 = 0\n  set (a, b) = x.two()\n  n += a.max(b).abs()\n}\n${pair}`
+    expect(body(code)).toContain('(call $two (local.get $x)) (local.set $b) (local.set $a)')
+    await validates(code)
+  })
+})
+
+describe('functions that share a name, in the output', () => {
+  test('each is emitted where it is declared, the later ones under their own names', () => {
+    const wat = modWat(`
+      func size(a: u32) -> u32 => 4
+      export func f(p: *u8, x: u64) -> u32 => size(1:u32) + size(x) + p.size()
+      func size(a: u64) -> u32 => 8
+      func size(p: *u8) -> u32 => 1
+    `)
+    expect([...wat.matchAll(/^\s*\(func \$(\S+)/gm)].map(m => m[1])).toEqual(['size', 'f', 'size:u64', 'size:*u8'])
+    expect(wat).toContain('(i32.add (i32.add (call $size (i32.const 1)) (call $size:u64 (local.get $x))) (call $size:*u8 (local.get $p)))')
+  })
+
+  test('an import that shares its name is declared under its own', () => {
+    const wat = modWat(`
+      import "env" ( "log_u32" func log(x: u32) "log_f64" func log(x: f64) )
+      export func f(a: u32, b: f64) { log(a) log(b) }
+    `)
+    expect(wat).toContain('(import "env" "log_u32" (func $log (param $x i32) ))')
+    expect(wat).toContain('(import "env" "log_f64" (func $log:f64 (param $x f64) ))')
+    expect(wat).toContain('(call $log (local.get $a))')
+    expect(wat).toContain('(call $log:f64 (local.get $b))')
+  })
+
+  test('funcToWat finds a function that shares its name by its declaration', () => {
+    const module = parse('func size(a: u32) -> u32 => 4\nfunc size(a: u64) -> u32 => 8').module as AST.Module
+    const checkResult = typecheck(module)
+    expect(funcToWat(module.decls[1] as AST.FuncDecl, checkResult)).toStartWith('(func $size:u64 (param $a i64) (result i32)')
+  })
+})
+
+describe('members named like a primitive type', () => {
+  test('a field whose name starts like one is read and written as any field', () => {
+    const wat = modWat(`
+      type S = (u32s: u32, boolish: bool, i8_le: u8)
+      export func f(s: *mut S, v: S) -> u32 {
+        s.u32s = 7
+        s.i8_le += 1
+        return s.u32s + v.u32s
+      }
+    `)
+    expect(wat).toContain('(i32.store (local.get $s) (i32.const 7))')
+    expect(wat).toContain('(i32.add (i32.load (local.get $s)) (local.get $v_u32s))')
+  })
+
+  test('a function of such a name is called as a method, and the type pun is still the pun', () => {
+    const wat = modWat(`
+      func u32s(n: u32) -> u32 => n * 4
+      export func f(n: u32, p: *u8) -> u32 => n.u32s() + p.u32[0]
+    `)
+    expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
+  })
+})

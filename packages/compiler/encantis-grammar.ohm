@@ -266,9 +266,13 @@ Encantis {
 
   LValue = ident AccessSuffix*
 
+  // A member is a type pun only when its whole name is a primitive type's:
+  // `.u32` and `.u32-1` are, `.u32s` and `.boolish` are a field or a method.
+  // The check is lexical, so that what follows on the next line is not
+  // taken for the rest of the name.
   AccessSuffix = "." digit+        -- tupleIndex
                | "." "*"           -- deref
-               | "." PrimitiveType -- typePun
+               | "." PrimitiveType #(~(letter | digit | "_"))  -- typePun
                | "." ident         -- field
                | "[" Expr? ".." Expr? "]"  -- slice
                | "[" Expr "]"      -- index

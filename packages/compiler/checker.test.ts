@@ -2597,3 +2597,338 @@ describe('builtins', () => {
     expect(errs(src('s: i32'))).toEqual(['memcpy src: expected *[N]T, got i32'])
   })
 })
+
+describe('functions that share a name', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  // The name of the function each call of `name` in `use` compiles to
+  const called = (decls: string, use: string, name = 'hash') => {
+    const result = checkModule(`${decls}\n${use}`)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const names: string[] = []
+    for (const [written, compiled] of result.calls) {
+      if (written.callee.kind === 'IdentExpr' && written.callee.name === name && compiled.kind === 'CallExpr' && compiled.callee.kind === 'IdentExpr') {
+        names.push(compiled.callee.name)
+      }
+    }
+    return names
+  }
+  const HASH = `
+    func hash(k: u32) -> u32 => k
+    func hash(k: u64) -> u32 => 1
+    func hash(k: []u8) -> u32 => k.len
+    func hash(a: u32, b: u32) -> u32 => a ^ b
+  `
+
+  test('each is a function of its own, the later ones under a name made of their parameter types', () => {
+    const result = checkModule(HASH)
+    expect(result.errors).toEqual([])
+    expect([...result.symbols.keys()]).toEqual(['hash', 'hash:u64', "hash:''u8", 'hash:u32|u32'])
+    expect([...result.funcNames.values()]).toEqual(['hash:u64', "hash:''u8", 'hash:u32|u32'])
+  })
+
+  test('a call means the one whose parameter types are the argument types', () => {
+    expect(called(HASH, 'func f(a: u64, s: []u8) -> u32 => hash(a) + hash(s) + hash(1:u64)')).toEqual(['hash:u64', "hash:''u8", 'hash:u64'])
+    // The first one declared is called by the name itself: nothing is recorded for it.
+    expect(called(HASH, 'func f(a: u32) -> u32 => hash(a)')).toEqual([])
+    expect(called(HASH, 'func f(a: u32) -> u32 => hash(a, a)')).toEqual(['hash:u32|u32'])
+  })
+
+  test('an exact match wins over one the argument could also be passed to', () => {
+    // A u32 can be passed for a u64, and is not: hash(u32) takes it as it is.
+    expect(called(HASH, 'func f(a: u32) -> u32 => hash(a) + hash(a + 1)')).toEqual([])
+    // A loop counter is a u32 known to lie in a range.
+    expect(called(HASH, 'func f() -> (n: u32) { for i in 12 { n += hash(i) } }')).toEqual([])
+    const mut = `
+      func len(p: *[4]u8) -> u32 => 4
+      func len(p: *mut [4]u8) -> u32 => 5
+    `
+    expect(called(mut, 'func f(p: *mut [4]u8, q: *[4]u8) -> u32 => len(p) + len(q)', 'len')).toEqual(['len:*mut.\'4\'u8'])
+  })
+
+  test('without one, the only function the arguments can be passed to', () => {
+    const two = `
+      func hash(k: u64) -> u32 => 1
+      func hash(k: []u8) -> u32 => k.len
+    `
+    // A u8 widens to a u64, a string is a []u8, and a literal fits one of the two.
+    expect(called(two, 'func f(a: u8) -> u32 => hash(a) + hash("abc") + hash(5) + hash([1, 2])')).toEqual(["hash:''u8", "hash:''u8"])
+    // A literal is checked against the parameter it would be passed for, as an argument is.
+    const sized = `
+      func put(b: []u8) -> u32 => 1
+      func put(b: []u32) -> u32 => 2
+    `
+    expect(called(sized, 'func f() -> u32 => put([1, 300])', 'put')).toEqual(["put:''u32"])
+  })
+
+  test('an argument that is one value only once a parameter says of what type goes to the only function that takes it', () => {
+    // By itself the `if` has branches of two types, and is an error. It
+    // takes no part in the first step, and is passed for a []u8 as it would
+    // be to a function that has its name to itself.
+    const use = 'func f(k: bool) -> u32 => slen(if k { "yes" } else { "no" })'
+    expect(called('func slen(s: []u8) -> u32 => s.len\nfunc slen(n: u64) -> u32 => 8', use, 'slen')).toEqual([])
+    expect(called('func slen(n: u64) -> u32 => 8\nfunc slen(s: []u8) -> u32 => s.len', use, 'slen')).toEqual(["slen:''u8"])
+    // So is a tuple of literals, and the arms of a match.
+    const total = 'func total(n: u64) -> u32 => 8\nfunc total(xs: []u32) -> u32 => xs.len\nfunc total(p: (u8, f64)) -> u32 => 2'
+    expect(called(total, 'func f(k: bool) -> u32 => total(match k { true => [7], false => [8, 9] }) + total(if k { (1, 2) } else { (3, 4.5) })', 'total')).toEqual([
+      "total:''u32",
+      'total:<u8|f64>',
+    ])
+    // Where no function takes it, or more than one does, what is wrong with
+    // it by itself is what there is to say.
+    expect(errs(`func slen(n: f64) -> u32 => 8\nfunc slen(n: u64) -> u32 => 8\n${use}`)).toEqual(['branches have different types: *[2]u8 and *[3]u8 (cast one explicitly)'])
+    expect(errs('func total(xs: []u32) -> u32 => 1\nfunc total(xs: []u64) -> u32 => 2\nfunc f(k: bool) -> u32 => total(if k { [1, 2, 3] } else { [4, 5] })')).toEqual([
+      'branches have different types: [2]i32 and [3]i32 (cast one explicitly)',
+    ])
+  })
+
+  test('none is one error that lists the argument types', () => {
+    expect(errs(`${HASH}\nfunc f(x: f64) -> u32 => hash(x)`)).toEqual(["no function 'hash' accepts (f64)"])
+    expect(errs(`${HASH}\nfunc f(x: u32) -> u32 => hash(x, x, x)`)).toEqual(["no function 'hash' accepts (u32, u32, u32)"])
+    expect(errs(`${HASH}\nfunc f() -> u32 => hash()`)).toEqual(["no function 'hash' accepts ()"])
+    expect(errs(`type Cell = (x: i32, y: i32)${HASH}\nfunc f(c: Cell) -> u32 => hash(c)`)).toEqual(["no function 'hash' accepts (Cell)"])
+    // Nothing more is said of what the call was used for.
+    expect(errs(`${HASH}\nfunc f(x: f64) -> bool => hash(x)`)).toEqual(["no function 'hash' accepts (f64)"])
+  })
+
+  test('several is one error too', () => {
+    expect(errs(`${HASH}\nfunc f() -> u32 => hash(5)`)).toEqual(["'hash' is ambiguous for (int(5))"])
+    expect(errs(`${HASH}\nfunc f(a: u8) -> u32 => hash(a)`)).toEqual(["'hash' is ambiguous for (u8)"])
+    // Giving the literal its type says which.
+    expect(errs(`${HASH}\nfunc f() -> u32 => hash(5:u64)`)).toEqual([])
+  })
+
+  test('an argument with an error of its own is that error alone', () => {
+    expect(errs(`${HASH}\nfunc f() -> u32 => hash(nope)`)).toEqual(["unknown identifier 'nope'"])
+    expect(errs(`${HASH}\nfunc f(x: f64) -> u32 => hash(hash(x))`)).toEqual(["no function 'hash' accepts (f64)"])
+  })
+
+  test('a call that failed is still a use of the functions', () => {
+    const result = checkModule(`${HASH}\nexport func f(x: f64) -> u32 => hash(x)`)
+    expect(result.warnings).toEqual([])
+  })
+
+  test('one that nothing calls is reported by the name it was declared with', () => {
+    const src = `${HASH}\nexport func f(x: u32) -> u32 => hash(x)`
+    const result = checkModule(src)
+    expect(result.warnings.map(w => w.message)).toEqual(["'hash' is never used", "'hash' is never used", "'hash' is never used"])
+    expect(result.warnings.map(w => w.offset)).toEqual([src.indexOf('func hash(k: u64'), src.indexOf('func hash(k: []'), src.indexOf('func hash(a:')])
+  })
+
+  test('a misspelt name is not answered with the name a function is known by', () => {
+    // hash:u64 is one edit from hash_u64, and nothing a program can write.
+    expect(errs(`${HASH}\nfunc f(x: u64) -> u32 => hash_u64(x)`)[0]).toBe("unknown identifier 'hash_u64'")
+    expect(errs(`${HASH}\nfunc f(x: u64) -> u32 => hasj(x)`)[0]).toBe("unknown identifier 'hasj' — did you mean 'hash'?")
+  })
+
+  test('two with the same parameter types are an error at the second', () => {
+    const src = 'func hash(k: u32) -> u32 => k\nfunc hash(n: u32) -> u64 => 1'
+    const result = checkModule(src)
+    expect(result.errors).toEqual([{ offset: src.lastIndexOf('func'), message: "'hash' is already declared with parameters (u32)" }])
+    expect(errs('func f() { }\nfunc f() { }')).toEqual(["'f' is already declared with parameters ()"])
+    // The names of the parameters and the result are not what tells two
+    // apart, nor is a name for a type. The message shows the earlier one's
+    // parameters as they were written.
+    expect(errs('type Meters = u32\nfunc f(a: Meters, b: []u8) { }\nfunc f(x: u32, y: []u8) -> u32 => 1')).toEqual([
+      "'f' is already declared with parameters (Meters, []u8)",
+    ])
+  })
+
+  test('also when a parameter type is declared further down', () => {
+    expect(errs('func f(a: Later) -> i32 => a.x\nfunc f(a: (x: i32)) -> i32 => 1\ntype Later = (x: i32)')).toEqual([
+      "'f' is already declared with parameters (Later)",
+    ])
+    // Refused, it is no second function of the name: the name is the one
+    // function's wherever it is used.
+    const less = 'func less(a: u32, b: u32) -> bool => a < b\nfunc less(a: Later, b: Later) -> bool => a > b\ntype Later = u32\n'
+    expect(errs(`${less}func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) { }\nfunc f(xs: []mut u32) { sort(xs, less) }`)).toEqual([
+      "'less' is already declared with parameters (u32, u32)",
+    ])
+    const bump = 'type Box = (n: u32)\nfunc bump(b: *mut Box) { b.n += 1 }\nfunc bump(b: *mut Later) { b.n += 2 }\ntype Later = (n: u32)\n'
+    expect(errs(`${bump}func f(b: Box) { b.bump() }`)).toEqual([
+      "'bump' is already declared with parameters (*mut Box)",
+      'bump takes *mut Box first; the receiver is a Box, which is held in registers and has no address',
+    ])
+    expect(called('func f(a: Later) -> i32 => a.x\nfunc f(a: Other) -> i32 => a.y\ntype Later = (x: i32)\ntype Other = (y: i32)',
+      'func g(a: Later, b: Other) -> i32 => f(a) + f(b)', 'f')).toEqual(['f:@Other'])
+  })
+
+  test('a generic function cannot share its name', () => {
+    expect(errs('func f(comptime T: type, a: T) -> T => a\nfunc f(a: u32) -> u32 => a')).toEqual([
+      "'f' is already declared: a generic function's name is unique in its module",
+    ])
+    expect(errs('func f(a: u32) -> u32 => a\nfunc f(comptime T: type, a: T) -> T => a')).toEqual([
+      "'f' is already declared: a generic function's name is unique in its module",
+    ])
+  })
+
+  test('an imported function shares a name like a declared one', () => {
+    const src = `
+      import "env" ( "log_u32" func log(x: u32) "log_f64" func log(x: f64) )
+      func log(x: []u8) { }
+      export func f(a: u32, b: f64, c: []u8) { log(a) log(b) log(c) }
+    `
+    expect(called(src, '', 'log')).toEqual(['log:f64', "log:''u8"])
+    expect(errs('import "env" ( "a" func log(x: u32) "b" func log(y: u32) )')).toEqual(["'log' is already declared with parameters (u32)"])
+  })
+
+  test('a global, a def or data that takes the name afterwards is checked without a throw', () => {
+    // Other declarations of one name replace each other, as they always
+    // have. The functions that shared it are no reason to fail on that.
+    const two = 'func hash(k: u32) -> u32 => k\nfunc hash(k: u64) -> u32 => 1\n'
+    for (const taker of ['global hash: u32 = 3', 'def hash = 3', 'data hash = [1:u8, 2]']) {
+      expect(() => checkModule(`${two}${taker}\nfunc hash(k: f64) -> u32 => 2\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
+      expect(() => checkModule(`${two}${taker}\nfunc f(x: u64) -> u32 => hash(x)`)).not.toThrow()
+    }
+  })
+
+  test('one function of another source module imported twice is that function, not a second one', () => {
+    const twice = `
+      import "./keys" "hash" func hash(k: u32) -> u32
+      import "./keys" (
+        "hash" func hash(k: u32) -> u32
+        "hash_bytes" func hash(k: []u8) -> u32
+        "hash_bytes" func hash(k: []u8) -> u32
+      )
+      func f(k: u32, s: []u8) -> u32 => hash(k) + hash(s)
+    `
+    const result = checkModule(twice)
+    expect(result.errors).toEqual([])
+    expect([...result.symbols.keys()]).toEqual(['hash', "hash:''u8", 'f'])
+    // Two imports of one name from the host are two functions of one name in the module.
+    expect(errs('import "env" "now" func now() -> u64\nimport "env" "now" func now() -> u64')).toEqual(["'now' is already declared with parameters ()"])
+  })
+
+  test('a function a test declares replaces the one of the module, as it always has', () => {
+    const result = checkModule(`
+      func hash(k: u32) -> u32 => k
+      test "t" {
+        func hash(k: u64) -> u32 => 1
+        assert hash(1:u64) == 1
+      }
+    `)
+    expect(result.errors).toEqual([])
+    expect([...result.symbols.keys()]).toEqual(['hash'])
+  })
+
+  test('a name that several functions share is not one a test can take over', () => {
+    // The test's function stood in for the first of them, for the module's
+    // code too: with tests built, a call of the module's own chose among
+    // other functions than in the build that ships.
+    const shared = `
+      func hash(k: u32) -> u32 => 1
+      func hash(k: u64) -> u32 => 2
+      func bucket(comptime K: type, k: K) -> u32 => hash(k)
+      export func f(k: u32) -> u32 => bucket(k) * 10 + hash(k)
+    `
+    const refused = "'hash' is the name of several functions of the module: a function declared in a test cannot take it over"
+    for (const params of ['k: f32', 'k: u64', 'a: u32, b: u32']) {
+      const result = checkModule(`${shared}
+      test "t" {
+        func hash(${params}) -> u32 => 3
+        assert f(1) == 11
+      }`)
+      expect(result.errors.map(e => e.message)).toEqual([refused])
+      // What the module's code calls is what it calls without the test.
+      expect([...result.symbols.keys()]).toEqual(['hash', 'hash:u64', 'bucket', 'f', 'bucket<u32>'])
+    }
+    // The test's own calls of it say nothing more, and neither does an import.
+    expect(errs(`${shared}
+      test "t" {
+        func hash(k: f32) -> u32 => 3
+        assert hash(1.5) == 3
+      }`)).toEqual([refused])
+    expect(errs(`${shared}
+      test "t" {
+        import "env" "hash" func hash(k: f32) -> u32
+        assert f(1) == 11
+      }`)).toEqual([refused])
+  })
+
+  test('a function the program declares takes a builtin\'s name, with every function that shares it', () => {
+    const src = `
+      type Pt = (q: i32, r: i32)
+      func max(a: Pt, b: Pt) -> Pt => if a.q > b.q { a } else { b }
+      func max(a: f64, b: f64) -> f64 => if a > b { a } else { b }
+      func f(p: Pt, x: f64) -> f64 => max(p, p).q as f64 + max(x, 1.5)
+    `
+    expect(called(src, '', 'max')).toEqual(['max:f64|f64'])
+    // The builtin is gone from the module: two u32s are widened for the one
+    // declared function that takes them, and two i64s have none.
+    expect(called(`${src}\nfunc g(a: u32) -> f64 => max(a, a)`, '', 'max')).toEqual(['max:f64|f64', 'max:f64|f64'])
+    expect(errs(`${src}\nfunc g(a: i64) -> i64 => max(a, a)`)).toEqual(["no function 'max' accepts (i64, i64)"])
+  })
+
+  test('each export needs a name of its own', () => {
+    const src = 'export func hash(k: u32) -> u32 => k\nexport func hash(k: []u8) -> u32 => k.len'
+    expect(checkModule(src).errors).toEqual([{
+      offset: src.lastIndexOf('export'),
+      message: `export name 'hash' is used twice: give one an explicit name, as in export "hash_2" func hash(...)`,
+    }])
+    expect(errs('export func hash(k: u32) -> u32 => k\nexport func hash(k: u64) -> u32 => 1')).toEqual([
+      `export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)`,
+    ])
+    expect(errs('export func hash(k: u32) -> u32 => k\nexport "hash_bytes" func hash(k: []u8) -> u32 => k.len')).toEqual([])
+    // Any two exports, not only two functions that share a name
+    expect(errs('export "x" func a() { }\nexport "x" func b() { }')).toEqual([
+      `export name 'x' is used twice: give one an explicit name, as in export "x_2" func b(...)`,
+    ])
+    expect(errs('export "x" func a() { }\nexport "x" global g: u32 = 0')).toEqual([
+      `export name 'x' is used twice: give one an explicit name, as in export "x_2" global g`,
+    ])
+    // Of several memory declarations only the first is the module's memory,
+    // so only its export is one.
+    expect(errs('export memory\nexport memory 8\nexport "mem" memory 8 256\nexport "mem" func f() { }')).toEqual([])
+    expect(errs('export "memory" func f() { }\nexport memory 8')).toEqual([
+      `export name 'memory' is used twice: give one an explicit name, as in export "memory_2" memory`,
+    ])
+    expect(errs('memory 1\nexport "memory" func f() { }\nexport memory 8')).toEqual([])
+  })
+
+  test('the name of several functions is no function value', () => {
+    // With no arguments to say which, it was the first one declared: here
+    // the one that does not fit, though the other does.
+    const inc = 'func inc(a: u64) -> u64 => a + 1\nfunc inc(a: u32) -> u32 => a + 1\n'
+    const refused = "'inc' is the name of several functions: it can only be called, where the arguments say which one"
+    expect(errs(`${inc}func ap(g: (u32) -> u32, x: u32) -> u32 => x\nfunc f(x: u32) -> u32 => ap(inc, x)`)).toEqual([refused])
+    const stored = checkModule(`${inc}export func f(x: u32) -> u32 {\n  let g = inc\n  return x\n}`)
+    expect(stored.errors.map(e => e.message)).toEqual([refused])
+    // It is a use of each of them all the same.
+    expect(stored.warnings).toEqual([])
+    // A name that one function has is its value, as before.
+    expect(errs('func inc(a: u32) -> u32 => a + 1\nfunc ap(g: (u32) -> u32, x: u32) -> u32 => x\nfunc f(x: u32) -> u32 => ap(inc, x)')).toEqual([])
+  })
+
+  test('a declaration that repeats another is that one error, exported or not', () => {
+    // It is no function of the module, so it exports nothing: a name for its
+    // export would not help.
+    expect(errs('export func f(x: u32) -> u32 => 1\nexport func f(x: u32) -> u32 => 2')).toEqual(["'f' is already declared with parameters (u32)"])
+    // The same where the two turn out to be one only once a later type is known.
+    expect(errs('export func f(x: u32) -> u32 => 1\nexport func f(x: Later) -> u32 => 2\ntype Later = u32')).toEqual([
+      "'f' is already declared with parameters (u32)",
+    ])
+  })
+})
+
+describe('calling a function value', () => {
+  const errs = (src: string) => checkModule(src).errors.map(e => e.message)
+  const refused = (type: string) =>
+    `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: ${type}), can be called`
+
+  test('is one error, wherever the value is held', () => {
+    const inc = 'func inc(a: u32) -> u32 => a + 1\n'
+    expect(errs(`${inc}func apply(g: (u32) -> u32, x: u32) -> u32 => g(x)`)).toEqual([refused('(u32) -> u32')])
+    expect(errs(`${inc}func f(x: u32) -> u32 {\n  let g = inc\n  return g(x)\n}`)).toEqual([refused('(u32) -> u32')])
+    expect(errs(`type S = (cb: (u32, u32) -> bool, n: u32)\nfunc f(s: S) -> bool => s.cb(s.n, 1)`)).toEqual([refused('(u32, u32) -> bool')])
+    expect(errs(`type S = (cb: (u32) -> u32, n: u32)\nfunc f(s: *S) -> u32 => s.cb(1)`)).toEqual([refused('(u32) -> u32')])
+  })
+
+  test('says nothing more of the call, and still checks its arguments', () => {
+    expect(errs('func apply(g: (u32) -> u32, x: u32) -> u64 => g(x)')).toEqual([refused('(u32) -> u32')])
+    expect(errs('func apply(g: (u32) -> u32, x: f64) -> u32 => g(x)')).toEqual([refused('(u32) -> u32'), 'argument 1: cannot assign f64 to u32'])
+  })
+
+  test('a function named directly is called as before', () => {
+    expect(errs('func inc(a: u32) -> u32 => a + 1\nfunc f(x: u32) -> u32 => inc(inc(x))')).toEqual([])
+    expect(errs('import "env" "now" func now() -> u64\nfunc f() -> u64 => now()')).toEqual([])
+  })
+})

@@ -1,6 +1,6 @@
 # Generics
 
-Generic functions: a function with a compile-time type parameter, compiled once for each type it is used with. Generic types, a type with type parameters, and comptime function parameters have their own sections at the end. The rules are the "Generics" chapter of [`docs/encantis.md`](../docs/encantis.md), whose own examples are run as tests too. This file holds the cases that are too detailed for the reference: how the new forms parse, programs at the edges of what is accepted, and one case for every error.
+Generic functions: a function with a compile-time type parameter, compiled once for each type it is used with. Generic types, a type with type parameters, comptime function parameters, method calls and the calls a generic's body makes have their own sections at the end. The rules are the "Generics" chapter of [`docs/encantis.md`](../docs/encantis.md), whose own examples are run as tests too. This file holds the cases that are too detailed for the reference: how the new forms parse, programs at the edges of what is accepted, and one case for every error.
 
 The accepted modules of this file are also compiled and validated (see [`README.md`](README.md)), so nothing is listed here as accepted that does not build.
 
@@ -2201,6 +2201,519 @@ func g() -> u32 => apply(inc)
 
 ```errors
 'apply' expects 2 arguments, got 1
+```
+
+## Method calls
+
+`x.f(a)` is the call `f(x, a)` where `x` has no member `f`. Nothing in the syntax is new: it parses as a call of a member, and the checker decides what it is.
+
+```ents Expr
+v.push(u32, 7)
+```
+
+```json ast
+{
+  "kind": "CallExpr",
+  "callee": {
+    "kind": "MemberExpr",
+    "object": {
+      "kind": "IdentExpr",
+      "name": "v"
+    },
+    "member": {
+      "kind": "field",
+      "name": "push"
+    }
+  },
+  "args": [
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "IdentExpr",
+        "name": "u32"
+      }
+    },
+    {
+      "kind": "Arg",
+      "name": null,
+      "value": {
+        "kind": "LiteralExpr",
+        "value": {
+          "kind": "int",
+          "value": "7",
+          "radix": 10
+        }
+      }
+    }
+  ]
+}
+```
+
+A member whose name only starts like a primitive type is a field or a method. The whole name is still a type pun, and what follows it is not part of it.
+
+```ents Expr
+v.u32s()
+```
+
+```json ast
+{
+  "kind": "CallExpr",
+  "callee": {
+    "kind": "MemberExpr",
+    "object": {
+      "kind": "IdentExpr",
+      "name": "v"
+    },
+    "member": {
+      "kind": "field",
+      "name": "u32s"
+    }
+  },
+  "args": []
+}
+```
+
+```ents Expr
+p.u32-1
+```
+
+```json ast
+{
+  "kind": "BinaryExpr",
+  "op": "-",
+  "left": {
+    "kind": "MemberExpr",
+    "object": {
+      "kind": "IdentExpr",
+      "name": "p"
+    },
+    "member": {
+      "kind": "type",
+      "type": {
+        "kind": "PrimitiveType",
+        "name": "u32"
+      }
+    }
+  },
+  "right": {
+    "kind": "LiteralExpr",
+    "value": {
+      "kind": "int",
+      "value": "1",
+      "radix": 10
+    }
+  }
+}
+```
+
+### Accepted
+
+The receiver is the first argument that is not a comptime one. It decides the type parameters, type arguments are written after it, and calls chain from left to right.
+
+```ents
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+func get(comptime T: type, v: *Vec(T), i: u32) -> T => v.ptr[i]
+func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
+func total(comptime T: type, xs: []T) -> (sum: T) {
+  sum = 0
+  for x in xs {
+    sum += x
+  }
+}
+func double(n: u64) -> u64 => n * 2
+
+data room = mut [0:u64; 8]
+data header = mut [0:u8; 12]
+
+test "a vector through method calls" {
+  let v = header as *mut Vec(u64)
+  v.* = Vec(u64)(room as [*]mut u64, 0, 8)
+  v.push(40)
+  v.push(u64, 2)
+  assert v.get(1) == 2
+  assert v.get(u64, 0) == 40
+  assert v.items().total() == 42
+  assert v.items().total().double().double() == 168
+}
+```
+
+The same module written with plain calls.
+
+```ents
+func hash(k: u32) -> u32 => k * 31
+func mix(a: u32, b: u32) -> u32 => (a ^ b) * 17
+func pick(comptime T: type, a: T, b: T, first: bool) -> T => if first { a } else { b }
+
+export func f(a: u32, b: u32) -> u32 => a.hash().mix(b.hash()).pick(b, a > b).max(7)
+```
+
+```ents same-wasm
+func hash(k: u32) -> u32 => k * 31
+func mix(a: u32, b: u32) -> u32 => (a ^ b) * 17
+func pick(comptime T: type, a: T, b: T, first: bool) -> T => if first { a } else { b }
+
+export func f(a: u32, b: u32) -> u32 => max(pick(mix(hash(a), hash(b)), b, a > b), 7)
+```
+
+A comptime function parameter is written in either form, before the receiver's parameter or after it.
+
+```ents
+func first(comptime T: type, comptime before: (T, T) -> bool, xs: []T) -> T => if before(xs.ptr[0], xs.ptr[1]) { xs.ptr[0] } else { xs.ptr[1] }
+func best(comptime T: type, xs: []T, comptime before: (T, T) -> bool) -> T => if xs.ptr[0].before(xs.ptr[1]) { xs.ptr[0] } else { xs.ptr[1] }
+func less(a: u8, b: u8) -> bool => a < b
+
+data pair = [9:u8, 4]
+
+test "a function given after the receiver" {
+  assert pair.first(less) == 4
+  assert pair.first(u8, less) == 4
+  assert pair.best(less) == 4
+  assert pair.best(u8, less) == 4
+}
+```
+
+Members win over functions: a field, also through a pointer, and what a slice, an array and a pointer have built in.
+
+```ents
+type Box = (size: u32, n: u32)
+
+func size(b: Box) -> u32 => 99
+func n(b: *Box) -> u32 => 98
+func len(xs: []u8) -> u32 => 97
+func wid(xs: []u8) -> u32 => 96
+
+func through(b: *Box) -> u32 => b.n + n(b)                  // the field, then the function
+func of(xs: []u8) -> u32 => xs.len + len(xs) + xs.wid()     // a slice has .len; it has no .wid
+
+data four = [1:u8, 2, 3, 4]
+data space = mut [0:u8; 8]
+
+test "the member is the member" {
+  let b = Box(5, 6)
+  assert b.size == 5
+  assert size(b) == 99
+  let p = space as *mut Box
+  p.* = b
+  assert through(p) == 6 + 98
+  assert four.len == 4
+  assert four.wid == 1
+  assert of("abc") == 3 + 97 + 96
+}
+```
+
+The receiver gets the conversions any argument gets: a narrower number is widened, `*mut` is passed for `*`, and an array pointer for a slice.
+
+```ents
+func wide(n: u64) -> u64 => n + 1
+func count(xs: []u8) -> u32 => xs.len
+func first(p: *u32) -> u32 => p.*
+
+data four = [1:u8, 2, 3, 4]
+data cell = mut [7:u32]
+
+test "a receiver is converted like an argument" {
+  let small: u8 = 255
+  assert small.wide() == 256
+  assert four.count() == 4
+  assert "ab".count() == 2
+  let p = &cell[0]
+  assert p.first() == 7
+}
+```
+
+A builtin is called the same way, unless the program declares the name.
+
+```ents
+func abs(x: i32) -> i32 => 1
+
+export func a(x: f64) -> f64 => x.sqrt().max(1.5).floor()
+export func b(x: i64, y: u8) -> u8 => x.clz().max(y)
+export func c(x: i32) -> i32 => x.abs()
+
+test "builtins with a receiver" {
+  assert a(16.0) == 4.0
+  assert a(1.0) == 1.0
+  assert b(1, 3) == 63
+  assert c(-5) == 1
+}
+```
+
+### Rejected
+
+A value is not passed for a pointer: no address is taken of the receiver. The message is the same for a generic, with its type arguments left out or written, and for a plain function.
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func push(comptime T: type, v: *mut Vec(T), x: T) { }
+func norm(p: *Pt) -> i32 => p.q + p.r
+
+func f(v: Vec(u32)) { v.push(7) }
+func g(v: Vec(u32)) { v.push(u32, 7) }
+func h(p: Pt) -> i32 => p.norm()
+```
+
+```errors
+push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
+push takes *mut Vec(u32) first; the receiver is a Vec(u32), which is held in registers and has no address
+norm takes *Pt first; the receiver is a Pt, which is held in registers and has no address
+```
+
+An array written out is no such value: passed for a pointer it is laid out in memory, as it is when it is written as the first argument. A table written out is laid out when the program is compiled, so a row known only at run time is what is wrong with it, said as it is of the argument.
+
+```ents
+func tsum(m: *[2][3]i32) -> i32 => m[1][2]
+
+func f(x: i32) -> i32 => [[x, 2, 3], [4, 5, 6]].tsum()
+func g(x: i32) -> i32 => [[1, 2, 3], [x; 3]].tsum()
+```
+
+```errors
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+a row of *[2][3]i32 is laid out at compile time: its values must be constants
+```
+
+Nor is a pointer followed for a value: the receiver is an argument like any other.
+
+```ents
+type Pt = (q: i32, r: i32)
+func norm(p: Pt) -> i32 => p.q + p.r
+
+func f(p: *Pt) -> i32 => p.norm()
+func g(p: *Pt) -> i32 => p.*.norm()
+```
+
+```errors
+receiver: cannot assign *Pt to Pt
+```
+
+Neither a member nor a function of the name is one error. A variable of the name is no function.
+
+```ents
+type Pt = (q: i32, r: i32)
+func double(n: u32) -> u32 => n * 2
+
+func f(p: Pt, x: u32) -> u32 => p.area(x, 2)
+func g(x: u32) -> u32 => x.dubble().double()
+func h(x: u32, twice: u32) -> u32 => x.twice()
+```
+
+```errors
+no field 'area' on type Pt, and no function 'area' accepts (Pt, u32, int(2))
+no field 'dubble' on type u32, and no function 'dubble' accepts (u32)
+no field 'twice' on type u32, and no function 'twice' accepts (u32)
+```
+
+A field that is called is still the field. Where a function of its name is there, the error says how that one is called.
+
+```ents
+type Box = (size: u32, n: u32)
+func size(b: Box) -> u32 => 99
+
+func f(b: Box) -> u32 => b.size()
+func g(b: Box) -> u32 => b.n()
+```
+
+```errors
+cannot call non-function type: u32 ('size' is a field here, and a field wins over the function 'size': write size(...))
+cannot call non-function type: u32
+cannot assign i32 to u32
+```
+
+A receiver with an error of its own is that error alone, however long the chain.
+
+```ents
+func double(n: u32) -> u32 => n * 2
+
+func f() -> u32 => nope.double().double().double()
+```
+
+```errors
+unknown identifier 'nope'
+```
+
+The other errors of `x.f(a)` are those of `f(x, a)`, said of the call as it was written: `x` is the receiver, and the arguments are counted after it.
+
+```ents
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+func zero(comptime T: type) -> T => 0
+func double(n: u32) -> u32 => n * 2
+func nothing() -> u32 => 0
+
+func a(x: u32) -> u32 => x.double(1)
+func b(x: f64) -> u32 => x.double()
+func c(x: u32) -> u32 => x.max()
+func d(x: u32) -> u32 => x.max(u8, 3)
+func e(x: u32) -> u32 => x.zero()
+func f(x: u32) -> u32 => x.nothing()
+func g(x: u32) -> u32 => x.max(u32, 1.5)
+```
+
+```errors
+'double' expected 0 arguments after the receiver, got 1
+receiver: cannot assign f64 to u32
+'max' expects 1 argument after the receiver, or 2 with its type argument written; got 0
+receiver: cannot assign u32 to u8
+receiver of 'zero' must be a type: T is a type parameter
+'nothing' expected 0 arguments, got 1: the receiver is one
+argument 2: cannot assign float(1.5) to u32
+```
+
+What a message suggests writing is in the form the call has.
+
+```ents
+func make(comptime T: type, n: u32) -> T => n as T
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+
+func a(x: u32) -> u64 => x.make()
+func b() -> u32 => (3).max(6)
+```
+
+```errors
+cannot infer T for 'make': write the type argument, as in x.make(u32)
+cannot infer T for 'max' from untyped literals: write .max(i32, ...) or give a literal its type (3:i32)
+```
+
+## Calls in a generic body
+
+A call in a generic's body is resolved in each instance, by its name and the types of its arguments. Each type brings its own function, and every call is a direct one.
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func eq(a: Pt, b: Pt) -> bool => a.q == b.q && a.r == b.r
+func eq(a: u32, b: u32) -> bool => a == b
+func index_of(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, e in xs {
+    return i when e.eq(x)
+  }
+  return xs.len
+}
+
+data nums = [3:u32, 5, 8]
+data pts: []Pt = [(1, 2), (3, 4)]
+
+test "each element type has its own eq" {
+  assert nums.index_of(8) == 2
+  assert index_of(pts, Pt(3, 4)) == 1
+  assert pts.index_of(Pt(9, 9)) == 2
+}
+```
+
+An argument is converted as for any call of the function: in the instance for `u8` the key is widened, in the one for `u64` it is not.
+
+```ents
+func wide(n: u64) -> u64 => n + 1
+func step(comptime T: type, x: T) -> u64 => wide(x) + x.wide()
+
+test "widened where it has to be" {
+  assert step(4:u8) == 10
+  assert step(4:u64) == 10
+}
+```
+
+### Rejected
+
+A type that no function of the name takes is one error in the instance, with one function of the name or with several. It is said once for the instance, however many calls ask.
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func eq(a: Pt, b: Pt) -> bool => a.q == b.q && a.r == b.r
+func hash(k: u32) -> u32 => k
+func hash(k: []u8) -> u32 => k.len
+func index_of(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, e in xs {
+    return i when eq(e, x)
+  }
+  return xs.len
+}
+func same(comptime K: type, a: K, b: K) -> bool => hash(a) == hash(b) && a.hash() == b.hash()
+
+export func f(xs: []u32) -> u32 => index_of(xs, 3)
+export func g(a: f64, b: f64) -> bool => same(a, b)
+```
+
+```errors
+no function 'eq' accepts (u32, u32), in index_of(T = u32)
+no function 'hash' accepts (f64), in same(K = f64)
+```
+
+So is a function that is not declared at all. With a receiver the error also says that the type has no such member.
+
+```ents
+func index_of(comptime T: type, xs: []T, x: T) -> u32 {
+  for i, e in xs {
+    return i when eq(e, x)
+  }
+  return xs.len
+}
+func bucket(comptime K: type, k: K, n: u32) -> u32 => k.hash() % n
+
+export func f(xs: []u32) -> u32 => index_of(xs, 3)
+export func g(x: f64) -> u32 => bucket(x, 4)
+```
+
+```errors
+no function 'eq' accepts (u32, u32), in index_of(T = u32)
+no field 'hash' on type f64, and no function 'hash' accepts (f64), in bucket(K = f64)
+```
+
+A call with the wrong number of arguments for the one function of its name is no requirement on the type. It reads as in any function.
+
+```ents
+func eq(a: u32, b: u32) -> bool => a == b
+func has(comptime T: type, xs: []T, x: T) -> bool => eq(xs.ptr[0])
+
+export func f(xs: []u32) -> bool => has(xs, 3)
+```
+
+```errors
+'eq' expected 2 arguments, got 1, in has(T = u32)
+```
+
+A function value is not called, in an instance as anywhere: a generic takes the function it calls as a comptime parameter.
+
+```ents
+func apply(comptime T: type, f: (T) -> T, x: T) -> T => f(x)
+func inc(a: u32) -> u32 => a + 1
+
+export func g(x: u32) -> u32 => apply(inc, x)
+```
+
+```errors
+calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called, in apply(T = u32)
+```
+
+A name that several functions share is not given for a comptime function parameter: there are no arguments to say which is meant.
+
+```ents
+func pick(comptime T: type, a: T, b: T, comptime before: (T, T) -> bool) -> T => if before(a, b) { a } else { b }
+func less(a: i32, b: i32) -> bool => a < b
+func less(a: f64, b: f64) -> bool => a < b
+
+export func f(a: i32, b: i32) -> i32 => pick(a, b, less)
+```
+
+```errors
+argument 3 of 'pick' must be the name of a function: before is a comptime function parameter ('less' has several overloads)
+```
+
+A generic function does not share its name, with a generic or with any other function.
+
+```ents
+func hash(comptime T: type, k: T) -> u32 => sizeof(T)
+func hash(k: u32) -> u32 => k
+```
+
+```errors
+'hash' is already declared: a generic function's name is unique in its module
 ```
 
 <!-- spec:end -->

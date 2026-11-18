@@ -78,6 +78,39 @@ export func f(v: *mut Vec(u32), p: Pair(u8, Vec(u8)), xs: []mut i32) -> u32 {
 }
 `
 
+// Method calls and functions that share a name: receivers of every kind,
+// chains, type arguments after the receiver, and members whose names start
+// like a primitive type.
+const METHODS = `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+type Box = (u32s: u32, boolish: bool)
+
+func push(comptime T: type, v: *mut Vec(T), x: T) {
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+func hash(k: []u8) -> u32 => k.len
+func i8_le(b: Box) -> u32 => b.u32s
+func double(n: u32) -> u32 => n * 2
+
+export "hash_bytes" func hash(k: [*]u8, n: u32) -> u32 => k[0..n].hash()
+
+export func f(v: *mut Vec(u8), b: Box, p: *u8) -> u32 {
+  v.push(7)
+  v.push(u8, 9)
+  let n = v.items().hash().double().min(b.i8_le())
+  let m = (5:u32).hash() + (n + 1).double() + v.items().len.double() + p.u32[0] + p.u32-1
+  return if b.boolish { n.max(m) } else { v.*.len.hash() }
+}
+
+test "methods" {
+  assert (3:u32).double() == 6
+  assert "four".hash() == 4
+}
+`
+
 // The AST without source positions.
 function shape(source: string): unknown {
   const parsed = parse(source)
@@ -101,6 +134,19 @@ describe('formatter', () => {
     const once = formatEncantis(GENERIC_TYPES)
     expect(formatEncantis(once)).toBe(once)
     expect(shape(once)).toEqual(shape(GENERIC_TYPES))
+  })
+
+  test('formatting method calls a second time changes nothing, and leaves the same program', () => {
+    const once = formatEncantis(METHODS)
+    expect(formatEncantis(once)).toBe(once)
+    expect(shape(once)).toEqual(shape(METHODS))
+  })
+
+  // No space comes between a receiver, the dot and the method, nor between
+  // the method and its arguments.
+  test('a method call is spaced like a member followed by a call', () => {
+    const formatted = formatEncantis('func f(v:*mut V)->u32=>v . items( ) .hash ( ).min( v.u32s ,2 )\n')
+    expect(formatted).toBe('func f(v:*mut V) -> u32 => v.items().hash().min(v.u32s, 2)\n')
   })
 
   // No space is put between a generic type's name and its arguments, where
