@@ -2,7 +2,7 @@
 // Produces LSP-compatible metadata: types, symbols, hints
 
 import type * as AST from './ast'
-import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, type TypeCheckResult } from './checker'
+import { typecheck, typeKey, instanceNodes, forNames, namedPartAt, genericDeclaring, isGenericDecl, readAsModuleName, type TypeCheckResult } from './checker'
 import { ownName, callOf, memberIn, instancesListed, applicationsListed, genericAround, type GenericInfo } from './instances'
 import { type ResolvedType, typeToString, byteSize, func, manyPointer, pointer, array, primitive, VOID, unwrap, tableRow } from './types'
 import { LineMap } from './position'
@@ -890,7 +890,7 @@ class MetaBuilder {
     if (hint.expr !== undefined) return memberIn(this.module, this.checkResult, offset, compact, compact)
     // Only what lies in a generic can be one of its own names.
     const generic = genericAround(this.module, offset) && genericDeclaring(this.module, offset, name)
-    if (generic) return ownName(this.source, this.checkResult, generic, offset, name, compact, compact)
+    if (generic && !readAsModuleName(this.checkResult, offset)) return ownName(this.source, this.checkResult, generic, offset, name, compact, compact)
     const call = callOf(this.source, this.module, this.checkResult, offset, name)
     if (call) return call
     const decl = hint.symbol !== undefined ? this.genericSymbols.get(hint.symbol) : undefined

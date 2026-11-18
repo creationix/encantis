@@ -3,7 +3,7 @@
 
 import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
-import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt } from './checker'
+import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
 import { parse } from './parser'
 import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
 import { typeToWasm } from './codegen'
@@ -295,7 +295,7 @@ export function hover(
     return { name, type, kind, ...rest }
   }
   const generic = genericDeclaring(module, start, name)
-  if (generic) {
+  if (generic && !readAsModuleName(checkResult, start)) {
     const own = ownName(source, checkResult, generic, start, name, shown)
     if (!own?.type || !own.kind) return null
     const { kind, type, ...rest } = own

@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import { parse } from './parser'
 import { typecheck } from './checker'
+import { buildMeta } from './meta'
 import {
   gotoDefinition,
   hover,
@@ -527,6 +528,36 @@ export func has_byte(xs: []u8, x: u8) -> bool => find(xs, x) < xs.len`
   test('outside a generic nothing is looked up in an instance', () => {
     const { source, module, check } = setup(code)
     expect(hover(source, module, check, code.indexOf('xs: []u8'))).toEqual({ name: 'xs', type: '[]u8', kind: 'local' })
+  })
+
+  // A loop variable named like a function of the module hides it in the
+  // loop's body only (5.2): after the loop the name calls the function, in a
+  // generic too. At the merge of claude/dec-hover, which takes a name a
+  // generic declares anywhere for its own, the call after the loop was shown
+  // as a local of the generic, with a type per instance.
+  test('a function a loop variable hides in its body is the function after it, in a generic too', () => {
+    const program = `func scale() -> f64 => 2.0
+func total(comptime T: type, xs: []T) -> f64 {
+  let s: f64 = scale()
+  for scale in 2 {
+    s += scale as f64
+  }
+  return s * scale()
+}
+export func f(a: []u32, b: []f64) -> f64 => total(a) + total(b)
+`
+    const { source, module, check } = setup(program)
+    const func = { name: 'scale', type: 'func() -> f64', kind: 'func' }
+    for (const call of [program.indexOf('scale()', program.indexOf('let s')), program.indexOf('scale()', program.indexOf('return'))]) {
+      expect(hover(source, module, check, call)).toEqual(func)
+      expect(gotoDefinition(source, module, check, call)?.location.offset).toBe(program.indexOf('func scale'))
+    }
+    expect(hover(source, module, check, program.indexOf('scale as'))).toMatchObject({ name: 'scale', kind: 'local', type: 'u32#2' })
+    const built = buildMeta(module, source)
+    const lines = program.slice(0, program.indexOf('scale()', program.indexOf('return'))).split('\n')
+    const hint = built.hints[`${lines.length - 1}:${lines.at(-1)!.length}`]
+    expect(hint.instances).toBeUndefined()
+    expect(hint.symbol !== undefined && built.symbols[hint.symbol].kind).toBe('func')
   })
 })
 

@@ -8389,6 +8389,18 @@ export function genericDeclaring(module: AST.Module, offset: number, name: strin
   return null
 }
 
+// Whether the name that starts at `offset` was read as a name of the module:
+// the checker recorded it as a use of one. In a generic that declares a
+// variable of that name it is still the module's outside the variable's
+// scope: a loop variable named like a function hides it in the loop's body
+// only, and after the loop the name calls the function.
+export function readAsModuleName(check: TypeCheckResult, offset: number): boolean {
+  const def = check.symbolRefs.get(offset)
+  if (def === undefined) return false
+  for (const at of check.symbolDefOffsets.values()) if (at === def) return true
+  return false
+}
+
 // Whether the name that starts at `offset` is a field's: in a type written
 // out (`type Pt = (x: i32)`, a parameter of a function type), after a point
 // (`p.x`, but not the name of a method called), or naming an argument or a
