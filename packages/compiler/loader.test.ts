@@ -677,6 +677,29 @@ export func f() -> u32 {
     expect(callsIn(wat, 'sort$sort<u32|descending@order>')).not.toContain('min')
   })
 
+  // To find K, *Set(K) is laid over the argument's type: Set is written out
+  // in the module that applies it, Pair in lib, which names it, and Inner in
+  // c, the only module that has it.
+  test("a generic type's body is written out where its names are, three modules deep", async () => {
+    const files = {
+      'c.ents': 'func Inner(comptime T: type) -> type => (x: T)\nexport func Pair(comptime T: type) -> type => (a: Inner(T), b: u32)\n',
+      'lib.ents': 'import "./c" "Pair" func Pair(comptime T: type) -> type\nexport func Set(comptime K: type) -> type => (p: Pair(K), n: u32)\nexport func size(comptime K: type, s: *Set(K)) -> u32 => s.n + s.p.b + (s.p.a.x as u32)\n',
+      'main.ents': `import "./lib" (
+  "Set" func Set(comptime K: type) -> type
+  "size" func size(comptime K: type, s: *Set(K)) -> u32
+)
+data store = mut [0:u32, 3, 4, 5]
+test "laid over a struct of the same shape, and over the type itself" {
+  let s = store as *(p: (a: (x: u16), b: u32), n: u32)
+  assert size(s) == 0x40000 + 0x30000
+  let t = store as *Set(u8)
+  assert t.size() == 0x4000000 + 0x3000000
+}
+`,
+    }
+    expect(await inDir(files, (dir) => failingTests(join(dir, 'main.ents')))).toEqual([])
+  })
+
   // As in one module, a generic's body does not see a function a test
   // declares, also where the test is the site.
   test('a function declared in a test is not looked up at the site', async () => {
