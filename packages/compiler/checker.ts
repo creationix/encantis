@@ -9,6 +9,7 @@ import {
   type ForwardRefRT,
   type ResolvedField,
   type ArrayRT,
+  type ComptimeArrayRT,
   type ArraySize,
   type PointerRT,
   type TupleRT,
@@ -1836,6 +1837,10 @@ class CheckContext {
       }
     } else if (decl.value) {
       type = this.inferExpr(decl.value)
+      if (settles(decl.value, this.concretize(type))) {
+        type = this.concretize(type)
+        this.settleLiteral(decl.value, type)
+      }
     } else {
       this.error(decl.span.start, 'global needs type annotation or initializer')
       type = primitive('i32')
@@ -2361,12 +2366,7 @@ class CheckContext {
       }
       // Concretize comptime types for variables
       type = this.concretize(valueType)
-      // A literal that holds slices, [three, four] for pointers to arrays of
-      // different lengths, holds each as a slice of its length (9.5).
-      const value = ungrouped(stmt.value)
-      if ((value.kind === 'ArrayExpr' || value.kind === 'RepeatExpr' || value.kind === 'TupleExpr') && holdsSlice(type)) {
-        this.coerce(value, valueType, type)
-      }
+      this.settleLiteral(stmt.value, type)
       // A constant initializer takes the variable's type, down to its literals.
       if (isComptimeNumber(valueType)) this.typeConstant(stmt.value, type, valueType, false)
     } else {
@@ -2651,6 +2651,26 @@ class CheckContext {
         }
         return slice(elemType)
       }
+    }
+
+    // Array literals of one length are an array of what their elements are
+    // together: [[three], [four]] holds two slices, as [three, four] does.
+    if (types.every((t) => t.kind === 'comptime_array')) {
+      const rows = types as ComptimeArrayRT[]
+      if (rows.every((r) => r.count === rows[0].count)) {
+        return array(this.concretize(this.unifyTypes(rows.map((r) => r.element))), [rows[0].count])
+      }
+    }
+
+    // Tuples with the same fields that hold pointers to arrays of different
+    // lengths hold them as slices: [(three, 1), (four, 2)] is a [2]([]i32, i32).
+    const tuples = types.map((t) => unwrap(t))
+    const [first] = tuples
+    if (first.kind === 'tuple' && tuples.every((t) => t.kind === 'tuple' && t.fields.length === first.fields.length
+      && t.fields.every((f, i) => f.name === first.fields[i].name))) {
+      const fields = first.fields.map((f, i) =>
+        field(f.name, this.concretize(this.unifyTypes(tuples.map((t) => (t as TupleRT).fields[i].type)))))
+      if (fields.some((f, i) => holdsSlice(f.type) && !holdsSlice(this.concretize(first.fields[i].type)))) return tuple(fields)
     }
 
     // Mixed or other types - concretize first element as fallback
@@ -4946,6 +4966,28 @@ class CheckContext {
       this.error(target.span.start, `copying into a range needs both lengths known at compile time; use memcpy for a runtime length`)
     } else if (dstLen !== srcLen) {
       this.error(target.span.start, `cannot copy ${srcLen} elements into a range of ${dstLen}`)
+    }
+  }
+
+  // A value with no type written takes the type of what it is made of
+  // (concretize). A literal that holds slices, [three, four] for pointers to
+  // arrays of different lengths, holds each as a slice of its length (9.5),
+  // and the rows of one written out are each that type: the literals it is
+  // made of, written out or as the branches of an if or a match, are
+  // converted to it, element by element.
+  private settleLiteral(expr: AST.Expr, type: ResolvedType): void {
+    const value = ungrouped(expr)
+    if (value.kind === 'ArrayExpr' || value.kind === 'RepeatExpr' || value.kind === 'TupleExpr') {
+      const own = this.exprTypes.get(value)
+      if (own && settles(value, type)) this.coerce(value, own, type)
+      return
+    }
+    const bodies = value.kind === 'IfExpr' ? [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
+      : value.kind === 'MatchExpr' ? value.arms.map((arm) => arm.body)
+      : []
+    for (const body of bodies) {
+      const tail = body ? bodyValue(body) : null
+      if (tail) this.settleLiteral(tail, type)
     }
   }
 
@@ -7427,6 +7469,23 @@ type Branch = { body: AST.FuncBody | AST.Expr; type: ResolvedType }
 function rowsAdvice(row: ResolvedType): string {
   const text = typeToString(row)
   return `for packed rows use a struct with an array field, (cells: ${text}), or *${text} for the pointers`
+}
+
+// Whether a literal with no type written has to be converted to the type it
+// settled on (settleLiteral): it holds slices, or it writes out rows, each of
+// which has to be a row of that type.
+function settles(expr: AST.Expr, type: ResolvedType): boolean {
+  return holdsSlice(type) || writesRows(expr)
+}
+
+// An array literal of array literals, itself or as an element of a tuple.
+function writesRows(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  if (value.kind === 'TupleExpr') return value.elements.some((e) => e.value !== null && writesRows(e.value))
+  return value.kind === 'ArrayExpr' && value.elements.some((e) => {
+    const element = ungrouped(e)
+    return element.kind === 'ArrayExpr' || element.kind === 'RepeatExpr' || writesRows(element)
+  })
 }
 
 // Whether a value of this type holds a slice in registers: is one, or has one

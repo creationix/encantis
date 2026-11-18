@@ -877,7 +877,7 @@ func f() -> u32 {
 cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
 ```
 
-A table converts the same way, to a slice of rows (`[][2]u16`), in a constructor as in a literal, and in a generic type's constructor. Pointers to arrays of different lengths in one literal are slices of their own lengths, with no type written for it (`[three, four]` is a `[2][]i32`), in a tuple and nested too.
+A table converts the same way, to a slice of rows (`[][2]u16`), in a constructor as in a literal, and in a generic type's constructor. Pointers to arrays of different lengths in one literal are slices of their own lengths, with no type written for it (`[three, four]` is a `[2][]i32`), in a tuple, in rows, in the branches of an `if` or `match` and in a global too.
 
 <!-- spec:begin compile -->
 
@@ -922,9 +922,49 @@ test "pointers to arrays of different lengths in one literal" {
   assert nested[1][0].len == 4
   assert nested[1][1].len == 3
 }
+
+global names = ["ab", "cde"]
+global pair = ([three, four], 9:u32)
+
+test "in the branches of an if or a match, in rows, and in a global" {
+  let x = if three[0] == 1 { [three, four] } else { [four, three] }
+  assert x[1].len == 4
+  let w = if four[0] == 4 { ["ab", "cde"] } else { ["x", "yz"] }
+  assert w[0].len == 2
+  assert w[1].len == 3
+  let m = match three[0] { 1 => [four, three], _ => [three, four] }
+  assert m[0].len == 4
+  let rows = [[three, three], [four, four]]
+  assert rows[0][1].len == 3
+  assert rows[1][0].len == 4
+  let pairs = [(three, 1), (four, 2)]
+  assert pairs[1].0.len == 4
+  assert pairs[1].1 == 2
+  assert names[1].len == 3
+  assert pair.0[1].len == 4
+  assert pair.1 == 9
+}
 ```
 
 <!-- spec:end -->
+
+Rows of different lengths have no type together: each is checked against the first one's.
+
+```ents
+data three: *[3]i32 = [1, 2, 3]
+data four: *[4]i32 = [4, 5, 6, 7]
+
+func f() -> u32 {
+  let rows = [[three], [four, three]]
+  let cells = [[1, 2], [3, 4, 5]]
+  return rows[1][0].len
+}
+```
+
+```errors
+cannot assign [2][]i32 to [1]*[3]i32
+cannot assign [3]i32 to [2]i32
+```
 
 ## Bounds
 
