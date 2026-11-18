@@ -5830,12 +5830,17 @@ class CheckContext {
       // section has had its elements checked against the element type.)
       // A tuple literal among them meets a struct element as it meets any
       // struct: field by field, by name where it has names.
+      // So is an array literal among them where the element is an array:
+      // its own elements meet the inner element type as they would alone.
       const elementType = this.peelArraySize(to)
       const structs = unwrap(elementType).kind === 'tuple'
+      const rows = unwrap(elementType).kind === 'array'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
-        else if (type) this.coerce(element, type, elementType, prefix)
+        const inner = ungrouped(element).kind
+        if ((structs && inner === 'TupleExpr') || (rows && (inner === 'ArrayExpr' || inner === 'RepeatExpr'))) {
+          this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        } else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on

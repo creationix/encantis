@@ -936,6 +936,39 @@ cannot assign float(1.5) to u64
 300
 ```
 
+So is an element that is an array, in an array held in registers (`[2][3]u16`): a literal row is checked element by element against the row's element type, wherever the array meets its type, a `let`, an argument or a field.
+
+<!-- spec:begin compile -->
+
+```ents
+type S = (n: u8, m: [2][2]u8)
+
+func pick(w: [2][3]u16) -> u16 => w[1][2]
+func rows(k: u8) -> u8 {
+  let x: [2][2]u8 = [[k, 2], [3; 2]]
+  let s = S(1, [[5, 6], [7, 8]])
+  return x[0][0] + x[1][1] + s.m[1][0]
+}
+
+test "a row literal of an array held in registers takes the row's element type" {
+  assert pick([[1, 2, 3], [4, 5, 300]]) == 300
+  assert rows(9) == 19
+}
+```
+
+<!-- spec:end -->
+
+```ents
+func f() -> u8 {
+  let x: [2][2]u8 = [[1, 2], [3, 300]]
+  return x[0][0]
+}
+```
+
+```errors
+cannot assign int(300) to u8
+```
+
 ## Literals for mutable pointers and slices
 
 A literal is constant unless it is written with `mut`. Where a mutable pointer or slice is wanted, a literal without the keyword is an error that shows it written with it. `mut` makes all of a literal writable and its own: the rows of a table, the elements of a slice of slices and the slice fields of its structs too.
