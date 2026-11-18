@@ -520,6 +520,23 @@ export func h() -> u8 => 'd'
     expect(hover(source.indexOf("'c'") + 1)).toBeNull()
   })
 
+  // A template's text can go on over lines, and was read a line at a time:
+  // a piece of text on a later line showed nothing, and an apostrophe there
+  // was taken for a quote, so that a literal after it showed nothing either.
+  test('a piece of text is whole over lines, and an apostrophe in it is text', () => {
+    const source = "func take(c: u8) -> []u8 => \"x\"\nexport func g() -> [][]u8 => `first\nit's ${take('m')} end\nlast`\n/* don't\n'q' */ export func h() -> []u8 => \"one\ntwo\"\n"
+    const hover = hoverIn(source)
+    for (const at of [0, 1, 2]) expect(hover(source.indexOf("'m'") + at)).toContain("'m':u8 = 109")
+    for (const at of [source.indexOf('first'), source.indexOf("it's") + 2]) expect(hover(at)).toContain('"first\\nit\'s ":[]u8')
+    expect(hover(source.indexOf('last'))).toContain('" end\\nlast":[]u8')
+    // So can a string, and a comment, which is not code.
+    expect(hover(source.indexOf('two'))).toContain('"one\\ntwo":[]u8')
+    expect(hover(source.indexOf("'q'") + 1)).toBeNull()
+    // What is shown is the piece of text, from its first line to its last.
+    const range = (serverFor(source)('onHover', source.indexOf('last')) as Hover).range
+    expect(range).toEqual({ start: { line: 2, character: 17 }, end: { line: 3, character: 4 } })
+  })
+
   // An escaped backtick or ${ is the template's text: the piece of text
   // ended at it.
   test('a piece of text is whole past an escape', () => {

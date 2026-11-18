@@ -542,6 +542,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // Check if this is a type punning context (preceded by a dot)
     const isTypePunContext = wordInfo.start > 0 && text[wordInfo.start - 1] === '.';
 
+    // A literal that goes on over lines ends where its word does
+    const multiline = word.includes('\n');
     // Helper to create hover range - uses exprStart if available for full expression highlight
     const makeHoverRange = (
       startPos: { line: number; character: number },
@@ -549,7 +551,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       exprStart?: number
     ) => ({
       start: { line: startPos.line, character: exprStart ?? startPos.character },
-      end: { line: startPos.line, character: startPos.character + len },
+      end: multiline ? offsetToPosition(text, wordInfo.end) : { line: startPos.line, character: startPos.character + len },
     });
 
     // Look up hint from meta FIRST (handles type punning and other resolved types)
@@ -589,8 +591,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
           };
         }
 
-        // Just type, no symbol - use expr if available for full context
-        let displayName = hint.expr ?? word;
+        // Just type, no symbol - use expr if available for full context.
+        // A literal's line breaks are shown as the escapes they stand for.
+        let displayName = hint.expr ?? (multiline ? word.replace(/\r/g, '\\r').replace(/\n/g, '\\n') : word);
         // Wrap unquoted string values (template literal segments) in quotes
         if (/^\[?]?u8$|^\*\[\d+]u8$/.test(typeStr) && !/^["'`[]/.test(displayName)) {
           displayName = `"${displayName}"`;
@@ -779,6 +782,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   });
 
   function getWordAtOffset(text: string, offset: number): { word: string; start: number; end: number } | null {
+    // A literal (a string, one in single quotes, a piece of a template's
+    // text) is one word, on as many lines as it goes on for.
+    const literal = literalAt(text, offset);
+    if (literal) return literal;
+
     // Handle brackets as single-character "words" for hover hints
     const ch = text[offset];
     if (ch === '[' || ch === ']') {
@@ -789,50 +797,6 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       return { word: '*', start: offset, end: offset + 1 };
     }
 
-    // A literal in single quotes, or a piece of a template's text, is one word.
-    const quoted = quotedAt(text, offset);
-    if (quoted) return quoted;
-
-    // Handle string literals using quote counting to determine if we're inside a string
-    // Count quotes from line start to current position
-    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
-    let quoteCount = 0;
-    let lastQuotePos = -1;
-    for (let i = lineStart; i < offset; i++) {
-      if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
-        quoteCount++;
-        lastQuotePos = i;
-      }
-    }
-
-    if (ch === '"') {
-      // We're on a quote - is it opening or closing?
-      if (quoteCount % 2 === 0) {
-        // Even quotes before us = this is an opening quote, look forward for closing
-        for (let i = offset + 1; i < text.length; i++) {
-          if (text[i] === '"' && text[i - 1] !== '\\') {
-            return { word: text.slice(offset, i + 1), start: offset, end: i + 1 };
-          }
-          if (text[i] === '\n') break;
-        }
-      } else {
-        // Odd quotes before us = this is a closing quote, use lastQuotePos as opening
-        return { word: text.slice(lastQuotePos, offset + 1), start: lastQuotePos, end: offset + 1 };
-      }
-    }
-
-    // Not on a quote - check if inside a string (odd number of quotes before us)
-    if (quoteCount % 2 === 1 && lastQuotePos !== -1) {
-      // Look forwards for closing quote
-      for (let i = offset; i < text.length; i++) {
-        if (text[i] === '"' && text[i - 1] !== '\\') {
-          // Found closing quote - return the whole string literal
-          return { word: text.slice(lastQuotePos, i + 1), start: lastQuotePos, end: i + 1 };
-        }
-        if (text[i] === '\n') break;
-      }
-    }
-
     let start = offset;
     let end = offset;
     while (start > 0 && isWordChar(text[start - 1])) start--;
@@ -841,29 +805,36 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { word: text.slice(start, end), start, end };
   }
 
-  // The literal that `offset` is in or on, read from the start of its line
-  // past comments, strings and escapes: one in single quotes ('a', 'ok'),
-  // from quote to quote, or a piece of a template's text, from its backtick
-  // or the } that closes an interpolation to its closing backtick or the next
-  // ${. What a template's ${...} holds is read as code, where a quote may
-  // hold a } or a backtick.
-  function quotedAt(text: string, offset: number): { word: string; start: number; end: number } | null {
-    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
-    const lineEnd = text.indexOf('\n', offset) === -1 ? text.length : text.indexOf('\n', offset);
+  // The literal that `offset` is in or on, read from the start of the text
+  // past comments and escapes: a string or a literal in single quotes ('a',
+  // 'ok'), from quote to quote, or a piece of a template's text, from its
+  // backtick or the } that closes an interpolation to its closing backtick
+  // or the next ${. Each can go on over lines, a template's text most of
+  // all, and only from the start of the text is it known whether a line
+  // starts in one. What a template's ${...} holds is read as code, where a
+  // quote may hold a } or a backtick. Null in code and in a comment.
+  function literalAt(text: string, offset: number): { word: string; start: number; end: number } | null {
     // For each ${ that is open, how many braces were open where it opened:
     // the } that closes it is the one that leaves that many open.
     const interpolations: number[] = [];
     let braces = 0;
-    let i = lineStart;
-    while (i < lineEnd && i <= offset) {
+    let i = 0;
+    while (i < text.length && i <= offset) {
       const ch = text[i];
-      if (ch === '/' && text[i + 1] === '/') return null;
+      if (ch === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+        const close = text[i + 1] === '/' ? '\n' : '*/';
+        const at = text.indexOf(close, i + 2);
+        const end = at === -1 ? text.length : at + close.length;
+        if (offset < end) return null;
+        i = end;
+        continue;
+      }
       if (ch === '"' || ch === "'") {
         const start = i;
         i++;
-        while (i < lineEnd && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
-        const end = Math.min(i + 1, lineEnd);
-        if (ch === "'" && offset >= start && offset < end) return { word: text.slice(start, end), start, end };
+        while (i < text.length && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i + 1, text.length);
+        if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
         i = end;
         continue;
       }
@@ -871,10 +842,10 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         if (ch === '}') interpolations.pop();
         const start = i + 1;
         i = start;
-        while (i < lineEnd && text[i] !== '`' && !(text[i] === '$' && text[i + 1] === '{')) i += text[i] === '\\' ? 2 : 1;
-        const end = Math.min(i, lineEnd);
+        while (i < text.length && text[i] !== '`' && !(text[i] === '$' && text[i + 1] === '{')) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i, text.length);
         if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
-        if (i < lineEnd && text[i] === '$') {
+        if (i < text.length && text[i] === '$') {
           interpolations.push(braces);
           i += 2;
         } else {
