@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { parse } from './parser'
-import type { ArrowBody, CallExpr, EnumDecl, Expr, FuncDecl } from './ast'
+import type { ArrowBody, CallExpr, EnumDecl, Expr, FuncDecl, ImportDecl } from './ast'
 
 describe('parser', () => {
   describe('parse function', () => {
@@ -275,6 +275,24 @@ describe('parser', () => {
 
     test('an import item takes the same parameter list', () => {
       expect(parses('import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T')).toBe(true)
+    })
+
+    test('a generic type is imported as the function it is', () => {
+      const result = parse('import "./containers" (\n  "Vec" func Vec(comptime T: type) -> type\n  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)\n)')
+      expect(result.errors).toEqual([])
+      const [vecType, vec] = (result.module?.decls[0] as ImportDecl).items
+      expect(vecType).toMatchObject({ name: 'Vec', item: { kind: 'ImportTypeFunc', ident: 'Vec', params: [{ comptime: true, ident: 'T', type: { kind: 'TypeType' } }] } })
+      expect(vec.item).toMatchObject({ kind: 'ImportFunc', ident: 'vec', signature: { output: { kind: 'PointerType', pointee: { kind: 'TypeApply', name: 'Vec' } } } })
+      // Two type parameters, and the near misses the checker explains
+      expect(parses('import "./m" "Map" func Map(comptime K: type, comptime V: type) -> type')).toBe(true)
+      expect(parses('import "./m" "Vec" func Vec(comptime t: type) -> type')).toBe(true)
+      expect(parses('import "./m" "Vec" func Vec(n: u32) -> type')).toBe(true)
+    })
+
+    test('an imported generic type has no body, and an ordinary import no capital', () => {
+      expect(parses('import "./m" "Vec" func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32)')).toBe(false)
+      expect(parses('import "./m" "Vec" func Vec(comptime T: type) -> u32')).toBe(false)
+      expect(parses('import "./m" "vec" func vec(comptime T: type) -> type')).toBe(false)
     })
 
     test('signatures without comptime parse as before', () => {

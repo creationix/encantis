@@ -334,6 +334,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.ImportItem
   },
 
+  ImportItem_typeFunc(_func, name, params, _arrow, _type): AST.ImportTypeFunc {
+    return {
+      kind: 'ImportTypeFunc',
+      ident: name.sourceString,
+      params: (params.toAST() as AST.CompositeType).fields,
+      span: span(this),
+    } as AST.ImportTypeFunc
+  },
+
   ImportItem_func(_func, identOpt, sig): AST.ImportFunc {
     return {
       kind: 'ImportFunc',
