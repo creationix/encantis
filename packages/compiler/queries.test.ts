@@ -121,6 +121,159 @@ describe('hover', () => {
   })
 })
 
+describe('generic types and comptime function parameters', () => {
+  const code = `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  if before(xs.ptr[1], xs.ptr[0]) { xs.ptr[0] = xs.ptr[1] }
+}
+func ascending(a: i32, b: i32) -> bool => a < b
+export func f(v: *Vec(u32), xs: []mut i32) -> u32 {
+  sort(xs, ascending)
+  return last(v)
+}`
+  const declared = 'generic type(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)'
+
+  test('hover on a generic type shows its declaration, where it is declared and where it is applied', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('Vec'))).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+    expect(hover(source, module, check, code.indexOf('Vec(T)'))).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+    expect(hover(source, module, check, code.indexOf('Vec(u32)') + 1)).toEqual({ name: 'Vec', type: declared, kind: 'typefunc' })
+  })
+
+  test('a generic type is listed as a type, and is found from where it is applied', () => {
+    const { source, module, check } = setup(code)
+    expect(documentSymbols(source, module, check).map(s => [s.name, s.kind, s.type])).toEqual([
+      ['Vec', 'type', declared],
+      ['last', 'func', 'generic func(comptime T: type, v: *Vec(T)) -> T'],
+      ['sort', 'func', 'generic func(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)'],
+      ['ascending', 'func', 'func(a: i32, b: i32) -> bool'],
+      ['f', 'func', 'func(v: *(ptr: [*]mut u32, len: u32, cap: u32), xs: []mut i32) -> u32'],
+    ])
+    expect(gotoDefinition(source, module, check, code.indexOf('Vec(u32)'))?.location.offset).toBe(0)
+    const references = findReferences(source, module, check, code.indexOf('Vec'))
+    expect(references?.references.map(r => r.offset).sort((a, b) => a - b)).toEqual([code.indexOf('Vec(T)'), code.indexOf('Vec(u32)')])
+  })
+
+  test('a call that gives a function for a comptime parameter shows the instance it uses', () => {
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('sort(xs, ascending)'))).toEqual({ name: 'sort', type: 'func(xs: []mut i32)', kind: 'generic' })
+    // The function given is a use of that function.
+    expect(hover(source, module, check, code.indexOf('ascending)'))).toEqual({ name: 'ascending', type: 'func(a: i32, b: i32) -> bool', kind: 'func' })
+    expect(findReferences(source, module, check, code.indexOf('ascending'))?.references.map(r => r.offset)).toEqual([code.indexOf('ascending)')])
+  })
+
+  test('a comptime function parameter is defined at its name and found at each use', () => {
+    // The name stands after the keyword, whatever lies between: it is where
+    // the parser read it, with no source text to search for it.
+    const program = `func twice(comptime T: type, comptime /* f, the step */ f: (T) -> T, x: T) -> T => f(f(x))
+func thrice(comptime T: type, comptime f: (T) -> T, x: T) -> T => twice(T, f, f(x))
+func inc(x: u32) -> u32 => x + 1
+export func up(x: u32) -> u32 => thrice(inc, x)
+`
+    const { source, module, check } = setup(program)
+    const declared = program.indexOf('f: (T)')
+    const uses = [program.indexOf('=> f(f(x))') + 3, program.indexOf('=> f(f(x))') + 5]
+    for (const at of [declared, ...uses]) {
+      expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'f', location: { offset: declared, length: 1 } })
+      expect(rename(source, module, check, at)).toEqual({
+        oldName: 'f',
+        locations: [declared, ...uses].map(offset => ({ offset, length: 1 })),
+      })
+    }
+    // Passed on for another's comptime function parameter, it is used there too.
+    const second = program.indexOf('f: (T)', program.indexOf('func thrice'))
+    expect(rename(source, module, check, second)?.locations.map(l => l.offset)).toEqual([
+      second, program.indexOf('twice(T, f') + 9, program.indexOf('f(x))', second),
+    ])
+    // It is the generic's own name: no hover, and not the function it was given.
+    expect(hover(source, module, check, declared)).toBeNull()
+    expect(rename(source, module, check, program.indexOf('inc'))?.locations.map(l => l.offset)).toEqual([
+      program.indexOf('func inc'), program.indexOf('thrice(inc') + 7,
+    ])
+  })
+
+  // No applied type has the type parameter: it is found from the generic
+  // type as written, applied or not, as a generic function's is.
+  const shapes = `global len: u32 = 7
+func Box(comptime T: type) -> type => (v: T, len: u32)
+func Two(comptime T: type, comptime U: type) -> type => (a: Box(T), b: ?*Two(U, T), f: (T, U) -> T)
+func open(comptime T: type, b: Box(T)) -> T => b.v
+`
+  const applied = 'export func f(b: Box(u8), t: *Two(u8, i64)) -> u32 => open(b) + b.len + len\n'
+  for (const [what, program] of [['never applied', shapes], ['applied', shapes + applied]]) {
+    test(`a generic type's type parameter is defined in its declaration and found at each use (${what})`, () => {
+      const { source, module, check } = setup(program)
+      const declared = program.indexOf('T: type')
+      const use = program.indexOf('v: T') + 3
+      for (const at of [declared, use]) {
+        expect(gotoDefinition(source, module, check, at)).toEqual({ name: 'T', location: { offset: declared, length: 1 } })
+        expect(findReferences(source, module, check, at)).toEqual({
+          definition: { offset: declared, length: 1 },
+          references: [{ offset: use, length: 1 }],
+        })
+        expect(rename(source, module, check, at)).toEqual({
+          oldName: 'T',
+          locations: [declared, use].map(offset => ({ offset, length: 1 })),
+        })
+      }
+      // Each of two type parameters has its own uses: as a type argument of
+      // another generic type and of its own, and in a function type.
+      const two = program.indexOf('func Two')
+      const t = program.indexOf('T: type', two)
+      expect(rename(source, module, check, program.indexOf('Box(T)', two) + 4)?.locations.map(l => l.offset)).toEqual([
+        t, program.indexOf('Box(T)', two) + 4, program.indexOf('Two(U, T)') + 7, program.indexOf('(T, U)') + 1, program.indexOf('-> T', two) + 3,
+      ])
+      const u = program.indexOf('U: type')
+      expect(rename(source, module, check, u)?.locations.map(l => l.offset)).toEqual([
+        u, program.indexOf('Two(U, T)') + 4, program.indexOf('(T, U)') + 4,
+      ])
+      // The T of the generic function after them is that function's.
+      const ofOpen = program.indexOf('T: type', program.indexOf('func open'))
+      expect(gotoDefinition(source, module, check, program.indexOf('-> T => b.v') + 3)?.location.offset).toBe(ofOpen)
+      expect(rename(source, module, check, ofOpen)?.locations.length).toBe(3)
+    })
+  }
+
+  test('a generic type\'s own names are not the module\'s names spelled the same', () => {
+    // By name, the field len was shown as the global len and the field b as
+    // the parameter b of f, and a rename from either edited that one. A
+    // generic's own names have no hover and are never looked up by name.
+    const program = shapes + applied
+    const { source, module, check } = setup(program)
+    for (const field of [program.indexOf('len: u32)'), program.indexOf('b: ?*Two')]) {
+      expect(hover(source, module, check, field)).toBeNull()
+      expect(gotoDefinition(source, module, check, field)).toBeNull()
+      expect(findReferences(source, module, check, field)).toBeNull()
+      expect(rename(source, module, check, field)).toBeNull()
+    }
+    expect(hover(source, module, check, program.indexOf('T: type'))).toBeNull()
+    expect(hover(source, module, check, program.indexOf('v: T') + 3)).toBeNull()
+    // The global is still itself, and so are the generic types: where one is
+    // declared and where another names it.
+    expect(hover(source, module, check, program.indexOf('len: u32 = 7'))).toEqual({ name: 'len', type: 'u32', kind: 'global' })
+    expect(rename(source, module, check, program.indexOf('+ len') + 2)?.locations.map(l => l.offset)).toEqual([
+      program.indexOf('len: u32 = 7'), program.indexOf('+ len') + 2,
+    ])
+    expect(hover(source, module, check, program.indexOf('Box(comptime'))?.kind).toBe('typefunc')
+    expect(hover(source, module, check, program.indexOf('a: Box(T)') + 3)?.kind).toBe('typefunc')
+  })
+
+  test('a type parameter of a generic type is not a type of the module with its name', () => {
+    // The checker reports the clash; the editor still must not answer for the wrong T.
+    const clash = 'type T = u64\nfunc Box(comptime T: type) -> type => (v: T)\n'
+    const { source, module, check } = setup(clash)
+    const declared = clash.indexOf('T: type')
+    const use = clash.indexOf('v: T') + 3
+    expect(hover(source, module, check, declared)).toBeNull()
+    expect(hover(source, module, check, use)).toBeNull()
+    expect(gotoDefinition(source, module, check, use)?.location.offset).toBe(declared)
+    expect(rename(source, module, check, use)?.locations.map(l => l.offset)).toEqual([declared, use])
+    expect(hover(source, module, check, clash.indexOf('T = u64'))).toEqual({ name: 'T', type: 'u64', kind: 'type' })
+    expect(rename(source, module, check, clash.indexOf('T = u64'))?.locations.map(l => l.offset)).toEqual([clash.indexOf('T = u64')])
+  })
+})
+
 describe('generic functions', () => {
   const code = `func find(comptime T: type, xs: []T, x: T) -> u32 {
   for i, v in xs {

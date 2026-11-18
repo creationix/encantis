@@ -60,6 +60,43 @@ test "add" {
   })
 })
 
+describe('generic types', () => {
+  const source = `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+type Pt = (q: i32, r: i32)
+func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
+export func f(p: u32, a: Pt, b: Pt) -> Pt {
+  let v = p as *mut Vec(Pt)
+  return max(a, b)
+}`
+
+  function meta(): MetaOutput {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return buildMeta(result.module!, source)
+  }
+
+  test('a generic type is a type symbol, with the declaration it was written with', () => {
+    const built = meta()
+    const vec = built.symbols.find(s => s.name === 'Vec')
+    expect(vec?.kind).toBe('type')
+    expect(vec?.def).toBe('0:5')
+    expect(built.types[vec?.type ?? -1].type).toBe('(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)')
+    expect(vec?.refs).toEqual(['4:20'])
+  })
+
+  test('where it is applied, its name is that symbol and its arguments are types of their own', () => {
+    const built = meta()
+    expect(built.symbols[built.hints['4:20'].symbol ?? -1].name).toBe('Vec')
+    expect(built.symbols[built.hints['4:24'].symbol ?? -1].name).toBe('Pt')
+  })
+
+  test('an error in an instance comes with the call it was required from', () => {
+    expect(meta().errors).toEqual([
+      { pos: '2:50', message: "'>' cannot be applied to Pt and Pt, in max(T = Pt)", notes: [{ pos: '5:9', message: 'required from' }] },
+    ])
+  })
+})
+
 describe('generic functions', () => {
   const source = `data nums = [3:u32, 5, 8, 13]
 func find(comptime T: type, xs: []T, x: T) -> u32 {

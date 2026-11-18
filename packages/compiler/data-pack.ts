@@ -90,6 +90,9 @@ export interface DataSection {
 const NULL_PAGE = 8
 
 export class DataSectionBuilder {
+  /** What the checker read a call as, where that is no call: a type that is
+   *  called, Vec(u32)(p, 0, cap), is the struct of its arguments. */
+  built?: ReadonlyMap<AST.CallExpr, AST.Expr>
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
@@ -554,8 +557,11 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
 // `expr` writes the struct out: a tuple gives them by position, as any tuple
 // that becomes a struct does; a constructor (Point(y: 2, x: 1)) can name them.
 // Type names are the identifiers that start with a capital letter.
-function structFieldValues(expr: AST.Expr, struct: TupleRT): (AST.Expr | null)[] | null {
+function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSectionBuilder): (AST.Expr | null)[] | null {
   let args: AST.Arg[]
+  // A type that is called: the checker gives its arguments field by field.
+  const built = expr.kind === 'CallExpr' ? builder.built?.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') expr = built
   if (expr.kind === 'TupleExpr') {
     args = expr.elements
   } else if (expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name)) {
@@ -664,7 +670,7 @@ function buildElementBytes(
   // A struct written out, as a tuple or a constructor: its fields one after
   // another, as they lie in memory. A field only known when the program runs
   // stays zero here.
-  const values = struct.kind === 'tuple' ? structFieldValues(expr, struct) : null
+  const values = struct.kind === 'tuple' ? structFieldValues(expr, struct, builder) : null
   if (values && struct.kind === 'tuple') {
     return concatBytes(struct.fields.map((f, i) => {
       const value = values[i]
@@ -1139,9 +1145,10 @@ export interface DataSectionResult {
 export function buildDataSection(
   literals: PendingLiteral[],
   types: Map<string, ResolvedType>,
-  options: { tolerant?: boolean } = {},
+  options: { tolerant?: boolean; calls?: ReadonlyMap<AST.CallExpr, AST.Expr> } = {},
 ): DataSectionResult {
   const dataBuilder = new DataSectionBuilder()
+  dataBuilder.built = options.calls
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)

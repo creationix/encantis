@@ -56,9 +56,9 @@ export interface CodegenContext {
   // Deferred expressions per open block, innermost last; loop bodies are marked
   // so break and continue run exactly the blocks they leave.
   deferFrames?: { loop: boolean; defers: AST.Expr[] }[]
-  // Calls the checker resolved to something else: the written call → the
-  // call to compile in its place (see TypeCheckResult.calls)
-  calls: Map<AST.CallExpr, AST.CallExpr>
+  // Calls the checker resolved to something else: the written call → what
+  // to compile in its place (see TypeCheckResult.calls)
+  calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
   // Scratch locals the current function's code asked for (see scratchLocal).
   scratch?: LocalDecl[]
 }
@@ -1022,9 +1022,10 @@ function builtinToWat(name: string, expr: AST.CallExpr, ctx: CodegenContext): st
 function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   // A call of a generic compiles as the plain call of its instance that the
   // checker recorded: nothing of the comptime arguments is left. This comes
-  // before the builtins, so a generic named max is reachable.
+  // before the builtins, so a generic named max is reachable. A type that is
+  // called, Vec(u32)(p, 0, cap), compiles as the struct of its arguments.
   const lowered = ctx.calls.get(expr)
-  if (lowered) return callToWat(lowered, ctx)
+  if (lowered) return lowered.kind === 'CallExpr' ? callToWat(lowered, ctx) : tupleToWat(lowered, ctx)
 
   // Get function name
   let funcName: string
@@ -1996,7 +1997,7 @@ function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: numb
   const u = unwrap(elemType)
   for (let i = 0; i < elements.length; i++) {
     const elem = elements[i]
-    if (isRuntimeExpr(elem)) {
+    if (isRuntimeExpr(elem, ctx.calls)) {
       const base = ref.ptr + i * elemSize
       const value = exprToWat(elem, ctx)
       if (u.kind === 'slice') {
@@ -2015,28 +2016,31 @@ function emitRuntimeSlots(expr: AST.ArrayExpr | AST.RepeatExpr, ref: { ptr: numb
   return parts.length > 0 ? parts.join('\n') + '\n' : ''
 }
 
-function isRuntimeExpr(expr: AST.Expr): boolean {
+function isRuntimeExpr(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
   if (expr.kind === 'LiteralExpr') return false
   if (expr.kind === 'ArrayExpr') return false
   if (expr.kind === 'RepeatExpr') return false
-  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr)
+  if (expr.kind === 'AnnotationExpr') return isRuntimeExpr(expr.expr, calls)
+  // A type that is called, Vec(u32)(p, 0, cap), is the struct of its arguments.
+  const built = expr.kind === 'CallExpr' ? calls.get(expr) : undefined
+  if (built?.kind === 'TupleExpr') return isRuntimeExpr(built, calls)
   // A struct written out from literals, as a tuple or a constructor, is data
   // too; one runtime field makes the whole struct runtime. A type's name is
   // the identifier that starts with a capital letter.
   const fields = expr.kind === 'TupleExpr' ? expr.elements
     : expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name) ? expr.args
     : null
-  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value))
+  if (fields) return fields.some((field) => !field.value || isRuntimeField(field.value, calls))
   return true
 }
 
 // Inside a struct an array literal is a field of its own ([N]T, or a slice
 // that points at it): runtime when one of its elements is, or the value it
 // repeats.
-function isRuntimeField(expr: AST.Expr): boolean {
-  if (expr.kind === 'ArrayExpr') return expr.elements.some(isRuntimeField)
-  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value)
-  return isRuntimeExpr(expr)
+function isRuntimeField(expr: AST.Expr, calls: CodegenContext['calls']): boolean {
+  if (expr.kind === 'ArrayExpr') return expr.elements.some((e) => isRuntimeField(e, calls))
+  if (expr.kind === 'RepeatExpr') return isRuntimeField(expr.value, calls)
+  return isRuntimeExpr(expr, calls)
 }
 
 function repeatToWat(expr: AST.RepeatExpr, ctx: CodegenContext): string {
@@ -2950,7 +2954,7 @@ function collectLocals(
       for (const elem of expr.elements) {
         // Any runtime slice element that doesn't split into (ptr, len) parts
         // (a call, a ?? fallback, ...) goes through the scratch local.
-        if (isRuntimeExpr(elem)) needsSlotLocal = true
+        if (isRuntimeExpr(elem, checkResult.calls)) needsSlotLocal = true
         visitExpr(elem)
       }
       if (needsSlotLocal) {
@@ -3032,7 +3036,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
   for (const decl of module.decls) {
     if (decl.kind === 'DataDecl') {
       const sym = checkResult.symbols.get(decl.ident)
-      if (!sym || sym.kind === 'generic') continue
+      if (!sym || sym.kind === 'generic' || sym.kind === 'typefunc') continue
       const expr = decl.value.kind === 'AnnotationExpr' ? decl.value.expr : decl.value
       const ref = literalRefs.get(expr.span.start)
       if (ref) dataBuilder.addLabel(ref.ptr, `${decl.ident}: ${RT.typeToString(sym.type)}`)
@@ -3049,7 +3053,7 @@ function labelDataEntries(module: AST.Module, checkResult: TypeCheckResult, data
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types)
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
 
@@ -3145,10 +3149,11 @@ function funcsInOrder(decls: AST.Declaration[], checkResult: TypeCheckResult): A
   return funcs
 }
 
-// A generic is never exported to the host: there is no one function to export.
-// Its `export` only makes it importable by other source modules.
+// A generic is never exported to the host: there is no one function to
+// export, and a generic type is not there at run time at all. Its `export`
+// only makes it importable by other source modules.
 function isGenericExport(decl: AST.ExportDecl): boolean {
-  return decl.item.kind === 'FuncDecl' && isGenericDecl(decl.item)
+  return decl.item.kind === 'TypeFuncDecl' || (decl.item.kind === 'FuncDecl' && isGenericDecl(decl.item))
 }
 
 function tidyRawWat(wat: string): string {
@@ -3216,6 +3221,8 @@ function emitTestDecl(
       parts.push(funcToWat(item, checkResult, literalRefs, ctx.nameMap, watName, ctx.symbols, ctx.dataSectionSize))
     } else if (item.kind === 'DefDecl' || item.kind === 'DataDecl') {
       // Already processed above
+    } else if (item.kind === 'TypeFuncDecl') {
+      // The checker has refused it: a generic type is declared at module level
     } else {
       stmts.push(item)
     }
@@ -3288,11 +3295,20 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
     // Get function type from signature
     const params: string[] = []
     const results: string[] = []
+    // The types are the checker's, part by part: a type that is a name (a
+    // `type`, an applied generic type) is known only there, and read off the
+    // syntax it would be no value at all.
+    const sym = ctx.symbols.get(name)
+    const checked = (from: 'params' | 'returns', index: number, count: number, ast: AST.Type): ResolvedType => {
+      const fields = sym?.kind === 'func' ? sym.type[from] : []
+      return fields.length === count ? fields[index].type : resolveAstType(ast)
+    }
 
     // Parse input type for params
     if (imp.signature.input.kind === 'CompositeType') {
-      for (const field of imp.signature.input.fields) {
-        const resolved = resolveAstType(field.type)
+      const fields = imp.signature.input.fields
+      for (const [index, field] of fields.entries()) {
+        const resolved = checked('params', index, fields.length, field.type)
         const flattened = flattenType(resolved)
         if (field.ident) {
           if (flattened.length === 1) {
@@ -3312,14 +3328,15 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
 
     // Parse output type for results
     if (imp.signature.output.kind === 'CompositeType') {
-      for (const field of imp.signature.output.fields) {
-        const wasmTypes = typeToWasm(resolveAstType(field.type))
+      const fields = imp.signature.output.fields
+      for (const [index, field] of fields.entries()) {
+        const wasmTypes = typeToWasm(checked('returns', index, fields.length, field.type))
         for (const wt of wasmTypes) {
           results.push(wt)
         }
       }
     } else {
-      const wasmTypes = typeToWasm(resolveAstType(imp.signature.output))
+      const wasmTypes = typeToWasm(checked('returns', 0, 1, imp.signature.output))
       for (const wt of wasmTypes) {
         results.push(wt)
       }
@@ -3374,7 +3391,7 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
   if (typeToWasm(type).length !== 1) return null
   const wt = typeToWasmSingle(type)
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
-  if (value.kind === 'data_ptr' || value.kind === 'type') return null
+  if (value.kind === 'data_ptr' || value.kind === 'type' || value.kind === 'func') return null
   if (wt === 'f32' || wt === 'f64') {
     const v = wt === 'f32' ? Math.fround(Number(value.value)) : Number(value.value)
     const text = Number.isNaN(v) ? 'nan' : !Number.isFinite(v) ? (v > 0 ? 'inf' : '-inf') : Object.is(v, -0) ? '-0' : `${v}`
@@ -3500,13 +3517,15 @@ export function programToWat(
   const nameMap = new Map<string, string>()
   const allLiterals: import('./checker').PendingLiteral[] = []
   const allTypes = new Map<string, import('./types').ResolvedType>()
+  const allCalls: TypeCheckResult['calls'] = new Map()
 
   // Collect all literals and types for a unified data section
   for (const [path, result] of checkResults) {
     allLiterals.push(...result.literals)
     for (const [k, v] of result.types) allTypes.set(k, v)
+    for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
   }
-  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes)
+  const { dataBuilder, literalRefs: globalLiteralRefs } = buildDataSection(allLiterals, allTypes, { calls: allCalls })
   for (const [, loaded] of modules) {
     const result = checkResults.get(loaded.path)
     if (result) labelDataEntries(loaded.module, result, dataBuilder, globalLiteralRefs)

@@ -46,6 +46,6 @@ UPDATE_SPEC=1 bun test spec
 
 - `syntax.md`: literals, enums and match, by grammar rule.
 - `checks.md`: programs the checker accepts or rejects.
-- `generics.md`: generic functions: how they parse, what is accepted, and the error for everything that is not.
+- `generics.md`: generic functions, generic types and comptime function parameters: how they parse, what is accepted, and the error for everything that is not.
 
 The format comes from an earlier parser experiment, kept in [`experiments/hand-written-compiler`](../experiments/hand-written-compiler).

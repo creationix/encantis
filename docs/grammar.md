@@ -31,7 +31,7 @@ UserId
 
 Identifiers can contain letters, digits, underscores, and hyphens.
 
-Keywords are not identifiers. `comptime` is one of them: it marks the compile-time parameters of a generic function and cannot name a function, a variable or a parameter.
+Keywords are not identifiers. `comptime` is one of them: it marks the compile-time parameters of a generic function or a generic type and cannot name a function, a variable or a parameter.
 
 ---
 
@@ -209,13 +209,31 @@ func_signature  = param_list ("->" type)?
 param_list      = "(" (param ("," param)*)? ")"
 
 param           = "comptime" type_ident ":" "type"     -- a type parameter
-                | "comptime" ident ":" type            -- parsed; not supported yet
+                | "comptime" ident ":" type            -- a function parameter: comptime before: (T, T) -> bool
                 | field                                -- an ordinary parameter
 ```
+
+A `comptime` parameter of a function type is given the name of a function; one of any other type (`comptime n: u32`) is parsed, and not supported yet.
 
 `comptime` can only be written in the parameter list of a declaration or of an import item. A struct type, a result, an enum payload and a function type are lists of fields, not of parameters, so `type P = (comptime T: type)` and `-> (comptime T: type)` are syntax errors, and `type` is not a type anywhere else (`let t: type` is a syntax error too).
 
 Two near misses of a type parameter, `comptime t: type` (lower-case name) and `T: type` (no `comptime`), are parsed so that the compiler can say what to write instead.
+
+**Generic types** (a function from types to a type):
+
+[Grammar: `FuncDecl` typeFunc case](../packages/compiler/encantis-grammar.ohm)
+
+```encantis
+func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+```
+
+```ebnf
+func_decl       = "func" type_ident param_list "->" "type" "=>" type    -- a generic type
+                | "inline"? "func" ident? func_signature body
+```
+
+The name is upper-case, the result is the keyword `type`, and the body is one type after `=>`: there is no block body. It may be exported like a function. Only a generic type has a result of `type`; `func vec(...) -> type` with a lower-case name is a syntax error.
 
 **Function types** (right-associative):
 ```encantis
@@ -302,7 +320,11 @@ base_type       = primitive_type
                 | pointer_type
                 | array_type
                 | composite_type
+                | type_ident "(" type ("," type)* ")"   -- a generic type applied: Vec(u32)
+                | type_ident
 ```
+
+**A generic type applied**, `Vec(u32)`, `Map(K, Vec(V))`, `*mut Vec(T)`, is a type wherever a type is written. There is no space between the name and the parenthesis: a type can end a line, and the next one can start with a parenthesis.
 
 ---
 
@@ -711,7 +733,9 @@ apply((u32) -> u32, f)        // so is a function type
 
 An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`) or is a function type, and the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
 
-One consequence: a struct type with named fields is an argument list of named arguments, whose values are expressions. `(q: i32, r: i32)` works; `(name: []u8, at: Point)` is a syntax error. Give such a type a name with `type` and pass the name.
+A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too.
+
+One consequence: a struct type with named fields is an argument list of named arguments, whose values are expressions. `(q: i32, r: i32)` works; `(name: []u8, at: Point)` is a syntax error. Give such a type a name, with `type` or as a generic type, and pass the name.
 
 ### Literals and Constructors
 
@@ -725,7 +749,11 @@ true                          // Boolean
 (x: 1, y: 2)                  // Struct
 [1, 2, 3]                     // Array literal
 Point(1.0, 2.0)               // Type constructor
+Vec(u32)(p, 0, 16)            // Constructor of a generic type applied
+Pair(u8, u16)(second: 2, first: 1)
 ```
+
+A type that is called constructs a value of it. `Vec(u32)(p, 0, 16)` parses as a call of a call; the checker reads the inner one as the type.
 
 ### If Expression
 

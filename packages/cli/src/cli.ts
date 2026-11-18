@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { parse } from '@encantis/compiler/parser'
-import { typecheck, typecheckProgram } from '@encantis/compiler/checker'
+import { typecheck, typecheckProgram, type ProgramCheckResult } from '@encantis/compiler/checker'
 import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
 import { loadModule } from '@encantis/compiler/loader'
@@ -189,20 +189,10 @@ switch (command) {
     const check = typecheckProgram(load.modules, entryPath, { includeTests: true })
 
     if (check.errors.length > 0) {
-      const diagnostics: { file: string; line: number; col: number; message: string }[] = []
-      for (const [path, result] of check.results) {
-        const modSource = load.modules.get(path)?.source ?? ''
-        for (const error of result.errors) {
-          const loc = offsetToLineCol(modSource, error.offset)
-          diagnostics.push({ file: path, line: loc.line, col: loc.column, message: error.message })
-        }
-      }
       if (jsonOutput) {
-        console.log(JSON.stringify(diagnostics))
+        console.log(JSON.stringify(checkDiagnostics(check, load.modules)))
       } else {
-        for (const d of diagnostics) {
-          console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
-        }
+        printCheckErrors(check, load.modules)
       }
       process.exit(1)
     }
@@ -259,13 +249,7 @@ switch (command) {
     const check = typecheckProgram(load.modules, entryPath, { includeTests: false })
 
     if (check.errors.length > 0) {
-      for (const [path, result] of check.results) {
-        const modSource = load.modules.get(path)?.source ?? ''
-        for (const error of result.errors) {
-          const loc = offsetToLineCol(modSource, error.offset)
-          console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
-        }
-      }
+      printCheckErrors(check, load.modules)
       process.exit(1)
     }
 
@@ -457,13 +441,7 @@ switch (command) {
       }
       const check = typecheckProgram(load.modules, entryPath, { includeTests: false })
       if (check.errors.length > 0) {
-        for (const [path, result] of check.results) {
-          const modSource = load.modules.get(path)?.source ?? ''
-          for (const error of result.errors) {
-            const loc = offsetToLineCol(modSource, error.offset)
-            console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
-          }
-        }
+        printCheckErrors(check, load.modules)
         process.exit(1)
       }
       const wat = programToWat(load.modules, check.results, entryPath)
@@ -542,13 +520,7 @@ switch (command) {
 
       const check = typecheckProgram(load.modules, entryPath, { includeTests: true })
       if (check.errors.length > 0) {
-        for (const [path, result] of check.results) {
-          const modSource = load.modules.get(path)?.source ?? ''
-          for (const error of result.errors) {
-            const loc = offsetToLineCol(modSource, error.offset)
-            console.error(`${path}:${loc.line}:${loc.column}: ${error.message}`)
-          }
-        }
+        printCheckErrors(check, load.modules)
         totalFailed++
         continue
       }
@@ -653,6 +625,43 @@ switch (command) {
     console.error(`Error: Unknown command: ${command}`)
     usage()
     process.exit(1)
+}
+
+interface CheckDiagnostic {
+  file: string
+  line: number
+  col: number
+  message: string
+  // For an error inside an instance of a generic: the calls it was required from
+  notes?: { file: string; line: number; col: number; message: string }[]
+}
+
+// The check errors of a program, each at its place in the module that has it.
+function checkDiagnostics(check: ProgramCheckResult, modules: Map<string, { source: string }>): CheckDiagnostic[] {
+  const diagnostics: CheckDiagnostic[] = []
+  for (const [path, result] of check.results) {
+    const source = modules.get(path)?.source ?? ''
+    const at = (offset: number) => {
+      const loc = offsetToLineCol(source, offset)
+      return { file: path, line: loc.line, col: loc.column }
+    }
+    for (const error of result.errors) {
+      const diagnostic: CheckDiagnostic = { ...at(error.offset), message: error.message }
+      if (error.notes) diagnostic.notes = error.notes.map((note) => ({ ...at(note.offset), message: note.message }))
+      diagnostics.push(diagnostic)
+    }
+  }
+  return diagnostics
+}
+
+// file:line:col: message, and under an error inside an instance of a generic
+// the calls that asked for the instance:
+//   required from file:line:col
+function printCheckErrors(check: ProgramCheckResult, modules: Map<string, { source: string }>): void {
+  for (const d of checkDiagnostics(check, modules)) {
+    console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
+    for (const note of d.notes ?? []) console.error(`  ${note.message} ${note.file}:${note.line}:${note.col}`)
+  }
 }
 
 // Convert byte offset to line:column

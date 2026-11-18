@@ -129,6 +129,9 @@ export interface MetaHint {
 export interface MetaError {
   pos: string // "line:col"
   message: string
+  // For an error inside an instance of a generic: the calls that asked for
+  // the instance, innermost first
+  notes?: { pos: string; message: string }[]
 }
 
 // === Main Entry Point ===
@@ -170,6 +173,7 @@ class MetaBuilder {
     // rejected may have no layout, and then has no address to show.
     const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types, {
       tolerant: this.checkResult.errors.length > 0,
+      calls: this.checkResult.calls,
     })
     this.literalMap = literalRefs
 
@@ -187,18 +191,13 @@ class MetaBuilder {
       hints: this.hints,
     }
 
-    if (this.checkResult.errors.length > 0) {
-      output.errors = this.checkResult.errors.map((e) => ({
-        pos: this.lineMap.positionKey(e.offset),
-        message: e.message,
-      }))
+    const report = (e: TypeCheckResult['errors'][number]): MetaError => {
+      const reported: MetaError = { pos: this.lineMap.positionKey(e.offset), message: e.message }
+      if (e.notes) reported.notes = e.notes.map((n) => ({ pos: this.lineMap.positionKey(n.offset), message: n.message }))
+      return reported
     }
-    if (this.checkResult.warnings.length > 0) {
-      output.warnings = this.checkResult.warnings.map((e) => ({
-        pos: this.lineMap.positionKey(e.offset),
-        message: e.message,
-      }))
-    }
+    if (this.checkResult.errors.length > 0) output.errors = this.checkResult.errors.map(report)
+    if (this.checkResult.warnings.length > 0) output.warnings = this.checkResult.warnings.map(report)
 
     return output
   }
@@ -221,6 +220,9 @@ class MetaBuilder {
         break
       case 'FuncDecl':
         this.collectFunc(decl)
+        break
+      case 'TypeFuncDecl':
+        this.collectTypeFunc(decl)
         break
       case 'TypeDecl':
         this.collectTypeDecl(decl)
@@ -303,6 +305,9 @@ class MetaBuilder {
       case 'FuncDecl':
         this.collectFunc(decl.item)
         break
+      case 'TypeFuncDecl':
+        this.collectTypeFunc(decl.item)
+        break
       case 'GlobalDecl':
         this.collectGlobal(decl.item)
         break
@@ -310,6 +315,19 @@ class MetaBuilder {
         // Memory declarations just specify size, no symbols to collect
         break
     }
+  }
+
+  // A generic type is a type only once it is applied. It is listed as a type
+  // with the declaration it was written with, so that its name is found at
+  // its declaration and wherever it is applied.
+  private collectTypeFunc(decl: AST.TypeFuncDecl): void {
+    if (this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
+    const offset = this.typeFuncIdentOffset(decl)
+    this.addSymbol(decl.ident, 'type', this.source.slice(offset + decl.ident.length, decl.span.end), offset)
+  }
+
+  private typeFuncIdentOffset(decl: AST.TypeFuncDecl): number {
+    return this.findKeywordIdentOffset(decl.span.start, decl.body.span.start, 'func')
   }
 
   private collectFunc(decl: AST.FuncDecl): void {
@@ -682,11 +700,16 @@ class MetaBuilder {
       case 'ExportDecl':
         if (decl.item.kind === 'FuncDecl') {
           this.generateHintsForFunc(decl.item)
+        } else if (decl.item.kind === 'TypeFuncDecl') {
+          this.generateHintsForTypeFunc(decl.item)
         }
         // MemoryDecl just specifies size, no hints needed
         break
       case 'FuncDecl':
         this.generateHintsForFunc(decl)
+        break
+      case 'TypeFuncDecl':
+        this.generateHintsForTypeFunc(decl)
         break
       case 'TypeDecl':
         this.generateHintsForTypeDecl(decl)
@@ -740,6 +763,7 @@ class MetaBuilder {
           this.generateHintsForDef(item)
           break
         case 'ImportDecl':
+        case 'TypeFuncDecl':
           break
         default:
           this.generateHintsForStmt(item)
@@ -773,6 +797,12 @@ class MetaBuilder {
       // Note: Hints for params/returns/body are added during collectFunc to avoid
       // symbolIndexByName conflicts when multiple functions share param/return names
     }
+  }
+
+  private generateHintsForTypeFunc(decl: AST.TypeFuncDecl): void {
+    const symbolIndex = this.symbolIndexByName.get(decl.ident)
+    if (symbolIndex === undefined || this.checkResult.symbols.get(decl.ident)?.kind !== 'typefunc') return
+    this.addHint(this.typeFuncIdentOffset(decl), decl.ident.length, this.symbols[symbolIndex].type, symbolIndex)
   }
 
   private generateHintsForBlock(block: AST.Block): void {
@@ -1185,6 +1215,15 @@ class MetaBuilder {
           symbolIndex,
         )
       }
+    }
+    // A generic type applied: its name is the generic type's, and its
+    // arguments are types of their own.
+    if (type.kind === 'TypeApply') {
+      const symbolIndex = this.symbolIndexByName.get(type.name)
+      if (symbolIndex !== undefined && this.checkResult.symbols.get(type.name)?.kind === 'typefunc') {
+        this.addHint(type.span.start, type.name.length, this.symbols[symbolIndex].type, symbolIndex)
+      }
+      for (const arg of type.args) this.generateHintsForTypeExpr(arg)
     }
     // Recurse into compound types
     if (type.kind === 'PointerType') {

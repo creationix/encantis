@@ -44,6 +44,40 @@ test "generics" {
 }
 `
 
+// Generic types and comptime function parameters: a type function, a type
+// applied in every place a type is written, a type that is called, and a
+// function passed for a comptime parameter.
+const GENERIC_TYPES = `func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+export func Slot(comptime K: type) -> type => (used: bool, key: K)
+
+type Bytes = Vec(u8)
+global shelf: Vec(u16) = (0 as [*]mut u16, 0, 0)
+
+func last(comptime T: type, v: *Vec(T)) -> T => v.ptr[v.len - 1]
+func swapped(comptime A: type, comptime B: type, p: Pair(A, B)) -> Pair(B, A) => Pair(B, A)(p.second, p.first)
+func make(comptime T: type, x: i32) -> T => T(x, x)
+
+func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  if xs.len > 1 && before(xs.ptr[1], xs.ptr[0]) {
+    let x = xs.ptr[0]
+    xs.ptr[0] = xs.ptr[1]
+    xs.ptr[1] = x
+  }
+}
+
+func ascending(a: i32, b: i32) -> bool => a < b
+
+export func f(v: *mut Vec(u32), p: Pair(u8, Vec(u8)), xs: []mut i32) -> u32 {
+  let w: Vec(u8) = Vec(u8)(0 as [*]mut u8, 0, 0)
+  let q = Pair(u8, u16)(first: 1, second: 2)
+  let r = swapped(Pair(u8, u16)(1, 2))
+  sort(xs, ascending)
+  sort(i32, xs, ascending)
+  return last(v) + last(u32, v) + w.len + sizeof(Vec(Pair(u8, Slot(u8)))) + (v as *Vec(u8)).len + make((i32, i32), 1).0 as u32
+}
+`
+
 // The AST without source positions.
 function shape(source: string): unknown {
   const parsed = parse(source)
@@ -61,6 +95,19 @@ describe('formatter', () => {
 
   test('formatted generics are the same program', () => {
     expect(shape(formatEncantis(GENERICS))).toEqual(shape(GENERICS))
+  })
+
+  test('formatting generic types a second time changes nothing, and leaves the same program', () => {
+    const once = formatEncantis(GENERIC_TYPES)
+    expect(formatEncantis(once)).toBe(once)
+    expect(shape(once)).toEqual(shape(GENERIC_TYPES))
+  })
+
+  // No space is put between a generic type's name and its arguments, where
+  // one would make the application no application.
+  test('a type function and a type applied are spaced like a function and a call', () => {
+    const formatted = formatEncantis('func Vec( comptime T:type )->type=>( ptr:[*]mut T ,len:u32 )\nfunc f(v:*Vec( u32 ))->u32=>Vec(u32)( v.ptr ,0 ).len\n')
+    expect(formatted).toBe('func Vec(comptime T:type) -> type => (ptr:[*]mut T, len:u32)\nfunc f(v:*Vec(u32)) -> u32 => Vec(u32)(v.ptr, 0).len\n')
   })
 
   test('a comptime parameter and a type argument are spaced like any other', () => {
