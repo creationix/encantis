@@ -234,4 +234,26 @@ export func f() -> u32 => index_of(us, 2) + index_of(fs, 2.0) + (7:u32).twice()
     expect(refs('eq(a: i64')).toEqual([])
     expect(refs('eq(a: i64', true)).toEqual([{ line: 2, character: 5 }])
   })
+
+  test('a name with no hint is not a type parameter or a comptime parameter spelled like it', () => {
+    // f in the slice has no hint, and was looked up by name: it was shown as
+    // the comptime parameter f of twice.
+    const program = `data space = mut [0:u8; 64]
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func inc(x: u32) -> u32 => x + 1
+func sum(xs: []u32) -> u32 => xs.len
+export func g() -> u32 => twice(inc, 1)
+test "t" {
+  let f = space as [*]mut u32
+  f[0] = 1
+  assert sum(f[0..1]) == 1
+}
+`
+    const server = serverFor(program)
+    const shown = server('onHover', program.indexOf('f[0..1]')) as Hover | null
+    expect(shown === null || !value(shown).includes('comptime')).toBe(true)
+    // Where they have hints, they are themselves.
+    expect(value(server('onHover', program.indexOf('f: (T)')))).toStartWith('```encantis\ncomptime f:(T) -> T\n```')
+    expect(value(server('onHover', program.indexOf('f(x)')))).toStartWith('```encantis\ncomptime f:(T) -> T\n```')
+  })
 })
