@@ -1,0 +1,63 @@
+// A second module that uses the containers of ./containers, next to ./main
+// (a09), whose functions it also calls. Both push to a Vec(u32), which is one
+// instance in the program. Both make a Set(Cell) with a Cell of the same
+// shape, each with its own hash and eq: the instances that call them are one
+// for each module, and each calls its own module's functions.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+)
+
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+  "items" func items(comptime T: type, v: *Vec(T)) -> []T
+  "Set" func Set(comptime K: type) -> type
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+
+import "./main" (
+  "visited" func visited(n: u32) -> u32
+  "total" func total(n: u32) -> u32
+)
+
+type Cell = (x: i32, y: i32)
+
+// Cells of one column are the same cell here.
+func hash(c: Cell) -> u32 => c.x as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x
+
+// How many columns the walk of main's visited reaches
+export func columns(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let seen = hashset(Cell, 2)
+  for i in n {
+    seen.add(Cell((i % 5) as i32, (i % 3) as i32))
+  }
+  return seen.count
+}
+
+export func doubled(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let v = vec(u32, 2)
+  for i in n {
+    v.push(i * 2)
+  }
+  let s: u32 = 0
+  for x in v.items() {
+    s += x
+  }
+  return s
+}
+
+test "each module's set calls its own module's hash and eq" {
+  assert columns(100) == 5
+  assert visited(100) == 15
+  assert doubled(5) == 20
+  assert total(5) == 10
+}

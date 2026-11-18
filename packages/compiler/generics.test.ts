@@ -1182,8 +1182,9 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 
   // The import may be written as if the function were ordinary; what the
-  // other module exports under that name is what counts.
-  test('a generic of another module cannot be imported under a plain signature either', async () => {
+  // other module exports under that name is what counts, as it is for any
+  // function a source module imports.
+  test('a generic of another module is imported as what it is, whatever signature the import writes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
     try {
       await writeFile(join(dir, 'util.ents'), `export ${MAX}`)
@@ -1191,7 +1192,8 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
       await writeFile(entry, 'import "./util" "max" func max(a: u32, b: u32) -> u32\nexport func f(a: u32) -> u32 => max(a, 1)\n')
       const load = await loadModule(entry)
       const program = typecheckProgram(load.modules, entry, { includeTests: false })
-      expect(program.errors.map(e => e.message)).toEqual(['generic functions cannot be imported yet'])
+      expect(program.errors).toEqual([])
+      expect(programToWat(load.modules, program.results, entry)).toContain('(call $util$max<u32> (local.get $a) (i32.const 1))')
     } finally {
       await rm(dir, { recursive: true })
     }

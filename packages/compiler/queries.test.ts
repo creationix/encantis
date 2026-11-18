@@ -853,8 +853,8 @@ export func f(m: Map(u32, u8), q: Map(u64, f32)) -> u32 => m.n + q.n
       code.indexOf('func eq(a: u32'), code.indexOf('func eq(a: f64'), code.indexOf('func eq(a: i64'), call,
     ])
     // Nothing calls it: it is reported as never used, as a function no other
-    // code calls is. (A generic cannot be imported: no other module makes an
-    // instance of it.)
+    // code calls is. (The generic is not exported: no other module can make
+    // an instance of it.)
     expect(check.warnings).toEqual([{ offset: code.indexOf('func eq(a: i64'), message: "'eq' is never used" }])
   })
 

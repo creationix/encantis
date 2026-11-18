@@ -1,0 +1,65 @@
+// a09 (entry module): generics defined in ./containers, instantiated here for a
+// type this module declares (Cell) with the hash and eq this module writes.
+// A source import names what it uses with its signature, as today; a generic
+// type is imported as the function it is. (Types themselves can't be imported
+// today: `Vec` being a function is what makes it importable.)
+// Expect in the WAT: one instance each of vec, push, items for u32 and for
+// Cell, and of hashset, table, slot, add for Cell; zeroed once; nothing for Set(u32).
+// The instances of slot and add call this module's $hash and $eq directly.
+// Blocked today, apart from generics: as a04 and a05, plus
+//   B16 an import item is `func` or `global` only, and for a source import the
+//       restated signature is not compared with the real one (checker.ts:519)
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+)
+
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+  "items" func items(comptime T: type, v: *Vec(T)) -> []T
+  "Set" func Set(comptime K: type) -> type
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+
+type Cell = (x: i32, y: i32)
+
+func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+// How many distinct cells a walk of n steps along a diagonal zigzag visits.
+export func visited(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let path = vec(Cell, 4)
+  let seen = hashset(Cell, 2)
+  for i in n {
+    let c = Cell((i % 5) as i32, (i % 3) as i32)
+    path.push(c)
+    seen.add(c)
+  }
+  return seen.count
+}
+
+export func total(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let v = vec(u32, 2)
+  for i in n {
+    v.push(i)
+  }
+  let s: u32 = 0
+  for x in v.items() {
+    s += x
+  }
+  return s
+}
+
+test "generics from another module, for this module's type" {
+  assert visited(100) == 15
+  assert visited(2) == 2
+  assert total(5) == 10
+}

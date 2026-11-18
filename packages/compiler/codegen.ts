@@ -3987,6 +3987,13 @@ export function programToWat(
         }
       }
     }
+    // The functions of other modules the module calls by names of its own:
+    // instances of the generics it imports, and in its instances the
+    // functions other modules gave for comptime parameters. A host import
+    // has the name it is imported by in every module.
+    for (const [known, { module, name }] of checkResults.get(path)?.externs ?? []) {
+      full.set(known, perModuleNameMap.get(module)?.get(name) ?? name)
+    }
     return full
   }
 

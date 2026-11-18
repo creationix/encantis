@@ -1,9 +1,14 @@
 import { describe, test, expect } from 'bun:test'
 import { loadModule, isSourceImport, resolveModulePath } from './loader'
 import { typecheckProgram } from './checker'
-import { programToWat } from './codegen'
+import { programToWat, programToWatWithTests } from './codegen'
 import { resolve } from 'path'
 import { instantiate } from './test-utils'
+import { createTestHost } from './test-host'
+import wabt from 'wabt'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const fixtures = resolve(import.meta.dir, 'tests/fixtures/modular')
 
@@ -157,5 +162,165 @@ describe('unified codegen', () => {
     expect(wat).not.toContain('(export "add"')
     // no wasm-level source imports
     expect(wat).not.toContain('(import "./util"')
+  })
+})
+
+// Generics across modules. tests/fixtures/generics has the plan's a09: a
+// library of containers (containers.ents, on the bump stack of stack.ents)
+// used by main.ents for a type it declares, with the hash and eq it writes;
+// and other.ents, a second module that does the same next to main.
+describe('generics across modules', () => {
+  const generics = resolve(import.meta.dir, 'tests/fixtures/generics')
+  const at = (name: string) => resolve(generics, name)
+
+  async function program(entry: string, includeTests = false) {
+    const load = await loadModule(entry, { includeTests })
+    expect(load.errors).toEqual([])
+    const check = typecheckProgram(load.modules, entry, { includeTests })
+    return { load, check }
+  }
+
+  async function watOf(entry: string): Promise<string> {
+    const { load, check } = await program(entry)
+    expect(check.errors).toEqual([])
+    return programToWat(load.modules, check.results, entry)
+  }
+
+  // The names of the functions of a module, in order
+  const funcs = (wat: string) => [...wat.matchAll(/^ {2}\(func \$(\S+)/gm)].map((m) => m[1])
+  // The functions a function calls, each once
+  const callsIn = (wat: string, name: string) => {
+    const start = wat.indexOf(`(func $${name} `)
+    const end = wat.indexOf('\n  (func ', start + 1)
+    return [...new Set([...wat.slice(start, end < 0 ? undefined : end).matchAll(/\(call \$(\S+?)[\s)]/g)].map((m) => m[1]))]
+  }
+
+  // The names of the tests of a program that fail
+  async function failingTests(entry: string): Promise<string[]> {
+    const { load, check } = await program(entry, true)
+    expect(check.errors).toEqual([])
+    const { wat, testNames } = programToWatWithTests(load.modules, check.results, entry)
+    const w = await wabt()
+    const parsed = w.parseWat('test.wat', wat, { simd: true, multi_value: true, bulk_memory: true })
+    parsed.validate()
+    const mod = await WebAssembly.compile(parsed.toBinary({}).buffer)
+    parsed.destroy()
+    expect(testNames.length).toBeGreaterThan(0)
+    const failed: string[] = []
+    for (const name of testNames) {
+      let failedAt = -1
+      const host = createTestHost(mod, (offset) => {
+        failedAt = offset
+      })
+      const instance = await WebAssembly.instantiate(mod, host.imports)
+      host.attach(instance)
+      ;(instance.exports[`test_${name}`] as () => void)()
+      if (failedAt >= 0) failed.push(name)
+    }
+    return failed
+  }
+
+  const cell = '<<x:i32|y:i32>>'
+
+  test("a09: the library's generics, instantiated for the importer's type, pass its test", async () => {
+    expect(await failingTests(at('main.ents'))).toEqual([])
+  })
+
+  test("a09: one instance per generic and type, calling the importer's hash and eq directly", async () => {
+    const wat = await watOf(at('main.ents'))
+    expect(funcs(wat)).toEqual([
+      'hash',
+      'eq',
+      'visited',
+      'total',
+      'stack$mark',
+      'stack$reset',
+      'stack$alloc',
+      'stack$extend',
+      `containers$vec${cell}`,
+      'containers$vec<u32>',
+      `containers$push${cell}`,
+      'containers$push<u32>',
+      'containers$items<u32>',
+      'containers$zeroed',
+      `containers$table${cell}`,
+      `containers$hashset${cell}`,
+      `containers$slot${cell}`,
+      `containers$add${cell}`,
+    ])
+    expect(callsIn(wat, `containers$add${cell}`)).toEqual(['hash', `containers$slot${cell}`, `containers$table${cell}`])
+    expect(callsIn(wat, `containers$slot${cell}`)).toEqual(['eq'])
+    expect(wat).not.toMatch(/call_indirect|\(table|\(elem|ref\.func|funcref/)
+  })
+
+  test('a09: the library compiled alone emits no generic and exports nothing', async () => {
+    const wat = await watOf(at('containers.ents'))
+    // zeroed is an ordinary function, and is emitted as every function is.
+    expect(funcs(wat)).toEqual(['zeroed', 'stack$mark', 'stack$reset', 'stack$alloc', 'stack$extend'])
+    expect(wat).not.toContain('(export')
+  })
+
+  test("two modules that push to a Vec(u32) share one instance, and each module's set calls its own hash", async () => {
+    expect(await failingTests(at('other.ents'))).toEqual([])
+    const wat = await watOf(at('other.ents'))
+    const names = funcs(wat)
+    for (const shared of ['vec<u32>', 'push<u32>', 'items<u32>', `table${cell}`, `hashset${cell}`]) {
+      expect(names.filter((n) => n === `containers$${shared}`)).toHaveLength(1)
+    }
+    // main is checked first, so its instances keep the plain names.
+    expect(callsIn(wat, `containers$add${cell}`)).toEqual(['main$hash', `containers$slot${cell}`, `containers$table${cell}`])
+    expect(callsIn(wat, `containers$slot${cell}`)).toEqual(['main$eq'])
+    const own = cell.replace(/>$/, '@other>')
+    expect(callsIn(wat, `containers$add${own}`)).toEqual(['hash', `containers$slot${own}`, `containers$table${cell}`])
+    expect(callsIn(wat, `containers$slot${own}`)).toEqual(['eq'])
+  })
+
+  // Sources written to a directory of their own, for the cases a fixture
+  // would only repeat
+  async function inDir<T>(files: Record<string, string>, run: (dir: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-modules-'))
+    try {
+      for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source)
+      return await run(dir)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  const SORT = `export func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let p = xs.ptr
+  for i in xs.len {
+    let x = p[i]
+    let j = i
+    while j > 0 && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+  }
+}
+`
+  const IMPORT_SORT = 'import "./sorting" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)\n'
+
+  test("a comparator of a third module is called by its module's name, and one function makes one instance", async () => {
+    const files = {
+      'sorting.ents': SORT,
+      'order.ents': 'export func descending(a: i32, b: i32) -> bool => a > b\n',
+      'other.ents': `${IMPORT_SORT}import "./order" "descending" func descending(a: i32, b: i32) -> bool
+export func down2(xs: []mut i32) { sort(xs, descending) }
+`,
+      'main.ents': `${IMPORT_SORT}import "./order" "descending" func descending(a: i32, b: i32) -> bool
+import "./other" "down2" func down2(xs: []mut i32)
+func ascending(a: i32, b: i32) -> bool => a < b
+export func down(xs: []mut i32) { sort(xs, descending) }
+export func up(xs: []mut i32) { xs.sort(ascending) }
+`,
+    }
+    const wat = await inDir(files, (dir) => watOf(join(dir, 'main.ents')))
+    expect(funcs(wat).filter((n) => n.startsWith('sorting$'))).toEqual(['sorting$sort<i32|ascending@main>', 'sorting$sort<i32|descending@order>'])
+    expect(callsIn(wat, 'sorting$sort<i32|descending@order>')).toEqual(['order$descending'])
+    expect(callsIn(wat, 'sorting$sort<i32|ascending@main>')).toEqual(['ascending'])
+    expect(callsIn(wat, 'down')).toEqual(['sorting$sort<i32|descending@order>'])
+    expect(callsIn(wat, 'other$down2')).toEqual(['sorting$sort<i32|descending@order>'])
   })
 })
