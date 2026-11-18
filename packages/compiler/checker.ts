@@ -129,15 +129,19 @@ export interface Instance {
   requestedIn: CheckContext // the module of that call, which another module's code can be
   depth: number         // instantiation nesting, to stop a generic that never stops instantiating
   chain: InstanceChain
+  owner: CheckContext   // the module that declares the generic
   // The module whose ordinary code started the chain of instantiations that
   // made this instance. A call in the body that the generic's own module has
   // no function for is looked up there (see callAtSite); one that was makes
-  // the instance the site's own (`usedSite`), and so does a call of an
-  // instance that is a site's own (`requests`: the instances the body
-  // calls). Another module asking for the same arguments then gets an
-  // instance of its own.
+  // the instance depend on the site (`usedSite`), and so does a call of an
+  // instance that does (`requests`: the instances the body calls).
+  // `lookedUp` holds what each name looked up at the site found there, as
+  // the body calls them. Another module asking for the same arguments gets
+  // the instance where its own functions of those names are the same ones,
+  // and an instance of its own where they are not (see sharedWith).
   site: CheckContext
   usedSite: boolean
+  lookedUp: Map<string, string[]>
   requests: Instance[]
   // Set once an error in it was reported at the call of another module that
   // asked for it (see reportToRequester)
@@ -518,15 +522,15 @@ export function typecheckProgram(
     return any
   }
 
-  // An instance that calls an instance that is a site's own is that site's
-  // own too: another module asking for it would call the first module's
+  // An instance that calls an instance that depends on its site depends on
+  // it too: another module asking for it would call the first module's
   // functions through it.
   function settleSites(): void {
     for (let more = true; more; ) {
       more = false
       for (const { ctx } of checked) {
         for (const inst of ctx.instances) {
-          if (inst.usedSite || !inst.requests.some((r) => r.usedSite && r.site === inst.site)) continue
+          if (inst.usedSite || !inst.requests.some((r) => r.usedSite)) continue
           inst.usedSite = true
           more = true
         }
@@ -4964,8 +4968,8 @@ class CheckContext {
       // A builtin is a function too, unless something of the program has
       // its name. In an instance, so is a function of the site's (see
       // callAtSite), which the call finds for itself.
-      const site = this.currentInstance?.site
-      const atSite = !sym && site !== undefined && site !== this && site.moduleScope.symbols.get(name)?.kind === 'func'
+      const inst = this.currentInstance
+      const atSite = !sym && inst !== null && inst.site !== this && !BUILTIN_NAMES.has(name) && !PRIMITIVE_NAMES.has(name) && this.atSite(inst, name).length > 0
       const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name)) || atSite
       // With nothing that could take it, what is wrong with the receiver is
       // all there is to say. Functions that share the name and a generic
@@ -5014,16 +5018,6 @@ class CheckContext {
     // A builtin and a cast are the language's: where the generic's module
     // has no function of the name, they answer, whatever the site declares.
     if (!own && (BUILTIN_NAMES.has(name) || PRIMITIVE_NAMES.has(name))) return null
-    const members = (site.overloads.get(name) ?? [name]).filter((member) => {
-      const sym = site.moduleScope.symbols.get(member)
-      return sym?.kind === 'func' && !sym.alias && !site.testOnly.has(member) && !site.testDeclared.has(sym)
-    })
-    if (members.length === 0) {
-      // What the call is wanting depends on the site too: another site may
-      // have the function.
-      if (!own) inst.usedSite = true
-      return null
-    }
     if (own?.kind === 'func') {
       const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
       const takes = (member: string) => {
@@ -5032,13 +5026,56 @@ class CheckContext {
       }
       if ((this.overloads.get(name) ?? [name]).some(takes)) return null
     }
-    inst.usedSite = true
+    // What the call is depends on the site from here, also where the site
+    // has nothing of the name: another site may have the function.
+    const members = this.atSite(inst, name)
+    if (members.length === 0) return null
     return members.map((member) => {
       const sym = site.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
       const alias = this.externFunc(site, member)
       if (!this.moduleScope.symbols.has(alias)) this.moduleScope.symbols.set(alias, { kind: 'func', type: sym.type, inline: sym.inline })
       site.calledFromInstances.add(member)
       return alias
+    })
+  }
+
+  // The functions of the name an instance's site has for a call of its body,
+  // by their names there. The instance depends on the site from then on, and
+  // holds what was found by the names the body calls them (see sharedWith).
+  private atSite(inst: Instance, name: string): string[] {
+    const site = inst.site
+    const members = site.functionsNamed(name)
+    inst.usedSite = true
+    inst.lookedUp.set(name, members.map((member) => this.externName(site.originOf(member))))
+    return members
+  }
+
+  // Whether an instance made for one site's code is what another site's
+  // code would get: each name its body, and the body of each instance it
+  // calls, looked up at its site stands for the same functions at this one.
+  // A generic's module is a site of its own that looks up nothing.
+  private sharedWith(inst: Instance, site: CheckContext): boolean {
+    const seen = new Set<Instance>()
+    const alike = (one: Instance): boolean => {
+      if (seen.has(one)) return true
+      seen.add(one)
+      for (const [name, found] of one.lookedUp) {
+        const there = site === one.owner ? [] : site.functionsNamed(name)
+        const names = there.map((member) => one.owner.externName(site.originOf(member)))
+        if (names.length !== found.length || names.some((n, i) => n !== found[i])) return false
+      }
+      return one.requests.every(alike)
+    }
+    return alike(inst)
+  }
+
+  // The module's functions of a name that an instance of another module's
+  // generic can call, by the names they are known by here: not a comptime
+  // function parameter's, and not a test's.
+  functionsNamed(name: string): string[] {
+    return (this.overloads.get(name) ?? [name]).filter((member) => {
+      const sym = this.moduleScope.symbols.get(member)
+      return sym?.kind === 'func' && !sym.alias && !this.testOnly.has(member) && !this.testDeclared.has(sym)
     })
   }
 
@@ -7410,8 +7447,11 @@ class CheckContext {
       .map((p) => {
         const given = funcs.get(p)
         if (!given) return { kind: 'type', type: bound.get(p.ident as string) as ResolvedType }
-        // The instance calls it from the generic's module, by a name it has there.
-        return sym.owner === this ? given : { ...given, name: sym.owner.externFunc(this, given.name) }
+        // The instance calls it from the generic's module, by a name it has
+        // there: the name of its own module's function, also where this
+        // module imports it under another, so that every name of one
+        // function makes one instance.
+        return { ...given, name: sym.owner.externFunc(this, given.name) }
       })
     const inst = this.instantiate(sym, args, expr.span.start)
     if (!inst) return fail()
@@ -7658,19 +7698,24 @@ class CheckContext {
     const held: ComptimeValue[] = args.map((a) => (a.kind === 'type' ? { kind: 'type', type: plain(a.type) } : a))
     // A function is the function of that name: two instances are one when
     // their functions are.
-    let key = held.map((a) => (a.kind === 'type' ? watSafe(canonicalKey(a.type)) : a.kind === 'func' ? a.name : '')).join('|')
+    const key = held.map((a) => (a.kind === 'type' ? watSafe(canonicalKey(a.type)) : a.kind === 'func' ? a.name : '')).join('|')
     // An instance asked for from an instance's body draws on that one's chain.
     const requester = this.currentInstance
     const site = requester?.site ?? this
+    const owner = sym.owner
     let existing = sym.instances.get(key)
-    // One that called a function of another module's for want of the
-    // generic's own is that module's: another gets its own copy, calling
-    // its own functions. A module's chains are all checked before the next
-    // module is, so whether an instance did is known by the time another
-    // module can ask.
+    // One that called functions of another module's for want of the
+    // generic's own is that module's, unless this site's functions of the
+    // names are the same ones: otherwise this site gets a copy of its own,
+    // calling its own functions. A module's chains are all checked before
+    // the next module is, so what an instance looked up is known by the time
+    // another module can ask. A copy is kept under the key and its site's
+    // tag, apart by a space, which no key has.
+    let copyKey: string | null = null
     if (existing?.usedSite && existing.site !== site) {
-      key = `${key}@${site.moduleTag()}`
-      existing = sym.instances.get(key)
+      const copies = [...sym.instances].filter(([k]) => k.startsWith(`${key} @`)).map(([, inst]) => inst)
+      existing = [existing, ...copies].find((inst) => inst.site === site || owner.sharedWith(inst, site))
+      if (!existing) copyKey = `${key} @${site.moduleTag()}`
     }
     if (existing) {
       requester?.requests.push(existing)
@@ -7695,7 +7740,6 @@ class CheckContext {
       chain.size++
     }
 
-    const owner = sym.owner
     const index = owner.instances.length + 1
     // Offsets have to stay exact integers, and below the next instance's.
     if (of.span.end >= INSTANCE_STRIDE || index >= MAX_INSTANCES) {
@@ -7703,7 +7747,7 @@ class CheckContext {
       return null
     }
     const decl = bindTypes(of, comptimeParams, held, index * INSTANCE_STRIDE)
-    decl.ident = instanceName(of.ident as string, key, (name) => owner.moduleScope.symbols.has(name))
+    decl.ident = instanceName(of.ident as string, key, copyKey === null ? null : site.moduleTag(), (name) => owner.moduleScope.symbols.has(name))
 
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
@@ -7723,12 +7767,14 @@ class CheckContext {
       requestedIn: this,
       depth,
       chain,
+      owner,
       site,
       usedSite: false,
+      lookedUp: new Map(),
       requests: [],
     }
     requester?.requests.push(inst)
-    sym.instances.set(key, inst)
+    sym.instances.set(copyKey ?? key, inst)
     owner.instances.push(inst)
     if (!sym.signatureOnly) owner.instanceQueue.push(inst)
     // The signature exists from here on, which is all a call needs. The body
@@ -7745,10 +7791,15 @@ class CheckContext {
   // modules' functions of one name apart.
   externFunc(from: CheckContext, known: string): string {
     const origin = from.originOf(known)
-    if (origin.ctx === this) return origin.name
-    const alias = `${origin.name}@${origin.ctx.moduleTag()}`
-    this.externs.set(alias, { module: origin.ctx.filePath as string, name: origin.name })
+    const alias = this.externName(origin)
+    if (origin.ctx !== this) this.externs.set(alias, { module: origin.ctx.filePath as string, name: origin.name })
     return alias
+  }
+
+  // The name this module calls a function declared in a module by (see
+  // externFunc)
+  externName(origin: { ctx: CheckContext; name: string }): string {
+    return origin.ctx === this ? origin.name : `${origin.name}@${origin.ctx.moduleTag()}`
   }
 
   // The module a function this module calls by this name is declared in, and
@@ -8817,9 +8868,10 @@ function literalMarks(node: unknown, skip: (call: AST.CallExpr) => boolean, foun
 }
 
 // The name of an instance, as a symbol and in WAT: the generic's name and the
-// key of its arguments.
-function instanceName(generic: string, key: string, taken: (name: string) => boolean): string {
-  return keyedName(`${generic}<`, key, '>', taken)
+// key of its arguments, and for a site's own copy the site's tag after them
+// (max<u32>@main), where no argument's name can be.
+function instanceName(generic: string, key: string, site: string | null, taken: (name: string) => boolean): string {
+  return keyedName(`${generic}<`, key, site === null ? '>' : `>@${site}`, taken)
 }
 
 // A name made of a prefix, a key of types and a suffix: an instance's

@@ -333,7 +333,7 @@ describe('generics across modules', () => {
     // main is checked first, so its instances keep the plain names.
     expect(callsIn(wat, `containers$add${cell}`)).toEqual(['main$hash', `containers$slot${cell}`, `containers$table${cell}`])
     expect(callsIn(wat, `containers$slot${cell}`)).toEqual(['main$eq'])
-    const own = cell.replace(/>$/, '@other>')
+    const own = `${cell}@other`
     expect(callsIn(wat, `containers$add${own}`)).toEqual(['hash', `containers$slot${own}`, `containers$table${cell}`])
     expect(callsIn(wat, `containers$slot${own}`)).toEqual(['eq'])
   })
@@ -425,7 +425,7 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     }
     await inDir(files, async (dir) => {
       const wat = await watOf(join(dir, 'm.ents'))
-      const m = cell.replace(/>$/, '@m>')
+      const m = `${cell}@m`
       expect(callsIn(wat, `p$bucket${cell}`)).toEqual(['n$hash'])
       expect(callsIn(wat, `p$bucket${m}`)).toEqual(['hash'])
       expect(callsIn(wat, `o$wrapper${cell}`)).toEqual([`p$bucket${cell}`])
@@ -433,6 +433,71 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
       const instance = await instantiate(join(dir, 'm.ents'))
       // m's hash is y, n's is x: (7 % 4) * 10 + 5 % 4
       expect((instance.exports.f as (x: number, y: number) => number)(5, 7)).toBe(31)
+    })
+  })
+
+  // A module's own function given for a comptime parameter, and a function
+  // of the generic's module found at the site, are two things however they
+  // are named: each call runs the function it names, in either order.
+  test("a site's own function of a name the generic's module also has is not taken for that one", async () => {
+    const LIB = 'export func apply(comptime T: type, x: T, comptime f: (T) -> T) -> T => f(hook(x))\nexport func inc(x: i32) -> i32 => x + 1\n'
+    const IMPORT = 'import "./lib" (\n  "apply" func apply(comptime T: type, x: T, comptime f: (T) -> T) -> T\n  "inc" func linc(x: i32) -> i32\n)\n'
+    const B = 'func hook(x: i32) -> i32 => x * 100\nfunc inc(x: i32) -> i32 => x - 1\n'
+    for (const calls of [
+      'export func b1(x: i32) -> i32 => apply(x, linc)\nexport func b2(x: i32) -> i32 => apply(x, inc)\n',
+      'export func b2(x: i32) -> i32 => apply(x, inc)\nexport func b1(x: i32) -> i32 => apply(x, linc)\n',
+    ]) {
+      const files = {
+        'lib.ents': LIB,
+        'a.ents': `${IMPORT}func hook(x: i32) -> i32 => x * 10\nexport func a(x: i32) -> i32 => apply(x, linc)\n`,
+        'b.ents': `${IMPORT}${B}${calls}`,
+        'main.ents': 'import "./a" "a" func a(x: i32) -> i32\nimport "./b" ("b1" func b1(x: i32) -> i32  "b2" func b2(x: i32) -> i32)\nexport func fa(x: i32) -> i32 => a(x)\nexport func fb1(x: i32) -> i32 => b1(x)\nexport func fb2(x: i32) -> i32 => b2(x)\n',
+      }
+      await inDir(files, async (dir) => {
+        const instance = await instantiate(join(dir, 'main.ents'))
+        const run = (name: string) => (instance.exports[name] as (x: number) => number)(1)
+        // lib's inc of a's hook, lib's inc of b's hook, b's inc of b's hook
+        expect([run('fa'), run('fb1'), run('fb2')]).toEqual([11, 101, 99])
+      })
+    }
+  })
+
+  // What a site lookup finds is what tells instances apart: two modules
+  // whose hash is one module's share the instance, and a module with a hash
+  // of its own has its own.
+  test("sites whose functions of the names looked up are the same functions share the instance", async () => {
+    const CELL = 'type Cell = (x: i32, y: i32)\n'
+    const IMPORTS = `import "./p" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nimport "./cells" "hash" func hash(c: (x: i32, y: i32)) -> u32\n${CELL}`
+    const files = {
+      'p.ents': 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n',
+      'cells.ents': `${CELL}export func hash(c: Cell) -> u32 => c.x as u32\n`,
+      'a.ents': `${IMPORTS}export func fa(c: Cell) -> u32 => bucket(c, 4)\n`,
+      'b.ents': `${IMPORTS}export func fb(c: Cell) -> u32 => bucket(c, 4)\n`,
+      'c.ents': `import "./p" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\n${CELL}func hash(c: Cell) -> u32 => c.y as u32\nexport func fc(c: Cell) -> u32 => bucket(c, 4)\n`,
+      'main.ents': 'import "./a" "fa" func fa(c: (x: i32, y: i32)) -> u32\nimport "./b" "fb" func fb(c: (x: i32, y: i32)) -> u32\nimport "./c" "fc" func fc(c: (x: i32, y: i32)) -> u32\nexport func f(x: i32, y: i32) -> u32 => fa((x, y)) * 100 + fb((x, y)) * 10 + fc((x, y))\n',
+    }
+    await inDir(files, async (dir) => {
+      const wat = await watOf(join(dir, 'main.ents'))
+      expect(funcs(wat).filter((n) => n.startsWith('p$'))).toEqual([`p$bucket${cell}`, `p$bucket${cell}@c`])
+      expect(callsIn(wat, `p$bucket${cell}`)).toEqual(['cells$hash'])
+      expect(callsIn(wat, `p$bucket${cell}@c`)).toEqual(['c$hash'])
+      const instance = await instantiate(join(dir, 'main.ents'))
+      expect((instance.exports.f as (x: number, y: number) => number)(5, 7)).toBe(113)
+    })
+  })
+
+  // A function given for a comptime parameter is the function, under
+  // whichever name a module imports it.
+  test('one function given under two names makes one instance', async () => {
+    const files = {
+      'util.ents': 'export func inc(x: i32) -> i32 => x + 1\n',
+      'lib.ents': 'import "./util" "inc" func uinc(x: i32) -> i32\nexport func apply(comptime T: type, x: T, comptime f: (T) -> T) -> T => f(x)\nexport func lib_inc(x: i32) -> i32 => apply(x, uinc)\n',
+      'main.ents': 'import "./lib" (\n  "apply" func apply(comptime T: type, x: T, comptime f: (T) -> T) -> T\n  "lib_inc" func lib_inc(x: i32) -> i32\n)\nimport "./util" "inc" func inc(x: i32) -> i32\nexport func f(x: i32) -> i32 => apply(x, inc) + lib_inc(x)\n',
+    }
+    await inDir(files, async (dir) => {
+      const wat = await watOf(join(dir, 'main.ents'))
+      expect(funcs(wat).filter((n) => n.startsWith('lib$apply'))).toEqual(['lib$apply<i32|inc@util>'])
+      expect(callsIn(wat, 'lib$apply<i32|inc@util>')).toEqual(['util$inc'])
     })
   })
 
