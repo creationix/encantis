@@ -445,7 +445,7 @@ Pointers and slices can be **optional** using the `?` prefix. An optional pointe
 
 Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
 
-None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
+None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
 
 <!-- spec:begin compile -->
 
@@ -463,6 +463,7 @@ func find(key: u32) -> ?[]u8 {
 }
 func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
 func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
+func unnamed() -> Entry => Entry(9, 0 as ?[]u8)
 
 test "none is 0 for an optional pointer and an optional slice" {
   assert find(1) == 0
@@ -472,6 +473,7 @@ test "none is 0 for an optional pointer and an optional slice" {
   assert size(0) == 99
   assert last == 0
   assert cell(0) == 0
+  assert unnamed().name == 0
 }
 ```
 

@@ -9491,6 +9491,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const t = unwrap(to)
   const single = (x: ResolvedType) => x.kind === 'primitive' || x.kind === 'pointer' || x.kind === 'func' || isComptimeNumber(x)
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
+  // 0 is none for an optional slice, as it is for an optional pointer.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot
