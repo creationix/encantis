@@ -3770,7 +3770,8 @@ class CheckContext {
     // A name nothing declares is the error of any expression, said once: a
     // signature is resolved where it is collected and again where its
     // function is checked.
-    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
+    // A name the module declares further down is no unknown one.
+    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
     if (unknown) {
       if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name))
       this.unknownInTypes.add(unknown.span.start)

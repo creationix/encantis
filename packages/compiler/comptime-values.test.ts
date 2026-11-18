@@ -384,6 +384,13 @@ describe('lengths and bounds in hand-written code', () => {
     await expectSameWasm(generic, byHand)
   })
 
+  test('a name that is no constant is one error, wherever it is declared', () => {
+    expect(errorsOf('export func f(p: *[g]u8) -> u32 => 0\nglobal g: u32 = 3')).toEqual(['array length must be a compile-time constant'])
+    expect(errorsOf('export func f(p: *[h]u8) -> u32 => 0\nfunc h() -> u32 => 1')).toEqual(['array length must be a compile-time constant'])
+    expect(errorsOf('export func f(p: *[zz + 1]u8) -> u32 => 0')).toEqual(["unknown identifier 'zz'"])
+    expect(errorsOf('type B = *[k]u8\ndef k = 2\nexport func f(b: B) -> u32 => b.len')).toEqual([])
+  })
+
   test('[0x10]u8 is sixteen bytes', () => {
     expect(watOfSource('export func f(p: *[0x10]u8) -> u32 => p.len')).toContain('(i32.const 16)')
   })
