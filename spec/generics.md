@@ -3315,6 +3315,34 @@ export func j(p: *[sizeof(u64) * 4]u8, i: u32#(k + 1)) -> u8 => p[i]
 def k = 4
 ```
 
+A typed constant is what it is in any expression, in a length too: `~0:u8` is 255. And behind a pointer an array of fixed arrays is a table, `n` row pointers, so its size is theirs: `*[65536][65537]u8` is as `*[65536]*[65537]u8` is, though `[65536][65537]u8` held by value is too large.
+
+```ents
+def m = ~0:u8
+
+export func f(p: *[m]u8, i: u32#(~0:u8)) -> u32 => p.len + i
+export func g(t: *[65536][65537]u8, i: u32#65536) -> u32 => t[i].len
+```
+
+```ents same-wasm
+export func f(p: *[255]u8, i: u32#255) -> u32 => p.len + i
+export func g(t: *[65536][65537]u8, i: u32#65536) -> u32 => t[i].len
+```
+
+`-n` is the negative number, as `-k` is where `def k = 3` puts 3 for `k`.
+
+```ents
+func f(comptime k: i32, x: i32) -> i32 => x * -k
+
+export func a(x: i32) -> i32 => f(3, x)
+```
+
+```ents same-wasm
+func f_3(x: i32) -> i32 => x * -3
+
+export func a(x: i32) -> i32 => f_3(x)
+```
+
 `n = 0` is a number like any other: a loop over the elements needs no proof.
 
 ```ents
@@ -3481,6 +3509,22 @@ argument 1: cannot assign int(-1) to u32
 argument 1: cannot assign float(1.5) to u32
 argument 1: cannot assign int(4294967296) to u32
 argument 1: cannot assign bool to u32
+```
+
+So for a generic type's value parameter: a typed constant by its type, an untyped one by its value.
+
+```ents
+func Small(comptime n: u8) -> type => (items: *[n]u8)
+
+func a(s: Small(4:u32)) -> u32 => 0
+func b(s: Small(sizeof(u64))) -> u32 => 0
+func c(s: Small(300)) -> u32 => 0
+```
+
+```errors
+argument 1 of 'Small': cannot assign u32 to u8
+argument 1 of 'Small': cannot assign u32 to u8
+argument 1 of 'Small': cannot assign int(300) to u8
 ```
 
 Another count of arguments, and named arguments.
@@ -3703,6 +3747,35 @@ export func g() -> u8 => f(300)
 cannot assign int(300) to u8, in f(n = 300)
 ```
 
+An error a number makes in the body of a generic type is the application's, reported once for each, with the use it was required from: `Ring(0, u32)` and `Ring(0, u8)` are two. What is made of it says nothing more. A body that applies its type to numbers that grow is stopped at once: by the parameter's type here, or at 1000 levels.
+
+```ents
+func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
+func T2(comptime n: u32) -> type => (a: *T2(n * 2), b: *T2(n * 2 + 1))
+
+export func f(r: *Ring(0, u32)) -> u32 => r.count
+export func g(r: *Ring(0, u8)) -> u32 => r.count
+export func h(t: *T2(1)) -> u32 => 0
+```
+
+```errors
+range bound must be at least 1: u32#0 has no values, in Ring(0, u32)
+range bound must be at least 1: u32#0 has no values, in Ring(0, u8)
+argument 1 of 'T2': cannot assign int(4294967296) to u32, in T2(2147483648)
+```
+
+A length that divides by zero.
+
+```ents
+func chunk(comptime n: u32, p: *[64 / n]u8) -> u32 => p.len
+
+export func a(p: *[8]u8) -> u32 => chunk(0, p)
+```
+
+```errors
+array length divides by zero, in chunk(n = 0)
+```
+
 A hyphen joins a name: `n-1` is no subtraction. In a signature that is found where the generic is declared, and in its body in each instance.
 
 ```ents
@@ -3745,6 +3818,18 @@ array length 4294967296 is too large: an array has at most 4294967295 elements
 array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses
 array length must be a compile-time constant
 array [536870912]u64 is too large: 4294967296 bytes, more than the 4294967295 a 32-bit memory addresses
+```
+
+A typed constant that its type does not hold, and a division by zero.
+
+```ents
+export func f(p: *[300:u8]u8) -> u32 => p.len
+export func g(p: *[7 / 0]u8) -> u32 => p.len
+```
+
+```errors
+cannot assign int(300) to u8
+array length divides by zero
 ```
 
 A hyphen where a subtraction was meant, with `n` a name in scope.
