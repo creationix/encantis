@@ -413,6 +413,29 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     expect(callsIn(wat, 'other$down2')).toEqual(['sorting$sort<i32|descending@order>'])
   })
 
+  // The site is the module whose ordinary code started the chain, however
+  // many generics of how many modules the chain goes through; and a generic
+  // that calls an instance which is a site's own is that site's own too.
+  test('a chain through generics of two modules looks up at the module that started it', async () => {
+    const files = {
+      'p.ents': 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n',
+      'o.ents': 'import "./p" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nexport func wrapper(comptime K: type, k: K) -> u32 => bucket(k, 4)\n',
+      'n.ents': 'import "./o" "wrapper" func wrapper(comptime K: type, k: K) -> u32\ntype Cell = (x: i32, y: i32)\nfunc hash(c: Cell) -> u32 => c.x as u32\nexport func g(c: Cell) -> u32 => wrapper(c)\n',
+      'm.ents': 'import "./o" "wrapper" func wrapper(comptime K: type, k: K) -> u32\nimport "./n" "g" func g(c: (x: i32, y: i32)) -> u32\ntype Cell = (x: i32, y: i32)\nfunc hash(c: Cell) -> u32 => c.y as u32\nexport func f(c: Cell) -> u32 => wrapper(c) * 10 + g(c)\n',
+    }
+    await inDir(files, async (dir) => {
+      const wat = await watOf(join(dir, 'm.ents'))
+      const m = cell.replace(/>$/, '@m>')
+      expect(callsIn(wat, `p$bucket${cell}`)).toEqual(['n$hash'])
+      expect(callsIn(wat, `p$bucket${m}`)).toEqual(['hash'])
+      expect(callsIn(wat, `o$wrapper${cell}`)).toEqual([`p$bucket${cell}`])
+      expect(callsIn(wat, `o$wrapper${m}`)).toEqual([`p$bucket${m}`])
+      const instance = await instantiate(join(dir, 'm.ents'))
+      // m's hash is y, n's is x: (7 % 4) * 10 + 5 % 4
+      expect((instance.exports.f as (x: number, y: number) => number)(5, 7)).toBe(31)
+    })
+  })
+
   // The literals of an instance are its module's: they are laid out with
   // that module's, where an instance asked for there would have them, and
   // read through that module's map, also where an offset of the module that
