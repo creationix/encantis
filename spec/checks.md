@@ -1999,6 +1999,34 @@ func counted() -> (n: u32) {
 }
 ```
 
+An untyped literal has no type of its own: beside typed arguments it only has to fit, and the function whose typed arguments match exactly is the one meant, before one that would convert them.
+
+```ents
+func gt(a: u32, b: u32) -> bool => a > b
+func gt(a: f64, b: f64) -> bool => a > b
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
+
+func typed(x: u32, y: f64, z: u8) -> u32 => if gt(x, 10) && gt(10, x) && gt(y, 10) && x.gt(3) { put(z, 300) } else { put(z, 3:u8) }
+```
+
+So in a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's, and its literals only have to fit.
+
+```ents
+type P32 = (x: u32, y: u32)
+type P64 = (x: u64, y: u64)
+func far(p: (u32, u32)) -> u32 => 1
+func far(p: (u64, u64)) -> u32 => 2
+func near(p: P32) -> u32 => 1
+func near(p: P64) -> u32 => 2
+func at(p: *(u32, u32)) -> u32 => 1
+func at(p: *(f64, f64)) -> u32 => 2
+
+func parts(i: u32, w: u64) -> u32 => far((i, 1)) + far((1, w)) + near((x: i, y: 1)) + near((x: 1, y: w)) + at(&(i, 1))
+```
+
+Where two are exact alike, as `put(z, 3)` is for both `put`s, that is still ambiguous (below), and so is a call where each function would convert something: `m((i, 1), j)` for `m(p: (u64, u64), q: u32)` and `m(p: (u32, u32), q: u64)`.
+
 Without such a function, it means the only one the arguments can be passed to, with the conversions an argument gets.
 
 ```ents
@@ -2021,12 +2049,18 @@ type Cell = (x: i32, y: i32)
 
 func hash(k: u32) -> u32 => k
 func hash(k: u64) -> u32 => 1
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
 
 func a(c: Cell) -> u32 => hash(c)
 func b(x: f64) -> u32 => hash(x, x)
 func c() -> u32 => hash(5)
 func d(x: u8) -> u32 => hash(x)
 func e() -> u32 => hash()
+func f(z: u8) -> u32 => put(z, 3)
+func m(p: (u64, u64), q: u32) -> u32 => 1
+func m(p: (u32, u32), q: u64) -> u32 => 2
+func g(i: u32, j: u32) -> u32 => m((i, 1), j)
 ```
 
 ```errors
@@ -2035,6 +2069,8 @@ no function 'hash' accepts (f64, f64)
 'hash' is ambiguous for (int(5))
 'hash' is ambiguous for (u8)
 no function 'hash' accepts ()
+'put' is ambiguous for (u8, int(3))
+'m' is ambiguous for ((u32, int(1)), u32)
 ```
 
 An argument with an error of its own is that error alone, and nothing more is said of what the call's value is used for.

@@ -161,6 +161,23 @@ describe('formatter', () => {
     expect(formatted).toBe('func max(comptime T:type, a:T) -> T => a\nfunc f(a:i32) -> i32 => max(i32, -a)\n')
   })
 
+  // A member's name is a whole identifier, hyphens included: p.u32-1 is a
+  // member called u32-1. A subtraction is printed with spaces, so the two
+  // read apart, and the formatter never joins or splits a hyphenated name.
+  test('a subtraction after a member is spaced, a hyphenated member is not', () => {
+    const formatted = formatEncantis('func f(p:*u8,s:[]u8,x:S)->u32=>p.u32 -1+s.len -1+x.u32-count+(p.u32)-1\n')
+    expect(formatted).toBe('func f(p:*u8, s:[]u8, x:S) -> u32 => p.u32 - 1 + s.len - 1 + x.u32-count + (p.u32) - 1\n')
+    expect(formatEncantis('func f(p:*u8)->u32=>p.u32-1\n')).toBe('func f(p:*u8) -> u32 => p.u32-1\n')
+    // What it prints parses as it reads: a subtraction and a member.
+    const expr = (source: string) => {
+      const result = parse(source, { startRule: 'Expr' })
+      expect(result.errors).toEqual([])
+      return result.module as unknown
+    }
+    expect(expr('p.u32 - 1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: { kind: 'MemberExpr', member: { kind: 'type' } } })
+    expect(expr('p.u32-1')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'u32-1' } })
+  })
+
   // comptime is a word of the language, not a name. No valid program has a
   // parenthesis or a bracket right after it, but a line being typed may, and
   // there it is not drawn up to it the way the name of a called function is.

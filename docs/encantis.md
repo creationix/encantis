@@ -26,7 +26,7 @@ merge-round64   // hyphenated
 my_var_2        // underscores and digits
 ```
 
-Hyphens in identifiers are idiomatic for constants and helper functions.
+Hyphens in identifiers are idiomatic for constants and helper functions. A name holds its hyphens wherever it stands, after a dot too (`x.u32-count` is the member `u32-count`), so a subtraction is written with spaces: `n - 1`. The formatter prints every binary `-` that way.
 
 ### 1.3 Type Identifiers
 
@@ -1379,7 +1379,7 @@ test "each call reaches its own function" {
 }
 ```
 
-1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second.
+1. **The function whose parameter types are the argument types is the one called.** `hash(n)` with `n: u32` is `hash(k: u32)`, although a `u32` could also be passed for the `u64` of the second. An untyped literal has no type of its own: beside typed arguments, or typed parts of a tuple, it only has to fit its parameter (see below).
 2. **Otherwise it is the only function the arguments can be passed to.** `hash("salt")` is `hash(k: []u8)`: a string is not a number. The argument is then converted as for any call.
 3. **Anything else is an error**, whether no function takes the arguments or more than one could:
 
@@ -1396,19 +1396,53 @@ no function 'hash' accepts (f64)
 'hash' is ambiguous for (int(5))
 ```
 
-`hash(5:u64)` says which. A literal has no type of its own, so a call with one among its arguments is never an exact match, whatever its other arguments are. Where the functions differ in the width or kind of their numbers, the other arguments can usually be passed to more than one of them, and the literal has to say what it is:
+`hash(5:u64)` says which. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
 
 ```ents
 func gt(a: u32, b: u32) -> bool => a > b
 func gt(a: f64, b: f64) -> bool => a > b
 
-func f(x: u32) -> bool => gt(x, 10)
-func g(x: u32) -> bool => gt(x, 10:u32)
+export func f(x: u32) -> bool => gt(x, 10)        // gt(a: u32, b: u32)
+export func g(x: f64) -> bool => gt(x, 10)        // gt(a: f64, b: f64)
+export func h(x: u32) -> bool => gt(x, 2.5)       // 2.5 is no u32: gt(a: f64, b: f64), x converted
+
+test "the typed argument says which" {
+  assert f(11)
+  assert !f(10)
+  assert g(10.5)
+  assert !h(2)
+}
+```
+
+The same holds inside a tuple, a struct literal or `&` of one: its typed parts are exact where they are the parameter's parts, and its literals only have to fit. `far((x, 1))` with `x: u32` is `far(p: (u32, u32))`, and `far((x, 1))` with `x: u64` is the other one. An array literal is untyped as a whole, even where an element has a type.
+
+```ents
+func far(p: (u32, u32)) -> u32 => p.0 + p.1
+func far(p: (u64, u64)) -> u32 => 0
+
+export func k(x: u32) -> u32 => far((x, 1))       // far(p: (u32, u32))
+export func m(x: u64) -> u32 => far((1, x))       // far(p: (u64, u64))
+
+test "a tuple's typed parts say which" {
+  assert k(2) == 3
+  assert m(2) == 0
+}
+```
+
+Only functions that are exact alike remain ambiguous: those whose typed arguments are the same and whose literals fit each of them, as `hash(5)` above, where there is no typed argument at all, and this one, where `x` is a `u8` for both and `3` fits both:
+
+```ents
+func put(a: u8, b: u8) -> u32 => 1
+func put(a: u8, b: u32) -> u32 => 2
+
+func f(x: u8) -> u32 => put(x, 3)
 ```
 
 ```errors
-'gt' is ambiguous for (u32, int(10))
+'put' is ambiguous for (u8, int(3))
 ```
+
+`put(x, 3:u32)` says which, and `put(x, 300)` needs no help: 300 fits only a `u32`.
 
 What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 
@@ -1821,7 +1855,21 @@ ptr.([]u8)
 
 > **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
 
-A member is a type view only when its whole name is a primitive type's. A name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, is a field or a method ([4.9](#49-method-call-syntax)). The one exception is a name that goes on with a hyphen: `p.u32-1` is the view minus one, so `x.u32-count` is `x.u32 - count` and never a member called `u32-count`.
+A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included (§1.2), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
+
+<!-- spec:begin compile -->
+
+```ents
+func f(p: *u8) {
+  let q = p.u32-1
+}
+```
+
+```errors
+no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
+```
+
+<!-- spec:end -->
 
 ### 4.7 Bounds-Checked Indexing
 
@@ -2755,6 +2803,7 @@ export func c(c: bool, p: (i32, i32), q: (i32, i32)) -> (i32, i32) => pick((i32,
 export func d(xs: [][]u8) -> []u8 => head([]u8, xs)
 export func e(xs: []*mut Pt) -> *mut Pt => head(*mut Pt, xs)
 export func f(xs: []u64) -> u64 => head(u64, xs)
+export func g(c: bool, n: []u8, p: Pt) -> []u8 => pick((name: []u8, at: Pt), c, (name: n, at: p), (name: "-", at: p)).name
 ```
 
 In that position a name is read as a type even if a variable of the same name is in scope (`u8` there is the type, as it is in `let x: u8`).
@@ -2805,9 +2854,10 @@ test "inferred calls" {
    | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
    | `*Vec(T)` | a pointer to a struct of `Vec`'s shape | `T` from the field that is made of it ([8.5](#85-generic-types)) |
    | `(T) -> T` | a function, `inc` | `T` from its parameter, or else its result |
+   | `(T, T)` | a tuple with a literal in it, `(i, 1)` with `i: u32` | `T = u32`, from its typed part |
 
    Type aliases are transparent, as everywhere.
-3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide.
+3. **Untyped literals never decide.** `7`, `0.5` and `[1, 2, 3]` have no type of their own; they take the type the parameter turns out to have. A literal with a type written on it (`7:u8`) is typed and can decide. A tuple decides by the parts of it that are typed, and its literals decide nothing: with `p: (T, T)`, `keep((i, 1))` for an `i: u32` gives `T = u32`, and the `1` is then a `u32`; `keep((1, 2))` decides nothing. So does a struct literal, `(x: i, y: 1)`, and `&` of either. An array literal is untyped as a whole, even where an element has a type.
 4. **Every other argument is an ordinary argument.** Once `T` is decided, the remaining arguments are checked against the now-concrete parameter types exactly as for a hand-written function: the same implicit conversions, the same errors.
 5. **Nothing is guessed.** If no argument decides a type parameter the call is an error and the type has to be written. That includes a call whose only candidates are literals (`max(1, 2)`) and a type parameter that appears only in the result (`zero()`): the expected type of the call is not used. An argument that has an error of its own decides nothing either, and the call adds no error to it.
 6. **`()` is never a type argument.** It has no values, so there is nothing to pass for a parameter of that type. An argument without a value, such as a call of a function that returns nothing, is an error where it stands: `argument 1 of 'id' has no value`.
@@ -3180,7 +3230,7 @@ Comptime function parameters are always written, also in the inferred form: `sor
 
 The parameter's type is a function type, written out or named: with `type Cmp = (i32, i32) -> bool`, `comptime before: Cmp` is the same parameter, and so is one typed by an applied generic type whose body is a function type.
 
-The function's signature can decide a type parameter like any other argument, and it has to be the type the parameter declares, with the names of parameters left aside. A function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
+The function's signature can decide a type parameter like any other argument, and it has to be exactly the type the parameter declares, with the names of its parameters and results left aside: names are no part of a function's type. Exact, for now: a function that a value of the declared type could be converted to is not taken, so one that takes a `u64` where the parameter says `u32`, or returns a `u8` where it says `u32`, is an error (accepting what is assignable may come later). The one relaxation: a function that lists a struct's fields as its results, `-> (sum: f64, n: u32)`, is one that returns the struct:
 
 ```ents
 func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
@@ -3203,6 +3253,35 @@ func f(xs: []mut i32) { sort(xs, inc) }
 
 ```errors
 'inc' is (u32) -> u32, but 'sort' needs before: (i32, i32) -> bool
+```
+
+```ents
+func twice(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(f(x))
+func widen(x: u64) -> u32 => x as u32
+func narrow(x: u32) -> u8 => x as u8
+
+func a(x: u32) -> u32 => twice(u32, widen, x)
+func b(x: u32) -> u32 => twice(u32, narrow, x)
+```
+
+```errors
+'widen' is (u64) -> u32, but 'twice' needs f: (u32) -> u32
+'narrow' is (u32) -> u8, but 'twice' needs f: (u32) -> u32
+```
+
+In the instance a call of the parameter is a call of the function given, and its results are that function's. A name the declared type gives a result is not there when the function's results have other names, or none, so a body that reaches a result by its name is an error in the instance:
+
+```ents
+func second(comptime f: (u32) -> (x: u32, y: u32), n: u32) {
+  let y = f(n).y
+}
+func pair(n: u32) -> (u32, u32) => (n, n + 1)
+
+func a(n: u32) { second(pair, n) }
+```
+
+```errors
+no field 'y' on type (u32, u32), in second(f = pair)
 ```
 
 Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
@@ -3232,8 +3311,6 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
 Also not in this version: generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
-
-One form of type argument cannot be written in place: a struct type with named fields whose field types are not themselves expressions, as in `pick((name: []u8, at: Pt), ...)`. Give the type a name and pass the name: with `type`, or, where it mentions a type parameter of the generic the call is in, as a generic type (`Named(T, Pt)` for `func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)`).
 
 A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
@@ -3469,7 +3546,7 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 ## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)).
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)), and so does an imported one. The compiler warns where such a function is declared, once for each declaration (each of the functions that share the name, and one a `test` declares, too): `'max' replaces the builtin max in this module`. A parameter that holds a value, or a local variable, with a builtin's name is no function and replaces nothing: `max(a, b)` beside `let max = 3` is still the builtin, and nothing is said. A comptime function parameter ([8.6](#86-comptime-function-parameters)) is a function: in the body of its generic a call of its name calls the function given for it, so `comptime max: (u32, u32) -> u32` is warned of where it is declared, once: `'max' replaces the builtin max in the body of 'app'`.
 
 ### 10.1 Numeric Builtins
 

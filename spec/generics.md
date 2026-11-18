@@ -497,6 +497,48 @@ export func a(xs: []u16) -> u16 => at(xs, 2)
 export func b(xs: []u8) -> u8 => at(xs, u8, 2)
 ```
 
+A tuple decides by its typed parts: here `i` decides `T` wherever it stands, also in a tuple inside the tuple, and the literals take the type `T` turns out to be. The literals by themselves decide nothing (see the errors below).
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep((i, 1)) + keep((2, i))
+export func b(i: u16) -> u16 => deep(((1, 2), i)) + deep(((i, 2), 3))
+```
+
+```ents same-wasm
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+
+export func a(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))
+export func b(i: u16) -> u16 => deep(u16, ((1, 2), i)) + deep(u16, ((i, 2), 3))
+```
+
+A struct type with named fields is written in place as a type argument as it is after a colon, also where its field types are not expressions (`[]u8`, `Pt`, `?*Pt`) and where it has one field. It is the type a `type` of it names, and compiles to the same module.
+
+```ents
+type Pt = (q: i32, r: i32)
+func size(comptime T: type) -> u32 => sizeof(T)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+
+export func f() -> u32 => size((at: Pt, n: u8)) + size((at: Pt)) + size((p: ?*Pt))
+export func g(c: bool, s: []u8, p: Pt) -> i32 => pick((name: []u8, at: Pt), c, (name: s, at: p), (name: "b", at: p)).at.r
+```
+
+```ents same-wasm
+type Pt = (q: i32, r: i32)
+type Two = (at: Pt, n: u8)
+type One = (at: Pt)
+type Ref = (p: ?*Pt)
+type Named = (name: []u8, at: Pt)
+func size(comptime T: type) -> u32 => sizeof(T)
+func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
+
+export func f() -> u32 => size(Two) + size(One) + size(Ref)
+export func g(c: bool, s: []u8, p: Pt) -> i32 => pick(Named, c, (name: s, at: p), (name: "b", at: p)).at.r
+```
+
 A struct literal is an untyped literal: it takes the type the parameter turns out to have.
 
 ```ents
@@ -867,7 +909,19 @@ func f() -> u32 {
 cannot infer T for 'zero': write the type argument, as in zero(u32)
 ```
 
-Untyped literals only. An array literal is untyped even when one of its elements has a type.
+Untyped literals only, also as the parts of a tuple.
+
+```ents
+func keep(comptime T: type, p: (T, T)) -> T => p.0
+
+func f() -> u32 => keep((1, 2))
+```
+
+```errors
+cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type
+```
+
+An array literal is untyped even when one of its elements has a type.
 
 ```ents
 func count(comptime T: type, xs: []T, x: T) -> u32 => xs.len
@@ -927,19 +981,6 @@ func f(x: u32) -> u32 => max(u32, x)
 
 ```errors
 'u32' is a type; a type can only be passed for a comptime parameter
-```
-
-A struct type with named fields, written in place as a type argument. Its field types are not expressions and it is not a function type, so it does not parse; give the type a name with `type` and pass the name.
-
-```ents
-type Pt = (q: i32, r: i32)
-func size(comptime T: type) -> u32 => sizeof(T)
-
-export func f() -> u32 => size((at: Pt, n: u8))
-```
-
-```errors
-Expected "->"
 ```
 
 An argument that has no value.
@@ -1705,7 +1746,7 @@ test "data" {
 }
 ```
 
-A struct type with named fields cannot be written in place as a type argument when its field types are not expressions. A generic type names it, also where it mentions a type parameter of the generic the call is in, which a `type` cannot.
+A struct type with named fields can be written in place as a type argument, also where it mentions a type parameter of the generic the call is in, which a `type` cannot; a generic type names it too.
 
 ```ents
 func Named(comptime A: type, comptime B: type) -> type => (name: A, at: B)
@@ -1713,7 +1754,7 @@ type Pt = (q: i32, r: i32)
 
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
 func id(comptime T: type, v: T) -> T => v
-func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).at
+func wrap(comptime T: type, x: T) -> u32 => id(Named(T, u8), (name: x, at: 2)).at + id((name: T, at: u8), (name: x, at: 3)).at
 
 export func a(c: bool, n: []u8, p: Pt) -> u32 => pick(Named([]u8, Pt), c, (name: n, at: p), (name: n, at: p)).name.len
 export func b() -> u32 => wrap(7:u64)
@@ -2351,7 +2392,7 @@ v.push(u32, 7)
 }
 ```
 
-A member whose name only starts like a primitive type is a field or a method. The whole name is still a type pun, and what follows it is not part of it.
+A member whose name only starts like a primitive type is a field or a method. A member's name is a whole identifier, hyphens included, so `p.u32-1` is a member called `u32-1`; only a name that is a primitive type's and nothing more is a type pun. A subtraction is written with spaces, as the formatter prints it.
 
 ```ents Expr
 v.u32s()
@@ -2377,6 +2418,24 @@ v.u32s()
 
 ```ents Expr
 p.u32-1
+```
+
+```json ast
+{
+  "kind": "MemberExpr",
+  "object": {
+    "kind": "IdentExpr",
+    "name": "p"
+  },
+  "member": {
+    "kind": "field",
+    "name": "u32-1"
+  }
+}
+```
+
+```ents Expr
+p.u32 - 1
 ```
 
 ```json ast

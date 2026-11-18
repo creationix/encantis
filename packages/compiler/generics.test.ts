@@ -124,6 +124,27 @@ export func g(q: i32, r: i32) -> i32 {
     ])
   })
 
+  test('a struct type is written in place as a type argument, whatever its fields are', async () => {
+    const PICK = 'type Pt = (q: i32, r: i32)\nfunc pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }\nfunc size(comptime T: type) -> u32 => sizeof(T)\n'
+    // Fields whose types are no expressions, and one field: (at: Pt) is the
+    // name at given a type, in parentheses, and as a type argument the struct.
+    const source = `${PICK}export func f(c: bool, s: []u8, p: Pt) -> i32 => pick((name: []u8, at: Pt), c, (name: s, at: p), (name: s, at: p)).at.q
+export func g() -> u32 => size((at: Pt)) + size((p: ?*Pt)) + size((n: u8, at: Pt))
+func wrap(comptime T: type, x: T) -> u8 => pick((t: T, n: u8), true, (t: x, n: 1), (t: x, n: 2)).n
+export func h(x: u64) -> u8 => wrap(x)`
+    expect(instancesOf(source)).toEqual([
+      "pick<<name:''u8|at:<q:i32|r:i32>>>",
+      'pick<<t:u64|n:u8>>',
+      'size<<at:<q:i32|r:i32>>>',
+      'size<<n:u8|at:<q:i32|r:i32>>>',
+      'size<<p:?*<q:i32|r:i32>>>',
+      'wrap<u64>',
+    ])
+    const instance = await WebAssembly.instantiate(await WebAssembly.compile(await wasmOfSource(source)))
+    expect((instance.exports.g as () => number)()).toBe(8 + 4 + 9)
+    expect((instance.exports.h as (x: bigint) => number)(5n)).toBe(1)
+  })
+
   test('a type argument is written as after a colon', () => {
     const source = `type Pt = (q: i32, r: i32)
 func pick(comptime T: type, first: bool, a: T, b: T) -> T => if first { a } else { b }
@@ -285,12 +306,38 @@ export func f(x: u32) -> u32 {
 }`
     expect(instancesOf(source)).toEqual(['fst<u32>', 'id<<u32|u32>>', 'keep<u32>'])
     // What an error suggests writing is that type too.
-    expect(errorsOf(`func keep(comptime T: type, p: (T, u8)) -> T => p.0
+    expect(errorsOf(`func pair(comptime T: type, comptime U: type, p: (T, U)) -> T => p.0
 export func f() -> u32 {
   let total: u32 = 0
-  for i in 3 { total += keep((i, 1)) }
+  for i in 3 { total += pair((i, 1)) }
   return total
-}`)).toEqual(["cannot infer T for 'keep' from untyped literals: write keep(u32, ...) or give a literal its type"])
+}`)).toEqual(["cannot infer U for 'pair' from untyped literals: write pair(u32, i32, ...) or give a literal its type"])
+  })
+
+  test('a tuple decides by its typed parts, and its literals by themselves never do', () => {
+    const KEEP = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\n'
+    // i decides T in either place; the literal takes the type T turns out to be.
+    expect(instancesOf(`${KEEP}export func f(i: u16) -> u16 => keep((i, 1)) + keep((2, i))`)).toEqual(['keep<u16>'])
+    // Also inside a nested tuple, behind a pointer, and with the loop counter's range dropped.
+    expect(instancesOf(`func deep(comptime T: type, p: ((T, u8), T)) -> T => p.1
+func at(comptime T: type, p: *(T, T)) -> T => p.0
+export func f(i: u64) -> u64 => deep(((1, 2), i)) + at(&(i, 1))
+export func g() -> (n: u32) { for j in 4 { n += deep(((j, 2), 3)) } }`)).toEqual(['at<u64>', 'deep<u32>', 'deep<u64>'])
+    // Only literals: nothing decides.
+    expect(errorsOf(`${KEEP}export func f() -> u32 => keep((1, 2))`)).toEqual([
+      "cannot infer T for 'keep' from untyped literals: write keep(i32, ...) or give a literal its type",
+    ])
+    // The first argument that decides decides: here the tuple, by i, and a
+    // later u64 is not widened to.
+    const KEEP2 = 'func keep2(comptime T: type, p: (T, T), q: T) -> T => q\n'
+    expect(errorsOf(`${KEEP2}export func f(i: u32, big: u64) -> u64 => keep2((i, 1), big)`)).toEqual(['argument 2: cannot assign u64 to u32'])
+    expect(instancesOf(`${KEEP2}export func f(big: u64) -> u64 => keep2((1, 2), big)`)).toEqual(['keep2<u64>'])
+  })
+
+  test('a tuple that decides by its typed parts compiles as the same call written out', async () => {
+    const generic = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep((i, 1)) + keep((2, i))'
+    const written = 'func keep(comptime T: type, p: (T, T)) -> T => p.0\nexport func f(i: u32) -> u32 => keep(u32, (i, 1)) + keep(u32, (2, i))'
+    expect(await wasmOfSource(generic)).toEqual(await wasmOfSource(written))
   })
 
   test('a range written in a type is part of the type', () => {
@@ -1129,7 +1176,9 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 
   test('an exported generic is not reported as unused', () => {
-    expect(check(`export ${MAX}`).warnings).toEqual([])
+    // It is a function that replaces a builtin, which is said once.
+    expect(check(`export ${MAX}`).warnings.map(w => w.message)).toEqual(["'max' replaces the builtin max in this module"])
+    expect(check(`export ${MAX.replace('max', 'largest')}`).warnings).toEqual([])
   })
 
   // The import may be written as if the function were ordinary; what the
@@ -4010,7 +4059,8 @@ func less(a: u8, b: u8) -> bool => a < b
   for x in xs { s += x }
 }
 export func f(v: *Vec(u32)) -> u32 => v.items().total().double()`
-    expect(compiled(source)).toEqual(['double/1', 'total/1', 'items<u32>/1'])
+    // The order the calls are recorded in says nothing: each is looked up by its node.
+    expect(compiled(source).sort()).toEqual(['double/1', 'items<u32>/1', 'total/1'])
     expect(funcWat(watOfSource(source), 'f')).toContain('(call $double (call $total (call $items<u32> (local.get $v))))')
   })
 

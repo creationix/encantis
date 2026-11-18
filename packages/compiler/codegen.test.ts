@@ -3000,6 +3000,22 @@ describe('members named like a primitive type', () => {
     `)
     expect(wat).toContain('(i32.add (call $u32s (local.get $n)) (i32.load (i32.add (local.get $p) ')
   })
+
+  test('a field whose name is one and a hyphen is read and written as any field', () => {
+    const wat = modWat(`
+      type S = (u32-count: u32, bool-ish: bool)
+      func u32-twice(n: u32) -> u32 => n * 2
+      export func f(s: *mut S, v: S, p: *u8) -> u32 {
+        s.u32-count = 7
+        return s.u32-count + v.u32-count + v.u32-count.u32-twice() + p.u32[0] - 1
+      }
+    `)
+    expect(wat).toContain('(i32.store (local.get $s) (i32.const 7))')
+    expect(wat).toContain('(i32.add (i32.load (local.get $s)) (local.get $v_u32-count))')
+    expect(wat).toContain('(call $u32-twice (local.get $v_u32-count))')
+    // p.u32[0] - 1, with spaces, is the subtraction.
+    expect(wat).toMatch(/\(i32\.sub \(i32\.add .*\(i32\.load \(i32\.add \(local\.get \$p\) .*\(i32\.const 1\)\) \(return\)/)
+  })
 })
 
 describe('declarations take the types they are checked as', () => {

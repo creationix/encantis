@@ -353,7 +353,7 @@ describe('parser', () => {
       expect(firstArg('f((x), y)')).toMatchObject({ kind: 'TupleExpr' })
     })
 
-    test('a function type is tried only after an expression', async () => {
+    test('a type that may be an expression is tried only after an expression', async () => {
       // Tried first, every argument and every element of a tuple was parsed as
       // a type before it was parsed as what it is, and a file without one
       // generic took a quarter longer to parse (a third, for one full of
@@ -361,7 +361,7 @@ describe('parser', () => {
       const grammar = await Bun.file(new URL('./encantis-grammar.ohm', import.meta.url)).text()
       const rule = grammar.slice(grammar.indexOf('\n  Arg = '), grammar.indexOf('\n  TypeLit = '))
       expect([...rule.matchAll(/-- (\w+)/g)].map(m => m[1])).toEqual([
-        'named', 'shorthand', 'type', 'positional', 'funcType', 'unfinished',
+        'named', 'shorthand', 'type', 'positional', 'otherType', 'unfinished',
       ])
     })
 
@@ -369,11 +369,29 @@ describe('parser', () => {
       const error = (source: string) => parse(source, { startRule: 'Expr' }).errors.map(e => e.message.split('\n')[0])
       expect(error('f(a b)')).toEqual(['Line 1, col 5:'])
       expect(error('f([]u8 x)')).toEqual(['Line 1, col 8:'])
-      // A struct type with named fields cannot be written in place: its field
-      // types are not expressions, and it is not followed by ->.
-      const struct = parse('size((at: Pt, n: u8))', { startRule: 'Expr' }).errors
-      expect(struct).toHaveLength(1)
-      expect(struct[0].message).toEndWith('Expected "->"')
+      // After a type that is no expression comes a comma or the parenthesis.
+      expect(error('f((at: Pt, n: u8) x)')).toEqual(['Line 1, col 19:'])
+    })
+
+    test('a struct type written in place is a type argument', () => {
+      // Its field types are not all expressions, so it is no expression: it
+      // is read as the type it is, as after a colon.
+      const fields = (source: string) => {
+        const result = parse(source, { startRule: 'Expr' })
+        expect(result.errors).toEqual([])
+        const arg = (result.module as unknown as { args: { value: { kind: string; type?: { kind: string; fields: { ident: string | null }[] } } }[] }).args[0]
+        expect(arg.value.kind).toBe('TypeExpr')
+        return arg.value.type?.fields.map(f => f.ident)
+      }
+      expect(fields('size((at: Pt, n: u8))')).toEqual(['at', 'n'])
+      expect(fields('pick((name: []u8, at: Pt), a, b)')).toEqual(['name', 'at'])
+      // One that is also an expression stays an expression: the checker
+      // reads it as a type where the parameter is one. (p: ?*Node) is the
+      // name p given a type, in parentheses.
+      const kind = (source: string) => (parse(source, { startRule: 'Expr' }).module as unknown as { args: { value: { kind: string } }[] }).args[0].value.kind
+      expect(kind('pick((q: i32, r: i32), a, b)')).toBe('TupleExpr')
+      expect(kind('pick((*u8, u32), a, b)')).toBe('TupleExpr')
+      expect(kind('id((p: ?*Node), v)')).toBe('GroupExpr')
     })
 
     test('a named argument still takes a value, not a type', () => {
@@ -416,12 +434,18 @@ describe('parser', () => {
       const pun = (name: string) => ({ kind: 'MemberExpr', member: { kind: 'type', type: { kind: 'PrimitiveType', name } } })
       expect(expr('p.u32')).toMatchObject(pun('u32'))
       expect(expr('p.u8[4]')).toMatchObject({ kind: 'IndexExpr', object: pun('u8') })
-      expect(expr('p.u32-1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
-      // A hyphen ends the name too, though a name may hold one: a member
-      // called u32-count is out of reach (docs/grammar.md says so).
-      expect(expr('p.u32-count')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32'), right: { kind: 'IdentExpr', name: 'count' } })
+      expect(expr('p.u32 - 1')).toMatchObject({ kind: 'BinaryExpr', op: '-', left: pun('u32') })
       expect(expr('p.u32.u8')).toMatchObject({ kind: 'MemberExpr', object: pun('u32'), member: { kind: 'type' } })
       expect(expr('p. u32')).toMatchObject(pun('u32'))
+    })
+
+    test('a name with a hyphen is one member, as it is one identifier anywhere', () => {
+      // docs/grammar.md: the name after a dot follows the identifier rule.
+      expect(expr('x.u32-count')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'u32-count' } })
+      expect(expr('p.u32-1')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'u32-1' } })
+      expect(expr('p.bool-ish')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'bool-ish' } })
+      expect(expr('v.u32-count()')).toMatchObject({ kind: 'CallExpr', callee: { kind: 'MemberExpr', member: { kind: 'field', name: 'u32-count' } } })
+      expect(expr('s.len-1')).toMatchObject({ kind: 'MemberExpr', member: { kind: 'field', name: 'len-1' } })
     })
 
     test('a type pun does not take the next line for the rest of its name', () => {
@@ -441,6 +465,7 @@ describe('parser', () => {
       }
       expect(target('p.u32s = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32s' } } })
       expect(target('p.u32 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'type' } } })
+      expect(target('p.u32-1 = 1')).toMatchObject({ kind: 'AssignmentStmt', target: { member: { kind: 'field', name: 'u32-1' } } })
     })
 
     test('a literal with its type written is a receiver only in parentheses', () => {
@@ -455,8 +480,9 @@ describe('parser', () => {
       const rule = patterns.find((p) => p.name === 'punctuation.accessor.typepun.encantis')
       const pun = (source: string) => (rule ? new RegExp(rule.match).exec(source)?.[0] ?? null : 'no rule')
       expect(pun('p.u32')).toBe('.u32')
-      expect(pun('p.u32-1')).toBe('.u32')
-      expect(pun('p.u32-count')).toBe('.u32')
+      expect(pun('p.u32 - 1')).toBe('.u32')
+      expect(pun('p.u32-1')).toBeNull()
+      expect(pun('p.u32-count')).toBeNull()
       expect(pun('s.boolish')).toBeNull()
       expect(pun('v.u32s()')).toBeNull()
       expect(pun('p.i8_le')).toBeNull()

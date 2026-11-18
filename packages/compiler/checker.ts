@@ -179,6 +179,11 @@ export interface Scope {
 // What declared a variable that a body alone sees (see bindName).
 export type BindingKind = 'loop' | 'if let' | 'match'
 
+// What makes a declaration the checker can meet more than once: a pattern of
+// a let, a named element of one, the variables of a for, an if let or elif
+// let, a match arm (see CheckContext.declared).
+type Declaration = AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm
+
 // === Type Key Helper ===
 
 /**
@@ -396,7 +401,7 @@ export interface ProgramCheckResult {
 }
 
 export function typecheckProgram(
-  modules: Map<string, { module: AST.Module }>,
+  modules: Map<string, { module: AST.Module; source?: string }>,
   entryPath: string,
   options?: TypecheckOptions,
 ): ProgramCheckResult {
@@ -423,7 +428,8 @@ export function typecheckProgram(
     }
     visitImports(loaded.module.decls)
 
-    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports })
+    // Each module's own text, which messages quote (see textOf)
+    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports, source: loaded.source })
     results.set(path, result)
     allErrors.push(...result.errors)
     moduleExports.set(path, getExportedSymbols(loaded.module, result))
@@ -605,83 +611,12 @@ export function isConcreteType(t: ResolvedType): boolean {
 
 // === Check Context ===
 
-// What the checker's tables took in while an expression was only being looked
-// at (see CheckContext.peek), to take it back. The tables share one journal,
-// so a look is undone as a whole: a type left on a node, or a conversion, is
-// something codegen would act on.
-class Trial {
-  private open = 0
-  private undo: (() => void)[] = []
-
-  get active(): boolean {
-    return this.open > 0
-  }
-
-  note(undo: () => void): void {
-    this.undo.push(undo)
-  }
-
-  begin(): number {
-    this.open++
-    return this.undo.length
-  }
-
-  rollback(mark: number): void {
-    while (this.undo.length > mark) this.undo.pop()?.()
-    this.open--
-  }
-}
-
-class TrialMap<K, V> extends Map<K, V> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override set(key: K, value: V): this {
-    if (this.trial.active) this.remember(key)
-    return super.set(key, value)
-  }
-
-  override delete(key: K): boolean {
-    if (this.trial.active) this.remember(key)
-    return super.delete(key)
-  }
-
-  private remember(key: K): void {
-    const had = this.has(key)
-    const was = this.get(key) as V
-    this.trial.note(() => {
-      if (had) super.set(key, was)
-      else super.delete(key)
-    })
-  }
-}
-
-class TrialSet<T> extends Set<T> {
-  constructor(private trial: Trial) {
-    super()
-  }
-
-  override add(value: T): this {
-    if (this.trial.active && !this.has(value)) this.trial.note(() => super.delete(value))
-    return super.add(value)
-  }
-
-  override delete(value: T): boolean {
-    if (this.trial.active && this.has(value)) this.trial.note(() => super.add(value))
-    return super.delete(value)
-  }
-}
-
 class CheckContext {
   source?: string
-  // What is recorded per offset and per node can be taken back after an
-  // expression was only looked at (see peek).
-  trial = new Trial()
-  types = new TrialMap<string, ResolvedType>(this.trial)
-  exprTypes = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  coercions = new TrialMap<AST.Expr, ResolvedType>(this.trial)
-  constants = new TrialMap<AST.Expr, ComptimeValue>(this.trial)
+  types = new Map<string, ResolvedType>()
+  exprTypes = new Map<AST.Expr, ResolvedType>()
+  coercions = new Map<AST.Expr, ResolvedType>()
+  constants = new Map<AST.Expr, ComptimeValue>()
   // The symbol each name was read as where it is written. A parameter or a
   // binding can have the name of a def or of data, and then it is not that
   // constant: the values of a literal are worked out at the end of the
@@ -689,20 +624,22 @@ class CheckContext {
   readAs = new WeakMap<AST.IdentExpr, Symbol>()
   // if and match expressions used as statements: nothing takes their value,
   // so their branches don't have to agree on a type.
-  statementExprs = new TrialSet<AST.Expr>(this.trial)
+  statementExprs = new Set<AST.Expr>()
   // The constant each branch of an if or match of constants is by itself.
   // The branches share one type, and each has to be a value of it.
-  branchConstants = new TrialMap<AST.Expr, ResolvedType>(this.trial)
+  branchConstants = new Map<AST.Expr, ResolvedType>()
   // The patterns that have declared their local. An operand of a builtin is
   // checked again once its type is settled, statements and all: a `let` in
   // one of its branches is then the same declaration, not a second one.
-  // A look (see peek) declares in a scope of its own, and is no first time.
+  // A look (see peek) declares in a scope of its own, and is no first time:
+  // what it adds is taken out when it ends (`lookDeclared`, see declare).
   // The same goes for the variables of a `for`, an `if let` or a match arm,
   // and for a named element of a tuple pattern, `(x:)` or `(x: a)`.
-  declared = new TrialSet<AST.Pattern | AST.PatternElement | AST.ForBinding | AST.IfExpr | AST.ElifBranch | AST.MatchArm>(this.trial)
+  declared = new Set<Declaration>()
+  lookDeclared: Declaration[] = []
   // Indexes read as an optional because they aren't known to be in range
   // (see TypeCheckResult.unproven).
-  unproven = new TrialSet<AST.IndexExpr>(this.trial)
+  unproven = new Set<AST.IndexExpr>()
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -762,8 +699,10 @@ class CheckContext {
   instances: Instance[] = []
   instanceQueue: Instance[] = []
   currentInstance: Instance | null = null
-  calls = new TrialMap<AST.CallExpr, AST.CallExpr | AST.TupleExpr>(this.trial)
-  fieldOrder = new TrialMap<AST.TupleExpr, number[]>(this.trial)
+  calls = new Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>()
+  // Recorded again, or deleted, each time a tuple meets a struct by name
+  // (see recordFieldOrder), so the check after a look says what stays.
+  fieldOrder = new Map<AST.TupleExpr, number[]>()
   // How many literals were registered when the second pass came to each
   // generic, which is where a function written in its place would add its own
   literalSlots = new Map<AST.FuncDecl, number>()
@@ -828,10 +767,10 @@ class CheckContext {
   refused = new Set<AST.CallExpr>()
   // The scopes that hold what a look at an expression declares (see untraced)
   lookScopes = new WeakSet<Scope>()
-  // How many attempts are open (see attempt)
-  attempting = 0
-  // How many looks are open (see untraced)
+  // How many looks are open (see untraced), and of them how many are attempts
+  // (see attempt)
   looking = 0
+  attempting = 0
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
@@ -1175,6 +1114,15 @@ class CheckContext {
     // Record definition at function name offset (need to find it in span)
     // FuncDecl span starts at 'func' keyword, ident follows
     this.recordDefinition(known, decl.span.start)
+    this.replacesBuiltin(name, decl.span.start)
+  }
+
+  // A function the module declares or imports with the name of a builtin is
+  // what that name calls in the module: said once, where it is declared. A
+  // variable of the name is no function, and calls of the name still reach
+  // the builtin (reference 10).
+  private replacesBuiltin(name: string, offset: number): void {
+    if (BUILTIN_NAMES.has(name)) this.warn(offset, `'${name}' replaces the builtin ${name} in this module`)
   }
 
   // A test's function takes over the name of the module's function, for the
@@ -2887,6 +2835,14 @@ class CheckContext {
     }
   }
 
+  // Marks a declaration as made: checked again, it is the same one (see
+  // declared). One that a look makes is taken out when the look ends.
+  private declare(node: Declaration): void {
+    if (this.declared.has(node)) return
+    this.declared.add(node)
+    if (this.looking) this.lookDeclared.push(node)
+  }
+
   // Where a `let` declares its variables: the scope it is in, past the
   // variables of a `for` around it, which only the loop's body sees.
   private letScope(): Scope {
@@ -2934,7 +2890,7 @@ class CheckContext {
         if (existing && !this.declared.has(pattern)) {
           this.error(pattern.span.start, `'${pattern.name}' is already declared in this scope`)
         }
-        this.declared.add(pattern)
+        this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
         this.letScope().symbols.set(pattern.name, sym)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
@@ -4045,7 +4001,7 @@ class CheckContext {
   // attempt, which keeps nothing of a failure but that it was one. Only a
   // look is cut short: what the check records, it records.
   inferCall(expr: AST.CallExpr): ResolvedType {
-    if (this.trial.active) {
+    if (this.looking) {
       const settled = this.settled.get(expr)
       if (settled) return settled
       const failed = this.failed.get(expr) ?? (this.attempting && this.refused.has(expr) ? RECOVERY : undefined)
@@ -4436,9 +4392,10 @@ class CheckContext {
   }
 
   // Which of the functions that share a name a call means: the one whose
-  // parameter types are the argument types, or else the only one the
-  // arguments can be passed to. Null, with the error reported, when there is
-  // none or more than one.
+  // parameter types are the types of the arguments that have one, where the
+  // others (untyped literals) fit, or else the only one the arguments can be
+  // passed to. Null, with the error reported, when there is none or more
+  // than one.
   private pickOverload(expr: AST.CallExpr, name: string, members: readonly string[]): string | null {
     const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
     const fail = (message?: string): null => {
@@ -4469,8 +4426,26 @@ class CheckContext {
     // parameter asks for that very range.
     const key = (type: ResolvedType) => (hasOwnType(type) ? canonicalKey(type) : null)
     const same = (param: ResolvedType, arg: ResolvedType) => key(arg) !== null && key(arg) === key(param)
-    let found = typed ? candidates.filter((c) => c.params.every((p, i) => same(p.type, types[i]))) : []
-    if (typed && found.length !== 1) found = candidates.filter((c) => c.params.every((p, i) => same(p.type, withoutRanges(types[i]))))
+    // An argument without a type of its own (a literal, or one that is
+    // nothing by itself) is exact wherever it fits: gt(x, 10) with x a u32
+    // is gt(u32, u32), not gt(f64, f64), which would convert x. So is a
+    // tuple of typed values and literals where its typed values are exact:
+    // f((x, 1)) is f((u32, u32)). Functions that are exact alike are as
+    // ambiguous as before.
+    const own = alone.map((type) => (type && hasOwnType(type) ? type : null))
+    const exactParts = (param: ResolvedType, arg: ResolvedType | null, as: (type: ResolvedType) => ResolvedType) => {
+      if (arg === null) return true
+      const filled = literalsAs(param, arg)
+      return !hasOwnType(filled) || same(param, as(filled))
+    }
+    const exact = (as: (type: ResolvedType) => ResolvedType) =>
+      candidates.filter(
+        (c) =>
+          c.params.every((p, i) => own[i] === null || same(p.type, as(own[i] as ResolvedType))) &&
+          c.params.every((p, i) => own[i] !== null || (this.fits(args[i], p.type) && exactParts(p.type, alone[i], as))),
+      )
+    let found = exact((type) => type)
+    if (found.length !== 1) found = exact(withoutRanges)
     if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
     if (found.length !== 1) {
       // An argument that is nothing by itself, and that no one function gives
@@ -5592,7 +5567,7 @@ class CheckContext {
             return primitive('u32')
           }
         }
-        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}`)
+        this.error(expr.span.start, `no field '${expr.member.name}' on type ${typeToString(objType)}${this.subtractionHint(expr.object, expr.member.name, objType)}`)
         return primitive('i32')
       }
 
@@ -5661,6 +5636,35 @@ class CheckContext {
         return punType
       }
     }
+  }
+
+  // A member's name is a whole identifier, hyphens included, so `p.u32-1`
+  // asks for a member called u32-1. Where a part of the name before a hyphen
+  // is a member (a field, .len, or a type pun), a subtraction was likely
+  // meant, and the hint shows it written with spaces.
+  private subtractionHint(object: AST.Expr, name: string, type: ResolvedType): string {
+    for (let at = name.lastIndexOf('-'); at > 0; at = name.lastIndexOf('-', at - 1)) {
+      const head = name.slice(0, at)
+      const rest = name.slice(at + 1)
+      if (rest === '' || !(PRIMITIVE_NAMES.has(head) || hasMember(type, head))) continue
+      const text = this.textOf(object)
+      if (text === null) return `: for a subtraction write the - with spaces, as in \`${head} - ${rest}\``
+      return `: for a subtraction write \`${text}.${head} - ${rest}\``
+    }
+    return ''
+  }
+
+  // The source of an expression as written, where the checker has the source
+  // (an instance's offsets are the generic's plus a multiple of the stride);
+  // otherwise what the syntax tree says of the usual forms (names, members,
+  // indexing, calls, parentheses), or null.
+  private textOf(expr: AST.Expr): string | null {
+    if (this.source) {
+      const start = expr.span.start % INSTANCE_STRIDE
+      const end = expr.span.end - (expr.span.start - start)
+      return this.source.slice(start, end)
+    }
+    return exprText(expr)
   }
 
   // items[start..end] is a []T over the same memory. On a *[N]T, constant
@@ -6463,6 +6467,7 @@ class CheckContext {
     }
     this.moduleScope.symbols.set(decl.ident, { kind: 'generic', decl, owner: this, instances: new Map(), valid })
     this.recordDefinition(decl.ident, decl.span.start)
+    this.replacesBuiltin(decl.ident, decl.span.start)
   }
 
   // Whether a type as written is a function type: one written out, or a name
@@ -6503,6 +6508,10 @@ class CheckContext {
           // In the instance it is a function of that name, which the other
           // parameter of the name would hide, or be hidden by.
           reject(at, `parameter '${p.ident}' is declared twice`)
+        } else if (BUILTIN_NAMES.has(p.ident) && decl.ident) {
+          // And so it is what a call of the name means in the body, in
+          // place of the builtin: said once, here, as for a declared one.
+          this.warn(at, `'${p.ident}' replaces the builtin ${p.ident} in the body of '${decl.ident}'`)
         }
       } else if (!p.comptime) {
         reject(at, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
@@ -6877,8 +6886,9 @@ class CheckContext {
 
   // The type parameters of an inferred call, found from its arguments; null,
   // with the error reported, when they cannot be. The first argument that can
-  // decide a type parameter decides it. An untyped literal never does: it takes
-  // the type the parameter turns out to have.
+  // decide a type parameter decides it, by its typed parts where some of it is
+  // untyped. An untyped literal never does: it takes the type the parameter
+  // turns out to have.
   private inferTypeArgs(
     expr: AST.CallExpr,
     name: string,
@@ -6919,6 +6929,10 @@ class CheckContext {
         match(param.type, type, bound)
         typed.push(param)
       } else {
+        // The typed parts of an argument decide as a typed argument does:
+        // keep((i, 1)) with i a u32 gives T = u32. The literals in it
+        // decide nothing (see matchType).
+        match(param.type, type, bound)
         untyped.push({ param, arg, type })
       }
     }
@@ -6968,20 +6982,25 @@ class CheckContext {
 
   // The type an expression has by itself, found without leaving a trace. An
   // argument that may decide a type parameter is looked at before the type it
-  // is checked against is known, and then checked as any argument is. Whatever
-  // the look recorded has to go: a `let` inside the argument would be declared
-  // twice, a literal it took the address of would stay marked as its own
-  // writable cell, and the call would no longer compile to what the same call
-  // of a hand-written function does. Errors stay: the check repeats them.
+  // is checked against is known, and then checked as any argument is. What
+  // the look declared and registered has to go: a `let` inside the argument
+  // would be declared twice, a literal it took the address of would stay
+  // marked as its own writable cell, and the call would no longer compile to
+  // what the same call of a hand-written function does. Errors stay: the
+  // check repeats them.
   private peek(expr: AST.Expr): ResolvedType {
     return this.untraced(expr, () => this.inferExpr(expr))
   }
 
-  // Runs a look at `expr` and takes back what it recorded. Errors stay.
+  // Runs a look at `expr` and takes back its scope and what it declared, the
+  // literals it registered and the marks it left on literals. Errors stay.
+  // What it recorded per node and per offset is not taken back: an
+  // expression that was looked at is always checked after the look, which
+  // records the same things again, over what the look left.
   private untraced<T>(expr: AST.Expr | null, look: () => T): T {
     // A call the look will not walk (see inferCall) keeps its marks.
     const literals = literalMarks(expr, (call) => this.known(call))
-    const recorded = this.trial.begin()
+    const declared = this.lookDeclared.length
     const registered = this.pendingLiterals.length
     const unplaced = this.unplaced.length
     const warned = this.warnings.length
@@ -6995,11 +7014,11 @@ class CheckContext {
     } finally {
       this.looking--
     }
+    for (const node of this.lookDeclared.splice(declared)) this.declared.delete(node)
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
     this.unplaced.length = unplaced
-    this.trial.rollback(recorded)
     for (const { node, marks } of literals) {
       delete node.mut
       delete node.dataId
@@ -7557,6 +7576,38 @@ function hasMember(type: ResolvedType, name: string): boolean {
 // after a colon. Forms that only a type can have are already a TypeExpr; the
 // rest are expressions that are also types (u32, (i32, i32)). Null for
 // anything else: a variable, a literal, ().
+// An expression written out from the syntax tree, for a message: the usual
+// forms only (names, members, indexing, calls, parentheses and decimal
+// integers), null for anything else.
+function exprText(expr: AST.Expr): string | null {
+  const all = (parts: (string | null)[]) => (parts.every((p) => p !== null) ? parts.join('') : null)
+  switch (expr.kind) {
+    case 'IdentExpr':
+      return expr.name
+    case 'LiteralExpr':
+      return expr.value.kind === 'int' && expr.value.radix === 10 ? String(expr.value.value) : null
+    case 'GroupExpr':
+    case 'TupleExpr': {
+      const inner = groupedExpr(expr)
+      return inner === null ? null : all(['(', exprText(inner), ')'])
+    }
+    case 'IndexExpr':
+      return all([exprText(expr.object), '[', exprText(expr.index), ']'])
+    case 'MemberExpr': {
+      const m = expr.member
+      const member =
+        m.kind === 'field' ? m.name : m.kind === 'index' ? String(m.value) : m.kind === 'deref' ? '*' : m.type.kind === 'TypeRef' ? m.type.name : null
+      return all([exprText(expr.object), '.', member])
+    }
+    case 'CallExpr': {
+      const args = expr.args.map((a) => (a.value === null ? `${a.name}:` : all([a.name === null ? '' : `${a.name}: `, exprText(a.value)])))
+      return all([exprText(expr.callee), '(', ...args.flatMap((a, i) => (i === 0 ? [a] : [', ', a])), ')'])
+    }
+    default:
+      return null
+  }
+}
+
 function typeOfArg(expr: AST.Expr): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':
@@ -7588,6 +7639,13 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
         args.push(type)
       }
       return { kind: 'TypeApply', name: expr.callee.name, args, span: expr.span }
+    }
+    case 'GroupExpr': {
+      // (at: Pt) parses as the name `at` given the type Pt, in parentheses:
+      // as a type it is the struct of that one field, as (v: f64) is.
+      const inner = expr.expr
+      if (inner.kind !== 'AnnotationExpr' || inner.expr.kind !== 'IdentExpr') return null
+      return { kind: 'CompositeType', fields: [{ kind: 'Field', ident: inner.expr.name, type: inner.type, span: inner.span }], span: expr.span }
     }
     default:
       return null
@@ -7671,6 +7729,24 @@ function sameSignature(wanted: FuncRT, given: FuncRT): boolean {
     return canonicalKey(func(params, [field(null, only?.kind === 'tuple' ? only : tuple(returns))]))
   }
   return asStruct(wanted) === asStruct(given)
+}
+
+// An argument's type with each untyped literal in it given the type of the
+// part of the parameter it would be passed for: (u32, int(1)) for a
+// (u64, u64) is (u32, u64), and the typed parts stay what they are. Only
+// tuples and pointers are looked into; anything else untyped (an array
+// literal) is the parameter's type, as a literal is. A pointer with an
+// untyped literal in it is one to a literal (&(x, 1)), whose cell is laid out
+// for the parameter: it is the parameter's kind of pointer.
+function literalsAs(param: ResolvedType, arg: ResolvedType): ResolvedType {
+  if (hasOwnType(arg)) return arg
+  const a = unwrap(arg)
+  const p = unwrap(param)
+  if (a.kind === 'tuple' && p.kind === 'tuple' && a.fields.length === p.fields.length) {
+    return { ...a, fields: a.fields.map((f, i) => ({ ...f, type: literalsAs(p.fields[i].type, f.type) })) }
+  }
+  if (a.kind === 'pointer' && p.kind === 'pointer') return { ...p, pointee: literalsAs(p.pointee, a.pointee) }
+  return param
 }
 
 // Whether a type is the recovery type, or what points to it, holds it or
@@ -7896,8 +7972,9 @@ function matchType(
   const u = unwrap(actual)
   switch (pattern.kind) {
     case 'TypeRef':
-      // A later argument never re-decides, and () decides nothing.
-      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual)) return
+      // A later argument never re-decides, and () decides nothing, nor does
+      // an untyped literal, also where it is a part of a typed tuple.
+      if (!typeParams.includes(pattern.name) || bound.has(pattern.name) || isUnit(actual) || !hasOwnType(actual)) return
       // `value`: nothing but tuples lies between the argument and this part
       // of it, so it is a value the argument holds, not memory it points to.
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)

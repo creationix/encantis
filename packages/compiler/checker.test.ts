@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
-import { concretizeType, isConcreteType, typecheck, typeKey, type TypeCheckResult } from './checker'
+import { concretizeType, isConcreteType, typecheck, typecheckProgram, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
 import { parseType as parseTypeLib } from './type-lib'
 import {
@@ -2683,6 +2683,71 @@ describe('struct constructors', () => {
   })
 })
 
+// The name after a dot is a whole identifier, hyphens included, as it is
+// everywhere else (reference 1.2, 4.6).
+describe('members whose name holds a hyphen', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+
+  test('a field named like a type pun and a hyphen is reached as a member', () => {
+    const src = `
+      type S = (u32-count: u32, bool-ish: bool)
+      func f(x: S, p: *S) -> u32 => if x.bool-ish { x.u32-count } else { p.u32-count }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const at = src.indexOf('x.u32-count')
+    const member = [...result.exprTypes].find(([e]) => e.kind === 'MemberExpr' && e.span.start === at)
+    expect(member && typeToString(member[1])).toBe('u32')
+  })
+
+  test('a member that is not there, where a subtraction was likely meant, says how to write one', () => {
+    expect(errs(`func f(p: *u8) {
+  let q = p.u32-1
+}`)).toEqual(["no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`"])
+    expect(errs(`func f(s: []u8) {
+  let n = s.len-1
+}`)).toEqual(["no field 'len-1' on type []u8: for a subtraction write `s.len - 1`"])
+    // The longest part before a hyphen that is a member is the one meant.
+    expect(errs(`type S = (a: u32, a-b: u32)
+func f(x: S) {
+  let n = x.a-b-c
+}`))
+      .toEqual(["no field 'a-b-c' on type S: for a subtraction write `x.a-b - c`"])
+    // Nothing before a hyphen is a member: nothing to suggest.
+    expect(errs(`type S = (a: u32)
+func f(x: S) {
+  let n = x.zz-1
+}`)).toEqual(["no field 'zz-1' on type S"])
+    // An assignment to one is the same mistake.
+    expect(errs(`func f(p: *mut u8) { p.u32-1 = 3 }`)).toEqual(["no field 'u32-1' on type *mut u8: for a subtraction write `p.u32 - 1`"])
+  })
+
+  test('the hint writes out what the member is of, however that is written', () => {
+    const src = `type Pt = (x: u32, y: u32)
+func get(p: Pt) -> Pt => p
+func f(p: Pt, ps: []Pt, q: *Pt, t: (Pt, u8)) -> u32 => get(p).y-2 + ps[0].x-1 + q.*.x-1 + (p).y-1 + t.0.x-1
+`
+    const hints = (messages: string[]) => messages.filter((m) => m.startsWith('no field'))
+    const expected = [
+      "no field 'y-2' on type Pt: for a subtraction write `get(p).y - 2`",
+      "no field 'x-1' on type Pt: for a subtraction write `ps[0].x - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `q.*.x - 1`",
+      "no field 'y-1' on type Pt: for a subtraction write `(p).y - 1`",
+      "no field 'x-1' on type Pt: for a subtraction write `t.0.x - 1`",
+    ]
+    // As the command line checks a program: from its files, with their text.
+    const path = '/virtual/hint.ents'
+    const program = typecheckProgram(new Map([[path, { module: parse(src).module!, source: src }]]), path)
+    expect(hints(program.errors.map((e) => e.message))).toEqual(expected)
+    // And from the syntax tree alone.
+    expect(hints(checkModule(src).errors.map((e) => e.message))).toEqual(expected)
+    // What cannot be written out from the tree is left out of the hint.
+    expect(hints(checkModule(`type Pt = (x: u32, y: u32)
+func f(c: bool, p: Pt) -> u32 => (if c { p } else { p }).x-1
+`).errors.map((e) => e.message))).toEqual(["no field 'x-1' on type Pt: for a subtraction write the - with spaces, as in `x - 1`"])
+  })
+})
+
 // A struct, a tuple, a slice and an array have no operators: the types a
 // generic's type argument can be and its body cannot assume operators for.
 describe('operands of operators', () => {
@@ -2915,7 +2980,7 @@ describe('builtins', () => {
       export func f() -> i32 => max(1, 2, 3)
     `)
     expect(result.errors.map(e => e.message)).toEqual([])
-    expect(result.warnings.map(e => e.message)).toEqual([])
+    expect(result.warnings.map(e => e.message)).toEqual(["'max' replaces the builtin max in this module"])
     // A variable of that name is not a function to call: the builtin is still meant.
     expect(errs(`func f(a: i32, b: i32) -> i32 {
       let max = max(a, b)
@@ -2965,6 +3030,62 @@ describe('builtins', () => {
       data table = [10:u8, 20, 30, 40]
       func f(i: u32#4, j: u32#4, c: bool) -> u8 => table[max(i, if c { j } else { 9 })]
     `)).toEqual(["runtime index on *[4]u8 requires 'if let' or '??' (no optional type for u8)"])
+  })
+
+  test('a function that replaces a builtin is warned of once, where it is declared', () => {
+    const src = `
+      func max(a: u32, b: u32) -> u32 => a
+      func max(a: f64, b: f64) -> f64 => a
+      func min(comptime T: type, a: T, b: T) -> T => a
+      import "env" "abs" func abs(x: i32) -> i32
+      func maximum(a: u32) -> u32 => a
+      func clz-of(a: u32) -> u32 => a
+      export func f(a: u32, b: f64, sqrt: f64) -> f64 {
+        let popcnt = max(a, a) + min(a, a) + maximum(a) + clz-of(a) + abs(1) as u32
+        return max(b, b) + sqrt(sqrt) + popcnt as f64
+      }
+      test "t" {
+        func ceil(x: f64) -> f64 => x
+        assert ceil(1.5) == 1.5
+      }
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    // One for each declaration, plain, shared, generic, imported or in a
+    // test, and none for a call or for a parameter or local of the name.
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual([
+      "'max' replaces the builtin max in this module",
+      "'max' replaces the builtin max in this module",
+      "'min' replaces the builtin min in this module",
+      "'abs' replaces the builtin abs in this module",
+      "'ceil' replaces the builtin ceil in this module",
+    ])
+    expect(replaced.map(w => w.offset)).toEqual([
+      src.indexOf('func max(a: u32'),
+      src.indexOf('func max(a: f64'),
+      src.indexOf('func min'),
+      src.indexOf('func abs'),
+      src.indexOf('func ceil'),
+    ])
+  })
+
+  test('a comptime function parameter that replaces a builtin in its body is warned of once, where it is declared', () => {
+    // Inside the body `max` is the function given for it, not the builtin:
+    // the same surprise as a declared function of the name, in a smaller
+    // place. Said once, not for each instance.
+    const src = `
+      func pick(a: u32, b: u32) -> u32 => a * 100 + b
+      func last(a: u32, b: u32) -> u32 => b
+      func app(comptime max: (u32, u32) -> u32, a: u32) -> u32 => max(a, 1)
+      func id(comptime f: (u32, u32) -> u32, max: u32) -> u32 => f(max, 1)
+      export func g(a: u32) -> u32 => app(pick, a) + app(last, a) + id(pick, a)
+    `
+    const result = checkModule(src)
+    expect(result.errors.map(e => e.message)).toEqual([])
+    const replaced = result.warnings.filter(w => w.message.includes('replaces'))
+    expect(replaced.map(w => w.message)).toEqual(["'max' replaces the builtin max in the body of 'app'"])
+    expect(replaced.map(w => w.offset)).toEqual([src.indexOf('comptime max')])
   })
 
   test('a variable in scope hides the declared function, and the builtin is meant again', () => {
@@ -3053,6 +3174,61 @@ describe('functions that share a name', () => {
       func len(p: *mut [4]u8) -> u32 => 5
     `
     expect(called(mut, 'func f(p: *mut [4]u8, q: *[4]u8) -> u32 => len(p) + len(q)', 'len')).toEqual(['len:*mut.\'4\'u8'])
+  })
+
+  test('a literal beside typed arguments is exact where it fits', () => {
+    const gt = `
+      func gt(a: u32, b: u32) -> bool => a > b
+      func gt(a: f64, b: f64) -> bool => a > b
+    `
+    // x is a u32: gt(u32, u32) takes it as it is and 10 fits; gt(f64, f64)
+    // would convert x. Either side, and as the receiver.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 10) || gt(10, x) || x.gt(10)', 'gt')).toEqual([])
+    expect(called(gt, 'func f(x: f64) -> bool => gt(x, 10) || gt(1.5, x)', 'gt')).toEqual(['gt:f64|f64', 'gt:f64|f64'])
+    // A loop counter in a range is exact as its type, as it is without a literal.
+    expect(called(gt, 'func f() -> (n: u32) { for i in 12 { if gt(i, 3) { n += 1 } } }', 'gt')).toEqual([])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(gt, 'func f(x: u32) -> bool => gt(x, 2.5)', 'gt')).toEqual(['gt:f64|f64'])
+    // Two that are exact alike are still ambiguous: the typed u8 is a u8 for
+    // both, and 3 fits both.
+    const put = `
+      func put(a: u8, b: u8) -> u32 => 1
+      func put(a: u8, b: u32) -> u32 => 2
+    `
+    expect(errs(`${put}\nfunc f(x: u8) -> u32 => put(x, 3)`)).toEqual(["'put' is ambiguous for (u8, int(3))"])
+    expect(called(put, 'func f(x: u8) -> u32 => put(x, 300) + put(x, 3:u32)', 'put')).toEqual(['put:u8|u32', 'put:u8|u32'])
+  })
+
+  test('a literal inside a tuple beside typed values is exact where it fits', () => {
+    // (i, 1) is a (u32, u32) for f((u32, u32)) as it stands, and a
+    // conversion of i for f((u64, u64)): the same rule as for gt(x, 10), in
+    // the parts of the argument. Also by name, nested and behind &.
+    const f = `
+      type P32 = (x: u32, y: u32)
+      type P64 = (x: u64, y: u64)
+      func f(p: (u32, u32)) -> u32 => 1
+      func f(p: (u64, u64)) -> u32 => 2
+      func g(p: P32) -> u32 => 1
+      func g(p: P64) -> u32 => 2
+      func h(p: ((u32, u32), u8)) -> u32 => 1
+      func h(p: ((f64, f64), u8)) -> u32 => 2
+      func k(p: *(u32, u32)) -> u32 => 1
+      func k(p: *(f64, f64)) -> u32 => 2
+    `
+    const exact = 'func a(i: u32) -> u32 => f((i, 1)) + f((1, i)) + g((x: i, y: 1)) + h(((i, 1), 2)) + k(&(i, 1))'
+    for (const name of ['f', 'g', 'h', 'k']) expect(called(f, exact, name)).toEqual([])
+    expect(called(f, 'func a(i: u64) -> u32 => f((i, 1))', 'f')).toEqual(['f:<u64|u64>'])
+    expect(called(f, 'func a(i: u64) -> u32 => g((x: 1, y: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
+    // A literal that does not fit the exact one leaves the conversion.
+    expect(called(f, 'func a(i: u32) -> u32 => f((i, 5000000000))', 'f')).toEqual(['f:<u64|u64>'])
+    // Where each function converts something, as before: ambiguous.
+    const both = `
+      func m(p: (u64, u64), q: u32) -> u32 => 1
+      func m(p: (u32, u32), q: u64) -> u32 => 2
+    `
+    expect(errs(`${both}\nfunc a(i: u32, j: u32) -> u32 => m((i, 1), j)`)).toEqual(["'m' is ambiguous for ((u32, int(1)), u32)"])
+    // Nothing typed in the tuple: nothing to say which.
+    expect(errs(`${f}\nfunc a() -> u32 => f((1, 2))`)).toEqual(["'f' is ambiguous for ((int(1), int(2)))"])
   })
 
   test('without one, the only function the arguments can be passed to', () => {

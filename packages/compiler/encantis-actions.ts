@@ -1804,7 +1804,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return typeArg(type)
   },
 
-  Arg_funcType(type, _lookahead) {
+  Arg_otherType(type, _lookahead) {
     return typeArg(type)
   },
 
