@@ -4007,6 +4007,23 @@ describe('the variables of a for, an if let or a match arm', () => {
       .toEqual([arm('n', 'a loop variable in scope')])
   })
 
+  // An argument that decides a type parameter, or which function of a name
+  // is meant, is looked at before it is checked. What the look declares is
+  // taken back with it: at the merge of claude/dec-generics, whose looks
+  // took back only a let's patterns, an if let or a loop in an argument of
+  // an overloaded call had its name taken over without a word.
+  test('a binding in an argument that is looked at first is checked as anywhere', () => {
+    const calls = 'func id(comptime T: type, x: T) -> T => x\nfunc over(x: u32) -> u32 => x\nfunc over(x: u64) -> u64 => x\n'
+    for (const call of ['id', 'over']) {
+      expect(errs(`${calls}func f(p: ?*u32, v: u32) -> u32 => ${call}(if let v = p { v.* } else { 0 })`)).toEqual([ifLet('v', 'a parameter')])
+      expect(errs(`${calls}func f(c: bool, i: u32) -> u32 => ${call}(if c {\n let t: u32 = 0\n for i in 3 { t += i }\n t\n} else { 0 })`))
+        .toEqual([loop('i', 'a parameter')])
+      expect(errs(`${calls}func f(k: u32, n: u32) -> u32 => ${call}(match k {\n 0 => 1\n n => n\n})`)).toEqual([arm('n', 'a parameter')])
+      // And without a clash it is one declaration, however often it is looked at.
+      expect(errs(`${calls}func f(p: ?*u32) -> u32 => ${call}(if let v = p { v.* } else { 0 }) + ${call}(if let v = p { v.* } else { 1 })`)).toEqual([])
+    }
+  })
+
   test('the names are free again after the body', () => {
     expect(errs(`
       data bytes = [1:u8, 2, 3]

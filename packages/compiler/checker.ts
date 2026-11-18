@@ -638,8 +638,10 @@ class CheckContext {
   declared = new Set<Declaration>()
   lookDeclared: Declaration[] = []
   // Indexes read as an optional because they aren't known to be in range
-  // (see TypeCheckResult.unproven).
+  // (see TypeCheckResult.unproven). One a look marks is taken out when it
+  // ends, as a declaration is (`lookUnproven`).
   unproven = new Set<AST.IndexExpr>()
+  lookUnproven: AST.IndexExpr[] = []
   // The element an assignment writes to, while its target is inferred: an
   // index into it that isn't known to be in range is reported as a write.
   writingTo: AST.IndexExpr | null = null
@@ -2579,7 +2581,7 @@ class CheckContext {
         for (const { name, offset, index } of forNames(binding).reverse()) {
           this.bindName(loop, name, index ? primitive('u32') : elemType, offset, 'loop', binding)
         }
-        this.declared.add(binding)
+        this.declare(binding)
         this.currentScope = loop
         try {
           this.checkLoopBody(stmt.body)
@@ -2923,7 +2925,7 @@ class CheckContext {
             if (this.lookup(varName) && !this.declared.has(element)) {
               this.error(pattern.span.start, `'${varName}' is already declared in this scope`)
             }
-            this.declared.add(element)
+            this.declare(element)
             const sym: Symbol = { kind: 'local', type: tupleField.type }
             this.letScope().symbols.set(varName, sym)
             const at = namedPartAt(element)
@@ -5152,7 +5154,7 @@ class CheckContext {
     if (elif.pattern) {
       this.inferExpr(elif.condition)
       for (const name of patternNames(elif.pattern)) this.bindName(this.currentScope, name, null, elif.span.start, 'if let', elif)
-      this.declared.add(elif)
+      this.declare(elif)
     } else {
       this.checkCondition(elif.condition)
     }
@@ -5924,6 +5926,7 @@ class CheckContext {
     // has to resolve the index where it is taken.
     const unproven = (elem: ResolvedType, problem: string, why = ''): ResolvedType => {
       if (!row && (unwrap(elem).kind === 'pointer' || unwrap(elem).kind === 'slice')) {
+        if (this.looking && !this.unproven.has(expr)) this.lookUnproven.push(expr)
         this.unproven.add(expr)
         return optionalOf(elem)
       }
@@ -6328,7 +6331,7 @@ class CheckContext {
     const then: Scope = { parent: prevScope, symbols: new Map() }
     // The binding is defined at its name, not at the value it is taken from
     this.bindName(then, pattern.name, elemType, expr.span.start, 'if let', expr, pattern.span.start)
-    this.declared.add(expr)
+    this.declare(expr)
     this.types.set(typeKey(expr.condition.span.start, 'IfLetBinding'), elemType)
     this.currentScope = then
     try {
@@ -6402,7 +6405,7 @@ class CheckContext {
     const subject = unwrap(stripMax(subjectType))
     for (const arm of expr.arms) {
       for (const name of arm.patterns.flatMap(patternNames)) this.bindName(this.currentScope, name, null, arm.span.start, 'match', arm)
-      this.declared.add(arm)
+      this.declare(arm)
       for (const pattern of arm.patterns) {
         // Only a number, a bool or _ is compared: a tuple pattern would
         // never match.
@@ -7001,6 +7004,7 @@ class CheckContext {
     // A call the look will not walk (see inferCall) keeps its marks.
     const literals = literalMarks(expr, (call) => this.known(call))
     const declared = this.lookDeclared.length
+    const unproven = this.lookUnproven.length
     const registered = this.pendingLiterals.length
     const unplaced = this.unplaced.length
     const warned = this.warnings.length
@@ -7015,6 +7019,7 @@ class CheckContext {
       this.looking--
     }
     for (const node of this.lookDeclared.splice(declared)) this.declared.delete(node)
+    for (const index of this.lookUnproven.splice(unproven)) this.unproven.delete(index)
     this.currentScope = scope
     this.warnings.length = warned
     this.pendingLiterals.length = registered
