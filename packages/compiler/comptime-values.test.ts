@@ -7,9 +7,9 @@
 // grammar.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import type * as AST from './ast'
 import { parse } from './parser'
 import { typecheck, typecheckProgram } from './checker'
@@ -149,7 +149,12 @@ describe('zero cost: each instance is the function written by hand for its numbe
       try {
         const [restated, hand, main] = byHand
         const addr = 'export func addr() -> u32 => mine as u32\n'
-        await writeFile(join(dir, 'g.ents'), `import "${relative(dir, libDir)}/${file}" (\n  ${uses}\n)\n${lib}${addr}`)
+        // The library file is copied next to the program and imported as
+        // source names a file: the path of lib/ from the temporary directory
+        // is not one on Windows, where the two can be on different drives.
+        await mkdir(join(dir, 'lib'))
+        await copyFile(join(libDir, `${file}.ents`), join(dir, 'lib', `${file}.ents`))
+        await writeFile(join(dir, 'g.ents'), `import "./lib/${file}" (\n  ${uses}\n)\n${lib}${addr}`)
         const type = /^type .*\n/.exec(hand)?.[0] ?? ''
         await writeFile(join(dir, 'hand.ents'), hand)
         await writeFile(join(dir, 'h.ents'), `${type}import "./hand" (\n  ${restated}\n)\n${main}${addr}`)
