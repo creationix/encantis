@@ -3669,6 +3669,17 @@ export func f(t: *[2][3]i32, u: [][3]i32) -> i32 => at(t)[0] + first(u)[1] + (sa
     ])
   })
 
+  // fix-round-2 types &p[i] of a many-pointer table as where the row pointer
+  // is, a **[M]T: at the merge of claude/dec-latetypes such an address,
+  // given where the generic wants a *T, lost the note it had on that branch.
+  test('the address of an element of a many-pointer table, where a *T is wanted, gets the note too', () => {
+    const source = `func at(comptime T: type, p: [*]T, i: u32) -> *T => &p[i]
+export func f(p: [*][3]i32) -> i32 => at(p, 1)[2]`
+    const result = check(source)
+    expect(result.errors.map(e => e.message)).toEqual(['cannot assign **[3]i32 to *[3]i32, in at(T = [3]i32)'])
+    expect(result.errors[0].notes?.[0]?.message).toBe(rowNote('[*][3]i32'))
+  })
+
   test('a pointer to a T that is no element of a table gets no such note', () => {
     const source = `func load(comptime T: type, p: *T) -> T => p
 export func f(p: *[3]i32) -> i32 => load(p)[0]`

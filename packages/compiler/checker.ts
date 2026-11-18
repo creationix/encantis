@@ -5913,7 +5913,14 @@ class CheckContext {
       const pointee = pointeeArray(row)
       return table && pointee && typeEquals(pointee, value) ? { table, pointee } : null
     }
-    const found = tableOf(actual, expected) ?? tableOf(expected, actual)
+    // &s[i] of a table is where the row pointer is, a **[M]T where a *T
+    // is wanted (4.7).
+    const addressOf = (address: ResolvedType, wanted: ResolvedType) => {
+      const a = unwrap(address)
+      const w = unwrap(wanted)
+      return a.kind === 'pointer' && w.kind === 'pointer' ? tableOf(a.pointee, unwrap(w.pointee)) : null
+    }
+    const found = tableOf(actual, expected) ?? tableOf(expected, actual) ?? addressOf(actual, expected) ?? addressOf(expected, actual)
     if (!found) return undefined
     const message = `in a ${typeToString(found.table)} each element is a pointer to its row (reference 2.5): ${rowsAdvice(found.pointee)}`
     return [{ offset, message }]
