@@ -4300,3 +4300,28 @@ describe('a value in memory', () => {
     expect(wat).toContain('(i32.load8_u (i32.add (local.get $p) (i32.const 715827883)))')
   })
 })
+
+describe('a constant expression as the index of a value array', () => {
+  // The checker proves the index of a value array with any constant, and
+  // codegen picks the element by the value the checker worked out. Before,
+  // only a literal was read here, and each of these threw in codegen.
+  const twinOf = (source: string, constant: string) => {
+    expect(modWat(source.replaceAll('INDEX', constant))).toBe(modWat(source.replaceAll('INDEX', '2')))
+  }
+  test('read from an array held in registers', () => {
+    const f = 'export func f(x: f64) -> f64 {\n  let v: [3]f64 = [x, 2.0, x * 3.0]\n  return v[INDEX]\n}'
+    expect(modWat(f.replace('INDEX', '1 + 1'))).toContain('(local.get $v_2)')
+    for (const index of ['1 + 1', '(2)', '((2))', '3 - 1', '2:u32', 'k - 1', 'two', 'sizeof(u16)']) {
+      twinOf(`def k = 3\n${f}\ndef two = 2`, index)
+    }
+  })
+  test('a field of a struct in registers and in memory', () => {
+    twinOf('type Buf = (len: u32, items: [3]u8)\nexport func f(b: Buf) -> u8 => b.items[INDEX]', '1 + 1')
+    twinOf('type Buf = (len: u32, items: [3]u8)\nexport func f(b: *Buf) -> u8 => b.items[INDEX]', '1 + 1')
+    twinOf('type Buf = (len: u32, items: [3]u8)\ndata held: Buf = (3, [1, 2, 3])\nexport func f() -> u8 => held.items[INDEX]', '(2)')
+  })
+  test('a store', () => {
+    twinOf('export func f() -> u32 {\n  let w: [3]u32 = [1, 2, 3]\n  w[INDEX] = 7\n  return w[2]\n}', '1 + 1')
+    twinOf('type Buf = (len: u32, items: [3]u8)\nexport func f(b: *mut Buf) { b.items[INDEX] = 9 }', '1 + 1')
+  })
+})

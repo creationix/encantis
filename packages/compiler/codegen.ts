@@ -1147,7 +1147,7 @@ function memberOf(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; valu
   const u = unwrap(objType)
   const width = (t: ResolvedType) => typeToWasm(t).length
   if (expr.kind === 'IndexExpr') {
-    const index = evalComptimeIndex(expr.index)
+    const index = evalComptimeIndex(expr.index, ctx)
     if (u.kind !== 'array' || !RT.isValueArray(u) || index === null) return null
     return { object, values: () => ({ start: index * width(u.element), count: width(u.element) }) }
   }
@@ -1316,7 +1316,7 @@ function memoryPlace(expr: AST.Expr, ctx: CodegenContext): MemoryPlace | null {
   if (expr.kind === 'IndexExpr') {
     if (u.kind === 'array' && RT.isValueArray(u)) {
       // An element of a fixed array is in memory when the array is.
-      const index = evalComptimeIndex(expr.index)
+      const index = evalComptimeIndex(expr.index, ctx)
       const stride = byteSize(u.element)
       const array = memoryPlace(object, ctx)
       if (index === null || stride === null || !array) return null
@@ -1777,19 +1777,21 @@ function scannedLength(ptr: string, objType: ResolvedType, ctx: CodegenContext):
   return `(block (result i32) (local.set ${at} ${ptr}) (local.set ${n} (i32.const 0)) (block ${label} (loop ${label}_next (br_if ${label} (${zero} (${load} ${element}))) (local.set ${n} (i32.add (local.get ${n}) (i32.const 1))) (br ${label}_next))) (local.get ${n}))`
 }
 
-function evalComptimeIndex(expr: AST.Expr): number | null {
+// The value of a constant index or count: a literal as written, or what the
+// checker worked out for a constant expression (v[1 + 1], [0; k]).
+function evalComptimeIndex(expr: AST.Expr, ctx: CodegenContext): number | null {
   if (expr.kind === 'LiteralExpr' && expr.value.kind === 'int') {
     return Number(expr.value.value)
   }
-  if (expr.kind === 'AnnotationExpr') return evalComptimeIndex(expr.expr)
+  const constant = ctx.constants.get(expr)
+  if (constant?.kind === 'int') return Number(constant.value)
+  if (expr.kind === 'AnnotationExpr') return evalComptimeIndex(expr.expr, ctx)
   return null
 }
 
-// How many times a repeat literal repeats its value: a count written as a
-// constant expression ([0; k]) has the value the checker worked out.
+// How many times a repeat literal repeats its value.
 function repeatCount(expr: AST.RepeatExpr, ctx: CodegenContext): number | null {
-  const constant = ctx.constants.get(expr.count)
-  return evalComptimeIndex(expr.count) ?? (constant?.kind === 'int' ? Number(constant.value) : null)
+  return evalComptimeIndex(expr.count, ctx)
 }
 
 // Whether the elements an index expression reads are optionals themselves

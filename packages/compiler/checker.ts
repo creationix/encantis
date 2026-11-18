@@ -6631,6 +6631,11 @@ class CheckContext {
           this.error(expr.index.span.start, `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
         } else if (idx.value < 0n || idx.value >= BigInt(n)) {
           this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${n}]${typeToString(objType.element)}`)
+        } else if (expr.index.kind !== 'LiteralExpr') {
+          // Codegen picks the element by the index's value, which only a
+          // literal shows: v[1 + 1], v[(2)] and v[k] with a def the checker
+          // resolves have theirs recorded.
+          this.constants.set(expr.index, idx)
         }
       }
       return objType.element
