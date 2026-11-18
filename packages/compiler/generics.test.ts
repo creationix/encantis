@@ -3065,9 +3065,9 @@ export func c() -> u32 => empty(u8).cap + three(7:u32).2 + (u32, u32)(1, 2).1`
   let v = ${make}
   return 0
 }`)
-    expect(f('Vec(u32)(p, 0)')).toEqual(['Vec(u32) expects 3 fields, got 2'])
+    expect(f('Vec(u32)(p, 0)')).toEqual(['Vec(u32) expects 3 fields, got 2: no value for cap'])
     expect(f('Vec(u32)(p, 0, 4.5)')).toEqual(['field cap: cannot assign float(4.5) to u32'])
-    expect(f('Vec(u32)(p, 0, size: 4)')).toEqual(["field 'size' not found in Vec(u32)"])
+    expect(f('Vec(u32)(p, 0, size: 4)')).toEqual(["field 'size' not found in Vec(u32), whose fields are ptr, len and cap"])
     expect(f('Vec(u32)(ptr: p, len: 0, ptr: p)')).toEqual(["Vec(u32): field 'ptr' is given twice"])
     expect(f('Vec(u32)(p, 0, len: 4)')).toEqual(["Vec(u32): field 'len' is given twice"])
   })

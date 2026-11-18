@@ -2198,17 +2198,17 @@ describe('structs in data arrays', () => {
     expect([next(), bytes(), maybe(), cell(), count()]).toEqual([80, 72, 96, 56, 2])
   })
 
-  test('a tuple gives its fields by position, in data as in a variable', async () => {
+  test('a tuple gives its fields by name where it names them, by position where not, in data as in a variable', async () => {
     const { f } = await run(`
       type Point = (x: i32, y: i32)
-      data points: *[1]Point = [(y: 8, x: 7)]
+      data points: *[2]Point = [(y: 8, x: 7), (8, 7)]
       export func f(a: i32) -> i32 {
         let p: Point = (y: 8, x: 7)
         let local: *[1]Point = [(y: a, x: 7)]
-        return p.x + points[0].x * 10 + local[0].x * 100
+        return p.x + points[0].x * 10 + local[0].x * 100 + points[1].x * 1000
       }
     `)
-    expect(f(8)).toBe(888)
+    expect(f(8)).toBe(8777)
   })
 
   test('(x) is x: a literal in parentheses is laid out as the literal', async () => {
@@ -3183,14 +3183,335 @@ describe('arguments by place and by name', () => {
     expect(x.dat()).toBe(5678)
   })
 
-  test('the fields of a named constructor are computed in the order of the type', () => {
-    const wat = modWat(`
+  test('the values of a constructor are computed in the order they are written', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+      global seen: i32 = 0
+      func tick(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      export func plain() -> i32 {
+        seen = 0
+        let p = Pt(r: tick(1), q: tick(2))
+        return seen * 100 + p.q * 10 + p.r
+      }
+      export func generic() -> i32 {
+        seen = 0
+        let p = Pair(i32, i32)(second: tick(1), first: tick(2))
+        return seen * 100 + p.first * 10 + p.second
+      }
+      export func mixed() -> i32 {
+        seen = 0
+        let p = Pt(tick(2), r: tick(1))
+        return seen * 100 + p.q * 10 + p.r
+      }
+      data cell = mut [Pt(0, 0), Pt(5, 6)]
+      export func stored() -> i32 {
+        seen = 0
+        cell[0] = Pt(r: tick(1), q: tick(2))
+        return seen * 100 + cell[0].q * 10 + cell[0].r
+      }
+      export func read() -> i32 {
+        let p: *mut Pt = &cell[1]
+        let v = Pt(r: p.q, q: put(p))
+        return v.q * 10 + v.r
+      }
+      func put(p: *mut Pt) -> i32 {
+        p.q = 7
+        return 8
+      }
+    `)
+    expect(x.plain()).toBe(1221)
+    expect(x.generic()).toBe(1221)
+    expect(x.mixed()).toBe(2121)
+    expect(x.stored()).toBe(1221)
+    // The load is written first: it reads 5, before the call writes 7.
+    expect(x.read()).toBe(85)
+  })
+
+  test('the fields in the order of the type, or values free to move, wait in no scratch local', () => {
+    const body = (src: string) => bodyOf(`
+      type Pt = (q: i32, r: i32)
+      global g: i32 = 0
+      func one() -> i32 => 1
+      func two() -> i32 => 2
+      func f(k: i32, p: *Pt) -> Pt => ${src}
+    `, 'f').join(' ')
+    // In the order of the type, by name or not: what the fields are written as.
+    expect(body('Pt(q: one(), r: two())')).toBe(body('Pt(one(), two())'))
+    // A constant or a local goes to its place as it is.
+    expect(body('Pt(r: k + 1, q: two())')).toBe(body('Pt(two(), k + 1)'))
+    expect(body('Pt(r: one(), q: 3)')).toBe(body('Pt(3, one())'))
+    // A call, a load or a global read written before what comes first waits.
+    expect(body('Pt(r: one(), q: two())')).toBe(
+      '(local.set $__tmp_0 (call $one)) (call $two) (local.get $__tmp_0)')
+    expect(body('Pt(r: p.q, q: two())')).toBe(
+      '(local.set $__tmp_0 (i32.load (local.get $p))) (call $two) (local.get $__tmp_0)')
+    expect(body('Pt(r: g, q: two())')).toBe('(local.set $__tmp_0 (global.get $g)) (call $two) (local.get $__tmp_0)')
+  })
+
+  test('a local that a value written after it sets, and a value that can trap, wait too', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      global seen: i32 = 0
+      func tick(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      export func local() -> i32 {
+        let k = 1
+        let p: Pt = (r: k, q: if true { k = 4
+          k } else { 0 })
+        return p.q * 10 + p.r
+      }
+      export func trap(z: i32) -> i32 {
+        let p: Pt = (r: 10 / z, q: tick(9))
+        return p.q + p.r
+      }
+      export func calls() -> i32 => seen
+    `)
+    expect(x.local()).toBe(41)
+    expect(() => x.trap(0)).toThrow()
+    expect(x.calls()).toBe(0)
+    expect(x.trap(2)).toBe(14)
+    expect(x.calls()).toBe(9)
+  })
+
+  test('a value of several wasm values waits in as many scratch locals', async () => {
+    const x = await run(`
+      type Wide = (a: u128, b: u8)
+      type Pp = (p: (u32, u32), q: u32)
+      global seen: u32 = 0
+      func two() -> u32 {
+        seen = seen * 10 + 2
+        return 2
+      }
+      func big() -> u128 {
+        seen = seen * 10 + 3
+        return 7
+      }
+      func pair() -> (u32, u32) {
+        seen = seen * 10 + 4
+        return (5, 6)
+      }
+      export func wide() -> u32 {
+        seen = 0
+        let w = Wide(b: two() as u8, a: big())
+        return seen * 100 + (w.a as u32) * 10 + (w.b as u32)
+      }
+      export func pp() -> u32 {
+        seen = 0
+        let w = Pp(q: two(), p: pair())
+        return seen * 1000 + w.p.0 * 100 + w.p.1 * 10 + w.q
+      }
+    `)
+    expect(x.wide()).toBe(2372)
+    expect(x.pp()).toBe(24562)
+  })
+})
+
+describe('a tuple literal with names gives each field by name', () => {
+  test('wherever it meets a struct', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      type Box = (lo: Pt, hi: Pt)
+      type Small = (b: u8, w: u32)
+      global g: Pt = (y: 1, x: 2)
+      data d: *[2]Pt = [(y: 3, x: 4), Pt(y: 5, x: 6)]
+      data s: Small = (w: 300, b: 7)
+      data words = [1:u8, 2, 3, 4]
+      func get-x(p: Pt) -> i32 => p.x
+      func ret() -> Pt {
+        return (y: 7, x: 8)
+      }
+      func arrow() -> Pt => (y: 9, x: 10)
+      func store(p: *mut Pt) {
+        p.* = (y: 11, x: 12)
+      }
+      func box() -> Box => (hi: (y: 13, x: 14), lo: (y: 15, x: 16))
+      func at() -> *Pt => &(y: 17, x: 18)
+      func view() -> []u8 => (len: 3, ptr: words as [*]u8)
+      export func let_() -> i32 {
+        let p: Pt = (y: 1, x: 2)
+        return p.x * 10 + p.y
+      }
+      export func arg() -> i32 => get-x((y: 1, x: 2))
+      export func returned() -> i32 => ret().x * 100 + arrow().x
+      export func global_() -> i32 => g.x * 10 + g.y
+      export func data_() -> i32 => d[0].x * 10 + d[1].x
+      export func data_struct() -> i32 => (s.b as i32) * 1000 + (s.w as i32)
+      data cell = mut [Pt(0, 0)]
+      export func stored() -> i32 {
+        store(&cell[0])
+        return cell[0].x * 100 + cell[0].y
+      }
+      export func field() -> i32 {
+        let b = box()
+        return b.lo.x * 100 + b.hi.x
+      }
+      export func assigned() -> i32 {
+        let p: Pt = (1, 2)
+        p = (y: 3, x: 4)
+        return p.x * 10 + p.y
+      }
+      export func receiver() -> i32 => (y: 1, x: 2).get-x()
+      export func branch(c: bool) -> i32 {
+        let p: Pt = if c { (y: 1, x: 2) } else { (x: 3, y: 4) }
+        return p.x
+      }
+      export func address() -> i32 => at().x
+      export func slice() -> i32 => (view().len as i32) * 10 + (view().ptr[2] as i32)
+      export func registers() -> i32 {
+        let a: [2]Pt = [(y: 1, x: 2), (3, 4)]
+        return a[0].x * 1000 + a[0].y * 100 + a[1].x * 10 + a[1].y
+      }
+    `)
+    expect(x.let_()).toBe(21)
+    expect(x.arg()).toBe(2)
+    expect(x.returned()).toBe(810)
+    expect(x.global_()).toBe(21)
+    expect(x.data_()).toBe(46)
+    expect(x.data_struct()).toBe(7300)
+    expect(x.stored()).toBe(1211)
+    expect(x.field()).toBe(1614)
+    expect(x.assigned()).toBe(43)
+    expect(x.receiver()).toBe(2)
+    expect(x.branch(1)).toBe(2)
+    expect(x.branch(0)).toBe(3)
+    expect(x.address()).toBe(18)
+    expect(x.slice()).toBe(33)
+    expect(x.registers()).toBe(2134)
+  })
+
+  test('computing its values in the order they are written', async () => {
+    const x = await run(`
+      type Pt = (q: i32, r: i32)
+      global seen: i32 = 0
+      func tick(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      data cell = mut [Pt(0, 0)]
+      export func literal() -> i32 {
+        seen = 0
+        let p: Pt = (r: tick(1), q: tick(2))
+        return seen * 100 + p.q * 10 + p.r
+      }
+      export func stored() -> i32 {
+        seen = 0
+        cell[0] = (r: tick(1), q: tick(2))
+        return seen * 100 + cell[0].q * 10 + cell[0].r
+      }
+    `)
+    expect(x.literal()).toBe(1221)
+    expect(x.stored()).toBe(1221)
+    const body = (src: string) => bodyOf(`
       type Pt = (q: i32, r: i32)
       func one() -> i32 => 1
       func two() -> i32 => 2
-      export func f() -> i32 => Pt(r: two(), q: one()).r
+      func f(k: i32) -> Pt => ${src}
+    `, 'f').join(' ')
+    expect(body('(q: one(), r: two())')).toBe(body('(one(), two())'))
+    expect(body('(r: one(), q: 3)')).toBe(body('(3, one())'))
+    expect(body('(r: one(), q: two())')).toBe('(local.set $__tmp_0 (call $one)) (call $two) (local.get $__tmp_0)')
+  })
+
+  test('and fills named results by name', async () => {
+    const x = await run(`
+      func trailing() -> (q: i32, r: i32) {
+        (r: 1, q: 2)
+      }
+      func arrow() -> (q: i32, r: i32) => (r: 1, q: 2)
+      func returned() -> (q: i32, r: i32) {
+        return (r: 1, q: 2)
+      }
+      func by_place() -> (q: i32, r: i32) => (1, 2)
+      export func f() -> i32 {
+        let (q: a, r: b) = trailing()
+        let (q: c, r: d) = arrow()
+        let (q: e, r: h) = returned()
+        let (q: k, r: m) = by_place()
+        return a * 1000 + c * 100 + e * 10 + k + (b + d + h + m) * 10000
+      }
     `)
-    expect(wat).toContain('(call $one) (call $two)')
+    expect(x.f()).toBe(52221)
+  })
+
+  test('also through an if or a match that ends a block body, as in an expression body', async () => {
+    const x = await run(`
+      func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
+      func trailing_if(c: bool) -> (q: i32, r: i32) {
+        if c { (r: 1, q: 2) } else { (r: 3, q: 4) }
+      }
+      func trailing_match(k: i32) -> (q: i32, r: i32) {
+        match k { 0 => (r: 1, q: 2), _ => { (r: 3, q: 4) } }
+      }
+      func arrow_if(c: bool) -> (q: i32, r: i32) => if c { (r: 1, q: 2) } else { (r: 3, q: 4) }
+      func mixed(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        if c { split(n) } else { (hi: 1, lo: 2) }
+      }
+      func orders(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        let k: u32 = n + 1
+        if c { (hi: k, lo: 3) } else { (lo: 4, hi: k) }
+      }
+      export func f() -> i32 {
+        let (q: a) = trailing_if(true)
+        let (q: b) = trailing_if(false)
+        let (q: c) = trailing_match(0)
+        let (q: d) = trailing_match(1)
+        let (q: e) = arrow_if(false)
+        return a * 10000 + b * 1000 + c * 100 + d * 10 + e
+      }
+      export func g() -> u32 => mixed(true, 0x50006).lo * 100 + mixed(false, 0).lo * 10 + mixed(false, 0).hi
+      export func h() -> u32 => orders(true, 1).lo * 1000 + orders(true, 1).hi * 100 + orders(false, 4).lo * 10 + orders(false, 4).hi
+    `)
+    expect(x.f()).toBe(24244)
+    expect(x.g()).toBe(521)
+    // Branches that give the same names in another order are not of
+    // different types: each fills the results by name.
+    expect(x.h()).toBe(3245)
+  })
+
+  test('in a generic, and to decide a type parameter', async () => {
+    const x = await run(`
+      func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
+      func first_of(comptime T: type, p: (a: T, b: u8)) -> T => p.a
+      func keep(comptime T: type, p: Pair(T, u8)) -> T => p.first
+      func make(comptime T: type, x: T) -> Pair(T, u8) => (second: 3, first: x)
+      export func f(x: u64, y: u8) -> u64 {
+        let m = make(x)
+        return first_of((b: y, a: x)) * 1000 + keep((second: y, first: x)) * 100 + m.first * 10 + (m.second as u64)
+      }
+    `)
+    expect(x.f(5n as never, 1)).toBe(5553n)
+  })
+
+  test('in an array with no type, whose tuples settle on one type as branches do', async () => {
+    // At 445731f the elements were laid over the first one's type as they
+    // came: 300 sat in a u8 (188 below) and 5000000000 in an i32.
+    const x = await run(`
+      export func wide() -> i32 {
+        let v = [(x: 1:u8, y: 2), (x: 300, y: 4)]
+        return v[1].x * 10 + v[1].y
+      }
+      export func big() -> i64 {
+        let v = [(1, 2), (3, 5000000000)]
+        return v[1].1 + (v[0].0 as i64)
+      }
+      export func turned() -> i32 {
+        let v = [(y: 1, x: 2), (x: 3, y: 4)]
+        return v[1].x * 10 + v[1].y
+      }
+      global g = [(y: 1, x: 2), (x: 5, y: 6)]
+      export func global_() -> i32 => g[1].x * 10 + g[1].y
+    `)
+    expect(x.wide()).toBe(3004)
+    expect(x.big()).toBe(5000000001n)
+    // A tuple with names meets the first one's type by name.
+    expect(x.turned()).toBe(34)
+    expect(x.global_()).toBe(56)
   })
 })
 
@@ -3237,6 +3558,58 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(x.typed()).toBe(7)
     expect(x.inferred()).toBe(9)
     expect(x.tuple()).toBe(12)
+  })
+
+  test('of a tuple with values only known when the program runs is a cell that is given them', async () => {
+    // At 445731f the cell of &(y: t(1), x: t(n)) held zeros and t was never
+    // called. (That such a cell shares no bytes with an equal literal is
+    // claude/fix2-literals' 052c7ef.)
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      type Box = (lo: Pt, k: i32)
+      global seen: i32 = 0
+      func t(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      func get(p: *Pt) -> i32 => p.x * 10 + p.y
+      export func runtime(n: i32) -> i32 => get(&(y: t(1), x: t(n)))
+      export func seen_() -> i32 => seen
+      export func nested(n: i32) -> i32 {
+        let p: *Box = &(k: t(3), lo: (y: n, x: 5))
+        return p.lo.x * 100 + p.lo.y * 10 + p.k
+      }
+      export func written(n: i32) -> i32 {
+        let p: *mut Pt = &mut (y: n, x: 7)
+        p.y += 1
+        return get(p)
+      }
+    `)
+    expect(x.runtime(2)).toBe(21)
+    expect(x.seen_()).toBe(12)
+    expect(x.nested(4)).toBe(543)
+    expect(x.written(5)).toBe(76)
+  })
+
+  test('of an array written out is that array laid out, as it is without the &', async () => {
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      func row(p: *[2]i32) -> i32 => p[0] * 10 + p[1]
+      func pts(p: *[2]Pt) -> i32 => p[0].x * 1000 + p[0].y * 100 + p[1].x * 10 + p[1].y
+      func put(p: *mut [2]i32) -> i32 {
+        p[0] = 9
+        return row(p)
+      }
+      export func ints(v: i32) -> i32 => row(&[1, 2]) * 10000 + row(&[3; 2]) * 100 + row(&[v, 4])
+      export func structs() -> i32 {
+        let p: *[2]Pt = &[(y: 5, x: 6), Pt(7, 8)]
+        return pts(p)
+      }
+      export func own() -> i32 => put(&[1, 2]) * 100 + row([1, 2])
+    `)
+    expect(x.ints(5)).toBe(123354)
+    expect(x.structs()).toBe(6578)
+    expect(x.own()).toBe(9212)
   })
 
   test('of a row of a many-pointer table is where its row pointer is', async () => {

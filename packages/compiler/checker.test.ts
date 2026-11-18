@@ -1706,7 +1706,7 @@ describe('a slice from a pointer and a length', () => {
     expect(errs('global g: []i32 = (1, 2, 3)')).toEqual(['cannot assign (int(1), int(2), int(3)) to []i32'])
     expect(errs('type R = (name: []u8, n: i32)\nglobal g: R = ((0), 1)')).toEqual(['cannot assign int(0) to []u8'])
     expect(errs('func f() { let s: []i32 = () }')).toEqual(['cannot assign () to []i32'])
-    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['cannot assign (len: int(3)) to []u8'])
+    expect(errs('func f() { let s: []u8 = (len: 3) }')).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr'])
     expect(errs('func take(s: []u8) {}\nfunc f() { take((1, 2, 3)) }')).toEqual([
       'argument 1: cannot assign (int(1), int(2), int(3)) to []u8',
     ])
@@ -2319,11 +2319,11 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(c: bool) -> i32 { let t = if c { (-2147483648, 1) } else { (2147483648, 2) }\n return t.0 }`)).toEqual(['cannot assign i64 to i32'])
     // Tuples that aren't alike still don't agree.
     expect(errs(`func f(c: bool) { let t = if c { (1, 2) } else { (3, 4, 5) } }`))
-      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)) (cast one explicitly)'])
+      .toEqual(['branches have different types: (int(3), int(4), int(5)) and (int(1), int(2)): give the value its type, as in let v: T = ..., and each branch is checked against T'])
     expect(errs(`func f(c: bool) { let t = if c { (x: 1, y: 2) } else { (y: 3, x: 4) } }`))
-      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)) (cast one explicitly)'])
+      .toEqual(['branches have different types: (y: int(3), x: int(4)) and (x: int(1), y: int(2)): give the value its type, as in let v: T = ..., and each branch is checked against T'])
     expect(errs(`func f(c: bool, x: f64) { let t = if c { (x, 2) } else { (3, true) } }`))
-      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool) (cast one explicitly)'])
+      .toEqual(['branches have different types: (f64, int(2)) and (f64, bool): give the value its type, as in let v: T = ..., and each branch is checked against T'])
   })
 
   test('branches that cannot agree are an error where the value is used', () => {
@@ -2377,6 +2377,45 @@ describe('values meeting an expected type', () => {
     expect(errs(`func f(a: i32, b: u32) { let r = [a, b] }`)).toEqual(['elements have different types: u32 and i32 (cast one explicitly)'])
     expect(errs(`func f(a: i32, b: bool) { let r = [a, b] }`)).toEqual(['elements have different types: bool and i32 (cast one explicitly)'])
     expect(errs(`func f(a: i64, x: f64) { let r = [x, a] }`)).toEqual(['elements have different types: i64 and f64 (cast one explicitly)'])
+  })
+
+  test('tuples in an untyped array literal settle on one type as branches do', () => {
+    // 445731f took the first element's type and laid the others over it as
+    // they came: (3, 4, 5) went into two (i32, i32) slots, (x: 3, y: 4)
+    // after a (y:, x:) had an x of 4, and 300 sat in a u8.
+    const source = `
+      func f(n: i64) {
+        let wide = [(x: 1:u8, y: 2), (x: 300, y: 4)]
+        let big = [(1, 2), (3, 5000000000)]
+        let mixed = [(1, n), (2, 3)]
+        let turned = [(y: 1, x: 2), (x: 3, y: 4)]
+      }
+    `
+    const result = checkModule(source)
+    expect(result.errors).toEqual([])
+    const type = (name: string) => typeAt(result, source.indexOf(`let ${name} =`) + 4)
+    expect(type('wide')).toBe('[2](x: i32, y: i32)')
+    expect(type('big')).toBe('[2](i32, i64)')
+    expect(type('mixed')).toBe('[2](i32, i64)')
+    // Tuples that don't agree are of the first one's type, which each of
+    // the others meets as it would any struct.
+    expect(type('turned')).toBe('[2](y: i32, x: i32)')
+    expect(errs(`func f() { let r = [(1, 2), (3, 4, 5)] }`)).toEqual(['cannot assign (int(3), int(4), int(5)) to (i32, i32)'])
+    expect(errs(`func f() { let r = [(y: 1, x: 2), (a: 3, b: 4)] }`)).toEqual([
+      "field 'a' not found in (y: i32, x: i32), whose fields are y and x",
+      "field 'b' not found in (y: i32, x: i32), whose fields are y and x",
+    ])
+    expect(errs(`func f() { let r = [(1, 2), (x: 3, y: 4)] }`)).toEqual([
+      "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'y' not found in (i32, i32), whose fields have no names: give the values by position",
+    ])
+    expect(errs(`type Pt = (x: i32, y: i32)\ntype Rv = (y: i32, x: i32)\nfunc f(p: Pt, q: Rv) { let r = [p, q] }`)).toEqual([
+      "cannot assign Rv to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
+    ])
+    // Strings of other lengths still go together, as they did.
+    expect(errs(`func f() -> i32 { let r = [("a", 1), ("bc", 2)]\n return r[1].1 }`)).toEqual([])
+    // With its type given, each element is checked against it, by name where it has names.
+    expect(errs(`type Pt = (x: i32, y: i32)\nfunc f() -> i32 { let r: [2]Pt = [(y: 1, x: 2), (x: 3, y: 4)]\n return r[1].x }`)).toEqual([])
   })
 
   test('a declared element type is what each element has to fit', () => {
@@ -2499,7 +2538,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(1)
     `)
-    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1')
+    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1: no value for y')
   })
 
   test('an unknown field name is an error', () => {
@@ -2507,7 +2546,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(x: 1, z: 2)
     `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point")
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point, whose fields are x and y")
   })
 })
 
@@ -3365,6 +3404,79 @@ describe('arguments by place and by name', () => {
       func b() -> Pt => Pt(r: 2, 1)
       func c(q: i32) -> Pt => Pt(q, r: 2)
     `)).toEqual(["Pt: field 'q' is given twice", "Pt: field 'r' is given twice"])
+  })
+
+  test('a tuple literal with names gives each field of the struct once, by name or by place', () => {
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func a() -> Pt => (q: 1, z: 2)
+      func b() -> Pt => (q: 1)
+      func c() -> Pt => (q: 1, q: 2)
+      func d() -> Pt => (r: 2, 1)
+      func e(q: i32) -> Pt => (q, r: 2)
+      func f(r: i32) -> Pt => (r:, q: 1)
+    `)).toEqual([
+      "field 'z' not found in Pt, whose fields are q and r",
+      'Pt expects 2 fields, got 1: no value for r',
+      "Pt: field 'q' is given twice",
+      "Pt: field 'r' is given twice",
+    ])
+    expect(errs(`
+      type One = (v: i32)
+      func a() -> One => (w: 5)
+    `)).toEqual(["field 'w' not found in One, whose only field is v"])
+    expect(errs(`
+      func a(p: [*]u8) -> []u8 => (len: 2)
+      func b(p: [*]u8) -> []u8 => (ptr: p, len: 2, wid: 3)
+    `)).toEqual(['[]u8 expects 2 fields, got 1: no value for ptr', '[]u8 expects 2 fields, got 3'])
+    // A value keeps its order: the error says where to give it the type.
+    expect(errs(`
+      type Pt = (q: i32, r: i32)
+      func mk() -> (r: i32, q: i32) => (1, 2)
+      func a() -> Pt => mk()
+      func b() -> (a: i32, q: i32) => (1, 2)
+      func c() -> Pt => b()
+    `)).toEqual([
+      "cannot assign (r: i32, q: i32) to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
+      'cannot assign (a: i32, q: i32) to Pt',
+    ])
+    // A tuple type without names, a slice and named results have the
+    // fields they have.
+    expect(errs(`
+      func f() -> (i32, i32) => (y: 1, x: 2)
+      func g(p: [*]u8) -> []u8 => (len: 3, p: p)
+      func h(p: [*]u8) -> []u8 => (len: 3, len: 4)
+      func k() -> (q: i32, r: i32) => (a: 1, r: 2)
+      func m(p: [*]u8, n: i64) -> []u8 => (len: n, ptr: p)
+    `)).toEqual([
+      "field 'y' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
+      "field 'p' not found in []u8: a slice's fields are ptr and len",
+      "[]u8: field 'len' is given twice",
+      "field 'a' not found in (q: i32, r: i32), whose fields are q and r",
+      'slice length: cannot assign i64 to u32',
+    ])
+  })
+
+  test('branches that give named results by name, in other orders, are no different types', () => {
+    expect(errs(`
+      func orders(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        let k: u32 = n + 1
+        if c { (hi: k, lo: 3) } else { (lo: 4, hi: k) }
+      }
+      func arms(m: u32) -> (lo: u32, hi: u32) {
+        match m { 0 => (hi: m, lo: 3), _ => { (lo: m, hi: 1:u8) } }
+      }
+    `)).toEqual([])
+  })
+
+  test('a tuple laid out as a struct in data gives each field a value of its type', () => {
+    expect(errs(`
+      type Small = (b: u8, w: u32)
+      data s: Small = (300, 1)
+      data t: Small = (w: 1.5, b: 2)
+      data u: Small = (w: 1, b: 2)
+    `)).toEqual(['cannot assign int(300) to u8', 'cannot assign float(1.5) to u32'])
   })
 
   test('a value of a struct type is not a constructor', () => {

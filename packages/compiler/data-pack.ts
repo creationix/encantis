@@ -185,6 +185,9 @@ export class DataSectionBuilder {
   /** Where the literal of the module being laid out with this id is, laying
    *  it out first if it isn't yet: the place a data_ptr constant names. */
   dataRef?: (id: number) => DataRef | null
+  /** Which element of a tuple gives each field, where that is not the one at
+   *  the field's place (see TypeCheckResult.fieldOrder). */
+  fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
   private internedMap = new Map<string, DataEntry>()
   /** Mutable entries that skip deduplication */
   private mutEntries: DataEntry[] = []
@@ -776,19 +779,25 @@ function buildMergedBytes(expr: AST.Expr, targetType: ArrayRT, builder: DataSect
   return zerosOf(getElementSize(elementType))
 }
 
+// The elements of a tuple in the order of the fields they give: by position,
+// or as the checker found them by name.
+function byField(expr: AST.TupleExpr, builder: DataSectionBuilder): (AST.Arg | undefined)[] {
+  const order = builder.fieldOrder?.get(expr)
+  return order ? order.map((element) => expr.elements[element]) : expr.elements
+}
+
 // The expressions that give a struct's fields, in the order of the type, when
-// `expr` writes the struct out: a tuple gives them by position, as any tuple
-// that becomes a struct does, and so does a constructor. One that names its
-// arguments (Point(y: 2, x: 1)) is given by the checker as the tuple of its
-// fields in order. Type names are the identifiers that start with a capital
-// letter.
+// `expr` writes the struct out: a tuple gives them by position, or by name
+// where it has names, and so does a constructor, which the checker gives as
+// the tuple of its arguments. Type names are the identifiers that start with
+// a capital letter.
 function structFieldValues(expr: AST.Expr, struct: TupleRT, builder: DataSectionBuilder): (AST.Expr | null)[] | null {
-  let args: AST.Arg[]
-  // A type that is called: the checker gives its arguments field by field.
+  let args: (AST.Arg | undefined)[]
+  // A type that is called: the checker gives its arguments as a tuple.
   const built = expr.kind === 'CallExpr' ? builder.built?.get(expr) : undefined
   if (built?.kind === 'TupleExpr') expr = built
   if (expr.kind === 'TupleExpr') {
-    args = expr.elements
+    args = byField(expr, builder)
   } else if (expr.kind === 'CallExpr' && expr.callee.kind === 'IdentExpr' && /^[A-Z]/.test(expr.callee.name)) {
     args = expr.args
   } else {
@@ -936,7 +945,7 @@ function isSlicePair(expr: AST.Expr): expr is AST.TupleExpr {
 // literal that is laid out on its own, and the count of elements. A part only
 // known when the program runs stays zero here.
 function slicePairBytes(expr: AST.TupleExpr, type: SliceRT, builder: DataSectionBuilder): Bytes {
-  const [ptr, len] = expr.elements.map((part) => part.value)
+  const [ptr, len] = byField(expr, builder).map((part) => part?.value ?? null)
   return concat([
     ptr ? buildFieldBytes(ptr, manyPointer(type.element, type.mutable), builder) : zerosOf(4),
     len ? buildElementBytes(len, primitive('u32'), [], builder) : zerosOf(4),
@@ -1408,6 +1417,7 @@ interface DataSectionOptions {
   tolerant?: boolean
   calls?: ReadonlyMap<AST.CallExpr, AST.Expr>
   constants?: ReadonlyMap<AST.Expr, ComptimeValue>
+  fieldOrder?: ReadonlyMap<AST.TupleExpr, number[]>
 }
 
 /**
@@ -1435,6 +1445,7 @@ export function buildProgramDataSection(
   const dataBuilder = new DataSectionBuilder()
   dataBuilder.built = options.calls
   dataBuilder.constants = options.constants
+  dataBuilder.fieldOrder = options.fieldOrder
   // Address 0 means "none" for optional pointers and slices, so program data
   // never starts there: the first 8 bytes stay unused, keeping 8-byte alignment.
   dataBuilder.setAutoDataStart(NULL_PAGE)

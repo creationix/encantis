@@ -412,6 +412,46 @@ elements have different types: u32 and i32
 cannot assign i32 to i16
 ```
 
+Tuples among the elements agree field by field, as branches do. Tuples that agree on no type (another count of fields, other names, the same names in another order) are of the first one's type, and each of the others meets it as it would any struct: a tuple written out gives its fields by name where it has names and by position where it has none. With the array's type given, each element is checked against that.
+
+```ents
+type Pt = (x: i32, y: i32)
+
+func a(n: i64) -> i64 {
+  let wide = [(x: 1:u8, y: 2), (x: 300, y: 4)]
+  let mixed = [(1, n), (2, 3)]
+  let turned = [(y: 1, x: 2), (x: 3, y: 4)]
+  let typed: [2]Pt = [(y: 1, x: 2), (x: 3, y: 4)]
+  return mixed[1].1 + wide[1].x + turned[1].x + typed[1].x
+}
+```
+
+```ents
+type Pt = (x: i32, y: i32)
+
+func a() -> i32 {
+  let r = [(1, 2), (3, 4, 5)]
+  return r[0].0
+}
+
+func b() -> i32 {
+  let r = [(y: 1, x: 2), (a: 3, b: 4)]
+  return r[1].x
+}
+
+func c(p: Pt) -> i32 {
+  let r = [(y: 1, x: 2), p]
+  return r[1].x
+}
+```
+
+```errors
+cannot assign (int(3), int(4), int(5)) to (i32, i32)
+field 'a' not found in (y: i32, x: i32), whose fields are y and x
+field 'b' not found in (y: i32, x: i32), whose fields are y and x
+cannot assign Pt to (y: i32, x: i32): its fields have the names of (y: i32, x: i32)'s in another order
+```
+
 A `match` compares its literal patterns in the subject's type, so each has to be a value of that type.
 
 ```ents

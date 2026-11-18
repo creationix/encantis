@@ -246,6 +246,12 @@ export interface TypeCheckResult {
   // method call x.f(a), the call f(x, a); for a call of a function that
   // shares its name, the call of the one that was meant
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // Which element of a tuple gives each field of the struct it becomes, in
+  // the order of the fields, where that is not the element at the field's
+  // place: for a tuple literal with names among its elements, and for the
+  // tuple a constructor is compiled as. Its elements are computed in the
+  // order they are written, and each value goes to its field.
+  fieldOrder: Map<AST.TupleExpr, number[]>
   // The name a function is known by, in `symbols` and in the output, where
   // that is not the name it was declared with: one that shares its name with
   // a function declared before it has a name of its own (hash:''u8).
@@ -356,6 +362,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     literals: ctx.pendingLiterals,
     instances: ctx.instances.map((i) => ({ of: i.of, decl: i.decl })),
     calls: ctx.calls,
+    fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
   }
@@ -708,6 +715,9 @@ class CheckContext {
   // The named results an expression body is being checked against, when
   // there are several: its value fills them in order.
   resultsInOrder: ResolvedType | null = null
+  // The trailing value of a block body that fills the named results by name,
+  // and those results (see checkFuncBody).
+  namedTail: { expr: AST.Expr; results: ResolvedType } | null = null
   // Loops open around the statement being checked, and the depth at the
   // innermost enclosing defer (null outside one). A deferred expression can't
   // return, or break or continue a loop outside it.
@@ -753,6 +763,7 @@ class CheckContext {
   instanceQueue: Instance[] = []
   currentInstance: Instance | null = null
   calls = new TrialMap<AST.CallExpr, AST.CallExpr | AST.TupleExpr>(this.trial)
+  fieldOrder = new TrialMap<AST.TupleExpr, number[]>(this.trial)
   // How many literals were registered when the second pass came to each
   // generic, which is where a function written in its place would add its own
   literalSlots = new Map<AST.FuncDecl, number>()
@@ -1496,6 +1507,9 @@ class CheckContext {
       if (expr.kind === 'LiteralExpr') {
         (expr as AST.LiteralExpr).dataId = dataId
       }
+      // A tuple laid out as a struct gives it its fields as it would
+      // anywhere: each meets its field's type, by name where it has names.
+      if (expr.kind === 'TupleExpr' && declaredType && unwrap(declaredType).kind === 'tuple') this.checkExpr(expr, declaredType)
       const arrType: ArrayRT = { kind: 'array', element: type, sizes: [1] }
       this.addLiteral(dataId, expr, arrType)
       this.requireConstants(decl.ident, expr)
@@ -2240,10 +2254,20 @@ class CheckContext {
     if (decl.body.kind === 'Block') {
       const named = output.kind === 'CompositeType' && output.fields.some(f => f.ident)
       // With named results, a trailing expression with a value supplies them.
-      this.checkBody(decl.body, named)
       const tail = named ? decl.body.stmts.at(-1) : undefined
+      // A tuple literal with names among its elements fills the results of
+      // those names, as it gives a struct its fields, also where it is the
+      // value of a branch of an if or a match. Such a value is checked
+      // against the results where it stands, as an expression body is, and
+      // a branch whose value is no such literal fills them in order.
+      const results = unwrap(this.returnValueType())
+      const byName = tail?.kind === 'ExpressionStmt' && givesNamedLiteral(tail.expr) && results.kind === 'tuple'
+      const prevTail = this.namedTail
+      this.namedTail = byName ? { expr: tail.expr, results: tuple(results.fields) } : null
+      this.checkBody(decl.body, named)
+      this.namedTail = prevTail
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
-      if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
+      if (!byName && tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
         this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
       }
       // A block body with unnamed results has to return on every path: there
@@ -2345,7 +2369,14 @@ class CheckContext {
       case 'ExpressionStmt':
         if (valueUsed) this.statementExprs.delete(stmt.expr)
         else this.statementExprs.add(stmt.expr)
-        this.inferExpr(stmt.expr)
+        if (valueUsed && this.namedTail?.expr === stmt.expr) {
+          // The trailing value of a body that gives the named results by
+          // name: checked against them (see checkFuncBody).
+          const prevResults = this.resultsInOrder
+          this.resultsInOrder = this.namedTail.results
+          this.checkExpr(stmt.expr, this.namedTail.results)
+          this.resultsInOrder = prevResults
+        } else this.inferExpr(stmt.expr)
         break
       case 'DeferStmt': {
         const prev = this.deferLoopDepth
@@ -3209,6 +3240,14 @@ class CheckContext {
     if (expr.kind === 'UnaryExpr' && refOperand && isLiteral && shape.kind === 'pointer') {
       const operand = refOperand
       if (shape.mutable) markMut(operand)
+      // An array written out where a pointer to an array is wanted is laid
+      // out in the data section as it is without the `&`, and `&` of it is
+      // that pointer: `&[1, 2]` for a *[2]i32 is `[1, 2]`.
+      if ((operand.kind === 'ArrayExpr' || operand.kind === 'RepeatExpr') && pointee?.kind === 'array') {
+        const result = this.checkExpr(expr.operand, expected)
+        this.exprTypes.set(expr, result)
+        return result
+      }
       this.checkExpr(expr.operand, shape.pointee)
       // Give the literal its own cell in the data section, as inferExpr does.
       if (operand.kind !== 'TupleExpr') {
@@ -3354,11 +3393,13 @@ class CheckContext {
 
     // (ptr, len) against a slice is that slice, built from its two parts: a
     // value like any other tuple, with nothing to lay out in the data section.
+    // With names among them, its parts are the fields of the struct a slice
+    // is, (ptr: [*]T, len: u32), and each is given by name.
     if (expr.kind === 'TupleExpr' && expr.elements.length === 2 && shape.kind === 'slice') {
       // Its parts are checked like any value that meets a type: a pointer to
       // the slice's elements, as writable as the slice, and a length that an
       // i32 holds (an i64 or a float would be the wrong wasm value).
-      const [ptr, len] = expr.elements.map(argValue)
+      const [ptr, len] = this.sliceParts(expr, expected, prefix)
       const ptrType = ptr && this.exprTypes.get(ptr)
       if (ptr && ptrType) this.coerce(ptr, ptrType, manyPointer(shape.element, shape.mutable), 'slice pointer: ')
       const lenType = len && this.exprTypes.get(len)
@@ -3373,9 +3414,15 @@ class CheckContext {
       return expected
     }
 
-    // No other tuple is a slice.
+    // No other tuple is a slice. One with names is the struct a slice is,
+    // given the wrong number of fields.
     if (expr.kind === 'TupleExpr' && shape.kind === 'slice') {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`)
+      const given = expr.elements.map((element, i) => element.name ?? ['ptr', 'len'][i])
+      const missing = ['ptr', 'len'].filter((part) => !given.includes(part))
+      const count = `${typeToString(expected)} expects 2 fields, got ${expr.elements.length}`
+      const why = !namedLiteral(expr) ? `cannot assign ${typeToString(inferred)} to ${typeToString(expected)}`
+        : expr.elements.length < 2 && missing.length > 0 ? `${count}: no value for ${spoken(missing)}` : count
+      this.error(expr.span.start, `${prefix}${why}`)
       this.exprTypes.set(expr, expected)
       return expected
     }
@@ -3493,8 +3540,18 @@ class CheckContext {
       }
     }
 
-    // Propagate expected type into tuple elements for bidirectional inference
+    // Propagate expected type into tuple elements for bidirectional inference.
+    // A tuple literal with names among its elements gives each field by
+    // name, as a constructor's arguments do: (y: 1, x: 2) as an (x, y) has
+    // an x of 2. One without names gives them by position.
     const unwrappedExpected = unwrap(expected)
+    if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' && expr.kind === 'TupleExpr' &&
+        expr.elements.some((element) => element.name !== null)) {
+      const given = this.checkFieldArgs(expr.elements, expr.span.start, unwrappedExpected, typeToString(expected), prefix, true)
+      this.recordFieldOrder(expr, given)
+      this.exprTypes.set(expr, expected)
+      return expected
+    }
     if (unwrappedExpected.kind === 'tuple' && inferred.kind === 'tuple' &&
         unwrappedExpected.fields.length === inferred.fields.length &&
         expr.kind === 'TupleExpr') {
@@ -4051,12 +4108,10 @@ class CheckContext {
     const namesType = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'type'
     const struct = unwrap(calleeType)
     if (namesType && struct.kind === 'tuple') {
-      const given = this.checkConstructorArgs(expr, struct, (expr.callee as AST.IdentExpr).name)
-      // With names among the arguments, it compiles as the fields' values
-      // in the order of the type, as a generic type's constructor does.
-      if (expr.args.some((a) => a.name !== null) && given.every((args) => args.length === 1)) {
-        this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-      }
+      const given = this.checkFieldArgs(expr.args, expr.span.start, struct, (expr.callee as AST.IdentExpr).name)
+      // With names among the arguments, it compiles as the tuple of its
+      // arguments, each going to its field, as a generic type's does.
+      if (expr.args.some((a) => a.name !== null)) this.constructAsTuple(expr, given)
       return calleeType
     }
 
@@ -4080,18 +4135,51 @@ class CheckContext {
     return primitive('i32')
   }
 
-  // The arguments of a constructor, each against the field it is for: an
-  // argument with a name is for the field of that name, and one without is
-  // for the field at its place. Gives the arguments each field was given, in
-  // the order of the fields.
-  private checkConstructorArgs(expr: AST.CallExpr, struct: TupleRT, shown: string): AST.Arg[][] {
+  // The values of a (ptr, len) literal that is a slice, pointer first: by
+  // place, or by name where it has names (len: n, ptr: p). Null for a part
+  // that is not there; a name a slice has no part of is reported, as is a
+  // part given twice.
+  private sliceParts(expr: AST.TupleExpr, type: ResolvedType, prefix: string): (AST.Expr | null)[] {
+    const values = expr.elements.map(argValue)
+    this.fieldOrder.delete(expr)
+    if (!namedLiteral(expr)) return values
+    const names = ['ptr', 'len']
+    const order = expr.elements.map((element, i) => (element.name === null ? i : names.indexOf(element.name)))
+    const unknown = order.findIndex((part) => part < 0)
+    if (unknown >= 0) {
+      this.error(expr.elements[unknown].span.start, `${prefix}field '${expr.elements[unknown].name}' not found in ${typeToString(type)}: a slice's fields are ptr and len`)
+      return [null, null]
+    }
+    if (order[0] === order[1]) {
+      this.error(expr.elements[1].span.start, `${prefix}${typeToString(type)}: field '${names[order[1]]}' is given twice`)
+      return [null, null]
+    }
+    if (order[0] === 1) {
+      this.fieldOrder.set(expr, [1, 0])
+      return [values[1], values[0]]
+    }
+    return values
+  }
+
+  // The arguments of a constructor, or the elements of a tuple literal with
+  // names among them, each against the field it is for: an argument with a
+  // name is for the field of that name, and one without is for the field at
+  // its place. Gives the arguments each field was given, in the order of the
+  // fields. `at` is where a count that is not the struct's is reported. A
+  // constructor's arguments say which field they are checked for; a
+  // literal's elements are checked as they are where the literal is.
+  private checkFieldArgs(args: AST.Arg[], at: number, struct: TupleRT, shown: string, prefix = '', literal = false): AST.Arg[][] {
     const before = this.errorsReported
-    const args = expr.args
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
+      // Too few: the fields that no value is for are named.
+      const meant = args.map((arg, i) => (arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]))
+      const missing = struct.fields.filter((f) => !meant.includes(f)).map((f) => f.name)
+      const unnamed = missing.some((name) => name === null)
+      const hint = args.length < struct.fields.length && missing.length > 0 && !unnamed ? `: no value for ${spoken(missing as string[])}` : ''
       this.error(
-        expr.span.start,
-        `${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}`,
+        at,
+        `${prefix}${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}${hint}`,
       )
     }
     args.forEach((arg, i) => {
@@ -4101,9 +4189,16 @@ class CheckContext {
       const field = arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]
       if (field) {
         given.set(field, [...(given.get(field) ?? []), arg])
-        this.checkExpr(value, field.type, `field ${field.name ?? i}`)
+        this.checkExpr(value, field.type, literal ? undefined : `field ${field.name ?? i}`)
       } else {
-        if (arg.name) this.error(arg.span.start, `field '${arg.name}' not found in ${shown}`)
+        // A tuple whose fields have no names takes its values by position.
+        // The fields it has are named, or a tuple whose fields have no names
+        // takes its values by position.
+        const names = struct.fields.map((f) => f.name)
+        const hint = names.every((name) => name === null) ? ', whose fields have no names: give the values by position'
+          : names.length === 1 ? `, whose only field is ${names[0]}`
+          : names.every((name) => name !== null) ? `, whose fields are ${spoken(names as string[])}` : ''
+        if (arg.name) this.error(arg.span.start, `${prefix}field '${arg.name}' not found in ${shown}${hint}`)
         this.inferExpr(value)
       }
     })
@@ -4112,15 +4207,34 @@ class CheckContext {
     // field has two of them, Pt(1, q: 2), and another none.
     const twice = fields.findIndex((args) => args.length > 1)
     if (twice >= 0 && this.errorsReported === before) {
-      this.error(fields[twice][1].span.start, `${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
+      this.error(fields[twice][1].span.start, `${prefix}${shown}: field '${struct.fields[twice].name ?? twice}' is given twice`)
     }
     return fields
   }
 
+  // A constructor compiles as the tuple of its arguments as written, and a
+  // tuple literal is that tuple already: where each field is given once,
+  // the element that gives it is recorded when it is not the one at its
+  // place (fieldOrder). The elements are computed in the order they are
+  // written, and each value goes to its field.
+  private recordFieldOrder(tuple: AST.TupleExpr, given: AST.Arg[][]): void {
+    const order = given.every((args) => args.length === 1) ? given.map(([arg]) => tuple.elements.indexOf(arg)) : null
+    // A literal checked again, against another type, is what the last check says.
+    if (order && order.some((element, field) => element !== field)) this.fieldOrder.set(tuple, order)
+    else this.fieldOrder.delete(tuple)
+  }
+
+  private constructAsTuple(expr: AST.CallExpr, given: AST.Arg[][]): void {
+    if (!given.every((args) => args.length === 1)) return
+    const tuple: AST.TupleExpr = { kind: 'TupleExpr', elements: expr.args, span: expr.span }
+    this.calls.set(expr, tuple)
+    this.recordFieldOrder(tuple, given)
+  }
+
   // Vec(u32)(p, 0, cap), or T(a, b) in an instance: a value of the type the
   // callee is, built from its fields by position or by name. It compiles as
-  // the fields' values in the order of the type, which is what the same
-  // struct written out as a literal compiles as.
+  // the tuple of its arguments, each going to its field, which is what the
+  // same struct written out as a literal compiles as.
   private inferConstructor(expr: AST.CallExpr, built: AST.Type): ResolvedType {
     const fail = (message?: string): ResolvedType => {
       if (message) this.error(expr.span.start, message)
@@ -4138,10 +4252,7 @@ class CheckContext {
     if (struct.kind !== 'tuple') {
       return fail(`${typeToString(type)} is not a struct or tuple type: it has no constructor; to convert a number write x as T`)
     }
-    const given = this.checkConstructorArgs(expr, struct, typeToString(type))
-    if (given.every((args) => args.length === 1)) {
-      this.calls.set(expr, { kind: 'TupleExpr', elements: given.map((args) => args[0]), span: expr.span })
-    }
+    this.constructAsTuple(expr, this.checkFieldArgs(expr.args, expr.span.start, struct, typeToString(type)))
     return type
   }
 
@@ -4980,7 +5091,7 @@ class CheckContext {
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}`)
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${reordered(from, to, typeToString(expected))}`)
       return
     }
     const grouped = groupedExpr(expr)
@@ -5011,10 +5122,14 @@ class CheckContext {
     } else if ((expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr') && from.kind === 'comptime_array' && to.kind === 'array') {
       // So is an array literal held in registers. (One that goes to the data
       // section has had its elements checked against the element type.)
+      // A tuple literal among them meets a struct element as it meets any
+      // struct: field by field, by name where it has names.
       const elementType = this.peelArraySize(to)
+      const structs = unwrap(elementType).kind === 'tuple'
       for (const element of expr.kind === 'ArrayExpr' ? expr.elements : [expr.value]) {
         const type = this.exprTypes.get(element)
-        if (type) this.coerce(element, type, elementType, prefix)
+        if (structs && ungrouped(element).kind === 'TupleExpr') this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
+        else if (type) this.coerce(element, type, elementType, prefix)
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
@@ -5039,6 +5154,19 @@ class CheckContext {
     }
     const to = unwrap(type)
     const from = unwrap(actual)
+    // An array of tuples with no type of its own: each element meets the
+    // element type as it would any struct, a tuple written out field by
+    // field, by name where it has names (see settleTuples).
+    if (expr.kind === 'ArrayExpr' && to.kind === 'array' && from.kind === 'comptime_array') {
+      const element = this.peelArraySize(to)
+      if (unwrap(element).kind !== 'tuple') return
+      for (const value of expr.elements) {
+        const own = this.exprTypes.get(value)
+        if (ungrouped(value).kind === 'TupleExpr') this.checkExpr(value, element)
+        else if (own) this.coerce(value, own, element)
+      }
+      return
+    }
     if (expr.kind !== 'TupleExpr' || to.kind !== 'tuple' || from.kind !== 'tuple' || to.fields.length !== expr.elements.length) return
     expr.elements.forEach((element, i) => {
       const value = argValue(element)
@@ -5851,8 +5979,10 @@ class CheckContext {
     // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
     const numbers = elemTypes.every(t => isScalar(unwrap(t)))
-    const elementType = numbers && !typedByContext
-      ? this.unifyElements(expr.elements, elemTypes)
+    const tuples = elemTypes.every(t => unwrap(t).kind === 'tuple')
+    const elementType = typedByContext ? this.unifyTypes(elemTypes)
+      : numbers ? this.unifyElements(expr.elements, elemTypes)
+      : tuples ? this.settleTuples(expr.elements, elemTypes)
       : this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
@@ -5875,6 +6005,19 @@ class CheckContext {
       this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
       return type
     }
+    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    return type
+  }
+
+  // The element type of an array literal of tuples with no declared type.
+  // Tuples that agree field by field, as the branches of an if do, are of
+  // the type they agree on, each converted where it stands: (1, 2) and
+  // (3, 5000000000) are an (i32, i64). Ones that don't agree are of the
+  // first one's type, which each tuple written out meets as it would any
+  // struct where the array gets its type (see typeDefault).
+  private settleTuples(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    const { type, odd } = this.commonType(types)
+    if (odd) return this.unifyTypes(types)
     for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
     return type
   }
@@ -5961,7 +6104,11 @@ class CheckContext {
     if (odd) {
       if (!valueUsed) return VOID
       const at = bodyValue(odd.body) ?? odd.body
-      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)} (cast one explicitly)`)
+      // A struct or tuple can't be cast: the fix is to say what it is.
+      const fix = unwrap(odd.type).kind === 'tuple' && unwrap(type).kind === 'tuple'
+        ? ': give the value its type, as in let v: T = ..., and each branch is checked against T'
+        : ' (cast one explicitly)'
+      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)}${fix}`)
       return type
     }
     for (const b of valued) {
@@ -7627,8 +7774,12 @@ function matchType(
       if (ungroupedType(pattern) !== pattern) {
         matchType(ungroupedType(pattern), actual, typeParams, bound, value, expand, expanding)
       } else if (u.kind === 'tuple' && u.fields.length === pattern.fields.length) {
+        // A field is laid over the argument's field of its name, which a
+        // tuple literal with names gives in any order, or else over the
+        // one at its place.
         pattern.fields.forEach((f, i) => {
-          matchType(f.type, u.fields[i].type, typeParams, bound, value, expand, expanding)
+          const named = f.ident ? u.fields.find((g) => g.name === f.ident) : undefined
+          matchType(f.type, (named ?? u.fields[i]).type, typeParams, bound, value, expand, expanding)
         })
       }
       return
@@ -8219,6 +8370,50 @@ function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'para
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// What to say of a struct value whose fields are those of the struct
+// wanted, in another order: only a literal gives fields by name.
+function reordered(from: ResolvedType, to: ResolvedType, shown: string): string {
+  if (from.kind !== 'tuple' || to.kind !== 'tuple' || from.fields.length !== to.fields.length) return ''
+  const names = (t: TupleRT) => t.fields.map((f) => f.name)
+  const [a, b] = [names(from), names(to)]
+  if (a.some((name) => name === null) || a.every((name, i) => name === b[i])) return ''
+  if (!a.every((name) => b.includes(name)) || new Set(a).size !== a.length) return ''
+  return `: its fields have the names of ${shown}'s in another order, and only a literal gives fields by name; give the value the type ${shown} where it is made`
+}
+
+// Names as a list is said: `x`, `x and y`, `x, y and z`.
+function spoken(names: string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('')
+}
+
+// A tuple literal with names among its elements, in parentheses or not: it
+// gives the fields of a struct by name.
+function namedLiteral(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  return value.kind === 'TupleExpr' && value.elements.some((element) => element.name !== null)
+}
+
+// Whether a named literal is the value of `expr`, or the value of one of the
+// branches of an if or a match `expr` is.
+function givesNamedLiteral(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  if (value.kind === 'IfExpr') {
+    const bodies = [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
+    return bodies.some((body) => body !== null && bodyGivesNamedLiteral(body))
+  }
+  if (value.kind === 'MatchExpr') {
+    return value.arms.some((arm) =>
+      arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody' ? bodyGivesNamedLiteral(arm.body) : givesNamedLiteral(arm.body))
+  }
+  return namedLiteral(value)
+}
+
+function bodyGivesNamedLiteral(body: AST.FuncBody): boolean {
+  if (body.kind === 'ArrowBody') return givesNamedLiteral(body.expr)
+  const last = body.stmts.at(-1)
+  return last?.kind === 'ExpressionStmt' && givesNamedLiteral(last.expr)
 }
 
 // What `&` takes the address of, through parentheses and a type annotation:

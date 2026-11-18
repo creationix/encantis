@@ -187,6 +187,7 @@ class MetaBuilder {
       tolerant: this.checkResult.errors.length > 0,
       calls: this.checkResult.calls,
       constants: this.checkResult.constants,
+      fieldOrder: this.checkResult.fieldOrder,
     })
     this.literalMap = literalRefs
 

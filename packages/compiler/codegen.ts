@@ -59,6 +59,9 @@ export interface CodegenContext {
   // Calls the checker resolved to something else: the written call → what
   // to compile in its place (see TypeCheckResult.calls)
   calls: Map<AST.CallExpr, AST.CallExpr | AST.TupleExpr>
+  // Which element of a tuple gives each field, where that is not the one at
+  // the field's place (see TypeCheckResult.fieldOrder)
+  fieldOrder: TypeCheckResult['fieldOrder']
   // The name a function that shares its name is known by (see
   // TypeCheckResult.funcNames)
   funcNames: TypeCheckResult['funcNames']
@@ -93,6 +96,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     namedReturnLocals: [],
     dataSectionSize,
     calls: checkResult.calls,
+    fieldOrder: checkResult.fieldOrder,
     funcNames: checkResult.funcNames,
     unproven: checkResult.unproven,
   }
@@ -877,6 +881,14 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       const innerExpr = addressedLiteral(expr.operand)
       const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
       const ref = ctx.literalRefs.get(dataId)
+      // A tuple with a value only known when the program runs: its cell is
+      // given its values there, computed in the order they are written (an
+      // array's are stored by arrayToWat).
+      const cell = lookupExprType(expr, ctx)
+      if (ref && cell?.kind === 'pointer' && innerExpr.kind !== 'ArrayExpr' && innerExpr.kind !== 'RepeatExpr' &&
+          isRuntimeExpr(innerExpr, ctx)) {
+        return `${storeToMemory(cell.pointee, `(i32.const ${ref.ptr})`, operand, ctx)}\n(i32.const ${ref.ptr})`
+      }
       if (ref) {
         return `(i32.const ${ref.ptr})`
       }
@@ -1993,6 +2005,9 @@ function elseToWat(expr: AST.IfExpr, ctx: CodegenContext, hasResult: boolean, re
   return current
 }
 
+// A tuple's values, field after field. Its elements are computed in the order
+// they are written; where they give the fields in another order (by name, see
+// TypeCheckResult.fieldOrder), each value still goes to its field.
 function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
   // Flatten tuple elements
   const parts = expr.elements.map((elem) => {
@@ -2000,7 +2015,51 @@ function tupleToWat(expr: AST.TupleExpr, ctx: CodegenContext): string {
     const value = argValue(elem)
     return value ? exprToWat(value, ctx) : ''
   })
+  const order = ctx.fieldOrder.get(expr)
+  if (order) return inFieldOrder(expr, parts, order, ctx)
   return parts.filter(Boolean).join(' ')
+}
+
+// The values of a tuple's elements, `parts` as written, put in the order of
+// the fields: `order` gives the element of each field. An element that is free
+// to move is computed at its field's place: nothing that runs before or after
+// it can tell (a constant, a local that no other element sets, arithmetic of
+// those that cannot trap). The others are computed in the order written: an
+// element that comes after its field's place waits there in scratch locals,
+// set before an element written after it runs. An order that needs no wait is
+// the same instructions as the elements written in the fields' order.
+function inFieldOrder(expr: AST.TupleExpr, parts: string[], order: number[], ctx: CodegenContext): string {
+  const free = parts.map((wat, i) =>
+    isDroppable(wat) && !readsGlobal(wat) && !parts.some((other, j) => j !== i && setsLocalOf(other, wat)))
+  const waiting = new Map<number, string[]>()
+  const computed = new Set<number>()
+  const out: string[] = []
+  for (const element of order) {
+    // The elements written before this one that are not free go first, in
+    // the order written, each into scratch locals of its own.
+    for (let earlier = 0; earlier < element && !free[element]; earlier++) {
+      if (free[earlier] || computed.has(earlier)) continue
+      const value = argValue(expr.elements[earlier])
+      const type = value && valueType(value, ctx)
+      if (!type) throw new Error(`Missing type for element ${earlier} of the tuple at offset ${expr.span.start}`)
+      const locals = typeToWasm(type).map((wasmType) => scratchLocal(ctx, wasmType))
+      out.push(setLocals(locals, parts[earlier]))
+      waiting.set(earlier, locals)
+      computed.add(earlier)
+    }
+    const locals = waiting.get(element)
+    out.push(locals ? locals.map((local) => `(local.get ${local})`).join(' ') : parts[element])
+    computed.add(element)
+  }
+  return out.filter(Boolean).join(' ')
+}
+
+// Sets `locals`, one for each wasm value of `wat`, to its values.
+function setLocals(locals: string[], wat: string): string {
+  if (locals.length === 1) return `(local.set ${locals[0]} ${wat})`
+  const values = trySplitMultiValue(wat, locals.length)
+  if (values) return locals.map((local, i) => `(local.set ${local} ${values[i]})`).join(' ')
+  return [wat, ...[...locals].reverse().map((local) => `(local.set ${local})`)].join(' ')
 }
 
 // Whether `wat` is one parenthesized expression, not several side by side.
@@ -3338,7 +3397,11 @@ function memoryHolds(size: number): void {
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
   // Build data section from collected literals
-  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, { calls: checkResult.calls, constants: checkResult.constants })
+  const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, {
+    calls: checkResult.calls,
+    constants: checkResult.constants,
+    fieldOrder: checkResult.fieldOrder,
+  })
   labelDataEntries(module, checkResult, dataBuilder, literalRefs)
   const dataSection = dataBuilder.result()
   memoryHolds(dataSection.totalSize)
@@ -3815,6 +3878,7 @@ export function programToWat(
   const nameMap = new Map<string, string>()
   const allCalls: TypeCheckResult['calls'] = new Map()
   const allConstants: TypeCheckResult['constants'] = new Map()
+  const allFieldOrders: TypeCheckResult['fieldOrder'] = new Map()
 
   // One data section for the literals of all modules. A literal is known by
   // its offset in its own module's source, so each module has its own map
@@ -3825,8 +3889,13 @@ export function programToWat(
     sources.push({ path, result })
     for (const [written, compiled] of result.calls) allCalls.set(written, compiled)
     for (const [expr, value] of result.constants) allConstants.set(expr, value)
+    for (const [tuple, order] of result.fieldOrder) allFieldOrders.set(tuple, order)
   }
-  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), { calls: allCalls, constants: allConstants })
+  const { dataBuilder, literalRefs: refsOfSource } = buildProgramDataSection(sources.map(({ result }) => result), {
+    calls: allCalls,
+    constants: allConstants,
+    fieldOrder: allFieldOrders,
+  })
   const literalRefsOf = new Map(sources.map(({ path }, i) => [path, refsOfSource[i]]))
   const refsOf = (path: string) => literalRefsOf.get(path) ?? new Map<number, DataRef>()
   for (const [path, loaded] of modules) {

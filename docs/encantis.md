@@ -582,7 +582,7 @@ let p = (x:, y:)             // equivalent to (x: x, y: y)
 
 <!-- spec:begin compile -->
 
-An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix. The struct is built from its fields in the order the type declares them, and that is the order their values are computed in, whatever the order they are written in:
+An argument with a name is for the field of that name, and one without is for the field at its place, so positional and named arguments mix:
 
 ```ents
 type Point = (x:f32, y:f32)
@@ -610,17 +610,65 @@ Point: field 'x' is given twice
 Point: field 'y' is given twice
 ```
 
-Only a constructor takes fields by name. A tuple literal becomes a struct field by field, by position, as any tuple does ([9.2](#structural-coercion)), whatever its elements are named: as a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 2.0. To give the fields in another order, construct the struct:
+A tuple literal with names among its elements gives the fields the same way, wherever it meets a struct: as a variable's value (by `let`, `=` or `set`), an argument, a receiver, a returned value or a function's named results, a field of a larger struct, an element of an array, the value of a global or of `data`, the literal `&` lays out, a value stored through a pointer, or the value of a branch of an `if` or a `match` that is one of these. As a `Point`, `(y: 2.0, x: 1.0)` has an `x` of 1.0. A tuple literal without names gives the fields by position, whatever the struct calls them. Only a literal is taken by name: a value made elsewhere keeps its order, and one whose fields have the struct's names in another order is not that struct ([9.2](#structural-coercion)); it is given the struct's type where it is made. A slice is the struct `(ptr: [*]T, len: u32)`, so `(len: n, ptr: p)` is a slice too:
 
 ```ents
 type Point = (x:f32, y:f32)
 
-func by_place() -> Point => (y: 2.0, x: 1.0)
-func by_name() -> Point => Point(y: 2.0, x: 1.0)
+func by_name() -> Point => (y: 2.0, x: 1.0)
+func by_place() -> Point => (2.0, 1.0)
+func first(p: [*]u8, n: u32) -> []u8 => (len: n, ptr: p)
 
-test "a tuple by position, a constructor by name" {
-  assert by_place().x == 2.0
+test "a literal with names by name, one without by position" {
   assert by_name().x == 1.0
+  assert by_place().x == 2.0
+  assert first("abc" as [*]u8, 2).len == 2
+}
+```
+
+A name the struct has no field of is an error, and so is a field given twice or not at all. A tuple type without names, such as `(f32, f32)`, has no field a name could give. The errors name the fields there are:
+
+```ents
+type Point = (x:f32, y:f32)
+
+func a() -> Point => (x: 1.0, z: 2.0)
+func b() -> Point => (x: 1.0)
+func c() -> Point => (y: 1.0, 2.0)
+func d() -> (f32, f32) => (x: 1.0, y: 2.0)
+func e() -> Point {
+  let v = (y: 1.0:f32, x: 2.0:f32)
+  return v
+}
+```
+
+```errors
+field 'z' not found in Point, whose fields are x and y
+Point expects 2 fields, got 1: no value for y
+Point: field 'y' is given twice
+field 'x' not found in (f32, f32), whose fields have no names: give the values by position
+field 'y' not found in (f32, f32), whose fields have no names: give the values by position
+cannot assign (y: f32, x: f32) to Point: its fields have the names of Point's in another order, and only a literal gives fields by name; give the value the type Point where it is made
+```
+
+The values are computed in the order they are written, and then each goes to its field, for a constructor and a literal alike: `Point(y: f(), x: g())` calls `f` before `g`. Where the fields are written in the order the type declares them, that is all there is to it. Where they are not, a value that something written after it could change or tell apart (a call, a read of memory or of a global, anything that can trap) is computed in its turn and waits in a local until its field's place comes; a constant, a local that no other value sets, or arithmetic on them that cannot trap is computed at its field's place, as nothing can tell the difference:
+
+```ents
+type Point = (x:i32, y:i32)
+
+global seen: i32 = 0
+
+func tick(v: i32) -> i32 {
+  seen = seen * 10 + v
+  return v
+}
+
+test "values in the order written, fields by name" {
+  let p = Point(y: tick(1), x: tick(2))
+  assert seen == 12
+  assert p.x == 2
+  let q: Point = (y: tick(3), x: tick(4))
+  assert seen == 1234
+  assert q.y == 3
 }
 ```
 
@@ -848,7 +896,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
-- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s. Tuples among the elements agree field by field, as branches do: `[(1, 2), (3, 5000000000)]` is a `[2](i32, i64)`. Tuples that agree on no type (another count of fields, other names, the same names in another order) are of the first one's type, and each of the others meets it as it would any struct: `[(y: 1, x: 2), (x: 3, y: 4)]` has a second element with an `x` of 3 ([2.8](#struct-constructors)), and `(3, 4, 5)` after a `(1, 2)` is an error.
 
 ```ents
 type Sample = (count: i64, mean: f64)
@@ -1102,7 +1150,7 @@ data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
 data view: []u8 = [0:u8; 1024]      // []u8 (slice, loses compile-time length)
 ```
 
-An element can be a struct. A tuple gives its fields by position, as any tuple that becomes a struct does; a constructor can also name them. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+An element can be a struct. A tuple gives its fields by position, or by name where it names them, as anywhere a tuple becomes a struct ([2.8](#struct-constructors)); so does a constructor. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
 
 ```ents
 type Point = (x:i32, y:i32)
@@ -1219,7 +1267,7 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results it fills them in order, whatever its own fields are called. An expression body gives the results the same way.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
 
 ```ents
 func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
@@ -1233,6 +1281,12 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 }
 
 func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
+
+func named(n: u32) -> (hi: u32, lo: u32) => (lo: n & 0xffff, hi: n >> 16)  // a literal with names, by name
+
+func picked(c: bool, n: u32) -> (lo: u32, hi: u32) {
+  if c { split(n) } else { (hi: 1, lo: 2) }   // in order in one branch, by name in the other
+}
 ```
 
 <!-- spec:begin compile -->
@@ -1930,7 +1984,7 @@ With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no
 
 <!-- spec:begin compile -->
 
-`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A variable is held in registers and has none, whatever type is expected of `&x`:
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
 
 ```ents
 func get(p: *i32) -> i32 => p.*
@@ -3240,7 +3294,7 @@ modify(mem_p)              // OK: mem_p points to linear memory
 
 #### Structural Coercion
 
-Structural struct types match any value with coercible fields at each position:
+Structural struct types match any value with coercible fields at each position, and with the same names. A tuple literal is matched by name where it has names, so `(y: 20, x: 10)` is a `BigPoint` with an `x` of 10, and by position where it has none ([2.8](#struct-constructors)):
 
 ```ents
 type BigPoint = (x:i32, y:i32)
