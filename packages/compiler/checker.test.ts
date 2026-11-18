@@ -3252,6 +3252,40 @@ describe('functions that share a name', () => {
     expect(called(f, 'func a(i: u64) -> u32 => g((y: 1, x: i))', 'g')).toEqual(['g:<x:u64|y:u64>'])
   })
 
+  // A tuple literal gives a struct's fields by name or by place wherever it
+  // stands (2.8), so its parts are those fields there too: inside another
+  // literal, behind &, and without names. At 0f1b047 only a literal with
+  // names that was the whole argument was laid over the struct, so these
+  // were all ambiguous.
+  test('a tuple literal is laid over a struct by name or by place, however deep it stands', () => {
+    const s = `
+      type Pt = (x: i32, y: i32)
+      type P8 = (x: u8, y: u8)
+      type P32 = (x: u32, y: u32)
+      func g(p: P8) -> u32 => 1
+      func g(p: P32) -> u32 => 2
+      func k(p: *P8) -> u32 => 1
+      func k(p: *P32) -> u32 => 2
+      func s(p: (at: Pt, n: u8)) -> u32 => 1
+      func s(p: (at: Pt, n: u32)) -> u32 => 2
+    `
+    expect(called(s, 'func a(n: u8, m: u8) -> u32 => g((n, m)) + g((n, 1)) + g((1, y: n))', 'g')).toEqual([])
+    expect(called(s, 'func a(n: u32) -> u32 => g((n, 1))', 'g')).toEqual(['g:<x:u32|y:u32>'])
+    expect(called(s, 'func a(n: u8) -> u32 => k(&(y: 1, x: n)) + k(&(n, 1))', 'k')).toEqual([])
+    expect(called(s, 'func a(n: u8) -> u32 => s((at: (2, 1), n: n)) + s((n: n, at: (y: 1, x: 2))) + s(((2, 1), n))', 's')).toEqual([])
+    expect(called(s, 'func a(n: u32) -> u32 => s((n: n, at: (y: 1, x: 2)))', 's')).toEqual(['s:<at:<x:i32|y:i32>|n:u32>'])
+    // A call one function was exact for before keeps it: f(((2, 1), n)) is
+    // exact as it stands for the one whose part has no names.
+    const kept = `
+      type Pt = (x: i32, y: i32)
+      func f(p: (Pt, u8)) -> u32 => 1
+      func f(p: ((i32, i32), u8)) -> u32 => 2
+    `
+    expect(called(kept, 'func a(n: u8) -> u32 => f(((2, 1), n))', 'f')).toEqual(['f:<<i32|i32>|u8>'])
+    // Functions that are exact alike are as ambiguous as before.
+    expect(errs(`${s}\nfunc a() -> u32 => g((1, 2))`)).toEqual(["'g' is ambiguous for ((int(1), int(2)))"])
+  })
+
   test('without one, the only function the arguments can be passed to', () => {
     const two = `
       func hash(k: u64) -> u32 => 1

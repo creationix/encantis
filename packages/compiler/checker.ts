@@ -4534,15 +4534,24 @@ class CheckContext {
       const filled = literalsAs(param, arg)
       return !hasOwnType(filled) || same(param, as(filled))
     }
-    const exact = (as: (type: ResolvedType) => ResolvedType) =>
+    const exact = (as: (type: ResolvedType) => ResolvedType, lay = laid) =>
       candidates.filter(
         (c) =>
-          c.params.every((p, i) => own[i] === null || same(p.type, as(laid(p.type, i, own[i] as ResolvedType)))) &&
+          c.params.every((p, i) => own[i] === null || same(p.type, as(lay(p.type, i, own[i] as ResolvedType)))) &&
           c.params.every((p, i) => own[i] !== null ||
-            (this.fits(args[i], p.type) && exactParts(p.type, alone[i] && laid(p.type, i, alone[i]), as))),
+            (this.fits(args[i], p.type) && exactParts(p.type, alone[i] && lay(p.type, i, alone[i]), as))),
       )
     let found = exact((type) => type)
     if (found.length !== 1) found = exact(withoutRanges)
+    // A tuple literal gives a struct's fields by name or by place wherever it
+    // stands, inside another literal and behind & too, and with no names at
+    // all: s((n: k, at: (y: 1, x: 2))), k(&(y: 1, x: n)) and g((n, 1)) are
+    // exact for the function whose fields their typed parts are. Asked only
+    // where the steps before found no one function, so no call they settle
+    // changes.
+    const deep = (param: ResolvedType, i: number, type: ResolvedType) => laidLiteral(args[i], param, type)
+    if (found.length !== 1) found = exact((type) => type, deep)
+    if (found.length !== 1) found = exact(withoutRanges, deep)
     if (found.length !== 1) found = candidates.filter((c) => args.every((arg, i) => this.fits(arg, c.params[i].type)))
     if (found.length !== 1) {
       // An argument that is nothing by itself, and that no one function gives
@@ -7951,6 +7960,34 @@ function byFieldNames(param: ResolvedType, arg: ResolvedType): ResolvedType {
   const given = p.fields.map((f, i) => a.fields.find((g) => g.name !== null && g.name === f.name) ?? (a.fields[i].name === null ? a.fields[i] : undefined))
   if (given.some((g) => !g) || new Set(given).size !== given.length) return arg
   return tuple(p.fields.map((f, i) => field(f.name, given[i]!.type)))
+}
+
+// The type of an argument as the parameter it meets lays it out: a tuple
+// literal gives a struct's fields by name, or by place where an element has
+// no name (2.8), at any depth and behind &, so each of its parts is under the
+// name of the field it gives. (n: u8, at: (y: int(1), x: int(2))) for a
+// (at: Pt, n: u8) is (at: (x: int(2), y: int(1)), n: u8). What is no tuple
+// literal, or does not give each field once, stays as it is.
+function laidLiteral(expr: AST.Expr, param: ResolvedType, type: ResolvedType): ResolvedType {
+  const value = ungrouped(expr)
+  const p = unwrap(param)
+  const t = unwrap(type)
+  if (value.kind === 'UnaryExpr' && value.op === '&' && p.kind === 'pointer' && t.kind === 'pointer') {
+    return { ...t, pointee: laidLiteral(value.operand, p.pointee, t.pointee) }
+  }
+  if (value.kind !== 'TupleExpr' || p.kind !== 'tuple' || t.kind !== 'tuple') return type
+  const n = p.fields.length
+  if (t.fields.length !== n || value.elements.length !== n) return type
+  const given = p.fields.map((f, i) => {
+    const named = value.elements.findIndex((e) => e.name !== null && e.name === f.name)
+    return named >= 0 ? named : value.elements[i].name === null ? i : -1
+  })
+  if (given.some((k) => k < 0) || new Set(given).size !== n) return type
+  return tuple(p.fields.map((f, i) => {
+    const element = value.elements[given[i]]
+    const part = t.fields[given[i]].type
+    return field(f.name, element.value ? laidLiteral(element.value, f.type, part) : part)
+  }))
 }
 
 // An argument's type with each untyped literal in it given the type of the
