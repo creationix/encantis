@@ -600,8 +600,8 @@ func d() -> (f32, f32) => (x: 1.0, y: 2.0)
 ```
 
 ```errors
-field 'z' not found in Point
-Point expects 2 fields, got 1
+field 'z' not found in Point, whose fields are x and y
+Point expects 2 fields, got 1: no value for y
 Point: field 'y' is given twice
 field 'x' not found in (f32, f32), whose fields have no names: give the values by position
 field 'y' not found in (f32, f32), whose fields have no names: give the values by position

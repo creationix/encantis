@@ -2270,7 +2270,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(1)
     `)
-    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1')
+    expect(result.errors.map(e => e.message)).toContain('Point expects 2 fields, got 1: no value for y')
   })
 
   test('an unknown field name is an error', () => {
@@ -2278,7 +2278,7 @@ describe('struct constructors', () => {
       type Point = (x: i32, y: i32)
       func f() -> Point => Point(x: 1, z: 2)
     `)
-    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point")
+    expect(result.errors.map(e => e.message)).toContain("field 'z' not found in Point, whose fields are x and y")
   })
 })
 
@@ -2999,8 +2999,8 @@ describe('arguments by place and by name', () => {
       func e(q: i32) -> Pt => (q, r: 2)
       func f(r: i32) -> Pt => (r:, q: 1)
     `)).toEqual([
-      "field 'z' not found in Pt",
-      'Pt expects 2 fields, got 1',
+      "field 'z' not found in Pt, whose fields are q and r",
+      'Pt expects 2 fields, got 1: no value for r',
       "Pt: field 'q' is given twice",
       "Pt: field 'r' is given twice",
     ])
@@ -3017,7 +3017,7 @@ describe('arguments by place and by name', () => {
       "field 'x' not found in (i32, i32), whose fields have no names: give the values by position",
       "field 'p' not found in []u8: a slice's fields are ptr and len",
       "[]u8: field 'len' is given twice",
-      "field 'a' not found in (q: i32, r: i32)",
+      "field 'a' not found in (q: i32, r: i32), whose fields are q and r",
       'slice length: cannot assign i64 to u32',
     ])
   })

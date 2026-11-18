@@ -3611,9 +3611,14 @@ class CheckContext {
     const before = this.errorsReported
     const given = new Map<ResolvedField, AST.Arg[]>()
     if (args.length !== struct.fields.length) {
+      // Too few: the fields that no value is for are named.
+      const meant = args.map((arg, i) => (arg.name ? struct.fields.find((f) => f.name === arg.name) : struct.fields[i]))
+      const missing = struct.fields.filter((f) => !meant.includes(f)).map((f) => f.name)
+      const unnamed = missing.some((name) => name === null)
+      const hint = args.length < struct.fields.length && missing.length > 0 && !unnamed ? `: no value for ${spoken(missing as string[])}` : ''
       this.error(
         at,
-        `${prefix}${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}`,
+        `${prefix}${shown} expects ${struct.fields.length} field${struct.fields.length === 1 ? '' : 's'}, got ${args.length}${hint}`,
       )
     }
     args.forEach((arg, i) => {
@@ -3626,8 +3631,12 @@ class CheckContext {
         this.checkExpr(value, field.type, literal ? undefined : `field ${field.name ?? i}`)
       } else {
         // A tuple whose fields have no names takes its values by position.
-        const unnamed = struct.fields.every((f) => f.name === null) ? ', whose fields have no names: give the values by position' : ''
-        if (arg.name) this.error(arg.span.start, `${prefix}field '${arg.name}' not found in ${shown}${unnamed}`)
+        // The fields it has are named, or a tuple whose fields have no names
+        // takes its values by position.
+        const names = struct.fields.map((f) => f.name)
+        const hint = names.every((name) => name === null) ? ', whose fields have no names: give the values by position'
+          : names.every((name) => name !== null) ? `, whose fields are ${spoken(names as string[])}` : ''
+        if (arg.name) this.error(arg.span.start, `${prefix}field '${arg.name}' not found in ${shown}${hint}`)
         this.inferExpr(value)
       }
     })
@@ -7374,6 +7383,11 @@ function isVariable(sym: Symbol): sym is Extract<Symbol, { kind: 'local' | 'para
 function ungrouped(expr: AST.Expr): AST.Expr {
   const inner = groupedExpr(expr)
   return inner ? ungrouped(inner) : expr
+}
+
+// Names as a list is said: `x`, `x and y`, `x, y and z`.
+function spoken(names: string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('')
 }
 
 // A tuple literal with names among its elements, in parentheses or not: it

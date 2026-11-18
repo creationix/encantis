@@ -1905,7 +1905,7 @@ func f(p: [*]mut u32) -> u32 => Vec(u32)(p, 0).len
 ```
 
 ```errors
-Vec(u32) expects 3 fields, got 2
+Vec(u32) expects 3 fields, got 2: no value for cap
 ```
 
 ```ents
