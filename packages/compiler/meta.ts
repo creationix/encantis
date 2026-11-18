@@ -171,6 +171,13 @@ class MetaBuilder {
   private symbols: MetaSymbol[] = []
   // The module's names, by the name the checker knows each by
   private symbolIndexByName = new Map<string, number>()
+  // The names each test declares (a data, a def, a function). A name of the
+  // module is the module's in symbolIndexByName whatever a test declares
+  // after it, and a test's own is its own while the test's hints are made:
+  // the bodies' hints are made once every declaration is collected.
+  private testNames = new Map<AST.TestDecl, Map<string, number>>()
+  private moduleNames = new Set<string>()
+  private inTest: AST.TestDecl | null = null
   // Every symbol by where the checker recorded its definition. A parameter
   // or local is found only this way: by name it would be the last one of
   // that name, in another function or in another block of this one, and a
@@ -289,6 +296,13 @@ class MetaBuilder {
   }
 
   private collectTestDecl(decl: AST.TestDecl): void {
+    const outer = this.inTest
+    this.inTest = decl
+    this.collectTestItems(decl)
+    this.inTest = outer
+  }
+
+  private collectTestItems(decl: AST.TestDecl): void {
     for (const item of decl.children) {
       switch (item.kind) {
         case 'TestDecl':
@@ -770,7 +784,15 @@ class MetaBuilder {
 
     const index = this.symbols.length
     this.symbols.push(symbol)
-    if (!local) this.symbolIndexByName.set(known, index)
+    if (!local && this.inTest) {
+      const own = this.testNames.get(this.inTest) ?? new Map<string, number>()
+      own.set(known, index)
+      this.testNames.set(this.inTest, own)
+      if (!this.moduleNames.has(known)) this.symbolIndexByName.set(known, index)
+    } else if (!local) {
+      this.symbolIndexByName.set(known, index)
+      this.moduleNames.add(known)
+    }
     if (checkerDefOffset !== undefined) this.symbolIndexByDef.set(checkerDefOffset, index)
 
     return index
@@ -924,6 +946,20 @@ class MetaBuilder {
   }
 
   private generateHintsForTestDecl(decl: AST.TestDecl): void {
+    // In the test, the names it declares are its own.
+    const hidden: [string, number | undefined][] = []
+    for (const [name, index] of this.testNames.get(decl) ?? []) {
+      hidden.push([name, this.symbolIndexByName.get(name)])
+      this.symbolIndexByName.set(name, index)
+    }
+    this.generateHintsForTestItems(decl)
+    for (const [name, index] of hidden.reverse()) {
+      if (index === undefined) this.symbolIndexByName.delete(name)
+      else this.symbolIndexByName.set(name, index)
+    }
+  }
+
+  private generateHintsForTestItems(decl: AST.TestDecl): void {
     // Collect locals from test body statements
     for (const item of decl.children) {
       if (item.kind === 'LetStmt') {

@@ -243,6 +243,17 @@ test "find" {
     expect(built.types[built.hints['1:12'].type].type).toBe('i32')
   })
 
+  test('a use of a def in a function is the module\'s def, though a test after it declares one of the name', () => {
+    // Since the body's hints are made once every declaration is a symbol, the
+    // def a test declares, collected last, was taken by name for the
+    // module's: definition went into the test.
+    const program = 'def k = 3\nexport func f() -> u32 => k\ntest "own" {\n  def k = 5\n  assert k == 5\n}\n'
+    const meta = buildMeta(parse(program).module!, program)
+    expect(meta.symbols[meta.hints['1:26'].symbol ?? -1]?.def).toBe('0:4')
+    // In the test, its own.
+    expect(meta.symbols[meta.hints['4:9'].symbol ?? -1]?.def).toBe('3:6')
+  })
+
   test('a call of a function declared further down has that function as its symbol', () => {
     // The body of a function had its hints before the functions after it
     // were symbols: the call was a type with no name.
