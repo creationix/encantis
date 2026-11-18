@@ -413,6 +413,52 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     expect(callsIn(wat, 'other$down2')).toEqual(['sorting$sort<i32|descending@order>'])
   })
 
+  // The literals of an instance are its module's: they are laid out with
+  // that module's, where an instance asked for there would have them, and
+  // read through that module's map, also where an offset of the module that
+  // asked meets one of the instance's.
+  test("an instance another module asks for reads its own module's literals", async () => {
+    const files = {
+      'names.ents': 'export func name(comptime T: type, x: T) -> []u8 => "lib"\n',
+      'main.ents': `import "./names" "name" func name(comptime T: type, x: T) -> []u8
+export func f() -> u32 {
+  let mine = "MAIN"
+  let theirs = name(1:u8)
+  return ((mine[0] ?? 0) as u32) << 8 | ((theirs[0] ?? 0) as u32)
+}
+`,
+    }
+    await inDir(files, async (dir) => {
+      const instance = await instantiate(join(dir, 'main.ents'))
+      expect((instance.exports.f as () => number)()).toBe(('M'.charCodeAt(0) << 8) | 'l'.charCodeAt(0))
+    })
+  })
+
+  // A requirement is looked up in the generic's module and at the site, and
+  // nowhere else: a function a third module has is found only where the
+  // site imports it, and then it is that module's function that is called.
+  test('a requirement that only a third module provides is found only where the site imports it', async () => {
+    const BUCKET = 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n'
+    const CELL = 'type Cell = (x: i32, y: i32)\n'
+    const files = {
+      'buckets.ents': BUCKET,
+      'cells.ents': `${CELL}export func hash(c: Cell) -> u32 => (c.x * 31 + c.y) as u32\n`,
+      'without.ents': `import "./buckets" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\n${CELL}export func f(c: Cell) -> u32 => bucket(c, 8)\n`,
+      'with.ents': `import "./buckets" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nimport "./cells" "hash" func hash(c: (x: i32, y: i32)) -> u32\n${CELL}export func f(c: Cell) -> u32 => c.bucket(8)\n`,
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'without.ents'))
+      expect(check.errors.map((e) => e.message)).toEqual([
+        "no function 'hash' accepts (Cell), in bucket(K = Cell)",
+        "bucket(K = Cell) cannot be instantiated: no function 'hash' accepts (Cell) (buckets.ents:1:62)",
+      ])
+      const wat = await watOf(join(dir, 'with.ents'))
+      expect(callsIn(wat, `buckets$bucket${cell}`)).toEqual(['cells$hash'])
+      const instance = await instantiate(join(dir, 'with.ents'))
+      expect((instance.exports.f as (x: number, y: number) => number)(2, 3)).toBe((2 * 31 + 3) % 8)
+    })
+  })
+
   // The containers of lib/, used from another module
   const lib = resolve(import.meta.dir, '../../lib')
   const VEC = `import "${lib}/vec" (
