@@ -1096,8 +1096,8 @@ class MetaBuilder {
         if (stmt.when) this.generateHintsForExpr(stmt.when)
         break
       case 'AssignmentStmt':
-        // LValue can be IdentExpr, MemberExpr, IndexExpr, or Pattern
-        if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr') {
+        // LValue can be IdentExpr, MemberExpr, IndexExpr, SliceExpr (a range filled or copied into), or Pattern
+        if (stmt.target.kind === 'IdentExpr' || stmt.target.kind === 'MemberExpr' || stmt.target.kind === 'IndexExpr' || stmt.target.kind === 'SliceExpr') {
           this.generateHintsForExpr(stmt.target)
         }
         this.generateHintsForExpr(stmt.value)
@@ -1324,6 +1324,13 @@ class MetaBuilder {
         }
         break
       }
+
+      // A range: what it is of and its bounds are code like any other
+      case 'SliceExpr':
+        this.generateHintsForExpr(expr.object)
+        if (expr.start) this.generateHintsForExpr(expr.start)
+        if (expr.end) this.generateHintsForExpr(expr.end)
+        break
 
       case 'TupleExpr':
         // 'ok' shows the codepoints it is, (111, 107).

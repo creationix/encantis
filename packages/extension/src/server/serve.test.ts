@@ -656,6 +656,28 @@ describe('a def where it is used', () => {
     expect(start(server('onDefinition', source.indexOf('bump(k')))).toBe('3:5')
     expect(value(server('onHover', source.indexOf('+ x') + 2))).toBe('```encantis\ninput x:i32\n```')
   })
+
+  // A range was not looked at, as a value or as what is filled or copied
+  // into: a def used as a bound was listed among its references, with no def
+  // to go to from it, and the names there (what is ranged, a bound) showed
+  // nothing.
+  test('is the def where it bounds a range, read or written', () => {
+    const source = 'def k = 2\ndata buf = mut [0:u8; 4]\nexport func f(a: u32, s: []u8) -> u32 {\n  buf[0..k] = 7\n  return if let r = s[a..k] { r.len } else { 0 }\n}\n'
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => {
+      const { line, character } = (location as Location).range.start
+      return `${line}:${character}`
+    }
+    for (const at of [source.indexOf('..k]') + 2, source.lastIndexOf('..k]') + 2]) {
+      expect(value(server('onHover', at))).toBe('```encantis\ndef k:u32 = 2\n```')
+      expect(start(server('onDefinition', at))).toBe('0:4')
+    }
+    expect((server('onReferences', 4, { context: { includeDeclaration: false } }) as unknown[]).map(start)).toEqual(['3:9', '4:25'])
+    expect(value(server('onHover', source.indexOf('[a..') + 1))).toBe('```encantis\ninput a:u32\n```')
+    expect(start(server('onDefinition', source.indexOf('s[a')))).toBe('2:22')
+    expect(start(server('onDefinition', source.indexOf('buf[0')))).toBe('1:5')
+  })
 })
 
 describe('a single-quoted literal in a template', () => {
