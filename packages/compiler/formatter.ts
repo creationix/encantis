@@ -52,7 +52,7 @@ export function formatEncantis(source: string): string {
       continue
     }
     if (ch === '"' || ch === "'") { skipString(ch); continue }
-    if (ch === 'x' && source[i + 1] === '"') { i++; skipString('"'); continue }
+    if ((ch === 'x' || ch === 'b') && source[i + 1] === '"') { i++; skipString('"'); continue }
     if (ch === '`') {
       i++
       if (scanTemplateContent()) templateStack.push(1)

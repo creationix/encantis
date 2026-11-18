@@ -41,13 +41,13 @@ export func main() {
   let (d:, a:) = to_polar((x:, y:))
 
   // Print the result
-  let dTxt = write-float([0:u8; 10], d)
-  let aTxt = write-float([0:u8; 10], a)
+  let dTxt = write-float(mut [0:u8; 10], d)
+  let aTxt = write-float(mut [0:u8; 10], a)
   print(`Polar coordinates: (${dTxt}, ${aTxt})`)
 
   // Convert from polar to cartesian coordinates
   set (x:, y:) = from_polar((d:, a:))
 
   // Print the result
-  print(`Cartesian coordinates: (${write-float([0:u8;10],x)}, ${write-float([0:u8;10],y)})`)
+  print(`Cartesian coordinates: (${write-float(mut [0:u8;10],x)}, ${write-float(mut [0:u8;10],y)})`)
 }

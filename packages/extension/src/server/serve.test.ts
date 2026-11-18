@@ -32,6 +32,15 @@ function hoverIn(text: string): (offset: number) => string | null {
 }
 
 describe('hover', () => {
+  test('a literal in single quotes shows its codepoints', () => {
+    const source = "export func f(c: u8) -> bool => c == 'a' || c == '\\n'\nexport func g() -> i32 {\n  let (o, k) = 'ok'\n  return o + k\n}\n"
+    const hover = hoverIn(source)
+    expect(hover(source.indexOf("'a'"))).toContain("'a':u8 = 97")
+    expect(hover(source.indexOf("'a'") + 1)).toContain("'a':u8 = 97")
+    expect(hover(source.indexOf("'\\n'") + 2)).toContain("'\\n':u8 = 10")
+    expect(hover(source.indexOf("'ok'") + 2)).toContain("'ok':(i32, i32) = (111, 107)")
+  })
+
   test('a name of the module is shown where it is declared and where it is used', () => {
     const source = 'global x: u32 = 0\nexport func f(n: u32) -> u32 => n + x\n'
     const hover = hoverIn(source)

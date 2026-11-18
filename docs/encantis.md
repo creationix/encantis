@@ -105,17 +105,49 @@ Float literals default to `f64`. Decimal-to-binary conversion is inherently loss
 
 ```ents
 "hello"           // UTF-8 string literal
-"line1\nline2"    // escape sequences: \n \t \r \\\ \"
-'also a string'   // single quotes work too
+"line1\nline2"    // escape sequences: \n \t \r \\ \' \"
+"\xE9"            // \xHH is the byte HH: one byte
+"\u{e9}"          // \u{H..} is a character by its codepoint: its UTF-8 bytes, two here
 x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
 b"SGVsbG8="       // base64 bytes
 ```
 
-Both single and double quoted strings are equivalent. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
+A string is written in double quotes; single quotes hold codepoints ([Codepoint Literals](#codepoint-literals)). The `x` and `b` prefixes take double quotes only. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
 
-There is no character literal: `'a'` is a string of one byte, in memory like any other. It is not a byte to compare, compute with, assign or pass: with `c: u8`, `c == 'a'`, `c - 'a'`, `let b: u8 = 'a'` and `match c { 'a' => ... }` are compile errors. Write the byte as a number (`c == 97`).
+A string is never a character: next to a number, given for one or matched against one it is an error, which shows how the character is written (`'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`).
+
+#### Codepoint Literals
+
+Single quotes hold codepoints, not a string. Each character between them is one codepoint (a Unicode scalar value, never a byte of its UTF-8 encoding), and each codepoint is exactly the integer literal of its value, as if the number were written in its place:
+
+```ents
+'a'               // 97
+'é'               // 233: a u8 holds it, as it holds 233
+'ā'               // 257: too big for a u8, as 257 is
+'\n'              // 10; also \t \r \\ \' \" (and ' needs no escape in "don't")
+'\x7F'            // 127: \xHH is the codepoint HH
+'\u{1F600}'       // 128512: \u{H..} is the codepoint H..
+'ok'              // the tuple (111, 107)
+```
+
+One codepoint is the value itself, as a parenthesised value is (`'a'` is `(97)`, which is `97`), so it compares, computes, assigns, passes and matches as its number does. With `c: u8`:
+
+```ents
+def newline = '\n'
+
+func is_lower(c: u8) -> bool => c >= 'a' && c <= 'z'
+func digit(c: u8) -> u8 => c - '0'
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+```
+
+Several codepoints are the tuple of them, values in registers like any tuple: `let (x, y) = 'ok'` binds 111 and 107, and `'RIFF'` passes for a `(u8, u8, u8, u8)` as `(82, 73, 70, 70)` does. A tuple is not an array, so `'abc'` is no `[3]u8`.
+
+A single-quoted literal is never a string, nor an address: where a pointer or a slice is wanted it is an error that shows the string (`cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")`). `''` holds no codepoint and is an error, as is an escape that names no character (`\u{D800}` to `\u{DFFF}`, past `\u{10FFFF}`).
 
 #### Template Literals
 
@@ -189,7 +221,9 @@ mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
 
 Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
 
-A literal given where a mutable pointer or slice is wanted is `mut` without the keyword: `let buf: []mut u8 = [0:u8; 20]`, `data s: []mut i32 = [20, 8]` and an argument `[0:u8; 10]` for a `[]mut u8` parameter are each a copy of their own, shared with no other literal, and so are the rows of a table literal given for a `*mut [N][M]T` (or for a `*mut [N][!]T`) and the elements of a literal given for a slice of mutable slices (`[][]mut u8`).
+A literal is constant unless it is written with `mut`, wherever it is: where a mutable pointer or slice is wanted, a literal without `mut` is an error that shows it written with the keyword. `let buf: []mut u8 = [0:u8; 20]` is ``a literal is constant: write `mut [0:u8; 20]` for a []mut u8``; the same goes for `data s: []mut i32 = [20, 8]`, an argument `"abc"` for a `[]mut u8` parameter (`mut "abc"`), a slice field of a struct (`Buf(mut [0:u8; 4], 0)`), an element of a slice of mutable slices (`data q: *[2][]mut u8 = [mut "ab", mut "cd"]`), the table literal of a `*mut [N][M]T` and a template literal for a `[]mut []u8` (``mut `a${x}b` ``). The receiver of a method call is shown in parentheses, ``receiver: a literal is constant: write `(mut "abc")` for a []mut u8``, as `mut` goes on the literal itself: `mut "abc".fill()` would be `mut` of the call, and is a syntax error that says so. Only where a mutable pointer or slice is wanted: the fallback of `??` is given for what the whole is given for ([4.7](#the--operator)), so in `println(digits[i..] ?? "")`, with `digits` a `*mut [24]u8` and `println` taking a `[]u8`, `""` needs no `mut`.
+
+`mut` makes the whole literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `&` before a literal makes a writable cell of its own as well (`let n = &0:u32` is a `*mut u32`).
 
 #### `def` — Compile-Time Constants
 
@@ -451,7 +485,8 @@ print(buf)                        // OK: mutable → const (implicit coercion)
 fill(buf)                         // OK: mutable → mutable
 print("hello")                    // OK: const literal → const param
 fill(text)                        // ERROR: const data → mutable param
-fill("hello")                     // OK: given for []mut u8, the literal is a mutable copy of its own
+fill("hello")                     // ERROR: a literal is constant: write `mut "hello"` for a []mut u8
+fill(mut "hello")                 // OK: a mutable copy of its own
 ```
 
 **Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
@@ -1172,12 +1207,13 @@ data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, an
 
 #### Mutability
 
-Data is const unless its literal is `mut` or its declared type is a mutable pointer or slice. Const data may share its bytes with equal literals; mutable data is its own:
+Data is const unless its literal is `mut`, and a mutable type needs a `mut` literal ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). Const data may share its bytes with equal literals; mutable data is its own:
 
 ```ents
 data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
 data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
-data counts: []mut u32 = [0, 0]     // []mut u32: unique, as if written with mut
+data counts: []mut u32 = mut [0, 0] // []mut u32: unique
+data sums: []mut u32 = [0, 0]       // ERROR: a literal is constant: write `mut [0, 0]` for a []mut u32
 ```
 
 ### 3.3 Variables
@@ -1879,7 +1915,7 @@ let name = names[i] ?? "Unknown"     // bounds-checked index with fallback
 let ptr = optional_ptr ?? default    // null-checked pointer with fallback
 ```
 
-The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type.
+The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type. Where the whole is given for the const pointer or slice that the left side's value is the mutable one of, the fallback is given for that type: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`, and the literal there is constant ([1.5](#the-mut-keyword-on-literals)). With a mutable one wanted, or none (`let s = buf[i..] ?? mut ""`), the fallback is for the mutable type.
 
 #### `if let` Bindings
 
@@ -2388,11 +2424,11 @@ let msg:[]u8 = match status & 3 {
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number or a bool; a string, `'a'` included, is not one ([1.5](#string-literals)):
+Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number, a codepoint (`'a'`, [1.5](#codepoint-literals)) or a bool. A string is not one, and no tuple pattern is compared yet, `'ok'` (the tuple `(111, 107)`) included: match one field at a time.
 
 ```ents
 match c {
-  97, 101, 105, 111, 117 => true   // the bytes of a, e, i, o, u
+  'a', 'e', 'i', 'o', 'u' => true   // 97, 101, 105, 111, 117
   _ => false
 }
 ```
@@ -2479,6 +2515,8 @@ The compiler enforces exhaustive matching when matching an enum — all variants
 
 #### Struct and Tuple Patterns
 
+> **Status: Not yet implemented** — `match` compares numbers, codepoints and bools; a tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`).
+
 Pattern matching works on structs and tuples too, not just enums:
 
 ```ents
@@ -2493,7 +2531,7 @@ func describe_point(p:Point) -> []u8 {
   }
 }
 
-// Anonymous tuple patterns work too
+// Anonymous tuple patterns too (not yet: the compiler refuses a tuple pattern)
 func check_pair(pair:(i32, i32)) -> bool {
   match pair {
     (0, 0) => true
@@ -2507,7 +2545,7 @@ The convention distinguishes patterns by case:
 
 - **Uppercase** (`Point`, `RGB`) — type constructor or variant
 - **lowercase** (`x`, `y`) — binding (introduces a variable)
-- **literals** (`0`, `"hello"`) — exact match
+- **literals** (`0`, `'a'`, `true`) — exact match
 - **`_`** — wildcard (match anything, don't bind)
 
 <!-- spec:begin compile -->
@@ -2911,7 +2949,7 @@ no function 'hash' accepts (f64), in same(K = f64)
 no function 'eq' accepts (f64, f64), in same(K = f64)
 ```
 
-A call with the wrong number of arguments for the one function of its name is a mistake in the body, not a requirement on the type, and reads as it does anywhere (`'eq' expected 2 arguments, got 1, in same(K = u32)`).
+A call with the wrong number of arguments for the one function of its name is a mistake in the body, not a requirement on the type, and reads as it does anywhere (`'eq' expected 2 arguments, got 1, in same(K = u32)`). So is a literal that is wrong as it is written, whatever the type: one without `mut` for a mutable slice (``argument 1: a literal is constant: write `mut "ab"` for a []mut u8, in same(K = u32)``), single quotes where a string is wanted, or a string where a character is.
 
 ### 8.4 Instances
 

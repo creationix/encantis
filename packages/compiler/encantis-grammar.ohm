@@ -427,7 +427,7 @@ Encantis {
   // - (0, y)         tuple pattern
   // - Red            unit variant (typeIdent)
   // - x              binding (ident, lowercase)
-  // - 42, "hello"    literals
+  // - 42, 'a', true  literals ('ok' is the tuple pattern (111, 107))
   // - _              wildcard
   MatchPattern = typeIdent "(" MatchPatternList ")"  -- constructor
                | "(" MatchPatternList ")"            -- tuple
@@ -479,6 +479,7 @@ Encantis {
 
   literal = numberLiteral
           | stringLiteral
+          | codepointLiteral
           | boolLiteral
 
   numberLiteral = floatLiteral
@@ -506,20 +507,22 @@ Encantis {
 
   exponent = caseInsensitive<"e"> ("+" | "-")? digit+
 
+  // A string is double-quoted: bytes in memory.
   stringLiteral = utf8String
-                | charString
                 | hexString
                 | base64String
 
   utf8String = "\"" dqChar* "\""
 
-  charString = "'" sqChar* "'"
+  // Single quotes hold codepoints, not a string: 'a' is 97, 'ok' is the
+  // tuple (111, 107). Each character or escape is one codepoint.
+  codepointLiteral = "'" sqChar* "'"
 
   hexString = "x\"" (hexByte | space)* "\""
 
   base64String = "b\"" (base64Char | space)* "\""
 
-  // Each kind of string only excludes its own quote: "don't" and 'say "hi"'.
+  // Each kind of quote only excludes its own: "don't" and '"'.
   dqChar = escapeSeq
          | ~("\"" | "\\") any
 
@@ -527,6 +530,7 @@ Encantis {
          | ~("'" | "\\") any
 
   escapeSeq = "\\" "x" hexDigit hexDigit  -- hex
+            | "\\" "u" "{" hexDigit+ "}"  -- unicode
             | "\\" escapeChar             -- simple
 
   escapeChar = "n" | "t" | "r" | "\\" | "\"" | "'"

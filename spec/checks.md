@@ -860,6 +860,83 @@ cannot assign float(1.5) to u64
 300
 ```
 
+## Literals for mutable pointers and slices
+
+A literal is constant unless it is written with `mut`. Where a mutable pointer or slice is wanted, a literal without the keyword is an error that shows it written with it. `mut` makes all of a literal writable and its own: the rows of a table, the elements of a slice of slices and the slice fields of its structs too.
+
+```ents
+type Buf = (bytes: []mut u8, n: u32)
+
+data s: []mut i32 = mut [20, 8]
+data t: *mut [2][2]i32 = mut [[1, 2], [1, 2]]
+data q: *[2][]mut u8 = [mut "ab", mut "cd"]
+data r: [][]mut u8 = mut [[1, 2], [3, 4]]
+data bufs: *mut [1]Buf = mut [([0:u8; 4], 0)]
+
+func fill(buf: []mut u8) -> u32 => buf.len
+func fill(n: u32) -> u32 => n
+
+func count(s: []u8) -> u32 => s.len
+
+func f() -> u32 {
+  let buf: []mut u8 = mut [0:u8; 20]
+  let b = Buf(mut [0:u8; 4], 0)
+  let cell = &0:u32
+  return fill(mut "hello") + fill(buf) + fill(b.bytes) + cell.* + (mut "ab").fill() + count(buf[2..] ?? "")
+}
+```
+
+```ents
+type Buf = (bytes: []mut u8, n: u32)
+
+data s: []mut i32 = [20, 8]
+data t: *mut [2][2]i32 = [[1, 2], [1, 2]]
+data q: *[2][]mut u8 = [mut "ab", "cd"]
+data r: [][]mut u8 = [[0:u8; 2]; 3]
+data e: []mut u8 = ""
+
+func fill(buf: []mut u8) -> u32 => buf.len
+func fill(n: u32) -> u32 => n
+
+func f(x: i32) -> u32 {
+  let buf: []mut u8 = [0:u8; 20]
+  let b: Buf = ([0:u8; 4], 0)
+  let p: *mut [2]i32 = [x, 8]
+  return fill("hello") + fill(buf) + "ab".fill() + fill(buf[2..] ?? "")
+}
+
+func g(x: []u8) -> u32 {
+  let parts: []mut []u8 = `a${x}b`
+  return parts.len
+}
+```
+
+```errors
+a literal is constant: write `mut [20, 8]` for a []mut i32
+a literal is constant: write `mut [[1, 2], [1, 2]]` for a *mut [2][2]i32
+a literal is constant: write `mut "cd"` for a []mut u8
+a literal is constant: write `mut [0:u8; 2]` for a []mut u8
+a literal is constant: write `mut ""` for a []mut u8
+a literal is constant: write `mut [0:u8; 20]` for a []mut u8
+a literal is constant: write `mut [0:u8; 4]` for a []mut u8
+a literal is constant: write `mut [x, 8]` for a *mut [2]i32
+argument 1: a literal is constant: write `mut "hello"` for a []mut u8
+receiver: a literal is constant: write `(mut "ab")` for a []mut u8
+a literal is constant: write `mut ""` for a []mut u8
+a literal is constant: write `mut `a${x}b`` for a []mut []u8
+```
+
+`mut` goes on the literal itself, so before a method call it is a syntax error that shows the parentheses:
+
+```ents
+func fill(buf: []mut u8) -> u32 => buf.len
+func f() -> u32 => mut "ab".fill()
+```
+
+```errors
+mut goes on the literal itself: write (mut "ab").fill()
+```
+
 ## Values in a literal in memory
 
 The value of a repeat literal, and each element of an array literal inside another, meets the element type as an element of the outer literal does: it widens to it, or it is an error.
@@ -1581,28 +1658,100 @@ argument 1: cannot assign a string literal to []u32 — a string is bytes ([]u8)
 cannot assign a string literal to []u16
 ```
 
-A string in single quotes is a string too, never a character: not a byte to compare, compute with, assign or pass. Next to a pointer it is the address of its bytes.
+A literal in single quotes is codepoints, not a string: `'a'` is the integer 97, exactly as if `97` were written there, and `'ok'` is the tuple `(111, 107)`. Each character is one codepoint, whatever its UTF-8 bytes: `'é'` is 233, which a `u8` holds. So with `c: u8` a codepoint compares, computes, assigns, passes and matches as its number does. A string next to a pointer is the address of its bytes.
 
 ```ents
+def newline = '\n'
+
 func is_a(c: u8) -> bool => c == 'a'
 func is_b(c: u8) -> bool => ('b') != c
 func offset(c: u8) -> u8 => c - 'a'
-func before(c: u32) -> bool => c < "ab"
 func next() -> bool => 'a' + 1 == 98
-func put() { let c: u8 = 'a' }
+func put() -> u8 {
+  let c: u8 = 'a'
+  return c
+}
 func take(c: u8) -> u8 => c
 func give() -> u8 => take('a')
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+func is_e(c: u8) -> bool => c == 'é' || c == '\xE9' || c == '\u{e9}'
+func at_end(c: u8) -> bool => c == newline || c == '\''
+func lower(c: u8) -> bool => c >= 'a' && c <= 'z'
+func pair() -> i32 {
+  let (o, k) = 'ok'
+  return o * 1000 + k
+}
+func tag(t: (u8, u8, u8, u8)) -> u8 => t.0
+func riff() -> u8 => tag('RIFF')
 func same(p: *[2]u8) -> bool => p == "ab"
 ```
 
+A codepoint that does not fit is refused as its number is. A string is never a character, and a single-quoted literal is never a string, nor an address.
+
+```ents
+func latin() -> u8 {
+  let c: u8 = '\u{101}'
+  return c
+}
+func is_a(c: u8) -> bool => c == "a"
+func before(c: u32) -> bool => c < "ab"
+func put() { let c: u8 = "a" }
+func greet(s: []u8) -> u32 => s.len
+func hello() -> u32 => greet('hi')
+func same(p: *[2]u8) -> bool => p == 'ab'
+func first(p: *u8) -> u8 => p.*
+func a() -> u8 => first('a')
+func vowel(c: u8) -> bool => match c {
+  "a" => true
+  _ => false
+}
+func ok(t: (u8, u8)) -> bool => match t {
+  'ok' => true
+  _ => false
+}
+```
+
 ```errors
-'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
-'!=' cannot be applied to a string and u8 — a string is bytes in memory, not a character; write its byte as a number (98)
-'-' cannot be applied to u8 and a string — a string is bytes in memory, not a character; write its byte as a number (97)
+cannot assign int(257) to u8
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
 '<' cannot be applied to u32 and a string — a string is bytes in memory, not a character
-'+' cannot be applied to a string and int(1) — a string is bytes in memory, not a character; write its byte as a number (97)
-cannot assign *[1]u8 to u8
-argument 1: cannot assign *[1]u8 to u8
+cannot assign *[1]u8 to u8 — a string is bytes in memory, not a character: a character is written in single quotes ('a')
+argument 1: cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")
+'==' cannot be applied to *[2]u8 and 'ab' — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("ab")
+argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a")
+cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
+'ok' is a tuple of codepoints, and match cannot compare a tuple pattern yet: compare one field at a time
+```
+
+Nor is one a slice in data:
+
+```ents
+data greeting: []u8 = 'hi'
+```
+
+```errors
+cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")
+```
+
+Single quotes hold at least one character, and an escape names a character: `\u{D800}` to `\u{DFFF}` are UTF-16 surrogates, and none is past `\u{10FFFF}`.
+
+```ents
+func f() -> u8 => ''
+```
+
+```errors
+'' holds no character: write one or more between single quotes, or "" for an empty string
+```
+
+```ents
+func f() -> u32 => '\u{d800}'
+```
+
+```errors
+\u{d800} is not a character: D800 to DFFF are UTF-16 surrogates, not codepoints
 ```
 
 Assigning to a range fills it (`buf[a..b] = 0`) or copies into it (`buf[a..b] = src`), as `memory.fill` and `memory.copy`. The range is written, so it must be known to fit, like an indexed write. A fill can have a runtime length; a copy needs both lengths known at compile time, and equal.

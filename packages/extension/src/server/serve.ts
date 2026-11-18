@@ -634,6 +634,10 @@ export function startServer(connection: Connection): void {
       }
     }
 
+    // A literal in single quotes ('a', 'ok') is one word, from quote to quote.
+    const codepoints = singleQuotedAt(text, offset);
+    if (codepoints) return codepoints;
+
     // Handle string literals using quote counting to determine if we're inside a string
     // Count quotes from line start to current position
     const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
@@ -680,6 +684,29 @@ export function startServer(connection: Connection): void {
     while (end < text.length && isWordChar(text[end])) end++;
     if (start === end) return null;
     return { word: text.slice(start, end), start, end };
+  }
+
+  // The single-quoted literal that `offset` is in or on, read from the start
+  // of its line past comments, strings and escapes.
+  function singleQuotedAt(text: string, offset: number): { word: string; start: number; end: number } | null {
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    const lineEnd = text.indexOf('\n', offset) === -1 ? text.length : text.indexOf('\n', offset);
+    let i = lineStart;
+    while (i < lineEnd && i <= offset) {
+      const ch = text[i];
+      if (ch === '/' && text[i + 1] === '/') return null;
+      if (ch === '"' || ch === '`' || ch === "'") {
+        const start = i;
+        i++;
+        while (i < lineEnd && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
+        const end = Math.min(i + 1, lineEnd);
+        if (ch === "'" && offset >= start && offset < end) return { word: text.slice(start, end), start, end };
+        i = end;
+        continue;
+      }
+      i++;
+    }
+    return null;
   }
 
   function isWordChar(ch: string): boolean {

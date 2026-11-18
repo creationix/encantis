@@ -1326,7 +1326,7 @@ describe('tables', () => {
     expect(errs('let t: *[2][3]i32 = [[a, 2, 3], [4, 5, 6]]\nlet u: *[2][3]i32 = [v, [1, 2, 3]]\nlet w: [][2]i32 = [[a; 2]; 3]', 'a: i32, v: [3]i32')).toEqual([
       row('*[2][3]i32'), row('*[2][3]i32'), row('[][2]i32'),
     ])
-    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = [a, 2, 3]', 'a: i32')).toEqual([])
+    expect(errs('let t: *[2][3]i32 = [[1, 2, 3], [4, 5, 6]]\nlet u: *[1][1](x: i32, y: i32) = [[(1, -2)]]\nlet r: *mut [3]i32 = mut [a, 2, 3]', 'a: i32')).toEqual([])
   })
 
   test('len of a packed *[NxM]T is N, its rows; wid of a slice is the width of an element', () => {
@@ -1578,6 +1578,110 @@ describe('struct elements of an array literal', () => {
   })
 })
 
+describe('a literal for a mutable pointer or slice', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+
+  test('is written with mut, and the error shows it so', () => {
+    expect(errs('data s: []mut i32 = [20, 8]')).toEqual([constant('[20, 8]', '[]mut i32')])
+    expect(errs('data s: []mut i32 = mut [20, 8]')).toEqual([])
+    expect(errs('data s: *mut [2]u8 = "ab"')).toEqual([constant('"ab"', '*mut [2]u8')])
+    expect(errs('data s: *mut [3]u8 = mut "a\\n\\""')).toEqual([])
+    expect(errs('data s: *mut [3]u8 = "a\\n\\""')).toEqual([constant('"a\\n\\""', '*mut [3]u8')])
+    expect(errs('data s: []mut u16 = [0xff; 4]')).toEqual([constant('[0xff; 4]', '[]mut u16')])
+    expect(errs('data s: []mut u8 = x"ff 00"')).toEqual([constant('x"ff00"', '[]mut u8')])
+    // A long one is shown by its brackets.
+    expect(errs('data s: []mut u16 = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]')).toEqual([constant('[...]', '[]mut u16')])
+  })
+
+  test('mut covers what the literal lays out apart', () => {
+    const source = 'type B = (bytes: []mut u8, n: u32)\n'
+    expect(errs(`${source}data bs: *mut [2]B = mut [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([])
+    expect(errs('data ts: *mut [2][2]i32 = [mut [1, 2], [3, 4]]')).toEqual([constant('[mut [1, 2], [3, 4]]', '*mut [2][2]i32')])
+    // A constructor's arguments are checked before the literal it is in
+    // meets its type: the one keyword is the fix for both.
+    expect(errs(`${source}data bs: *mut [2]B = [([0:u8; 2], 0), B("ab", 1)]`))
+      .toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[([0:u8; 2], 0), B("ab", 1)]', '*mut [2]B')])
+    // In a value, a constructor's fields are what is checked.
+    expect(errs(`${source}func f() -> u32 {\n  let a: [2]B = [B("cd", 1), B(mut "ef", 2)]\n  let t: (B, u32) = (B("gh", 1), 2)\n  return 0\n}`))
+      .toEqual([`field bytes: ${constant('"cd"', '[]mut u8')}`, `field bytes: ${constant('"gh"', '[]mut u8')}`])
+    expect(errs(`${source}data bs: *[2]B = [([0:u8; 2], 0), B("ab", 1)]`)).toEqual([`field bytes: ${constant('"ab"', '[]mut u8')}`, constant('[0:u8; 2]', '[]mut u8')])
+    // Nothing else wrong with it, or the other error is the one.
+    expect(errs('data s: []mut u32 = "abcd"')).toEqual([expect.stringContaining('cannot assign a string literal to []mut u32')])
+  })
+
+  test('the function meant is found as if the literal were mut, and an instance names it', () => {
+    expect(errs('func fill(b: []mut u8) -> u32 => b.len\nfunc fill(n: u32) -> u32 => n\nfunc f() -> u32 => fill([0:u8; 4])'))
+      .toEqual([`argument 1: ${constant('[0:u8; 4]', '[]mut u8')}`])
+    expect(errs('func zeros(comptime T: type, n: T) -> u32 {\n  let b: []mut T = [n; 4]\n  return b.len\n}\nfunc f() -> u32 => zeros(u8, 1)'))
+      .toEqual([`${constant('[n; 4]', '[]mut u8')}, in zeros(T = u8)`])
+  })
+
+  test('& before a literal is a writable cell of its own', () => {
+    expect(errs('func f() -> u32 {\n  let n = &0:u32\n  n.* = 1\n  let p: *mut i32 = &5\n  return n.*\n}')).toEqual([])
+  })
+})
+
+describe('what a literal error says, wherever the literal is', () => {
+  const errs = (source: string) => checkModule(source).errors.map(e => e.message)
+  const constant = (literal: string, type: string) => `a literal is constant: write \`mut ${literal}\` for a ${type}`
+  const notAString = (quoted: string, type: string) =>
+    `cannot assign '${quoted}' to ${type} — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("${quoted}")`
+
+  test('a data slice of a single-quoted literal is told to use double quotes', () => {
+    expect(errs("data d: []u8 = 'hi'")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = ('hi')")).toEqual([notAString('hi', '[]u8')])
+    expect(errs("data d: []u8 = 'hi':[]u8")).toEqual([notAString('hi', '[]u8')])
+    // A (ptr, len) pair written as numbers is still one.
+    expect(errs('data d: []u8 = (104, 105)')).toEqual(['data value must be a literal to lay out: a (ptr, len) pair is a slice already'])
+  })
+
+  test('the receiver of a method call is told to write mut in parentheses', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\n'
+    expect(errs(`${source}func f() -> u32 => "ab".fill() + [1, 2].fill() + (mut "ok").fill()`))
+      .toEqual(['receiver: a literal is constant: write `(mut "ab")` for a []mut u8', 'receiver: a literal is constant: write `(mut [1, 2])` for a []mut u8'])
+    // which is how it parses: mut before "ab".fill() is told the same.
+    const parsed = parse(`${source}func f() -> u32 => mut "ab".fill()`)
+    expect(parsed.errors.map(e => e.shortMessage)).toEqual(['mut goes on the literal itself: write (mut "ab").fill()'])
+    expect(parse('func f(x: u8) -> u8 => mut x').errors.map(e => e.shortMessage))
+      .toEqual(['mut goes before a literal (an array, a string or a tuple), not before x'])
+  })
+
+  test('a template literal is shown as it is written', () => {
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = `a${x}b\\n`\n  return t.len\n}'))
+      .toEqual([constant('`a${x}b\\n`', '[]mut []u8')])
+    expect(errs('func f(x: []u8) -> u32 {\n  let t: []mut []u8 = mut `a${x}b`\n  return t.len\n}')).toEqual([])
+  })
+
+  test('an instance keeps the error a literal has of its own', () => {
+    const source = 'func fill(s: []mut u8) -> u32 => s.len\nfunc greet(s: []u8) -> u32 => s.len\nfunc take(c: u8) -> u8 => c\nfunc first(p: *u8) -> u8 => p.*\n'
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => fill("ab")\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([`argument 1: ${constant('"ab"', '[]mut u8')}, in h(T = u8)`])
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet('hi') + take("a") + first('a')\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual([
+        `argument 1: ${notAString('hi', '[]u8')}, in h(T = u8)`,
+        `argument 1: cannot assign *[1]u8 to u8 — a string is bytes in memory, not a character: a character is written in single quotes ('a'), in h(T = u8)`,
+        `argument 1: cannot assign 'a' to *u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("a"), in h(T = u8)`,
+      ])
+    // What the type argument does not bring is still a requirement.
+    expect(errs(`${source}func h(comptime T: type, x: T) -> u32 => greet(x)\nfunc f() -> u32 => h(u8, 1)`))
+      .toEqual(["no function 'greet' accepts (u8), in h(T = u8)"])
+  })
+
+  test('the fallback of ?? is given for what the whole is given for', () => {
+    const source = 'func first(s: []u8) -> u32 => s.len\n'
+    // A const slice is wanted: "" needs no mut.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 => first(x[i..] ?? "")`)).toEqual([])
+    expect(errs(`${source}func f(t: [][]mut u8) -> u32 {\n  let s: []u8 = t[0] ?? "ab"\n  return first(s)\n}`)).toEqual([])
+    // So for a parameter whose type is inferred from the argument.
+    expect(errs('func count(comptime T: type, s: []T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => count(x[i..] ?? "")')).toEqual([])
+    // A mutable one is: it does.
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s: []mut u8 = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+    expect(errs('func fill(comptime T: type, s: []mut T) -> u32 => s.len\nfunc f(x: []mut u8, i: u32) -> u32 => fill(x[i..] ?? "")')).toEqual([`${constant('""', '[]mut u8')}`])
+    expect(errs(`${source}func f(x: []mut u8, i: u32) -> u32 {\n  let s = x[i..] ?? ""\n  return s.len\n}`)).toEqual([constant('""', '[]mut u8')])
+  })
+})
+
 describe('a string literal as a slice', () => {
   const errs = (source: string) => checkModule(`type Pt = (x: i32, y: i32)\n${source}`).errors.map(e => e.message)
   const assign = (to: string, element = to.replace(/^\??\[\](mut )?/, '')) =>
@@ -1586,8 +1690,11 @@ describe('a string literal as a slice', () => {
     `cannot use a string literal among ${element} elements — a string is bytes ([]u8); write the ${element} elements as an array literal ([1, 2, 3])`
 
   test('is a slice of elements of one byte', () => {
-    for (const type of ['[]u8', '[]mut u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
+    for (const type of ['[]u8', '?[]u8', '[]i8', '[]bool', '[]u8#128']) {
       expect(errs(`func f() -> u32 { let s: ${type} = "abc"\n return 1 }`)).toEqual([])
+    }
+    for (const type of ['[]mut u8', '?[]mut u8', '*mut [3]u8']) {
+      expect(errs(`func f() -> u32 { let s: ${type} = mut "abc"\n return 1 }`)).toEqual([])
     }
     expect(errs('data names: [][]u8 = ["ab", "c"]\ndata rows: [][][]u8 = [["ab"], ["c", "d"]]\ndata joined: []u8 = ["ab", "c"]')).toEqual([])
   })
@@ -3379,7 +3486,9 @@ func k(s: S) -> f64 {
 
   test('lays out a literal, in data or in place, and makes a pointer to it a slice', () => {
     // A data declared with the name, or a literal given for it after a colon
-    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
+    // (PA is a *mut [3]u8: its literal is written with mut, as for the
+    // pointer it names)
+    expect(errs(`${names}type B = [3]u16\ntype PB = *B\ndata s: S = [1.5, 2.5]\ndata pa: PA = mut [1, 2, 3]\ndata pb: PB = [4, 5, 6]\ndata ms = mut [0:f64; 4]:S\nfunc f() -> u32 => s.len + pa[1] + pb.len + ms.len`)).toEqual([])
     // A pointer to a name for an array, whatever names the pointer
     expect(errs(`${names}type B = [3]u16\ntype PB = *B\nfunc f() -> []u16 {\n  let q: *B = [1, 2, 3]\n  let r: PB = q\n  let m: [*]u16 = r\n  let s: []u16 = r\n  return q\n}`)).toEqual([])
     // Not as writable as a slice that is: the same refusal as written out
@@ -3708,7 +3817,10 @@ describe('the variables of a for, an if let or a match arm', () => {
 
   test('a match binding cannot have the name of a variable seen where the match is', () => {
     expect(errs('func f(n: u32, k: u32) -> u32 => match k {\n 0 => 1\n n => n + 1\n}')).toEqual([arm('n', 'a parameter')])
-    expect(errs('func f(x: i32, p: (i32, i32)) -> i32 => match p {\n (x, 0) => 1\n _ => 0\n}')).toEqual([arm('x', 'a parameter')])
+    // (A tuple pattern is refused as well: match compares no tuple yet.)
+    expect(errs('func f(x: i32, p: (i32, i32)) -> i32 => match p {\n (x, 0) => 1\n _ => 0\n}')).toEqual([
+      arm('x', 'a parameter'), 'match cannot compare a tuple pattern yet: compare one field at a time',
+    ])
     expect(errs('func f(k: u32) -> u32 {\n let t: u32 = 0\n for n in 3 {\n t += match k {\n n => 1\n _ => 0\n }\n }\n return t\n}'))
       .toEqual([arm('n', 'a loop variable in scope')])
   })
