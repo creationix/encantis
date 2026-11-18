@@ -3910,11 +3910,15 @@ class CheckContext {
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
     // A value of `n` registers, whose code is written out `copies` times
+    // A def's value is copied where it is used, with its own places in the
+    // source: what is counted of it is said at the use (the last expression
+    // of the function's own met before it).
+    let site = span.start
     const count = (expr: AST.Expr, n: number, copies: number) => {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
       const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
-      uses.push({ at: expr.span.start, n: own, shown })
+      uses.push({ at: site, n: own, shown })
     }
     // A block's value, which a wasm block gives back
     const blockValue = (expr: AST.Expr, what: string) => {
@@ -3983,6 +3987,7 @@ class CheckContext {
       // (x) and x: T are x
       let expr = ungrouped(written)
       while (expr.kind === 'AnnotationExpr') expr = ungrouped(expr.expr)
+      if (expr.span.start >= span.start && expr.span.start < span.end) site = expr.span.start
       const type = this.exprTypes.get(expr)
       const own = () => {
         if (!(part && isPlace(expr))) count(expr, Math.max(1, registers(type)), n)
