@@ -1385,68 +1385,100 @@ export function arrayLength(type: ResolvedType): number | null {
 
 // The most parts a type can have, written out in full: every name replaced by
 // what it names, each field, element, pointer and number counted where it
-// stands. Names let a type double at every level (type D2 = (a: D1, b: D1)),
-// and what is done with a type written out (an instance key, the registers of
-// a value) would then not fit in memory.
+// stands, and an array held by value counted once for each of its elements.
+// Names let a type double at every level (type D2 = (a: D1, b: D1)), and an
+// array held by value is that many values ([2][2][2]u8 is eight): what is
+// done with a type written out (an instance key, the registers of a value)
+// would then not fit in memory.
 export const MAX_TYPE_PARTS = 1 << 16
 
 // How many parts a type has, written out in full, counted once for each place
 // it stands. A type that refers to itself is cut where it comes round, as
 // canonicalKey cuts it. `counted` holds what is known already, so a type that
 // names the same type many times is counted in a time of its own size.
-export function typeParts(root: ResolvedType, counted: Map<ResolvedType, number> = new Map(), open: Set<ResolvedType> = new Set()): number {
+//
+// `byValue`: the type is held by value, as a parameter, a result, a variable
+// or a global is, and a field or an element of one. It is then laid out in
+// registers, an array [N]T as N of T (typeToWasm): N times what T counts.
+// What a pointer or a slice points to is in memory, written out once whatever
+// its length, and the parameters and results of a function type are held by
+// value wherever the function type is.
+export function typeParts(root: ResolvedType, counted: Map<ResolvedType, number> = new Map(), byValue = false): number {
   // A walk with a stack of its own: a type can be deeper than the call stack,
   // through names that each add a level (type T0 = (n: ?*T1), ...).
-  type Frame = { t: ResolvedType; parts: readonly ResolvedType[]; next: number; n: number }
+  type Frame = { t: ResolvedType; byValue: boolean; parts: readonly Part[]; next: number; n: number }
   const stack: Frame[] = []
+  // What is known, and what is being counted, held by value and not
+  const known = [counted, new Map<ResolvedType, number>()]
+  const open = [new Set<ResolvedType>(), new Set<ResolvedType>()]
+  const mode = (held: boolean) => (held ? 1 : 0)
   // The count of a type known already, or one cut where it comes round, or
   // null where it is to be counted from its parts (pushed)
-  const enter = (t: ResolvedType): number | null => {
-    const known = counted.get(t)
-    if (known !== undefined) return known
-    if (open.has(t)) return 1
-    open.add(t)
-    const [parts, own] = partsOf(t)
-    stack.push({ t, parts, next: 0, n: own })
+  const enter = (t: ResolvedType, held: boolean): number | null => {
+    const n = known[mode(held)].get(t)
+    if (n !== undefined) return n
+    if (open[mode(held)].has(t)) return 1
+    open[mode(held)].add(t)
+    const [parts, own] = partsOf(t, held)
+    stack.push({ t, byValue: held, parts, next: 0, n: own })
     return null
   }
-  const first = enter(root)
+  // A count past any limit stays a number: it is only ever compared
+  const add = (a: number, b: number) => Math.min(a + b, Number.MAX_SAFE_INTEGER)
+  const first = enter(root, byValue)
   if (first !== null) return first
   for (;;) {
     const frame = stack[stack.length - 1]
     if (frame.next < frame.parts.length) {
-      const n = enter(frame.parts[frame.next++])
-      if (n !== null) frame.n += n
+      const part = frame.parts[frame.next]
+      const n = enter(part.t, part.byValue)
+      // Counted now, or when its frame is done (below)
+      if (n === null) continue
+      frame.n = add(frame.n, Math.min(n * part.times, Number.MAX_SAFE_INTEGER))
+      frame.next++
       continue
     }
     stack.pop()
-    open.delete(frame.t)
-    counted.set(frame.t, frame.n)
+    open[mode(frame.byValue)].delete(frame.t)
+    known[mode(frame.byValue)].set(frame.t, frame.n)
     if (stack.length === 0) return frame.n
-    stack[stack.length - 1].n += frame.n
+    const parent = stack[stack.length - 1]
+    const part = parent.parts[parent.next++]
+    parent.n = add(parent.n, Math.min(frame.n * part.times, Number.MAX_SAFE_INTEGER))
   }
 }
 
+// A type a type is made of where it stands: whether it is held by value
+// there, and how many times it is (an element of an array held by value)
+type Part = { t: ResolvedType; byValue: boolean; times: number }
+
 // The types a type is made of where it stands, and what it counts for itself:
 // a name or a resolved reference is the type it names, and counts nothing.
-function partsOf(t: ResolvedType): [readonly ResolvedType[], number] {
+function partsOf(t: ResolvedType, byValue: boolean): [readonly Part[], number] {
+  const at = (type: ResolvedType, held = byValue, times = 1): Part => ({ t: type, byValue: held, times })
   switch (t.kind) {
     case 'named':
-      return [[t.type], 0]
+      return [[at(t.type)], 0]
     case 'forward_ref':
-      return t.target ? [[t.target], 0] : [[], 1]
+      return t.target ? [[at(t.target)], 0] : [[], 1]
     case 'pointer':
-      return [[t.pointee], 1]
+      return [[at(t.pointee, false)], 1]
     case 'slice':
-    case 'array':
+      return [[at(t.element, false)], 1]
+    case 'array': {
+      // Held by value, an array of one known length is its elements (none
+      // still writes its element out once). Any other is held as a pointer.
+      const length = t.sizes?.length === 1 && typeof t.sizes[0] === 'number' ? t.sizes[0] : null
+      return [[byValue && length !== null ? at(t.element, true, Math.max(length, 1)) : at(t.element, false)], 1]
+    }
     case 'comptime_array':
-      return [[t.element], 1]
+      return [[byValue ? at(t.element, true, Math.max(t.count, 1)) : at(t.element, false)], 1]
     case 'tuple':
-      return [t.fields.map((f) => f.type), 1]
+      return [t.fields.map((f) => at(f.type)), 1]
     case 'func':
-      return [[...t.params, ...t.returns].map((f) => f.type), 1]
+      return [[...t.params, ...t.returns].map((f) => at(f.type, true)), 1]
     case 'comptime_list':
-      return [t.elements, 1]
+      return [t.elements.map((e) => at(e)), 1]
     default:
       return [[], 1]
   }

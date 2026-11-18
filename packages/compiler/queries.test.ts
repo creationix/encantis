@@ -910,3 +910,17 @@ test "two" {
     expect(rename(source, module, check, at(5, ').y', 'y'))).toBeNull()
   })
 })
+
+describe('a value too large to hold', () => {
+  test('is one error, and the editor shows its name without laying it out', () => {
+    // s would be 2^30 registers: its hover counted them to say how many slots it takes.
+    const code = 'func f(s: (a: (b: [1073741824]u8), c: u8)) -> u8 => s.c\n'
+    const result = parse(code)
+    const check = typecheck(result.module!)
+    expect(check.errors.map((e) => e.message)).toEqual([
+      "type '(a: (b: [1073741824]u8), c: u8)' is too large: written out in full it has more than 65536 parts",
+    ])
+    expect(hover(code, result.module!, check, code.indexOf('s:'))?.name).toBe('s')
+    expect(hover(code, result.module!, check, code.indexOf('s.c'))?.name).toBe('s')
+  })
+})

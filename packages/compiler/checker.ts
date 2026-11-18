@@ -1037,7 +1037,7 @@ class CheckContext {
             }
             this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type: exported.type })
           } else {
-            const type = this.resolveType(item.item.type)
+            const type = this.resolveHeld(item.item.type)
             this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type })
           }
           break
@@ -1996,6 +1996,9 @@ class CheckContext {
     if (decl.value && !this.isConstantInitializer(decl.value)) {
       this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
     }
+    const written = decl.type
+    const held = type
+    type = this.heldByValue(type, (written ?? decl.pattern).span.start, () => (written ? typeText(written) : typeToString(held)))
     this.moduleScope.symbols.set(name, { kind: 'global', type })
     this.types.set(typeKey(decl.pattern.span.start, decl.pattern.kind), type)
     this.recordDefinition(name, decl.pattern.span.start)
@@ -2219,7 +2222,7 @@ class CheckContext {
     this.currentScope = funcScope
     // `-> (u32)` lists one result, as `-> (q: i32, r: i32)` lists two.
     const output = decl.signature.output
-    const results = output.kind === 'CompositeType' ? tuple(this.typeToFields(output)) : this.resolveType(output)
+    const results = output.kind === 'CompositeType' ? tuple(this.typeToFields(output, true)) : this.resolveHeld(output)
     // What follows `->` is a list of results only where it is written in
     // parentheses. An instance's `-> T` is one result, also when T is bound
     // to a tuple or a struct: it is held as the list of that one, so that
@@ -2283,7 +2286,7 @@ class CheckContext {
     if (type.kind !== 'CompositeType') return
     for (const field of type.fields) {
       if (field.ident) {
-        const resolvedType = this.resolveType(field.type)
+        const resolvedType = this.resolveHeld(field.type)
         const sym: Symbol = { kind, type: resolvedType }
         const param = kind === 'return' ? scope.symbols.get(field.ident) : undefined
         // A result named like a parameter is that parameter, so it has the
@@ -2452,6 +2455,9 @@ class CheckContext {
           // The loop variable is a u32 compared with the count.
           this.error(stmt.iterable.span.start, `a loop count must be an integer of at most 32 bits, not ${typeToString(iterableType)}`)
         }
+        // The value of each element is held by value in the variable
+        const element = elemType
+        elemType = this.heldByValue(element, stmt.binding.span.start, () => typeToString(element))
         // Record the binding types and add them to scope. Each name is
         // defined where it stands: in `for i, v in xs` the index comes first
         // and the value last.
@@ -2590,6 +2596,11 @@ class CheckContext {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
     }
+    // The variable is held by value: said where its type is written, or else
+    // at the variable
+    const written = stmt.type
+    const held = type
+    type = this.heldByValue(type, (written ?? stmt.pattern).span.start, () => (written ? typeText(written) : typeToString(held)))
 
     // Add bindings from pattern and record types
     this.bindPattern(stmt.pattern, type)
@@ -2727,6 +2738,23 @@ class CheckContext {
         break
       }
       case 'TuplePattern': {
+        // A value whose type has an error of its own (one too large to hold,
+        // heldByValue) has no parts to tell apart: each name is the recovery
+        // type, and there is nothing more to say.
+        if (type === RECOVERY) {
+          for (const element of pattern.elements) {
+            if (element.kind === 'positional') {
+              this.bindPattern(element.pattern, RECOVERY)
+              continue
+            }
+            const sym: Symbol = { kind: 'local', type: RECOVERY }
+            const at = namedPartAt(element)
+            this.currentScope.symbols.set(element.binding ?? element.field, sym)
+            this.types.set(typeKey(at, 'Binding'), RECOVERY)
+            this.recordDefinition(element.binding ?? element.field, at, sym)
+          }
+          break
+        }
         // Unwrap named types to get the underlying tuple
         const unwrappedType = unwrap(type)
         if (unwrappedType.kind !== 'tuple') {
@@ -3079,8 +3107,8 @@ class CheckContext {
   }
 
   resolveSignature(sig: AST.FuncSignature): ResolvedType & { kind: 'func' } {
-    const params = this.typeToFields(sig.input)
-    const returns = this.typeToFields(sig.output)
+    const params = this.typeToFields(sig.input, true)
+    const returns = this.typeToFields(sig.output, true)
     return func(params, returns)
   }
 
@@ -3088,17 +3116,39 @@ class CheckContext {
   // CompositeType with fields -> array of fields
   // Empty CompositeType -> empty array (void)
   // Other types -> single unnamed field
-  typeToFields(type: AST.Type): ResolvedField[] {
+  // `held`: these are the parameters or the results of a function, each held
+  // by value (heldByValue). Those of a function type written in a type are
+  // counted with that type.
+  typeToFields(type: AST.Type, held = false): ResolvedField[] {
+    const resolve = (t: AST.Type) => (held ? this.resolveHeld(t) : this.resolveType(t))
     if (type.kind === 'CompositeType') {
       // Empty composite = void, return no fields
       if (type.fields.length === 0) {
         return []
       }
       // Composite with fields = tuple/struct
-      return type.fields.map((f) => field(f.ident, this.resolveType(f.type)))
+      return type.fields.map((f) => field(f.ident, resolve(f.type)))
     }
     // Single type without name
-    return [field(null, this.resolveType(type))]
+    return [field(null, resolve(type))]
+  }
+
+  // A type written for a value held by value: a parameter, a result, a
+  // variable or a global (heldByValue)
+  resolveHeld(type: AST.Type): ResolvedType {
+    return this.heldByValue(this.resolveType(type), type.span.start, () => typeText(type))
+  }
+
+  // A value held by value (a parameter, a result, a variable, a global) is
+  // laid out in registers, an array as each of its elements, and is held to
+  // the size a declared type is (MAX_TYPE_PARTS) counted so: [65536]u8 is
+  // fine as what a pointer points to, and too large to pass. One error where
+  // the type is written, or where the value is held when it is not written;
+  // then it is the recovery type, which nothing lays out.
+  private heldByValue(type: ResolvedType, at: number, shown: () => string): ResolvedType {
+    if (type === RECOVERY || typeParts(type, new Map(), true) <= MAX_TYPE_PARTS) return type
+    this.error(at, tooLarge(shown()))
+    return RECOVERY
   }
 
   // === Expression Type Inference ===
@@ -5969,6 +6019,8 @@ class CheckContext {
       this.error(expr.span.start, 'if let requires an optional expression or bounds-checked index')
       elemType = condType
     }
+    const unwrapped = elemType
+    elemType = this.heldByValue(unwrapped, pattern.span.start, () => typeToString(unwrapped))
 
     // Bind the pattern variable in a new scope for the then-branch
     const prevScope = this.currentScope
