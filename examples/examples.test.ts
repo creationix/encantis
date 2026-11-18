@@ -82,8 +82,9 @@ for (const file of entsFiles) {
 
   describe(rel, () => {
     // Generics exist at compile time only: what they compile to has no
-    // function table and no indirect call.
-    if (rel.startsWith('generics/')) {
+    // function table and no indirect call. The container library and the
+    // example that uses it are generics throughout.
+    if (rel.startsWith('generics/') || rel.startsWith('containers/') || file.startsWith(libDir)) {
       test('compiles to direct calls only', () => {
         for (const forbidden of ['call_indirect', '(table', '(elem', 'ref.func', 'funcref']) {
           expect(wat).not.toContain(forbidden)

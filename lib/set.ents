@@ -1,0 +1,174 @@
+// A hash set of any key type, on the bump stack of ./stack: open addressing
+// with linear probing, doubled when it is half full.
+//
+//   let seen = hashset(u32, 6)     // *mut Set(u32), 64 slots to start with
+//   if seen.add(x) { ... }         // true where x is new
+//   seen.has(x)
+//   seen.count
+//
+// The set calls hash(k) and eq(a, b) for its key type. This file has them for
+// u32, u64, i32, i64, []u8 and []u32 (exported as hash_u32, eq_u32 and so
+// on). For any other key type, the module that makes the set writes them:
+//
+//   type Cell = (x: i32, y: i32)
+//   func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+//   func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+//
+// A call in a generic's body that its own module has no function for is
+// looked up in the module whose code made the instance: that module's set of
+// cells calls its own hash and eq directly. Two modules that both use a
+// Set(Cell) each get their own copy of the functions that call them.
+//
+// Keys are copied into the set by value; a slice key is the slice, not its
+// bytes, so the bytes must stay where they are while the set is used.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+  "alloc" func alloc(n: u32) -> u32
+  "zeroed" func zeroed(n: u32) -> u32
+)
+
+func Slot(comptime K: type) -> type => (used: bool, hash: u32, key: K)
+export func Set(comptime K: type) -> type => (slots: [*]mut Slot(K), mask: u32, count: u32)
+
+// Gives s an empty table of size slots (a power of two).
+func table(comptime K: type, s: *mut Set(K), size: u32) {
+  s.slots = zeroed(size * sizeof(Slot(K))) as [*]mut Slot(K)
+  s.mask = size - 1
+  s.count = 0
+}
+
+// An empty set with 2^bits slots to start with.
+export func hashset(comptime K: type, bits: u32) -> *mut Set(K) {
+  let s = alloc(sizeof(Set(K))) as *mut Set(K)
+  table(K, s, 1 << bits)
+  return s
+}
+
+// The slot of k: its own, or the empty one where it would go.
+func slot(comptime K: type, s: *Set(K), h: u32, k: K) -> u32 {
+  let i = h & s.mask
+  loop {
+    return i when !s.slots[i].used
+    return i when s.slots[i].hash == h && eq(s.slots[i].key, k)
+    i = (i + 1) & s.mask
+  }
+}
+
+// Whether k is in the set.
+export func has(comptime K: type, s: *Set(K), k: K) -> bool => s.slots[s.slot(hash(k), k)].used
+
+// Adds k. True where it was not in the set.
+export func add(comptime K: type, s: *mut Set(K), k: K) -> bool {
+  let h = hash(k)
+  let i = s.slot(h, k)
+  return false when s.slots[i].used
+  if (s.count + 1) * 2 > s.mask + 1 {
+    let old = s.slots
+    let size = s.mask + 1
+    table(K, s, size * 2)
+    for j in size {
+      if old[j].used {
+        s.slots[s.slot(old[j].hash, old[j].key)] = old[j]
+        s.count += 1
+      }
+    }
+    i = s.slot(h, k)
+  }
+  s.slots[i] = (used: true, hash: h, key: k)
+  s.count += 1
+  return true
+}
+
+// hash and eq for the common key types
+
+export "hash_u32" func hash(k: u32) -> (h: u32) {
+  h = (k ^ (k >> 16)) * 0x45d9f3b
+  h = h ^ (h >> 16)
+}
+export "eq_u32" func eq(a: u32, b: u32) -> bool => a == b
+
+export "hash_u64" func hash(k: u64) -> u32 => hash(((k >> 32) as u32) * 0x01000193 ^ (k as u32))
+export "eq_u64" func eq(a: u64, b: u64) -> bool => a == b
+
+export "hash_i32" func hash(k: i32) -> u32 => hash(k as u32)
+export "eq_i32" func eq(a: i32, b: i32) -> bool => a == b
+
+export "hash_i64" func hash(k: i64) -> u32 => hash(k as u64)
+export "eq_i64" func eq(a: i64, b: i64) -> bool => a == b
+
+// FNV-1a over the bytes
+export "hash_bytes" func hash(k: []u8) -> (h: u32) {
+  h = 0x811c9dc5
+  for c in k {
+    h = (h ^ (c as u32)) * 0x01000193
+  }
+}
+export "eq_bytes" func eq(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+
+// FNV-1a over the words
+export "hash_words" func hash(k: []u32) -> (h: u32) {
+  h = 0x811c9dc5
+  for w in k {
+    h = (h ^ w) * 0x01000193
+  }
+}
+export "eq_words" func eq(a: []u32, b: []u32) -> bool {
+  return false when a.len != b.len
+  for i in a.len {
+    return false when a.ptr[i] != b.ptr[i]
+  }
+  return true
+}
+
+test "a set of numbers grows as it fills" {
+  let scope = mark()
+  defer reset(scope)
+  let s = hashset(u32, 1)
+  for i in 100 {
+    assert s.add(i * 7)
+  }
+  assert s.count == 100
+  assert s.mask == 255
+  assert !s.add(14)
+  assert s.has(693)
+  assert !s.has(694)
+  assert s.count == 100
+}
+
+test "keys of other widths and signs" {
+  let scope = mark()
+  defer reset(scope)
+  let big = hashset(u64, 2)
+  assert big.add(0x100000000)
+  assert big.add(1)
+  assert !big.add(0x100000000)
+  let neg = hashset(i32, 2)
+  assert neg.add(-1)
+  assert neg.has(-1)
+  assert !neg.has(1)
+}
+
+test "slices are compared by their elements" {
+  data words = [1:u32, 2, 3, 1, 2, 4]
+  let scope = mark()
+  defer reset(scope)
+  let names = hashset([]u8, 2)
+  assert names.add("ab")
+  assert names.add("abc")
+  assert !names.add("ab")
+  assert names.has("abc")
+  assert !names.has("b")
+  let rows = hashset([]u32, 2)
+  assert rows.add(words[0..2])
+  assert !rows.add(words[3..5])
+  assert rows.add(words[3..6])
+  assert rows.count == 2
+}

@@ -371,4 +371,63 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     expect(callsIn(wat, 'down')).toEqual(['sorting$sort<i32|descending@order>'])
     expect(callsIn(wat, 'other$down2')).toEqual(['sorting$sort<i32|descending@order>'])
   })
+
+  // The containers of lib/, used from another module
+  const lib = resolve(import.meta.dir, '../../lib')
+  const VEC = `import "${lib}/vec" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+  "items" func items(comptime T: type, v: *Vec(T)) -> []T
+)
+`
+
+  test('a library file compiled alone emits no generic, and exports none', async () => {
+    for (const name of ['stack', 'vec', 'set', 'map', 'sort']) {
+      const wat = await watOf(join(lib, `${name}.ents`))
+      expect(funcs(wat).filter((n) => n.includes('<'))).toEqual([])
+      const exported = [...wat.matchAll(/\(export "([^"]+)"/g)].map((m) => m[1])
+      for (const generic of ['Vec', 'vec', 'push', 'pop', 'items', 'Set', 'hashset', 'add', 'has', 'Map', 'map', 'insert', 'lookup', 'sort']) {
+        expect(exported).not.toContain(generic)
+      }
+    }
+  })
+
+  // A fixed array for T is a table of rows (reference 2.5, owner decision
+  // Q1): an element of the Vec's [*]mut [3]i32 is a pointer to its row, and
+  // push, which stores a T there and computes the storage in sizeof(T), is
+  // refused for it, never compiled to something that is wrong. A struct of
+  // one field lies in place.
+  test('Vec([3]i32) is refused in push with the table rule, and Vec((cells: [3]i32)) is packed', async () => {
+    const files = {
+      'rows.ents': `${VEC}export func f(r: *[3]i32) -> u32 {
+  let rows = vec([3]i32, 2)
+  rows.push(r.*)
+  return rows.len
+}
+`,
+      'packed.ents': `${VEC}type Row = (cells: [3]i32)
+export func f(n: i32) -> i32 {
+  let rows = vec(Row, 1)
+  for i in 3 {
+    rows.push(Row([n, i as i32, 7]))
+  }
+  let words = rows.ptr as [*]i32
+  return words[8] + words[3] * 10
+}
+`,
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'rows.ents'))
+      const errors = check.results.get(join(lib, 'vec.ents'))?.errors ?? []
+      expect(errors.map((e) => e.message)).toEqual(['cannot assign [3]i32 to *mut [3]i32, in push(T = [3]i32)'])
+      expect(errors[0].notes?.[0].message).toStartWith('in a [*]mut [3]i32 each element is a pointer to its row (reference 2.5)')
+      expect(check.results.get(join(dir, 'rows.ents'))?.errors.map((e) => e.message)).toEqual([
+        'push(T = [3]i32) cannot be instantiated: cannot assign [3]i32 to *mut [3]i32 (vec.ents:53:18)',
+      ])
+      const instance = await instantiate(join(dir, 'packed.ents'))
+      // Rows of 12 bytes one after another: word 8 is the last row's 7, word 3 the second row's n.
+      expect((instance.exports.f as (n: number) => number)(5)).toBe(57)
+    })
+  })
 })

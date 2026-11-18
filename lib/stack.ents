@@ -1,0 +1,89 @@
+// A bump stack in linear memory: the allocator the containers of this
+// directory use. Every allocation is a pointer bump and nothing is freed one
+// by one. A scope frees everything it allocated by resetting to a mark, and
+// defer ties that to every way out of the scope:
+//
+//   let scope = mark()
+//   defer reset(scope)
+//
+// Scopes nest. A result that must outlive a scope is allocated before
+// entering it. Marks are addresses. alloc starts each allocation 8-byte
+// aligned; extend grows the topmost allocation by exactly n bytes, which is
+// how a Vec at the top of the stack grows in place.
+//
+// The stack is 256 KiB. A program that needs more copies this file and
+// makes `capacity` and `space` larger: zeroed data costs nothing to compile.
+
+def capacity = 262144:u32
+data space = mut [0:u8; 262144]
+global top: u32 = 0
+
+// The current top, as an address.
+export func mark() -> u32 => (space as u32) + top
+
+// Frees everything allocated since the mark m was taken.
+export func reset(m: u32) {
+  top = m - (space as u32)
+}
+
+// n bytes, 8-byte aligned. Traps when the stack is full.
+export func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}
+
+// n more bytes at the top, directly after what is there (no alignment).
+export func extend(n: u32) -> (p: u32) {
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}
+
+// n bytes, all zero.
+export func zeroed(n: u32) -> (p: u32) {
+  p = alloc(n)
+  let bytes = p as [*]mut u8
+  bytes[0..n] = 0
+}
+
+test "a scope frees what it allocates, on every way out" {
+  let base = mark()
+  let a = alloc(10)
+  assert a == base
+  assert mark() == base + 10
+  let inner = mark()
+  let b = zeroed(4)
+  assert b == a + 16
+  reset(inner)
+  assert mark() == base + 10
+  reset(base)
+  assert mark() == base
+}
+
+test "extend builds a contiguous array from a mark" {
+  let base = mark()
+  let start = mark()
+  for i in 5 {
+    let w = extend(4) as [*]mut u32
+    w[0] = i * 10
+  }
+  let words = start as [*]u32
+  assert words[0] == 0
+  assert words[4] == 40
+  assert mark() == start + 20
+  reset(base)
+}
+
+test "zeroed memory reads as zero after other use" {
+  let base = mark()
+  let used = alloc(8) as [*]mut u32
+  used[0] = 7
+  used[1] = 9
+  reset(base)
+  let fresh = zeroed(8) as [*]u32
+  assert fresh[0] == 0
+  assert fresh[1] == 0
+  reset(base)
+}
