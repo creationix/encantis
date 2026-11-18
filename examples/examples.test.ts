@@ -3,7 +3,7 @@ import { loadModule } from '@encantis/compiler/loader'
 import { typecheckProgram } from '@encantis/compiler/checker'
 import { programToWatWithTests } from '@encantis/compiler/codegen'
 import { createTestHost } from '@encantis/compiler/test-host'
-import { resolve } from 'path'
+import { relative, resolve, sep } from 'path'
 import { readdir } from 'fs/promises'
 import wabt from 'wabt'
 
@@ -36,7 +36,8 @@ function buildFailed(rel: string, stage: string, err: unknown) {
 }
 
 for (const file of entsFiles) {
-  const rel = file.startsWith(examplesDir) ? file.slice(examplesDir.length + 1) : file.slice(repoDir.length + 1)
+  // Named with `/` on every platform, which the checks below go by.
+  const rel = relative(file.startsWith(examplesDir) ? examplesDir : repoDir, file).split(sep).join('/')
 
   const load = await loadModule(file, { includeTests: true })
   const entryMod = load.modules.get(file)
