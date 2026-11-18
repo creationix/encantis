@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import type * as AST from './ast'
 import { parse } from './parser'
 import { typecheck, typecheckProgram } from './checker'
@@ -102,14 +102,64 @@ describe('zero cost: each instance is the function written by hand for its numbe
   // that uses them would, against the instances written by hand. None of
   // them checks an index at run time: each is proven by the capacity.
   for (const [pair, file, skip] of [
-    ['14-fixedvec', 'fixedvec.ents', ['fixedvec']],
-    ['15-ring', 'ring.ents', ['ring']],
+    ['14-fixedvec', 'fixedvec.ents', []],
+    ['15-ring', 'ring.ents', []],
     ['16-bits', 'bits.ents', []],
   ] as const) {
     test(`lib/${file}`, async () => {
       const generic = (await libraryDecls(file, skip)) + (await readFile(join(valuesDir, `${pair}.uses.ents`), 'utf8'))
       const byHand = await readFile(join(valuesDir, `${pair}.twin.ents`), 'utf8')
       await expectSameWasm(generic, byHand)
+    })
+  }
+
+  // A program that imports a library file, as programs do, against the same
+  // program with the instances written by hand in a module of its own. What
+  // the file holds besides its generics (data, imports, plain functions)
+  // would be in the first and not in the second, and the program's own data
+  // would no longer be at the first address data takes.
+  for (const [file, uses, lib, byHand] of [
+    [
+      'bits',
+      '"set_bit" func set_bit(comptime w: u32, b: *mut [w]u32, i: u32#(w * 32))\n  "has_bit" func has_bit(comptime w: u32, b: *[w]u32, i: u32#(w * 32)) -> bool',
+      'data mine = mut [0:u32; 2]\nexport func a(k: u32) -> bool {\n  mine.set_bit(k & 63)\n  return mine.has_bit(k & 63)\n}\n',
+      ['"set_bit_2" func set_bit_2(b: *mut [2]u32, i: u32#64)\n  "has_bit_2" func has_bit_2(b: *[2]u32, i: u32#64) -> bool',
+        'export func set_bit_2(b: *mut [2]u32, i: u32#64) {\n  b[i >> 5] |= 1 << (i & 31)\n}\nexport func has_bit_2(b: *[2]u32, i: u32#64) -> bool => ((b[i >> 5] >> (i & 31)) & 1) == 1\n',
+        'data mine = mut [0:u32; 2]\nexport func a(k: u32) -> bool {\n  set_bit_2(mine, k & 63)\n  return has_bit_2(mine, k & 63)\n}\n'],
+    ],
+    [
+      'ring',
+      '"Ring" func Ring(comptime n: u32#2147483649, comptime T: type) -> type\n  "push" func push(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T)',
+      'data mine = mut [0:u32; 4]\ndata r: Ring(4, u32) = mut (0, 0, mine)\nexport func a(x: u32) { r.push(x) }\n',
+      ['"push_4" func push_4(r: *mut R4, x: u32)',
+        'type R4 = (head: u32#4, count: u32, items: *mut [4]u32)\nexport func push_4(r: *mut R4, x: u32) {\n  r.items[(r.head + r.count) % 4] = x\n  if r.count < 4 {\n    r.count += 1\n  } else {\n    r.head = (r.head + 1) % 4\n  }\n}\n',
+        'data mine = mut [0:u32; 4]\ndata r: R4 = mut (0, 0, mine)\nexport func a(x: u32) { push_4(r, x) }\n'],
+    ],
+    [
+      'fixedvec',
+      '"FixedVec" func FixedVec(comptime n: u32, comptime T: type) -> type\n  "push" func push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool',
+      'data mine = mut [0:u64; 4]\ndata v: FixedVec(4, u64) = mut (0, mine)\nexport func a(x: u64) -> bool => v.push(x)\n',
+      ['"push_4" func push_4(v: *mut F4, x: u64) -> bool',
+        'type F4 = (len: u32#5, buf: *mut [4]u64)\nexport func push_4(v: *mut F4, x: u64) -> bool {\n  let i = v.len\n  return false when i >= 4\n  v.buf[i] = x\n  v.len = i + 1\n  return true\n}\n',
+        'data mine = mut [0:u64; 4]\ndata v: F4 = mut (0, mine)\nexport func a(x: u64) -> bool => push_4(v, x)\n'],
+    ],
+  ] as const) {
+    test(`a program that imports lib/${file}.ents has only the instances it uses of it`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'encantis-values-'))
+      try {
+        const [restated, hand, main] = byHand
+        const addr = 'export func addr() -> u32 => mine as u32\n'
+        await writeFile(join(dir, 'g.ents'), `import "${relative(dir, libDir)}/${file}" (\n  ${uses}\n)\n${lib}${addr}`)
+        const type = /^type .*\n/.exec(hand)?.[0] ?? ''
+        await writeFile(join(dir, 'hand.ents'), hand)
+        await writeFile(join(dir, 'h.ents'), `${type}import "./hand" (\n  ${restated}\n)\n${main}${addr}`)
+        const [g, h] = [await compileToWasm(join(dir, 'g.ents')), await compileToWasm(join(dir, 'h.ents'))]
+        expect(Buffer.from(g).equals(Buffer.from(h))).toBe(true)
+        const instance = await WebAssembly.instantiate(await WebAssembly.compile(g))
+        expect((instance.exports.addr as () => number)()).toBe(8)
+      } finally {
+        await rm(dir, { recursive: true })
+      }
     })
   }
 

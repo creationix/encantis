@@ -4,7 +4,7 @@ Small helpers written in Encantis. They're plain source files: import them by re
 
 - `io.ents` and `text.ents` are for programs that read text and print results (Advent of Code style). They don't allocate: input goes into a buffer you provide, and parsing returns slices of it.
 - `stack.ents`, `vec.ents`, `set.ents`, `map.ents` and `sort.ents` are generic containers, for any element or key type (a narrow integer key is widened, see below), on a bump stack. Each element type is its own copy of the functions that use it, so a container costs what the same code written for that one type would.
-- `fixedvec.ents`, `ring.ents` and `bits.ents` are containers of a fixed capacity, which is in their type (a comptime value parameter, reference 8.7): `FixedVec(8, u32)`, `Ring(8, u32)`, a bitset over a `*mut [4]u32`. Every index into them is proven by the capacity and compiles to a plain load or store. Each capacity is its own copy of the functions, as each element type is.
+- `fixedvec.ents`, `ring.ents` and `bits.ents` (with `fixedalloc.ents` to allocate the first two on the stack) are containers of a fixed capacity, which is in their type (a comptime value parameter, reference 8.7): `FixedVec(8, u32)`, `Ring(8, u32)`, a bitset over a `*mut [4]u32`. Every index into them is proven by the capacity and compiles to a plain load or store. Each capacity is its own copy of the functions, as each element type is.
 
 ## io.ents
 
@@ -56,7 +56,7 @@ An element that is a fixed array is a table of rows (reference 2.5): `Vec([3]i32
 
 | Function | What it does |
 | --- | --- |
-| `fixedvec(n, T) -> *mut FixedVec(n, T)` | An empty one, the header and the `n` elements in one allocation on the stack |
+| `fixedvec(n, T) -> *mut FixedVec(n, T)` | In `fixedalloc.ents`: an empty one, the header and the `n` elements in one allocation on the stack. Or lay one out yourself: `data cells = mut [0:u32; 8]` and `data v: FixedVec(8, u32) = mut (0, cells)` |
 | `v.push(x) -> bool` | At the end; false, with nothing changed, when it is full |
 | `v.pop() -> T`, `v.last() -> T` | At the end. Traps when there is none |
 | `v.items() -> []T`, `v.items_mut() -> []mut T` | The elements |
@@ -70,12 +70,16 @@ The names are `vec.ents`' own. A module's generics have names of their own, so a
 
 | Function | What it does |
 | --- | --- |
-| `ring(n, T) -> *mut Ring(n, T)` | An empty one, in one allocation on the stack |
+| `ring(n, T) -> *mut Ring(n, T)` | In `fixedalloc.ents`: an empty one, in one allocation on the stack. Or lay one out yourself: `data log: Ring(8, u32) = mut (0, 0, cells)` |
 | `r.push(x)` | After the newest; when full, in the oldest one's place |
 | `r.oldest(i) -> T`, `r.newest() -> T`, `r.count` | The `i`-th oldest (`i: u32#n`); the newest (traps when there is none); how many it holds |
 | `r.clear()` | Empties it |
 
-Where an element goes is `(head + i) % n`, a `u32#n`: a remainder by a constant, one `and` after wasm-opt when `n` is a power of two.
+Where an element goes is `(head + i) % n`, a `u32#n`: a remainder by a constant, one `and` after wasm-opt when `n` is a power of two. `n` is at most 2^31 (`comptime n: u32#2147483649`), so that `head + count`, below `2n`, is a `u32` and never wraps.
+
+## fixedalloc.ents
+
+`fixedvec(n, T) -> *mut FixedVec(n, T)` and `ring(n, T) -> *mut Ring(n, T)`: an empty `FixedVec` or `Ring`, the header and the `n` elements in one allocation on the stack of `stack.ents`. They are in a file of their own so that `fixedvec.ents` and `ring.ents` import nothing: a program that holds its containers elsewhere (in `data`, or in memory of its own) gets none of the stack.
 
 ## bits.ents
 
@@ -121,7 +125,7 @@ func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
 
 ## What a program gets of them
 
-A generic is in the program only for the types it is used with, and one the program never uses is not there at all. The ordinary functions of a module are in every program that imports it, used or not, as for any module: `set.ents` brings its twelve `hash` and `eq` functions (and `map.ents`, which imports them, those too), and `sort.ents` the four small comparators its tests use.
+A generic is in the program only for the types it is used with, and one the program never uses is not there at all. The ordinary functions and the data of a module are in every program that imports it, used or not, as for any module: `set.ents` brings its twelve `hash` and `eq` functions (and `map.ents`, which imports them, those too), `sort.ents` the four small comparators its tests use, and `stack.ents` (which `vec.ents`, `set.ents` and `map.ents` import) its 256 KiB and five functions. `fixedvec.ents`, `ring.ents` and `bits.ents` hold generics only and import nothing, so a program pays for the instances it uses of them and nothing else; what their tests use is declared inside the tests.
 
 ## Using them
 

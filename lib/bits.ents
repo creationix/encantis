@@ -31,10 +31,9 @@ export func count_bits(comptime w: u32, b: *[w]u32) -> (n: u32) {
   }
 }
 
-data seen = mut [0:u32; 4]
-data wide = mut [0:u32; 1]
-
 test "bits set, tested and cleared" {
+  let seen: *mut [4]u32 = mut [0:u32; 4]
+  let wide: *mut [1]u32 = mut [0:u32; 1]
   for k in 300 {
     if k % 7 == 0 {
       seen.set_bit(k & 127)
@@ -53,6 +52,7 @@ test "bits set, tested and cleared" {
 }
 
 test "a narrower range is a fine index" {
+  let seen: *mut [4]u32 = mut [0:u32; 4]
   let k: u32#100 = 99
   seen.set_bit(k)
   assert seen.has_bit(k)

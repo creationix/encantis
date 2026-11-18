@@ -11,6 +11,7 @@ import "../../lib/stack" (
   "mark" func mark() -> u32
   "reset" func reset(m: u32)
 )
+import "../../lib/fixedalloc" "fixedvec" func fixedvec(comptime n: u32, comptime T: type) -> *mut FixedVec(n, T)
 
 import "../../lib/vec" (
   "Vec" func Vec(comptime T: type) -> type
@@ -20,13 +21,12 @@ import "../../lib/vec" (
 
 import "../../lib/fixedvec" (
   "FixedVec" func FixedVec(comptime n: u32, comptime T: type) -> type
-  "fixedvec" func fixedvec(comptime n: u32, comptime T: type) -> *mut FixedVec(n, T)
   "push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool
   "items" func items(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> []T
 )
 
 import "../../lib/ring" (
-  "Ring" func Ring(comptime n: u32, comptime T: type) -> type
+  "Ring" func Ring(comptime n: u32#2147483649, comptime T: type) -> type
   "push" func record(comptime n: u32, comptime T: type, r: *mut Ring(n, T), x: T)
   "oldest" func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) -> T
 )

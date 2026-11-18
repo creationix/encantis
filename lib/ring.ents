@@ -1,9 +1,14 @@
 // The last n elements of a stream: a ring buffer that, when full, takes the
 // place of its oldest element for each new one.
 //
-//   let r = ring(8, u32)         // *mut Ring(8, u32), on the stack
-//   r.push(x)
-//   r.oldest(0), r.newest()
+//   data cells = mut [0:u32; 8]
+//   data log: Ring(8, u32) = mut (0, 0, cells)
+//   log.push(x)
+//   log.oldest(0), log.newest()
+//
+// or `let r = ring(8, u32)` from lib/fixedalloc.ents, which allocates one
+// on the stack. This file imports nothing: a program that holds its rings
+// where it likes pays for nothing else.
 //
 // Where an element goes is (head + i) % n, a u32#n, so every store and load
 // through items is proven and unchecked: `% n` is a remainder by a
@@ -11,25 +16,13 @@
 // `and` for a power of two). The number held is the field `count`; a
 // function of that name would be hidden by the field.
 //
+// n is at most 2^31: head is below n and count at most n, so head + count
+// is then a u32, and a slot is found without a sum that wraps.
+//
 // The names are lib/vec's where they mean the same (push, clear): a module
 // that imports both renames one on import.
 
-import "./stack" (
-  "mark" func mark() -> u32
-  "reset" func reset(m: u32)
-  "alloc" func alloc(n: u32) -> u32
-)
-
-export func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
-
-// An empty Ring of n elements: the header and the elements in one
-// allocation on the stack.
-export func ring(comptime n: u32, comptime T: type) -> *mut Ring(n, T) {
-  let at = alloc(sizeof(Ring(n, T)) + n * sizeof(T))
-  let r = at as *mut Ring(n, T)
-  r.* = Ring(n, T)(0, 0, (at + sizeof(Ring(n, T))) as *mut [n]T)
-  return r
-}
+export func Ring(comptime n: u32#2147483649, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
 
 // Adds x after the newest element; when the ring is full, x takes the
 // oldest one's place.
@@ -49,7 +42,7 @@ export func oldest(comptime n: u32, comptime T: type, r: *Ring(n, T), i: u32#n) 
 // The newest element. Traps when there is none.
 export func newest(comptime n: u32, comptime T: type, r: *Ring(n, T)) -> T {
   assert r.count > 0
-  return r.items[(r.head + r.count + (n - 1)) % n]
+  return r.items[(r.head + r.count - 1) % n]
 }
 
 // Empties it.
@@ -59,9 +52,8 @@ export func clear(comptime n: u32, comptime T: type, r: *mut Ring(n, T)) {
 }
 
 test "the ring keeps the last n" {
-  let scope = mark()
-  defer reset(scope)
-  let r = ring(4, u32)
+  let cells: *mut [4]u32 = mut [0:u32; 4]
+  let r: *mut Ring(4, u32) = &mut (0, 0, cells)
   for i in 3 {
     r.push(i)
   }
@@ -83,20 +75,33 @@ test "the ring keeps the last n" {
 }
 
 test "a capacity that is no power of two, and a Ring laid out as data" {
-  let scope = mark()
-  defer reset(scope)
-  let r = ring(3, u64)
+  let cells: *mut [3]u64 = mut [0:u64; 3]
+  let r: *mut Ring(3, u64) = &mut (0, 0, cells)
   for i in 7 {
     r.push((i * i) as u64)
   }
   assert r.oldest(0) == 16
   assert r.oldest(1) == 25
   assert r.oldest(2) == 36
+  data slots = mut [0:i32; 2]
+  data log: Ring(2, i32) = mut (0, 0, slots)
   log.push(1)
   log.push(2)
   assert log.newest() == 2
   assert log.oldest(0) == 1
 }
 
-data cells = mut [0:i32; 2]
-data log: Ring(2, i32) = mut (0, 0, cells)
+test "the slots of a full ring of the largest capacities" {
+  // A ring of 2^31 - 1 bytes, full, its head at the last slot: the newest
+  // is in the slot before head, and the next push goes to head's. Its items
+  // are placed so that those two slots are the bytes of `at`: a slot found
+  // by a sum that wrapped would be read from elsewhere.
+  let at: *mut [2]u8 = mut [7:u8, 9]
+  let items = ((at as u32) - 2147483645) as *mut [2147483647]u8
+  let r: *mut Ring(2147483647, u8) = &mut (2147483646, 2147483647, items)
+  assert r.newest() == 7
+  r.push(5)
+  assert at[1] == 5
+  assert r.head == 0
+  assert r.oldest(2147483646) == 5
+}

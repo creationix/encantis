@@ -14,7 +14,7 @@ func push_8_u32(r: *mut Ring8, x: u32) {
 func oldest_8_u32(r: *Ring8, i: u32#8) -> u32 => r.items[(r.head + i) % 8]
 func newest_8_u32(r: *Ring8) -> u32 {
   assert r.count > 0
-  return r.items[(r.head + r.count + (8 - 1)) % 8]
+  return r.items[(r.head + r.count - 1) % 8]
 }
 func clear_8_u32(r: *mut Ring8) {
   r.head = 0
