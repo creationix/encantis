@@ -3407,6 +3407,15 @@ function memoryHolds(size: number): void {
 }
 
 export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): string {
+  // What such a module's types are is known only in its program.
+  if (checkResult.partial) {
+    throw new Error('a module that imports a generic type is compiled as part of its program: compile the program from its entry module')
+  }
+  // An instance of a generic another module declares is a function of that
+  // module, which no module compiled on its own exports.
+  if ([...checkResult.symbols.values()].some((sym) => sym.kind === 'generic' && sym.signatureOnly)) {
+    throw new Error('a module that imports a generic function is compiled as part of its program: compile the program from its entry module')
+  }
   // Build data section from collected literals
   const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, {
     calls: checkResult.calls,
@@ -3923,7 +3932,9 @@ export function programToWat(
   // and for functions that share a name never the same for two of them.
   const perModuleExports = new Map<string, Map<string, string>>()
   for (const [path, loaded] of modules) {
-    const prefix = path === entryPath ? '' : modulePrefix(path)
+    // Two modules with one file name have two prefixes: the checker
+    // numbers the second (lib~2), and names it so in its own names.
+    const prefix = path === entryPath ? '' : (checkResults.get(path)?.tag || modulePrefix(path))
     const modNameMap = new Map<string, string>()
     const modExports = new Map<string, string>()
     const funcNames = checkResults.get(path)?.funcNames
@@ -3997,6 +4008,13 @@ export function programToWat(
           if (mangled) full.set(item.item.ident, mangled)
         }
       }
+    }
+    // The functions of other modules the module calls by names of its own:
+    // instances of the generics it imports, and in its instances the
+    // functions other modules gave for comptime parameters. A host import
+    // has the name it is imported by in every module.
+    for (const [known, { module, name }] of checkResults.get(path)?.externs ?? []) {
+      full.set(known, perModuleNameMap.get(module)?.get(name) ?? name)
     }
     return full
   }

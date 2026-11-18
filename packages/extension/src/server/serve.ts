@@ -27,9 +27,11 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
 import type { Module } from '@encantis/compiler/ast';
-import { fieldNamedAt, genericDeclaring } from '@encantis/compiler/checker';
-import { buildMeta, type MetaError, type MetaHint, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import { fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
+import { getSourceImports, loadModule } from '@encantis/compiler/loader';
+import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
+import * as nodePath from 'path';
 
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
@@ -225,8 +227,93 @@ function symbolKindToModifiers(kind: MetaSymbol['kind'], isDef: boolean, isInput
 // Connection Setup
 // -----------------------------------------------------------------------------
 
-export function startServer(connection: Connection): void {
+export interface ServerOptions {
+  // Reads a source file the editor does not have open: its text, or null.
+  // The desktop server reads the file system; the web one has none, and
+  // sees only the documents that are open.
+  readFile?: (path: string) => Promise<string | null>;
+}
+
+// What the paths of files are on the platform the server runs on: path's
+// own, or path.win32 or path.posix to see what they are on another.
+type Paths = Pick<typeof nodePath, 'resolve' | 'sep'>;
+
+// The path of the file a file: URI names, as the loader names that file
+// (path.resolve), or null for a document that is no file. Compared with the
+// paths the loader asks for and names modules by, it is the same string for
+// the same file. On Windows it has its drive, and the drive letter is in
+// lower case, as VS Code writes it (file:///d%3A/...), whichever case the
+// URI has; a URI with a host is a UNC path.
+export function pathOf(uri: string, paths: Paths = nodePath): string | null {
+  if (!uri.startsWith('file://')) return null;
+  let path: string;
+  let host: string;
+  try {
+    const url = new URL(uri);
+    path = decodeURIComponent(url.pathname);
+    host = url.host === 'localhost' ? '' : url.host;
+  } catch {
+    return null;
+  }
+  if (paths.sep === '\\') {
+    if (host) path = `//${host}${path}`;
+    else if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+  } else if (host) {
+    return null;
+  }
+  return paths.resolve(path).replace(/^[A-Z]:/, drive => drive.toLowerCase());
+}
+
+// The file: URI of a path the loader made, each part of it encoded (a # or
+// a ? is part of a name, not the start of a fragment or a query)
+export function uriOf(path: string, paths: Paths = nodePath): string {
+  const slashed = paths.sep === '\\' ? path.replace(/\\/g, '/') : path;
+  const encode = (parts: string[]) => parts.map(part => (/^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part))).join('/');
+  if (paths.sep === '\\' && slashed.startsWith('//')) {
+    const [host, ...rest] = slashed.slice(2).split('/');
+    return `file://${host}/${encode(rest)}`;
+  }
+  return `file://${slashed.startsWith('/') ? '' : '/'}${encode(slashed.split('/'))}`;
+}
+
+export function startServer(connection: Connection, options: ServerOptions = {}): void {
   const documents = new TextDocuments(TextDocument);
+
+  // A document that imports other source files is checked as part of its
+  // program, so that what it imports is known: its generics are
+  // instantiated and checked, and the instances' errors that concern this
+  // document reach it. The files are the open documents where they are
+  // open, and else what the server can read. Where one cannot be read the
+  // document is checked on its own, by the signatures its imports write.
+  // The open document of a file, found by its path: a URI made again from
+  // the path need not be the one the editor gave the document (VS Code
+  // encodes a drive's colon, parentheses and more).
+  function documentAt(path: string): TextDocument | undefined {
+    return documents.all().find(document => pathOf(document.uri) === path);
+  }
+
+  async function programOf(uri: string, text: string): Promise<(MetaOptions & { module: Module }) | null> {
+    const path = pathOf(uri);
+    if (!path) return null;
+    const readFile = async (file: string): Promise<string | null> => {
+      if (file === path) return text;
+      const open = documentAt(file);
+      if (open) return open.getText();
+      return options.readFile ? options.readFile(file) : null;
+    };
+    try {
+      const load = await loadModule(path, { includeTests: true, readFile });
+      if (load.errors.length > 0) return null;
+      const check = typecheckProgram(load.modules, load.entry.path, { includeTests: true });
+      const checkResult = check.results.get(load.entry.path);
+      if (!checkResult) return null;
+      // The checker's tables are keyed by the nodes of the module it checked.
+      const sources = new Map([...load.modules].map(([file, loaded]) => [file, loaded.source]));
+      return { module: load.entry.module, checkResult, sources };
+    } catch {
+      return null;
+    }
+  }
 
   // -----------------------------------------------------------------------------
   // Initialization
@@ -252,9 +339,24 @@ export function startServer(connection: Connection): void {
   // Document Change Handling
   // -----------------------------------------------------------------------------
 
+  // The files each open document's program was read from, by the document's
+  // URI: what the document's check says depends on them too.
+  const programFiles = new Map<string, Set<string>>();
+
   documents.onDidChangeContent(change => {
     validateTextDocument(change.document);
+    revalidateImporters(change.document.uri);
   });
+
+  // The open documents whose programs have the file of this URI are checked
+  // again: what it exports, and the instances it makes for them, may differ.
+  function revalidateImporters(uri: string): void {
+    const path = pathOf(uri);
+    if (!path) return;
+    for (const document of documents.all()) {
+      if (document.uri !== uri && programFiles.get(document.uri)?.has(path)) validateTextDocument(document);
+    }
+  }
 
   async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
@@ -278,8 +380,16 @@ export function startServer(connection: Connection): void {
 
     // Build meta info (includes type checking)
     let meta: MetaOutput;
+    let module = parseResult.module;
     try {
-      meta = buildMeta(parseResult.module, text, { srcPath: textDocument.uri });
+      // A document with no source import is checked at once, as it always was.
+      const program = getSourceImports(parseResult.module, true).length > 0 ? await programOf(textDocument.uri, text) : null;
+      // Changed while its program was read: the newer text is checked.
+      const latest = documents.get(textDocument.uri);
+      if (latest && latest.version !== textDocument.version) return;
+      programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
+      if (program) module = program.module;
+      meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program });
     } catch (e) {
       // Never crash on partially written code — show the error as a diagnostic
       diagnostics.push({
@@ -292,7 +402,7 @@ export function startServer(connection: Connection): void {
       return;
     }
 
-    analysisCache.set(textDocument.uri, { text, meta, module: parseResult.module });
+    analysisCache.set(textDocument.uri, { text, meta, module });
 
     // Convert meta errors and warnings to diagnostics
     const tokenLen = (line: number, col: number): number => {
@@ -303,6 +413,11 @@ export function startServer(connection: Connection): void {
       return m ? m[0].length : Math.max(1, rest.match(/^\S+/)?.[0]?.length ?? 1);
     };
 
+    // A place in another file, whose text is not at hand here
+    const rangeIn = (pos: string) => {
+      const [line, col] = pos.split(':').map(Number);
+      return { start: { line, character: col }, end: { line, character: col + 1 } };
+    };
     const rangeAt = (pos: string) => {
       const [line, col] = pos.split(':').map(Number);
       return {
@@ -316,7 +431,7 @@ export function startServer(connection: Connection): void {
       notes && notes.length > 0
         ? {
             relatedInformation: notes.map(note => ({
-              location: { uri: textDocument.uri, range: rangeAt(note.pos) },
+              location: note.path ? { uri: uriOf(note.path), range: rangeIn(note.pos) } : { uri: textDocument.uri, range: rangeAt(note.pos) },
               message: note.message,
             })),
           }
@@ -804,6 +919,9 @@ export function startServer(connection: Connection): void {
   documents.onDidClose(e => {
     analysisCache.delete(e.document.uri);
     connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
+    // Closed, the file is read where it is saved, which can differ.
+    programFiles.delete(e.document.uri);
+    revalidateImporters(e.document.uri);
   });
 
   // -----------------------------------------------------------------------------

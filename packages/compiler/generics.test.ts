@@ -1146,9 +1146,11 @@ describe('declaring a generic function', () => {
       'a generic function is declared at module level, not inside a test',
     ],
     [
-      'a source import',
-      'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T',
-      'generic functions cannot be imported yet',
+      // In a file checked on its own the import's signature is all there is
+      // of the generic, and it is held to the rules of a declaration.
+      'a source import whose signature breaks a rule',
+      'import "./lib" "pick" func pick(T: type, a: u32) -> u32',
+      "a parameter of type 'type' must be comptime: write 'comptime T: type'",
     ],
     [
       'a host import',
@@ -1181,9 +1183,33 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
     expect(check(`export ${MAX.replace('max', 'largest')}`).warnings).toEqual([])
   })
 
+  // A file checked on its own, as the editor checks one whose imports it
+  // cannot read: an imported generic is the signature its import writes. Its
+  // instances are functions of the module that declares it, which exports
+  // none, so the file is compiled only as part of its program.
+  test('a source import, in a file checked on its own, is its signature', () => {
+    const source = 'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nexport func f(a: u32, b: u32) -> u32 => max(a, b)\nexport func g(a: f64) -> f64 => a.max(0.5)\n'
+    const result = check(source)
+    expect(result.errors).toEqual([])
+    expect(result.instances.map((i) => i.name)).toEqual(['max<u32>', 'max<f64>'])
+    expect(() => watOfSource(source)).toThrow('a module that imports a generic function is compiled as part of its program')
+    expect(errorsOf('import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nfunc f(a: u8, b: u32) -> u32 => max(a, b)')).toEqual([
+      'argument 2: cannot assign u32 to u8',
+    ])
+  })
+
+  test('a generic type imported in a file checked on its own leaves its errors to the program', () => {
+    const result = check('import "./lib" "Vec" func Vec(comptime T: type) -> type\nexport func f(v: *Vec(u32)) -> u32 => v.len + nowhere\n')
+    expect(result.partial).toBe(true)
+    expect(result.errors).toEqual([])
+    expect(result.warnings.map((w) => w.message)).toEqual(['imported generic types are resolved only when the program is checked'])
+    expect(() => watOfSource('import "./lib" "Vec" func Vec(comptime T: type) -> type\n')).toThrow(/compiled as part of its program/)
+  })
+
   // The import may be written as if the function were ordinary; what the
-  // other module exports under that name is what counts.
-  test('a generic of another module cannot be imported under a plain signature either', async () => {
+  // other module exports under that name is what counts, as it is for any
+  // function a source module imports.
+  test('a generic of another module is imported as what it is, whatever signature the import writes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-generics-'))
     try {
       await writeFile(join(dir, 'util.ents'), `export ${MAX}`)
@@ -1191,7 +1217,8 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
       await writeFile(entry, 'import "./util" "max" func max(a: u32, b: u32) -> u32\nexport func f(a: u32) -> u32 => max(a, 1)\n')
       const load = await loadModule(entry)
       const program = typecheckProgram(load.modules, entry, { includeTests: false })
-      expect(program.errors.map(e => e.message)).toEqual(['generic functions cannot be imported yet'])
+      expect(program.errors).toEqual([])
+      expect(programToWat(load.modules, program.results, entry)).toContain('(call $util$max<u32> (local.get $a) (i32.const 1))')
     } finally {
       await rm(dir, { recursive: true })
     }

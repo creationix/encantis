@@ -1,0 +1,98 @@
+// The containers of lib/ from another module: a Vec, a Set and a Map of this
+// module's own type, and a sort with this module's comparator. The library's
+// generics are instantiated here, for Cell, and the set and the map call the
+// hash and eq this module writes for it.
+
+import "../../lib/stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+)
+
+import "../../lib/vec" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+  "items" func items(comptime T: type, v: *Vec(T)) -> []T
+  "items_mut" func items_mut(comptime T: type, v: *mut Vec(T)) -> []mut T
+)
+
+import "../../lib/set" (
+  "Set" func Set(comptime K: type) -> type
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+
+import "../../lib/map" (
+  "Map" func Map(comptime K: type, comptime V: type) -> type
+  "map" func map(comptime K: type, comptime V: type, bits: u32) -> *mut Map(K, V)
+  "insert" func insert(comptime K: type, comptime V: type, m: *mut Map(K, V), k: K, v: V) -> bool
+  "lookup" func lookup(comptime K: type, comptime V: type, m: *Map(K, V), k: K) -> ?*mut V
+  "get_or" func get_or(comptime K: type, comptime V: type, m: *Map(K, V), k: K, fallback: V) -> V
+)
+
+import "../../lib/sort" (
+  "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)
+)
+
+type Cell = (x: i32, y: i32)
+
+func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+// Row by row, then by column
+func reading_order(a: Cell, b: Cell) -> bool => if a.y != b.y { a.y < b.y } else { a.x < b.x }
+
+// The cell of step i of a walk that zigzags over a 5 by 3 board
+func step(i: u32) -> Cell => Cell((i % 5) as i32, (i % 3) as i32)
+
+// How many distinct cells a walk of n steps visits
+export func visited(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let seen = hashset(Cell, 2)
+  for i in n {
+    seen.add(step(i))
+  }
+  return seen.count
+}
+
+// How often the walk is at its most visited cell
+export func busiest(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let visits = map(Cell, u32, 2)
+  let most: u32 = 0
+  for i in n {
+    let c = step(i)
+    if let count = visits.lookup(c) {
+      count.* += 1
+    } else {
+      visits.insert(c, 1)
+    }
+    most = max(most, visits.get_or(c, 0))
+  }
+  return most
+}
+
+// The first cell of the walk in reading order, as y * 5 + x
+export func first_in_reading_order(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let path = vec(Cell, 4)
+  for i in n {
+    path.push(step(i + 7))
+  }
+  path.items_mut().sort(reading_order)
+  let first = path.items().ptr[0]
+  return (first.y * 5 + first.x) as u32
+}
+
+test "the containers, for this module's cell" {
+  assert visited(100) == 15
+  assert visited(2) == 2
+  assert busiest(15) == 1
+  assert busiest(30) == 2
+  assert busiest(31) == 3
+  assert first_in_reading_order(1) == 7
+  assert first_in_reading_order(15) == 0
+}

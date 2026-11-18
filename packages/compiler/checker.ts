@@ -93,7 +93,11 @@ export type Symbol =
   // distinct set of comptime arguments is an instance, which is an ordinary
   // function. `valid` is false when its declaration already has an error, so
   // that calls don't add theirs.
-  | { kind: 'generic'; decl: AST.FuncDecl; owner: CheckContext; instances: Map<string, Instance>; valid: boolean }
+  // `signatureOnly`: imported from a source module while this one is
+  // checked on its own, so all there is of it is the signature the import
+  // writes. Its calls are checked against that, and its instances have no
+  // body here.
+  | { kind: 'generic'; decl: AST.FuncDecl; owner: CheckContext; instances: Map<string, Instance>; valid: boolean; signatureOnly?: true }
   // A generic type: a function from types to a type. Applying it resolves its
   // body with the parameters replaced, in the module that declares it, once
   // for each way its arguments were written (`cache`). The result is the body
@@ -122,8 +126,23 @@ export interface Instance {
   first: boolean        // the generic's first instance: the one the editor's tables are filled from
   args: ComptimeValue[] // in comptime-parameter order
   requestedAt: number   // the call that first asked for it; inside an instance, at that one's offsets
+  requestedIn: CheckContext // the module of that call, which another module's code can be
   depth: number         // instantiation nesting, to stop a generic that never stops instantiating
   chain: InstanceChain
+  owner: CheckContext   // the module that declares the generic
+  // The module whose ordinary code started the chain of instantiations that
+  // made this instance. A call in the body that the generic's own module has
+  // no function for is looked up there (see callAtSite); one that was makes
+  // the instance depend on the site (`usedSite`), and so does a call of an
+  // instance that does (`requests`: the instances the body calls).
+  // `lookedUp` holds what each name looked up at the site found there, as
+  // the body calls them. Another module asking for the same arguments gets
+  // the instance where its own functions of those names are the same ones,
+  // and an instance of its own where they are not (see sharedWith).
+  site: CheckContext
+  usedSite: boolean
+  lookedUp: Map<string, string[]>
+  requests: Instance[]
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -206,8 +225,9 @@ export interface TypeError {
   message: string
   // For an error inside an instance of a generic: the call that first asked
   // for the instance, then the call that asked for the instance that call is
-  // in, and so on outwards.
-  notes?: { offset: number; message: string }[]
+  // in, and so on outwards. A call in another module of the program has that
+  // module's path; the others are in the module that has the error.
+  notes?: { offset: number; message: string; path?: string }[]
 }
 
 // Pending literal for data section serialization (handled by codegen, not checker)
@@ -218,6 +238,10 @@ export interface PendingLiteral {
 }
 
 export interface TypeCheckResult {
+  // Whether the module, checked on its own, imports a generic type from
+  // another source module: its errors are not known (and not listed) until
+  // the program is checked, and it cannot be compiled alone.
+  partial: boolean
   // Types of bindings and declarations: "offset:kind" → resolved type
   types: Map<string, ResolvedType>
   // The type of every expression, by AST node
@@ -274,6 +298,32 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+  // Functions of other source modules that this module's code calls by a
+  // name of its own (see CheckContext.externs): by that name, the path of
+  // the module that has the function and the name it is known by there.
+  externs: Map<string, Extern>
+  // The functions of this module that instances of other modules' generics
+  // call by their name, with each such call (see callAtSite)
+  calledFromInstances: Map<string, InstanceCall[]>
+  // The module's name where the names of several modules meet: its file's
+  // name, numbered from the second file of the program with that name
+  // (lib, lib~2). Codegen prefixes the module's functions with it.
+  tag: string
+}
+
+// A call in an instance of another module's generic, at its place in the
+// source of the module that declares the generic
+export interface InstanceCall {
+  path: string
+  offset: number
+  label: string // the instance's, as messages name it
+}
+
+export interface Extern {
+  module: string
+  name: string
+  // For an instance, how messages name it: push(T = u32)
+  label?: string
 }
 
 export interface InstanceInfo {
@@ -322,20 +372,43 @@ const DEFAULT_OPTIONS: Pick<Required<TypecheckOptions>, 'defaultInt' | 'defaultF
  * 3. Concretizes comptime types to concrete runtime types
  */
 export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeCheckResult {
+  const ctx = contextFor(options)
+  ctx.checkModule(module)
+  return finalize(ctx, module)
+}
+
+function contextFor(options?: TypecheckOptions): CheckContext {
   const opts = { ...DEFAULT_OPTIONS, ...options }
   const ctx = new CheckContext()
   ctx.options = opts
   ctx.source = opts.source
   ctx.filePath = opts.filePath
   ctx.moduleExports = opts.moduleExports
-  ctx.checkModule(module)
+  return ctx
+}
 
+// What a checked module is, as codegen and the editor read it. In a program
+// of several modules a module can be finalized again after another module's
+// code asked it for more instances of its generics: what it does to the
+// tables is done again to the same effect, and the warnings are worked out
+// afresh each time.
+function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
+  const opts = { ...DEFAULT_OPTIONS, ...ctx.options }
+  // A type a finalize made is concrete, and making it again gives the same:
+  // a module finalized after each module that adds instances to it would
+  // otherwise make all of its types again each time.
+  const concrete = (type: ResolvedType): ResolvedType => {
+    if (concretized.has(type)) return type
+    const made = concretizeType(type, opts)
+    concretized.add(made)
+    return made
+  }
   // Concretize all comptime types to concrete types (single source of truth)
   for (const [key, type] of ctx.types) {
-    ctx.types.set(key, concretizeType(type, opts))
+    ctx.types.set(key, concrete(type))
   }
   for (const [expr, type] of ctx.exprTypes) {
-    ctx.exprTypes.set(expr, concretizeType(type, opts))
+    ctx.exprTypes.set(expr, concrete(type))
   }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
@@ -344,7 +417,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     // the types map at their definition offset may hold a non-func type
     // (e.g. a return type or parameter type), so skip the map lookup.
     if (sym.kind === 'func') {
-      sym.type = concretizeType(sym.type, opts) as typeof sym.type
+      sym.type = concrete(sym.type) as typeof sym.type
       continue
     }
     const defOffset = ctx.symbolDefOffsets.get(name)
@@ -356,6 +429,7 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     sym.type = concretizeType(sym.type, opts) as typeof sym.type
   }
   // Warn on unused symbols (dead code)
+  const warnings = [...ctx.warnings]
   const exportedNames = new Set<string>()
   for (const decl of module.decls) {
     if (decl.kind === 'ExportDecl') {
@@ -366,24 +440,30 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     }
   }
   for (const [name, defOffset] of ctx.symbolDefOffsets) {
-    if (exportedNames.has(name)) continue
+    if (exportedNames.has(name) || ctx.calledFromInstances.has(name)) continue
     const refs = ctx.references.get(defOffset)
     if (refs && refs.length === 0) {
       const sym = ctx.moduleScope.symbols.get(name)
       if (sym && (sym.kind === 'func' || sym.kind === 'generic' || sym.kind === 'def' || sym.kind === 'global')) {
-        ctx.warnings.push({ offset: defOffset, message: `'${declaredName(name)}' is never used` })
+        warnings.push({ offset: defOffset, message: `'${declaredName(name)}' is never used` })
       }
     }
   }
 
+  // A module that imports a generic type, checked on its own, cannot tell
+  // what is wrong with it: its errors would be about types it could not
+  // know. It says so once instead.
+  const partial = ctx.typesFromElsewhere !== undefined
+  if (partial) warnings.unshift({ offset: ctx.typesFromElsewhere as number, message: 'imported generic types are resolved only when the program is checked' })
   return {
+    partial,
     types: ctx.types,
     exprTypes: ctx.exprTypes,
     coercions: ctx.coercions,
     constants: ctx.constants,
     symbols: ctx.moduleScope.symbols,
-    errors: ctx.errors,
-    warnings: ctx.warnings,
+    errors: partial ? [] : ctx.errors,
+    warnings,
     references: ctx.references,
     symbolRefs: ctx.symbolRefs,
     symbolDefOffsets: ctx.symbolDefOffsets,
@@ -394,6 +474,9 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
+    externs: ctx.externs,
+    calledFromInstances: ctx.calledFromInstances,
+    tag: ctx.moduleTag(),
   }
 }
 
@@ -410,7 +493,11 @@ function getExportedSymbols(module: AST.Module, { symbols, funcNames }: TypeChec
     if (exports.has(decl.name)) continue
     if (item.kind === 'FuncDecl' && item.ident) {
       const sym = symbols.get(funcNames.get(item) ?? item.ident)
-      if (sym) exports.set(decl.name, sym)
+      // A generic is exported as itself, and only where its name is its own.
+      if (sym && (!isGenericDecl(item) || (sym.kind === 'generic' && sym.decl === item))) exports.set(decl.name, sym)
+    } else if (item.kind === 'TypeFuncDecl') {
+      const sym = symbols.get(item.ident)
+      if (sym?.kind === 'typefunc' && sym.decl === item) exports.set(decl.name, sym)
     } else if (item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern') {
       const sym = symbols.get(item.pattern.name)
       if (sym) exports.set(decl.name, sym)
@@ -424,6 +511,15 @@ export interface ProgramCheckResult {
   errors: TypeError[]
 }
 
+// Modules are checked one at a time, each module's dependencies before it.
+// A module that imports a generic asks the module that declares it for an
+// instance: the instance is a function of that module, already checked by
+// then, and its body is checked there, as the owner's own instances are.
+// So after each module the instances it asked for are checked wherever they
+// belong, and so are the ones those ask for, until none is left; and a
+// module that gained instances is finalized again, so that its result has
+// them. The program's errors are taken from the results at the end, since
+// an instance can bring an error to a module checked long before.
 export function typecheckProgram(
   modules: Map<string, { module: AST.Module; source?: string }>,
   entryPath: string,
@@ -431,8 +527,44 @@ export function typecheckProgram(
 ): ProgramCheckResult {
   const results = new Map<string, TypeCheckResult>()
   const moduleExports = new Map<string, Map<string, Symbol>>()
-  const allErrors: TypeError[] = []
   const visited = new Set<string>()
+  const program = new Map<string, CheckContext>()
+  const checked: { path: string; ctx: CheckContext; module: AST.Module }[] = []
+
+  // Checks the instances asked for and not yet checked, in every module,
+  // and then tells the modules that asked for them of their errors. Gives
+  // the modules that had any: nothing else of a module changes.
+  function drain(): Set<CheckContext> {
+    const grown = new Set<CheckContext>()
+    for (let more = true; more; ) {
+      more = false
+      for (const { ctx } of checked) {
+        if (!ctx.drainLate()) continue
+        grown.add(ctx)
+        more = true
+      }
+    }
+    for (const { ctx } of checked) ctx.reportToRequesters()
+    return grown
+  }
+
+  // An instance that calls an instance that depends on its site depends on
+  // it too: another module asking for it would call the first module's
+  // functions through it. Only instances made since the last time can: an
+  // older one's body, and so what it calls, was settled then.
+  const settled = new Map<CheckContext, number>()
+  function settleSites(): void {
+    const fresh = checked.flatMap(({ ctx }) => ctx.instances.slice(settled.get(ctx) ?? 0))
+    for (let more = true; more; ) {
+      more = false
+      for (const inst of fresh) {
+        if (inst.usedSite || !inst.requests.some((r) => r.usedSite)) continue
+        inst.usedSite = true
+        more = true
+      }
+    }
+    for (const { ctx } of checked) settled.set(ctx, ctx.instances.length)
+  }
 
   function visit(path: string) {
     if (visited.has(path)) return
@@ -453,17 +585,49 @@ export function typecheckProgram(
     visitImports(loaded.module.decls)
 
     // Each module's own text, which messages quote (see textOf)
-    const result = typecheck(loaded.module, { ...options, filePath: path, moduleExports, source: loaded.source })
+    const ctx = contextFor({ ...options, filePath: path, moduleExports, source: loaded.source })
+    ctx.program = program
+    const alike = [...program.values()].filter((other) => fileTag(other.filePath) === fileTag(path)).length
+    ctx.tag = alike === 0 ? fileTag(path) : `${fileTag(path)}~${alike + 1}`
+    program.set(path, ctx)
+    ctx.checkModule(loaded.module)
+    checked.push({ path, ctx, module: loaded.module })
+    const grown = drain()
+    settleSites()
+    for (const earlier of checked) {
+      if (earlier.ctx !== ctx && grown.has(earlier.ctx)) results.set(earlier.path, finalize(earlier.ctx, earlier.module))
+    }
+    const result = finalize(ctx, loaded.module)
     results.set(path, result)
-    allErrors.push(...result.errors)
     moduleExports.set(path, getExportedSymbols(loaded.module, result))
   }
 
   visit(entryPath)
-  return { results, errors: allErrors }
+  return { results, errors: [...results.values()].flatMap((result) => result.errors) }
+}
+
+// A path's last part, the name of the file
+function fileName(path: string): string {
+  return path.replace(/^.*[\\/]/, '')
+}
+
+// line:column of an offset in a source, both from 1
+function lineAndColumn(source: string, offset: number): string {
+  const before = source.slice(0, offset)
+  const line = before.split('\n').length
+  return `${line}:${offset - before.lastIndexOf('\n')}`
+}
+
+// A module's file name as a name: what is left of its path without the
+// directories and the .ents, with anything but letters, digits and _ as _.
+function fileTag(path: string | undefined): string {
+  return (path ?? '').replace(/^.*[\\/]/, '').replace(/\.ents$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
 }
 
 // === Concretization ===
+
+// The types finalize made (see there)
+const concretized = new WeakSet<ResolvedType>()
 
 /**
  * Concretize a single type, replacing comptime types with concrete defaults.
@@ -711,10 +875,29 @@ class CheckContext {
   symbolRefs = new Map<number, number>() // usageOffset → defOffset
   symbolDefOffsets = new Map<string, number>() // name → defOffset
 
+  // The functions of this module that instances of other modules' generics
+  // call (see callAtSite), with the calls: used, though nothing in this
+  // module calls them, and named in another module's source.
+  calledFromInstances = new Map<string, InstanceCall[]>()
+  // Where the module first imports a generic type while it is checked on its
+  // own: what that type is, and so what anything of it is, is known only
+  // when the program is checked (see finalize).
+  typesFromElsewhere?: number
   // Multi-module support
   filePath?: string
   moduleExports?: Map<string, Map<string, Symbol>>
   options: TypecheckOptions = DEFAULT_OPTIONS
+  // In a program of several modules, every module's context by its path (see
+  // typecheckProgram): an instance of a generic is checked in the module
+  // that declares it, whichever module asked for it.
+  program?: Map<string, CheckContext>
+  // Functions of other modules that this module's code calls by a name of
+  // its own: an instance of a generic it imports, which belongs to the
+  // generic's module (push<u32> of ./containers, called here by the name the
+  // generic is imported as), and, in an instance, a function of another
+  // module given for a comptime function parameter. Codegen gives each name
+  // the wasm name of the function it stands for.
+  externs = new Map<string, Extern>()
 
   // Literals that need data section serialization (collected during checking)
   pendingLiterals: PendingLiteral[] = []
@@ -931,10 +1114,11 @@ class CheckContext {
   // use of every function of its name. Where the generic has instances, each
   // has recorded what it calls: a guess no instance made is taken back, so
   // that the uses of one of several functions that share a name are the calls
-  // that call it, and one no call calls is reported as never used. (A generic
-  // cannot be imported: its instances are all this module's.) A generic
+  // that call it, and one no call calls is reported as never used. A generic
   // nothing instantiates keeps its guesses: any function of the name could be
-  // the one an instance would call.
+  // the one an instance would call. So does one that only other modules
+  // instantiate: their instances come after this, and what the module says
+  // of itself does not depend on who imports it.
   private settleGuesses(): void {
     const instantiated = new Set(this.instances.map((inst) => inst.of))
     for (const { generic, def, use } of this.guessedCalls) {
@@ -957,6 +1141,18 @@ class CheckContext {
     // signature of the module can apply it, wherever it stands.
     const item = decl.kind === 'ExportDecl' ? decl.item : decl
     if (item.kind === 'TypeFuncDecl') this.collectTypeFunc(item)
+    // An imported one too. A module that is not there is reported where the
+    // import is collected.
+    if (decl.kind === 'ImportDecl') {
+      const depExports = this.exportsOf(decl)
+      const missing = isSourceImport(decl.module) && this.filePath && this.moduleExports && !depExports
+      for (const imported of decl.items) {
+        if (imported.item.kind !== 'ImportTypeFunc') continue
+        // Of a module that is not there, the one error is that it is not.
+        if (missing) this.unknownTypeFunc(imported.item, imported.span.start)
+        else this.importTypeFunc(decl, imported, imported.item, depExports)
+      }
+    }
   }
 
   // === First Pass: Collect Declarations ===
@@ -1012,18 +1208,29 @@ class CheckContext {
           const name = item.item.ident ?? item.name
           if (this.takenByGeneric(name, item.span.start)) break
           if (this.takenByAnother(name, item.span.start, 'func', inTest)) break
-          if (isGenericSignature(item.item.signature)) {
-            this.error(item.span.start, isSource ? `generic functions cannot be imported yet` : `a host import cannot have comptime parameters`)
+          if (!isSource && isGenericSignature(item.item.signature)) {
+            this.error(item.span.start, `a host import cannot have comptime parameters`)
+            break
+          }
+          if (!depExports && isGenericSignature(item.item.signature)) {
+            this.importSignature(name, item.item)
             break
           }
           if (isSource && depExports) {
             const exported = depExports.get(item.name)
             if (!exported) {
               this.errors.push({ offset: item.span.start, message: `'${item.name}' is not exported from '${decl.module}'` })
+              // A generic is then known by the signature the import writes,
+              // as in a file checked on its own, so that its calls say
+              // nothing more of what is one mistake.
+              if (isGenericSignature(item.item.signature)) this.importSignature(name, item.item)
               break
             }
+            // What the other module exports under the name is what is
+            // imported, as for any function: the signature written here is
+            // not compared with it.
             if (exported.kind === 'generic') {
-              this.error(item.span.start, `generic functions cannot be imported yet`)
+              this.importGeneric(name, exported, item.span.start)
               break
             }
             if (exported.kind !== 'func') {
@@ -1037,6 +1244,11 @@ class CheckContext {
           }
           break
         }
+        case 'ImportTypeFunc':
+          // A module's own are registered with its type names (see
+          // preRegisterTypes); one a test imports, where the test is.
+          if (inTest) this.importTypeFunc(decl, item, item.item, depExports)
+          break
         case 'ImportGlobal': {
           if (this.takenByGeneric(item.item.ident, item.span.start)) break
           // Importing a global of another module twice is the same global
@@ -1064,6 +1276,100 @@ class CheckContext {
         }
       }
     }
+  }
+
+  // A generic of another module, under the name it is imported as here. It
+  // is the other module's symbol itself: an instance is made in the module
+  // that declares the generic, whichever module asks for it.
+  private importGeneric(name: string, exported: Symbol & { kind: 'generic' }, offset: number): void {
+    if (this.moduleScope.symbols.has(name)) {
+      this.error(offset, `'${name}' is already declared: a generic function's name is unique in its module`)
+      return
+    }
+    this.moduleScope.symbols.set(name, exported)
+    this.recordDefinition(name, offset)
+    this.replacesBuiltin(name, offset)
+  }
+
+  // A generic of another module, in a module checked on its own: what the
+  // import writes is all there is of it. Calls are checked against the
+  // signature with their types filled in, as calls of the generic itself
+  // would be; what its body requires of them is found out when the program
+  // is checked.
+  private importSignature(name: string, imported: AST.ImportFunc): void {
+    const decl: AST.FuncDecl = {
+      kind: 'FuncDecl',
+      inline: false,
+      ident: name,
+      signature: imported.signature,
+      body: { kind: 'Block', stmts: [], span: { start: imported.span.end, end: imported.span.end } },
+      span: imported.span,
+    }
+    const valid = this.checkGenericDecl(decl)
+    if (this.moduleScope.symbols.has(name)) {
+      this.error(imported.span.start, `'${name}' is already declared: a generic function's name is unique in its module`)
+      return
+    }
+    this.moduleScope.symbols.set(name, { kind: 'generic', decl, owner: this, instances: new Map(), valid, signatureOnly: true })
+    this.recordDefinition(name, imported.span.start)
+    this.replacesBuiltin(name, imported.span.start)
+  }
+
+  // A generic type of another module, under its own name: applied here, its
+  // body is resolved in the module that declares it, as a generic type of
+  // this module's is. A type can be named anywhere in a module, so the
+  // generic types it imports are known before any type is resolved.
+  private importTypeFunc(decl: AST.ImportDecl, item: AST.ImportItem, imported: AST.ImportTypeFunc, depExports: Map<string, Symbol> | undefined): void {
+    const name = imported.ident
+    const at = item.span.start
+    if (!isSourceImport(decl.module)) {
+      this.error(at, `a host import cannot have comptime parameters`)
+      return
+    }
+    if (!depExports) {
+      // Checked on its own, the module cannot know what the type is: it is
+      // known by name, so that its uses say nothing, and the module is
+      // checked as part of its program.
+      this.typesFromElsewhere ??= at
+      this.unknownTypeFunc(imported, at)
+      return
+    }
+    // A failed import is the one error: the name is known, and its uses
+    // say nothing more.
+    const exported = depExports.get(item.name)
+    if (!exported) {
+      this.error(at, `'${item.name}' is not exported from '${decl.module}'`)
+      this.unknownTypeFunc(imported, at)
+      return
+    }
+    if (exported.kind !== 'typefunc') {
+      this.error(at, `'${item.name}' in '${decl.module}' is not a generic type`)
+      this.unknownTypeFunc(imported, at)
+      return
+    }
+    if (this.moduleScope.symbols.has(name) || this.pendingTypeNames.has(name)) {
+      this.error(at, `'${name}' is already declared: a generic type's name is unique in its module`)
+      return
+    }
+    this.moduleScope.symbols.set(name, exported)
+    this.recordDefinition(name, at)
+  }
+
+  // A generic type of which only the name is known: its uses say nothing.
+  private unknownTypeFunc(imported: AST.ImportTypeFunc, at: number): void {
+    const name = imported.ident
+    if (this.moduleScope.symbols.has(name)) return
+    const decl: AST.TypeFuncDecl = { kind: 'TypeFuncDecl', ident: name, params: imported.params, body: { kind: 'TypeRef', name, span: imported.span }, span: imported.span }
+    this.moduleScope.symbols.set(name, { kind: 'typefunc', decl, owner: this, cache: new Map(), valid: false })
+    this.recordDefinition(name, at)
+  }
+
+  // The source module an import names, and what it exports, where the
+  // program is checked; undefined for a host import and in a file checked
+  // on its own.
+  private exportsOf(decl: AST.ImportDecl): Map<string, Symbol> | undefined {
+    if (!isSourceImport(decl.module) || !this.filePath || !this.moduleExports) return undefined
+    return this.moduleExports.get(resolveModulePath(decl.module, this.filePath))
   }
 
   collectExport(decl: AST.ExportDecl): void {
@@ -4203,7 +4509,22 @@ class CheckContext {
       const sym = this.lookup(name)
       if (sym?.kind === 'generic') return this.inferGenericCall(expr, sym, name)
       if (sym?.kind === 'typefunc') return this.typeAsValue(expr, sym)
-      if (sym?.kind === 'func' && sym.alias) {
+      // In an instance a call that the generic's own module has no function
+      // for is looked up in the module that started the instance's chain.
+      const atSite = (sym === undefined || (sym.kind === 'func' && !sym.alias && sym === this.moduleScope.symbols.get(name))) ? this.callAtSite(expr, name) : null
+      if (atSite) {
+        if (atSite.length > 1) {
+          const member = this.pickOverload(expr, name, atSite)
+          if (member === null) return RECOVERY
+          named = this.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
+          this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: member } })
+        } else {
+          const only = this.moduleScope.symbols.get(atSite[0]) as Symbol & { kind: 'func' }
+          named = only
+          this.calls.set(expr, { ...expr, callee: { ...expr.callee, name: atSite[0] } })
+          if (expr.args.filter((a) => a.value).length === only.type.params.length) required = name
+        }
+      } else if (sym?.kind === 'func' && sym.alias) {
         // A comptime function parameter, in an instance, is the function it
         // was given: the call compiles as a direct call of that one.
         named = sym
@@ -4237,7 +4558,7 @@ class CheckContext {
 
     // Check for builtin functions first. A function the program declares takes
     // the place of the builtin of the same name.
-    if (expr.callee.kind === 'IdentExpr') {
+    if (expr.callee.kind === 'IdentExpr' && !named) {
       const declared = this.lookup(expr.callee.name)?.kind === 'func'
       const builtinResult = declared ? null : this.inferBuiltin(expr, expr.callee.name)
       if (builtinResult !== null) return builtinResult
@@ -4271,7 +4592,7 @@ class CheckContext {
       // Only a function that is named can be called: the call compiles to
       // a direct call of it. A function held in a variable, a field or a
       // parameter would need an indirect call, which nothing emits.
-      const direct = expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'func'
+      const direct = named !== null || (expr.callee.kind === 'IdentExpr' && this.lookup(expr.callee.name)?.kind === 'func')
       if (!direct) {
         this.error(
           expr.span.start,
@@ -4728,8 +5049,11 @@ class CheckContext {
       }
       this.receivers.set(call, receiver)
       // A builtin is a function too, unless something of the program has
-      // its name.
-      const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name))
+      // its name. In an instance, so is a function of the site's (see
+      // callAtSite), which the call finds for itself.
+      const inst = this.currentInstance
+      const atSite = !sym && inst !== null && inst.site !== this && !BUILTIN_NAMES.has(name) && !PRIMITIVE_NAMES.has(name) && this.atSite(inst, name).length > 0
+      const callable = sym?.kind === 'generic' || sym?.kind === 'func' || (!sym && BUILTIN_NAMES.has(name)) || atSite
       // With nothing that could take it, what is wrong with the receiver is
       // all there is to say. Functions that share the name and a generic
       // find that out for themselves.
@@ -4759,6 +5083,86 @@ class CheckContext {
     // A builtin's value can be a constant, which is more than its type.
     if (this.errorsReported === reported && this.lookup(name)) this.settled.set(expr, result)
     return result
+  }
+
+  // In an instance whose chain was started by another module's code: where
+  // the generic's own module has no function of this name that takes the
+  // call's arguments, the site's functions of the name, under the names
+  // this module calls them by (hash@main); null where the call is the
+  // module's own. A library's functions come first and cannot be replaced
+  // from outside, and only the callee of a call is looked up at the site:
+  // the types, globals and helpers of a generic's body are always its own
+  // module's. The instance is then the site's own (see Instance.usedSite).
+  private callAtSite(expr: AST.CallExpr, name: string): string[] | null {
+    const inst = this.currentInstance
+    const site = inst?.site
+    if (!inst || !site || site === this) return null
+    const own = this.lookup(name)
+    // A builtin and a cast are the language's: where the generic's module
+    // has no function of the name, they answer, whatever the site declares.
+    if (!own && (BUILTIN_NAMES.has(name) || PRIMITIVE_NAMES.has(name))) return null
+    if (own?.kind === 'func') {
+      const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
+      const takes = (member: string) => {
+        const sym = this.moduleScope.symbols.get(member)
+        return sym?.kind === 'func' && sym.type.params.length === args.length && args.every((arg, i) => this.fits(arg, sym.type.params[i].type))
+      }
+      if ((this.overloads.get(name) ?? [name]).some(takes)) return null
+    }
+    // What the call is depends on the site from here, also where the site
+    // has nothing of the name: another site may have the function.
+    const members = this.atSite(inst, name)
+    if (members.length === 0) return null
+    return members.map((member) => {
+      const sym = site.moduleScope.symbols.get(member) as Symbol & { kind: 'func' }
+      const alias = this.externFunc(site, member)
+      if (!this.moduleScope.symbols.has(alias)) this.moduleScope.symbols.set(alias, { kind: 'func', type: sym.type, inline: sym.inline })
+      const calls = site.calledFromInstances.get(member) ?? []
+      const call = { path: this.filePath ?? '', offset: expr.callee.span.start % INSTANCE_STRIDE, label: inst.label }
+      if (!calls.some((c) => c.path === call.path && c.offset === call.offset)) calls.push(call)
+      site.calledFromInstances.set(member, calls)
+      return alias
+    })
+  }
+
+  // The functions of the name an instance's site has for a call of its body,
+  // by their names there. The instance depends on the site from then on, and
+  // holds what was found by the names the body calls them (see sharedWith).
+  private atSite(inst: Instance, name: string): string[] {
+    const site = inst.site
+    const members = site.functionsNamed(name)
+    inst.usedSite = true
+    inst.lookedUp.set(name, members.map((member) => this.externName(site.originOf(member))))
+    return members
+  }
+
+  // Whether an instance made for one site's code is what another site's
+  // code would get: each name its body, and the body of each instance it
+  // calls, looked up at its site stands for the same functions at this one.
+  // A generic's module is a site of its own that looks up nothing.
+  private sharedWith(inst: Instance, site: CheckContext): boolean {
+    const seen = new Set<Instance>()
+    const alike = (one: Instance): boolean => {
+      if (seen.has(one)) return true
+      seen.add(one)
+      for (const [name, found] of one.lookedUp) {
+        const there = site === one.owner ? [] : site.functionsNamed(name)
+        const names = there.map((member) => one.owner.externName(site.originOf(member)))
+        if (names.length !== found.length || names.some((n, i) => n !== found[i])) return false
+      }
+      return one.requests.every(alike)
+    }
+    return alike(inst)
+  }
+
+  // The module's functions of a name that an instance of another module's
+  // generic can call, by the names they are known by here: not a comptime
+  // function parameter's, and not a test's.
+  functionsNamed(name: string): string[] {
+    return (this.overloads.get(name) ?? [name]).filter((member) => {
+      const sym = this.moduleScope.symbols.get(member)
+      return sym?.kind === 'func' && !sym.alias && !this.testOnly.has(member) && !this.testDeclared.has(sym)
+    })
   }
 
   // Whether several functions of the module share this name
@@ -7020,10 +7424,14 @@ class CheckContext {
   // replaced by the types written for them, unresolved. This is how a
   // parameter `v: *Vec(T)` is laid over an argument to find T.
   private expandTypeApply(applied: AST.TypeApply): AST.Type | null {
-    const sym = this.moduleScope.symbols.get(applied.name)
+    const scope = expandedIn.get(applied) ?? this
+    const sym = scope.moduleScope.symbols.get(applied.name)
     if (sym?.kind !== 'typefunc' || !sym.valid || applied.args.length !== sym.decl.params.length) return null
     const args = new Map(sym.decl.params.map((p, i) => [p.ident as string, applied.args[i]]))
-    return cloneAst(sym.decl.body, 0, (param) => args.get(param)) as AST.Type
+    const put = new Set<object>()
+    const body = cloneAst(sym.decl.body, 0, (param) => args.get(param), put) as AST.Type
+    if (sym.owner !== this) for (const inner of applicationsOutside(body, put)) expandedIn.set(inner, sym.owner)
+    return body
   }
 
   // A call of a generic function: find the comptime arguments, get the
@@ -7124,7 +7532,15 @@ class CheckContext {
 
     const args: ComptimeValue[] = params
       .filter((p) => p.comptime)
-      .map((p) => funcs.get(p) ?? { kind: 'type', type: bound.get(p.ident as string) as ResolvedType })
+      .map((p) => {
+        const given = funcs.get(p)
+        if (!given) return { kind: 'type', type: bound.get(p.ident as string) as ResolvedType }
+        // The instance calls it from the generic's module, by a name it has
+        // there: the name of its own module's function, also where this
+        // module imports it under another, so that every name of one
+        // function makes one instance.
+        return { ...given, name: sym.owner.externFunc(this, given.name) }
+      })
     const inst = this.instantiate(sym, args, expr.span.start)
     if (!inst) return fail()
 
@@ -7141,7 +7557,7 @@ class CheckContext {
     // conversions recorded for them are the ones the plain call is compiled with.
     this.calls.set(expr, {
       kind: 'CallExpr',
-      callee: { kind: 'IdentExpr', name: inst.name, span: expr.callee.span },
+      callee: { kind: 'IdentExpr', name: this.calleeOf(inst, sym, name), span: expr.callee.span },
       args: runtimeArgs,
       span: expr.span,
     })
@@ -7371,11 +7787,30 @@ class CheckContext {
     // A function is the function of that name: two instances are one when
     // their functions are.
     const key = held.map((a) => (a.kind === 'type' ? watSafe(canonicalKey(a.type)) : a.kind === 'func' ? a.name : '')).join('|')
-    const existing = sym.instances.get(key)
-    if (existing) return existing
-
     // An instance asked for from an instance's body draws on that one's chain.
     const requester = this.currentInstance
+    const site = requester?.site ?? this
+    const owner = sym.owner
+    let existing = sym.instances.get(key)
+    // One that called functions of another module's for want of the
+    // generic's own is that module's, unless this site's functions of the
+    // names are the same ones: otherwise this site gets a copy of its own,
+    // calling its own functions. A module's chains are all checked before
+    // the next module is, so what an instance looked up is known by the time
+    // another module can ask. A copy is kept under the key and its site's
+    // tag, apart by a space, which no key has.
+    let copyKey: string | null = null
+    if (existing?.usedSite && existing.site !== site) {
+      const copies = [...sym.instances].filter(([k]) => k.startsWith(`${key} @`)).map(([, inst]) => inst)
+      existing = [existing, ...copies].find((inst) => inst.site === site || owner.sharedWith(inst, site))
+      if (!existing) copyKey = `${key} @${site.moduleTag()}`
+    }
+    if (existing) {
+      requester?.requests.push(existing)
+      if (!requester && !this.asked.has(existing)) this.asked.set(existing, { at, told: false })
+      return existing
+    }
+
     const depth = (requester?.depth ?? 0) + 1
     let chain: InstanceChain = { size: 1, keySize: key.length, stopped: false }
     if (requester) {
@@ -7394,7 +7829,6 @@ class CheckContext {
       chain.size++
     }
 
-    const owner = sym.owner
     const index = owner.instances.length + 1
     // Offsets have to stay exact integers, and below the next instance's.
     if (of.span.end >= INSTANCE_STRIDE || index >= MAX_INSTANCES) {
@@ -7402,22 +7836,105 @@ class CheckContext {
       return null
     }
     const decl = bindTypes(of, comptimeParams, held, index * INSTANCE_STRIDE)
-    decl.ident = instanceName(of.ident as string, key, (name) => owner.moduleScope.symbols.has(name))
+    decl.ident = instanceName(of.ident as string, key, copyKey === null ? null : site.moduleTag(), (name) => owner.moduleScope.symbols.has(name))
 
+    // A function of another module is named as it is there, with its file:
+    // inc (b.ents), not by the name the generic's module calls it.
+    const funcText = (name: string) => {
+      const extern = owner.externs.get(name)
+      return extern ? `${extern.name} (${fileName(extern.module)})` : name
+    }
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
-      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? value.name : ''
+      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? funcText(value.name) : ''
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
     const label = `${of.ident}(${shown.join(', ')})`
-    const inst: Instance = { name: decl.ident, label, of, decl, index, first: sym.instances.size === 0, args: held, requestedAt: at, depth, chain }
-    sym.instances.set(key, inst)
+    const inst: Instance = {
+      name: decl.ident,
+      label,
+      of,
+      decl,
+      index,
+      first: sym.instances.size === 0,
+      args: held,
+      requestedAt: at,
+      requestedIn: this,
+      depth,
+      chain,
+      owner,
+      site,
+      usedSite: false,
+      lookedUp: new Map(),
+      requests: [],
+    }
+    requester?.requests.push(inst)
+    if (!requester) this.asked.set(inst, { at, told: false })
+    sym.instances.set(copyKey ?? key, inst)
     owner.instances.push(inst)
-    owner.instanceQueue.push(inst)
+    if (!sym.signatureOnly) owner.instanceQueue.push(inst)
     // The signature exists from here on, which is all a call needs. The body
     // waits for drainInstances.
     owner.collectFunc(decl)
     return inst
+  }
+
+  // The name this module's code calls a function of `from` by, where the
+  // function was given for a comptime parameter of one of this module's
+  // generics. A function of this module, also one that came back through
+  // other modules, is called by its own name; any other by its name and its
+  // module's (ascending@main), which is what tells instances for two
+  // modules' functions of one name apart.
+  externFunc(from: CheckContext, known: string): string {
+    const origin = from.originOf(known)
+    const alias = this.externName(origin)
+    if (origin.ctx !== this) this.externs.set(alias, { module: origin.ctx.filePath as string, name: origin.name })
+    return alias
+  }
+
+  // The name this module calls a function declared in a module by (see
+  // externFunc)
+  externName(origin: { ctx: CheckContext; name: string }): string {
+    return origin.ctx === this ? origin.name : `${origin.name}@${origin.ctx.moduleTag()}`
+  }
+
+  // The module a function this module calls by this name is declared in, and
+  // the name it is known by there: through imports from other source
+  // modules, and through the names of functions other modules gave.
+  originOf(known: string): { ctx: CheckContext; name: string } {
+    const extern = this.externs.get(known)
+    const target = extern && this.program?.get(extern.module)
+    if (extern && target) return target.originOf(extern.name)
+    const origin = this.origins.get(known)
+    if (origin === undefined || !this.filePath || !this.program) return { ctx: this, name: known }
+    const cut = origin.lastIndexOf(':')
+    const depPath = resolveModulePath(origin.slice(0, cut), this.filePath)
+    const dep = this.program.get(depPath)
+    const exported = this.moduleExports?.get(depPath)?.get(origin.slice(cut + 1))
+    if (!dep || !exported) return { ctx: this, name: known }
+    for (const [name, sym] of dep.moduleScope.symbols) if (sym === exported) return dep.originOf(name)
+    return { ctx: this, name: known }
+  }
+
+  // A short name for this module where names of several modules meet: the
+  // name of its file, numbered from the second file of the program that has
+  // the same name (see typecheckProgram).
+  tag = ''
+  moduleTag(): string {
+    return this.tag || fileTag(this.filePath)
+  }
+
+  // The name a call here gives an instance. An instance of this module's
+  // generic is known by its own name. One of another module's is known by
+  // the name the generic is imported as and the rest of the instance's name
+  // (push<u32> of ./containers, imported as append, is append<u32> here):
+  // no name of this module's has that shape, and two generics imported
+  // under two names cannot meet in it.
+  private calleeOf(inst: Instance, sym: Symbol & { kind: 'generic' }, name: string): string {
+    if (sym.owner === this || !sym.owner.filePath) return inst.name
+    const known = `${name}${inst.name.slice((inst.of.ident as string).length)}`
+    this.externs.set(known, { module: sym.owner.filePath, name: inst.name, label: inst.label })
+    return known
   }
 
   // The signature of an instance as one call sees it: the generic's, with that
@@ -7488,6 +8005,17 @@ class CheckContext {
       this.checkFuncBody(inst.decl)
     }
     this.currentInstance = null
+  }
+
+  // The instances other modules asked for after this one was checked, and
+  // those their bodies ask for here: checked as the module's own were, their
+  // literals laid out in their generic's place. Says whether there were any.
+  drainLate(): boolean {
+    if (this.instanceQueue.length === 0) return false
+    this.drainInstances()
+    this.settleLiterals()
+    this.placeInstanceLiterals()
+    return true
   }
 
   // A generic's body is checked per instance, with its types filled in, and
@@ -7561,12 +8089,25 @@ class CheckContext {
     }
     // The calls the instance exists for: the one that first asked for it,
     // and while that call is inside an instance, the one that asked for that.
+    // Each is in the module of the code that made it.
     const notes: NonNullable<TypeError['notes']> = [...said]
+    // A function the call wants that the site has as a generic: only the
+    // site's plain functions are looked up, which the message alone would
+    // not say.
+    const wanted = /^no function '([^']+)' accepts/.exec(message)?.[1]
+    const siteGeneric = wanted !== undefined && inst.lookedUp.has(wanted) && inst.site.moduleScope.symbols.get(wanted)?.kind === 'generic'
+    const genericAt = siteGeneric ? inst.site.symbolDefOffsets.get(wanted) : undefined
+    if (wanted !== undefined && genericAt !== undefined) {
+      notes.push({ offset: genericAt, message: `the site's '${wanted}' is generic, and only plain functions are looked up at the site:`, path: inst.site.filePath })
+    }
+    let from = inst.requestedIn
     for (let at = inst.requestedAt; notes.length < said.length + MAX_NOTES; ) {
-      notes.push({ offset: at % INSTANCE_STRIDE, message: 'required from' })
-      const outer = this.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
+      const note = { offset: at % INSTANCE_STRIDE, message: 'required from' }
+      notes.push(from === this || !from.filePath ? note : { ...note, path: from.filePath })
+      const outer = from.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
       if (!outer) break
       at = outer.requestedAt
+      from = outer.requestedIn
     }
     return { offset: offset % INSTANCE_STRIDE, message: `${message}, in ${inst.label}`, notes }
   }
@@ -7700,9 +8241,9 @@ class CheckContext {
     }
     for (const [candidate] of this.moduleScope.symbols) {
       // Not a name that could have been meant: an instance's, the one a
-      // function that shares its name is known by, or one the code being
-      // checked cannot see.
-      if (candidate.includes('<') || candidate.includes(':') || !this.lookup(candidate)) continue
+      // function that shares its name is known by, another module's function
+      // an instance calls, or one the code being checked cannot see.
+      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
@@ -7717,6 +8258,60 @@ class CheckContext {
     const error = this.atSource(offset, message, notes)
     if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
       this.errors.push(error)
+    }
+    const inst = offset >= INSTANCE_STRIDE ? this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1] : undefined
+    if (inst) this.errorsIn.set(error, { inst, message })
+  }
+
+  // The errors of instances, with the instance and the message as it was
+  // reported (see reportToRequesters)
+  private errorsIn = new WeakMap<TypeError, { inst: Instance; message: string }>()
+
+  // The instances this module's ordinary code asked for, at the first call
+  // of each (see reportToRequesters)
+  private asked = new Map<Instance, { at: number; told: boolean }>()
+
+  // The first error an instance of this module's has, as it was reported
+  private errorOf(inst: Instance): { error: TypeError; message: string } | undefined {
+    for (const error of this.errors) {
+      const found = this.errorsIn.get(error)
+      if (found?.inst === inst) return { error, message: found.message }
+    }
+    return undefined
+  }
+
+  // An error in an instance is listed with the module that declares the
+  // generic, where it is, with the calls that led there as notes. Where the
+  // call of ordinary code that the chain started from is in another module,
+  // that module is told too, once, at its call: its own errors are what its
+  // author reads first, and the instance is there because of that call. It
+  // is told the first error of the instance it asked for or of one that
+  // instance's body asks for, however deep, and nothing is said at the calls
+  // between. Done once the instances are checked, with what they report then:
+  // an error can be taken back for a better one (see notAccepted).
+  reportToRequesters(): void {
+    for (const [asked, request] of this.asked) {
+      if (request.told) continue
+      const seen = new Set<Instance>([asked])
+      const queue = [asked]
+      let found: { inst: Instance; error: TypeError; message: string } | undefined
+      for (let inst = queue.shift(); inst && !found; inst = queue.shift()) {
+        const error = inst.owner.errorOf(inst)
+        if (error) found = { inst, ...error }
+        for (const next of inst.requests) {
+          if (seen.has(next)) continue
+          seen.add(next)
+          queue.push(next)
+        }
+      }
+      // The instances are all checked by now, and what they report is final.
+      request.told = true
+      if (!found) continue
+      const owner = found.inst.owner
+      if (owner === this) continue
+      const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, found.error.offset)})` : ''
+      const inner = found.inst === asked ? '' : `, in ${found.inst.label}`
+      this.error(request.at, `${asked.label} cannot be instantiated: ${found.message}${inner}${where}`)
     }
   }
 
@@ -8406,9 +9001,10 @@ function literalMarks(node: unknown, skip: (call: AST.CallExpr) => boolean, foun
 }
 
 // The name of an instance, as a symbol and in WAT: the generic's name and the
-// key of its arguments.
-function instanceName(generic: string, key: string, taken: (name: string) => boolean): string {
-  return keyedName(`${generic}<`, key, '>', taken)
+// key of its arguments, and for a site's own copy the site's tag after them
+// (max<u32>@main), where no argument's name can be.
+function instanceName(generic: string, key: string, site: string | null, taken: (name: string) => boolean): string {
+  return keyedName(`${generic}<`, key, site === null ? '>' : `>@${site}`, taken)
 }
 
 // A name made of a prefix, a key of types and a suffix: an instance's
@@ -8685,8 +9281,9 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; c
 // from another copy, so no offset is moved twice. Every node of the copy is a
 // new object (only the bytes of a string are shared): the types and
 // conversions the checker records by node are then the copy's alone.
-function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Type | undefined): unknown {
-  if (Array.isArray(node)) return node.map((n) => cloneAst(n, delta, subst))
+// `put`: where given, gets each node put in place of a name.
+function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Type | undefined, put?: Set<object>): unknown {
+  if (Array.isArray(node)) return node.map((n) => cloneAst(n, delta, subst, put))
   if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return node
   const n = node as Record<string, unknown>
   const shift = (span: unknown): AST.Span => {
@@ -8697,15 +9294,34 @@ function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Typ
     const to = subst(n.name as string)
     if (to) {
       const type: AST.Type = { ...to, span: shift(n.span) }
+      put?.add(type)
       // An upper-case name is an expression only as the callee of T(a, b)
       return n.kind === 'TypeRef' ? type : { kind: 'TypeExpr', type, span: type.span }
     }
   }
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n)) {
-    out[k] = k === 'span' ? shift(v) : cloneAst(v, delta, subst)
+    out[k] = k === 'span' ? shift(v) : cloneAst(v, delta, subst, put)
   }
   return out
+}
+
+// The generic types applied in the body of another one, as expandTypeApply
+// writes the body out, by the module whose names they are: the body names
+// the types of its own module, while what was put in for its parameters is
+// written in the module that applied it.
+const expandedIn = new WeakMap<AST.TypeApply, CheckContext>()
+
+// The generic types applied in a type, without going into the nodes in `skip`
+function applicationsOutside(node: unknown, skip: ReadonlySet<object>, found: AST.TypeApply[] = []): AST.TypeApply[] {
+  if (Array.isArray(node)) {
+    for (const n of node) applicationsOutside(n, skip, found)
+    return found
+  }
+  if (node === null || typeof node !== 'object' || node instanceof Uint8Array || skip.has(node)) return found
+  if ((node as AST.Type).kind === 'TypeApply') found.push(node as AST.TypeApply)
+  for (const [k, v] of Object.entries(node)) if (k !== 'span') applicationsOutside(v, skip, found)
+  return found
 }
 
 // Each node of a generic's declaration with its copy in one instance. What

@@ -1,0 +1,160 @@
+// A hash map from any key type to any value type, on the bump stack of
+// ./stack: open addressing with linear probing, doubled when half full.
+//
+//   let ages = map([]u8, u32, 4)    // *mut Map([]u8, u32), 16 slots to start
+//   ages.insert("ada", 36)          // true where the key is new
+//   if let age = ages.lookup("ada") { age.* += 1 }
+//   ages.get_or("bob", 0)
+//
+// The keys are hashed and compared as a Set's are (see ./set): the hash and
+// eq of ./set for the common key types, or those of the module that makes
+// the map for its own key type.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+  "alloc" func alloc(n: u32) -> u32
+  "zeroed" func zeroed(n: u32) -> u32
+)
+
+import "./set" (
+  "hash_u32" func hash(k: u32) -> u32
+  "eq_u32" func eq(a: u32, b: u32) -> bool
+  "hash_u64" func hash(k: u64) -> u32
+  "eq_u64" func eq(a: u64, b: u64) -> bool
+  "hash_i32" func hash(k: i32) -> u32
+  "eq_i32" func eq(a: i32, b: i32) -> bool
+  "hash_i64" func hash(k: i64) -> u32
+  "eq_i64" func eq(a: i64, b: i64) -> bool
+  "hash_bytes" func hash(k: []u8) -> u32
+  "eq_bytes" func eq(a: []u8, b: []u8) -> bool
+  "hash_words" func hash(k: []u32) -> u32
+  "eq_words" func eq(a: []u32, b: []u32) -> bool
+)
+
+func Entry(comptime K: type, comptime V: type) -> type => (used: bool, hash: u32, key: K, value: V)
+export func Map(comptime K: type, comptime V: type) -> type => (slots: [*]mut Entry(K, V), mask: u32, count: u32)
+
+// Gives m an empty table of size slots (a power of two).
+func retable(comptime K: type, comptime V: type, m: *mut Map(K, V), size: u32) {
+  m.slots = zeroed(size * sizeof(Entry(K, V))) as [*]mut Entry(K, V)
+  m.mask = size - 1
+  m.count = 0
+}
+
+// An empty map with 2^bits slots to start with.
+export func map(comptime K: type, comptime V: type, bits: u32) -> *mut Map(K, V) {
+  let m = alloc(sizeof(Map(K, V))) as *mut Map(K, V)
+  retable(K, V, m, 1 << bits)
+  return m
+}
+
+// The slot of k: its own, or the empty one where it would go.
+func place_of(comptime K: type, comptime V: type, m: *Map(K, V), h: u32, k: K) -> u32 {
+  let i = h & m.mask
+  loop {
+    return i when !m.slots[i].used
+    return i when m.slots[i].hash == h && eq(m.slots[i].key, k)
+    i = (i + 1) & m.mask
+  }
+}
+
+// A pointer to k's value, or none. Valid until the next insert.
+export func lookup(comptime K: type, comptime V: type, m: *Map(K, V), k: K) -> ?*mut V {
+  let i = m.place_of(hash(k), k)
+  return 0 as ?*mut V when !m.slots[i].used
+  // The value is the last field of its entry, and fields are packed in
+  // the order they are declared. (&m.slots[i].value, the address of a field,
+  // is not in the language yet.)
+  let entry = &m.slots[i]
+  return ((entry as u32) + sizeof(Entry(K, V)) - sizeof(V)) as ?*mut V
+}
+
+// k's value, or fallback where k has none.
+export func get_or(comptime K: type, comptime V: type, m: *Map(K, V), k: K, fallback: V) -> V {
+  let i = m.place_of(hash(k), k)
+  return fallback when !m.slots[i].used
+  return m.slots[i].value
+}
+
+// Sets k's value. True where k is new.
+export func insert(comptime K: type, comptime V: type, m: *mut Map(K, V), k: K, v: V) -> bool {
+  let h = hash(k)
+  let i = m.place_of(h, k)
+  if m.slots[i].used {
+    m.slots[i].value = v
+    return false
+  }
+  if (m.count + 1) * 2 > m.mask + 1 {
+    let old = m.slots
+    let size = m.mask + 1
+    retable(K, V, m, size * 2)
+    for j in size {
+      if old[j].used {
+        m.slots[m.place_of(old[j].hash, old[j].key)] = old[j]
+        m.count += 1
+      }
+    }
+    i = m.place_of(h, k)
+  }
+  m.slots[i] = (used: true, hash: h, key: k, value: v)
+  m.count += 1
+  return true
+}
+
+type Pt = (q: i32, r: i32)
+
+test "a map from slices to numbers" {
+  data keys = [0:u32, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  let scope = mark()
+  defer reset(scope)
+  let m = map([]u32, i32, 1)
+  for i in 9 {
+    assert m.insert(keys[i..i + 2] ?? keys[..], (i as i32) - 4)
+  }
+  assert m.count == 9
+  assert m.get_or(keys[0..2], 99) == -4
+  assert m.get_or(keys[8..10], 99) == 4
+  assert m.get_or(keys[0..3], 99) == 99
+  assert !m.insert(keys[3..5], 50)
+  assert m.get_or(keys[3..5], 99) == 50
+  if let p = m.lookup(keys[3..5]) {
+    p.* += 1
+  } else {
+    assert false
+  }
+  assert m.get_or(keys[3..5], 99) == 51
+}
+
+test "a map from numbers to structs" {
+  let scope = mark()
+  defer reset(scope)
+  let at = map(u32, Pt, 2)
+  for c in 50 {
+    at.insert(c, Pt((c % 7) as i32, (c / 7) as i32))
+  }
+  assert at.count == 50
+  let p = at.get_or(23, Pt(-1, -1))
+  assert p.q == 2
+  assert p.r == 3
+  let none = at.get_or(50, Pt(-1, -1))
+  assert none.q == -1
+}
+
+test "a map from strings, counted" {
+  data text: [][]u8 = ["to", "be", "or", "not", "to", "be"]
+  let scope = mark()
+  defer reset(scope)
+  let counts = map([]u8, u32, 1)
+  for word in text {
+    if let n = counts.lookup(word) {
+      n.* += 1
+    } else {
+      counts.insert(word, 1)
+    }
+  }
+  assert counts.count == 4
+  assert counts.get_or("to", 0) == 2
+  assert counts.get_or("not", 0) == 1
+  assert counts.get_or("is", 0) == 0
+}

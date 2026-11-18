@@ -47,8 +47,12 @@ Encantis {
 
   ImportGroupItem = stringLiteral ImportItem
 
-  ImportItem = func ident? FuncSignature   -- func
-             | global ident TypeAnnotation -- global
+  // A generic type is imported as the function it is, and that is the only
+  // import item a capitalised name can have. It comes first for the reason
+  // FuncDecl_typeFunc does.
+  ImportItem = func typeIdent ParamList "->" type  -- typeFunc
+             | func ident? FuncSignature           -- func
+             | global ident TypeAnnotation         -- global
 
   // ============================================================================
   // Exports

@@ -3,7 +3,7 @@
 // What the checker reports is tested in the compiler package.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -53,6 +53,99 @@ describe('check errors on the command line', () => {
       const { file, exitCode, stderr } = await encantis(command)
       expect(exitCode).toBe(1)
       expect(stderr).toContain(`${file}:2:51: ${message}\n  required from ${file}:4:38\n`)
+    })
+  }
+})
+
+// meta.json names the file it is of by the file's name, on every platform.
+test('meta names its file', async () => {
+  const { stdout } = await encantis('meta')
+  expect(JSON.parse(stdout).src).toBe('file://./shapes.ents')
+})
+
+// A library that checks on its own, used by a module whose type it cannot
+// serve: the error is in the library's generic, found only once the other
+// module asks for the instance, after the library was checked. It stops the
+// build, and the call that asked is said where it is, in the other file.
+describe('check errors across modules', () => {
+  const LIB = `export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+`
+  const MAIN = `import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32
+export func f(x: f64) -> u32 => bucket(x, 16)
+`
+  const lib = "no function 'hash' accepts (f64), in bucket(K = f64)"
+  const main = `bucket(K = f64) cannot be instantiated: no function 'hash' accepts (f64) (lib.ents:1:62)`
+
+  async function run(command: string, ...flags: string[]) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), LIB)
+      await writeFile(join(dir, 'main.ents'), MAIN)
+      const run = Bun.spawnSync([process.execPath, CLI, command, join(dir, 'main.ents'), ...flags])
+      return { dir, exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  test("the note is in the file of the call that asked, and that call has an error of its own", async () => {
+    const { dir, exitCode, stderr } = await run('check')
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe(`${join(dir, 'lib.ents')}:1:62: ${lib}\n  required from ${join(dir, 'main.ents')}:2:33\n${join(dir, 'main.ents')}:2:33: ${main}\n`)
+  })
+
+  test('check --json carries the note with its file', async () => {
+    const { dir, stdout } = await run('check', '--json')
+    expect(JSON.parse(stdout)).toEqual([
+      { file: join(dir, 'lib.ents'), line: 1, col: 62, message: lib, notes: [{ file: join(dir, 'main.ents'), line: 2, col: 33, message: 'required from' }] },
+      { file: join(dir, 'main.ents'), line: 2, col: 33, message: main },
+    ])
+  })
+
+  test('a query on a file that imports a generic answers from its program', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), LIB)
+      await writeFile(join(dir, 'main.ents'), `${MAIN}export func g(x: u32) -> u32 => x.bucket(16)\n`)
+      const run = Bun.spawnSync([process.execPath, CLI, 'hover', `${join(dir, 'main.ents')}:3:35`])
+      expect(run.stdout.toString()).toBe('generic bucket: func(k: u32, n: u32) -> u32 — bucket(x, 16); calls bucket(K = u32)\n')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  // A function of this module that another module's generic calls by its
+  // name is found there, and renaming it here would leave that call with
+  // nothing to find. The other file is named relative to the working
+  // directory also where that directory is reached through a symbolic link,
+  // as macOS's temporary directory is (/var is /private/var): the file was
+  // named from the root.
+  test("references find another module's instance calling the function, and rename refuses", async () => {
+    const real = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    const dir = `${real}-link`
+    await symlink(real, dir, 'junction')
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n')
+      await writeFile(join(dir, 'main.ents'), 'import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nfunc hash(k: f64) -> u32 => 7\nexport func f(x: f64) -> u32 => bucket(x, 16)\n')
+      const at = `${join(dir, 'main.ents')}:2:6`
+      const references = Bun.spawnSync([process.execPath, CLI, 'references', at, '--json'], { cwd: dir })
+      expect(JSON.parse(references.stdout.toString())).toEqual([{ file: 'lib.ents', line: 1, col: 62 }])
+      const rename = Bun.spawnSync([process.execPath, CLI, 'rename', at, '--json'], { cwd: dir })
+      expect(rename.exitCode).toBe(1)
+      expect(rename.stderr.toString()).toBe("'hash' is called by its name from instances of other modules' generics (bucket(K = f64) in lib.ents): renamed, they would no longer find it\n")
+    } finally {
+      await unlink(dir)
+      await rm(real, { recursive: true })
+    }
+  })
+
+  for (const command of ['compile', 'wasm']) {
+    test(`${command} stops at the error in the module checked first`, async () => {
+      const { exitCode, stdout, stderr } = await run(command)
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe('')
+      expect(stderr).toContain(lib)
     })
   }
 })

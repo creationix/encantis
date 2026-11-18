@@ -1,0 +1,95 @@
+// a09 (library module): generic containers, defined here and instantiated from
+// the module that imports them (main.ents). Nothing in this file is emitted
+// until some module instantiates it; compiled on its own, it is a module with no
+// functions but the stack's.
+// Names in a generic body resolve where the generic is written (alloc, mark,
+// extend, zeroed are this module's), except the functions a type argument has
+// to bring (hash, eq), which resolve where the generic is instantiated.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "alloc" func alloc(n: u32) -> u32
+  "extend" func extend(n: u32) -> u32
+)
+
+export func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+export func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let room = if cap == 0 { 1 } else { cap }
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)
+  return v
+}
+
+export func push(comptime T: type, v: *mut Vec(T), x: T) {
+  if v.len == v.cap {
+    let bytes = v.cap * sizeof(T)
+    if (v.ptr as u32) + bytes == mark() {
+      extend(bytes)
+    } else {
+      let moved = alloc(bytes * 2) as [*]mut T
+      for i in v.len {
+        moved[i] = v.ptr[i]
+      }
+      v.ptr = moved
+    }
+    v.cap *= 2
+  }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+export func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
+
+func Slot(comptime K: type) -> type => (used: bool, hash: u32, key: K)
+export func Set(comptime K: type) -> type => (slots: [*]mut Slot(K), mask: u32, count: u32)
+
+// Private to this module, and still reachable from the instances of hashset and add.
+func zeroed(n: u32) -> u32 {
+  let p = alloc(n)
+  let bytes = p as [*]mut u8
+  bytes[0..n] = 0
+  return p
+}
+
+func table(comptime K: type, s: *mut Set(K), size: u32) {
+  s.slots = zeroed(size * sizeof(Slot(K))) as [*]mut Slot(K)
+  s.mask = size - 1
+  s.count = 0
+}
+
+export func hashset(comptime K: type, bits: u32) -> *mut Set(K) {
+  let s = alloc(sizeof(Set(K))) as *mut Set(K)
+  table(K, s, 1 << bits)
+  return s
+}
+
+func slot(comptime K: type, s: *Set(K), h: u32, k: K) -> u32 {
+  let i = h & s.mask
+  loop {
+    return i when !s.slots[i].used
+    return i when s.slots[i].hash == h && eq(s.slots[i].key, k)
+    i = (i + 1) & s.mask
+  }
+}
+
+export func add(comptime K: type, s: *mut Set(K), k: K) -> bool {
+  let h = hash(k)
+  let i = s.slot(h, k)
+  return false when s.slots[i].used
+  if (s.count + 1) * 2 > s.mask + 1 {
+    let old = s.slots
+    let size = s.mask + 1
+    table(K, s, size * 2)
+    for j in size {
+      if old[j].used {
+        s.slots[s.slot(old[j].hash, old[j].key)] = old[j]
+        s.count += 1
+      }
+    }
+    i = s.slot(h, k)
+  }
+  s.slots[i] = (true, h, k)
+  s.count += 1
+  return true
+}

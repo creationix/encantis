@@ -1,0 +1,19 @@
+// Uses the set of ./containers for a type it gives an eq and no hash: the
+// set's add cannot be instantiated for it. The error is the library's, in
+// add, with this module's call as where it was required from; and this
+// module's call says so too.
+
+import "./containers" (
+  "Set" func Set(comptime K: type) -> type
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+
+type Cell = (x: i32, y: i32)
+
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+export func once(x: i32) -> bool {
+  let seen = hashset(Cell, 2)
+  return seen.add(Cell(x, 1))
+}

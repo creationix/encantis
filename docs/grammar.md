@@ -143,6 +143,21 @@ import "wasi" (
 import "env" "memory_offset" global g_offset: i32
 ```
 
+**Generics from another source module:** a generic function is imported with its signature, comptime parameters included. A generic type is imported as the function it is, with no body: `func`, its upper-case name, its parameter list and `-> type`. This is the only import item whose name is upper-case.
+```encantis
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+)
+```
+
+```ebnf
+ImportItem = "func" TypeIdent ParamList "->" "type"   (* a generic type *)
+           | "func" Ident? FuncSignature
+           | "global" Ident ":" Type
+```
+
 ### Exports
 
 [Grammar: `ExportDecl`](../packages/compiler/src/grammar/encantis.ohm#L36-L40)

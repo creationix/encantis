@@ -1,16 +1,18 @@
 #!/usr/bin/env bun
 
 import { parse } from '@encantis/compiler/parser'
-import { typecheck, typecheckProgram, type ProgramCheckResult } from '@encantis/compiler/checker'
+import { typecheck, typecheckProgram, type ProgramCheckResult, type TypeCheckResult } from '@encantis/compiler/checker'
+import type { Module } from '@encantis/compiler/ast'
 import { buildMeta } from '@encantis/compiler/meta'
 import { moduleToWat, programToWat, programToWatWithTests } from '@encantis/compiler/codegen'
-import { loadModule } from '@encantis/compiler/loader'
+import { getSourceImports, loadModule } from '@encantis/compiler/loader'
 import { bigintReplacer } from '@encantis/compiler/utils'
 import { formatEncantis } from '@encantis/compiler/formatter'
 import { gotoDefinition, hover, hoverText, findReferences, documentSymbols, signatureHelp, workspaceSymbols, rename } from '@encantis/compiler/queries'
 import { LineMap } from '@encantis/compiler/position'
 import { createTestHost } from '@encantis/compiler/test-host'
-import { resolve } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, relative, resolve } from 'node:path'
 import wabt from 'wabt'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
@@ -227,8 +229,9 @@ switch (command) {
     }
 
     // Generate meta.json
-    const srcPath = `file://./${inputFile.split('/').pop()}`
-    const meta = buildMeta(result.module, source, { srcPath })
+    const srcPath = `file://./${basename(inputFile)}`
+    const { module: metaModule, check: metaCheck, sources } = await checkedInProgram(inputFile, result.module)
+    const meta = buildMeta(metaModule, source, { srcPath, checkResult: metaCheck, sources })
     const json = JSON.stringify(meta, bigintReplacer, 2)
     await output(json)
     break
@@ -310,7 +313,8 @@ switch (command) {
       console.error(qResult.errors[0].message)
       process.exit(1)
     }
-    const qCheck = typecheck(qResult.module!)
+    const { module: qModule, check: qCheck, sources: qSources } = await checkedInProgram(pos.file, qResult.module!)
+    qResult.module = qModule
     const lineMap = new LineMap(qSource)
     const offset = lineMap.positionToOffset({ line: pos.line, col: pos.col })
 
@@ -334,17 +338,24 @@ switch (command) {
     } else if (command === 'references') {
       const r = findReferences(qSource, qResult.module!, qCheck, offset)
       if (!r) { console.log('No references found'); process.exit(1) }
+      // Calls in other modules' instances that find the function by its
+      // name here, in those modules' files
+      const elsewhere = (r.elsewhere ?? []).map(ref => {
+        const p = new LineMap(qSources?.get(ref.path) ?? '').offsetToPosition(ref.offset)
+        return { file: relativeToCwd(ref.path), line: p.line + 1, col: p.col + 1 }
+      })
       if (jsonOutput) {
         const locs = r.references.map(ref => {
           const p = lineMap.offsetToPosition(ref.offset)
           return { file: pos.file, line: p.line + 1, col: p.col + 1 }
         })
-        console.log(JSON.stringify(locs))
+        console.log(JSON.stringify([...locs, ...elsewhere]))
       } else {
         for (const ref of r.references) {
           const p = lineMap.offsetToPosition(ref.offset)
           console.log(`${pos.file}:${p.line + 1}:${p.col + 1}`)
         }
+        for (const ref of elsewhere) console.log(`${ref.file}:${ref.line}:${ref.col}`)
       }
     } else if (command === 'signature') {
       const r = signatureHelp(qSource, qResult.module!, qCheck, offset)
@@ -358,6 +369,7 @@ switch (command) {
     } else if (command === 'rename') {
       const r = rename(qSource, qResult.module!, qCheck, offset)
       if (!r) { console.log('No symbol found'); process.exit(1) }
+      if (r.refused) { console.error(r.refused); process.exit(1) }
       if (jsonOutput) {
         const locs = r.locations.map(loc => {
           const p = lineMap.offsetToPosition(loc.offset)
@@ -387,7 +399,8 @@ switch (command) {
         console.error(sResult.errors[0].message)
         process.exit(1)
       }
-      const sCheck = typecheck(sResult.module!)
+      const { module: sModule, check: sCheck } = await checkedInProgram(target, sResult.module!)
+      sResult.module = sModule
       const lineMap = new LineMap(sSource)
       const syms = documentSymbols(sSource, sResult.module!, sCheck)
       if (jsonOutput) {
@@ -640,14 +653,15 @@ interface CheckDiagnostic {
 function checkDiagnostics(check: ProgramCheckResult, modules: Map<string, { source: string }>): CheckDiagnostic[] {
   const diagnostics: CheckDiagnostic[] = []
   for (const [path, result] of check.results) {
-    const source = modules.get(path)?.source ?? ''
-    const at = (offset: number) => {
-      const loc = offsetToLineCol(source, offset)
-      return { file: path, line: loc.line, col: loc.column }
+    // A note can be in another module: the call there that asked for the
+    // instance the error is in.
+    const at = (offset: number, file = path) => {
+      const loc = offsetToLineCol(modules.get(file)?.source ?? '', offset)
+      return { file, line: loc.line, col: loc.column }
     }
     for (const error of result.errors) {
       const diagnostic: CheckDiagnostic = { ...at(error.offset), message: error.message }
-      if (error.notes) diagnostic.notes = error.notes.map((note) => ({ ...at(note.offset), message: note.message }))
+      if (error.notes) diagnostic.notes = error.notes.map((note) => ({ ...at(note.offset, note.path), message: note.message }))
       diagnostics.push(diagnostic)
     }
   }
@@ -662,6 +676,40 @@ function printCheckErrors(check: ProgramCheckResult, modules: Map<string, { sour
     console.error(`${d.file}:${d.line}:${d.col}: ${d.message}`)
     for (const note of d.notes ?? []) console.error(`  ${note.message} ${note.file}:${note.line}:${note.col}`)
   }
+}
+
+// A path as it is printed for the working directory: relative to it. Both
+// are taken with their symbolic links resolved, since the working directory
+// is (macOS's temporary directory /var is /private/var) and a path given on
+// the command line need not be: made relative to the other, one was named
+// by way of the root.
+function relativeToCwd(path: string): string {
+  const real = (p: string) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  return relative(real(process.cwd()), real(path))
+}
+
+// A file and its check for the queries: as part of its program where it
+// imports other source files and they can be read, so that what it imports
+// is known; else on its own, by the signatures its imports write. The
+// checker's tables are keyed by the nodes of the module it checked, which is
+// then the loader's.
+async function checkedInProgram(
+  file: string,
+  parsed: Module,
+): Promise<{ module: Module; check: TypeCheckResult; sources?: Map<string, string> }> {
+  if (getSourceImports(parsed, true).length > 0) {
+    const load = await loadModule(file, { includeTests: true })
+    const check = load.errors.length === 0 ? typecheckProgram(load.modules, load.entry.path, { includeTests: true }) : null
+    const result = check?.results.get(load.entry.path)
+    if (result) return { module: load.entry.module, check: result, sources: new Map([...load.modules].map(([path, loaded]) => [path, loaded.source])) }
+  }
+  return { module: parsed, check: typecheck(parsed) }
 }
 
 // Convert byte offset to line:column

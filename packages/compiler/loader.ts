@@ -1,6 +1,6 @@
 import { parse } from './parser'
 import type { Module, ImportDecl, TestDecl } from './ast'
-import { resolve, dirname } from 'path'
+import { basename, resolve, dirname } from 'path'
 
 export interface LoadedModule {
   path: string
@@ -31,7 +31,9 @@ function resolveModulePath(importPath: string, fromFile: string): string {
   return resolved
 }
 
-function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
+// The imports of other source files a module has, with those of its tests
+// where they are included
+export function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
   const imports: ImportDecl[] = []
   function collect(decls: readonly { kind: string }[]) {
     for (const d of decls) {
@@ -48,16 +50,28 @@ function getSourceImports(mod: Module, includeTests?: boolean): ImportDecl[] {
 
 export interface LoadOptions {
   includeTests?: boolean
+  // Reads a source file: its text, or null where there is no such file. The
+  // file system by default; the editor reads the documents it has open, and
+  // where it has no file system, only those. A file is asked for by the path
+  // the loader names it by, as path.resolve makes it (on Windows with a drive
+  // and backslashes).
+  readFile?: (path: string) => Promise<string | null>
+}
+
+async function readFromDisk(path: string): Promise<string | null> {
+  const file = Bun.file(path)
+  return (await file.exists()) ? file.text() : null
 }
 
 export async function loadModule(entryPath: string, options?: LoadOptions): Promise<LoadResult> {
   const absEntry = resolve(entryPath)
   const modules = new Map<string, LoadedModule>()
   const errors: LoadError[] = []
+  const readFile = options?.readFile ?? readFromDisk
 
   async function load(filePath: string, importedFrom: string | undefined, chain: Set<string>): Promise<boolean> {
     if (chain.has(filePath)) {
-      const cycle = [...chain, filePath].map(p => p.split('/').pop()).join(' → ')
+      const cycle = [...chain, filePath].map(p => basename(p)).join(' → ')
       errors.push({
         message: `Import cycle detected: ${cycle}`,
         filePath,
@@ -68,8 +82,8 @@ export async function loadModule(entryPath: string, options?: LoadOptions): Prom
 
     if (modules.has(filePath)) return true
 
-    const file = Bun.file(filePath)
-    if (!(await file.exists())) {
+    const source = await readFile(filePath)
+    if (source === null) {
       errors.push({
         message: `Module not found: ${filePath}`,
         filePath,
@@ -78,7 +92,6 @@ export async function loadModule(entryPath: string, options?: LoadOptions): Prom
       return false
     }
 
-    const source = await file.text()
     const result = parse(source, { filePath })
 
     if (result.errors.length > 0 || !result.module) {

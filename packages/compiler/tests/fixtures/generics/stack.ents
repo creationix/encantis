@@ -1,0 +1,23 @@
+// A small bump stack (the same interface as monkey-fist's stack/stack.ents).
+def capacity = 65536:u32
+data space = mut [0:u8; 65536]
+global top: u32 = 0
+
+export func mark() -> u32 => (space as u32) + top
+
+export func reset(m: u32) {
+  top = m - (space as u32)
+}
+
+export func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}
+
+export func extend(n: u32) -> (p: u32) {
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}

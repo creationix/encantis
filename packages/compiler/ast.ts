@@ -50,13 +50,21 @@ export interface ImportDecl extends BaseNode {
 export interface ImportItem extends BaseNode {
   kind: 'ImportItem'
   name: string
-  item: ImportFunc | ImportGlobal
+  item: ImportFunc | ImportTypeFunc | ImportGlobal
 }
 
 export interface ImportFunc extends BaseNode {
   kind: 'ImportFunc'
   ident: string | null
   signature: FuncSignature
+}
+
+// func Vec(comptime T: type) -> type: a generic type of another source
+// module, imported as the function it is. Its body stays where it is declared.
+export interface ImportTypeFunc extends BaseNode {
+  kind: 'ImportTypeFunc'
+  ident: string
+  params: Field[]
 }
 
 export interface ImportGlobal extends BaseNode {

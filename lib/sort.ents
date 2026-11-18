@@ -1,0 +1,196 @@
+// Sorting in place, with the order given at compile time.
+//
+//   func by_cost(a: Item, b: Item) -> bool => a.cost < b.cost
+//   items.sort(by_cost)          // xs: []mut Item
+//
+// `before(a, b)` says a must come before b. The comparator is a comptime
+// function parameter: each element type and comparator is its own copy of
+// sort, which calls the comparator directly. There is no function table and
+// no indirect call. A comparator is a function declared at module level, in
+// any module; a name that several functions share is not one.
+//
+// sort is stable: elements neither of which must come before the other keep
+// their order. It sorts runs of 16 by insertion and merges them, with as many
+// elements of scratch as it sorts, from the bump stack of ./stack and freed
+// before it returns.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+  "alloc" func alloc(n: u32) -> u32
+)
+
+def run = 16:u32
+
+// p[from..to] by insertion
+func insertion(comptime T: type, p: [*]mut T, from: u32, to: u32, comptime before: (T, T) -> bool) {
+  let i = from + 1
+  while i < to {
+    let x = p[i]
+    let j = i
+    while j > from && before(x, p[j - 1]) {
+      p[j] = p[j - 1]
+      j -= 1
+    }
+    p[j] = x
+    i += 1
+  }
+}
+
+// The sorted runs src[lo..mid] and src[mid..hi], merged into dst[lo..hi].
+// On a tie the element of the first run goes first.
+func merge(comptime T: type, src: [*]T, dst: [*]mut T, lo: u32, mid: u32, hi: u32, comptime before: (T, T) -> bool) {
+  let i = lo
+  let j = mid
+  let k = lo
+  while k < hi {
+    if j >= hi || (i < mid && !before(src[j], src[i])) {
+      dst[k] = src[i]
+      i += 1
+    } else {
+      dst[k] = src[j]
+      j += 1
+    }
+    k += 1
+  }
+}
+
+// Sorts xs in place, stably.
+export func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool) {
+  let n = xs.len
+  return when n < 2
+  let a = xs.ptr
+  let start: u32 = 0
+  while start < n {
+    let end = min(start + run, n)
+    insertion(T, a, start, end, before)
+    start = end
+  }
+  return when n <= run
+  let scope = mark()
+  defer reset(scope)
+  let b = alloc(n * sizeof(T)) as [*]mut T
+  // Each pass merges pairs of runs from one buffer into the other.
+  let from = a
+  let to = b
+  let width = run
+  while width < n {
+    let lo: u32 = 0
+    while lo < n {
+      let mid = min(lo + width, n)
+      let hi = min(lo + 2 * width, n)
+      merge(T, from, to, lo, mid, hi, before)
+      lo = hi
+    }
+    let done = from
+    from = to
+    to = done
+    width *= 2
+  }
+  if from != a {
+    for i in n {
+      a[i] = from[i]
+    }
+  }
+}
+
+// Whether no element of xs must come before the one ahead of it.
+export func is_sorted(comptime T: type, xs: []T, comptime before: (T, T) -> bool) -> bool {
+  let p = xs.ptr
+  let i: u32 = 1
+  while i < xs.len {
+    return false when before(p[i], p[i - 1])
+    i += 1
+  }
+  return true
+}
+
+// The first index of sorted xs whose element x does not come after: where x
+// would go, after the elements before it. xs.len when there is none.
+export func lower_bound(comptime T: type, xs: []T, x: T, comptime before: (T, T) -> bool) -> u32 {
+  let p = xs.ptr
+  let lo: u32 = 0
+  let hi = xs.len
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2
+    if before(p[mid], x) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  return lo
+}
+
+// The comparators the tests use. Like every function of a module, they are
+// in each program that imports it.
+func ascending(a: i32, b: i32) -> bool => a < b
+func descending(a: u32, b: u32) -> bool => a > b
+
+type Try = (rope: i32, to: i32, order: i32)
+// By order, then by rope
+func by_order(a: Try, b: Try) -> bool => if a.order != b.order { a.order < b.order } else { a.rope < b.rope }
+// By order alone, so that equal orders keep their places
+func by_order_only(a: Try, b: Try) -> bool => a.order < b.order
+
+test "numbers sort ascending, and a sorted slice is found in" {
+  let scope = mark()
+  defer reset(scope)
+  let a = alloc(16) as [*]mut i32
+  a[0] = 3
+  a[1] = -1
+  a[2] = 2
+  a[3] = -1
+  a[0..4].sort(ascending)
+  assert a[0] == -1
+  assert a[1] == -1
+  assert a[2] == 2
+  assert a[3] == 3
+  assert a[0..4].is_sorted(ascending)
+  assert lower_bound(a[0..4], 2, ascending) == 2
+  assert lower_bound(a[0..4], -5, ascending) == 0
+  assert lower_bound(a[0..4], 9, ascending) == 4
+}
+
+test "structs sort by a two-field comparator" {
+  let scope = mark()
+  defer reset(scope)
+  let t = alloc(3 * sizeof(Try)) as [*]mut Try
+  t[0] = Try(2, 7, 3)
+  t[1] = Try(0, -1, 2)
+  t[2] = Try(1, 4, 3)
+  sort(t[0..3], by_order)
+  assert t[0].rope == 0
+  assert t[1].rope == 1
+  assert t[2].rope == 2
+}
+
+test "more than a run: merged, and stable" {
+  let scope = mark()
+  defer reset(scope)
+  let n: u32 = 100
+  let xs = alloc(n * 4) as [*]mut u32
+  for i in n {
+    xs[i] = (i * 37) % 101
+  }
+  xs[0..n].sort(descending)
+  assert xs[0..n].is_sorted(descending)
+  assert xs[0] == 100
+  assert xs[99] == 0
+  // Orders 0..9 ten times over: each order's ropes stay in the order they had.
+  let ts = alloc(n * sizeof(Try)) as [*]mut Try
+  for i in n {
+    ts[i] = Try(i as i32, 0, (9 - i % 10) as i32)
+  }
+  ts[0..n].sort(by_order_only)
+  for i in n {
+    let t = ts[i]
+    assert t.order == (i / 10) as i32
+    assert t.rope % 10 == 9 - t.order
+  }
+  for i in n - 1 {
+    let a = ts[i]
+    let b = ts[i + 1]
+    assert a.order < b.order || a.rope < b.rope
+  }
+}

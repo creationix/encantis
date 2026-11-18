@@ -145,22 +145,33 @@ export interface MetaError {
   pos: string // "line:col"
   message: string
   // For an error inside an instance of a generic: the calls that asked for
-  // the instance, innermost first
-  notes?: { pos: string; message: string }[]
+  // the instance, innermost first. A call in another module of the program
+  // has that module's path, and its position is in that module's source.
+  notes?: { pos: string; message: string; path?: string }[]
 }
 
 // === Main Entry Point ===
 
+export interface MetaOptions {
+  srcPath?: string
+  // The module's result where it was checked as part of its program (see
+  // typecheckProgram): it is then not checked again on its own.
+  checkResult?: TypeCheckResult
+  // The sources of the program's other modules by path, for the notes of
+  // its errors that are in them
+  sources?: Map<string, string>
+}
+
 export function buildMeta(
   module: AST.Module,
   source: string,
-  options?: { srcPath?: string },
+  options?: MetaOptions,
 ): MetaOutput {
   const lineMap = new LineMap(source)
   const comments = extractComments(source)
-  const checkResult = typecheck(module, { source })
+  const checkResult = options?.checkResult ?? typecheck(module, { source })
 
-  const builder = new MetaBuilder(module, source, lineMap, comments, checkResult)
+  const builder = new MetaBuilder(module, source, lineMap, comments, checkResult, options?.sources)
   return builder.build(options?.srcPath ?? 'file://./source.ents')
 }
 
@@ -209,15 +220,17 @@ class MetaBuilder {
     private lineMap: LineMap,
     private comments: Comment[],
     private checkResult: TypeCheckResult,
+    private sources?: Map<string, string>,
   ) {}
 
   build(srcPath: string): MetaOutput {
     // Build data section to get literal addresses for hover hints
     // Use the checker's pending literals which include all def data (arrays, strings, repeats)
     // A module with errors still gets its metadata: a literal the checker
-    // rejected may have no layout, and then has no address to show.
+    // rejected may have no layout, and then has no address to show. So does
+    // one whose errors are known only in its program (see partial).
     const { literalRefs } = buildDataSection(this.checkResult.literals, this.checkResult.types, {
-      tolerant: this.checkResult.errors.length > 0,
+      tolerant: this.checkResult.errors.length > 0 || this.checkResult.partial,
       calls: this.checkResult.calls,
       constants: this.checkResult.constants,
       fieldOrder: this.checkResult.fieldOrder,
@@ -245,7 +258,13 @@ class MetaBuilder {
 
     const report = (e: TypeCheckResult['errors'][number]): MetaError => {
       const reported: MetaError = { pos: this.lineMap.positionKey(e.offset), message: e.message }
-      if (e.notes) reported.notes = e.notes.map((n) => ({ pos: this.lineMap.positionKey(n.offset), message: n.message }))
+      if (e.notes) {
+        reported.notes = e.notes.map((n) => {
+          const elsewhere = n.path === undefined ? undefined : this.sources?.get(n.path)
+          if (n.path === undefined || elsewhere === undefined) return { pos: this.lineMap.positionKey(n.offset), message: n.message }
+          return { pos: new LineMap(elsewhere).positionKey(n.offset), message: n.message, path: n.path }
+        })
+      }
       return reported
     }
     if (this.checkResult.errors.length > 0) output.errors = this.checkResult.errors.map(report)
@@ -336,22 +355,33 @@ class MetaBuilder {
           // Find the position of the function name in the import
           const offset = this.findImportFuncOffset(item, name)
           this.addSymbol(name, 'func', sym.type, offset, undefined, undefined, known)
+        } else if (sym?.kind === 'generic') {
+          // Another module's generic is listed as one of this module's is,
+          // with the signature written here: the editor then finds its name
+          // at the import and at its calls.
+          this.addSymbol(name, 'func', this.writtenSignature(item.item.signature), this.findImportFuncOffset(item, name))
         }
+      } else if (item.item.kind === 'ImportTypeFunc') {
+        const name = item.item.ident
+        if (this.checkResult.symbols.get(name)?.kind !== 'typefunc') continue
+        const offset = this.findImportFuncOffset(item, name)
+        this.addSymbol(name, 'type', this.source.slice(offset + name.length, item.item.span.end), offset)
       }
     }
   }
 
   private findImportFuncOffset(item: AST.ImportItem, name: string): number {
-    // If ident is specified, use its position in the ImportFunc
+    // If ident is specified, use its position in the item
     // Otherwise, the name comes from item.name
-    if (item.item.kind === 'ImportFunc' && item.item.ident) {
+    const ident = item.item.kind === 'ImportGlobal' ? undefined : item.item.ident
+    if (ident) {
       // Search for the ident after "func" keyword
       const funcStart = item.item.span.start
       const searchText = this.source.slice(funcStart, item.item.span.end)
       const funcIdx = searchText.indexOf('func')
       if (funcIdx !== -1) {
         const afterFunc = funcStart + funcIdx + 4
-        const identIdx = this.source.indexOf(item.item.ident, afterFunc)
+        const identIdx = this.source.indexOf(ident, afterFunc)
         if (identIdx !== -1) return identIdx
       }
     }
@@ -391,6 +421,12 @@ class MetaBuilder {
     return this.findKeywordIdentOffset(decl.span.start, decl.body.span.start, 'func')
   }
 
+  // A generic's signature as it is written, comptime parameters included
+  private writtenSignature({ input, output }: AST.FuncSignature): string {
+    const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
+    return `${this.source.slice(input.span.start, input.span.end)}->${returns}`
+  }
+
   private collectFunc(decl: AST.FuncDecl): void {
     if (decl.ident) {
       const known = this.checkResult.funcNames.get(decl) ?? decl.ident
@@ -400,10 +436,7 @@ class MetaBuilder {
         // was written with, so that its name is found where a function's is:
         // at its declaration and at its calls, where the hint carries the
         // signature of the instance.
-        const { input, output } = decl.signature
-        const returns = output.kind === 'CompositeType' && output.fields.length === 0 ? '()' : this.source.slice(output.span.start, output.span.end)
-        const written = `${this.source.slice(input.span.start, input.span.end)}->${returns}`
-        const symbolIndex = this.addSymbol(decl.ident, 'func', written, this.findFuncIdentOffset(decl))
+        const symbolIndex = this.addSymbol(decl.ident, 'func', this.writtenSignature(decl.signature), this.findFuncIdentOffset(decl))
         if (sym.decl === decl) this.genericSymbols.set(symbolIndex, decl)
         // What its parameters and the names in its body are depends on the
         // instance: their hints are made from the first one, and then say
@@ -1004,6 +1037,12 @@ class MetaBuilder {
         if (symbolIndex !== undefined) {
           const offset = this.findImportFuncOffset(item, name)
           this.addHint(offset, name.length, this.symbols[symbolIndex].type, symbolIndex)
+        }
+      } else if (item.item.kind === 'ImportTypeFunc') {
+        const name = item.item.ident
+        const symbolIndex = this.symbolIndexByName.get(name)
+        if (symbolIndex !== undefined && this.checkResult.symbols.get(name)?.kind === 'typefunc') {
+          this.addHint(this.findImportFuncOffset(item, name), name.length, this.symbols[symbolIndex].type, symbolIndex)
         }
       }
     }

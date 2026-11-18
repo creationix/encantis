@@ -3,7 +3,7 @@ import { loadModule } from '@encantis/compiler/loader'
 import { typecheckProgram } from '@encantis/compiler/checker'
 import { programToWatWithTests } from '@encantis/compiler/codegen'
 import { createTestHost } from '@encantis/compiler/test-host'
-import { resolve } from 'path'
+import { relative, resolve, sep } from 'path'
 import { readdir } from 'fs/promises'
 import wabt from 'wabt'
 
@@ -36,7 +36,8 @@ function buildFailed(rel: string, stage: string, err: unknown) {
 }
 
 for (const file of entsFiles) {
-  const rel = file.startsWith(examplesDir) ? file.slice(examplesDir.length + 1) : file.slice(repoDir.length + 1)
+  // Named with `/` on every platform, which the checks below go by.
+  const rel = relative(file.startsWith(examplesDir) ? examplesDir : repoDir, file).split(sep).join('/')
 
   const load = await loadModule(file, { includeTests: true })
   const entryMod = load.modules.get(file)
@@ -82,8 +83,9 @@ for (const file of entsFiles) {
 
   describe(rel, () => {
     // Generics exist at compile time only: what they compile to has no
-    // function table and no indirect call.
-    if (rel.startsWith('generics/')) {
+    // function table and no indirect call. The container library and the
+    // example that uses it are generics throughout.
+    if (rel.startsWith('generics/') || rel.startsWith('containers/') || file.startsWith(libDir)) {
       test('compiles to direct calls only', () => {
         for (const forbidden of ['call_indirect', '(table', '(elem', 'ref.func', 'funcref']) {
           expect(wat).not.toContain(forbidden)

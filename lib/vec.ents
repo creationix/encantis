@@ -1,0 +1,159 @@
+// A growable array of any element type, on the bump stack of ./stack.
+//
+//   let v = vec(u32, 16)     // *mut Vec(u32), room for 16
+//   v.push(7)
+//   for x in v.items() { ... }
+//
+// The header (ptr, len, cap) is in memory and a Vec is used through the
+// pointer vec returns, so the functions that change it take a *mut Vec(T).
+// Storage is on the stack: it lives until the scope that made the Vec resets
+// the stack. A Vec whose storage is at the top of the stack grows in place;
+// any other is copied to new storage twice its size.
+//
+// Each element type is its own copy of each function (push<u32>,
+// push<<x:i32|y:i32>>), and a type the program never pushes costs nothing.
+//
+// An element that is a fixed array, Vec([3]i32), is a table: ptr is a
+// [*]mut [3]i32, whose elements are pointers to rows (reference 2.5), so a
+// push of a [3]i32 is refused in the instance. A struct with an array field
+// lies in place: Vec((cells: [3]i32)) holds packed rows of 12 bytes.
+
+import "./stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+  "alloc" func alloc(n: u32) -> u32
+  "extend" func extend(n: u32) -> u32
+)
+
+export func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
+
+// An empty Vec with room for cap elements (at least one).
+export func vec(comptime T: type, cap: u32) -> *mut Vec(T) {
+  let room = if cap == 0 { 1 } else { cap }
+  let v = alloc(sizeof(Vec(T))) as *mut Vec(T)
+  v.* = Vec(T)(alloc(room * sizeof(T)) as [*]mut T, 0, room)
+  return v
+}
+
+// Adds x at the end, growing the storage when it is full.
+export func push(comptime T: type, v: *mut Vec(T), x: T) {
+  if v.len == v.cap {
+    let bytes = v.cap * sizeof(T)
+    if (v.ptr as u32) + bytes == mark() {
+      extend(bytes)
+    } else {
+      let moved = alloc(bytes * 2) as [*]mut T
+      for i in v.len {
+        moved[i] = v.ptr[i]
+      }
+      v.ptr = moved
+    }
+    v.cap *= 2
+  }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+// Takes the last element off. Traps when there is none.
+export func pop(comptime T: type, v: *mut Vec(T)) -> T {
+  assert v.len > 0
+  v.len -= 1
+  return v.ptr[v.len]
+}
+
+// The last element. Traps when there is none.
+export func last(comptime T: type, v: *Vec(T)) -> T {
+  assert v.len > 0
+  return v.ptr[v.len - 1]
+}
+
+// The elements, in the order they were pushed. Valid until the next push.
+export func items(comptime T: type, v: *Vec(T)) -> []T => v.ptr[0..v.len]
+
+// The elements, to change in place (to sort them, say). Valid until the
+// next push.
+export func items_mut(comptime T: type, v: *mut Vec(T)) -> []mut T => v.ptr[0..v.len]
+
+// Empties the Vec and keeps its storage.
+export func clear(comptime T: type, v: *mut Vec(T)) {
+  v.len = 0
+}
+
+type Pt = (x: i32, y: i32)
+
+test "numbers, growing in place at the top of the stack" {
+  let scope = mark()
+  defer reset(scope)
+  let v = vec(u32, 2)
+  for i in 10 {
+    v.push(i)
+  }
+  assert v.len == 10
+  assert v.cap == 16
+  let total: u32 = 0
+  for x in v.items() {
+    total += x
+  }
+  assert total == 45
+  assert v.last() == 9
+  assert v.pop() == 9
+  assert v.len == 9
+  v.clear()
+  assert v.items().len == 0
+}
+
+test "a Vec that is not at the top is copied when it grows" {
+  let scope = mark()
+  defer reset(scope)
+  let a = vec(u32, 1)
+  let b = vec(u32, 1)
+  a.push(1)
+  b.push(10)
+  a.push(2)
+  b.push(20)
+  a.push(3)
+  let xs = a.items()
+  let ys = b.items()
+  assert xs.len == 3
+  assert ys.len == 2
+  assert xs.ptr[0] + xs.ptr[1] + xs.ptr[2] == 6
+  assert ys.ptr[0] + ys.ptr[1] == 30
+}
+
+test "structs" {
+  let scope = mark()
+  defer reset(scope)
+  let path = vec(Pt, 0)
+  for i in 5 {
+    path.push(Pt(i as i32, -(i as i32)))
+  }
+  let p = path.last()
+  assert p.x == 4
+  assert p.y == -4
+  let first = path.items().ptr[0]
+  assert first.x == 0
+  assert path.pop().x == 4
+  assert path.len == 4
+}
+
+// A fixed array is a table of rows when it is an element; in a struct of one
+// field it lies in place.
+type Row = (cells: [3]i32)
+
+test "packed rows through a struct of one field" {
+  let scope = mark()
+  defer reset(scope)
+  let rows = vec(Row, 1)
+  for i in 4 {
+    let n = i as i32
+    rows.push(Row([n, n * 10, n * 100]))
+  }
+  assert rows.len == 4
+  assert sizeof(Row) == 12
+  let r = rows.items().ptr[3]
+  assert r.cells[0] == 3
+  assert r.cells[2] == 300
+  // The rows lie one after another, 12 bytes apart.
+  let words = rows.ptr as [*]i32
+  assert words[7] == 20
+}

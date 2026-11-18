@@ -2,6 +2,9 @@ import { describe, test, expect } from 'bun:test'
 import { Glob } from 'bun'
 import { parse } from './parser'
 import { buildMeta, type MetaOutput } from './meta'
+import { loadModule } from './loader'
+import { typecheckProgram } from './checker'
+import { resolve } from 'node:path'
 
 function metaHints(source: string): Record<string, { name: string | null; type: string }> {
   const result = parse(source)
@@ -363,6 +366,46 @@ export func g(a: u32, b: f64) -> f64 => (apply(inc, a) as f64) + apply(neg, b)`
     // A field after a point in a generic's body, in each instance
     expect(listed(built, '3:59')).toEqual(['slot(K = u32): u32', 'slot(K = []u8): []u8'])
     expect(built.types[built.hints['3:59'].type].type).toBe('K')
+  })
+})
+
+// The generics another source module exports are symbols of the module that
+// imports them, defined at the import, whether the module is checked with
+// its program or on its own: the editor finds their definition and uses.
+describe('imported generics', () => {
+  const lib = `export func Box(comptime T: type) -> type => (v: T)
+export func open(comptime T: type, b: Box(T)) -> T => b.v
+`
+  const main = `import "./lib" (
+  "Box" func Box(comptime T: type) -> type
+  "open" func unbox(comptime T: type, b: Box(T)) -> T
+)
+export func f(b: Box(u32)) -> u32 => unbox(b) + unbox(Box(u32)(7))
+`
+
+  function symbols(meta: MetaOutput) {
+    return Object.fromEntries(meta.symbols.filter(s => s.name === 'Box' || s.name === 'unbox').map(s => [s.name, { kind: s.kind, def: s.def, refs: s.refs }]))
+  }
+  const expected = {
+    Box: { kind: 'type', def: '1:13', refs: ['4:17', '4:54'] },
+    unbox: { kind: 'func', def: '2:14', refs: ['4:37', '4:48'] },
+  }
+
+  test('in its program', async () => {
+    // Asked for by the path the loader names a file by: resolved, which on
+    // Windows gives it a drive and backslashes.
+    const files = new Map([[resolve('/p/lib.ents'), lib], [resolve('/p/main.ents'), main]])
+    const load = await loadModule('/p/main.ents', { readFile: async path => files.get(path) ?? null })
+    expect(load.errors).toEqual([])
+    const check = typecheckProgram(load.modules, load.entry.path)
+    expect(check.errors).toEqual([])
+    const checkResult = check.results.get(load.entry.path)
+    expect(symbols(buildMeta(load.entry.module, main, { checkResult }))).toEqual(expected)
+  })
+
+  test('on its own', () => {
+    const result = parse(main)
+    expect(symbols(buildMeta(result.module!, main))).toEqual(expected)
   })
 })
 

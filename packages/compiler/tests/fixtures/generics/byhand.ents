@@ -1,0 +1,165 @@
+// main.ents (a09) as one file written out by hand: the stack of stack.ents,
+// the instances of containers.ents that main asks for, each written for its
+// type, and main's own functions, in the order the program emits them.
+// loader.test.ts compares the two: the same functions with the same bodies,
+// the same data, globals and exports, and so the same .wasm file.
+
+def capacity = 65536:u32
+data space = mut [0:u8; 65536]
+global top: u32 = 0
+
+type Cell = (x: i32, y: i32)
+type CellVec = (ptr: [*]mut Cell, len: u32, cap: u32)
+type U32Vec = (ptr: [*]mut u32, len: u32, cap: u32)
+type CellSlot = (used: bool, hash: u32, key: Cell)
+type CellSet = (slots: [*]mut CellSlot, mask: u32, count: u32)
+
+func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+export func visited(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let path = vec_cell(4)
+  let seen = hashset_cell(2)
+  for i in n {
+    let c = Cell((i % 5) as i32, (i % 3) as i32)
+    push_cell(path, c)
+    add_cell(seen, c)
+  }
+  return seen.count
+}
+
+export func total(n: u32) -> u32 {
+  let scope = mark()
+  defer reset(scope)
+  let v = vec_u32(2)
+  for i in n {
+    push_u32(v, i)
+  }
+  let s: u32 = 0
+  for x in items_u32(v) {
+    s += x
+  }
+  return s
+}
+
+func mark() -> u32 => (space as u32) + top
+
+func reset(m: u32) {
+  top = m - (space as u32)
+}
+
+func alloc(n: u32) -> (p: u32) {
+  top = (top + 7) & 0xFFFFFFF8
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}
+
+func extend(n: u32) -> (p: u32) {
+  p = (space as u32) + top
+  top += n
+  assert top <= capacity
+}
+
+func vec_cell(cap: u32) -> *mut CellVec {
+  let room = if cap == 0 { 1 } else { cap }
+  let v = alloc(sizeof(CellVec)) as *mut CellVec
+  v.* = CellVec(alloc(room * sizeof(Cell)) as [*]mut Cell, 0, room)
+  return v
+}
+
+func vec_u32(cap: u32) -> *mut U32Vec {
+  let room = if cap == 0 { 1 } else { cap }
+  let v = alloc(sizeof(U32Vec)) as *mut U32Vec
+  v.* = U32Vec(alloc(room * sizeof(u32)) as [*]mut u32, 0, room)
+  return v
+}
+
+func push_cell(v: *mut CellVec, x: Cell) {
+  if v.len == v.cap {
+    let bytes = v.cap * sizeof(Cell)
+    if (v.ptr as u32) + bytes == mark() {
+      extend(bytes)
+    } else {
+      let moved = alloc(bytes * 2) as [*]mut Cell
+      for i in v.len {
+        moved[i] = v.ptr[i]
+      }
+      v.ptr = moved
+    }
+    v.cap *= 2
+  }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func push_u32(v: *mut U32Vec, x: u32) {
+  if v.len == v.cap {
+    let bytes = v.cap * sizeof(u32)
+    if (v.ptr as u32) + bytes == mark() {
+      extend(bytes)
+    } else {
+      let moved = alloc(bytes * 2) as [*]mut u32
+      for i in v.len {
+        moved[i] = v.ptr[i]
+      }
+      v.ptr = moved
+    }
+    v.cap *= 2
+  }
+  v.ptr[v.len] = x
+  v.len += 1
+}
+
+func items_u32(v: *U32Vec) -> []u32 => v.ptr[0..v.len]
+
+func zeroed(n: u32) -> u32 {
+  let p = alloc(n)
+  let bytes = p as [*]mut u8
+  bytes[0..n] = 0
+  return p
+}
+
+func table_cell(s: *mut CellSet, size: u32) {
+  s.slots = zeroed(size * sizeof(CellSlot)) as [*]mut CellSlot
+  s.mask = size - 1
+  s.count = 0
+}
+
+func hashset_cell(bits: u32) -> *mut CellSet {
+  let s = alloc(sizeof(CellSet)) as *mut CellSet
+  table_cell(s, 1 << bits)
+  return s
+}
+
+func slot_cell(s: *CellSet, h: u32, k: Cell) -> u32 {
+  let i = h & s.mask
+  loop {
+    return i when !s.slots[i].used
+    return i when s.slots[i].hash == h && eq(s.slots[i].key, k)
+    i = (i + 1) & s.mask
+  }
+}
+
+func add_cell(s: *mut CellSet, k: Cell) -> bool {
+  let h = hash(k)
+  let i = slot_cell(s, h, k)
+  return false when s.slots[i].used
+  if (s.count + 1) * 2 > s.mask + 1 {
+    let old = s.slots
+    let size = s.mask + 1
+    table_cell(s, size * 2)
+    for j in size {
+      if old[j].used {
+        s.slots[slot_cell(s, old[j].hash, old[j].key)] = old[j]
+        s.count += 1
+      }
+    }
+    i = slot_cell(s, h, k)
+  }
+  s.slots[i] = (true, h, k)
+  s.count += 1
+  return true
+}

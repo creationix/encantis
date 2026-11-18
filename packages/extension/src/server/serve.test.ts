@@ -2,8 +2,9 @@
 // the handlers the server registers.
 
 import { describe, expect, test } from 'bun:test'
-import type { Connection, Hover, MarkupContent } from 'vscode-languageserver/lib/common/api'
-import { startServer } from './serve'
+import type { Connection, Hover, Location, MarkupContent } from 'vscode-languageserver/lib/common/api'
+import { posix, win32 } from 'node:path'
+import { pathOf, startServer, uriOf } from './serve'
 
 type Handler = (params: unknown) => unknown
 
@@ -264,6 +265,132 @@ test "t" {
     // Where they have hints, they are themselves.
     expect(value(server('onHover', program.indexOf('f: (T)')))).toStartWith('```encantis\ncomptime f:(T) -> T\n```')
     expect(value(server('onHover', program.indexOf('f(x)')))).toStartWith('```encantis\ncomptime f:(T) -> T\n```')
+  })
+})
+
+// A document that imports other source files is checked as part of its
+// program, read from the open documents and, where the server can, from
+// disk. Where an import cannot be read the document is checked on its own.
+describe('a document with source imports', () => {
+  const LIB = 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\nfunc hash(k: u32) -> u32 => k * 0x45d9f3b\n'
+  const MAIN = 'import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nexport func f(x: f64) -> u32 => bucket(x, 16)\nexport func g(x: u32) -> u32 => bucket(x, 16)\n'
+  const libUri = 'file:///project/lib.ents'
+  const mainUri = 'file:///project/main.ents'
+
+  type Sent = { uri: string; diagnostics: { message: string; relatedInformation?: { location: { uri: string } }[] }[] }
+
+  // Opens the documents in order, with the reader given, and returns what
+  // the server says of the last one.
+  async function open(documents: [string, string][], readFile?: (path: string) => Promise<string | null>) {
+    const handlers = new Map<string, Handler>()
+    const sent: Sent[] = []
+    const connection = new Proxy({}, {
+      get(_target, name: string) {
+        if (name === 'languages') return { semanticTokens: { on: () => {} } }
+        if (name === 'listen') return () => {}
+        if (name === 'sendDiagnostics') return (params: Sent) => sent.push(params)
+        return (handler: Handler) => {
+          handlers.set(name, handler)
+          return { dispose() {} }
+        }
+      },
+    }) as Connection
+    startServer(connection, { readFile })
+    for (const [uri, text] of documents) {
+      handlers.get('onDidOpenTextDocument')?.({ textDocument: { uri, languageId: 'encantis', version: 1, text } })
+    }
+    const [uri, text] = documents[documents.length - 1]
+    for (let i = 0; i < 100 && !sent.some((s) => s.uri === uri); i++) await Bun.sleep(5)
+    // A place in the last document, as a request names it
+    const at = (offset: number) => {
+      const before = text.slice(0, offset)
+      return { textDocument: { uri }, position: { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 } }
+    }
+    const hover = (offset: number) => {
+      const shown = handlers.get('onHover')?.(at(offset)) as Hover | null
+      return shown ? (shown.contents as MarkupContent).value : null
+    }
+    return { diagnostics: sent.filter((s) => s.uri === uri).at(-1)?.diagnostics ?? [], hover, at, handlers, sent }
+  }
+
+  const failed = "bucket(K = f64) cannot be instantiated: no function 'hash' accepts (f64) (lib.ents:1:62)"
+
+  test('an import the server reads from disk', async () => {
+    // Asked for by the path the loader names it by: on Windows with a drive.
+    const files = new Map([[pathOf(libUri), LIB]])
+    const { diagnostics, hover } = await open([[mainUri, MAIN]], async (path) => files.get(path) ?? null)
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+    // The call shows the instance it calls, with its signature.
+    expect(hover(MAIN.lastIndexOf('bucket('))).toBe('```encantis\nfunc bucket(k:u32, n:u32) -> u32\n```\n\ncalls `bucket(K = u32)`')
+  })
+
+  test('an import that is open, with no disk to read', async () => {
+    const { diagnostics } = await open([[libUri, LIB], [mainUri, MAIN]])
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+  })
+
+  test('an imported generic is defined at its import, and used at its calls', async () => {
+    const { at, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
+    const call = MAIN.lastIndexOf('bucket(')
+    const line = (location: Location) => `${location.range.start.line}:${location.range.start.character}`
+    expect(line(handlers.get('onDefinition')?.(at(call)) as Location)).toBe('0:29')
+    const references = handlers.get('onReferences')?.({ ...at(call), context: { includeDeclaration: false } }) as Location[]
+    expect(references.map(line)).toEqual(['1:32', '2:32'])
+  })
+
+  test('a document is checked again when a file of its program changes', async () => {
+    const { diagnostics, sent, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+    const fixed = `${LIB}func hash(k: f64) -> u32 => 1\n`
+    handlers.get('onDidChangeTextDocument')?.({ textDocument: { uri: libUri, version: 2 }, contentChanges: [{ text: fixed }] })
+    const latest = () => sent.filter((s) => s.uri === mainUri).at(-1)?.diagnostics
+    for (let i = 0; i < 100 && latest()?.length !== 0; i++) await Bun.sleep(5)
+    expect(latest()).toEqual([])
+  })
+
+  test('an import that cannot be read: the document is checked by the signatures its imports write', async () => {
+    const { diagnostics } = await open([[mainUri, MAIN]])
+    expect(diagnostics).toEqual([])
+  })
+
+  // An open document is found by the path of its file, not by a URI made
+  // again from that path: VS Code encodes more of a path than encodeURI does
+  // (here the parentheses; on Windows the colon of every drive, d%3A), and
+  // the document was not found, nor was the document's own text read on
+  // Windows.
+  test('an open import is found by its path, however its URI is written', async () => {
+    const dir = 'file:///project/my%20%28copy%29'
+    const { diagnostics } = await open([[`${dir}/lib.ents`, LIB], [`${dir}/main.ents`, MAIN]])
+    expect(diagnostics.map((d) => d.message)).toEqual([failed])
+  })
+})
+
+// The path of a file a file: URI names, as the loader names it, and back:
+// on Windows the path has its drive, with the letter in one case whichever
+// a client writes, and backslashes. Emulated with path.win32 on any platform.
+describe('file URIs and paths', () => {
+  test('on Windows', () => {
+    expect(pathOf('file:///d%3A/a/encantis/main.ents', win32)).toBe('d:\\a\\encantis\\main.ents')
+    expect(pathOf('file:///D:/a/encantis/main.ents', win32)).toBe('d:\\a\\encantis\\main.ents')
+    expect(pathOf('file:///c%3A/Users/me/my%20%28copy%29/lib.ents', win32)).toBe('c:\\Users\\me\\my (copy)\\lib.ents')
+    expect(pathOf('file://server/share/lib.ents', win32)).toBe('\\\\server\\share\\lib.ents')
+    for (const path of ['d:\\a\\encantis\\main.ents', 'c:\\my (copy)\\a#b?c 100%.ents', '\\\\server\\share\\lib.ents']) {
+      expect(pathOf(uriOf(path, win32), win32)).toBe(path)
+    }
+    expect(uriOf('d:\\a\\b c\\lib.ents', win32)).toBe('file:///d:/a/b%20c/lib.ents')
+  })
+
+  test('elsewhere', () => {
+    expect(pathOf('file:///project/my%20%28copy%29/main.ents', posix)).toBe('/project/my (copy)/main.ents')
+    for (const path of ['/project/main.ents', '/my (copy)/a#b?c 100%.ents', '/a\\b.ents']) {
+      expect(pathOf(uriOf(path, posix), posix)).toBe(path)
+    }
+    expect(uriOf('/a/b c/lib.ents', posix)).toBe('file:///a/b%20c/lib.ents')
+  })
+
+  test('a document that is no file has no path', () => {
+    expect(pathOf('untitled:Untitled-1')).toBeNull()
+    expect(pathOf('vscode-vfs://github/creationix/encantis/main.ents')).toBeNull()
   })
 })
 

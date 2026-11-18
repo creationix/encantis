@@ -77,6 +77,17 @@ export interface SymbolInfo {
 export interface ReferenceResult {
   definition: Location
   references: Location[]
+  // Calls in instances of other modules' generics that find the function
+  // by its name at this module (see 8.7), in those modules' sources; only
+  // where there are any
+  elsewhere?: ExternalLocation[]
+}
+
+export interface ExternalLocation {
+  path: string
+  offset: number
+  length: number
+  label: string
 }
 
 export interface SignatureInfo {
@@ -392,15 +403,32 @@ export function findReferences(
   if (defOffset === undefined) return null
 
   const refs = checkResult.references.get(defOffset) ?? []
+  const elsewhere = calledFromElsewhere(checkResult, [defOffset], name)
   return {
     definition: { offset: defOffset, length: name.length },
     references: refs.map(r => ({ offset: r, length: name.length })),
+    ...(elsewhere.length > 0 ? { elsewhere } : {}),
   }
+}
+
+// The calls of other modules' instances that find the functions declared
+// at these offsets by their name
+function calledFromElsewhere(checkResult: TypeCheckResult, defs: number[], name: string): ExternalLocation[] {
+  const found: ExternalLocation[] = []
+  for (const [known, offset] of checkResult.symbolDefOffsets) {
+    if (!defs.includes(offset)) continue
+    for (const call of checkResult.calledFromInstances.get(known) ?? []) {
+      if (!found.some(f => f.path === call.path && f.offset === call.offset)) found.push({ ...call, length: name.length })
+    }
+  }
+  return found
 }
 
 export interface RenameResult {
   oldName: string
   locations: Location[]
+  // Why the name cannot be renamed here, where it cannot
+  refused?: string
 }
 
 export function rename(
@@ -420,6 +448,15 @@ export function rename(
   // the name is renamed for all of them, or the program no longer checks.
   const shared = sharing(checkResult, defOffset)
   const defs = shared.length > 0 ? shared : [defOffset]
+  // A generic's body in another module calls the function by its name,
+  // which that module's own functions of the name share: renamed here, the
+  // instance would no longer find it, and there it would no longer be the
+  // generic's.
+  const elsewhere = calledFromElsewhere(checkResult, defs, name)
+  if (elsewhere.length > 0) {
+    const by = [...new Set(elsewhere.map(e => `${e.label} in ${e.path.replace(/^.*[\\/]/, '')}`))].join(', ')
+    return { oldName: name, locations: [], refused: `'${name}' is called by its name from instances of other modules' generics (${by}): renamed, they would no longer find it` }
+  }
   const refs = new Set(defs.flatMap(def => checkResult.references.get(def) ?? []))
   const locations: Location[] = [
     ...defs.map(def => ({ offset: def, length: name.length })),
