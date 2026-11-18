@@ -309,6 +309,32 @@ export func f(a: Box(u32), b: Box([]u8)) -> u32 => slot(a, 4) + b.slot(8)`
     expect(built.hints['4:66']).toMatchObject({ calls: 'slot(K = []u8)', as: 'slot(b, 8)' })
   })
 
+  test('a call in a generic\'s body is the function the first instance calls, for its symbol', () => {
+    // The first instance (K = u32) calls hash(k: u32), the second hash(k: []u8),
+    // which was recorded last: by that the hint named the second.
+    const program = source.replace('b.v.hash() % n', 'hash(b.v) % n')
+    const built = buildMeta(parse(program).module!, program)
+    const symbol = built.symbols[built.hints['3:57'].symbol ?? -1]
+    expect(`${symbol?.name} @${symbol?.def}`).toBe('hash @0:5')
+    expect(listed(built, '3:57')).toEqual(['slot(K = u32): hash(k: u32) -> u32', 'slot(K = []u8): hash(k: []u8) -> u32'])
+  })
+
+  test('a comptime function parameter is a symbol of its own, with the function each instance was given', () => {
+    const program = `func apply(comptime T: type, comptime f: (T) -> T, x: T) -> T => f(x)
+func inc(x: u32) -> u32 => x + 1
+func neg(x: f64) -> f64 => -x
+export func g(a: u32, b: f64) -> f64 => (apply(inc, a) as f64) + apply(neg, b)`
+    const built = buildMeta(parse(program).module!, program)
+    const at = '0:38'
+    const symbol = built.symbols[built.hints[at].symbol ?? -1]
+    expect(symbol).toMatchObject({ name: 'f', kind: 'comptime', def: at, refs: ['0:65'] })
+    expect(built.types[symbol.type].type).toBe('(T) -> T')
+    for (const key of [at, '0:65']) {
+      expect(built.hints[key].symbol).toBe(built.hints[at].symbol)
+      expect(listed(built, key)).toEqual(['apply(T = u32, f = inc): inc(x: u32) -> u32', 'apply(T = f64, f = neg): neg(x: f64) -> f64'])
+    }
+  })
+
   test('a generic type has its applications, and its parameter and its fields what each one makes them', () => {
     const built = meta()
     expect(listed(built, '2:5')).toEqual(['Box(u32): (v:u32,n:u32)', 'Box([]u8): (v:[]u8,n:u32)'])

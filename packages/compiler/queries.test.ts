@@ -731,6 +731,14 @@ export func g(b: Box(f64)) -> f64 => open(b)
     })
   })
 
+  test('an application made while declarations are collected is one too', () => {
+    // A type alias is resolved before the module's declarations are all
+    // known, and what is resolved then is not kept for the checker.
+    const program = 'func Box(comptime T: type) -> type => (v: T, n: u32)\ntype BP = Box(u8)\nexport func f(b: BP) -> u8 => b.v\n'
+    const { source, module, check } = setup(program)
+    expect(hover(source, module, check, 0 + 'func '.length)?.instances).toEqual([{ in: ['Box(u8)'], type: '(v: u8, n: u32) (2 slots)' }])
+  })
+
   test('past twelve instances the rest are counted', () => {
     const types = ['u8', 'u16', 'u32', 'u64', 'i8', 'i16', 'i32', 'i64', 'f32', 'f64', 'bool', '[]u8', '[]u16', '[]u32']
     const many = `func id(comptime T: type, x: T) -> T => x\n${types.map((t, i) => `export func f${i}(x: ${t}) -> ${t} => id(x)\n`).join('')}`
@@ -757,6 +765,19 @@ export func g(b: Box(f64)) -> f64 => open(b)
     // code calls is. (A generic cannot be imported: no other module makes an
     // instance of it.)
     expect(check.warnings).toEqual([{ offset: code.indexOf('func eq(a: i64'), message: "'eq' is never used" }])
+  })
+
+  test('a name that is no call keeps the uses read off a generic\'s declaration', () => {
+    // A comptime parameter's type is no part of the instance's copy: its
+    // instances record no use of Pt there, and it is a use all the same.
+    const program = `type Pt = (q: i32, r: i32)
+func pick(comptime f: (Pt) -> bool, p: Pt) -> i32 => if f(p) { p.q } else { p.r }
+func left(p: Pt) -> bool => p.q < p.r
+export func g(p: Pt) -> i32 => pick(left, p)
+`
+    const { source, module, check } = setup(program)
+    const uses = findReferences(source, module, check, program.indexOf('Pt'))?.references.map(r => r.offset)
+    expect(uses).toContain(program.indexOf('(Pt) -> bool') + 1)
   })
 
   test('with no instance to go by, a call in the body is a use of every function of its name', () => {
