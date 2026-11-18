@@ -45,6 +45,7 @@ import {
   pointeeArray,
   isFloat,
   isInteger,
+  isRowArray,
   isSigned,
   isNumeric,
   isComptime,
@@ -83,7 +84,9 @@ export type Symbol =
   // for the function of that name
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string }
   | { kind: 'global'; type: ResolvedType }
-  | { kind: 'def'; type: ResolvedType; value: ComptimeValue }
+  // `valueParam`: a comptime value parameter's name inside an instance (see
+  // bindComptimeValues)
+  | { kind: 'def'; type: ResolvedType; value: ComptimeValue; valueParam?: true }
   // `binding`: a variable a `for`, an `if let` or a match arm binds, which
   // its body alone sees; a `let` has none
   | { kind: 'local'; type: ResolvedType; binding?: BindingKind }
@@ -112,6 +115,8 @@ export type Symbol =
       // comes round again while its body is resolved is that type, referred
       // to by itself.
       applying?: Map<string, ForwardRefRT[]>
+      // Its body's names are checked, at its first application (checkNamesOf)
+      named?: true
     }
 
 // One generic function with its comptime arguments fixed: a copy of the
@@ -869,6 +874,15 @@ class CheckContext {
   // What each `type` of the module is declared as, as written: whether a
   // name stands for a function type is asked before any type is resolved.
   typeBodies = new Map<string, AST.Type>()
+  // The names of the module's defs, wherever they are declared: a comptime
+  // value parameter cannot have one (the parser puts a def in for its name)
+  defNames = new Set<string>()
+  // The names of the module's data, globals and functions, wherever they are
+  // declared: a length that names one is no unknown name
+  private valueNames = new Set<string>()
+  // The module's defs by name, and those collected so far (see collectDefsIn)
+  private defDecls = new Map<string, AST.DefDecl>()
+  private collectedDefs = new Set<AST.DefDecl>()
 
   // Reference tracking
   references = new Map<number, number[]>() // defOffset → refOffsets
@@ -942,6 +956,25 @@ class CheckContext {
   // Set where an application inside another's body made a type too large to
   // write out (MAX_TYPE_PARTS), until the application that began it reports it
   applyTooLarge = false
+  // The applications made for the one that began them, each once, with the
+  // type each made once it is made. A type with more than MAX_TYPE_PARTS of
+  // them is too large to write out, and is known to be before they are all
+  // made. One made again inside the same one is the same type, also while
+  // declarations are collected, when nothing is kept for longer: a body
+  // that applies its type to two numbers that come round, T(n * 2 % 64) and
+  // T((n * 2 + 1) % 64), would otherwise make each of the 64 types once for
+  // every path to it.
+  applyMade = new Map<string, ResolvedType | null>()
+  // Set where an application inside another's body had an error, until the
+  // application that began it is done: nothing more of that type is applied
+  applyFailed = false
+  // The applications of this module's generic types whose bodies are being
+  // resolved, innermost last. An error in a body is one of the application:
+  // its message names it, and its notes are the uses it was required from.
+  applyStack: { shown: string; from: { offset: number; in: CheckContext }[] }[] = []
+  // The first error in the body of the application being made, as it was
+  // said there, for another module that applied it
+  applyError: { offset: number; message: string } | null = null
   // Set while a type written in place is resolved, and while the body of a
   // `type` is: a written type is measured once, as a whole (resolveType)
   resolvingType = false
@@ -1133,6 +1166,16 @@ class CheckContext {
 
   // Pre-register type names so they can be referenced before their full definition
   preRegisterTypes(decl: AST.Declaration): void {
+    if (decl.kind === 'DefDecl') {
+      this.defNames.add(decl.ident)
+      if (!this.defDecls.has(decl.ident)) this.defDecls.set(decl.ident, decl)
+    }
+    const declared = decl.kind === 'ExportDecl' ? decl.item : decl
+    if ((declared.kind === 'DataDecl' || declared.kind === 'FuncDecl') && declared.ident) this.valueNames.add(declared.ident)
+    if (declared.kind === 'GlobalDecl' && declared.pattern.kind === 'IdentPattern') this.valueNames.add(declared.pattern.name)
+    if (declared.kind === 'ImportDecl') {
+      for (const item of declared.items) if (item.item.kind !== 'ImportTypeFunc') this.valueNames.add(item.item.ident ?? item.name)
+    }
     if (decl.kind === 'TypeDecl') {
       this.pendingTypeNames.add(decl.ident.name)
       if (!this.typeBodies.has(decl.ident.name)) this.typeBodies.set(decl.ident.name, decl.type)
@@ -1710,6 +1753,9 @@ class CheckContext {
   }
 
   collectDef(decl: AST.DefDecl): void {
+    // Collected already, where a type named it before its turn
+    if (this.collectedDefs.has(decl)) return
+    this.collectedDefs.add(decl)
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
     // Defs are comptime - infer type from literal value or use LHS type annotation
@@ -1844,7 +1890,8 @@ class CheckContext {
       return
     }
 
-    this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
+    // A literal whose type has the error says nothing more.
+    if (!unresolved(inferredType)) this.error(decl.span.start, `data value must be a literal (array, string, tuple, or scalar)`)
   }
 
   // `data` is laid out when the program is compiled, and no code of the
@@ -2289,9 +2336,12 @@ class CheckContext {
   }
 
   private comptimeValue(expr: AST.Expr, typed: boolean): ComptimeValue | null {
-    // Handle annotation expression (e.g., 42:u32)
+    // Handle annotation expression (e.g., 42:u32). An integer it has been
+    // checked as is the value that type holds: ~0:u8 is 255.
     if (expr.kind === 'AnnotationExpr') {
-      return this.evalComptimeExpr(expr.expr, typed)
+      const value = this.evalComptimeExpr(expr.expr, typed)
+      const type = this.exprTypes.get(expr)
+      return !typed && value?.kind === 'int' && type && isInteger(unwrap(type)) ? constantIn(value, type) : value
     }
 
     // Handle literal expression
@@ -2329,7 +2379,11 @@ class CheckContext {
     if (expr.kind === 'UnaryExpr' && expr.op === '~') {
       const operand = this.evalComptimeExpr(expr.operand, typed)
       if (operand?.kind === 'int') {
-        return { kind: 'int', value: ~operand.value }
+        // The bits of a typed constant are its type's: ~0:u8 is 255.
+        const inner = ungrouped(expr.operand)
+        const type = !typed && inner.kind === 'AnnotationExpr' ? this.exprTypes.get(inner) : undefined
+        const value: ComptimeValue = { kind: 'int', value: ~operand.value }
+        return type && isInteger(unwrap(type)) ? constantIn(value, type) : value
       }
     }
 
@@ -2685,7 +2739,9 @@ class CheckContext {
     if (decl.signature.input.kind !== 'CompositeType') return
     for (const field of decl.signature.input.fields) {
       if (!field.ident) continue
-      const type = this.resolveType(field.type)
+      // As the signature resolves it: a length there that names a parameter
+      // is the error it is there, and nothing more here
+      const type = this.inSignature(decl.signature, () => this.resolveType(field.type))
       if (this.isManyPointer(type)) {
         const inner = type as PointerRT
         const mut = inner.mutable ? 'mut ' : ''
@@ -2700,9 +2756,16 @@ class CheckContext {
     const funcScope: Scope = { parent: this.currentScope, symbols: new Map() }
 
     // Add parameters and named returns to scope
-    this.bindFields(decl.signature.input, funcScope, 'param')
-    this.bindFields(decl.signature.output, funcScope, 'return')
-    if (this.currentInstance?.decl === decl) this.bindComptimeFuncs(this.currentInstance, funcScope)
+    const inst = this.currentInstance?.decl === decl ? this.currentInstance : null
+    const values = inst ? genericParams(inst.of).filter(isValueParam).map((p) => p.ident as string) : []
+    this.inSignature(decl.signature, () => {
+      this.bindFields(decl.signature.input, funcScope, 'param')
+      this.bindFields(decl.signature.output, funcScope, 'return')
+    }, values)
+    if (this.currentInstance?.decl === decl) {
+      this.bindComptimeFuncs(this.currentInstance, funcScope)
+      this.bindComptimeValues(this.currentInstance, funcScope)
+    }
 
     // Check body
     const prevScope = this.currentScope
@@ -2887,7 +2950,7 @@ class CheckContext {
         // data block is a constant, and a function is code.
         const named = stmt.target.kind === 'IdentExpr' ? this.lookup(stmt.target.name) : undefined
         if (stmt.target.kind === 'IdentExpr' && named && !isVariable(named)) {
-          this.error(stmt.target.span.start, `cannot assign to '${declaredName(stmt.target.name)}': it is not a variable`)
+          this.error(stmt.target.span.start, `cannot assign to '${declaredName(stmt.target.name)}': ${notAVariable(named)}`)
           this.inferExpr(stmt.value)
           break
         }
@@ -3188,7 +3251,7 @@ class CheckContext {
         if (!sym) {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
         } else if (!isVariable(sym)) {
-          this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': it is not a variable`)
+          this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': ${notAVariable(sym)}`)
         }
         // The variable set is used here, as an assignment's target is
         this.recordReference(pattern.name, pattern.span.start)
@@ -3216,7 +3279,7 @@ class CheckContext {
             if (!sym) {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             } else if (!isVariable(sym)) {
-              this.error(pattern.span.start, `cannot set '${declaredName(varName)}': it is not a variable`)
+              this.error(pattern.span.start, `cannot set '${declaredName(varName)}': ${notAVariable(sym)}`)
             }
             this.recordReference(varName, namedPartAt(element))
             // As in a let: a part names a field the value has, or nothing
@@ -3580,11 +3643,29 @@ class CheckContext {
   // resolveType, for each part of a type written in place
   private resolveTypeParts(type: AST.Type): ResolvedType {
     switch (type.kind) {
-      case 'PrimitiveType':
-        return primitive(type.name, type.max)
+      case 'PrimitiveType': {
+        // A bound written as a name or an expression is computed here: u32#n
+        // in an instance is u32#8.
+        const bound = type.bound ? this.typeNumber(type.bound, 'range bound') : type.max === undefined ? undefined : BigInt(type.max)
+        if (bound === null) return RECOVERY
+        if (bound === undefined) return primitive(type.name)
+        const problem = boundProblem(type.name, bound)
+        if (problem) {
+          this.error((type.bound ?? type).span.start, problem)
+          return RECOVERY
+        }
+        return primitive(type.name, Number(bound))
+      }
 
-      case 'PointerType':
-        return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
+      case 'PointerType': {
+        const outer = this.pointee
+        this.pointee = type.pointee
+        try {
+          return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
+        } finally {
+          this.pointee = outer
+        }
+      }
 
       case 'IndexedType': {
         const element = this.resolveType(type.element)
@@ -3604,13 +3685,25 @@ class CheckContext {
         // Build sizes array from size and specifiers
         const sizes: ArraySize[] = []
 
-        // Add numeric size(s) if present
-        if (type.size !== null && type.size !== 'inferred' && type.size !== 'comptime') {
-          if (Array.isArray(type.size)) {
-            sizes.push(...type.size)
-          } else {
-            sizes.push(type.size)
+        // A length written as a constant expression ([n]T, [k * 2]T) is
+        // computed here, exactly: in an instance [n * 2]u8 is [8]u8.
+        if (type.size === 'expr') {
+          const length = this.typeNumber(type.length as AST.Expr, 'array length')
+          if (length === null) return RECOVERY
+          const problem = lengthProblem(length)
+          if (problem) {
+            this.error((type.length as AST.Expr).span.start, problem)
+            return RECOVERY
           }
+          sizes.push(Number(length))
+        } else if (type.size !== null && type.size !== 'inferred' && type.size !== 'comptime') {
+          const written = Array.isArray(type.size) ? type.size : [type.size]
+          const problem = written.map((n) => lengthProblem(BigInt(n))).find((p) => p)
+          if (problem) {
+            this.error(type.span.start, problem)
+            return RECOVERY
+          }
+          sizes.push(...written)
         } else if (type.size === 'inferred' || type.size === 'comptime') {
           // Both 'inferred' and 'comptime' map to '_' (compile-time known)
           sizes.push('_')
@@ -3622,7 +3715,18 @@ class CheckContext {
         }
 
         // If only specifiers and no size, that's valid: [!]T, [?]T
-        return array(element, sizes.length > 0 ? sizes : null)
+        const result = array(element, sizes.length > 0 ? sizes : null)
+        // An array has at most 4294967295 bytes, wherever it is: its size is
+        // a u32 (sizeof), and so is the byte offset of every element a proven
+        // index reaches. Behind a pointer, an array of fixed arrays is a
+        // table, n row pointers (Nesting), each row an array of its own.
+        const table = this.pointee === type && sizes.length === 1 && typeof sizes[0] === 'number' && isRowArray(unwrap(element))
+        const bytes = table ? (sizes[0] as number) * 4 : arrayBytes(result)
+        if (bytes !== null && bytes > MAX_ARRAY_BYTES) {
+          this.error(type.span.start, arrayTooLarge(result, bytes))
+          return RECOVERY
+        }
+        return result
       }
 
       case 'CompositeType': {
@@ -3691,10 +3795,119 @@ class CheckContext {
     }
   }
 
+  // The number a length or a bound is written as: any compile-time constant,
+  // computed exactly, as no type (a u32's `/` and `>>` would take wrapped
+  // operands). Null, with the error reported, for anything else.
+  private typeNumber(expr: AST.Expr, what: 'array length' | 'range bound'): bigint | null {
+    this.collectDefsIn(expr)
+    // A typed constant is what it is in any expression: 300:u8 is an error,
+    // and ~0:u8 is 255 (see comptimeValue).
+    const before = this.errorsReported
+    for (const annotated of annotationsIn(expr)) if (this.evalComptimeExpr(annotated)) this.inferExpr(annotated)
+    if (this.errorsReported > before) return null
+    const value = this.evalComptimeExpr(expr)
+    if (value?.kind === 'int') return value.value
+    if (value?.kind === 'float' || value?.kind === 'bool') {
+      const shown = value.kind === 'float' ? `float(${value.value})` : 'bool'
+      this.error(expr.span.start, `${what} must be an integer: it is ${shown}`)
+      return null
+    }
+    // A name nothing declares is the error of any expression, said once: a
+    // signature is resolved where it is collected and again where its
+    // function is checked.
+    // A name the module declares further down is no unknown one.
+    const unknown = unknownNames(expr).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name) && !this.valueNames.has(name.name))
+    if (unknown) {
+      if (!this.unknownInTypes.has(unknown.span.start)) this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+      this.unknownInTypes.add(unknown.span.start)
+      return null
+    }
+    if (this.dividesByZero(expr)) {
+      this.error(expr.span.start, `${what} divides by zero`)
+      return null
+    }
+    const name = ungrouped(expr)
+    const param = name.kind === 'IdentExpr' && (this.signatureNames?.get(name.name) === 'param' || this.lookup(name.name)?.kind === 'param')
+    const hint = param && name.kind === 'IdentExpr' ? `: '${name.name}' is a parameter; to give it at compile time, write comptime ${name.name}: u32` : ''
+    this.error(expr.span.start, `${what} must be a compile-time constant${hint}`)
+    return null
+  }
+
+  private unknownInTypes = new Set<number>()
+
+  // The type a pointer being resolved points to (see the D9 size of a table)
+  private pointee: AST.Type | null = null
+
+  // Whether a constant is none because it divides by zero: 64 / n with n = 0
+  private dividesByZero(expr: unknown): boolean {
+    if (Array.isArray(expr)) return expr.some((e) => this.dividesByZero(e))
+    if (expr === null || typeof expr !== 'object' || expr instanceof Uint8Array) return false
+    const n = expr as AST.Expr
+    if (n.kind === 'SizeofExpr') return false
+    if (n.kind === 'BinaryExpr' && (n.op === '/' || n.op === '%')) {
+      const divisor = this.evalComptimeExpr(n.right)
+      if (divisor?.kind === 'int' && divisor.value === 0n && this.evalComptimeExpr(n.left)) return true
+    }
+    return Object.entries(n).some(([key, value]) => key !== 'span' && this.dividesByZero(value))
+  }
+
+  // A def can size a type wherever it is declared: one a type names before
+  // its declaration is collected there, ahead of its turn.
+  private collectDefsIn(expr: AST.Expr): void {
+    if (this.currentScope !== this.moduleScope && !this.signatureNames) return
+    for (const name of unknownNames(expr)) {
+      const decl = this.defDecls.get(name.name)
+      if (!decl || this.collectedDefs.has(decl) || this.lookup(name.name)) continue
+      const scope = this.currentScope
+      this.currentScope = this.moduleScope
+      try {
+        this.collectDef(decl)
+      } finally {
+        this.currentScope = scope
+      }
+    }
+  }
+
+  // The names of the parameters of the signature being resolved, which a
+  // length in it may name by mistake (or, in an instance, by a hyphen)
+  signatureNames: Map<string, 'param' | 'value'> | null = null
+
+  // The message for a name nothing declares. `n-1` is one name (1.2): where
+  // `n` is one, a subtraction was meant.
+  // `constant`: the name is in a length, a bound or a value argument, where
+  // no type is meant.
+  unknownIdentifier(name: string, constant = false): string {
+    const hyphen = /^(.+)-([0-9]+)$/.exec(name)
+    if (hyphen && (this.lookup(hyphen[1]) || this.signatureNames?.has(hyphen[1]))) {
+      return `unknown identifier '${name}': a hyphen joins a name; for subtraction write ${hyphen[1]} - ${hyphen[2]}`
+    }
+    const similar = this.findSimilar(name, constant)
+    return `unknown identifier '${name}'${similar ? ` — did you mean '${similar}'?` : ''}`
+  }
+
   resolveSignature(sig: AST.FuncSignature): ResolvedType & { kind: 'func' } {
-    const params = this.typeToFields(sig.input, true)
-    const returns = this.typeToFields(sig.output, true)
-    return func(params, returns)
+    return this.inSignature(sig, () => {
+      const params = this.typeToFields(sig.input, true)
+      const returns = this.typeToFields(sig.output, true)
+      return func(params, returns)
+    })
+  }
+
+  // Runs `resolve` with the names of a signature's parameters known, for the
+  // messages of a length that names one (see typeNumber)
+  inSignature<T>(sig: AST.FuncSignature, resolve: () => T, values: readonly string[] = []): T {
+    const prev = this.signatureNames
+    const names = new Map(prev ?? [])
+    for (const name of values) names.set(name, 'value')
+    if (sig.input.kind === 'CompositeType') {
+      for (const f of sig.input.fields) if (f.ident && !f.comptime && !names.has(f.ident)) names.set(f.ident, 'param')
+    }
+    this.signatureNames = names
+    try {
+      return resolve()
+    } finally {
+      this.signatureNames = prev
+    }
   }
 
   // Convert a Type to a list of fields (for function params/returns)
@@ -4403,9 +4616,7 @@ class CheckContext {
         this.error(expr.span.start, `'${expr.name}' is a type; a type can only be passed for a comptime parameter`)
         return RECOVERY
       }
-      const similar = this.findSimilar(expr.name)
-      const hint = similar ? ` — did you mean '${similar}'?` : ''
-      this.error(expr.span.start, `unknown identifier '${expr.name}'${hint}`)
+      this.error(expr.span.start, this.unknownIdentifier(expr.name))
       return primitive('i32')
     }
 
@@ -4552,7 +4763,7 @@ class CheckContext {
     // A type that is called constructs a value of it: Vec(u32)(p, 0, cap),
     // T(a, b) in an instance, where T was a type parameter, and (T, T)(a, b).
     const built = expr.callee.kind === 'TypeExpr' ? expr.callee.type
-      : expr.callee.kind === 'CallExpr' || expr.callee.kind === 'TupleExpr' ? typeOfArg(expr.callee)
+      : expr.callee.kind === 'CallExpr' || expr.callee.kind === 'TupleExpr' ? this.typeApplied(expr.callee)
       : null
     if (built) return this.inferConstructor(expr, built)
 
@@ -4607,7 +4818,7 @@ class CheckContext {
         this.error(expr.span.start, `'${declaredName(calleeName)}' takes positional arguments`)
         for (const arg of expr.args) {
           const value = argValue(arg)
-          if (value && !typeOfArg(value)) this.inferExpr(value)
+          if (value && !this.typeApplied(value)) this.inferExpr(value)
         }
         return calleeType.returns.length === 0 ? VOID
           : calleeType.returns.length === 1 ? calleeType.returns[0].type
@@ -4673,7 +4884,7 @@ class CheckContext {
         `cannot call non-function type: ${typeToString(calleeType)} ('${field}' is a field here, and a field wins over the function '${field}': write ${field}(...))`,
       )
       for (const arg of expr.args) {
-        if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+        if (arg.value && !this.typeApplied(arg.value)) this.inferExpr(arg.value)
       }
       return RECOVERY
     }
@@ -4787,7 +4998,7 @@ class CheckContext {
       // A type among the arguments, T(u8), is part of the same mistake.
       for (const arg of expr.args) {
         const value = argValue(arg)
-        if (value && !typeOfArg(value)) this.inferExpr(value)
+        if (value && !this.typeApplied(value)) this.inferExpr(value)
       }
       return RECOVERY
     }
@@ -4807,7 +5018,7 @@ class CheckContext {
   private typeAsValue(expr: AST.CallExpr, sym: Symbol & { kind: 'typefunc' }): ResolvedType {
     const name = (expr.callee as AST.IdentExpr).name
     this.recordReference(name, expr.callee.span.start)
-    const applied = typeOfArg(expr)
+    const applied = this.typeApplied(expr)
     if (applied) {
       this.error(expr.span.start, `'${typeText(applied)}' is a type; a type can only be passed for a comptime parameter`)
     } else {
@@ -4816,7 +5027,7 @@ class CheckContext {
       }
       for (const arg of expr.args) {
         const value = argValue(arg)
-        if (value && !typeOfArg(value)) this.inferExpr(value)
+        if (value && !this.typeApplied(value)) this.inferExpr(value)
       }
     }
     return RECOVERY
@@ -4839,7 +5050,7 @@ class CheckContext {
   // An argument as a message about its call lists it: by its type, or, where
   // a type was written for a comptime parameter, by that type.
   private shownArg(arg: AST.Expr, typeOf: (arg: AST.Expr) => ResolvedType): string {
-    const written = typeOfArg(arg)
+    const written = this.typeApplied(arg)
     return written ? typeText(written) : typeToString(typeOf(arg))
   }
 
@@ -5008,7 +5219,7 @@ class CheckContext {
       if (message) this.requirement(at, message)
       this.inferExpr(receiver)
       for (const arg of expr.args) {
-        if (arg.value && !typeOfArg(arg.value)) this.inferExpr(arg.value)
+        if (arg.value && !this.typeApplied(arg.value)) this.inferExpr(arg.value)
       }
       return RECOVERY
     }
@@ -5191,7 +5402,7 @@ class CheckContext {
     const params = genericParams(sym.decl)
     const first = params.find((p) => !p.comptime)
     if (!first || first.type.kind !== 'PointerType') return null
-    const typeParams = params.filter(isTypeParam).map((p) => p.ident as string)
+    const typeParams = params.filter(isInferable).map((p) => p.ident as string)
     const expand = (applied: AST.TypeApply) => sym.owner.expandTypeApply(applied)
     const bound = new Map<string, ResolvedType>()
     // A type that resolves without a word, or null: this only asks.
@@ -5205,9 +5416,11 @@ class CheckContext {
       // The type arguments are written, after the receiver.
       params.filter((p) => p !== first).forEach((p, i) => {
         const value = args[i].value
-        const written = isTypeParam(p) && value ? typeOfArg(value) : null
+        const written = isTypeParam(p) && value ? this.typeApplied(value) : null
         const type = written && quietly(this, () => this.resolveType(written))
         if (type) bound.set(p.ident as string, type)
+        const number = isValueParam(p) && value ? this.evalComptimeExpr(value) : null
+        if (number?.kind === 'int') bound.set(p.ident as string, comptimeInt(number.value))
       })
     } else {
       // The receiver decides them as it would behind the pointer.
@@ -5229,7 +5442,7 @@ class CheckContext {
       this.error(expr.span.start, `'${name}' takes positional arguments`)
       for (const arg of expr.args) {
         const value = argValue(arg)
-        if (value && !typeOfArg(value)) this.inferExpr(value)
+        if (value && !this.typeApplied(value)) this.inferExpr(value)
       }
       return RECOVERY
     }
@@ -6570,8 +6783,9 @@ class CheckContext {
     this.insideIfLetCondition = false
     const indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
-    this.inferIndexValue(expr.index)
-    if (unresolved(indexed)) return RECOVERY
+    const index = this.inferIndexValue(expr.index)
+    // An index whose type has the error says nothing more.
+    if (unresolved(indexed) || unresolved(index)) return RECOVERY
     // A name for a slice, an array or a pointer is the type it names
     const objType = unwrap(this.resolvedFirst(expr.span.start, indexed, 'index'))
 
@@ -6631,6 +6845,11 @@ class CheckContext {
           this.error(expr.index.span.start, `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
         } else if (idx.value < 0n || idx.value >= BigInt(n)) {
           this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${n}]${typeToString(objType.element)}`)
+        } else if (expr.index.kind !== 'LiteralExpr') {
+          // Codegen picks the element by the index's value, which only a
+          // literal shows: v[1 + 1], v[(2)] and v[k] with a def the checker
+          // resolves have theirs recorded.
+          this.constants.set(expr.index, idx)
         }
       }
       return objType.element
@@ -6836,6 +7055,13 @@ class CheckContext {
     if (count < 0) {
       this.error(expr.count.span.start, 'repeat count cannot be negative')
       return comptimeArrayLiteral(valueType, 0)
+    }
+    // As many elements and bytes as any array has, at most
+    const tooLong = lengthProblem(countValue.value)
+    const bytes = tooLong === null && hasOwnType(valueType) ? byteSize(array(valueType, [count])) : null
+    if (tooLong || (bytes !== null && bytes > MAX_ARRAY_BYTES)) {
+      this.error(expr.count.span.start, tooLong ?? arrayTooLarge(array(valueType, [count]), bytes as number))
+      return RECOVERY
     }
     // A count written as a constant expression ([0; k], [0; 2 * 8]) is laid
     // out and compiled as its value.
@@ -7147,6 +7373,40 @@ class CheckContext {
     return body !== undefined && this.namesFuncType(body, seen)
   }
 
+  // Whether a type as written is an integer type, written out or named by a
+  // `type`: what a comptime value parameter is declared with. Asked, as
+  // namesFuncType is, while types are still unresolved.
+  private namesIntegerType(type: AST.Type, seen = new Set<string>()): boolean {
+    if (type.kind === 'PrimitiveType') return INTEGER_NAMES.has(type.name)
+    if (type.kind === 'CompositeType' && ungroupedType(type) !== type) return this.namesIntegerType(ungroupedType(type), seen)
+    if (type.kind !== 'TypeRef' || seen.has(type.name)) return false
+    seen.add(type.name)
+    const body = this.typeBodies.get(type.name)
+    return body !== undefined && this.namesIntegerType(body, seen)
+  }
+
+  // Sorts the comptime parameters that are not types into functions and
+  // numbers, and says what is wrong with one that is neither. A value
+  // parameter is marked (VALUE_PARAMS) for every rule that counts or infers
+  // comptime arguments. Null when the parameter is fine.
+  private comptimeParamProblem(p: AST.Field, others: readonly AST.Field[]): string | null {
+    const name = p.ident as string
+    if (this.namesFuncType(p.type)) {
+      if (/^[A-Z]/.test(name)) return `a comptime function parameter's name starts with a lower-case letter: write 'comptime ${lowerFirst(name)}: ${typeText(p.type)}'`
+      return null
+    }
+    if (!this.namesIntegerType(p.type)) {
+      return `comptime parameter '${name}' is ${typeText(p.type)}: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)`
+    }
+    VALUE_PARAMS.add(p)
+    if (/^[A-Z]/.test(name)) return `a value parameter's name starts with a lower-case letter: write 'comptime ${lowerFirst(name)}: ${typeText(p.type)}'`
+    if (others.some((other) => other !== p && other.ident === name)) return `parameter '${name}' is declared twice`
+    // The parser puts a def's value in for its name, so the body would never
+    // read the parameter.
+    if (this.defNames.has(name)) return `comptime parameter '${name}' has the name of a def declared in this module`
+    return null
+  }
+
   // What a generic is checked for where it is declared. The rest of it waits
   // for an instance, where its types are known.
   private checkGenericDecl(decl: AST.FuncDecl): boolean {
@@ -7164,10 +7424,18 @@ class CheckContext {
       if (!p.ident) continue
       const at = p.span.start
       if (p.type.kind !== 'TypeType') {
-        // A comptime parameter of a function type is given a function.
+        // A comptime parameter of a function type is given a function, and
+        // one of an integer type a number.
         if (!p.comptime) continue
-        if (!this.namesFuncType(p.type)) {
-          reject(at, `comptime value parameters are not supported yet: '${p.ident}' must be 'type' or a function type`)
+        const problem = this.comptimeParamProblem(p, params)
+        const results = decl.signature.output.kind === 'CompositeType' ? decl.signature.output.fields : []
+        if (problem) {
+          reject(at, problem)
+        } else if (isValueParam(p)) {
+          // In the instance the name is the number, which a result of the
+          // name would have to be too.
+          const result = results.find((r) => r.ident === p.ident)
+          if (result) reject(result.span.start, `result '${p.ident}' has the name of the comptime value parameter '${p.ident}'`)
         } else if (params.some((other) => other !== p && other.ident === p.ident)) {
           // In the instance it is a function of that name, which the other
           // parameter of the name would hide, or be hidden by.
@@ -7189,6 +7457,16 @@ class CheckContext {
         typeParams.add(p.ident)
       }
     }
+    // A length or a bound in the signature that names nothing at all is the
+    // one error: no call could find or give a number for it.
+    const known = (name: string) => params.some((p) => p.ident === name) || this.defNames.has(name) || this.valueNames.has(name) || this.lookup(name) !== undefined
+    const prevNames = this.signatureNames
+    this.signatureNames = new Map(params.flatMap((p) => (p.ident ? [[p.ident, isValueParam(p) ? 'value' : 'param'] as const] : [])))
+    for (const length of signatureLengths(decl.signature)) {
+      const unknown = unknownNames(length).find((n) => !known(n.name))
+      if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+    }
+    this.signatureNames = prevNames
     // What the declaration says of generic types is checked here, by name
     // alone. An instance would say it once for each set of arguments, and an
     // inferred call that cannot find T through `v: *Vec(T, T)` would say
@@ -7225,10 +7503,15 @@ class CheckContext {
     // read off the declaration, as for a generic function's, for the editor
     // to find.
     const used = typeUses(decl.body)
+    // A value parameter is used by name in the lengths, bounds and value
+    // arguments of the body.
+    const named = signatureLengths(decl.body).flatMap((e) => unknownNames(e))
     for (const param of decl.params) {
-      if (!isTypeParam(param) || !param.identSpan) continue
+      if (!param.comptime || !param.identSpan) continue
       const declared = param.identSpan.start
-      const uses = used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+      const uses = isTypeParam(param)
+        ? used.filter((t) => t.name === param.ident).map((t) => t.span.start)
+        : named.filter((n) => n.name === param.ident).map((n) => n.span.start)
       this.references.set(declared, uses)
       for (const use of uses) this.symbolRefs.set(use, declared)
     }
@@ -7253,14 +7536,22 @@ class CheckContext {
       }
       // A `type` declaration of the same name is refused where it stands.
       if (this.pendingTypeNames.has(decl.ident)) this.contested.add(decl.ident)
-      if (decl.params.length === 0 || decl.params.some((p) => !isTypeParam(p) || !/^[A-Z]/.test(p.ident ?? ''))) {
-        reject(decl.span.start, `generic type '${decl.ident}' takes comptime type parameters only, as (comptime T: type)`)
+      // A parameter is a type or a number: comptime T: type, comptime n: u32.
+      const kindOf = (p: AST.Field) =>
+        isTypeParam(p) ? (/^[A-Z]/.test(p.ident ?? '') ? 'type' : null)
+        : p.comptime && p.ident && this.namesIntegerType(p.type) ? 'value'
+        : null
+      if (decl.params.length === 0 || decl.params.some((p) => kindOf(p) === null)) {
+        reject(decl.span.start, `generic type '${decl.ident}' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)`)
         continue
       }
       const names = new Set<string>()
       for (const p of decl.params) {
         const name = p.ident as string
-        if (names.has(name)) reject(p.span.start, `type parameter '${name}' is declared twice`)
+        if (kindOf(p) === 'value') {
+          const problem = this.comptimeParamProblem(p, decl.params)
+          if (problem) reject(p.span.start, problem)
+        } else if (names.has(name)) reject(p.span.start, `type parameter '${name}' is declared twice`)
         else if (this.isTypeName(name)) reject(p.span.start, `type parameter '${name}' has the name of a type declared in this module`)
         names.add(name)
       }
@@ -7323,7 +7614,65 @@ class CheckContext {
     }
     const params = sym.decl.params.length
     if (!sym.valid || used.args.length === params) return null
-    return `${name} expects ${params} type argument${params === 1 ? '' : 's'}, got ${used.args.length}`
+    const kind = sym.decl.params.every(isTypeParam) ? 'type argument' : 'argument'
+    return `${name} expects ${params} ${kind}${params === 1 ? '' : 's'}, got ${used.args.length}`
+  }
+
+  // The arguments of a generic type as written, each resolved for its
+  // parameter: a type, or for a value parameter its number in the
+  // parameter's type. Null, with the error reported, where one is neither.
+  private typeFuncArgs(type: AST.TypeApply, params: readonly AST.Field[], owner: CheckContext): (ResolvedType | bigint)[] | null {
+    const args: (ResolvedType | bigint)[] = []
+    let ok = true
+    type.args.forEach((arg, i) => {
+      const param = params[i]
+      const place = `argument ${i + 1} of '${type.name}'`
+      if (param && !isTypeParam(param)) {
+        const value = this.typeFuncValue(arg, param, owner, place)
+        if (value === null) ok = false
+        else args.push(value)
+        return
+      }
+      if (arg.kind === 'ValueArg') {
+        // A name of a value or a number, where a type is wanted
+        this.error(arg.span.start, param ? `${place} must be a type: ${param.ident} is a type parameter` : `${place} must be a type`)
+        ok = false
+        return
+      }
+      args.push(this.resolveType(arg))
+    })
+    return ok ? args : null
+  }
+
+  // The number given to a value parameter of a generic type: a compile-time
+  // constant that the parameter's type holds, as it is held there (~0 for a
+  // u8 is 255).
+  private typeFuncValue(arg: AST.Type | AST.ValueArg, param: AST.Field, owner: CheckContext, place: string): bigint | null {
+    const fail = (message: string): null => {
+      this.error(arg.span.start, message)
+      return null
+    }
+    if (arg.kind !== 'ValueArg') return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
+    // As in a length: a def declared further down is a number here too
+    this.collectDefsIn(arg.value)
+    const value = this.evalComptimeExpr(arg.value)
+    if (value === null) {
+      const unknown = unknownNames(arg.value).find((name) => !this.lookup(name.name) && !this.signatureNames?.has(name.name))
+      if (unknown) return fail(this.unknownIdentifier(unknown.name, true))
+      if (this.dividesByZero(arg.value)) return fail(`${place} divides by zero`)
+      return fail(`${place} must be a compile-time constant: ${param.ident} is a comptime value parameter`)
+    }
+    const wanted = owner.resolveType(param.type)
+    if (value.kind !== 'int') return fail(`${place}: cannot assign ${value.kind === 'float' ? `float(${value.value})` : value.kind === 'bool' ? 'bool' : 'a value'} to ${typeToString(wanted)}`)
+    // Checked as the argument of a generic function's value parameter is: a
+    // typed constant by its type (4:u32 and sizeof(u64) are no u8), an
+    // untyped one by its value, and given as its type holds it.
+    const before = this.errorsReported
+    this.checkExpr(arg.value, wanted, place)
+    if (this.errorsReported > before) return null
+    const typed = this.evalComptimeExpr(arg.value, true) ?? value
+    const held = constantIn(typed, wanted)
+    return held.kind === 'int' ? held.value : value.value
   }
 
   // Vec(u32): the generic type's body with its parameters replaced by these
@@ -7332,62 +7681,98 @@ class CheckContext {
     const { name } = type
     const at = type.span.start
     this.recordReference(name, at, false)
+    // Inside the body of an application that is cut short (below)
+    if (this.applyDepth > 0 && (this.applyTooDeep || this.applyTooLarge || this.applyFailed)) return RECOVERY
     const before = this.errorsReported
-    const args = type.args.map((a) => this.resolveType(a))
     const problem = this.typeFuncProblem(type)
-    if (problem) this.error(at, problem)
     const sym = this.moduleScope.symbols.get(name)
+    if (sym?.kind === 'typefunc' && sym.valid && !sym.named) sym.owner.checkNamesOf(sym)
+    const typefunc = sym?.kind === 'typefunc' && sym.valid ? sym : null
+    const args = typefunc
+      ? this.typeFuncArgs(type, typefunc.decl.params, typefunc.owner)
+      : type.args.map((a) => (a.kind === 'ValueArg' ? 0n : this.resolveType(a)))
+    if (problem) this.error(at, problem)
     // Where the generic type's declaration has the error, that is all.
-    if (problem || sym?.kind !== 'typefunc' || !sym.valid) return RECOVERY
-    const params = sym.decl.params
-    if (this.errorsReported > before) return RECOVERY
-    const vague = args.findIndex((a) => !hasOwnType(a))
+    if (problem || !typefunc || !args) return this.applicationFailed(typefunc?.owner)
+    const params = typefunc.decl.params
+    if (this.errorsReported > before) return this.applicationFailed(typefunc.owner)
+    const vague = args.findIndex((a) => typeof a !== 'bigint' && !hasOwnType(a))
     if (vague >= 0) {
       this.error(type.args[vague].span.start, `type argument ${params[vague].ident} of '${name}' must be a concrete type`)
       return RECOVERY
     }
 
-    const owner = sym.owner
-    const shown = `${name}(${args.map((a) => typeToString(a)).join(', ')})`
+    const owner = typefunc.owner
+    const argText = (a: ResolvedType | bigint) => (typeof a === 'bigint' ? String(a) : typeToString(a))
+    const shown = `${name}(${args.map(argText).join(', ')})`
     // While declarations are still being collected a type can hold a
     // reference to one declared further down. What is resolved then is not
     // kept: the same application resolves to the finished type later.
     const settled = owner.pendingTypeNames.size === 0 && this.pendingTypeNames.size === 0
     // By what the arguments are and by how they were written: Vec(Meters) and
     // Vec(u32) are one type, and each reads as it was written.
-    const key = `${args.map((a) => canonicalKey(a)).join('|')} ${shown}`
-    const cached = settled ? sym.cache.get(key) : undefined
+    const key = `${args.map((a) => (typeof a === 'bigint' ? String(a) : canonicalKey(a))).join('|')} ${shown}`
+    const cached = settled ? typefunc.cache.get(key) : undefined
     if (cached) return cached
     // The same application again, inside its own body: the type it makes,
     // which is what it is once the body is resolved.
-    const applying = sym.applying?.get(key)
+    const applying = typefunc.applying?.get(key)
     if (applying) {
       const ref = forwardRef(shown)
       applying.push(ref)
       return ref
     }
+    if (owner.applyDepth === 0) {
+      owner.applyTooDeep = false
+      owner.applyTooLarge = false
+      owner.applyFailed = false
+      owner.applyMade.clear()
+    }
+    // Once one application has gone too deep, made the type too large or had
+    // an error, the whole type is cut short and nothing else of it is
+    // applied: a body that applies itself twice, T(n + 1) and T(n + 2), would
+    // otherwise go too deep once for every path down the tree it makes, and
+    // T(n * 2) and T(n * 2 + 1) would refuse 2^32 arguments.
+    if (owner.applyTooDeep || owner.applyTooLarge || owner.applyFailed || this.applyFailed) return RECOVERY
     if (owner.applyDepth >= MAX_APPLY_DEPTH) {
       owner.applyTooDeep = true
       return RECOVERY
     }
-    const bound = new Map(params.map((p, i) => [p.ident as string, args[i]]))
-    const body = cloneAst(sym.decl.body, 0, (param) => {
-      const to = bound.get(param)
-      return to && { kind: 'BoundType', name: param, type: to, span: { start: 0, end: 0 } }
-    }) as AST.Type
+    const made = owner.applyMade.get(`${name} ${key}`)
+    if (made) return made
+    owner.applyMade.set(`${name} ${key}`, null)
+    if (owner.applyMade.size > MAX_TYPE_PARTS) {
+      owner.applyTooLarge = true
+      return RECOVERY
+    }
+    const bound = new Map(params.map((p, i): [string, ResolvedType] => {
+      const a = args[i]
+      return [p.ident as string, typeof a === 'bigint' ? comptimeInt(a) : a]
+    }))
+    const body = cloneAst(typefunc.decl.body, 0, boundSubst(bound)) as AST.Type
     owner.applyDepth++
+    owner.applyStack.push({ shown, from: this.usesOf(at) })
     const refs: ForwardRefRT[] = []
-    sym.applying ??= new Map()
-    sym.applying.set(key, refs)
+    typefunc.applying ??= new Map()
+    typefunc.applying.set(key, refs)
+    const beforeBody = owner.errorsReported
+    const outerError = owner.applyError
+    owner.applyError = null
     const resolved = named(shown, owner.resolveType(body))
-    sym.applying.delete(key)
+    // (Set by error() while the body was resolved, which the compiler cannot see)
+    const bodyError = owner.applyError as CheckContext['applyError']
+    owner.applyError = outerError ?? bodyError
+    typefunc.applying.delete(key)
+    owner.applyStack.pop()
     owner.applyDepth--
+    const failed = owner.errorsReported > beforeBody || owner.applyFailed
+    if (owner.applyDepth === 0) owner.applyFailed = false
     // Holding itself, not through a pointer or a slice, it has no size. That
     // is so whatever its arguments are: one error, where it is declared.
     if (refs.length > 0 && containsByValue(resolved.type, refs)) {
       for (const ref of refs) ref.target = RECOVERY
-      if (sym.valid) owner.error(sym.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
-      sym.valid = false
+      if (typefunc.valid) owner.declarationError(typefunc.decl.span.start, `generic type '${name}' contains itself: a type can only refer to itself through a pointer or a slice`)
+      typefunc.valid = false
       return RECOVERY
     }
     for (const ref of refs) ref.target = resolved
@@ -7408,16 +7793,98 @@ class CheckContext {
       if (owner.applyDepth === 0) this.error(at, tooLarge(shown))
       return RECOVERY
     }
-    if (settled) sym.cache.set(key, resolved)
+    // A body with an error makes no type: what is made of it says nothing
+    // more. The error was reported once, for the first use; another use of
+    // the same application gets the same nothing.
+    if (failed) {
+      if (settled) typefunc.cache.set(key, RECOVERY)
+      // Another module that applied it is told too, at its use, as it is
+      // of an instance it asked for (reportToRequesters)
+      if (owner !== this && bodyError) {
+        const where = owner.source && owner.filePath ? ` (${fileName(owner.filePath)}:${lineAndColumn(owner.source, bodyError.offset)})` : ''
+        this.error(at, `${shown} cannot be applied: ${bodyError.message}${where}`)
+      }
+      return this.applicationFailed(owner)
+    }
+    if (settled) typefunc.cache.set(key, resolved)
+    owner.applyMade.set(`${name} ${key}`, resolved)
     // For the editor, each way it was applied, once: also an application
     // only a signature makes while declarations are collected, as it was
-    // resolved then, until it is resolved again once they are.
-    const applied = owner.applications.get(sym.decl) ?? []
+    // resolved then, until it is resolved again once they are. A number is
+    // held as its int(N) type.
+    const applied = owner.applications.get(typefunc.decl) ?? []
     const known = applied.findIndex((a) => a.shown === shown)
-    if (known < 0) applied.push({ shown, args, type: resolved })
-    else if (settled) applied[known] = { shown, args, type: resolved }
-    owner.applications.set(sym.decl, applied)
+    const held = args.map((a) => (typeof a === 'bigint' ? comptimeInt(a) : a))
+    if (known < 0) applied.push({ shown, args: held, type: resolved })
+    else if (settled) applied[known] = { shown, args: held, type: resolved }
+    owner.applications.set(typefunc.decl, applied)
     return resolved
+  }
+
+  // A name in the body of a generic type that names nothing is a mistake of
+  // the declaration, said once, where it is, when the type is first applied:
+  // each application would say it for its own arguments, and one nobody
+  // applies is only parsed. Every type name a body can use is known by then.
+  checkNamesOf(sym: Symbol & { kind: 'typefunc' }): void {
+    sym.named = true
+    const { decl } = sym
+    const params = new Map(decl.params.map((p) => [p.ident as string, isTypeParam(p) ? 'param' : 'value'] as const))
+    const reject = (offset: number, message: string) => {
+      sym.valid = false
+      this.declarationError(offset, message)
+    }
+    for (const used of typeUses(decl.body)) {
+      if (used.kind !== 'TypeRef' || params.has(used.name) || this.pendingTypeNames.has(used.name)) continue
+      const known = this.moduleScope.symbols.get(used.name)
+      if (known?.kind === 'type' || known?.kind === 'typefunc') continue
+      const similar = this.findSimilar(used.name)
+      reject(used.span.start, `unknown type '${used.name}'${similar ? ` — did you mean '${similar}'?` : ''}`)
+    }
+    const prevNames = this.signatureNames
+    this.signatureNames = params
+    try {
+      for (const length of signatureLengths(decl.body)) {
+        const unknown = unknownNames(length).find((n) => !params.has(n.name) && !this.defNames.has(n.name) && !this.valueNames.has(n.name) && !this.lookup(n.name))
+        if (unknown) reject(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+      }
+    } finally {
+      this.signatureNames = prevNames
+    }
+  }
+
+  // An application that had an error: RECOVERY, and where it is inside the
+  // body of another, that one is cut short (see applyFailed).
+  private applicationFailed(owner: CheckContext | undefined): ResolvedType {
+    if (this.applyDepth > 0) this.applyFailed = true
+    if (owner && owner.applyDepth > 0) owner.applyFailed = true
+    return RECOVERY
+  }
+
+  // The uses an application at `at` of this module's text is required from:
+  // that one, and where it is in the body of another application or in an
+  // instance, what that one was required from in turn.
+  private usesOf(at: number): { offset: number; in: CheckContext }[] {
+    const uses = [{ offset: at % INSTANCE_STRIDE, in: this as CheckContext }]
+    const outer = this.applyStack.at(-1)
+    if (outer) return [...uses, ...outer.from].slice(0, MAX_NOTES)
+    let inst = at >= INSTANCE_STRIDE ? this.instances[Math.floor(at / INSTANCE_STRIDE) - 1] : undefined
+    while (inst && uses.length < MAX_NOTES) {
+      const { requestedAt, requestedIn } = inst
+      uses.push({ offset: requestedAt % INSTANCE_STRIDE, in: requestedIn })
+      inst = requestedIn.instances[Math.floor(requestedAt / INSTANCE_STRIDE) - 1]
+    }
+    return uses
+  }
+
+  // An error of a declaration, said once whatever application found it
+  private declarationError(offset: number, message: string): void {
+    const stack = this.applyStack
+    this.applyStack = []
+    try {
+      this.error(offset, message)
+    } finally {
+      this.applyStack = stack
+    }
   }
 
   // The body of a generic type as one application of it reads: the parameters
@@ -7427,7 +7894,10 @@ class CheckContext {
     const scope = expandedIn.get(applied) ?? this
     const sym = scope.moduleScope.symbols.get(applied.name)
     if (sym?.kind !== 'typefunc' || !sym.valid || applied.args.length !== sym.decl.params.length) return null
-    const args = new Map(sym.decl.params.map((p, i) => [p.ident as string, applied.args[i]]))
+    const args = new Map(sym.decl.params.map((p, i) => {
+      const arg = applied.args[i]
+      return [p.ident as string, arg.kind === 'ValueArg' ? arg.value : arg]
+    }))
     const put = new Set<object>()
     const body = cloneAst(sym.decl.body, 0, (param) => args.get(param), put) as AST.Type
     if (sym.owner !== this) for (const inner of applicationsOutside(body, put)) expandedIn.set(inner, sym.owner)
@@ -7441,7 +7911,7 @@ class CheckContext {
     // However the call fails, the values among its arguments are still
     // inferred, so that their own errors appear. Until the form of the call is
     // known, those are the arguments that cannot be read as types.
-    let values = expr.args.flatMap((a) => (a.value && !typeOfArg(a.value) ? [a.value] : []))
+    let values = expr.args.flatMap((a) => (a.value && !this.typeApplied(a.value) ? [a.value] : []))
     const fail = (offset?: number, message?: string): ResolvedType => {
       if (offset !== undefined && message) this.error(offset, message)
       for (const value of values) this.inferExpr(value)
@@ -7451,24 +7921,26 @@ class CheckContext {
     if (!sym.valid) return fail()
 
     // Which form the call is depends only on how many arguments it has: all
-    // the type parameters are written, or all are left out.
+    // the type and value parameters are written, or all are left out.
     const params = genericParams(sym.decl)
     const typeParams = params.filter(isTypeParam).map((p) => p.ident as string)
+    const valueParams = params.filter(isValueParam).map((p) => p.ident as string)
+    const inferable = params.filter(isInferable).map((p) => p.ident as string)
     if (expr.args.some((a) => a.name !== null || a.value === null)) {
       return fail(expr.span.start, `'${name}' takes positional arguments`)
     }
     const explicit = expr.args.length === params.length
     // A comptime function parameter is always written, in either form.
-    const runtimeCount = params.length - typeParams.length
+    const runtimeCount = params.length - inferable.length
     if (!explicit && expr.args.length !== runtimeCount) {
       // A generic with comptime function parameters only has the one form.
       const receiver = this.receivers.has(expr) && runtimeCount > 0 ? 1 : 0
-      const between = typeParams.length === 0 ? ', ' : `, or ${params.length - receiver} with its type argument${typeParams.length === 1 ? '' : 's'} written; `
+      const between = inferable.length === 0 ? ', ' : `, or ${params.length - receiver} with ${comptimeArgsText(typeParams.length, valueParams.length, 'its')} written; `
       return fail(expr.span.start, `'${name}' expects ${this.counted(expr, runtimeCount, expr.args.length, between)}`)
     }
     const pairs: { param: AST.Field; arg: AST.Expr; index: number }[] = []
     for (const param of params) {
-      if (isTypeParam(param) && !explicit) continue
+      if (isInferable(param) && !explicit) continue
       pairs.push({ param, arg: expr.args[pairs.length].value as AST.Expr, index: pairs.length })
     }
     // An argument that stands for a comptime parameter is not a value,
@@ -7478,25 +7950,27 @@ class CheckContext {
 
     const funcs = new Map<AST.Field, ComptimeValue & { kind: 'func' }>()
     for (const { param, arg, index } of pairs) {
-      if (!param.comptime || isTypeParam(param)) continue
-      const value = this.evalComptimeArg(name, param, arg, this.place(expr, index))
+      if (!param.comptime || isInferable(param)) continue
+      const value = this.evalComptimeArg(name, param, arg, this.place(expr, index), sym.owner)
       if (value?.kind !== 'func') return fail()
       funcs.set(param, value)
     }
 
+    // A number is held here as its int(N) type, beside the types.
     const bound = new Map<string, ResolvedType>()
     if (explicit) {
       for (const { param, arg, index } of pairs) {
-        if (!isTypeParam(param)) continue
-        const value = this.evalComptimeArg(name, param, arg, this.place(expr, index))
-        if (value?.kind !== 'type') return fail()
-        bound.set(param.ident as string, value.type)
+        if (!isInferable(param)) continue
+        const value = this.evalComptimeArg(name, param, arg, this.place(expr, index), sym.owner)
+        if (value?.kind === 'type') bound.set(param.ident as string, value.type)
+        else if (value?.kind === 'int') bound.set(param.ident as string, comptimeInt(value.value))
+        else return fail()
       }
     } else {
       // What the call found the first time it was come to is what it finds now.
       let found = this.inferred.get(expr)
       if (found === undefined) {
-        found = this.inferTypeArgs(expr, name, pairs, typeParams, funcs, sym.owner)
+        found = this.inferTypeArgs(expr, name, pairs, inferable, new Set(valueParams), funcs, sym.owner)
         if (found || !this.attempting) this.inferred.set(expr, found)
       }
       if (!found) return fail()
@@ -7534,7 +8008,9 @@ class CheckContext {
       .filter((p) => p.comptime)
       .map((p) => {
         const given = funcs.get(p)
-        if (!given) return { kind: 'type', type: bound.get(p.ident as string) as ResolvedType }
+        const held = bound.get(p.ident as string) as ResolvedType
+        if (!given && held.kind === 'comptime_int') return { kind: 'int', value: held.value }
+        if (!given) return { kind: 'type', type: held }
         // The instance calls it from the generic's module, by a name it has
         // there: the name of its own module's function, also where this
         // module imports it under another, so that every name of one
@@ -7578,12 +8054,14 @@ class CheckContext {
     name: string,
     pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
     typeParams: string[],
+    values: ReadonlySet<string>,
     funcs: ReadonlyMap<AST.Field, ComptimeValue & { kind: 'func' }>,
     owner: CheckContext,
   ): Map<string, ResolvedType> | null {
     const bound = new Map<string, ResolvedType>()
     const untyped: { param: AST.Field; arg: AST.Expr; type: ResolvedType }[] = []
     const typed: AST.Field[] = []
+    const argTypes = new Map<AST.Field, ResolvedType>()
     // A generic type in a parameter's declared type is seen through: what
     // counts is what its body does with the type parameter.
     const expand = (applied: AST.TypeApply) => owner.expandTypeApply(applied)
@@ -7602,13 +8080,16 @@ class CheckContext {
       }
       // An argument with an error of its own decides nothing: the type it
       // was given is a guess, and the call would add errors about the guess.
+      // So does one whose type had the error, also behind a pointer: a
+      // *mut Ring(0, u32) whose Ring(0, u32) is no type.
       const reported = this.errorsReported
       const type = this.peek(arg)
-      if (type === RECOVERY || this.errorsReported > reported) return null
+      if (unresolved(type) || this.errorsReported > reported) return null
       if (isUnit(type)) {
         this.error(arg.span.start, `${this.place(expr, index)} of '${name}' has no value`)
         return null
       }
+      argTypes.set(param, type)
       if (hasOwnType(type)) {
         match(param.type, type, bound)
         typed.push(param)
@@ -7621,7 +8102,13 @@ class CheckContext {
       }
     }
     const missing = typeParams.find((p) => !bound.has(p))
-    if (!missing) return bound
+    if (!missing) return this.valuesFit(expr, name, bound, values, owner) ? bound : null
+    if (values.has(missing)) {
+      this.cannotInferValue(expr, name, missing, pairs, typeParams, values, argTypes, expand)
+      return null
+    }
+    // The arguments a message shows to write: a type as u32, a number as 8
+    const shownArgs = (shown: (p: string) => string) => typeParams.map((p) => (values.has(p) ? '8' : shown(p)))
 
     const literals = untyped.filter((u) => mentions(u.param.type, [missing]))
     // An argument with a type of its own that mentions the parameter and did
@@ -7632,7 +8119,7 @@ class CheckContext {
     // nothing can be found out through that one.
     const unused = pairs
       .flatMap(({ param }) => typeApplications(param.type))
-      .find((applied) => applied.args.some((a) => mentionsUnbound(a, [missing], bound)) && !mentions(applied, [missing]))
+      .find((applied) => applied.args.some((a) => a.kind !== 'ValueArg' && mentionsUnbound(a, [missing], bound)) && !mentions(applied, [missing]))
     if (unused && literals.length === 0 && !passedOver) {
       this.error(
         expr.span.start,
@@ -7641,17 +8128,17 @@ class CheckContext {
       return null
     }
     if (literals.length === 0 || passedOver) {
-      const plural = typeParams.length === 1 ? '' : 's'
+      const kinds = comptimeArgsText(typeParams.length - values.size, values.size, 'the')
       this.error(
         expr.span.start,
-        `cannot infer ${missing} for '${name}': write the type argument${plural}, as in ${this.written(expr, name, typeParams.map(() => 'u32'), pairs.length)}`,
+        `cannot infer ${missing} for '${name}': write ${kinds}, as in ${this.written(expr, name, shownArgs(() => 'u32'), pairs.length)}`,
       )
       return null
     }
     // What the literals would be on their own, to show what to write
     const guess = new Map(bound)
     for (const u of untyped) match(u.param.type, this.concretize(u.type), guess)
-    const written = typeParams.map((p) => {
+    const written = shownArgs((p) => {
       const type = guess.get(p)
       return type ? typeToString(type) : p
     })
@@ -7662,6 +8149,83 @@ class CheckContext {
       `cannot infer ${missing} for '${name}' from untyped literals: write ${this.written(expr, name, written, pairs.length)} or give a literal its type${example}`,
     )
     return null
+  }
+
+  // Whether each number an inferred call found for a value parameter is one
+  // the parameter's type holds: an array of 300 for a `comptime n: u8` is not.
+  private valuesFit(expr: AST.CallExpr, name: string, bound: ReadonlyMap<string, ResolvedType>, values: ReadonlySet<string>, owner: CheckContext): boolean {
+    const sym = this.lookup(name)
+    const params = sym?.kind === 'generic' ? genericParams(sym.decl) : []
+    for (const p of params) {
+      const found = p.ident && values.has(p.ident) ? bound.get(p.ident) : undefined
+      if (found?.kind !== 'comptime_int') continue
+      const wanted = owner.resolveType(p.type)
+      if (!typeAssignable(wanted, found)) {
+        this.error(expr.span.start, `cannot infer ${p.ident} for '${name}': the argument gives ${found.value}, which is not a ${typeToString(wanted)}`)
+        return false
+      }
+    }
+    return true
+  }
+
+  // Why a call cannot find a value parameter, as an error: nothing decides it
+  // but a length that is its name alone, of an argument whose type has one
+  // there (D5).
+  private cannotInferValue(
+    expr: AST.CallExpr,
+    name: string,
+    missing: string,
+    pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
+    typeParams: string[],
+    values: ReadonlySet<string>,
+    argTypes: ReadonlyMap<AST.Field, ResolvedType>,
+    expand: ExpandTypeApply,
+  ): void {
+    const why = this.whyNotInferred(expr, name, missing, pairs, typeParams, values, argTypes, expand)
+    this.error(expr.span.start, `cannot infer ${missing} for '${name}'${why}`)
+  }
+
+  private whyNotInferred(
+    expr: AST.CallExpr,
+    name: string,
+    missing: string,
+    pairs: { param: AST.Field; arg: AST.Expr; index: number }[],
+    typeParams: string[],
+    values: ReadonlySet<string>,
+    argTypes: ReadonlyMap<AST.Field, ResolvedType>,
+    expand: ExpandTypeApply,
+  ): string {
+    const example = (n: string) => this.written(expr, name, typeParams.map((p) => (p === missing ? n : values.has(p) ? '8' : 'u32')), pairs.length)
+    const what = comptimeArgsText(typeParams.length - values.size, values.size, 'the')
+    const mentioning = pairs.filter(({ param }) => lengthUses(param.type, missing, expand).length > 0)
+    // An array literal, whose count would have said it
+    const literal = mentioning.find(({ arg }) => literalCount(ungrouped(arg), (e) => this.evalComptimeExpr(e)) !== null)
+    if (literal) {
+      const count = literalCount(ungrouped(literal.arg), (e) => this.evalComptimeExpr(e)) as bigint
+      return ` from an array literal: write ${example(String(count))}`
+    }
+    // A slice (or another type with no length) where the length decides
+    for (const { param } of mentioning) {
+      const type = argTypes.get(param)
+      const decides = lengthUses(param.type, missing, expand).some((u) => u.alone)
+      if (type && decides && hasNoLength(type)) return `: a ${typeToString(type)} has no length in its type; write ${what}, as in ${example('8')}`
+    }
+    if (mentioning.length > 0 && !mentioning.some(({ param }) => lengthUses(param.type, missing, expand).some((u) => u.alone))) {
+      const uses = mentioning.flatMap(({ param }) => lengthUses(param.type, missing, expand))
+      // One written in the parameter's type is shown as written there. One
+      // in a generic type's body, with the argument put in, is that generic
+      // type's: its text is in no source.
+      const arithmetic = uses.find((u) => u.length !== null && u.applied === null)
+      if (arithmetic?.length) {
+        const owner = this.lookup(name)
+        const ctx = owner?.kind === 'generic' ? owner.owner : this
+        const text = ctx.textOf(arithmetic.length) ?? lengthText(arithmetic.length)
+        return `: [${text}] does not decide ${missing}, only a length that is ${missing} alone does; write ${what}, as in ${example('8')}`
+      }
+      const applied = uses.find((u) => u.applied)?.applied
+      if (applied) return `: '${typeText(applied)}' has no length that is ${missing} alone; write ${what}`
+    }
+    return `: write ${what}, as in ${example('8')}`
   }
 
   // The type an expression has by itself, found without leaving a trace. An
@@ -7727,10 +8291,66 @@ class CheckContext {
     return found
   }
 
+  // A call argument or callee read as a type, by its syntax and by what its
+  // names are: Ring(8, u32) is a type where Ring is a generic type in scope,
+  // its 8 given to a value parameter. Any other call with value arguments is
+  // a value, as Cell(1, 2) is. Null where it is no type.
+  typeApplied(expr: AST.Expr): AST.Type | null {
+    return typeOfArg(expr, (call) => this.applicationOf(call))
+  }
+
+  private applicationOf(call: AST.CallExpr): AST.Type | null | undefined {
+    if (call.callee.kind !== 'IdentExpr') return undefined
+    const sym = this.lookup(call.callee.name)
+    if (sym?.kind !== 'typefunc') return undefined
+    // One of type parameters only reads as it always has.
+    const params = sym.decl.params
+    if (params.every(isTypeParam)) return undefined
+    if (call.args.length === 0 || call.args.some((a) => a.name !== null || a.value === null)) return null
+    const args: (AST.Type | AST.ValueArg)[] = []
+    for (const [i, arg] of call.args.entries()) {
+      const value = arg.value as AST.Expr
+      const param = params[i] as AST.Field | undefined
+      const type = param && !isTypeParam(param) ? null : this.typeApplied(value)
+      if (type) args.push(type)
+      else if (param && isTypeParam(param)) return null
+      else args.push({ kind: 'ValueArg', value, span: value.span })
+    }
+    return { kind: 'TypeApply', name: call.callee.name, args, span: call.span }
+  }
+
   // The one place a comptime argument is evaluated. A type argument is read as
   // a type because of where it stands, as after a colon, and resolved in the
   // calling module.
-  private evalComptimeArg(callee: string, param: AST.Field, arg: AST.Expr, place: string): ComptimeValue | null {
+  private evalComptimeArg(callee: string, param: AST.Field, arg: AST.Expr, place: string, owner: CheckContext): ComptimeValue | null {
+    if (isValueParam(param)) {
+      // A number known at compile time, evaluated here, in the calling
+      // module, and checked against the parameter's type as any argument
+      // is. The instance gets the value it has in that type: ~0 for a
+      // `comptime m: u8` is 255.
+      const constant = this.typeApplied(arg) ? null : this.evalComptimeExpr(arg)
+      if (constant === null || constant.kind === 'data_ptr' || constant.kind === 'type' || constant.kind === 'func') {
+        const unknown = constant === null ? unknownNames(arg).find((n) => !this.lookup(n.name)) : undefined
+        if (unknown && !this.typeApplied(arg)) {
+          this.error(unknown.span.start, this.unknownIdentifier(unknown.name, true))
+          return null
+        }
+        if (constant === null && this.dividesByZero(arg)) {
+          this.error(arg.span.start, `${place} of '${callee}' divides by zero`)
+          return null
+        }
+        this.error(arg.span.start, `${place} of '${callee}' must be a compile-time constant: ${param.ident} is a comptime value parameter`)
+        return null
+      }
+      const wanted = owner.resolveType(param.type)
+      const before = this.errorsReported
+      this.checkExpr(arg, wanted, place)
+      if (this.errorsReported > before) return null
+      const value = this.evalComptimeExpr(arg, true)
+      if (value?.kind !== 'int') return null
+      const held = constantIn(value, wanted)
+      return held.kind === 'int' ? held : value
+    }
     if (!isTypeParam(param)) {
       // A function parameter is given a function of the module by its name,
       // or, inside an instance, a comptime function parameter passed on.
@@ -7756,7 +8376,7 @@ class CheckContext {
       }
       return { kind: 'func', name: target.alias ?? arg.name, type: target.type, inline: target.inline }
     }
-    const ast = typeOfArg(arg)
+    const ast = this.typeApplied(arg)
     if (!ast) {
       this.error(arg.span.start, `${place} of '${callee}' must be a type: ${param.ident} is a type parameter`)
       return null
@@ -7786,7 +8406,7 @@ class CheckContext {
     const held: ComptimeValue[] = args.map((a) => (a.kind === 'type' ? { kind: 'type', type: plain(a.type) } : a))
     // A function is the function of that name: two instances are one when
     // their functions are.
-    const key = held.map((a) => (a.kind === 'type' ? watSafe(canonicalKey(a.type)) : a.kind === 'func' ? a.name : '')).join('|')
+    const key = held.map((a) => (a.kind === 'type' ? watSafe(canonicalKey(a.type)) : a.kind === 'func' ? a.name : a.kind === 'int' ? String(a.value) : '')).join('|')
     // An instance asked for from an instance's body draws on that one's chain.
     const requester = this.currentInstance
     const site = requester?.site ?? this
@@ -7846,7 +8466,7 @@ class CheckContext {
     }
     const shown = comptimeParams.map((p, i) => {
       const value = held[i]
-      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? funcText(value.name) : ''
+      const text = value.kind === 'type' ? typeToString(value.type) : value.kind === 'func' ? funcText(value.name) : value.kind === 'int' ? String(value.value) : ''
       return `${p.ident} = ${text.length > 60 ? `${text.slice(0, 57)}...` : text}`
     })
     const label = `${of.ident}(${shown.join(', ')})`
@@ -7874,8 +8494,16 @@ class CheckContext {
     owner.instances.push(inst)
     if (!sym.signatureOnly) owner.instanceQueue.push(inst)
     // The signature exists from here on, which is all a call needs. The body
-    // waits for drainInstances.
-    owner.collectFunc(decl)
+    // waits for drainInstances. Its value parameters are numbers in it now;
+    // their names are known, for the message of a length that names one
+    // with a hyphen (n-1).
+    const before = owner.signatureNames
+    owner.signatureNames = new Map(comptimeParams.filter(isValueParam).map((p) => [p.ident as string, 'value']))
+    try {
+      owner.collectFunc(decl)
+    } finally {
+      owner.signatureNames = before
+    }
     return inst
   }
 
@@ -7967,12 +8595,7 @@ class CheckContext {
 
   // A type as a generic's declaration writes it, with these type arguments
   resolveBound(type: AST.Type, bound: ReadonlyMap<string, ResolvedType>): ResolvedType {
-    return this.resolveType(
-      cloneAst(type, 0, (name) => {
-        const to = bound.get(name)
-        return to && { kind: 'BoundType', name, type: to, span: { start: 0, end: 0 } }
-      }) as AST.Type,
-    )
+    return this.resolveType(cloneAst(type, 0, boundSubst(bound)) as AST.Type)
   }
 
   // Inside an instance a comptime function parameter is the function it was
@@ -7989,6 +8612,22 @@ class CheckContext {
       // For the editor: the parameter is defined at its name, which stands
       // after the `comptime` its span starts with.
       if (param.identSpan) this.recordDefinition(name, inst.index * INSTANCE_STRIDE + param.identSpan.start, sym)
+    })
+  }
+
+  // Inside an instance a value parameter's name, where it is read, is already
+  // its number (bindTypes). The name is still declared, as a def of the
+  // number beside the parameters, so that the rules about names see it: a
+  // `let`, a loop or a match arm cannot bind it again, and it cannot be
+  // assigned to (D14).
+  private bindComptimeValues(inst: Instance, scope: Scope): void {
+    const comptimeParams = genericParams(inst.of).filter((p) => p.comptime)
+    comptimeParams.forEach((param, i) => {
+      const value = inst.args[i]
+      if (value.kind !== 'int') return
+      const name = param.ident as string
+      // Its uses, numbers in the copy, are the generic's (see skipGenericBody).
+      scope.symbols.set(name, { kind: 'def', type: comptimeInt(value.value), value, valueParam: true })
     })
   }
 
@@ -8081,7 +8720,7 @@ class CheckContext {
   // An offset inside an instance, as the place in the generic's source it was
   // copied from, with the instance named in the message.
   private atSource(offset: number, message: string, own: NonNullable<TypeError['notes']> = []): TypeError {
-    const said = own.map((note) => ({ offset: note.offset % INSTANCE_STRIDE, message: note.message }))
+    const said = own.map((note) => ({ ...note, offset: note.offset % INSTANCE_STRIDE }))
     const inst = offset < INSTANCE_STRIDE ? undefined : this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1]
     if (!inst) {
       const at = offset % INSTANCE_STRIDE
@@ -8225,25 +8864,28 @@ class CheckContext {
 
   // === Error Reporting ===
 
-  private findSimilar(name: string): string | null {
+  // `values`: no type is meant, nor a generic type
+  private findSimilar(name: string, values = false): string | null {
     let best: string | null = null
     let bestDist = 3
+    const meant = (sym: Symbol) => !values || (sym.kind !== 'type' && sym.kind !== 'typefunc')
     // What a look at an expression declares goes into a scope of its own,
     // which is no reason to suggest another name than the check will.
     let local = this.currentScope
     while (local.parent && this.lookScopes.has(local)) local = local.parent
-    for (const [candidate] of local.symbols) {
+    for (const [candidate, sym] of local.symbols) {
+      if (!meant(sym)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
         best = candidate
       }
     }
-    for (const [candidate] of this.moduleScope.symbols) {
+    for (const [candidate, sym] of this.moduleScope.symbols) {
       // Not a name that could have been meant: an instance's, the one a
       // function that shares its name is known by, another module's function
       // an instance calls, or one the code being checked cannot see.
-      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate)) continue
+      if (candidate.includes('<') || candidate.includes(':') || candidate.includes('@') || !this.lookup(candidate) || !meant(sym)) continue
       const dist = editDistance(name, candidate)
       if (dist < bestDist) {
         bestDist = dist
@@ -8255,8 +8897,19 @@ class CheckContext {
 
   error(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {
     this.errorsReported++
+    // In the body of a generic type, an error of the application being made
+    const applying = offset < INSTANCE_STRIDE ? this.applyStack.at(-1) : undefined
+    if (applying) {
+      this.applyError ??= { offset, message }
+      message = `${message}, in ${applying.shown}`
+      const uses = applying.from.map((use) => ({ offset: use.offset, message: 'required from', ...(use.in === this || !use.in.filePath ? {} : { path: use.in.filePath }) }))
+      notes = [...(notes ?? []), ...uses]
+    }
     const error = this.atSource(offset, message, notes)
-    if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
+    // One error for one mistake, also where a name nothing declares is met
+    // again once a name like it is declared, and a hint comes with it.
+    const said = withoutHint(error.message)
+    if (!this.errors.some((e) => e.offset === error.offset && withoutHint(e.message) === said)) {
       this.errors.push(error)
     }
     const inst = offset >= INSTANCE_STRIDE ? this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1] : undefined
@@ -8429,6 +9082,83 @@ function isTypeParam(param: AST.Field): boolean {
   return param.comptime === true && param.type.kind === 'TypeType'
 }
 
+// The comptime parameters of an integer type, `comptime n: u32`, as the
+// checker found them where their generic is declared (comptimeParamProblem)
+const VALUE_PARAMS = new WeakSet<AST.Field>()
+
+function isValueParam(param: AST.Field): boolean {
+  return param.comptime === true && VALUE_PARAMS.has(param)
+}
+
+// A comptime parameter whose argument a call can leave out, to be found from
+// the other arguments: a type or a number. A comptime function parameter is
+// always written.
+function isInferable(param: AST.Field): boolean {
+  return isTypeParam(param) || isValueParam(param)
+}
+
+const INTEGER_NAMES: ReadonlySet<string> = new Set(['i8', 'i16', 'i32', 'i64', 'i128', 'i256', 'i512', 'u8', 'u16', 'u32', 'u64', 'u128', 'u256', 'u512'])
+
+// How a message names the comptime arguments of a call: `the type
+// argument`, `its value arguments`, `the comptime arguments` (both kinds).
+function comptimeArgsText(types: number, values: number, det: string): string {
+  if (values === 0) return `${det} type argument${types === 1 ? '' : 's'}`
+  if (types === 0) return `${det} value argument${values === 1 ? '' : 's'}`
+  return `${det} comptime arguments`
+}
+
+// Where a parameter's declared type uses a value parameter: in a length that
+// is its name alone (which decides it), in other arithmetic, or in a bound;
+// `applied` where that is inside a generic type, seen through.
+interface LengthUse { alone: boolean; length: AST.Expr | null; applied: AST.TypeApply | null }
+function lengthUses(type: AST.Type, name: string, expand?: ExpandTypeApply, applied: AST.TypeApply | null = null, expanding: readonly string[] = []): LengthUse[] {
+  const uses = (e: AST.Expr | undefined) => e !== undefined && unknownNames(e).some((n) => n.name === name)
+  const inner = (t: AST.Type) => lengthUses(t, name, expand, applied, expanding)
+  switch (type.kind) {
+    case 'IndexedType': {
+      const own: LengthUse[] = uses(type.length) ? [{ alone: lengthName(type) === name, length: lengthName(type) === name ? null : type.length ?? null, applied }] : []
+      return [...own, ...inner(type.element)]
+    }
+    case 'PrimitiveType':
+      return uses(type.bound) ? [{ alone: false, length: null, applied }] : []
+    case 'PointerType':
+      return inner(type.pointee)
+    case 'CompositeType':
+      return type.fields.flatMap((f) => inner(f.type))
+    case 'FuncType':
+      return [...inner(type.input), ...inner(type.output)]
+    case 'TypeApply': {
+      const text = typeText(type)
+      const body = expanding.includes(text) ? null : expand?.(type)
+      if (body) return lengthUses(body, name, expand, applied ?? type, [...expanding, text])
+      return type.args.some((a) => (a.kind === 'ValueArg' ? uses(a.value) : inner(a).length > 0)) ? [{ alone: false, length: null, applied: applied ?? type }] : []
+    }
+    default:
+      return []
+  }
+}
+
+// The number of elements an array literal has, or null for anything else
+function literalCount(expr: AST.Expr, evaluate: (e: AST.Expr) => ComptimeValue | null): bigint | null {
+  if (expr.kind === 'ArrayExpr' && !expr.template) return BigInt(expr.elements.length)
+  if (expr.kind !== 'RepeatExpr') return null
+  const count = evaluate(expr.count)
+  return count?.kind === 'int' ? count.value : null
+}
+
+// A type with no length in it where a length decides a value parameter: a
+// slice, a many-pointer, a framed array
+function hasNoLength(type: ResolvedType): boolean {
+  const u = unwrap(type)
+  if (u.kind === 'slice') return true
+  const arr = u.kind === 'array' ? u : pointeeArray(u)
+  return arr !== null && (arr.sizes === null || arr.sizes.some((s) => typeof s !== 'number'))
+}
+
+function lowerFirst(name: string): string {
+  return name.charAt(0).toLowerCase() + name.slice(1)
+}
+
 // Where the receiver of a method call stands among the arguments of the call
 // it is written for: it is the first argument that is not a comptime one.
 // With every type parameter written, v.push(u32, 7), those come before it as
@@ -8436,7 +9166,7 @@ function isTypeParam(param: AST.Field): boolean {
 // either form.
 function receiverSlot(decl: AST.FuncDecl, argCount: number): number {
   const params = genericParams(decl)
-  const written = argCount === params.length ? params : params.filter((p) => !isTypeParam(p))
+  const written = argCount === params.length ? params : params.filter((p) => !isInferable(p))
   return Math.max(0, written.findIndex((p) => !p.comptime))
 }
 
@@ -8489,7 +9219,35 @@ function exprText(expr: AST.Expr): string | null {
   }
 }
 
-function typeOfArg(expr: AST.Expr): AST.Type | null {
+// `apply`: how a call whose callee is a generic type in scope is read, by
+// that generic type's parameters (see typeApplied); undefined where the
+// callee is none, and the call is read by its syntax as below.
+type ApplyOf = (call: AST.CallExpr) => AST.Type | null | undefined
+// A length, a bound or a value argument as written, for a message: what
+// exprText writes, and arithmetic.
+function lengthText(expr: AST.Expr): string {
+  switch (expr.kind) {
+    case 'LiteralExpr':
+      return expr.value.kind === 'int' ? String(expr.value.value) : exprText(expr) ?? '...'
+    case 'BinaryExpr':
+      return `${lengthText(expr.left)} ${expr.op} ${lengthText(expr.right)}`
+    case 'UnaryExpr':
+      return `${expr.op}${lengthText(expr.operand)}`
+    case 'GroupExpr':
+    case 'TupleExpr': {
+      const inner = groupedExpr(expr)
+      return inner ? `(${lengthText(inner)})` : exprText(expr) ?? '...'
+    }
+    case 'SizeofExpr':
+      return `sizeof(${typeText(expr.type)})`
+    case 'AnnotationExpr':
+      return `${lengthText(expr.expr)}:${typeText(expr.type)}`
+    default:
+      return exprText(expr) ?? '...'
+  }
+}
+
+function typeOfArg(expr: AST.Expr, apply?: ApplyOf): AST.Type | null {
   switch (expr.kind) {
     case 'TypeExpr':
       return expr.type
@@ -8501,21 +9259,23 @@ function typeOfArg(expr: AST.Expr): AST.Type | null {
       if (expr.elements.length === 0) return null
       // (u32) is u32, as a type in parentheses is anywhere.
       const only = expr.elements[0]
-      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value) : null
+      if (expr.elements.length === 1 && !only.name) return only.value ? typeOfArg(only.value, apply) : null
       const fields: AST.Field[] = []
       for (const el of expr.elements) {
-        const type = el.value ? typeOfArg(el.value) : null
+        const type = el.value ? typeOfArg(el.value, apply) : null
         if (!type) return null
         fields.push({ kind: 'Field', ident: el.name, type, span: el.span })
       }
       return { kind: 'CompositeType', fields, span: expr.span }
     }
     case 'CallExpr': {
+      const applied = apply?.(expr)
+      if (applied !== undefined) return applied
       // Vec(u32): a generic type applied, when every argument is a type
       if (expr.callee.kind !== 'IdentExpr' || !/^[A-Z]/.test(expr.callee.name) || expr.args.length === 0) return null
       const args: AST.Type[] = []
       for (const arg of expr.args) {
-        const type = arg.value && !arg.name ? typeOfArg(arg.value) : null
+        const type = arg.value && !arg.name ? typeOfArg(arg.value, apply) : null
         if (!type) return null
         args.push(type)
       }
@@ -8559,18 +9319,24 @@ function typeFuncForm(decl: AST.TypeFuncDecl): string {
 // A type as it was written, for a message
 function typeText(type: AST.Type): string {
   switch (type.kind) {
-    case 'PrimitiveType':
+    case 'PrimitiveType': {
+      if (type.bound) {
+        const text = lengthText(type.bound)
+        return type.bound.kind === 'IdentExpr' || (type.bound.kind === 'LiteralExpr' && type.bound.value.kind === 'int') ? `${type.name}#${text}` : `${type.name}#(${text})`
+      }
       return type.max !== undefined ? `${type.name}#${type.max}` : type.name
+    }
     case 'TypeRef':
       return type.name
     case 'TypeApply':
-      return `${type.name}(${type.args.map(typeText).join(', ')})`
+      return `${type.name}(${type.args.map((a) => (a.kind === 'ValueArg' ? lengthText(a.value) : typeText(a))).join(', ')})`
     case 'BoundType':
       return typeToString(type.type)
     case 'PointerType':
       return `${type.optional ? '?' : ''}*${type.mutable ? 'mut ' : ''}${typeText(type.pointee)}`
     case 'IndexedType': {
-      const size = type.manyPointer ? '*' : type.size === null ? '' : Array.isArray(type.size) ? type.size.join('x') : type.size === 'inferred' ? '_' : `${type.size}`
+      const size = type.manyPointer ? '*' : type.size === null ? '' : Array.isArray(type.size) ? type.size.join('x') : type.size === 'inferred' ? '_'
+        : type.size === 'expr' ? lengthText(type.length as AST.Expr) : `${type.size}`
       return `${type.optional ? '?' : ''}[${size}]${type.mutable ? 'mut ' : ''}${typeText(type.element)}`
     }
     case 'CompositeType':
@@ -8850,13 +9616,17 @@ function mentionsUnbound(
   expanding: readonly string[] = [],
 ): boolean {
   const inner = (t: AST.Type) => mentionsUnbound(t, typeParams, bound, expand, expanding)
+  // A value parameter is mentioned by a length or a bound, also in arithmetic
+  const inExpr = (e: AST.Expr | undefined) => e !== undefined && unknownNames(e).some((n) => typeParams.includes(n.name) && !bound.has(n.name))
   switch (type.kind) {
     case 'TypeRef':
       return typeParams.includes(type.name) && !bound.has(type.name)
     case 'PointerType':
       return inner(type.pointee)
     case 'IndexedType':
-      return inner(type.element)
+      return inner(type.element) || inExpr(type.length)
+    case 'PrimitiveType':
+      return inExpr(type.bound)
     case 'CompositeType':
       return type.fields.some((f) => inner(f.type))
     case 'FuncType':
@@ -8868,11 +9638,33 @@ function mentionsUnbound(
       // read by its arguments; Vec(T) inside Vec(Vec(T)) is another one.
       const applied = typeText(type)
       const body = expanding.includes(applied) ? null : expand?.(type)
-      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, applied]) : type.args.some(inner)
+      return body ? mentionsUnbound(body, typeParams, bound, expand, [...expanding, applied]) : type.args.some((a) => (a.kind === 'ValueArg' ? inExpr(a.value) : inner(a)))
     }
     default:
       return false
   }
+}
+
+// The lengths, bounds and value arguments written in a signature's types
+function signatureLengths(node: unknown, found: AST.Expr[] = []): AST.Expr[] {
+  if (Array.isArray(node)) {
+    for (const n of node) signatureLengths(n, found)
+  } else if (node !== null && typeof node === 'object' && !(node instanceof Uint8Array)) {
+    const n = node as { kind?: string; length?: AST.Expr; bound?: AST.Expr; value?: AST.Expr }
+    if (n.kind === 'IndexedType' && n.length) found.push(n.length)
+    if (n.kind === 'PrimitiveType' && n.bound) found.push(n.bound)
+    if (n.kind === 'ValueArg' && n.value) found.push(n.value)
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'length' && key !== 'bound') signatureLengths(value, found)
+  }
+  return found
+}
+
+// The value parameter a length decides: one that is the parameter's name
+// alone, [n] (D5). Arithmetic, [n * 2], decides nothing.
+function lengthName(type: AST.IndexedType): string | null {
+  if (type.size !== 'expr' || !type.length) return null
+  const length = ungrouped(type.length)
+  return length.kind === 'IdentExpr' ? length.name : null
 }
 
 // The body of a generic type as one application of it reads, or null where
@@ -8911,6 +9703,13 @@ function matchType(
       }
       return
     case 'IndexedType': {
+      // [n] laid over an array of one length gives n that length: a value
+      // array, or the array a pointer points to. A slice, a many-pointer, a
+      // framed or packed array has no such length.
+      const length = lengthName(pattern)
+      if (length !== null && typeParams.includes(length) && !bound.has(length) && u.kind === 'array' && u.sizes?.length === 1 && typeof u.sizes[0] === 'number') {
+        bound.set(length, comptimeInt(BigInt(u.sizes[0])))
+      }
       const element =
         u.kind === 'slice' || u.kind === 'array' ? u.element
         : pointeeArray(u)?.element ?? null
@@ -8969,11 +9768,9 @@ function bindTypes(of: AST.FuncDecl, params: AST.Field[], values: ComptimeValue[
   params.forEach((p, i) => {
     const value = values[i]
     if (value.kind === 'type') bound.set(p.ident as string, value.type)
+    if (value.kind === 'int') bound.set(p.ident as string, comptimeInt(value.value))
   })
-  const subst = (name: string): AST.BoundType | undefined => {
-    const type = bound.get(name)
-    return type && { kind: 'BoundType', name, type, span: { start: 0, end: 0 } }
-  }
+  const subst = boundSubst(bound)
   const decl = (part ? { ...of, signature: cloneAst(of.signature, delta, subst) } : cloneAst(of, delta, subst)) as AST.FuncDecl
   const input = decl.signature.input as AST.CompositeType
   input.fields = input.fields.filter((f) => !f.comptime)
@@ -9282,7 +10079,7 @@ function namesIn(decl: AST.FuncDecl): { names: { name: string; offset: number; c
 // new object (only the bytes of a string are shared): the types and
 // conversions the checker records by node are then the copy's alone.
 // `put`: where given, gets each node put in place of a name.
-function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Type | undefined, put?: Set<object>): unknown {
+function cloneAst(node: unknown, delta: number, subst: Subst, put?: Set<object>): unknown {
   if (Array.isArray(node)) return node.map((n) => cloneAst(n, delta, subst, put))
   if (node === null || typeof node !== 'object' || node instanceof Uint8Array) return node
   const n = node as Record<string, unknown>
@@ -9292,18 +10089,78 @@ function cloneAst(node: unknown, delta: number, subst: (name: string) => AST.Typ
   }
   if (n.kind === 'TypeRef' || n.kind === 'IdentExpr') {
     const to = subst(n.name as string)
-    if (to) {
+    if (to && isTypeNode(to)) {
       const type: AST.Type = { ...to, span: shift(n.span) }
       put?.add(type)
       // An upper-case name is an expression only as the callee of T(a, b)
       return n.kind === 'TypeRef' ? type : { kind: 'TypeExpr', type, span: type.span }
+    }
+    // A value parameter's name read is its number: wherever an expression
+    // stands, in a type's length or bound too.
+    if (to && n.kind === 'IdentExpr') {
+      const value = { ...(cloneAst(to, 0, NO_SUBST) as AST.Expr), span: shift(n.span) }
+      put?.add(value)
+      return value
     }
   }
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n)) {
     out[k] = k === 'span' ? shift(v) : cloneAst(v, delta, subst, put)
   }
+  // The name a value is assigned to stays a name, for the checker to say it
+  // is no variable (8 = 3 would be no statement at all).
+  if (n.kind === 'AssignmentStmt' && (n.target as AST.Expr).kind === 'IdentExpr') out.target = cloneAst(n.target, delta, NO_SUBST)
+  // The shorthand (n:) is (n: n), whose value is the number.
+  if (n.kind === 'Arg' && n.value === null && typeof n.name === 'string') {
+    const to = subst(n.name)
+    if (to && !isTypeNode(to)) out.value = { ...(cloneAst(to, 0, NO_SUBST) as AST.Expr), span: shift(n.span) }
+  }
+  // -n is the negative number, as the parser makes -8 of it where a def puts
+  // 8 for n (UnaryExpr_neg): through an annotation or a cast too, and again
+  // for --n.
+  if (n.kind === 'UnaryExpr' && n.op === '-') return negatedNumber(out as unknown as AST.UnaryExpr) ?? out
   return out
+}
+
+// A negation of a number a value parameter was given, as one literal
+function negatedNumber(expr: AST.UnaryExpr): AST.Expr | null {
+  const inner = expr.operand
+  const lit = inner.kind === 'AnnotationExpr' || inner.kind === 'CastExpr' ? inner.expr : inner
+  if (lit.kind !== 'LiteralExpr' || lit.param === undefined || (lit.value.kind !== 'int' && lit.value.kind !== 'float')) return null
+  const negated: AST.LiteralExpr = { ...lit, value: { ...lit.value, value: -lit.value.value } as AST.LiteralValue, span: { start: expr.span.start, end: lit.span.end } }
+  if (inner === lit) return { ...negated, span: expr.span }
+  return { ...inner, expr: negated, span: expr.span } as AST.Expr
+}
+
+// What cloneAst puts in place of a comptime parameter's name: a type for a
+// type parameter, an expression (the number) for a value parameter.
+type Subst = (name: string) => AST.Type | AST.Expr | undefined
+const NO_SUBST: Subst = () => undefined
+
+const TYPE_KINDS: ReadonlySet<string> = new Set([
+  'PrimitiveType', 'PointerType', 'IndexedType', 'CompositeType', 'ComptimeIntType', 'ComptimeFloatType',
+  'TypeRef', 'TypeApply', 'TypeType', 'BoundType', 'FuncType',
+])
+function isTypeNode(node: AST.Type | AST.Expr | AST.ValueArg): node is AST.Type {
+  return TYPE_KINDS.has(node.kind)
+}
+
+// The number a value parameter is given, as it is put in where its name is
+// read: a decimal literal, marked with the parameter's name.
+function valueLiteral(name: string, value: bigint): AST.LiteralExpr {
+  return { kind: 'LiteralExpr', value: { kind: 'int', value, radix: 10 }, param: name, span: { start: 0, end: 0 } }
+}
+
+// What a comptime parameter's name is replaced by, for what is bound to it:
+// a type is put in as itself, a number (held as an int(N) type while a call's
+// arguments are found) as its literal.
+function boundSubst(bound: ReadonlyMap<string, ResolvedType>): Subst {
+  return (name) => {
+    const to = bound.get(name)
+    if (!to) return undefined
+    if (to.kind === 'comptime_int') return valueLiteral(name, to.value)
+    return { kind: 'BoundType', name, type: to, span: { start: 0, end: 0 } }
+  }
 }
 
 // The generic types applied in the body of another one, as expandTypeApply
@@ -9381,6 +10238,71 @@ function isScalar(t: ResolvedType): boolean {
 }
 
 // A ranged integer type (u32#8) as the plain type its values are held in (u32).
+// The most bytes an array has (D9): a u32's worth.
+const MAX_ARRAY_BYTES = 4294967295
+
+// What is wrong with a length, if anything: a length is a u32's.
+function lengthProblem(length: bigint): string | null {
+  if (length < 0n) return `array length cannot be negative: it is ${length}`
+  if (length > 4294967295n) return `array length ${length} is too large: an array has at most 4294967295 elements`
+  return null
+}
+
+// What is wrong with a range bound for an unsigned type, if anything: it has
+// a value below it, and no more values than its type.
+function boundProblem(name: string, bound: bigint): string | null {
+  if (bound < 1n) return `range bound must be at least 1: ${name}#${bound} has no values`
+  const bits = BigInt(name.slice(1))
+  if (bound > 1n << bits) return `range bound ${bound} is too large for ${name}, which has ${1n << bits} values`
+  return null
+}
+
+// The bytes an array holds, where all its lengths are known
+function arrayBytes(t: ResolvedType & { kind: 'array' }): number | null {
+  if (!t.sizes || !t.sizes.every((s) => typeof s === 'number')) return null
+  return byteSize(t)
+}
+
+function arrayTooLarge(t: ResolvedType, bytes: number): string {
+  return `array ${typeToString(t)} is too large: ${bytes} bytes, more than the 4294967295 a 32-bit memory addresses`
+}
+
+// A message without the name it suggests (' — did you mean 'k'?')
+function withoutHint(message: string): string {
+  return message.replace(/ — did you mean '[^']*'\?/, '')
+}
+
+// The outermost annotations of an expression (42:u8), but for those of a type
+// in it (sizeof)
+function annotationsIn(expr: unknown, found: AST.AnnotationExpr[] = []): AST.AnnotationExpr[] {
+  if (Array.isArray(expr)) {
+    for (const e of expr) annotationsIn(e, found)
+  } else if (expr !== null && typeof expr === 'object' && !(expr instanceof Uint8Array)) {
+    const n = expr as { kind?: string }
+    if (n.kind === 'AnnotationExpr') {
+      found.push(n as AST.AnnotationExpr)
+      return found
+    }
+    if (n.kind === 'SizeofExpr') return found
+    for (const [key, value] of Object.entries(n)) if (key !== 'span') annotationsIn(value, found)
+  }
+  return found
+}
+
+// The names an expression reads, for the one it cannot be computed without
+function unknownNames(expr: unknown, found: AST.IdentExpr[] = []): AST.IdentExpr[] {
+  if (Array.isArray(expr)) {
+    for (const e of expr) unknownNames(e, found)
+  } else if (expr !== null && typeof expr === 'object' && !(expr instanceof Uint8Array)) {
+    const n = expr as { kind?: string }
+    if (n.kind === 'IdentExpr') found.push(n as AST.IdentExpr)
+    // A member's name and a type's are no names of values.
+    if (n.kind === 'SizeofExpr') return found
+    for (const [key, value] of Object.entries(n)) if (key !== 'span' && key !== 'member') unknownNames(value, found)
+  }
+  return found
+}
+
 function stripMax(t: ResolvedType): ResolvedType {
   return t.kind === 'primitive' && t.max !== undefined ? primitive(t.name) : t
 }
@@ -9626,7 +10548,7 @@ function takenName(sym: Symbol): string | null {
         : sym.binding === 'match' ? 'a match binding in scope'
         : 'a variable in scope'
     case 'def':
-      return sym.value.kind === 'data_ptr' ? 'a data block' : 'a def'
+      return sym.valueParam ? 'a comptime value parameter' : sym.value.kind === 'data_ptr' ? 'a data block' : 'a def'
     case 'func':
       // A comptime function parameter, in an instance.
       return sym.alias ? 'a parameter' : null
@@ -9646,6 +10568,11 @@ function patternNames(pattern: AST.MatchPattern): string[] {
     default:
       return []
   }
+}
+
+// Why a name cannot be assigned to: what it is, where that is not plain
+function notAVariable(sym: Symbol): string {
+  return sym.kind === 'def' && sym.valueParam ? 'it is a comptime value parameter' : 'it is not a variable'
 }
 
 // A name that holds a value in registers, which `=` and `set` can replace.

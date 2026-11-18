@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { parse } from './parser'
-import type { ArrowBody, CallExpr, EnumDecl, Expr, FuncDecl, ImportDecl } from './ast'
+import type { ArrowBody, AssertStmt, BinaryExpr, CallExpr, EnumDecl, Expr, FuncDecl, ImportDecl, TestDecl } from './ast'
 
 describe('parser', () => {
   describe('parse function', () => {
@@ -70,6 +70,23 @@ describe('parser', () => {
       expect(body(3)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'int', value: 5n } })
       expect(body(4)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'float', value: -0.5 } })
       expect(body(5)).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'float', value: 0.5 } })
+    })
+
+    // A def declared in a test is the test's: the code after the test reads
+    // the name as it would without it (before, the def was pasted there too).
+    test('a def in a test is pasted in that test only', () => {
+      const result = parse(`
+        test "t" {
+          def q = 3
+          assert q == 3
+        }
+        func f() -> u32 => q
+      `)
+      expect(result.errors).toHaveLength(0)
+      const t = result.module?.decls[0] as TestDecl
+      const assertStmt = t.children.find((s) => s.kind === 'AssertStmt') as AssertStmt
+      expect((assertStmt.expr as BinaryExpr).left).toMatchObject({ kind: 'LiteralExpr', value: { kind: 'int', value: 3n } })
+      expect(((result.module?.decls[1] as FuncDecl).body as ArrowBody).expr).toMatchObject({ kind: 'IdentExpr', name: 'q' })
     })
   })
 

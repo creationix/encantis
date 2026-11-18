@@ -1,0 +1,26 @@
+type Ring_8_u32 = (head: u32#8, count: u32, items: *mut [8]u32)
+
+func push_8_u32(r: *mut Ring_8_u32, x: u32) {
+  r.items[(r.head + r.count) % 8] = x
+  if r.count < 8 {
+    r.count += 1
+  } else {
+    r.head = (r.head + 1) % 8
+  }
+}
+
+func oldest_8_u32(r: *Ring_8_u32, i: u32#8) -> u32 => r.items[(r.head + i) % 8]
+
+data cells = mut [0:u32; 8]
+data log: Ring_8_u32 = mut (0, 0, cells)
+
+export func record(x: u32) { push_8_u32(log, x) }
+export func first() -> u32 => oldest_8_u32(log, 0)
+
+test "the ring keeps the last eight" {
+  for i in 10 {
+    record(i)
+  }
+  assert log.count == 8
+  assert first() == 2
+}

@@ -1,0 +1,26 @@
+func FixedVec(comptime n: u32, comptime T: type) -> type => (len: u32#(n + 1), buf: *mut [n]T)
+
+// Adds x at the end, or returns false when the vector is full.
+func push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool {
+  let i = v.len
+  return false when i >= n
+  v.buf[i] = x             // i is a u32#n here: the store needs no check
+  v.len = i + 1            // a u32#(n + 1), which len is
+  return true
+}
+
+// The elements, in the order they were pushed.
+func items(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> []T => v.buf[0..v.len]
+
+data store = mut [0:u64; 4]
+data v: FixedVec(4, u64) = mut (0, store)
+
+export func add(x: u64) -> bool => v.push(x)
+export func count() -> u32 => v.items().len
+
+test "four fit" {
+  for i in 5 {
+    assert add(i) == (i < 4)
+  }
+  assert count() == 4
+}

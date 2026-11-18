@@ -1,0 +1,24 @@
+type FixedVec_4_u64 = (len: u32#5, buf: *mut [4]u64)
+
+func push_4_u64(v: *mut FixedVec_4_u64, x: u64) -> bool {
+  let i = v.len
+  return false when i >= 4
+  v.buf[i] = x
+  v.len = i + 1
+  return true
+}
+
+func items_4_u64(v: *FixedVec_4_u64) -> []u64 => v.buf[0..v.len]
+
+data store = mut [0:u64; 4]
+data v: FixedVec_4_u64 = mut (0, store)
+
+export func add(x: u64) -> bool => push_4_u64(v, x)
+export func count() -> u32 => items_4_u64(v).len
+
+test "four fit" {
+  for i in 5 {
+    assert add(i) == (i < 4)
+  }
+  assert count() == 4
+}

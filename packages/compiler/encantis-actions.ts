@@ -28,6 +28,20 @@ function span(node: ohm.Node): Span {
   }
 }
 
+// A name read as a value: a def declared before it is its value, put in at
+// the name's place; anything else is the name, for the checker.
+function identOrDef(name: string, at: Span): AST.Expr {
+  const def = currentDefs.get(name)
+  if (!def) return { kind: 'IdentExpr', name, span: at } as AST.IdentExpr
+  // Inline the def value, retargeting the span to the identifier's span
+  const clonedValue = cloneExprWithSpan(def.value, at)
+  // If def has a type annotation, wrap in AnnotationExpr so type propagates
+  if (def.type) {
+    return { kind: 'AnnotationExpr', expr: clonedValue, type: def.type, span: at } as AST.AnnotationExpr
+  }
+  return clonedValue
+}
+
 // A type written as a call argument
 function typeArg(type: ohm.Node): AST.Arg {
   const value: AST.TypeExpr = { kind: 'TypeExpr', type: type.toAST(), span: span(type) }
@@ -463,6 +477,18 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.Field
   },
 
+  // comptime N: u32: parsed so that the checker can say to write n
+  Param_comptimeValueUpper(_comptime, name, typeAnnotation) {
+    return {
+      kind: 'Field',
+      comptime: true,
+      ident: name.sourceString,
+      identSpan: span(name),
+      type: typeAnnotation.toAST(),
+      span: span(this),
+    } as AST.Field
+  },
+
   Param_typeNoComptime(name, _colon, typeKw) {
     return {
       kind: 'Field',
@@ -669,7 +695,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
   },
 
   TestBlock(_open, items, _close) {
-    return items.children.map((i: any) => i.toAST())
+    // A def inside a test is the test's (the checker declares it in the
+    // test's scope): put in for its name there, and nowhere after the test.
+    const outer = currentDefs
+    currentDefs = new Map(outer)
+    try {
+      return items.children.map((i: any) => i.toAST())
+    } finally {
+      currentDefs = outer
+    }
   },
 
   TestItem(item) {
@@ -849,6 +883,55 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.IndexedType
   },
 
+  // [n]mut T, [k * 2]mut T: a length that is a constant expression
+  BaseType_lengthMut(_lb, length, _rb, _mut, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: length.toAST(),
+      specifiers: [],
+      mutable: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  // [n]T, [k + 1]T, [0x10]T
+  BaseType_length(_lb, length, _rb, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: length.toAST(),
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  // [N]T: a near miss of [n]T, read as the name
+  BaseType_lengthUpperMut(_lb, name, _rb, _mut, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: { kind: 'IdentExpr', name: name.sourceString, span: span(name) },
+      specifiers: [],
+      mutable: true,
+      span: span(this),
+    } as AST.IndexedType
+  },
+
+  BaseType_lengthUpper(_lb, name, _rb, element) {
+    return {
+      kind: 'IndexedType',
+      element: element.toAST(),
+      size: 'expr',
+      length: { kind: 'IdentExpr', name: name.sourceString, span: span(name) },
+      specifiers: [],
+      span: span(this),
+    } as AST.IndexedType
+  },
+
   // Comma-separated framings: dimensions and/or specifiers
   // [5] -> size=5, [5,16] -> size=[5,16], [!] -> specifier, [5,!] -> size=5 + specifier
   arrayFramings(first, _xs, rest) {
@@ -932,13 +1015,28 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return ranged.toAST()
   },
 
-  rangedUnsigned(unsignedType, _hash, digits) {
+  // u32#16, or u32#n with a name for the bound: a def the parser knows is
+  // put in as it is in an expression, anything else is left for the checker.
+  rangedUnsigned(unsignedType, _hash, bound) {
+    const name = unsignedType.sourceString as AST.PrimitiveType['name']
+    if (/^[0-9]/.test(bound.sourceString)) {
+      return { kind: 'PrimitiveType', name, max: parseInt(bound.sourceString, 10), span: span(this) } as AST.PrimitiveType
+    }
+    return { kind: 'PrimitiveType', name, bound: identOrDef(bound.sourceString, span(bound)), span: span(this) } as AST.PrimitiveType
+  },
+
+  // u32#(n + 1)
+  BaseType_rangedComputed(head, bound, _rp) {
     return {
       kind: 'PrimitiveType',
-      name: unsignedType.sourceString as AST.PrimitiveType['name'],
-      max: parseInt(digits.sourceString, 10),
+      name: head.toAST(),
+      bound: bound.toAST(),
       span: span(this),
     } as AST.PrimitiveType
+  },
+
+  rangedHead(name, _hashParen) {
+    return name.sourceString
   },
 
   BaseType_primitive(prim) {
@@ -960,6 +1058,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   typeApplyHead(name, _lp) {
     return name.sourceString
+  },
+
+  TypeArg_type(type, _lookahead) {
+    return type.toAST()
+  },
+
+  // The 8 of Ring(8, u32)
+  TypeArg_value(value) {
+    return { kind: 'ValueArg', value: value.toAST(), span: span(this) } as AST.ValueArg
   },
 
   ComptimeType_int(_int, _lp, value, _rp) {
@@ -1548,29 +1655,7 @@ export const semanticsActions: Record<string, SemanticAction> = {
 
   PrimaryExpr(expr) {
     // Handle ident specially - it returns a string but needs to be IdentExpr here
-    if (expr.ctorName === 'ident') {
-      const name = expr.toAST() as string
-      const def = currentDefs.get(name)
-      if (def) {
-        // Inline the def value, retargeting the span to the identifier's span
-        const clonedValue = cloneExprWithSpan(def.value, span(expr))
-        // If def has a type annotation, wrap in AnnotationExpr so type propagates
-        if (def.type) {
-          return {
-            kind: 'AnnotationExpr',
-            expr: clonedValue,
-            type: def.type,
-            span: span(expr),
-          } as AST.AnnotationExpr
-        }
-        return clonedValue
-      }
-      return {
-        kind: 'IdentExpr',
-        name,
-        span: span(expr),
-      } as AST.IdentExpr
-    }
+    if (expr.ctorName === 'ident') return identOrDef(expr.toAST() as string, span(expr))
     return expr.toAST()
   },
 

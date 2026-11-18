@@ -1,0 +1,59 @@
+// A bitset over the w words of a *mut [w]u32: bits 0 to w * 32 - 1.
+//
+//   data seen = mut [0:u32; 4]     // 128 bits
+//   seen.set_bit(k & 127)
+//   seen.has_bit(k & 127)
+//
+// The words decide w, so calls are inferred: on a *mut [4]u32, set_bit is
+// set_bit<4>. An index is a u32#(w * 32), so `i >> 5` is below w and each
+// word is read and written without a check: one shift, one load, one `or`,
+// one store. (set is a keyword, the start of `set (a, b) = ...`, so the
+// functions are set_bit, clear_bit and has_bit.)
+//
+// A bitset of a number of bits that is no multiple of 32 takes the words
+// that hold it, (bits + 31) / 32, and a range that is narrower: a u32#100
+// is a fine index for a *mut [4]u32.
+
+export func set_bit(comptime w: u32, b: *mut [w]u32, i: u32#(w * 32)) {
+  b[i >> 5] |= 1 << (i & 31)
+}
+
+export func clear_bit(comptime w: u32, b: *mut [w]u32, i: u32#(w * 32)) {
+  b[i >> 5] &= ~(1 << (i & 31))
+}
+
+export func has_bit(comptime w: u32, b: *[w]u32, i: u32#(w * 32)) -> bool => ((b[i >> 5] >> (i & 31)) & 1) == 1
+
+// How many bits are set.
+export func count_bits(comptime w: u32, b: *[w]u32) -> (n: u32) {
+  for x in b {
+    n += popcnt(x)
+  }
+}
+
+test "bits set, tested and cleared" {
+  let seen: *mut [4]u32 = mut [0:u32; 4]
+  let wide: *mut [1]u32 = mut [0:u32; 1]
+  for k in 300 {
+    if k % 7 == 0 {
+      seen.set_bit(k & 127)
+    }
+  }
+  assert seen.has_bit(0)
+  assert seen.has_bit(7)
+  assert !seen.has_bit(8)
+  assert seen.has_bit(127 & (7 * 18))
+  seen.clear_bit(7)
+  assert !seen.has_bit(7)
+  assert seen.has_bit(14)
+  wide.set_bit(31)
+  assert wide[0] == 0x80000000
+  assert wide.count_bits() == 1
+}
+
+test "a narrower range is a fine index" {
+  let seen: *mut [4]u32 = mut [0:u32; 4]
+  let k: u32#100 = 99
+  seen.set_bit(k)
+  assert seen.has_bit(k)
+}

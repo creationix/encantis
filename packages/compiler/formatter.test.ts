@@ -241,6 +241,16 @@ describe('formatter', () => {
     expect(shape(formatEncantis(source))).toEqual(shape(source))
   })
 
+  // A ranged type is one word with its bound, a number, a name or the
+  // parenthesis of an expression: split at the #, it would not parse.
+  test('a length and a bound that are expressions, and a value argument, keep their meaning', () => {
+    const source = 'func Ring(comptime n:u32, comptime T:type)->type=>(head:u32#n, count:u32#(n+1), items:*mut [n*2]T, b:[0x10]mut u8)\nfunc f(comptime n:u32, x:*Ring(n*2,u32), y:Ring( 8 ,u32 ), i:u32#16)->u32=>sizeof(Ring(4+4,u32))\n'
+    const once = formatEncantis(source)
+    expect(once).toBe('func Ring(comptime n:u32, comptime T:type) -> type => (head:u32#n, count:u32#(n + 1), items:*mut [n * 2]T, b:[0x10]mut u8)\nfunc f(comptime n:u32, x:*Ring(n * 2, u32), y:Ring(8, u32), i:u32#16) -> u32 => sizeof (Ring(4 + 4, u32))\n')
+    expect(formatEncantis(once)).toBe(once)
+    expect(shape(once)).toEqual(shape(source))
+  })
+
   test('comptime is spaced as a keyword', () => {
     expect(formatEncantis('func f(comptime(T): type) {}\n')).toBe('func f(comptime (T):type) {}\n')
     expect(formatEncantis('func f(comptime[n]u8) {}\n')).toBe('func f(comptime [n]u8) {}\n')

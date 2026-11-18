@@ -1,0 +1,4 @@
+func scratch(comptime n: u32) -> *mut [n]u8 => mut [0:u8; n]
+
+export func a() -> u32 => (scratch(16) as u32) + (scratch(64) as u32)
+export func b() -> bool => scratch(16) == scratch(16)

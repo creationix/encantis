@@ -267,9 +267,12 @@ export function formatEncantis(source: string): string {
       if (/[a-zA-Z_]/.test(line[j])) {
         const start = j
         while (j < line.length && /[a-zA-Z0-9_-]/.test(line[j])) j++
-        if (line[j] === '#' && /^u(8|16|32|64|128|256|512)$/.test(line.slice(start, j)) && /[0-9]/.test(line[j + 1])) {
+        // A ranged type is one word: u32#16, u32#n, and u32# before the
+        // parenthesis of u32#(n + 1).
+        if (line[j] === '#' && /^u(8|16|32|64|128|256|512)$/.test(line.slice(start, j)) && /[0-9a-z(]/.test(line[j + 1] ?? '')) {
           j++
-          while (j < line.length && /[0-9]/.test(line[j])) j++
+          if (/[0-9]/.test(line[j])) while (j < line.length && /[0-9]/.test(line[j])) j++
+          else if (line[j] !== '(') while (j < line.length && /[a-zA-Z0-9_-]/.test(line[j])) j++
         }
         tokens.push({ kind: 'word', text: line.slice(start, j) }); continue
       }

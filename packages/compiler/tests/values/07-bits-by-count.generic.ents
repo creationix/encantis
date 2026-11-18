@@ -1,0 +1,17 @@
+func set_bit(comptime n: u32, b: *mut [(n + 31) / 32]u32, i: u32#n) {
+  b[i >> 5] |= 1 << (i & 31)
+}
+func has_bit(comptime n: u32, b: *[(n + 31) / 32]u32, i: u32#n) -> bool => ((b[i >> 5] >> (i & 31)) & 1) == 1
+
+data seen = mut [0:u32; 4]
+
+export func mark(k: u32) { set_bit(100, seen, k % 100) }
+export func marked(k: u32) -> bool => has_bit(100, seen, k % 100)
+
+test "bits" {
+  mark(99)
+  mark(3)
+  assert marked(99)
+  assert marked(103)
+  assert !marked(4)
+}

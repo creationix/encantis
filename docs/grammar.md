@@ -226,6 +226,7 @@ func print_hello() { /* side effects */ }
 ```encantis
 func max(comptime T: type, a: T, b: T) -> T => if a > b { a } else { b }
 func at(xs: []T, comptime T: type, i: u32) -> T => xs.ptr[i]
+func sum(comptime n: u32, xs: *[n]u32) -> u32 => 0
 ```
 
 ```ebnf
@@ -235,15 +236,16 @@ func_signature  = param_list ("->" type)?
 param_list      = "(" (param ("," param)*)? ")"
 
 param           = "comptime" type_ident ":" "type"     -- a type parameter
-                | "comptime" ident ":" type            -- a function parameter: comptime before: (T, T) -> bool
+                | "comptime" ident ":" type            -- a function parameter, comptime before: (T, T) -> bool,
+                                                       -- or a value parameter, comptime n: u32
                 | field                                -- an ordinary parameter
 ```
 
-A `comptime` parameter of a function type is given the name of a function; one of any other type (`comptime n: u32`) is parsed, and not supported yet.
+A `comptime` parameter of a function type is given the name of a function, and one of an integer type (`comptime n: u32`) a number. The checker tells them apart by the type; a parameter of any other type is an error.
 
 `comptime` can only be written in the parameter list of a declaration or of an import item. A struct type, a result, an enum payload and a function type are lists of fields, not of parameters, so `type P = (comptime T: type)` and `-> (comptime T: type)` are syntax errors, and `type` is not a type anywhere else (`let t: type` is a syntax error too).
 
-Two near misses of a type parameter, `comptime t: type` (lower-case name) and `T: type` (no `comptime`), are parsed so that the compiler can say what to write instead.
+Two near misses of a type parameter, `comptime t: type` (lower-case name) and `T: type` (no `comptime`), and one of a value parameter, `comptime N: u32` (upper-case name, with `[N]T` where it is used), are parsed so that the compiler can say what to write instead.
 
 **Generic types** (a function from types to a type):
 
@@ -258,6 +260,8 @@ func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)
 func_decl       = "func" type_ident param_list "->" "type" "=>" type    -- a generic type
                 | "inline"? "func" ident? func_signature body
 ```
+
+Its parameters are type parameters and value parameters: `func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, items: *mut [n]T)`.
 
 The name is upper-case, the result is the keyword `type`, and the body is one type after `=>`: there is no block body. It may be exported like a function. Only a generic type has a result of `type`; `func vec(...) -> type` with a lower-case name is a syntax error.
 
@@ -346,11 +350,14 @@ base_type       = primitive_type
                 | pointer_type
                 | array_type
                 | composite_type
-                | type_ident "(" type ("," type)* ")"   -- a generic type applied: Vec(u32)
+                | type_ident "(" type_arg ("," type_arg)* ")"   -- a generic type applied: Vec(u32), Ring(8, u32)
                 | type_ident
+
+type_arg        = type                           -- followed by "," or ")"
+                | expr                           -- a number for a value parameter: Ring(8, u32), Bits(n * 2)
 ```
 
-**A generic type applied**, `Vec(u32)`, `Map(K, Vec(V))`, `*mut Vec(T)`, is a type wherever a type is written. There is no space between the name and the parenthesis: a type can end a line, and the next one can start with a parenthesis.
+**A generic type applied**, `Vec(u32)`, `Map(K, Vec(V))`, `*mut Vec(T)`, `Ring(8, u32)`, is a type wherever a type is written. There is no space between the name and the parenthesis: a type can end a line, and the next one can start with a parenthesis. An argument is a type where it parses as one, and otherwise an expression, a number for a value parameter.
 
 **Nesting.** Brackets (`(`, `[`, `{`, and the `${` of a template literal), and prefixes before what they apply to (`-`, `~`, `!`, `&`, `*`, `?`, `^`, `mut`, `[]`, `[*]`, `[N]`), nest at most 256 deep: a prefix counts until its operand, and one before a bracket as long as the bracket is open. Deeper source is the error `nested more than 256 deep` at the first place it goes deeper, and is not parsed.
 
@@ -374,7 +381,16 @@ Unsigned integers support an optional upper bound: `u32#N` means values in `[0, 
 ```encantis
 u8#16                  // u8 with values 0..15
 u32#6                  // u32 with values 0..5
+u32#n                  // a bound that is a name: a def, or a value parameter
+u32#(n + 1)            // any other constant, in parentheses
 ```
+
+```ebnf
+ranged_type     = unsigned_name "#" (digit+ | ident)     -- lexical: no space around the #
+                | unsigned_name "#(" expr ")"
+```
+
+A name after `#` is lexical, as an identifier is, so `u32#n-1` is the bound named `n-1`: write `u32#(n - 1)`.
 
 ### Composite Types (Tuples/Structs)
 
@@ -415,6 +431,18 @@ u32#6                  // u32 with values 0..5
 [Grammar: `BaseType` array case, `arrayTypePrefix`](../packages/compiler/src/grammar/encantis.ohm#L110-L118)
 
 `[N]T` with a fixed numeric size is a value type (flattened to N wasm values). Other bracket types are pointers.
+
+A length is a decimal number or any compile-time constant expression: `[n]T`, `[k * 2]T`, `[(n + 31) / 32]u32`, `[sizeof(T) * 4]u8`, `[0x10]u8`. The bracket forms of the table below are tried first; whatever else stands between the brackets is read as an expression, unless it starts with `*`, `!` or `?`, as the bracket forms `[*]`, `[!]` and `[?]` do. A near miss of one of those, `[*:0]u8` or `[!u8]`, is a syntax error at the place that form went wrong.
+
+```ebnf
+array_type      = "[" framings "]" "mut"? type   -- [5]T, [12x16]T, [_]T, [!]T, [?]T
+                | "[" expr "]" "mut"? type       -- [n]T, [k * 2]T, [0x10]T; expr not starting with *, ! or ?
+
+framing         = "_" | decimal | "!" | "?"      -- decimal: digits not starting 0x, 0o, 0b or 0d
+framings        = framing ("x" framing)*
+```
+
+The `x` between dimensions is read only between decimal numbers, so `[0x10]u8` is sixteen bytes and `[2x3]u8` a packed block of two rows of three.
 
 **Many-pointer** (thin, just ptr):
 ```encantis
@@ -777,9 +805,11 @@ apply((u32) -> u32, f)        // so is a function type
 pick((name: []u8, at: Point), a, b)   // and a struct type whose fields are not all expressions
 ```
 
-An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, an upper-case name that is not followed by `(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8` or `Point`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
+An argument is parsed as a type when it starts in a way no expression can (`?`, `*`, `[*]`, `[]`, `[N]`, `u8#16`, `u8#n`, `u8#(`, an upper-case name that is not followed by `(`), or when it is no expression but is a type, such as a function type or a struct type with a field type like `[]u8` or `Point`; the type is followed by `,` or `)`. Everything else stays an expression: `u32`, `(i32, i32)`, `(q: i32, r: i32)`, `(at: Point)` (the name `at` given a type, in parentheses), `Point(1, 2)`, `[4]`, `[]`. The checker reads such an expression as a type where the parameter is a type parameter, so a type argument is always written as it would be after a colon.
 
-A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too.
+A generic type applied is an expression of the same kind: `first(Vec(u32), vs)` parses as a call inside a call, and is read as a type by its position. Its own arguments follow the same rule, so `first(Vec([]u8), vs)` works too. A call with numbers among its arguments, `Ring(8, u32)`, is read as a type where its callee is a generic type in scope, each number given to a value parameter; `Cell(1, 2)` with `Cell` a struct type stays a value.
+
+**Value arguments.** Where the parameter is `comptime n: u32`, the argument is an expression, a compile-time constant: `sum(8, xs)`, `sum(2 + 2, xs)`, `fill(n * 2, xs, 7)`.
 
 So a struct type with named fields is written in place like any other type argument: `(q: i32, r: i32)` is an expression read as a type, and `(name: []u8, at: Point)` is parsed as a type because it is no expression.
 

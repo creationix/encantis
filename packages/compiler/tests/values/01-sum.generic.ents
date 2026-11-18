@@ -1,0 +1,18 @@
+func sum(comptime n: u32, xs: *[n]u32) -> (total: u32) {
+  for i in n {
+    total += xs[i]
+  }
+}
+
+data primes = [2:u32, 3, 5, 7]
+data squares = [1:u32, 4, 9, 16, 25, 36, 49, 64]
+
+export func a() -> u32 => sum(primes)          // n = 4, from *[4]u32
+export func b() -> u32 => sum(8, squares)      // n written
+export func c() -> u32 => sum(2 + 2, primes)   // the instance of a
+
+test "each length is its own function" {
+  assert a() == 17
+  assert b() == 204
+  assert c() == 17
+}

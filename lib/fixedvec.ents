@@ -1,0 +1,104 @@
+// A vector of at most n elements that never grows, for a known maximum (the
+// moves of a position, the neighbours of a cell): no copying, and the
+// capacity in the type.
+//
+//   data cells = mut [0:u32; 8]
+//   data v: FixedVec(8, u32) = mut (0, cells)
+//   v.push(7)                    // false when it is full
+//   for x in v.items() { ... }
+//
+// or `let v = fixedvec(8, u32)` from lib/fixedalloc.ents, which allocates
+// the header and the elements in one allocation on the stack. This file imports
+// nothing: a program that holds its vectors where it likes pays for nothing
+// else.
+//
+// The length is a u32#(n + 1): it reaches n when the vector is full. So
+// `return false when i >= n` leaves i a u32#n, below the length of the
+// *mut [n]T, and every store and load through buf is proven and unchecked.
+// Each capacity and element type is its own copy of each function
+// (push<8|u32>), as each element type of a Vec is.
+//
+// The names are lib/vec's: a module that imports both renames one on
+// import, as in "push" func fixed_push(...). The field holding the elements
+// is `buf`: a field wins over a function of its name, so one called `items`
+// would hide the function `items` from v.items().
+//
+// An element that is a fixed array makes buf a table (reference 2.5), whose
+// elements are row pointers, so a push of a [3]i32 is refused in the
+// instance. A struct with an array field lies in place:
+// FixedVec(8, (cells: [3]i32)).
+
+export func FixedVec(comptime n: u32, comptime T: type) -> type => (len: u32#(n + 1), buf: *mut [n]T)
+
+// Adds x at the end. False, with nothing changed, when it is full.
+export func push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool {
+  let i = v.len
+  return false when i >= n
+  v.buf[i] = x             // i is a u32#n here: the store needs no check
+  v.len = i + 1            // a u32#(n + 1), which len is
+  return true
+}
+
+// Takes the last element off. Traps when there is none.
+export func pop(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T)) -> T {
+  assert v.len > 0
+  // len is at most n, and above 0 here: one less is below n.
+  let i = (v.len - 1) as u32#n
+  v.len = i
+  return v.buf[i]
+}
+
+// The last element. Traps when there is none.
+export func last(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> T {
+  assert v.len > 0
+  return v.buf[(v.len - 1) as u32#n]
+}
+
+// The elements, in the order they were pushed: a slice of proven bounds.
+export func items(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> []T => v.buf[0..v.len]
+
+// The elements, to change in place.
+export func items_mut(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T)) -> []mut T => v.buf[0..v.len]
+
+// Empties it.
+export func clear(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T)) {
+  v.len = 0
+}
+
+// Whether it is full.
+export func full(comptime n: u32, comptime T: type, v: *FixedVec(n, T)) -> bool => v.len == n
+
+test "at most n, and nothing changes when full" {
+  let cells: *mut [4]u32 = mut [0:u32; 4]
+  let v: *mut FixedVec(4, u32) = &mut (0, cells)
+  for i in 6 {
+    let added = v.push(i * 10)
+    assert added == (i < 4)
+  }
+  assert v.len == 4
+  assert v.full()
+  let total: u32 = 0
+  for x in v.items() {
+    total += x
+  }
+  assert total == 60
+  assert v.last() == 30
+  assert v.pop() == 30
+  assert v.len == 3
+  assert !v.full()
+  v.clear()
+  assert v.items().len == 0
+  assert v.push(5)
+  assert v.last() == 5
+}
+
+test "the elements change in place" {
+  data cells = mut [0:u64; 3]
+  data v: FixedVec(3, u64) = mut (0, cells)
+  assert v.push(1)
+  assert v.push(2)
+  let xs = v.items_mut()
+  xs.ptr[1] = 9
+  assert v.last() == 9
+  assert cells[1] == 9
+}

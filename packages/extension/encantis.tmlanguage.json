@@ -235,6 +235,15 @@
     "variables": {
       "patterns": [
         {
+          "comment": "A range bound written as a name (u32#n, a def or a value parameter) is a value; u32#( is the type of u32#(n + 1)",
+          "match": "\\b(u8|u16|u32|u64|u128|u256|u512)(#)(?:([a-z][0-9A-Za-z_-]*)|(?=\\())",
+          "captures": {
+            "1": { "name": "entity.name.type.encantis" },
+            "2": { "name": "entity.name.type.encantis" },
+            "3": { "name": "variable.other.constant.encantis" }
+          }
+        },
+        {
           "name": "entity.name.type.encantis",
           "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(#[0-9]+)?(?![a-zA-Z0-9_-])"
         },

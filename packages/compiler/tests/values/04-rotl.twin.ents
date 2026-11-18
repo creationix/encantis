@@ -1,0 +1,4 @@
+func rotl_13(x: u32) -> u32 => (x << 13) | (x >> (32 - 13))
+func rotl_7(x: u32) -> u32 => (x << 7) | (x >> (32 - 7))
+
+export func mix(a: u32, b: u32) -> u32 => rotl_7(a) ^ rotl_13(b)

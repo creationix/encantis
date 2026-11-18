@@ -1,0 +1,6 @@
+func get_8_u16(xs: *[8]u16, i: u32#8) -> u16 => xs[i]
+
+data widths = [3:u16, 1, 4, 1, 5, 9, 2, 6]
+
+export func a(k: u32) -> u16 => get_8_u16(widths, k & 7)
+export func b(k: u32) -> u16 => get_8_u16(widths, k % 8)
