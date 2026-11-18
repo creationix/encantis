@@ -2412,8 +2412,28 @@ describe('values meeting an expected type', () => {
     expect(errs(`type Pt = (x: i32, y: i32)\ntype Rv = (y: i32, x: i32)\nfunc f(p: Pt, q: Rv) { let r = [p, q] }`)).toEqual([
       "cannot assign Rv to Pt: its fields have the names of Pt's in another order, and only a literal gives fields by name; give the value the type Pt where it is made",
     ])
-    // Strings of other lengths still go together, as they did.
+    // Strings of other lengths still go together, as they did, and are
+    // slices, as they are in an array by themselves: each keeps its length
+    // (at the merge of claude/dec-named "bc" met a *[1]u8 and was refused;
+    // on either branch alone it was laid over one and read as "b").
     expect(errs(`func f() -> i32 { let r = [("a", 1), ("bc", 2)]\n return r[1].1 }`)).toEqual([])
+    const strings = `
+      func f(x: []u8) {
+        let plain = [("a", 1), ("bc", 2)]
+        let named = [(n: 1, s: "a"), (s: "bc", n: 2)]
+        let both = [("a", "xy"), ("bc", "z")]
+        let same = [("a", 1), ("b", 2)]
+        let held = [(mut "a", 1), (mut "bc", 2)]
+      }
+    `
+    const settled = checkModule(strings)
+    expect(settled.errors).toEqual([])
+    const typeOf = (name: string) => typeAt(settled, strings.indexOf(`let ${name} =`) + 4)
+    expect(typeOf('plain')).toBe('[2]([]u8, i32)')
+    expect(typeOf('named')).toBe('[2](n: i32, s: []u8)')
+    expect(typeOf('both')).toBe('[2]([]u8, []u8)')
+    expect(typeOf('same')).toBe('[2](*[1]u8, i32)')
+    expect(typeOf('held')).toBe('[2]([]mut u8, i32)')
     // With its type given, each element is checked against it, by name where it has names.
     expect(errs(`type Pt = (x: i32, y: i32)\nfunc f() -> i32 { let r: [2]Pt = [(y: 1, x: 2), (x: 3, y: 4)]\n return r[1].x }`)).toEqual([])
   })

@@ -6014,10 +6014,15 @@ class CheckContext {
   // the type they agree on, each converted where it stands: (1, 2) and
   // (3, 5000000000) are an (i32, i64). Ones that don't agree are of the
   // first one's type, which each tuple written out meets as it would any
-  // struct where the array gets its type (see typeDefault).
+  // struct where the array gets its type (see typeDefault). A field that is
+  // a string, or a pointer to a fixed array, of other lengths in each tuple
+  // is a slice of them, as such values are as the elements of an array by
+  // themselves: ["a", "bc"] is a [2][]u8, and [("a", 1), ("bc", 2)] a
+  // [2]([]u8, i32).
   private settleTuples(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
-    const { type, odd } = this.commonType(types)
-    if (odd) return this.unifyTypes(types)
+    const settled = arraysOfOtherLengthsAsSlices(types)
+    const { type, odd } = this.commonType(settled)
+    if (odd) return this.unifyTypes(settled)
     for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
     return type
   }
@@ -7973,6 +7978,44 @@ export function fieldNamedAt(module: AST.Module, offset: number): boolean {
 // the value last; alone, the value is the whole binding. They are listed
 // value first, the order they are bound in (`for i, i in xs` leaves the
 // index in scope).
+// Tuples written out with the same fields (by place, or all by name in any
+// order), with a field that is a pointer to a fixed array of other lengths in
+// each (strings of other lengths): that field as a slice of the arrays'
+// element, in each of them, writable if each pointer is (see settleTuples).
+// Other types are given back as they are.
+function arraysOfOtherLengthsAsSlices(types: ResolvedType[]): ResolvedType[] {
+  if (!types.every((t): t is TupleRT => t.kind === 'tuple')) return types
+  const tuples = types as TupleRT[]
+  const [first] = tuples
+  const names = first.fields.map((f) => f.name)
+  const byName = names.every((n) => n !== undefined && n !== null) && new Set(names).size === names.length
+  // Where each of the first tuple's fields is in each tuple.
+  const places = tuples.map((t) => first.fields.map((f, i) =>
+    t.fields.length !== first.fields.length ? -1
+      : t.fields[i].name === f.name ? i
+      : byName ? t.fields.findIndex((g) => g.name === f.name) : -1))
+  if (places.some((p) => p.includes(-1))) return types
+  const array = (t: ResolvedType) => {
+    const p = unwrap(t)
+    const a = p.kind === 'pointer' ? unwrap(p.pointee) : null
+    return p.kind === 'pointer' && a?.kind === 'array' && a.sizes?.length === 1 && typeof a.sizes[0] === 'number'
+      ? { element: a.element, size: a.sizes[0], mutable: !!p.mutable } : null
+  }
+  const sliced = first.fields.map((_, i) => {
+    const arrays = tuples.map((t, k) => array(t.fields[places[k][i]].type))
+    if (arrays.some((a) => !a)) return null
+    const [a0] = arrays as NonNullable<(typeof arrays)[number]>[]
+    if (arrays.every((a) => a!.size === a0.size) || !arrays.every((a) => typeEquals(a!.element, a0.element))) return null
+    return slice(a0.element, arrays.every((a) => a!.mutable))
+  })
+  if (sliced.every((s) => !s)) return types
+  return tuples.map((t, k) => {
+    const fields = [...t.fields]
+    sliced.forEach((s, i) => { if (s) fields[places[k][i]] = field(fields[places[k][i]].name, s) })
+    return tuple(fields)
+  })
+}
+
 export function forNames(binding: AST.ForBinding): { name: string; offset: number; index: boolean }[] {
   const { span, value, index } = binding
   if (index === null) return [{ name: value, offset: span.start, index: false }]

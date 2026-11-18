@@ -3506,7 +3506,19 @@ describe('a tuple literal with names gives each field by name', () => {
       }
       global g = [(y: 1, x: 2), (x: 5, y: 6)]
       export func global_() -> i32 => g[1].x * 10 + g[1].y
+      export func strings() -> i32 {
+        let v = [("a", 1), ("bc", 2), ("def", 3)]
+        return v[2].0.len as i32 * 100 + v[1].0.len as i32 * 10 + v[0].0.len as i32
+      }
+      export func named() -> i32 {
+        let v = [(n: 1, s: "a"), (s: "bc", n: 2)]
+        return v[1].n * 10 + v[1].s.len as i32
+      }
+      global gs = [("ab", 1), ("c", 2)]
+      export func gstrings() -> i32 => gs[0].0.len as i32 * 10 + gs[1].0.len as i32
     `)
+    // Strings of other lengths each keep their length.
+    expect([x.strings(), x.named(), x.gstrings()]).toEqual([321, 22, 21])
     expect(x.wide()).toBe(3004)
     expect(x.big()).toBe(5000000001n)
     // A tuple with names meets the first one's type by name.
