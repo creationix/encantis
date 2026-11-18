@@ -1179,6 +1179,15 @@ class MetaBuilder {
   private generateHintsForExpr(expr: AST.Expr): void {
     const type = this.exprType(expr)
 
+    // Where a def's name is written its value was put, which is the def
+    // there, typed as that place needs. What the value holds is the def's
+    // own, at the def's declaration.
+    const def = this.defUsedAt(expr)
+    if (def !== undefined) {
+      this.addHint(expr.span.start, this.symbols[def].name.length, type ? this.typeRegistry.register(type) : this.symbols[def].type, def)
+      return
+    }
+
     switch (expr.kind) {
       case 'IdentExpr': {
         const symbolIndex = this.usedSymbol(expr)
@@ -1192,9 +1201,7 @@ class MetaBuilder {
       }
 
       case 'LiteralExpr': {
-        // A single-quoted literal shows the codepoint it is. A def's value
-        // is put where the def is used, quoted with it: there it is the def
-        // (def lf = '\n' at lf), found by its name below.
+        // A single-quoted literal shows the codepoint it is.
         if (type && expr.quoted && expr.value.kind === 'int' && this.source[expr.span.start] === "'") {
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
           this.addHint(expr.span.start, len, this.typeRegistry.register(type), undefined, expr.value.value.toString())
@@ -1203,19 +1210,8 @@ class MetaBuilder {
         if (type) {
           const typeIndex = this.typeRegistry.register(type)
           const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          const sourceText = this.source.slice(expr.span.start, expr.span.end)
-          const symbolIndex = this.symbolIndexByName.get(sourceText)
-          const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
-          const isDefRef = symbol?.kind === 'def'
-
-          let dataInfo: string | undefined
-          if (!isDefRef) {
-            const entry = this.literalMap.get(this.literalId(expr))
-            if (entry) {
-              dataInfo = this.formatDataRef(entry, type)
-            }
-          }
-          this.addHint(expr.span.start, len, typeIndex, isDefRef ? symbolIndex : undefined, dataInfo)
+          const entry = this.literalMap.get(this.literalId(expr))
+          this.addHint(expr.span.start, len, typeIndex, undefined, entry ? this.formatDataRef(entry, type) : undefined)
         }
         break
       }
@@ -1443,23 +1439,10 @@ class MetaBuilder {
         this.generateHintsForTypeExpr(expr.type)
         break
 
-      case 'AnnotationExpr': {
-        // Check if this is a def reference (def substitution creates AnnotationExpr with the reference span)
-        const sourceText = this.source.slice(expr.span.start, expr.span.end)
-        const symbolIndex = this.symbolIndexByName.get(sourceText)
-        const symbol = symbolIndex !== undefined ? this.symbols[symbolIndex] : undefined
-        if (symbol?.kind === 'def') {
-          // This is a def reference - add hint for the whole expression
-          const typeIndex = this.typeRegistry.register(type ?? primitive('i32'))
-          const len = this.lineMap.spanLength(expr.span.start, expr.span.end)
-          this.addHint(expr.span.start, len, typeIndex, symbolIndex)
-        } else {
-          // Not a def reference - recurse normally
-          this.generateHintsForExpr(expr.expr)
-          this.generateHintsForTypeExpr(expr.type)
-        }
+      case 'AnnotationExpr':
+        this.generateHintsForExpr(expr.expr)
+        this.generateHintsForTypeExpr(expr.type)
         break
-      }
     }
   }
 
@@ -1583,6 +1566,19 @@ class MetaBuilder {
   // The symbol a name used at an expression is: the one defined where the
   // checker found it defined, or else, for a name the checker recorded no
   // use of, the module's name.
+  // The def whose name is written where this expression is: the copy of its
+  // value the parser put there (Module.defUses), which the checker recorded
+  // as a use of it. Not what the copy holds, nor an expression that only
+  // starts there.
+  private defUsedAt(expr: AST.Expr): number | undefined {
+    if (expr.kind === 'IdentExpr') return undefined
+    const declared = this.checkResult.symbolRefs.get(expr.span.start)
+    const index = declared !== undefined ? this.symbolIndexByDef.get(declared) : undefined
+    const symbol = index !== undefined ? this.symbols[index] : undefined
+    if (symbol?.kind !== 'def' || expr.span.end - expr.span.start !== symbol.name.length) return undefined
+    return index
+  }
+
   private usedSymbol(expr: AST.IdentExpr): number | undefined {
     const def = this.checkResult.symbolRefs.get(expr.span.start)
     return def !== undefined ? this.symbolIndexByDef.get(def) : this.symbolIndexByName.get(expr.name)

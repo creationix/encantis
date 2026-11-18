@@ -1108,6 +1108,25 @@ class CheckContext {
     this.settleLiterals()
     this.placeInstanceLiterals()
     this.settleGuesses()
+    this.recordDefUses(module)
+  }
+
+  // A def's value is put where its name is written when the module is
+  // parsed (Module.defUses), and the checker sees only the value there: each
+  // of those places is a use of the def, as a name it checks is. Not in a
+  // test that is not checked, where nothing is used.
+  private recordDefUses(module: AST.Module): void {
+    const unchecked: AST.Span[] = []
+    if (this.options.includeTests === false) {
+      for (const decl of module.decls) if (decl.kind === 'TestDecl') unchecked.push(decl.span)
+    }
+    for (const { decl, at } of module.defUses ?? []) {
+      if (unchecked.some((span) => at >= span.start && at < span.end)) continue
+      const refs = this.references.get(decl)
+      if (!refs) continue
+      if (!refs.includes(at)) refs.push(at)
+      this.symbolRefs.set(at, decl)
+    }
   }
 
   // A call in a generic's body was taken, before any instance existed, for a

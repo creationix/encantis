@@ -459,10 +459,44 @@ describe('a def of a single-quoted literal', () => {
     const use = source.indexOf('== lf') + 3
     expect(value(server('onHover', use))).toBe('```encantis\ndef lf:u8 = 10\n```')
     expect(start(server('onDefinition', use))).toEqual({ line: 0, character: 4 })
-    expect((server('onReferences', use, { context: { includeDeclaration: true } }) as unknown[]).map(start)).toEqual([{ line: 0, character: 4 }])
+    // Its references are where it is declared and where it is used; the
+    // literal written in the body is no use of it.
+    expect((server('onReferences', use, { context: { includeDeclaration: true } }) as unknown[]).map(start)).toEqual([{ line: 0, character: 4 }, { line: 1, character: 37 }])
     // The literal itself is still its codepoint, in the def and in the body.
     expect(value(server('onHover', source.indexOf("'\\n'")))).toContain("'\\n':i32 = 10")
     expect(value(server('onHover', source.lastIndexOf("'\\n'")))).toContain("'\\n':u8 = 10")
+  })
+})
+
+describe('a def where it is used', () => {
+  // A def's value is put where its name is written, and the checker sees
+  // only the value there: the references of a def were its declaration
+  // alone, and where the value is an expression ('a' + 1, 1 + 2) its use was
+  // the expression's parts, with no def to go to.
+  test('is the def, also one whose value is an expression, and each use is a reference', () => {
+    const source = "def n = 1 + 2\ndef nxt = 'a' + 1\ndef lf: u8 = '\\n'\nexport func f(c: u8) -> bool => c == nxt || c == lf || n + n == 6\n"
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => {
+      const { line, character } = (location as Location).range.start
+      return `${line}:${character}`
+    }
+    const references = (offset: number) => (server('onReferences', offset, { context: { includeDeclaration: true } }) as unknown[]).map(start)
+    const n = [source.indexOf('n + n'), source.indexOf('n == 6')]
+    for (const at of [source.indexOf('n ='), ...n]) {
+      if (at !== source.indexOf('n =')) expect(value(server('onHover', at))).toBe('```encantis\ndef n:i32 = 3\n```')
+      expect(start(server('onDefinition', at))).toBe('0:4')
+      expect(references(at)).toEqual(['0:4', '3:55', '3:59'])
+    }
+    const nxt = source.indexOf('== nxt') + 3
+    expect(value(server('onHover', nxt))).toBe('```encantis\ndef nxt:u8 = 98\n```')
+    expect(start(server('onDefinition', nxt))).toBe('1:4')
+    expect(references(nxt)).toEqual(['1:4', '3:37'])
+    const lf = source.indexOf('== lf') + 3
+    expect(value(server('onHover', lf))).toBe('```encantis\ndef lf:u8 = 10\n```')
+    expect(references(lf)).toEqual(['2:4', '3:49'])
+    // What the value holds is shown where the def is declared.
+    expect(value(server('onHover', source.indexOf("'a'")))).toContain("'a':i32 = 97")
   })
 })
 

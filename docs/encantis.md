@@ -1186,6 +1186,8 @@ def max-size = 1024              // inferred i32
 def max-len: u32 = 1024          // explicit u32
 ```
 
+Each place the name is written is a use of the def, also where its value is an expression (`def next = 'a' + 1`): the editor shows the def there and goes from there to it, its references are those places, and a def used nowhere is reported as never used.
+
 ### 3.2 Data Declarations (`data`)
 
 `data` allocates a value in the wasm data section and binds the name to a pointer.
