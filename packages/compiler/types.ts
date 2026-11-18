@@ -1502,6 +1502,75 @@ function partsOf(t: ResolvedType, byValue: boolean): [readonly Part[], number] {
   }
 }
 
+// === Registers of a value ===
+
+// What an engine takes of one wasm function (the limits of the WebAssembly JS
+// API, which every engine shares): 1000 parameters, 1000 results, and as many
+// results of a block (an if or a match that has a value); 50000 locals, its
+// parameters among them; a body of 7654321 bytes.
+export const MAX_PARAM_REGISTERS = 1000
+export const MAX_RESULT_REGISTERS = 1000
+export const MAX_FUNCTION_REGISTERS = 50000
+// And of one wasm module: 1000000 globals, 100000 imports, 100000 exports.
+export const MAX_MODULE_GLOBALS = 1000000
+export const MAX_MODULE_IMPORTS = 100000
+export const MAX_MODULE_EXPORTS = 100000
+
+// How many wasm values a value of a type held by value is laid out in, as
+// typeToWasm lays it out ([N]T is N times T, a slice two, a pointer one),
+// counted without writing them out: [1073741824]u8 is a number, not a list.
+// `memo` holds the counts known already. A count past any limit stays a
+// number: it is only ever compared and added.
+export function typeRegisters(t: ResolvedType, memo: Map<ResolvedType, number> = new Map(), open: Set<ResolvedType> = new Set()): number {
+  const known = memo.get(t)
+  if (known !== undefined) return known
+  // A type held by value cannot hold itself; one that does (an error said
+  // elsewhere) is cut where it comes round.
+  if (open.has(t)) return 1
+  open.add(t)
+  const of = (type: ResolvedType) => typeRegisters(type, memo, open)
+  const times = (n: number, each: number) => Math.min(n * each, Number.MAX_SAFE_INTEGER)
+  let n: number
+  switch (t.kind) {
+    case 'named':
+      n = of(t.type)
+      break
+    case 'forward_ref':
+      n = t.target ? of(t.target) : 1
+      break
+    case 'primitive': {
+      const size = primitiveByteSize(t)
+      n = size !== null && size >= 16 ? size / 8 : 1
+      break
+    }
+    case 'slice':
+      n = 2
+      break
+    case 'array':
+      // A value array is its elements; any other is held as a pointer.
+      n = t.sizes?.length === 1 && typeof t.sizes[0] === 'number' ? times(t.sizes[0], of(t.element)) : 1
+      break
+    case 'comptime_array':
+      n = times(t.count, of(t.element))
+      break
+    case 'tuple':
+      n = t.fields.reduce((sum, f) => Math.min(sum + of(f.type), Number.MAX_SAFE_INTEGER), 0)
+      break
+    case 'comptime_list':
+      n = t.elements.reduce((sum, e) => Math.min(sum + of(e), Number.MAX_SAFE_INTEGER), 0)
+      break
+    case 'void':
+      n = 0
+      break
+    default:
+      // A pointer, a function (a table index), a number not yet given a type
+      n = 1
+  }
+  open.delete(t)
+  memo.set(t, n)
+  return n
+}
+
 // === Instance keys ===
 
 // A string that is the same for two types exactly when they are the same type:

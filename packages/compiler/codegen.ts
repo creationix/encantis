@@ -1206,12 +1206,10 @@ function claimGlobals(module: AST.Module, symbols: Map<string, CheckSymbol>, nam
     for (let n = 0; ; n++) {
       const names = suffixes.map((suffix) => `${n === 0 ? '' : `_${n}_`}${name}${suffix}`)
       // Two parts of one global named alike take names apart, as a local's do.
-      for (let i = 1; i < names.length; i++) {
-        for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
-          const w = `_${k}_${name}${suffixes[i]}`
-          if (!claimed.has(w) && !names.includes(w)) names[i] = w
-        }
-      }
+      apart(names, n, (i, k) => {
+        const w = `_${k}_${name}${suffixes[i]}`
+        return claimed.has(w) ? null : w
+      })
       if (names.some((w) => claimed.has(w))) continue
       for (const w of names) claimed.add(w)
       into.set(watName, names.map((w) => `${modulePrefix}${w}`))
@@ -3055,12 +3053,10 @@ function claimLocals(
     // Two parts of one variable can be named alike: a field `x_y`, and the
     // field `y` of a field `x`. The later one takes the next prefix whose
     // name is free, or is the same part's of a variable like this one.
-    for (let i = 1; i < names.length; i++) {
-      for (let k = n + 1; names.indexOf(names[i]) < i; k++) {
-        const w = `_${k}_${name}_${parts[i].suffix}`
-        if ((!claimed.has(w) || claimed.get(w) === owners[i]) && !names.includes(w)) names[i] = w
-      }
-    }
+    apart(names, n, (i, k) => {
+      const w = `_${k}_${name}_${parts[i].suffix}`
+      return !claimed.has(w) || claimed.get(w) === owners[i] ? w : null
+    })
     if (names.some((w, i) => claimed.has(w) && claimed.get(w) !== owners[i])) continue
     names.forEach((w, i) => {
       if (claimed.has(w)) return
@@ -3068,6 +3064,28 @@ function claimLocals(
       locals?.push({ name: w, type: parts[i].wasmType })
     })
     return names
+  }
+}
+
+// Gives each of `names` that an earlier one has already the first name
+// `candidate(i, k)` offers, for k from n + 1 on, that is free: that none of
+// `names` has, and that the candidate does not refuse (null). In time linear
+// in the names, which can be as many as the registers of a large value.
+function apart(names: string[], n: number, candidate: (i: number, k: number) => string | null): void {
+  const count = new Map<string, number>()
+  for (const w of names) count.set(w, (count.get(w) ?? 0) + 1)
+  const earlier = new Set<string>(names.slice(0, 1))
+  for (let i = 1; i < names.length; i++) {
+    for (let k = n + 1; earlier.has(names[i]); k++) {
+      const w = candidate(i, k)
+      if (w === null || count.has(w)) continue
+      const left = (count.get(names[i]) ?? 1) - 1
+      if (left > 0) count.set(names[i], left)
+      else count.delete(names[i])
+      count.set(w, 1)
+      names[i] = w
+    }
+    earlier.add(names[i])
   }
 }
 

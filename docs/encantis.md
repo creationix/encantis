@@ -1138,7 +1138,7 @@ type 'D16' is too large: written out in full it has more than 65536 parts
 
 <!-- spec:end -->
 
-A value held by value — a parameter, a result, a variable or a global, with each field and element of it — is laid out in registers, so there an array counts each of its elements: `[N]T` is one part and N times what `T` counts (at least once, for `[0]T`), and `[2][2][2]u8` is fifteen parts where it is eight bytes. What a pointer or a slice points to is in memory and counts once, whatever its length: `*[1048576]u8`, `[][4096]u8`, a name for a large array behind a pointer and `data buf = mut [0:u8; 1048576]` are each a few parts, while a parameter `x: [65536]u8` is over the limit. The parameters and results of a function type are held by value wherever the function type is. A value over the limit is one error where its type is written, or, where none is (`let x = p.*`, `for v in rows`, `if let v = ...`), at the variable.
+A value held by value — a parameter, a result, a variable or a global, with each field and element of it — is laid out in registers, so there an array counts each of its elements: `[N]T` is one part and N times what `T` counts (at least once, for `[0]T`), and `[2][2][2]u8` is fifteen parts where it is eight bytes. What a pointer or a slice points to is in memory and counts once, whatever its length: `*[1048576]u8`, `[][4096]u8`, a name for a large array behind a pointer and `data buf = mut [0:u8; 1048576]` are each a few parts, while a global `g: [65536]u8` or a parameter `x: [65536]u8` is over the limit (a function holds its values to far less, below). The parameters and results of a function type are held by value wherever the function type is. A value over the limit is one error where its type is written, or, where none is (`let x = p.*`, `for v in rows`, `if let v = ...`), at the variable.
 
 <!-- spec:begin compile -->
 
@@ -1155,6 +1155,59 @@ func whole(x: [65536]u8) -> u8 => x[0]
 
 ```errors
 type '[65536]u8' is too large: written out in full it has more than 65536 parts
+```
+
+<!-- spec:end -->
+
+A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool or a pointer is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
+
+- The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
+- The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
+- A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
+
+A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)).
+
+<!-- spec:begin compile -->
+
+```ents
+func copy(p: *mut [4000]u8, q: *[4000]u8) { p.* = q.* }                    // 4002 registers
+func move(p: *mut [65536]u8, q: *[65536]u8) { p[..] = q[..] }              // memory.copy
+func clear(p: *mut [65536]u8) { p[..] = 0 }                                // memory.fill
+func pick(c: bool, p: *[1000]u8, q: *[1000]u8) -> u8 => (if c { p.* } else { q.* })[0]
+func first(p: *[65536]u8) -> u8 => p.*[0]                                  // one element is read
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func copy(p: *mut [65536]u8, q: *[65536]u8) { p.* = q.* }
+func fill(p: *mut [60000]u8) { p.* = [0; 60000] }
+func pick(c: bool, p: *[1001]u8, q: *[1001]u8) -> u8 => (if c { p.* } else { q.* })[0]
+func pass(x: [1000]u8, n: u32) -> u8 => x[0]
+```
+
+```errors
+the parameters are 1001 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+function 'copy' needs more than 50000 registers, the most a wasm function has (here [65536]u8 is 65536)
+function 'fill' needs more than 50000 registers, the most a wasm function has (here u8, written out 60000 times, is 60000)
+an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block gives back
+```
+
+<!-- spec:end -->
+
+The modules of a program are one wasm module, which every engine takes with at most 1000000 globals, 100000 imports and 100000 exports. A global held by value is a wasm global for each of its registers; one imported from the host is an import for each, and one the entry module exports an export for each ([7.2](#72-exports)). So the globals of a program are at most 1000000 registers in all, and its imports (a function, or each register of a global) and the exports of its entry module (a function, a memory, or each register of a global) at most 100000 each. Going over is one error, at the global, the import or the export that goes over, the modules taken in the order they are checked, an imported one before the one that imports it.
+
+<!-- spec:begin compile -->
+
+```ents
+export global a: [65535]u8
+export global b: [65535]u8
+```
+
+```errors
+the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has (here b: [65535]u8 is 65535)
 ```
 
 <!-- spec:end -->
