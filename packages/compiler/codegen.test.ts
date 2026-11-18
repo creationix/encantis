@@ -3747,6 +3747,21 @@ describe('the wasm names of variables', () => {
     expect(x.bound(1)).toBe(56)
   })
 
+  // The parts of a value are named in time linear in their count: a global of
+  // 65535 bytes took 9.5 seconds, a variable of 49990 six.
+  test('the registers of a large value are named as fast as there are many', () => {
+    const wat = modWat(`
+      global g: [65535]u8
+      export func f() -> u8 {
+        let x: [49990]u8
+        x[49989] = g[65534]
+        return x[49989]
+      }
+    `)
+    expect(wat).toContain('(global $g_65534 (mut i32) (i32.const 0))')
+    expect(wat).toContain('(local.set $x_49989 (global.get $g_65534))')
+  }, 4000)
+
   test('a name goes to the first variable that asks, and another gets it with a prefix', () => {
     const wat = modWat(`
       type P = (x: i32, y: i32)
