@@ -1894,6 +1894,8 @@ no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
 
 ### 4.7 Bounds-Checked Indexing
 
+An index is an integer of at most 32 bits, signed or not (`an index must be an integer of at most 32 bits, not i64`); a constant bit pattern is the `u32` it stands for (`~4294967293` is 2, [4.2](#42-bitwise-operators)). It is an offset into 32-bit memory, read as an unsigned number, so a negative one is past any length: `xs[i] ?? 0` with `i: i32` equal to `-1` is `0`, and a negative constant index into a `*[N]T` is an error. A many-pointer checks nothing, and there `p[-1]` is the element before the one `p` points to.
+
 Array and slice indexing follows strict rules based on whether the index is known at compile time:
 
 **Compile-time constant indices** are statically verified against the known array length:
@@ -2117,7 +2119,7 @@ arr[..4]        // []u8 from 0 to 3
 arr[..]         // []u8 whole array as slice
 ```
 
-Ranges follow the same bounds rules as indexing:
+Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not, and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
 
 - On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
 - Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.

@@ -1835,6 +1835,52 @@ func rest(s: []u8, i: u32) -> []u8 {
 cannot assign ?[]u8 to []u8
 ```
 
+A bound is an integer as an index is: of at most 32 bits, signed or not. A negative one is out of range, as a negative index is: read as an unsigned number it is past any length. On a many-pointer nothing is checked, and a negative bound is before the element it points to, as a negative index is. A bit pattern is the `u32` it stands for, in an index as in a bound: `~4294967293` is 2.
+
+<!-- spec:begin compile -->
+
+```ents
+data xs = [1:i32, 2, 3, 4]
+
+func at(i: i32) -> i32 => xs[i] ?? -1
+func part(a: i32, b: i32) -> u32 => if let s = xs[a..b] { s.len } else { 99 }
+func rest(s: []i32, a: i8) -> u32 => if let r = s[a..] { r.len } else { 99 }
+func before(a: i32, b: i32) -> i32 {
+  let p = xs as [*]i32 + 8
+  let s = p[a..b]
+  return (s[0] ?? 0) * 100 + s.len as i32
+}
+func pattern() -> i32 => xs[~4294967293] + xs[~4294967294..].len as i32
+
+test "a negative bound is out of range, as a negative index is" {
+  assert at(-1) == -1
+  assert part(1, 3) == 2
+  assert part(-1, 2) == 99
+  assert part(0, -1) == 99
+  assert part(-1, -1) == 99
+  assert rest(xs, 1) == 3
+  assert rest(xs, -1) == 99
+  assert before(-2, 0) == 102
+  assert pattern() == 6
+}
+```
+
+<!-- spec:end -->
+
+```ents
+data xs = [1:i32, 2, 3, 4]
+
+func a(i: u64) -> u32 => (xs[i..] ?? xs).len
+func b() -> u32 => xs[-1..2].len
+func c(f: f32) -> u32 => (xs[..f] ?? xs).len
+```
+
+```errors
+a range bound must be an integer of at most 32 bits, not u64
+range -1..2 is out of bounds for *[4]i32
+a range bound must be an integer of at most 32 bits, not f32
+```
+
 A many-pointer has no length, so its ranges are unchecked and need an end.
 
 ```ents

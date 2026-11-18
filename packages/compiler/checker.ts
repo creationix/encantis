@@ -6267,13 +6267,11 @@ class CheckContext {
   // checked at runtime.
   inferSlice(expr: AST.SliceExpr): ResolvedType {
     const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'take a range of'))
+    // A bound is what an index is: an integer of at most 32 bits, signed or
+    // not. A negative one is, as an unsigned number, past any length.
     const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
       if (!e) return { value: null, max: null }
-      const t = unwrap(this.inferExpr(e))
-      if (t.kind === 'comptime_int') this.checkExpr(e, primitive('u32'))
-      else if (t.kind !== 'primitive' || !isUnsignedName(t.name)) {
-        this.error(e.span.start, `range bound must be an unsigned integer, not ${typeToString(t)}`)
-      }
+      const t = unwrap(this.inferIndexValue(e, 'a range bound'))
       const c = this.constantInType(e) as unknown as { kind: string; value?: bigint } | null
       if (c && c.kind === 'int' && typeof c.value === 'bigint') return { value: c.value, max: c.value + 1n }
       const limit = t.kind === 'primitive' ? (t.max !== undefined ? BigInt(t.max) : unsignedLimit(t)) : null
@@ -6306,7 +6304,7 @@ class CheckContext {
       const endFits = e.max !== null && e.max <= n + 1n
       const startFits = s.value === 0n || (e.value !== null && s.max !== null && s.max <= e.value + 1n)
       proven = endFits && startFits
-      if (s.value !== null && e.value !== null && (s.value > e.value || e.value > n)) {
+      if (s.value !== null && e.value !== null && (s.value < 0n || s.value > e.value || e.value > n)) {
         this.error(expr.span.start, `range ${s.value}..${e.value} is out of bounds for *[${n}]${typeToString(elem)}`)
         proven = true // already reported; don't add a second error
       }
@@ -6531,7 +6529,7 @@ class CheckContext {
     elem = this.rowOf(objType) ?? elem
     this.inferIndexValue(expr.index)
     this.exprTypes.set(expr, elem)
-    const idx = this.evalComptimeExpr(expr.index)
+    const idx = this.constantInType(expr.index)
     let proven = false
     if (size !== null) {
       if (idx && idx.kind === 'int') {
@@ -6556,13 +6554,17 @@ class CheckContext {
   }
 
   // An index is an offset in 32-bit memory: an integer no wider than that.
-  private inferIndexValue(index: AST.Expr): ResolvedType {
+  // A range's bounds are the same.
+  private inferIndexValue(index: AST.Expr, what = 'an index'): ResolvedType {
     const type = this.inferExpr(index)
     const t = unwrap(type)
-    if (t.kind === 'comptime_int') {
+    if (t.kind === 'comptime_int' && t.bits) {
+      // A bit pattern is the u32 it stands for: ~4294967280 is 15.
+      this.checkExpr(index, primitive('u32'))
+    } else if (t.kind === 'comptime_int') {
       this.coerce(index, type, addressType(t))
     } else if (!isInteger(t) || (byteSize(t) ?? 8) > 4) {
-      this.error(index.span.start, `an index must be an integer of at most 32 bits, not ${typeToString(type)}`)
+      this.error(index.span.start, `${what} must be an integer of at most 32 bits, not ${typeToString(type)}`)
     }
     return type
   }
@@ -6695,7 +6697,7 @@ class CheckContext {
         // Fixed-size pointer array *[N]T: check bounds
         if (sizes && typeof sizes[0] === 'number') {
           const n = sizes[0]
-          const idx = this.evalComptimeExpr(expr.index)
+          const idx = this.constantInType(expr.index)
           if (idx === null || idx.kind !== 'int') {
             // Ranged index: statically safe if max <= array size
             if (!this.indexInRange(expr, n)) {
