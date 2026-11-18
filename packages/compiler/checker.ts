@@ -394,12 +394,21 @@ function contextFor(options?: TypecheckOptions): CheckContext {
 // afresh each time.
 function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
   const opts = { ...DEFAULT_OPTIONS, ...ctx.options }
+  // A type a finalize made is concrete, and making it again gives the same:
+  // a module finalized after each module that adds instances to it would
+  // otherwise make all of its types again each time.
+  const concrete = (type: ResolvedType): ResolvedType => {
+    if (concretized.has(type)) return type
+    const made = concretizeType(type, opts)
+    concretized.add(made)
+    return made
+  }
   // Concretize all comptime types to concrete types (single source of truth)
   for (const [key, type] of ctx.types) {
-    ctx.types.set(key, concretizeType(type, opts))
+    ctx.types.set(key, concrete(type))
   }
   for (const [expr, type] of ctx.exprTypes) {
-    ctx.exprTypes.set(expr, concretizeType(type, opts))
+    ctx.exprTypes.set(expr, concrete(type))
   }
   // Symbols derive their types from the concretized types map
   for (const [name, sym] of ctx.moduleScope.symbols) {
@@ -408,7 +417,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     // the types map at their definition offset may hold a non-func type
     // (e.g. a return type or parameter type), so skip the map lookup.
     if (sym.kind === 'func') {
-      sym.type = concretizeType(sym.type, opts) as typeof sym.type
+      sym.type = concrete(sym.type) as typeof sym.type
       continue
     }
     const defOffset = ctx.symbolDefOffsets.get(name)
@@ -523,33 +532,38 @@ export function typecheckProgram(
   const checked: { path: string; ctx: CheckContext; module: AST.Module }[] = []
 
   // Checks the instances asked for and not yet checked, in every module,
-  // and then tells the modules that asked for them of their errors. Says
-  // whether there were any.
-  function drain(): boolean {
-    let any = false
+  // and then tells the modules that asked for them of their errors. Gives
+  // the modules that had any: nothing else of a module changes.
+  function drain(): Set<CheckContext> {
+    const grown = new Set<CheckContext>()
     for (let more = true; more; ) {
       more = false
-      for (const { ctx } of checked) if (ctx.drainLate()) more = true
-      any ||= more
+      for (const { ctx } of checked) {
+        if (!ctx.drainLate()) continue
+        grown.add(ctx)
+        more = true
+      }
     }
     for (const { ctx } of checked) ctx.reportToRequesters()
-    return any
+    return grown
   }
 
   // An instance that calls an instance that depends on its site depends on
   // it too: another module asking for it would call the first module's
-  // functions through it.
+  // functions through it. Only instances made since the last time can: an
+  // older one's body, and so what it calls, was settled then.
+  const settled = new Map<CheckContext, number>()
   function settleSites(): void {
+    const fresh = checked.flatMap(({ ctx }) => ctx.instances.slice(settled.get(ctx) ?? 0))
     for (let more = true; more; ) {
       more = false
-      for (const { ctx } of checked) {
-        for (const inst of ctx.instances) {
-          if (inst.usedSite || !inst.requests.some((r) => r.usedSite)) continue
-          inst.usedSite = true
-          more = true
-        }
+      for (const inst of fresh) {
+        if (inst.usedSite || !inst.requests.some((r) => r.usedSite)) continue
+        inst.usedSite = true
+        more = true
       }
     }
+    for (const { ctx } of checked) settled.set(ctx, ctx.instances.length)
   }
 
   function visit(path: string) {
@@ -578,11 +592,10 @@ export function typecheckProgram(
     program.set(path, ctx)
     ctx.checkModule(loaded.module)
     checked.push({ path, ctx, module: loaded.module })
-    if (drain()) {
-      settleSites()
-      for (const earlier of checked) {
-        if (earlier.ctx !== ctx) results.set(earlier.path, finalize(earlier.ctx, earlier.module))
-      }
+    const grown = drain()
+    settleSites()
+    for (const earlier of checked) {
+      if (earlier.ctx !== ctx && grown.has(earlier.ctx)) results.set(earlier.path, finalize(earlier.ctx, earlier.module))
     }
     const result = finalize(ctx, loaded.module)
     results.set(path, result)
@@ -612,6 +625,9 @@ function fileTag(path: string | undefined): string {
 }
 
 // === Concretization ===
+
+// The types finalize made (see there)
+const concretized = new WeakSet<ResolvedType>()
 
 /**
  * Concretize a single type, replacing comptime types with concrete defaults.
