@@ -3369,9 +3369,17 @@ class CheckContext {
       if (shape.mutable) markMut(operand)
       // An array written out where a pointer to an array is wanted is laid
       // out in the data section as it is without the `&`, and `&` of it is
-      // that pointer: `&[1, 2]` for a *[2]i32 is `[1, 2]`.
+      // that pointer: `&[1, 2]` for a *[2]i32 is `[1, 2]`. The `&` asks for
+      // a cell of the literal's own, writable where the pointer is, as `mut`
+      // does: `&[1, 2]` for a *mut [2]i32 needs no `mut` of its own.
       if ((operand.kind === 'ArrayExpr' || operand.kind === 'RepeatExpr') && pointee?.kind === 'array') {
-        const result = this.checkExpr(expr.operand, expected)
+        if (shape.mutable) this.mutLiterals++
+        let result: ResolvedType
+        try {
+          result = this.checkExpr(expr.operand, expected)
+        } finally {
+          if (shape.mutable) this.mutLiterals--
+        }
         this.exprTypes.set(expr, result)
         return result
       }

@@ -1619,6 +1619,12 @@ describe('a literal for a mutable pointer or slice', () => {
 
   test('& before a literal is a writable cell of its own', () => {
     expect(errs('func f() -> u32 {\n  let n = &0:u32\n  n.* = 1\n  let p: *mut i32 = &5\n  return n.*\n}')).toEqual([])
+    // Also an array laid out where a pointer to an array is wanted, as it
+    // is without the & (at the merge of claude/dec-named, which lays it out
+    // so, it asked for mut): what it lays out apart is writable too.
+    const put = 'type Pt = (x: i32, y: i32)\nfunc put(p: *mut [2]i32) -> i32 => p[0]\nfunc pts(p: *mut [1]Pt) -> i32 => p[0].x\nfunc rows(p: *mut [1][]mut u8) -> u32 => p.len\n'
+    expect(errs(`${put}func f() -> i32 => put(&[1, 2]) + put(&[3; 2]) + pts(&[(y: 5, x: 6)]) + rows(&[[1:u8, 2]]) as i32`)).toEqual([])
+    expect(errs(`${put}func f() -> i32 => put([1, 2])`)).toEqual([`argument 1: ${constant('[1, 2]', '*mut [2]i32')}`])
   })
 })
 
