@@ -455,6 +455,14 @@ describe('the grammar', () => {
     expect((typeOf('[n]mut u8') as AST.IndexedType).mutable).toBe(true)
   })
 
+  test('a near miss of a bracket form of before is the syntax error it was', () => {
+    const expected = (text: string) => parse(`func f(p: ${text}) -> u32 => 0`).errors.map((e) => e.message.split('\n').find((l) => l.includes('Expected')))
+    expect(expected('[*:0]u8')).toEqual(['Expected "?", "!", a digit, or "_"'])
+    expect(expected('[*!]u8')).toEqual(['Expected "?", "!", a digit, or "_"'])
+    expect(expected('*[!u8]')).toEqual(['Expected "]"'])
+    expect(expected('[!:u8]')).toEqual(['Expected "]"'])
+  })
+
   test('the bracket forms of before keep their meaning', () => {
     expect((typeOf('[5]u8') as AST.IndexedType).size).toBe(5)
     expect((typeOf('[2x3]u8') as AST.IndexedType).size).toEqual([2, 3])

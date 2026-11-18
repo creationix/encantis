@@ -432,11 +432,11 @@ A name after `#` is lexical, as an identifier is, so `u32#n-1` is the bound name
 
 `[N]T` with a fixed numeric size is a value type (flattened to N wasm values). Other bracket types are pointers.
 
-A length is a decimal number or any compile-time constant expression: `[n]T`, `[k * 2]T`, `[(n + 31) / 32]u32`, `[sizeof(T) * 4]u8`, `[0x10]u8`. The bracket forms of the table below are tried first; whatever else stands between the brackets is read as an expression.
+A length is a decimal number or any compile-time constant expression: `[n]T`, `[k * 2]T`, `[(n + 31) / 32]u32`, `[sizeof(T) * 4]u8`, `[0x10]u8`. The bracket forms of the table below are tried first; whatever else stands between the brackets is read as an expression, unless it starts with `*`, `!` or `?`, as the bracket forms `[*]`, `[!]` and `[?]` do. A near miss of one of those, `[*:0]u8` or `[!u8]`, is a syntax error at the place that form went wrong.
 
 ```ebnf
 array_type      = "[" framings "]" "mut"? type   -- [5]T, [12x16]T, [_]T, [!]T, [?]T
-                | "[" expr "]" "mut"? type       -- [n]T, [k * 2]T, [0x10]T
+                | "[" expr "]" "mut"? type       -- [n]T, [k * 2]T, [0x10]T; expr not starting with *, ! or ?
 
 framing         = "_" | decimal | "!" | "?"      -- decimal: digits not starting 0x, 0o, 0b or 0d
 framings        = framing ("x" framing)*

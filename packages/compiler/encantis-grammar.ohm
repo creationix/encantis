@@ -162,10 +162,10 @@ Encantis {
            | "?" "*" Type                      -- optPointer
            | "[" arrayFramings "]" mut Type     -- arrayMut
            | "[" arrayFramings "]" Type        -- array
-           | "[" Expr "]" mut Type             -- lengthMut
-           | "[" Expr "]" Type                 -- length
-           | "[" typeIdent "]" mut Type        -- lengthUpperMut
-           | "[" typeIdent "]" Type            -- lengthUpper
+           | ~BracketForm "[" Expr "]" mut Type  -- lengthMut
+           | ~BracketForm "[" Expr "]" Type     -- length
+           | ~BracketForm "[" typeIdent "]" mut Type  -- lengthUpperMut
+           | ~BracketForm "[" typeIdent "]" Type      -- lengthUpper
            | "[*]" mut Type                    -- manyPointerMut
            | "[*]" Type                        -- manyPointer
            | "[]" mut Type                     -- sliceMut
@@ -188,6 +188,14 @@ Encantis {
 
   // lengthUpper is a near miss of length, [N]T with a value parameter named
   // as a type would be: it parses so that the checker can say to write n.
+
+  // What starts a bracket form of the types of before ([*]T, [!]T, [?]T)
+  // starts no length: `!u8` or `?x` is no number. A near miss of one of
+  // those forms ([*:0]u8, [!u8]) is then the syntax error it was before
+  // lengths were expressions, at the place that form went wrong. (Looked
+  // for before the "[", so that what a syntax error says was expected
+  // after it is what it was.)
+  BracketForm = "[" ("*" | "!" | "?")
 
   // An argument of a generic type: a type, or a number for a value parameter,
   // Ring(8, u32) or Bits(n * 2). A type is tried first.
