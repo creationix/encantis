@@ -1511,6 +1511,10 @@ function partsOf(t: ResolvedType, byValue: boolean): [readonly Part[], number] {
 export const MAX_PARAM_REGISTERS = 1000
 export const MAX_RESULT_REGISTERS = 1000
 export const MAX_FUNCTION_REGISTERS = 50000
+// And of one wasm module: 1000000 globals, 100000 imports, 100000 exports.
+export const MAX_MODULE_GLOBALS = 1000000
+export const MAX_MODULE_IMPORTS = 100000
+export const MAX_MODULE_EXPORTS = 100000
 
 // How many wasm values a value of a type held by value is laid out in, as
 // typeToWasm lays it out ([N]T is N times T, a slice two, a pointer one),

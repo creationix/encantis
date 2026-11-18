@@ -41,6 +41,9 @@ import {
   MAX_PARAM_REGISTERS,
   MAX_RESULT_REGISTERS,
   MAX_FUNCTION_REGISTERS,
+  MAX_MODULE_GLOBALS,
+  MAX_MODULE_IMPORTS,
+  MAX_MODULE_EXPORTS,
   watSafe,
   comptimeIntFits,
   typeAssignable,
@@ -387,23 +390,24 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 type ModuleSizeUse = { at: number; n: number; shown: string | null }
 
 // The wasm module of a program has at most 1000000 globals, 100000 imports
-// and 100000 exports (the limits of the WebAssembly JS API). Going over is
+// and 100000 exports (MAX_MODULE_GLOBALS ..., the limits of the WebAssembly
+// JS API). Going over is
 // one error for each, where the count goes over, in the order the modules
 // were checked.
 function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
   const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
   const fix = 'share a large value through memory, behind a pointer'
   const limits = [
-    { of: 'globals', most: 1000000, said: 'the program has more than 1000000 wasm globals, the most a wasm module has', fix: 'keep a large value in memory, as data' },
-    { of: 'imports', most: 100000, said: 'the program imports more than 100000 wasm functions and globals, the most a wasm module has', fix },
-    { of: 'exports', most: 100000, said: 'the program exports more than 100000 wasm functions, globals and memories, the most a wasm module has', fix },
+    { of: 'globals', most: MAX_MODULE_GLOBALS, said: `the program has more than ${MAX_MODULE_GLOBALS} wasm globals`, fix: 'keep a large value in memory, as data' },
+    { of: 'imports', most: MAX_MODULE_IMPORTS, said: `the program imports more than ${MAX_MODULE_IMPORTS} wasm functions and globals`, fix },
+    { of: 'exports', most: MAX_MODULE_EXPORTS, said: `the program exports more than ${MAX_MODULE_EXPORTS} wasm functions, globals and memories`, fix },
   ] as const
   for (const limit of limits) {
     let total = 0
     for (const { ctx, use } of counted.flatMap(({ ctx, uses }) => [...uses[limit.of]].sort((a, b) => a.at - b.at).map((use) => ({ ctx, use })))) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
       if (total <= limit.most) continue
-      ctx.error(use.at, `${limit.said}${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
+      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
       break
     }
   }
@@ -3894,13 +3898,14 @@ class CheckContext {
     const clean = !hasErrors()
     const memo = new Map<ResolvedType, number>()
     const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
-    type Use = { at: number; n: number; shown: string | null }
+    // What adds to the count, where, and what to say of it if it goes over there
+    type Use = { at: number; n: number; shown: () => string | null }
     const uses: Use[] = []
     // A signature over its own limits has its error (checkSignatureSize).
     const signature = { param: 0, return: 0 }
     for (const [at, { name, type, of }] of this.variables ?? []) {
       const n = registers(type)
-      uses.push({ at, n, shown: n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null })
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null) })
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
@@ -3908,7 +3913,7 @@ class CheckContext {
     const count = (expr: AST.Expr, n: number, copies: number) => {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
-      const shown = (n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null
+      const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
       uses.push({ at: expr.span.start, n: own, shown })
     }
     // A block's value, which a wasm block gives back
@@ -3963,7 +3968,12 @@ class CheckContext {
       if (e.kind === 'AnnotationExpr') inMemory(e.expr, n)
       else if (e.kind === 'ArrayExpr') for (const element of e.elements) inMemory(element, n)
       else if (e.kind === 'RepeatExpr') inMemory(e.value, times(n, repeats(e)))
-      else if (e.kind === 'TupleExpr') for (const field of e.elements) field.value && inMemory(field.value, n)
+      else if (e.kind === 'TupleExpr') {
+        for (const field of e.elements) {
+          const v = argValue(field)
+          if (v) inMemory(v, n)
+        }
+      }
       else value(e, n, false)
     }
     // An expression, its code written out `n` times; `part` when only part
@@ -4138,7 +4148,8 @@ class CheckContext {
     for (const use of uses) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
       if (total <= MAX_FUNCTION_REGISTERS) continue
-      const here = use.shown ? ` (here ${use.shown})` : ''
+      const shown = use.shown()
+      const here = shown ? ` (here ${shown})` : ''
       this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)`)
       return
     }

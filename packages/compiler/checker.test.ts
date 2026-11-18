@@ -3805,6 +3805,8 @@ describe('the size of a function', () => {
     // Nor is a literal laid out in memory, unless a value in it is only known when the program runs
     expect(errs('func sum(p: *[100000]u8) -> u8 => p[0]\nfunc f() -> u8 => sum([0; 100000])')).toEqual([])
     expect(errs('func sum(p: *[100000]u8) -> u8 => p[0]\nfunc k(x: u32) -> u8 => x as u8\nfunc f(a: u32) -> u8 => sum([k(a); 100000])')).toEqual([over('u8, written out 100000 times, is 100000')])
+    // A field written (a:) is the variable a
+    expect(errs('func f() -> u8 {\n  let a: [20000]u8\n  let p: *[2](a: [20000]u8) = [(a:), (a:)]\n  return p[1].a[0]\n}')).toEqual([over('[20000]u8 is 20000')])
   })
 
   test('a deferred expression counts at each exit that writes it out', () => {
