@@ -55,6 +55,14 @@ describe('text that does not parse', () => {
     expect(recovered(`func a() -> []u8 => "abc\n${b}func c() -> []u8 => "c"\n${f}`)).toEqual({ declared: ['b', 'c', 'f'], leftOut: ['func a() -> []u8 => "abc\n'] })
   })
 
+  // The grammar lets a string go on over lines: one written whole before
+  // the place the parser stopped was taken for a quote not closed, and its
+  // declaration was left out too.
+  test('a string over lines that is closed is not left out', () => {
+    expect(recovered(`data msg = "two\nlines"\n${b}func a( \n`)).toEqual({ declared: ['DataDecl', 'b'], leftOut: ['func a( \n'] })
+    expect(recovered(`data q = 'x\ny'\n${b}${f}let = \n`)).toEqual({ declared: ['DataDecl', 'b', 'f'], leftOut: ['let = \n'] })
+  })
+
   test('each place that does not parse is left out', () => {
     expect(recovered(`func a() -> u32 => \n${b}func c( => 3\n${f}`)).toEqual({ declared: ['b', 'f'], leftOut: ['func a() -> u32 => \n', 'func c( => 3\n'] })
   })

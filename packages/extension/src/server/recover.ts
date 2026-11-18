@@ -94,9 +94,11 @@ export function recoverParse(text: string, parse: (text: string) => ParseResult,
       const tried = parse(blanked);
       parses++;
       // Taken where the rest parses, or where the parser now gets past it
-      // and stops at something else that is broken.
+      // and stops at something else that is broken. Where it stops where it
+      // did, what was left out was not what stopped it: a string over lines
+      // before that place, written whole, is no runaway.
       const at = tried.errors[0]?.span.start;
-      if (tried.module || (at !== undefined && at > span.end)) {
+      if (tried.module || (at !== undefined && at > span.end && at !== stopped)) {
         next = { text: blanked, result: tried, span };
         break;
       }
