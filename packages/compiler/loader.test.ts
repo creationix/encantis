@@ -275,6 +275,32 @@ describe('generics across modules', () => {
     expect(callsIn(wat, `containers$slot${own}`)).toEqual(['eq'])
   })
 
+  test("a type without the hash the library's set calls: the library's error, and one at the call that asked", async () => {
+    const { check } = await program(at('nohash.ents'))
+    const lib = await Bun.file(at('containers.ents')).text()
+    const main = await Bun.file(at('nohash.ents')).text()
+    const inAdd = lib.indexOf('hash(k)')
+    const call = main.indexOf('add(Cell(x, 1))')
+    expect(check.results.get(at('containers.ents'))?.errors).toEqual([
+      {
+        offset: inAdd,
+        message: "no function 'hash' accepts (Cell), in add(K = Cell)",
+        notes: [{ offset: call, message: 'required from', path: at('nohash.ents') }],
+      },
+    ])
+    expect(check.results.get(at('nohash.ents'))?.errors).toEqual([
+      { offset: call, message: "add(K = Cell) cannot be instantiated: no function 'hash' accepts (Cell) (containers.ents:77:11)" },
+    ])
+    // The library was checked, and found sound, before this module asked
+    // for the instance: the program's errors are what its modules hold at
+    // the end, and they stop the build.
+    expect(check.errors.map((e) => e.message)).toEqual([
+      "no function 'hash' accepts (Cell), in add(K = Cell)",
+      "add(K = Cell) cannot be instantiated: no function 'hash' accepts (Cell) (containers.ents:77:11)",
+    ])
+    expect((await program(at('containers.ents'))).check.errors).toEqual([])
+  })
+
   // Sources written to a directory of their own, for the cases a fixture
   // would only repeat
   async function inDir<T>(files: Record<string, string>, run: (dir: string) => Promise<T>): Promise<T> {

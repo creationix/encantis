@@ -82,6 +82,7 @@
   "lib/text.ents": "8e5488a082624c420e15a1db62aa825b4681fce20c6cbbe4859dbcd8eebffb74",
   "packages/compiler/tests/fixtures/generics/containers.ents": "829fc0f7135080d735fcc61a44027eb2b95b9544d525c036e31cb7003b034f33",
   "packages/compiler/tests/fixtures/generics/main.ents": "b763f252f856c424f111003bd441b6dd7d90c5e3818815fb08e0f85232f435c7",
+  "packages/compiler/tests/fixtures/generics/nohash.ents": "does not compile",
   "packages/compiler/tests/fixtures/generics/other.ents": "199b8bcc3fc764bec1efc33ee9e88713a67eef1bea79004b060ffdfc5baddbb4",
   "packages/compiler/tests/fixtures/generics/stack.ents": "5dc5e953d1f4ff4bf88c92d0d1ae5928ae0b8e7e9114546609e7d65fc5347dd4",
   "packages/compiler/tests/fixtures/modular/bad-import.ents": "does not compile",

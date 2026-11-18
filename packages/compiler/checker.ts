@@ -135,6 +135,9 @@ export interface Instance {
   site: CheckContext
   usedSite: boolean
   requests: Instance[]
+  // Set once an error in it was reported at the call of another module that
+  // asked for it (see reportToRequester)
+  reportedOutside?: true
 }
 
 // Everything one call in ordinary code brought into being: the instance it
@@ -217,8 +220,9 @@ export interface TypeError {
   message: string
   // For an error inside an instance of a generic: the call that first asked
   // for the instance, then the call that asked for the instance that call is
-  // in, and so on outwards.
-  notes?: { offset: number; message: string }[]
+  // in, and so on outwards. A call in another module of the program has that
+  // module's path; the others are in the module that has the error.
+  notes?: { offset: number; message: string; path?: string }[]
 }
 
 // Pending literal for data section serialization (handled by codegen, not checker)
@@ -484,13 +488,15 @@ export function typecheckProgram(
   const program = new Map<string, CheckContext>()
   const checked: { path: string; ctx: CheckContext; module: AST.Module }[] = []
 
-  // Checks the instances asked for and not yet checked, in every module.
-  // Says whether there were any.
+  // Checks the instances asked for and not yet checked, in every module,
+  // and tells the modules that asked for them of their errors. Says whether
+  // there were any.
   function drain(): boolean {
     let any = false
     for (let more = true; more; ) {
       more = false
       for (const { ctx } of checked) if (ctx.drainLate()) more = true
+      for (const { ctx } of checked) if (ctx.reportToRequesters()) more = true
       any ||= more
     }
     return any
@@ -551,6 +557,18 @@ export function typecheckProgram(
 
   visit(entryPath)
   return { results, errors: [...results.values()].flatMap((result) => result.errors) }
+}
+
+// A path's last part, the name of the file
+function fileName(path: string): string {
+  return path.replace(/^.*[\\/]/, '')
+}
+
+// line:column of an offset in a source, both from 1
+function lineAndColumn(source: string, offset: number): string {
+  const before = source.slice(0, offset)
+  const line = before.split('\n').length
+  return `${line}:${offset - before.lastIndexOf('\n')}`
 }
 
 // A module's file name as a name: what is left of its path without the
@@ -4932,8 +4950,13 @@ class CheckContext {
       const sym = site.moduleScope.symbols.get(member)
       return sym?.kind === 'func' && !sym.alias && !site.testOnly.has(member) && !site.testDeclared.has(sym)
     })
-    if (members.length === 0) return null
     const own = this.lookup(name)
+    if (members.length === 0) {
+      // What the call is wanting depends on the site too: another site may
+      // have the function.
+      if (!own) inst.usedSite = true
+      return null
+    }
     if (own?.kind === 'func') {
       const args = expr.args.flatMap((a) => (a.value ? [a.value] : []))
       const takes = (member: string) => {
@@ -7852,12 +7875,16 @@ class CheckContext {
     }
     // The calls the instance exists for: the one that first asked for it,
     // and while that call is inside an instance, the one that asked for that.
+    // Each is in the module of the code that made it.
     const notes: NonNullable<TypeError['notes']> = [...said]
+    let from = inst.requestedIn
     for (let at = inst.requestedAt; notes.length < said.length + MAX_NOTES; ) {
-      notes.push({ offset: at % INSTANCE_STRIDE, message: 'required from' })
-      const outer = this.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
+      const note = { offset: at % INSTANCE_STRIDE, message: 'required from' }
+      notes.push(from === this || !from.filePath ? note : { ...note, path: from.filePath })
+      const outer = from.instances[Math.floor(at / INSTANCE_STRIDE) - 1]
       if (!outer) break
       at = outer.requestedAt
+      from = outer.requestedIn
     }
     return { offset: offset % INSTANCE_STRIDE, message: `${message}, in ${inst.label}`, notes }
   }
@@ -8009,6 +8036,32 @@ class CheckContext {
     if (!this.errors.some((e) => e.offset === error.offset && e.message === error.message)) {
       this.errors.push(error)
     }
+    const inst = offset >= INSTANCE_STRIDE ? this.instances[Math.floor(offset / INSTANCE_STRIDE) - 1] : undefined
+    if (inst && inst.requestedIn !== this) this.errorsIn.set(error, { inst, message })
+  }
+
+  // The errors of instances that another module's code asked for, with the
+  // instance and the message as it was reported (see reportToRequesters)
+  private errorsIn = new WeakMap<TypeError, { inst: Instance; message: string }>()
+
+  // An error in an instance that another module's code asked for is listed
+  // with the module that declares the generic, where it is. The module that
+  // asked is told too, once, at its call: its own errors are what its author
+  // reads first, and the instance is there because of that call. Done once
+  // the instances are checked, with what they report then: an error can be
+  // taken back for a better one (see notAccepted). Says whether it told any.
+  reportToRequesters(): boolean {
+    let told = false
+    for (const error of this.errors) {
+      const found = this.errorsIn.get(error)
+      if (!found || found.inst.reportedOutside) continue
+      const { inst, message } = found
+      inst.reportedOutside = true
+      told = true
+      const where = this.source && this.filePath ? ` (${fileName(this.filePath)}:${lineAndColumn(this.source, error.offset)})` : ''
+      inst.requestedIn.error(inst.requestedAt, `${inst.label} cannot be instantiated: ${message}${where}`)
+    }
+    return told
   }
 
   warn(offset: number, message: string, notes?: NonNullable<TypeError['notes']>): void {

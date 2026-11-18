@@ -57,6 +57,56 @@ describe('check errors on the command line', () => {
   }
 })
 
+// A library that checks on its own, used by a module whose type it cannot
+// serve: the error is in the library's generic, found only once the other
+// module asks for the instance, after the library was checked. It stops the
+// build, and the call that asked is said where it is, in the other file.
+describe('check errors across modules', () => {
+  const LIB = `export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n
+func hash(k: u32) -> u32 => k * 0x45d9f3b
+`
+  const MAIN = `import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32
+export func f(x: f64) -> u32 => bucket(x, 16)
+`
+  const lib = "no function 'hash' accepts (f64), in bucket(K = f64)"
+  const main = `bucket(K = f64) cannot be instantiated: no function 'hash' accepts (f64) (lib.ents:1:62)`
+
+  async function run(command: string, ...flags: string[]) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), LIB)
+      await writeFile(join(dir, 'main.ents'), MAIN)
+      const run = Bun.spawnSync([process.execPath, CLI, command, join(dir, 'main.ents'), ...flags])
+      return { dir, exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  test("the note is in the file of the call that asked, and that call has an error of its own", async () => {
+    const { dir, exitCode, stderr } = await run('check')
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe(`${join(dir, 'lib.ents')}:1:62: ${lib}\n  required from ${join(dir, 'main.ents')}:2:33\n${join(dir, 'main.ents')}:2:33: ${main}\n`)
+  })
+
+  test('check --json carries the note with its file', async () => {
+    const { dir, stdout } = await run('check', '--json')
+    expect(JSON.parse(stdout)).toEqual([
+      { file: join(dir, 'lib.ents'), line: 1, col: 62, message: lib, notes: [{ file: join(dir, 'main.ents'), line: 2, col: 33, message: 'required from' }] },
+      { file: join(dir, 'main.ents'), line: 2, col: 33, message: main },
+    ])
+  })
+
+  for (const command of ['compile', 'wasm']) {
+    test(`${command} stops at the error in the module checked first`, async () => {
+      const { exitCode, stdout, stderr } = await run(command)
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe('')
+      expect(stderr).toContain(lib)
+    })
+  }
+})
+
 // The queries answer for the name where it stands: a local where it is
 // defined, the binding of an if let at its name, each name of a for, and a
 // field as a field. Before, each was looked up by name, and a rename from one

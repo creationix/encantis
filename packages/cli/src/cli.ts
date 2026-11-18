@@ -640,14 +640,15 @@ interface CheckDiagnostic {
 function checkDiagnostics(check: ProgramCheckResult, modules: Map<string, { source: string }>): CheckDiagnostic[] {
   const diagnostics: CheckDiagnostic[] = []
   for (const [path, result] of check.results) {
-    const source = modules.get(path)?.source ?? ''
-    const at = (offset: number) => {
-      const loc = offsetToLineCol(source, offset)
-      return { file: path, line: loc.line, col: loc.column }
+    // A note can be in another module: the call there that asked for the
+    // instance the error is in.
+    const at = (offset: number, file = path) => {
+      const loc = offsetToLineCol(modules.get(file)?.source ?? '', offset)
+      return { file, line: loc.line, col: loc.column }
     }
     for (const error of result.errors) {
       const diagnostic: CheckDiagnostic = { ...at(error.offset), message: error.message }
-      if (error.notes) diagnostic.notes = error.notes.map((note) => ({ ...at(note.offset), message: note.message }))
+      if (error.notes) diagnostic.notes = error.notes.map((note) => ({ ...at(note.offset, note.path), message: note.message }))
       diagnostics.push(diagnostic)
     }
   }
