@@ -1,5 +1,6 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: this is a test, it's fine */
 import { describe, expect, test } from 'bun:test'
+import { resolve } from 'node:path'
 import { concretizeType, isConcreteType, typecheck, typecheckProgram, typeKey, type TypeCheckResult } from './checker'
 import { parse } from './parser'
 import { parseType as parseTypeLib } from './type-lib'
@@ -3872,14 +3873,17 @@ describe('the size of a function', () => {
     expect(errs('import "m" "a" global a: [65535]u8\nimport "m" "b" global b: [65535]u8')).toEqual([`the program imports more than 100000 wasm functions and globals, the most a wasm module has (here b: [65535]u8 is 65535) — ${share}`])
     // The modules of a program are one wasm module: their globals add up, in
     // the order the modules are checked, the imported one first. Only the
-    // entry module's exports are the module's.
+    // entry module's exports are the module's. A module is named by the path
+    // the loader resolves its import to (on Windows with a drive and
+    // backslashes).
+    const [lib, main] = [resolve('/p/lib.ents'), resolve('/p/main.ents')]
     const modules = new Map([
-      ['/p/lib.ents', `${globals(8)}export global big: [65535]u8\nexport global more: [65535]u8\n`],
-      ['/p/main.ents', `import "./lib" "big" global big: [65535]u8\n${globals(8)}export func f() -> u8 => big[0]\n`],
+      [lib, `${globals(8)}export global big: [65535]u8\nexport global more: [65535]u8\n`],
+      [main, `import "./lib" "big" global big: [65535]u8\n${globals(8)}export func f() -> u8 => big[0]\n`],
     ].map(([path, src]) => [path, { module: parse(src).module!, source: src }]))
-    const program = typecheckProgram(modules, '/p/main.ents')
+    const program = typecheckProgram(modules, main)
     expect(program.errors.map((e) => e.message)).toEqual(['the program has more than 1000000 wasm globals, the most a wasm module has (here g5: [65535]u8 is 65535) — keep a large value in memory, as data'])
-    expect(program.results.get('/p/main.ents')!.errors.length).toBe(1)
+    expect(program.results.get(main)!.errors.length).toBe(1)
   })
 
   test('a test is a function, and so is an instance', () => {
