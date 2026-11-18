@@ -559,12 +559,16 @@ export function startServer(connection: Connection): void {
 
   // The symbol a name at a position is, as its hint says: where it is defined
   // and where it is used, as the checker recorded them. A call in a
-  // generic's body is a use of the functions its instances call.
+  // generic's body is a use of the functions its instances call. Only an
+  // analysis of the text as it is now answers: while the text does not parse
+  // (or is not analysed), the last analysis is of older text, where the name
+  // at this place was another one or meant something else.
   function symbolAt(params: TextDocumentPositionParams): { symbol: MetaSymbol; uri: string } | null {
     const document = documents.get(params.textDocument.uri);
     const cached = analysisCache.get(params.textDocument.uri);
     if (!document || !cached) return null;
     const text = document.getText();
+    if (cached.text !== text) return null;
     const word = getWordAtOffset(text, document.offsetAt(params.position));
     if (!word) return null;
     const at = offsetToPosition(text, word.start);
