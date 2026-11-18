@@ -1135,8 +1135,11 @@ function ungroup(expr: AST.Expr): AST.Expr {
 // Which of a value's wasm values one member of it covers: a field of a struct
 // or tuple (p.y, t.1), the ptr or len of a slice, or an element of a fixed
 // array at a constant index (v[2]). Null for anything else, such as a field
-// reached through a pointer.
-function memberValues(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; start: number; count: number } | null {
+// reached through a pointer. The values are worked out only when asked for,
+// once the object is known to be held: it may be a value in memory, never
+// laid out (p.a[1] in p.a[1][0] for a p: *S), and only a value that is held
+// is within MAX_TYPE_PARTS counted by value.
+function memberOf(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; values: () => { start: number; count: number } } | null {
   if (expr.kind !== 'MemberExpr' && expr.kind !== 'IndexExpr') return null
   const object = ungroup(expr.object)
   const objType = lookupExprType(object, ctx)
@@ -1146,17 +1149,19 @@ function memberValues(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; 
   if (expr.kind === 'IndexExpr') {
     const index = evalComptimeIndex(expr.index)
     if (u.kind !== 'array' || !RT.isValueArray(u) || index === null) return null
-    return { object, start: index * width(u.element), count: width(u.element) }
+    return { object, values: () => ({ start: index * width(u.element), count: width(u.element) }) }
   }
   const member = expr.member
   if (u.kind === 'slice' && member.kind === 'field' && (member.name === 'ptr' || member.name === 'len')) {
-    return { object, start: member.name === 'ptr' ? 0 : 1, count: 1 }
+    return { object, values: () => ({ start: member.name === 'ptr' ? 0 : 1, count: 1 }) }
   }
   if (u.kind !== 'tuple' || (member.kind !== 'field' && member.kind !== 'index')) return null
   const index = member.kind === 'index' ? member.value : u.fields.findIndex((f) => f.name === member.name)
   if (index < 0 || index >= u.fields.length) return null
-  const start = u.fields.slice(0, index).reduce((n, f) => n + width(f.type), 0)
-  return { object, start, count: width(u.fields[index].type) }
+  return {
+    object,
+    values: () => ({ start: u.fields.slice(0, index).reduce((n, f) => n + width(f.type), 0), count: width(u.fields[index].type) }),
+  }
 }
 
 interface Registers {
@@ -1234,9 +1239,12 @@ function registersOf(expr: AST.Expr, ctx: CodegenContext): Registers | null {
     if (sym?.kind === 'global') return { names: globalNames(expr.name, sym.type, ctx), global: true }
     return null
   }
-  const member = memberValues(expr, ctx)
-  const object = member && registersOf(member.object, ctx)
-  if (!member || !object || member.start + member.count > object.names.length) return null
+  // The variable first: only then is the value in registers to be counted
+  const of = memberOf(expr, ctx)
+  const object = of && registersOf(of.object, ctx)
+  if (!of || !object) return null
+  const member = of.values()
+  if (member.start + member.count > object.names.length) return null
   return { names: object.names.slice(member.start, member.start + member.count), global: object.global }
 }
 
@@ -1362,17 +1370,20 @@ function selectValues(wat: string, types: string[], start: number, count: number
 // value and keeps the wasm values the last one covers. Null when there is no
 // such struct; a slice on the stack (f().len) has its own form in memberToWat.
 function memberOfStackValue(expr: AST.Expr, ctx: CodegenContext): string | null {
-  let member = memberValues(ungroup(expr), ctx)
-  if (!member) return null
-  let { object, start } = member
-  const count = member.count
-  for (member = memberValues(object, ctx); member; member = memberValues(object, ctx)) {
+  // Down to the value the members are of, and only then, where it is on the
+  // stack, which of its values they cover (see memberOf)
+  const members: { values: () => { start: number; count: number } }[] = []
+  let object = ungroup(expr)
+  for (let member = memberOf(object, ctx); member; member = memberOf(object, ctx)) {
+    members.push(member)
     object = member.object
-    start += member.start
   }
+  if (members.length === 0) return null
   const type = lookupExprType(object, ctx)
   if (!type || unwrap(type).kind === 'slice' || registersOf(object, ctx) || memoryPlace(object, ctx)) return null
-  return selectValues(exprToWat(object, ctx), typeToWasm(type), start, count, ctx)
+  const covered = members.map((m) => m.values())
+  const start = covered.reduce((n, m) => n + m.start, 0)
+  return selectValues(exprToWat(object, ctx), typeToWasm(type), start, covered[0].count, ctx)
 }
 
 function memberToWat(expr: AST.MemberExpr, ctx: CodegenContext): string {
