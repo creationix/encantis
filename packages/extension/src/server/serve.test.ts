@@ -600,6 +600,27 @@ describe('a def where it is used', () => {
     // What the value holds is shown where the def is declared.
     expect(value(server('onHover', source.indexOf("'a'")))).toContain("'a':i32 = 97")
   })
+
+  // A minus before a def's value is taken into it (-k is the literal -5),
+  // which starts at the minus: the use, from the minus on, was that literal,
+  // and the name with its minus was no name.
+  test('is the def where it is negated', () => {
+    const source = 'def k = 5\ndef h: f64 = 0.5\nexport func f(x: i32) -> f64 => (-k + k - -x) as f64 + -h\n'
+    const server = serverFor(source)
+    const value = (hover: unknown) => ((hover as Hover).contents as MarkupContent).value
+    const start = (location: unknown) => {
+      const { line, character } = (location as Location).range.start
+      return `${line}:${character}`
+    }
+    for (const at of [source.indexOf('-k'), source.indexOf('-k') + 1]) {
+      expect(value(server('onHover', at))).toBe('```encantis\ndef k:i32 = 5\n```')
+      expect(start(server('onDefinition', at))).toBe('0:4')
+    }
+    expect((server('onReferences', source.indexOf('-k') + 1, { context: { includeDeclaration: false } }) as unknown[]).map(start)).toEqual(['2:34', '2:38'])
+    expect(start(server('onDefinition', source.indexOf('-h') + 1))).toBe('1:4')
+    // A negated name of any other kind is the name.
+    expect(value(server('onHover', source.indexOf('-x') + 1))).toBe('```encantis\ninput x:i32\n```')
+  })
 })
 
 describe('a single-quoted literal in a template', () => {

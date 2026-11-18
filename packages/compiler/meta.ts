@@ -1184,7 +1184,7 @@ class MetaBuilder {
     // own, at the def's declaration.
     const def = this.defUsedAt(expr)
     if (def !== undefined) {
-      this.addHint(expr.span.start, this.symbols[def].name.length, type ? this.typeRegistry.register(type) : this.symbols[def].type, def)
+      this.addHint(def.at, this.symbols[def.index].name.length, type ? this.typeRegistry.register(type) : this.symbols[def.index].type, def.index)
       return
     }
 
@@ -1566,17 +1566,23 @@ class MetaBuilder {
   // The symbol a name used at an expression is: the one defined where the
   // checker found it defined, or else, for a name the checker recorded no
   // use of, the module's name.
-  // The def whose name is written where this expression is: the copy of its
-  // value the parser put there (Module.defUses), which the checker recorded
-  // as a use of it. Not what the copy holds, nor an expression that only
-  // starts there.
-  private defUsedAt(expr: AST.Expr): number | undefined {
+  // The def whose name is written where this expression is, and where its
+  // name is: the copy of its value the parser put there (Module.defUses),
+  // which the checker recorded as a use of it, also one the parser negated
+  // (-k, a literal from the minus on). Not what the copy holds, nor an
+  // expression that only starts there.
+  private defUsedAt(expr: AST.Expr): { index: number; at: number } | undefined {
     if (expr.kind === 'IdentExpr') return undefined
-    const declared = this.checkResult.symbolRefs.get(expr.span.start)
+    let at = expr.span.start
+    if (this.source[at] === '-') {
+      at++
+      while (/\s/.test(this.source[at] ?? '')) at++
+    }
+    const declared = this.checkResult.symbolRefs.get(at)
     const index = declared !== undefined ? this.symbolIndexByDef.get(declared) : undefined
     const symbol = index !== undefined ? this.symbols[index] : undefined
-    if (symbol?.kind !== 'def' || expr.span.end - expr.span.start !== symbol.name.length) return undefined
-    return index
+    if (index === undefined || symbol?.kind !== 'def' || expr.span.end - at !== symbol.name.length) return undefined
+    return { index, at }
   }
 
   private usedSymbol(expr: AST.IdentExpr): number | undefined {

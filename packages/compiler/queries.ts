@@ -101,17 +101,18 @@ function identAtOffset(source: string, offset: number): string | null {
   if (offset < 0 || offset >= source.length) return null
   const ch = source[offset]
   if (!/[a-zA-Z_\-]/.test(ch)) return null
-  let start = offset
-  while (start > 0 && /[a-zA-Z0-9_\-]/.test(source[start - 1])) start--
+  const start = wordStart(source, offset)
   let end = offset
   while (end < source.length && /[a-zA-Z0-9_\-]/.test(source[end])) end++
-  return source.slice(start, end)
+  return start < end ? source.slice(start, end) : null
 }
 
-// The offset at which the identifier around `offset` begins
+// The offset at which the identifier around `offset` begins. A name starts
+// with a letter: a minus before it negates it (-k).
 function wordStart(source: string, offset: number): number {
   let start = offset
   while (start > 0 && /[a-zA-Z0-9_-]/.test(source[start - 1])) start--
+  while (source[start] === '-' && /[a-zA-Z_]/.test(source[start + 1] ?? '')) start++
   return start
 }
 

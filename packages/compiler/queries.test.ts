@@ -925,6 +925,15 @@ describe('findReferences', () => {
     expect(check.warnings).toEqual([])
   })
 
+  test('a negated use of a def is the def', () => {
+    const code = 'def k = 5\nexport func f() -> i32 => -k + k\n'
+    const { source, module, check } = setup(code)
+    const negated = code.indexOf('-k') + 1
+    expect(gotoDefinition(source, module, check, negated)).toEqual({ name: 'k', location: { offset: 0, length: 1 } })
+    expect(hover(source, module, check, negated)).toEqual({ name: 'k', type: 'i32', kind: 'def', value: '5' })
+    expect(findReferences(source, module, check, code.indexOf('k ='))?.references.map(r => r.offset)).toEqual([negated, code.lastIndexOf('k')])
+  })
+
   test('a def used only in a test that is not checked is never used', () => {
     const code = 'def k = 5\nfunc f(x: u32) -> u32 => x\ntest "k" {\n  assert(f(k) == 5)\n}\n'
     const module = parse(code).module!

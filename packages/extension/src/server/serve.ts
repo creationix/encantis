@@ -891,6 +891,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     let end = offset;
     while (start > 0 && isWordChar(text[start - 1])) start--;
     while (end < text.length && isWordChar(text[end])) end++;
+    // A name starts with a letter: a minus before it negates it (-k).
+    while (text[start] === '-' && /[A-Za-z_]/.test(text[start + 1] ?? '')) start++;
     if (start === end) return null;
     return { word: text.slice(start, end), start, end };
   }
