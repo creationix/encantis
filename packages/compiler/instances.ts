@@ -26,7 +26,7 @@ import {
   type ComptimeValue,
   type Application,
 } from './checker'
-import { typeToString, unwrap, named, type ResolvedType, type ResolvedField } from './types'
+import { typeToString, unwrap, named, canonicalKey, type ResolvedType, type ResolvedField } from './types'
 
 // How many instances (or applications) are listed; past that they are counted
 export const MAX_LISTED = 12
@@ -191,10 +191,19 @@ function listed(list: Listing | undefined): Pick<GenericInfo, 'instances' | 'mor
 export function generalize(types: readonly ResolvedType[], views: readonly InstanceView[]): ResolvedType | null {
   const params = [...(views[0]?.bound.keys() ?? [])].filter((name) => views.every((v) => v.bound.get(name)?.kind === 'type'))
   const bound = (v: InstanceView, name: string) => (v.bound.get(name) as ComptimeValue & { kind: 'type' }).type
+  // Types compare as instances do, structurally: an instance holds the
+  // struct Pt by its name, and a local of it may have the struct itself.
+  const key = (type: ResolvedType) => {
+    try {
+      return canonicalKey(type)
+    } catch {
+      return typeToString(type)
+    }
+  }
   const go = (here: readonly ResolvedType[]): ResolvedType | null => {
-    const texts = here.map((t) => typeToString(t))
+    const texts = here.map(key)
     if (texts.every((t) => t === texts[0])) return here[0]
-    const param = params.find((name) => views.every((v, i) => typeToString(bound(v, name)) === texts[i]))
+    const param = params.find((name) => views.every((v, i) => key(bound(v, name)) === texts[i]))
     if (param) return named(param, here[0])
     const first = here[0]
     if (here.some((t) => t.kind !== first.kind)) {

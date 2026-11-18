@@ -691,6 +691,21 @@ export func g(b: Box(f64)) -> f64 => open(b)
     expect(at('b.v', 2)).toEqual({ name: 'v', type: 'T', kind: 'field', instances: each('u32', 'f64', 'open') })
   })
 
+  test('a local of a struct type argument is that type parameter too', () => {
+    // The instance holds Pt by its name, the local has the struct it names.
+    const program = `type Pt = (q: i32, r: i32)
+func twice(comptime T: type, a: T) -> T {
+  let b = a
+  return b
+}
+export func f(p: Pt, x: i32) -> i32 => twice(p).q + twice(x)
+`
+    const { source, module, check } = setup(program)
+    expect(hover(source, module, check, program.indexOf('b = a'))).toEqual({
+      name: 'b', type: 'T', kind: 'local', instances: [{ in: ['twice(T = Pt)'], type: '(q: i32, r: i32) (2 slots)' }, { in: ['twice(T = i32)'], type: 'i32' }],
+    })
+  })
+
   test('a type parameter: what each instance binds it to', () => {
     const { source, module, check } = setup(code)
     const t = { name: 'T', type: 'type', kind: 'type parameter', instances: each('u32', 'f64') }

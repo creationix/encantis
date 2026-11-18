@@ -53,11 +53,11 @@ Each parameter, local, loop variable and `if let` binding is its own name, found
 A generic's body is checked once per instance, so `hover` there answers for each instance the program makes (reference 8.4):
 
 ```text
-$ encantis hover lib.ents:4:x
+$ encantis hover lib.ents:4:42          # x in func index_of(comptime T: type, xs: []T, x: T) -> u32
 local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
-$ encantis hover lib.ents:6:eq
+$ encantis hover lib.ents:6:eq          # return i when eq(y, x)
 func eq: func(a: u32, b: u32) -> bool — in index_of(T = u32): eq(a: u32, b: u32) -> bool; in index_of(T = f64): eq(a: f64, b: f64) -> bool
-$ encantis hover lib.ents:12:index_of
+$ encantis hover lib.ents:12:45         # index_of(fs, 2.0)
 generic index_of: func(xs: []f64, x: f64) -> u32 — calls index_of(T = f64)
 ```
 
