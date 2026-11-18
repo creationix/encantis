@@ -7759,7 +7759,8 @@ class CheckContext {
     const outerError = owner.applyError
     owner.applyError = null
     const resolved = named(shown, owner.resolveType(body))
-    const bodyError = owner.applyError
+    // (Set by error() while the body was resolved, which the compiler cannot see)
+    const bodyError = owner.applyError as CheckContext['applyError']
     owner.applyError = outerError ?? bodyError
     typefunc.applying.delete(key)
     owner.applyStack.pop()
