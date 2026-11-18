@@ -3635,6 +3635,7 @@ class CheckContext {
         // takes its values by position.
         const names = struct.fields.map((f) => f.name)
         const hint = names.every((name) => name === null) ? ', whose fields have no names: give the values by position'
+          : names.length === 1 ? `, whose only field is ${names[0]}`
           : names.every((name) => name !== null) ? `, whose fields are ${spoken(names as string[])}` : ''
         if (arg.name) this.error(arg.span.start, `${prefix}field '${arg.name}' not found in ${shown}${hint}`)
         this.inferExpr(value)

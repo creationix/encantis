@@ -3004,6 +3004,10 @@ describe('arguments by place and by name', () => {
       "Pt: field 'q' is given twice",
       "Pt: field 'r' is given twice",
     ])
+    expect(errs(`
+      type One = (v: i32)
+      func a() -> One => (w: 5)
+    `)).toEqual(["field 'w' not found in One, whose only field is v"])
     // A tuple type without names, a slice and named results have the
     // fields they have.
     expect(errs(`
