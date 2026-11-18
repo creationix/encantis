@@ -7,6 +7,7 @@ import { compileToWasm, instantiate } from './test-utils'
 import { createTestHost } from './test-host'
 import wabt from 'wabt'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -649,9 +650,13 @@ export func f() -> u32 {
     })
   })
 
-  // The containers of lib/, used from another module
+  // The containers of lib/, used from another module. They are copied next
+  // to it and imported as source names a file: the path of lib/ is not one
+  // on Windows, where it has a drive and backslashes (escapes in a string),
+  // and the temporary directory can be on another drive.
   const lib = resolve(import.meta.dir, '../../lib')
-  const VEC = `import "${lib}/vec" (
+  const LIB = Object.fromEntries(['stack', 'vec', 'set', 'sort'].map((name) => [`lib/${name}.ents`, readFileSync(join(lib, `${name}.ents`), 'utf8')]))
+  const VEC = `import "./lib/vec" (
   "Vec" func Vec(comptime T: type) -> type
   "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
   "push" func push(comptime T: type, v: *mut Vec(T), x: T)
@@ -663,8 +668,9 @@ export func f() -> u32 {
   // module, so the instance does not depend on the module that asked: two
   // modules that sort one type with one comparator share it.
   test("a builtin in a generic's body does not make its instance a site's own", async () => {
-    const SORT = `import "${lib}/sort" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)\nimport "./order" "descending" func descending(a: u32, b: u32) -> bool\n`
+    const SORT = `import "./lib/sort" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)\nimport "./order" "descending" func descending(a: u32, b: u32) -> bool\n`
     const files = {
+      ...LIB,
       'order.ents': 'export func descending(a: u32, b: u32) -> bool => a > b\n',
       'other.ents': `${SORT}export func down2(xs: []mut u32) { xs.sort(descending) }\n`,
       // A function of the module named like the builtin changes nothing.
@@ -732,6 +738,7 @@ test "laid over a struct of the same shape, and over the type itself" {
   // one field lies in place.
   test('Vec([3]i32) is refused in push with the table rule, and Vec((cells: [3]i32)) is packed', async () => {
     const files = {
+      ...LIB,
       'rows.ents': `${VEC}export func f(r: *[3]i32) -> u32 {
   let rows = vec([3]i32, 2)
   rows.push(r.*)
@@ -751,7 +758,7 @@ export func f(n: i32) -> i32 {
     }
     await inDir(files, async (dir) => {
       const { check } = await program(join(dir, 'rows.ents'))
-      const errors = check.results.get(join(lib, 'vec.ents'))?.errors ?? []
+      const errors = check.results.get(join(dir, 'lib', 'vec.ents'))?.errors ?? []
       expect(errors.map((e) => e.message)).toEqual(['cannot assign [3]i32 to *mut [3]i32, in push(T = [3]i32)'])
       expect(errors[0].notes?.[0].message).toStartWith('in a [*]mut [3]i32 each element is a pointer to its row (reference 2.5)')
       expect(check.results.get(join(dir, 'rows.ents'))?.errors.map((e) => e.message)).toEqual([
@@ -767,19 +774,20 @@ export func f(n: i32) -> i32 {
   // functions, and those come first, so a hash(u16) of the module's own is
   // not used; widened, the key is a u32.
   test("a narrow integer key is ambiguous in lib/set's hash, and is widened", async () => {
-    const SET = `import "${join(lib, 'set')}" (
+    const SET = `import "./lib/set" (
   "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
   "Set" func Set(comptime K: type) -> type
   "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
 )
 `
     const files = {
+      ...LIB,
       'narrow.ents': `${SET}func hash(k: u16) -> u32 => k as u32\nfunc eq(a: u16, b: u16) -> bool => a == b\nexport func f(k: u16) -> bool => hashset(u16, 2).add(k)\n`,
       'wide.ents': `${SET}export func f(k: u16) -> bool => hashset(u32, 2).add(k as u32)\n`,
     }
     await inDir(files, async (dir) => {
       const { check } = await program(join(dir, 'narrow.ents'))
-      expect(check.results.get(join(lib, 'set.ents'))?.errors.map((e) => e.message)).toContain("'hash' is ambiguous for (u16), in add(K = u16)")
+      expect(check.results.get(join(dir, 'lib', 'set.ents'))?.errors.map((e) => e.message)).toContain("'hash' is ambiguous for (u16), in add(K = u16)")
       const instance = await instantiate(join(dir, 'wide.ents'))
       expect((instance.exports.f as (k: number) => number)(7)).toBe(1)
     })

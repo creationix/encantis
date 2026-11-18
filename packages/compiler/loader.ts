@@ -52,7 +52,9 @@ export interface LoadOptions {
   includeTests?: boolean
   // Reads a source file: its text, or null where there is no such file. The
   // file system by default; the editor reads the documents it has open, and
-  // where it has no file system, only those.
+  // where it has no file system, only those. A file is asked for by the path
+  // the loader names it by, as path.resolve makes it (on Windows with a drive
+  // and backslashes).
   readFile?: (path: string) => Promise<string | null>
 }
 

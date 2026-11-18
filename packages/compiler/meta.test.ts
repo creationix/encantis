@@ -4,6 +4,7 @@ import { parse } from './parser'
 import { buildMeta, type MetaOutput } from './meta'
 import { loadModule } from './loader'
 import { typecheckProgram } from './checker'
+import { resolve } from 'node:path'
 
 function metaHints(source: string): Record<string, { name: string | null; type: string }> {
   const result = parse(source)
@@ -391,7 +392,9 @@ export func f(b: Box(u32)) -> u32 => unbox(b) + unbox(Box(u32)(7))
   }
 
   test('in its program', async () => {
-    const files = new Map([['/p/lib.ents', lib], ['/p/main.ents', main]])
+    // Asked for by the path the loader names a file by: resolved, which on
+    // Windows gives it a drive and backslashes.
+    const files = new Map([[resolve('/p/lib.ents'), lib], [resolve('/p/main.ents'), main]])
     const load = await loadModule('/p/main.ents', { readFile: async path => files.get(path) ?? null })
     expect(load.errors).toEqual([])
     const check = typecheckProgram(load.modules, load.entry.path)
