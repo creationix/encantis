@@ -162,14 +162,14 @@ Encantis {
            | "?" "*" Type                      -- optPointer
            | "[" arrayFramings "]" mut Type     -- arrayMut
            | "[" arrayFramings "]" Type        -- array
-           | "[*]" mut Type                    -- manyPointerMut
-           | "[*]" Type                        -- manyPointer
-           | "[]" mut Type                     -- sliceMut
-           | "[]" Type                         -- slice
            | "[" Expr "]" mut Type             -- lengthMut
            | "[" Expr "]" Type                 -- length
            | "[" typeIdent "]" mut Type        -- lengthUpperMut
            | "[" typeIdent "]" Type            -- lengthUpper
+           | "[*]" mut Type                    -- manyPointerMut
+           | "[*]" Type                        -- manyPointer
+           | "[]" mut Type                     -- sliceMut
+           | "[]" Type                         -- slice
            | "*" mut Type                      -- pointerMut
            | "*" Type                          -- pointer
            | "^" Type                          -- boundaryPointer
