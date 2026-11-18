@@ -1184,18 +1184,15 @@ export func f(a: u32) -> u32 => max(a, 1, 2)`
   })
 
   // A file checked on its own, as the editor checks one whose imports it
-  // cannot read: an imported generic is the signature its import writes, and
-  // each instance a call asks for is imported from that module when the file
-  // is compiled alone.
+  // cannot read: an imported generic is the signature its import writes. Its
+  // instances are functions of the module that declares it, which exports
+  // none, so the file is compiled only as part of its program.
   test('a source import, in a file checked on its own, is its signature', () => {
     const source = 'import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nexport func f(a: u32, b: u32) -> u32 => max(a, b)\nexport func g(a: f64) -> f64 => a.max(0.5)\n'
     const result = check(source)
     expect(result.errors).toEqual([])
     expect(result.instances.map((i) => i.name)).toEqual(['max<u32>', 'max<f64>'])
-    const wat = watOfSource(source)
-    expect(wat).toContain('(import "./lib" "max<u32>" (func $max<u32> (param i32) (param i32) (result i32)))')
-    expect(wat).toContain('(import "./lib" "max<f64>" (func $max<f64> (param f64) (param f64) (result f64)))')
-    expect(wat).not.toContain('  (func $max')
+    expect(() => watOfSource(source)).toThrow('a module that imports a generic function is compiled as part of its program')
     expect(errorsOf('import "./lib" "max" func max(comptime T: type, a: T, b: T) -> T\nfunc f(a: u8, b: u32) -> u32 => max(a, b)')).toEqual([
       'argument 2: cannot assign u32 to u8',
     ])

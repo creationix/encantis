@@ -3400,6 +3400,11 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   if (checkResult.partial) {
     throw new Error('a module that imports a generic type is compiled as part of its program: compile the program from its entry module')
   }
+  // An instance of a generic another module declares is a function of that
+  // module, which no module compiled on its own exports.
+  if ([...checkResult.symbols.values()].some((sym) => sym.kind === 'generic' && sym.signatureOnly)) {
+    throw new Error('a module that imports a generic function is compiled as part of its program: compile the program from its entry module')
+  }
   // Build data section from collected literals
   const { dataBuilder, literalRefs } = buildDataSection(checkResult.literals, checkResult.types, {
     calls: checkResult.calls,
@@ -3421,7 +3426,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   for (const decl of module.decls) {
     if (decl.kind === 'ImportDecl') {
       for (const item of decl.items) {
-        parts.push(importItemToWat(decl.module, item, ctx, checkResult.instances))
+        parts.push(importItemToWat(decl.module, item, ctx))
       }
     }
   }
@@ -3651,27 +3656,18 @@ function getMemoryDecl(module: AST.Module): { exportName: string | null; min: nu
   return null
 }
 
-function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenContext, instances: TypeCheckResult['instances'] = []): string {
+function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenContext): string {
   const imp = item.item
 
   if (imp.kind === 'ImportFunc') {
     const name = ctx.funcNames.get(imp) ?? imp.ident ?? item.name
-    // A generic of a source module, in a module compiled on its own: each
-    // instance its calls asked for is imported from that module, by the
-    // name the generic is imported under and the rest of the instance's.
-    const sym = ctx.symbols.get(name)
-    if (sym?.kind === 'generic') {
-      return instances
-        .filter((inst) => inst.of === sym.decl)
-        .map((inst) => importedInstanceToWat(moduleName, `${item.name}${inst.name.slice(name.length)}`, inst.name, ctx))
-        .join('\n')
-    }
     // Get function type from signature
     const params: string[] = []
     const results: string[] = []
     // The types are the checker's, part by part: a type that is a name (a
     // `type`, an applied generic type) is known only there, and read off the
     // syntax it would be no value at all.
+    const sym = ctx.symbols.get(name)
     const checked = (from: 'params' | 'returns', index: number, count: number, ast: AST.Type): ResolvedType => {
       const fields = sym?.kind === 'func' ? sym.type[from] : []
       return fields.length === count ? fields[index].type : resolveAstType(ast)
@@ -3730,17 +3726,6 @@ function importItemToWat(moduleName: string, item: AST.ImportItem, ctx: CodegenC
   }
 
   return ''
-}
-
-// An instance of a generic that a module compiled on its own imports from
-// the module the generic is declared in, with the instance's signature.
-function importedInstanceToWat(moduleName: string, field: string, name: string, ctx: CodegenContext): string {
-  const sym = ctx.symbols.get(name)
-  if (sym?.kind !== 'func') return ''
-  const params = sym.type.params.flatMap((p) => typeToWasm(p.type)).map((t) => ` (param ${t})`)
-  const results = sym.type.returns.flatMap((r) => typeToWasm(r.type))
-  const result = results.length > 0 ? ` (result ${results.join(' ')})` : ''
-  return `  (import "${moduleName}" "${field}" (func $${name}${params.join('')}${result}))`
 }
 
 // A global is one wasm global per wasm value of its type: a slice, struct or
