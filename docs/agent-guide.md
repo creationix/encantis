@@ -48,6 +48,21 @@ Returns every location (definition + all references) so you can do a precise ren
 
 Each parameter, local, loop variable and `if let` binding is its own name, found from where it is defined and from each use: two loops that both use `i`, and a parameter named like a global, are renamed apart. A parameter that is also a named result (`acc` in `func round(acc: u64, v: u64) -> (acc: u64)`) is one name with that result, and a `data` or `def` a test declares is that test's own. Fields are not followed: on a field's name (in a `type`, after a point, or naming an argument as in `Pt(x: 1)`) `definition`, `references` and `rename` find nothing, and `hover` after a point shows the member's type.
 
+## Queries inside generics
+
+A generic's body is checked once per instance, so `hover` there answers for each instance the program makes (reference 8.4):
+
+```text
+$ encantis hover lib.ents:4:x
+local x: T — in index_of(T = u32): u32; in index_of(T = f64): f64
+$ encantis hover lib.ents:6:eq
+func eq: func(a: u32, b: u32) -> bool — in index_of(T = u32): eq(a: u32, b: u32) -> bool; in index_of(T = f64): eq(a: f64, b: f64) -> bool
+$ encantis hover lib.ents:12:index_of
+generic index_of: func(xs: []f64, x: f64) -> u32 — calls index_of(T = f64)
+```
+
+The type before the dash is the declared one (in terms of the type parameters); after it come the instances, those that agree listed together, the first twelve. A method call adds the call it is (`v.push(7)` — `push(v, 7)`), a generic its instances, a generic type its applications. `--json` gives the same as fields: `calls`, `as`, `instances: [{ in: [...], type }]` and `more` (instances not listed). `definition` from a call in a generic's body goes to what the first instance calls; `references` from one of several functions of a name lists the calls in generic bodies that an instance makes of it.
+
 ## Compiling and testing
 
 ```bash

@@ -177,44 +177,69 @@ test "find" {
     const call = built.hints[`${line}:${lines[line].indexOf('max(a, b)')}`]
     expect(call.symbol).toBe(max)
     expect(built.types[call.type].type).toBe('(a:u32,b:u32)->u32')
-    // The parameters and locals of a generic are symbols as they are in its
-    // first instance, with the uses inside the generic and no others: found
-    // by name, they would be those of the same name in another function.
+    // The parameters and locals of a generic are symbols with the type they
+    // are declared with, with the uses inside the generic and no others:
+    // found by name, they would be those of the same name in another
+    // function. Its type parameter is one too.
     const swap = lines.findIndex(l => l.startsWith('func swap('))
     const inSwap = built.symbols.filter(s => Number(s.def.split(':')[0]) >= swap && Number(s.def.split(':')[0]) <= swap + 4)
-    expect(inSwap.map(s => `${s.name}: ${built.types[s.type].type}`)).toEqual(['swap: (comptime T: type, a: *mut T, b: *mut T)->()', 'a: *mut u32', 'b: *mut u32', 'tmp: u32'])
+    expect(inSwap.map(s => `${s.name}: ${built.types[s.type].type}`)).toEqual(['swap: (comptime T: type, a: *mut T, b: *mut T)->()', 'a: *mut T', 'b: *mut T', 'tmp: T', 'T: type'])
     for (const s of inSwap.slice(1)) {
       expect(s.refs.length).toBeGreaterThan(0)
       for (const ref of s.refs) {
         const line = Number(ref.split(':')[0])
-        expect(line > swap && line <= swap + 4).toBe(true)
+        expect(line >= swap && line <= swap + 4).toBe(true)
       }
     }
   })
 
-  test('the body of a generic has the hints of its first instance', () => {
+  test('the body of a generic has the types its names are declared with, and their types in each instance', () => {
     // find is first asked for by the test, for u32: the bodies of instances
     // are come to after everything else, contains<u8> among them.
-    const hints = metaHints(source)
-    const inFind = Object.entries(hints).filter(([key]) => {
+    const built = meta()
+    const shown = (key: string) => {
+      const hint = built.hints[key]
+      const instances = (hint.instances ?? []).map(i => ` [${i.in.join(', ')}: ${built.types[i.type].type}]`).join('')
+      return `${key} ${built.types[hint.type].type}${instances}`
+    }
+    const inFind = Object.keys(built.hints).filter(key => {
       const line = Number(key.split(':')[0])
       return line >= 1 && line <= 6
-    })
-    // `for i, v in xs`: the index i and the value v each at its name
-    expect(inFind.map(([key, hint]) => `${key} ${hint.type}`)).toEqual([
-      '1:28 []u32', '1:37 u32', '2:6 u32', '2:9 u32', '2:14 []u32', '3:11 u32', '3:18 u32', '3:23 u32', '5:9 []u32', '5:12 u32',
-      '1:5 (comptime T: type, xs: []T, x: T)->u32',
+    }).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const t = '[find(T = u32): u32] [find(T = u8): u8]'
+    const ts = '[find(T = u32): []u32] [find(T = u8): []u8]'
+    const same = '[find(T = u32), find(T = u8): u32]'
+    // `for i, v in xs`: the index i and the value v each at its name. The
+    // type parameter T where it is declared and at each use.
+    expect(inFind.map(shown)).toEqual([
+      '1:5 (comptime T: type, xs: []T, x: T)->u32 [find(T = u32): func(xs: []u32, x: u32) -> u32] [find(T = u8): func(xs: []u8, x: u8) -> u32]',
+      `1:19 type ${t}`, `1:28 []T ${ts}`, `1:34 type ${t}`, `1:37 T ${t}`, `1:40 type ${t}`,
+      `2:6 u32 ${same}`, `2:9 T ${t}`, `2:14 []T ${ts}`,
+      `3:11 u32 ${same}`, `3:18 T ${t}`, `3:23 T ${t}`,
+      `5:9 []T ${ts}`, `5:12 u32 ${same}`,
     ])
     // A call in it is the instance that instance calls.
-    expect(hints['7:58'].type).toBe('(xs:[]u8,x:u8)->u32')
+    expect(built.hints['7:58'].calls).toBe('find(T = u8)')
+    expect(built.types[built.hints['7:58'].type].type).toBe('(xs:[]u8,x:u8)->u32')
+    // The type parameter is a symbol, found from where it is declared.
+    const symbol = built.symbols[built.hints['1:19'].symbol ?? -1]
+    expect(symbol).toEqual({ name: 'T', kind: 'typeparam', type: built.hints['1:19'].type, def: '1:19', refs: ['1:34', '1:40'] })
   })
 
-  test('a generic nothing has called has a hint at its name and none inside', () => {
-    const lonely = 'func keep(comptime T: type, a: T) -> T {\n  let b = a\n  return b\n}\nexport func f() { }'
+  test('a generic nothing has called has hints where its own names are declared with a written type, and none else inside', () => {
+    const lonely = 'func keep(comptime T: type, a: T) -> T {\n  let b = a\n  let c: *T = &b\n  return b\n}\nexport func f() { }'
     const result = parse(lonely)
     const built = buildMeta(result.module!, lonely)
-    expect(Object.keys(built.hints)).toEqual(['0:5', '4:12'])
-    expect(built.symbols.map(s => s.name)).toEqual(['keep', 'f'])
+    const hints = Object.entries(built.hints).map(([key, hint]) => `${key} ${built.types[hint.type].type} ${built.symbols[hint.symbol ?? -1]?.kind}`)
+    expect(hints.sort()).toEqual(['0:19 type typeparam', '0:28 T param', '0:31 type typeparam', '0:37 type typeparam', '0:5 (comptime T: type, a: T)->T func', '2:10 type typeparam', '2:6 *T local', '5:12 ()->() func'])
+    expect(built.symbols.map(s => s.name)).toEqual(['keep', 'f', 'T', 'a', 'c'])
+  })
+
+  test('a call of a function declared further down has that function as its symbol', () => {
+    // The body of a function had its hints before the functions after it
+    // were symbols: the call was a type with no name.
+    const built = buildMeta(parse('export func a() -> u32 => b() + 1\nfunc b() -> u32 => 2\n').module!, 'export func a() -> u32 => b() + 1\nfunc b() -> u32 => 2\n')
+    expect(built.symbols[built.hints['0:26'].symbol ?? -1]?.name).toBe('b')
   })
 })
 
@@ -259,6 +284,40 @@ export func f(xs: []u8) -> u32 => xs.slot(4) + hash(7:u32)`
     expect(at('4:25')).toBe('(a:i32,b:i32)->i32 @undefined')
     // The receiver keeps its own.
     expect(at('6:34')).toBe('[]u8 @6:14')
+  })
+})
+
+describe('what a generic is in each of its instances', () => {
+  const source = `func hash(k: u32) -> u32 => k
+func hash(k: []u8) -> u32 => k.len
+func Box(comptime T: type) -> type => (v: T, n: u32)
+func slot(comptime K: type, b: Box(K), n: u32) -> u32 => b.v.hash() % n
+export func f(a: Box(u32), b: Box([]u8)) -> u32 => slot(a, 4) + b.slot(8)`
+
+  function meta(): MetaOutput {
+    const result = parse(source)
+    expect(result.errors).toEqual([])
+    return buildMeta(result.module!, source)
+  }
+  const listed = (built: MetaOutput, key: string) => (built.hints[key].instances ?? []).map(i => `${i.in.join(', ')}: ${built.types[i.type].type}`)
+
+  test('a call in a generic\'s body has the function each instance calls; a method call the call it is', () => {
+    const built = meta()
+    expect(built.hints['3:61'].as).toBe('hash(b.v)')
+    expect(listed(built, '3:61')).toEqual(['slot(K = u32): hash(k: u32) -> u32', 'slot(K = []u8): hash(k: []u8) -> u32'])
+    expect(built.hints['4:51'].calls).toBe('slot(K = u32)')
+    expect(built.hints['4:66']).toMatchObject({ calls: 'slot(K = []u8)', as: 'slot(b, 8)' })
+  })
+
+  test('a generic type has its applications, and its parameter and its fields what each one makes them', () => {
+    const built = meta()
+    expect(listed(built, '2:5')).toEqual(['Box(u32): (v:u32,n:u32)', 'Box([]u8): (v:[]u8,n:u32)'])
+    expect(listed(built, '2:18')).toEqual(['Box(u32): u32', 'Box([]u8): []u8'])
+    expect(built.types[built.hints['2:39'].type].type).toBe('T')
+    expect(listed(built, '2:39')).toEqual(['Box(u32): u32', 'Box([]u8): []u8'])
+    // A field after a point in a generic's body, in each instance
+    expect(listed(built, '3:59')).toEqual(['slot(K = u32): u32', 'slot(K = []u8): []u8'])
+    expect(built.types[built.hints['3:59'].type].type).toBe('K')
   })
 })
 

@@ -1,6 +1,7 @@
 // =============================================================================
 // Encantis Language Server
-// Provides diagnostics and hover for .ents files. Shared by the desktop (Node)
+// Provides diagnostics, hover, definition and references for .ents files.
+// Shared by the desktop (Node)
 // and web (worker) entry points, which only differ in how they connect.
 // =============================================================================
 
@@ -14,6 +15,8 @@ import {
   TextDocumentSyncKind,
   type TextDocumentPositionParams,
   type Hover,
+  type Location,
+  type ReferenceParams,
   MarkupKind,
   SemanticTokensBuilder,
   SemanticTokensLegend,
@@ -25,7 +28,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { parse } from '@encantis/compiler/parser';
 import type { Module } from '@encantis/compiler/ast';
 import { fieldNamedAt, genericDeclaring } from '@encantis/compiler/checker';
-import { buildMeta, type MetaError, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
+import { buildMeta, type MetaError, type MetaHint, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 
 // Builtin function signatures for hover display
@@ -64,6 +67,8 @@ function kindToPrefix(kind: MetaSymbol['kind']): string {
     case 'def': return 'def';
     case 'func': return 'func';
     case 'type': return 'type';
+    case 'typeparam':
+    case 'comptime': return 'comptime';
     default: return '';
   }
 }
@@ -108,9 +113,30 @@ function formatSymbolDisplay(symbol: MetaSymbol, typeStr: string): string {
       return symbol.value
         ? `def ${symbol.name}: ${typeStr} = ${symbol.value}`
         : `def ${symbol.name}: ${typeStr}`;
+    // A generic's comptime parameters, as they are declared
+    case 'typeparam':
+    case 'comptime':
+      return `comptime ${symbol.name}: ${typeStr}`;
     default:
       return `${symbol.name}: ${typeStr}`;
   }
+}
+
+// What a hint says beyond its type, below it: for x.f(a) the call it is, the
+// function a call calls (an instance of a generic), and what the name is in
+// each instance (each application, for a generic type).
+function hintDetails(hint: MetaHint, meta: MetaOutput): string {
+  const parts: string[] = [];
+  const call = hint.as !== undefined ? `the call \`${hint.as}\`` : '';
+  if (hint.calls !== undefined) parts.push(call ? `${call}, which calls \`${hint.calls}\`` : `calls \`${hint.calls}\``);
+  else if (call) parts.push(call);
+  const listed = (hint.instances ?? []).map(i => {
+    const type = formatLine(meta.types[i.type]?.type ?? 'unknown');
+    return `- in ${i.in.map(n => `\`${n}\``).join(', ')}: \`${type}\``;
+  });
+  if (hint.more !== undefined) listed.push(`- and ${hint.more} more instance${hint.more === 1 ? '' : 's'}`);
+  if (listed.length > 0) parts.push(listed.join('\n'));
+  return parts.map(p => `\n\n${p}`).join('');
 }
 
 // Cache analysis results per document
@@ -152,9 +178,11 @@ function symbolKindToTokenType(kind: MetaSymbol['kind']): number {
   switch (kind) {
     case 'type':
     case 'unique':
+    case 'typeparam':
       return 0; // type
     case 'func':
-      return 1; // function
+    case 'comptime':
+      return 1; // function (a comptime function parameter stands for one)
     case 'param':
       return 2; // parameter (input)
     case 'return':
@@ -209,6 +237,8 @@ export function startServer(connection: Connection): void {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
         hoverProvider: true,
+        definitionProvider: true,
+        referencesProvider: true,
         documentFormattingProvider: true,
         semanticTokensProvider: {
           legend: tokenLegend,
@@ -424,15 +454,17 @@ export function startServer(connection: Connection): void {
         if (symbol) {
           const display = formatLine(formatSymbolDisplay(symbol, typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
+          value += hintDetails(hint, meta);
           if (symbol.doc) {
             value += `\n\n${symbol.doc}`;
           }
           return { contents: { kind: MarkupKind.Markdown, value }, range };
         }
 
-        // Check for builtin functions
+        // Check for builtin functions: a call of one has a function's type.
+        // A field or a member named like one (`min: T`, `r.max`) is not it.
         const builtinSig = BUILTIN_SIGNATURES[word];
-        if (builtinSig) {
+        if (builtinSig && typeStr.includes('->') && hint.expr === undefined) {
           return {
             contents: {
               kind: MarkupKind.Markdown,
@@ -460,7 +492,7 @@ export function startServer(connection: Connection): void {
         return {
           contents: {
             kind: MarkupKind.Markdown,
-            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\``,
+            value: `\`\`\`encantis\n${formatLine(raw)}\n\`\`\`${hintDetails(hint, meta)}`,
           },
           range,
         };
@@ -517,6 +549,44 @@ export function startServer(connection: Connection): void {
     }
 
     return null;
+  });
+
+  // -----------------------------------------------------------------------------
+  // Definition and References
+  // -----------------------------------------------------------------------------
+
+  // The symbol a name at a position is, as its hint says: where it is defined
+  // and where it is used, as the checker recorded them. A call in a
+  // generic's body is a use of the functions its instances call.
+  function symbolAt(params: TextDocumentPositionParams): { symbol: MetaSymbol; uri: string } | null {
+    const document = documents.get(params.textDocument.uri);
+    const cached = analysisCache.get(params.textDocument.uri);
+    if (!document || !cached) return null;
+    const text = document.getText();
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!word) return null;
+    const at = offsetToPosition(text, word.start);
+    const hint = cached.meta.hints[`${at.line}:${at.character}`];
+    const symbol = hint?.symbol !== undefined ? cached.meta.symbols[hint.symbol] : undefined;
+    return symbol ? { symbol, uri: params.textDocument.uri } : null;
+  }
+
+  function locationOf(uri: string, symbol: MetaSymbol, key: string): Location {
+    const [line, character] = key.split(':').map(Number);
+    return { uri, range: { start: { line, character }, end: { line, character: character + symbol.name.length } } };
+  }
+
+  connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
+    const found = symbolAt(params);
+    return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+  });
+
+  connection.onReferences((params: ReferenceParams): Location[] | null => {
+    const found = symbolAt(params);
+    if (!found) return null;
+    const { symbol, uri } = found;
+    const keys = params.context?.includeDeclaration ? [symbol.def, ...symbol.refs] : symbol.refs;
+    return keys.map(key => locationOf(uri, symbol, key));
   });
 
   // -----------------------------------------------------------------------------
