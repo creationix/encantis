@@ -3222,6 +3222,37 @@ describe('the address of an element, where a pointer is expected', () => {
     expect(x.tuple()).toBe(12)
   })
 
+  test('of a tuple with values only known when the program runs is a cell that is given them', async () => {
+    // At 445731f the cell of &(y: t(1), x: t(n)) held zeros and t was never
+    // called. (That such a cell shares no bytes with an equal literal is
+    // claude/fix2-literals' 052c7ef.)
+    const x = await run(`
+      type Pt = (x: i32, y: i32)
+      type Box = (lo: Pt, k: i32)
+      global seen: i32 = 0
+      func t(v: i32) -> i32 {
+        seen = seen * 10 + v
+        return v
+      }
+      func get(p: *Pt) -> i32 => p.x * 10 + p.y
+      export func runtime(n: i32) -> i32 => get(&(y: t(1), x: t(n)))
+      export func seen_() -> i32 => seen
+      export func nested(n: i32) -> i32 {
+        let p: *Box = &(k: t(3), lo: (y: n, x: 5))
+        return p.lo.x * 100 + p.lo.y * 10 + p.k
+      }
+      export func written(n: i32) -> i32 {
+        let p: *mut Pt = &mut (y: n, x: 7)
+        p.y += 1
+        return get(p)
+      }
+    `)
+    expect(x.runtime(2)).toBe(21)
+    expect(x.seen_()).toBe(12)
+    expect(x.nested(4)).toBe(543)
+    expect(x.written(5)).toBe(76)
+  })
+
   test('of an array written out is that array laid out, as it is without the &', async () => {
     const x = await run(`
       type Pt = (x: i32, y: i32)

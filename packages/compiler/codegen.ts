@@ -874,6 +874,14 @@ function unaryToWat(expr: AST.UnaryExpr, ctx: CodegenContext): string {
       const innerExpr = addressedLiteral(expr.operand)
       const dataId = (innerExpr as { dataId?: number }).dataId ?? innerExpr.span.start
       const ref = ctx.literalRefs.get(dataId)
+      // A tuple with a value only known when the program runs: its cell is
+      // given its values there, computed in the order they are written (an
+      // array's are stored by arrayToWat).
+      const cell = lookupExprType(expr, ctx)
+      if (ref && cell?.kind === 'pointer' && innerExpr.kind !== 'ArrayExpr' && innerExpr.kind !== 'RepeatExpr' &&
+          isRuntimeExpr(innerExpr, ctx.calls)) {
+        return `${storeToMemory(cell.pointee, `(i32.const ${ref.ptr})`, operand, ctx)}\n(i32.const ${ref.ptr})`
+      }
       if (ref) {
         return `(i32.const ${ref.ptr})`
       }
