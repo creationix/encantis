@@ -3074,6 +3074,33 @@ describe('a tuple literal with names gives each field by name', () => {
     expect(x.f()).toBe(52221)
   })
 
+  test('also through an if or a match that ends a block body, as in an expression body', async () => {
+    const x = await run(`
+      func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
+      func trailing_if(c: bool) -> (q: i32, r: i32) {
+        if c { (r: 1, q: 2) } else { (r: 3, q: 4) }
+      }
+      func trailing_match(k: i32) -> (q: i32, r: i32) {
+        match k { 0 => (r: 1, q: 2), _ => { (r: 3, q: 4) } }
+      }
+      func arrow_if(c: bool) -> (q: i32, r: i32) => if c { (r: 1, q: 2) } else { (r: 3, q: 4) }
+      func mixed(c: bool, n: u32) -> (lo: u32, hi: u32) {
+        if c { split(n) } else { (hi: 1, lo: 2) }
+      }
+      export func f() -> i32 {
+        let (q: a) = trailing_if(true)
+        let (q: b) = trailing_if(false)
+        let (q: c) = trailing_match(0)
+        let (q: d) = trailing_match(1)
+        let (q: e) = arrow_if(false)
+        return a * 10000 + b * 1000 + c * 100 + d * 10 + e
+      }
+      export func g() -> u32 => mixed(true, 0x50006).lo * 100 + mixed(false, 0).lo * 10 + mixed(false, 0).hi
+    `)
+    expect(x.f()).toBe(24244)
+    expect(x.g()).toBe(521)
+  })
+
   test('in a generic, and to decide a type parameter', async () => {
     const x = await run(`
       func Pair(comptime A: type, comptime B: type) -> type => (first: A, second: B)

@@ -1963,10 +1963,17 @@ class CheckContext {
       const tailType = tail?.kind === 'ExpressionStmt' ? this.exprTypes.get(tail.expr) : undefined
       if (tail?.kind === 'ExpressionStmt' && tailType && tailType.kind !== 'void' && !(tailType.kind === 'tuple' && tailType.fields.length === 0)) {
         // A tuple literal with names among its elements fills the results
-        // of those names, as it gives a struct its fields.
-        const results = this.returnValueType()
-        if (namedLiteral(tail.expr) && unwrap(results).kind === 'tuple') this.checkExpr(tail.expr, results)
-        else this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
+        // of those names, as it gives a struct its fields, also where it is
+        // the value of a branch of an if or a match: then the value is
+        // checked as an expression body's is, and a branch whose value is no
+        // such literal fills them in order.
+        const results = unwrap(this.returnValueType())
+        if (givesNamedLiteral(tail.expr) && results.kind === 'tuple') {
+          const prevResults = this.resultsInOrder
+          this.resultsInOrder = tuple(results.fields)
+          this.checkExpr(tail.expr, this.resultsInOrder)
+          this.resultsInOrder = prevResults
+        } else this.coerce(tail.expr, tailType, this.resultsFilledBy(tailType))
       }
       // A block body with unnamed results has to return on every path: there
       // are no named locals to return when it falls off the end.
@@ -7366,6 +7373,27 @@ function ungrouped(expr: AST.Expr): AST.Expr {
 function namedLiteral(expr: AST.Expr): boolean {
   const value = ungrouped(expr)
   return value.kind === 'TupleExpr' && value.elements.some((element) => element.name !== null)
+}
+
+// Whether a named literal is the value of `expr`, or the value of one of the
+// branches of an if or a match `expr` is.
+function givesNamedLiteral(expr: AST.Expr): boolean {
+  const value = ungrouped(expr)
+  if (value.kind === 'IfExpr') {
+    const bodies = [value.thenBranch, ...value.elifs.map((elif) => elif.thenBranch), value.else_]
+    return bodies.some((body) => body !== null && bodyGivesNamedLiteral(body))
+  }
+  if (value.kind === 'MatchExpr') {
+    return value.arms.some((arm) =>
+      arm.body.kind === 'Block' || arm.body.kind === 'ArrowBody' ? bodyGivesNamedLiteral(arm.body) : givesNamedLiteral(arm.body))
+  }
+  return namedLiteral(value)
+}
+
+function bodyGivesNamedLiteral(body: AST.FuncBody): boolean {
+  if (body.kind === 'ArrowBody') return givesNamedLiteral(body.expr)
+  const last = body.stmts.at(-1)
+  return last?.kind === 'ExpressionStmt' && givesNamedLiteral(last.expr)
 }
 
 // What `&` takes the address of, through parentheses and a type annotation:

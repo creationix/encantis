@@ -1096,7 +1096,7 @@ func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
 }
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)). An expression body gives the results the same way.
+Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
 
 ```ents
 func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
@@ -1112,6 +1112,10 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
 func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
 
 func named(n: u32) -> (hi: u32, lo: u32) => (lo: n & 0xffff, hi: n >> 16)  // a literal with names, by name
+
+func picked(c: bool, n: u32) -> (lo: u32, hi: u32) {
+  if c { split(n) } else { (hi: 1, lo: 2) }   // in order in one branch, by name in the other
+}
 ```
 
 A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
