@@ -819,7 +819,7 @@ A value widens wherever two operand types meet or a value meets a declared type:
 - **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
-- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s.
+- **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s. Tuples among the elements agree field by field, as branches do: `[(1, 2), (3, 5000000000)]` is a `[2](i32, i64)`. Tuples that agree on no type (another count of fields, other names, the same names in another order) are of the first one's type, and each of the others meets it as it would any struct: `[(y: 1, x: 2), (x: 3, y: 4)]` has a second element with an `x` of 3 ([2.8](#struct-constructors)), and `(3, 4, 5)` after a `(1, 2)` is an error.
 
 ```ents
 type Sample = (count: i64, mean: f64)

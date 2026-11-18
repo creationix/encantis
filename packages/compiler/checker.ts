@@ -4563,6 +4563,19 @@ class CheckContext {
     }
     const to = unwrap(type)
     const from = unwrap(actual)
+    // An array of tuples with no type of its own: each element meets the
+    // element type as it would any struct, a tuple written out field by
+    // field, by name where it has names (see settleTuples).
+    if (expr.kind === 'ArrayExpr' && to.kind === 'array' && from.kind === 'comptime_array') {
+      const element = this.peelArraySize(to)
+      if (unwrap(element).kind !== 'tuple') return
+      for (const value of expr.elements) {
+        const own = this.exprTypes.get(value)
+        if (ungrouped(value).kind === 'TupleExpr') this.checkExpr(value, element)
+        else if (own) this.coerce(value, own, element)
+      }
+      return
+    }
     if (expr.kind !== 'TupleExpr' || to.kind !== 'tuple' || from.kind !== 'tuple' || to.fields.length !== expr.elements.length) return
     expr.elements.forEach((element, i) => {
       const value = argValue(element)
@@ -5254,8 +5267,10 @@ class CheckContext {
     // Infer element types and unify
     const elemTypes = expr.elements.map((e) => this.inferExpr(e))
     const numbers = elemTypes.every(t => isScalar(unwrap(t)))
-    const elementType = numbers && !typedByContext
-      ? this.unifyElements(expr.elements, elemTypes)
+    const tuples = elemTypes.every(t => unwrap(t).kind === 'tuple')
+    const elementType = typedByContext ? this.unifyTypes(elemTypes)
+      : numbers ? this.unifyElements(expr.elements, elemTypes)
+      : tuples ? this.settleTuples(expr.elements, elemTypes)
       : this.unifyTypes(elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
@@ -5278,6 +5293,19 @@ class CheckContext {
       this.error(at.span.start, `elements have different types: ${typeToString(odd)} and ${typeToString(type)} (cast one explicitly)`)
       return type
     }
+    for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
+    return type
+  }
+
+  // The element type of an array literal of tuples with no declared type.
+  // Tuples that agree field by field, as the branches of an if do, are of
+  // the type they agree on, each converted where it stands: (1, 2) and
+  // (3, 5000000000) are an (i32, i64). Ones that don't agree are of the
+  // first one's type, which each tuple written out meets as it would any
+  // struct where the array gets its type (see typeDefault).
+  private settleTuples(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    const { type, odd } = this.commonType(types)
+    if (odd) return this.unifyTypes(types)
     for (const [i, element] of elements.entries()) this.coerce(element, types[i], type)
     return type
   }
@@ -5361,7 +5389,11 @@ class CheckContext {
     if (odd) {
       if (!valueUsed) return VOID
       const at = bodyValue(odd.body) ?? odd.body
-      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)} (cast one explicitly)`)
+      // A struct or tuple can't be cast: the fix is to say what it is.
+      const fix = unwrap(odd.type).kind === 'tuple' && unwrap(type).kind === 'tuple'
+        ? ': give the value its type, as in let v: T = ..., and each branch is checked against T'
+        : ' (cast one explicitly)'
+      this.error(at.span.start, `branches have different types: ${typeToString(odd.type)} and ${typeToString(type)}${fix}`)
       return type
     }
     for (const b of valued) {

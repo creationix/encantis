@@ -3149,6 +3149,32 @@ describe('a tuple literal with names gives each field by name', () => {
     `)
     expect(x.f(5n as never, 1)).toBe(5553n)
   })
+
+  test('in an array with no type, whose tuples settle on one type as branches do', async () => {
+    // At 445731f the elements were laid over the first one's type as they
+    // came: 300 sat in a u8 (188 below) and 5000000000 in an i32.
+    const x = await run(`
+      export func wide() -> i32 {
+        let v = [(x: 1:u8, y: 2), (x: 300, y: 4)]
+        return v[1].x * 10 + v[1].y
+      }
+      export func big() -> i64 {
+        let v = [(1, 2), (3, 5000000000)]
+        return v[1].1 + (v[0].0 as i64)
+      }
+      export func turned() -> i32 {
+        let v = [(y: 1, x: 2), (x: 3, y: 4)]
+        return v[1].x * 10 + v[1].y
+      }
+      global g = [(y: 1, x: 2), (x: 5, y: 6)]
+      export func global_() -> i32 => g[1].x * 10 + g[1].y
+    `)
+    expect(x.wide()).toBe(3004)
+    expect(x.big()).toBe(5000000001n)
+    // A tuple with names meets the first one's type by name.
+    expect(x.turned()).toBe(34)
+    expect(x.global_()).toBe(56)
+  })
 })
 
 describe('the address of an element, where a pointer is expected', () => {
