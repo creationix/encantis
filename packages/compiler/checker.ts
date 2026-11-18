@@ -3882,7 +3882,8 @@ class CheckContext {
   // values a value is laid out in: each register of its parameters and
   // variables, and each register of each value its code computes, as often as
   // the code is written out (a fill [x; N] writes x N times, a deferred
-  // expression is written at each exit). A value computes as much code as it
+  // expression is written at each exit, a return without a value reads the
+  // named results again). A value computes as much code as it
   // has registers, so this bounds the body as well; and a value an if, an if
   // let, a match or a ?? gives is a wasm block's results, at most 1000
   // (MAX_RESULT_REGISTERS). One error where the count goes over, at the value
@@ -4128,6 +4129,14 @@ class CheckContext {
           case 'ReturnStmt':
             if (stmt.value) value(stmt.value, n, false)
             if (stmt.when) value(stmt.when, n, false)
+            // Without a value it gives back the named results, each of
+            // their registers read again
+            if (!stmt.value && signature.return > 0) {
+              if (stmt.span.start >= span.start && stmt.span.start < span.end) site = stmt.span.start
+              const given = signature.return
+              const own = times(given, n)
+              uses.push({ at: site, n: own, shown: () => (given > 1 || n > 1 ? `the named results a return gives back${n > 1 ? `, written out ${n} times,` : ''} are ${own}` : null) })
+            }
             return
           case 'BreakStmt':
           case 'ContinueStmt':

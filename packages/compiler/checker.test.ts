@@ -3819,6 +3819,19 @@ describe('the size of a function', () => {
     expect(errs(src(48))).toEqual([over('[1000]u8, written out 50 times, is 50000')])
   })
 
+  test('a return without a value gives the named results back, each time', () => {
+    // 1000 registers each time (the results read again) and 3 for the condition
+    const src = (returns: number) => `func f(a: u32, p: *[1000]u8) -> (r: [1000]u8) {\n  r = p.*\n${Array.from({ length: returns }, (_, i) => `  return when a == ${i}\n`).join('')}}`
+    expect(errs(src(47))).toEqual([])
+    expect(at(src(48))).toEqual([`ret: ${over('the named results a return gives back are 1000')}`])
+    // 3000 of them built a body of 8.6 MB, which no engine takes
+    expect(errs(src(3000))).toEqual([over('the named results a return gives back are 1000')])
+    // Written out as often as the code around it is
+    const fill = (n: number) => `func f(a: u32, p: *[1000]u8, q: *mut [${n}]u8) -> (r: [1000]u8) {\n  r = p.*\n  q.* = [(if a == 0 { return } else { 1 }); ${n}]\n}`
+    expect(errs(fill(40))).toEqual([])
+    expect(errs(fill(60))).toEqual([over('the named results a return gives back, written out 60 times, are 60000')])
+  })
+
   test('the exits after a defer are counted in time linear in the function', () => {
     // Each defer counted what follows it again, the bytes of a literal among them: this took 15 s
     const src = `func k() -> u8 => 1\nfunc f() -> u8 {\n${'  defer k()\n'.repeat(2000)}  let t = "${'y'.repeat(20000)}"\n  return t[0]\n}`
