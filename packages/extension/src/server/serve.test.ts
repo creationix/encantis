@@ -358,4 +358,13 @@ export func h() -> u8 => 'd'
     expect(hover(source.indexOf('>`'))).toContain('">":[]u8')
     expect(hover(source.indexOf("'c'") + 1)).toBeNull()
   })
+
+  // An escaped backtick or ${ is the template's text: the piece of text
+  // ended at it.
+  test('a piece of text is whole past an escape', () => {
+    const source = 'func name(c: u8) -> []u8 => "x"\nexport func g() -> [][]u8 => `a\\`b${name(1)}c\\${d ${name(2)}`\n'
+    const hover = hoverIn(source)
+    for (const at of [0, 1, 2, 3]) expect(hover(source.indexOf('a\\`b') + at)).toContain('"a\\`b":[]u8')
+    for (const at of [0, 1, 2, 3, 4, 5]) expect(hover(source.indexOf('c\\${d') + at)).toContain('"c\\${d ":[]u8')
+  })
 })
