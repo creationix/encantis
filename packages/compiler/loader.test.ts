@@ -677,6 +677,20 @@ export func f() -> u32 {
     expect(callsIn(wat, 'sort$sort<u32|descending@order>')).not.toContain('min')
   })
 
+  // As in one module, a generic's body does not see a function a test
+  // declares, also where the test is the site.
+  test('a function declared in a test is not looked up at the site', async () => {
+    const files = {
+      'lib.ents': 'export func bucket(comptime K: type, k: K) -> u32 => hash(k) % 16\n',
+      'main.ents': 'import "./lib" "bucket" func bucket(comptime K: type, k: K) -> u32\ntype Cell = (x: u32)\ntest "t" {\n  func hash(c: Cell) -> u32 => c.x\n  assert bucket(Cell(17)) == 1\n}\n',
+    }
+    const errors = await inDir(files, async (dir) => (await program(join(dir, 'main.ents'), true)).check.errors.map((e) => e.message))
+    expect(errors).toEqual([
+      "no function 'hash' accepts ((x: u32)), in bucket(K = (x: u32))",
+      "bucket(K = (x: u32)) cannot be instantiated: no function 'hash' accepts ((x: u32)) (lib.ents:1:54)",
+    ])
+  })
+
   test('a library file compiled alone emits no generic, and exports none', async () => {
     for (const name of ['stack', 'vec', 'set', 'map', 'sort']) {
       const wat = await watOf(join(lib, `${name}.ents`))
