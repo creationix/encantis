@@ -2707,6 +2707,30 @@ import "sys" "print"
 func print(msg:[]u8)
 ```
 
+#### Source modules
+
+A module string that starts with `./`, `../` or `/` names another source file (`.ents` is added): the two are compiled into one wasm module, and what is imported is what that file exports. Imports inside a `test` block are followed only when tests are built.
+
+```text
+import "./util" "add" func add(a: i32, b: i32) -> i32
+import "../lib/text" (
+  "next_line" func next_line(s: []u8) -> (line: []u8, rest: []u8)
+)
+```
+
+The signature an import writes is documentation: what the other module exports under the name is what is called, and the module that imports it is checked against that. A name that is not exported is `'add' is not exported from './util'`. Types are structural, so a struct type used across modules is declared again (or written out) where it is needed; a `type` is not imported.
+
+A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them: see [8.7 Generics Across Modules](#87-generics-across-modules).
+
+```text
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+)
+```
+
+When a file is checked without the files it imports (the editor's web worker, a spec block), a generic function it imports is the signature its import writes, and its calls are checked against that signature. A generic type is unknown there, and so is anything made of it: such a file lists no errors, and has one warning, `imported generic types are resolved only when the program is checked`. The command line and the desktop editor check the program.
+
 ### 7.2 Exports
 
 ```ents
@@ -2731,6 +2755,8 @@ export global counter:i32 = 0
 ```
 
 A global of several wasm values is exported (and imported from the host) as one wasm global per value, each named for its part the way a local's registers are: `export global order:[]i32` exports `order_ptr` and `order_len`, and a struct global `size:(w:i32, h:i32)` exports `size_w` and `size_h`.
+
+Only the entry module's exports reach the host. In a module that another imports, `export` makes a name importable. A generic function or generic type is never exported to the host, since there is no one function of it (and nothing of a generic type exists at run time): its `export` makes it importable by other source modules, and in an entry module it emits nothing, so a library of generics compiles on its own to a module with none of them. To export an instance, write a wrapper: `export func push_u32(v: *mut Vec(u32), x: u32) { push(v, x) }`.
 
 ### 7.3 Memory Declarations
 
@@ -3298,7 +3324,70 @@ no field 'y' on type (u32, u32), in second(f = pair)
 
 Inside the generic the parameter is not a value. It can be called, and passed on for a comptime function parameter of another generic; it cannot be stored or passed as an ordinary argument.
 
-### 8.7 Not in This Version
+### 8.7 Generics Across Modules
+
+`export func max(comptime T: type, ...)` and `export func Vec(comptime T: type) -> type` make a generic importable by other source modules. A source import names what it uses with its signature, as for any function ([7.1](#71-imports)), and a generic type as the function it is:
+
+```text
+import "./containers" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+)
+
+export func total(n: u32) -> u32 {
+  let v = vec(u32, 16)
+  for i in n {
+    v.push(i)
+  }
+  return v.len
+}
+```
+
+An instance belongs to the module that declares the generic: its body's names are that module's names, its errors are reported against that module's source, and its code is emitted with that module's functions. A second module that also pushes to a `Vec(u32)` uses the same instance: the program has one `push<u32>`. A generic type applied in another module is the type its body gives, as in its own.
+
+**Where a call in a generic body is looked up.** In the generic's own module first. Where no function there of the callee's name takes the arguments, in the *site*: the module whose ordinary (non-generic) code started the chain of instantiations. So a library provides `hash` and `eq` for the common key types, and a program that uses `Set(Cell)` with its own `Cell` writes `hash(c: Cell)` and `eq(a: Cell, b: Cell)` in the module that makes the set:
+
+```text
+import "./containers" (
+  "Set" func Set(comptime K: type) -> type
+  "hashset" func hashset(comptime K: type, bits: u32) -> *mut Set(K)
+  "add" func add(comptime K: type, s: *mut Set(K), k: K) -> bool
+)
+
+type Cell = (x: i32, y: i32)
+
+func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+export func visited(n: u32) -> u32 {
+  let seen = hashset(Cell, 2)
+  for i in n {
+    seen.add(Cell((i % 5) as i32, (i % 3) as i32))
+  }
+  return seen.count
+}
+```
+
+`add<Cell>` and the `slot<Cell>` it calls are functions of `./containers` that call this module's `hash` and `eq` directly. A library's own functions come first and cannot be replaced from outside. Only the callee of a call is looked up at the site: the types, globals and helpers of a generic's body are always its own module's, and a comptime function argument is written where the generic is called.
+
+An instance whose body needed the site belongs to that site, and so does an instance that calls one: another module that uses the same generic with the same arguments gets its own copy, calling its own functions: two functions in the output, the second named with its site in WAT, `add<<x:i32|y:i32>@other>`. Instances that did not need the site exist once in the program.
+
+A function of another module given for a comptime function parameter is called by that module's name for it: `sort(xs, by_cost)` with `by_cost` declared in, or imported from, another module is an instance that calls that function directly, and two modules that give the same function share it.
+
+**Errors.** An error in an instance is the generic's module's, at its line in the generic, labelled with the instance, and with the call it was required from in the module of that call. The module that asked is told too, once, at its call:
+
+```text
+containers.ents:77:11: no function 'hash' accepts (Cell), in add(K = Cell)
+  required from main.ents:18:15
+main.ents:18:15: add(K = Cell) cannot be instantiated: no function 'hash' accepts (Cell) (containers.ents:77:11)
+```
+
+Such an error is found when the program is checked, also in a library that was checked on its own and found sound before, and it stops the build like any other.
+
+The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents`, `lib/set.ents`, `lib/map.ents` and `lib/sort.ents`, on the bump stack of `lib/stack.ents`. [`examples/containers/main.ents`](../examples/containers/main.ents) uses them for a type of its own.
+
+### 8.8 Not in This Version
 
 Each of these is rejected with an error that says so, so the syntax stays free for a later version.
 
@@ -3307,7 +3396,6 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime value parameter, `comptime n: u32` | `comptime value parameters are not supported yet: 'n' must be 'type' or a function type` |
 | A generic function declared inside a `test` block | `a generic function is declared at module level, not inside a test` |
 | A generic function that shares its name with another function, global, `def`, `data` or import | `'max' is already declared: a generic function's name is unique in its module` |
-| Importing a generic function from another source module | `generic functions cannot be imported yet` |
 | A generic host import | `a host import cannot have comptime parameters` |
 | A generic function used as a value | `generic function 'max' must be called` |
 | A generic type with a parameter that is not `comptime X: type`, or with none | `generic type 'Vec' takes comptime type parameters only, as (comptime T: type)` |
@@ -3322,13 +3410,13 @@ Each of these is rejected with an error that says so, so the syntax stays free f
 | A comptime function argument that is a name several functions share | the same, followed by `('less' has several overloads)` |
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 
-Also not in this version: generics across source modules, a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
+Also not in this version: a generic type with a block body or conditions (a syntax error: its body is one type), writing some type parameters and inferring others, inference from the expected result type, generic functions that share a name, and traits or declared requirements. An array size that names a parameter, `[n]T`, is a syntax error.
 
 A limit older than generics is met through them. A function passed for an ordinary parameter of function type decides `T` like any other argument, but a function value cannot be called at run time yet, in a generic or anywhere else: the call is `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called`. A generic that calls a function takes it as a comptime parameter.
 
 <!-- spec:end -->
 
-### 8.8 How This Is Compile-Time Evaluation
+### 8.9 How This Is Compile-Time Evaluation
 
 Encantis already has names bound at compile time: `def n = 64` binds a number, `type Pt = (...)` binds a type, and `sizeof(T)` is an expression the compiler evaluates. Generics add one thing: **a name bound at compile time can be a parameter**, and a compile-time value can be a type or a function.
 
@@ -3789,7 +3877,7 @@ Comptime value parameters are parsed today, and rejected with a message that say
 
 ### Module System
 
-Multi-file organization beyond WASM imports:
+Source modules exist today ([7.1](#71-imports)): a file imports the functions, globals and generics another file exports, by their signatures. What a module system would add is importing a module's names without restating them:
 
 ```ents
 // In math/vector.ents
@@ -3804,7 +3892,7 @@ use math.vector (Vec3, dot)
 use math.vector as vec
 ```
 
-**Why:** Larger projects need to split code across files. Currently the only modularity is WASM-level imports from the host environment. A proper module system enables code organization and selective visibility.
+**Why:** Larger projects split code across files, and restating every signature at each import is the cost of that today.
 
 ### Operator Overloading via Method Calls
 
