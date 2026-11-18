@@ -550,6 +550,26 @@ export func up(xs: []mut i32) { xs.sort(ascending) }
     })
   })
 
+  // Only plain functions of the site answer a call of an instance's body,
+  // and an error for want of one says where the site has a generic of the
+  // name.
+  test("a generic of the site's is not looked up, and the error says so", async () => {
+    const files = {
+      'p.ents': 'export func bucket(comptime K: type, k: K, n: u32) -> u32 => hash(k) % n\n',
+      'main.ents': 'import "./p" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\ntype Cell = (x: i32, y: i32)\nfunc hash(comptime T: type, c: T) -> u32 => 7\nexport func f(c: Cell) -> u32 => bucket(c, 4)\n',
+    }
+    await inDir(files, async (dir) => {
+      const { check } = await program(join(dir, 'main.ents'))
+      const [error] = check.results.get(join(dir, 'p.ents'))?.errors ?? []
+      expect(error.message).toBe("no function 'hash' accepts (Cell), in bucket(K = Cell)")
+      expect(error.notes?.[0]).toEqual({
+        offset: files['main.ents'].indexOf('func hash'),
+        message: "the site's 'hash' is generic, and only plain functions are looked up at the site:",
+        path: join(dir, 'main.ents'),
+      })
+    })
+  })
+
   // Two modules with one file name are two modules in the output too: their
   // functions and instances have a prefix each.
   test('two modules with one file name have their own functions and instances', async () => {

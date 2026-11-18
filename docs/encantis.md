@@ -3369,7 +3369,7 @@ export func visited(n: u32) -> u32 {
 }
 ```
 
-`add<Cell>` and the `slot<Cell>` it calls are functions of `./containers` that call this module's `hash` and `eq` directly. A library's own functions come first and cannot be replaced from outside. Only the callee of a call is looked up at the site: the types, globals and helpers of a generic's body are always its own module's, and a comptime function argument is written where the generic is called.
+`add<Cell>` and the `slot<Cell>` it calls are functions of `./containers` that call this module's `hash` and `eq` directly. A library's own functions come first and cannot be replaced from outside. Only the site's plain functions are looked up: a generic of the site's of the name is not, and an error for want of the function says so in a note. Only the callee of a call is looked up at the site: the types, globals and helpers of a generic's body are always its own module's, and a comptime function argument is written where the generic is called.
 
 An instance whose body needed the site belongs to that site, and so does an instance that calls one. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, calling its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. Instances that did not need the site exist once in the program.
 

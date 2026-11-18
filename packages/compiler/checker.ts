@@ -8005,6 +8005,15 @@ class CheckContext {
     // and while that call is inside an instance, the one that asked for that.
     // Each is in the module of the code that made it.
     const notes: NonNullable<TypeError['notes']> = [...said]
+    // A function the call wants that the site has as a generic: only the
+    // site's plain functions are looked up, which the message alone would
+    // not say.
+    const wanted = /^no function '([^']+)' accepts/.exec(message)?.[1]
+    const siteGeneric = wanted !== undefined && inst.lookedUp.has(wanted) && inst.site.moduleScope.symbols.get(wanted)?.kind === 'generic'
+    const genericAt = siteGeneric ? inst.site.symbolDefOffsets.get(wanted) : undefined
+    if (wanted !== undefined && genericAt !== undefined) {
+      notes.push({ offset: genericAt, message: `the site's '${wanted}' is generic, and only plain functions are looked up at the site:`, path: inst.site.filePath })
+    }
     let from = inst.requestedIn
     for (let at = inst.requestedAt; notes.length < said.length + MAX_NOTES; ) {
       const note = { offset: at % INSTANCE_STRIDE, message: 'required from' }
