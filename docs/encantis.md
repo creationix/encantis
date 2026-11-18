@@ -1190,6 +1190,8 @@ def max-size = 1024              // inferred i32
 def max-len: u32 = 1024          // explicit u32
 ```
 
+A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
+
 ### 3.2 Data Declarations (`data`)
 
 `data` allocates a value in the wasm data section and binds the name to a pointer.
