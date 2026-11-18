@@ -26,12 +26,14 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { Module } from '@encantis/compiler/ast';
-import { fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
+import type { Module, Span } from '@encantis/compiler/ast';
+import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
 import { getSourceImports, loadModule } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 import * as nodePath from 'path';
+import { namesIn, recoverParse, untrusted } from './recover';
+import { literalAt } from './scan';
 
 // Builtin function signatures for hover display
 // Polymorphic builtins show representative types
@@ -141,8 +143,19 @@ function hintDetails(hint: MetaHint, meta: MetaOutput): string {
   return parts.map(p => `\n\n${p}`).join('');
 }
 
-// Cache analysis results per document
-const analysisCache = new Map<string, { text: string; meta: MetaOutput; module: Module }>();
+// An analysis of a document's text, for the queries
+interface Analysis {
+  // The document's text it is of
+  text: string;
+  meta: MetaOutput;
+  module: Module;
+  // Where the text does not parse, what was left out for the rest to parse
+  // (see recoverParse), and the declarations of the rest whose analysis can
+  // differ from the one the text will have once that is written again (see
+  // untrusted). No place in either is answered for, and the uses of a name
+  // written in either are not all known.
+  recovered?: { leftOut: Span[]; untrusted: Span[]; unseenNames: Set<string> };
+}
 
 // -----------------------------------------------------------------------------
 // Semantic Tokens
@@ -279,6 +292,40 @@ export function uriOf(path: string, paths: Paths = nodePath): string {
 export function startServer(connection: Connection, options: ServerOptions = {}): void {
   const documents = new TextDocuments(TextDocument);
 
+  // The last analysis of each document
+  const analysisCache = new Map<string, Analysis>();
+
+  // The analysis of a document's text as it is now, or none: an analysis of
+  // older text, where the name at a place was another one or meant
+  // something else, answers nothing.
+  function analysisOf(uri: string, text: string): Analysis | null {
+    const cached = analysisCache.get(uri);
+    return cached && cached.text === text ? cached : null;
+  }
+
+  // Whether an analysis answers for what is at an offset: one of the text
+  // as it parses does; one with what is broken left out outside of that,
+  // where the declaration the offset is in is as it will be once that is
+  // written again.
+  function answersAt(analysis: Analysis, offset: number): boolean {
+    const recovered = analysis.recovered;
+    const within = (span: Span) => offset >= span.start && offset < span.end;
+    return !recovered || (!recovered.leftOut.some(within) && !recovered.untrusted.some(within));
+  }
+
+  // What a hint or a symbol shows as its value. Where what was left out of
+  // the text can hold data, the address of data is not known: the data of
+  // the rest is laid out after less.
+  function shownValue<T extends { value?: string }>(analysis: Analysis, shown: T): T {
+    return analysis.recovered && shown.value?.startsWith('0x') ? { ...shown, value: undefined } : shown;
+  }
+
+  // Whether it answers for a symbol: also where it is defined
+  function answersFor(analysis: Analysis, document: TextDocument, symbol: MetaSymbol): boolean {
+    const [line, character] = symbol.def.split(':').map(Number);
+    return answersAt(analysis, document.offsetAt({ line, character }));
+  }
+
   // A document that imports other source files is checked as part of its
   // program, so that what it imports is known: its generics are
   // instantiated and checked, and the instances' errors that concern this
@@ -375,6 +422,41 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         });
       }
       connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+      // The queries answer from an analysis of the text as it is now, with
+      // what is broken left out (the declarations the parser stopped in, see
+      // recoverParse), but for the names written there. Its errors are not
+      // shown: what is left out can be what they miss.
+      const recovered = recoverParse(text, parse, parseResult);
+      if (!recovered) return;
+      try {
+        const program = getSourceImports(recovered.module, true).length > 0 ? await programOf(textDocument.uri, recovered.text) : null;
+        const latest = documents.get(textDocument.uri);
+        if (latest && latest.version !== textDocument.version) return;
+        programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
+        const module = program?.module ?? recovered.module;
+        const meta = buildMeta(module, recovered.text, { srcPath: textDocument.uri, ...program });
+        // Checked on its own, a module that imports generic types lists no
+        // errors (see TypeCheckResult.partial): nothing would say what depends on what
+        // was left out.
+        if (meta.warnings?.some((warning) => warning.message.startsWith('imported generic types are resolved only'))) return;
+        // Where the checker found errors here, and the calls here that asked
+        // for an instance in which it found one
+        const offsetOf = (pos: string) => {
+          const [line, character] = pos.split(':').map(Number);
+          return textDocument.offsetAt({ line, character });
+        };
+        const errors = (meta.errors ?? []).flatMap((error) => [error.pos, ...(error.notes ?? []).filter((note) => !note.path).map((note) => note.pos)]);
+        const distrusted = untrusted(module, text, recovered.leftOut, errors.map(offsetOf), BUILTIN_NAMES);
+        if (!distrusted) return;
+        analysisCache.set(textDocument.uri, {
+          text,
+          meta,
+          module,
+          recovered: { leftOut: recovered.leftOut, untrusted: distrusted, unseenNames: namesIn(text, [...recovered.leftOut, ...distrusted]) },
+        });
+      } catch {
+        // Nothing to answer from
+      }
       return;
     }
 
@@ -554,9 +636,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       end: multiline ? offsetToPosition(text, wordInfo.end) : { line: startPos.line, character: startPos.character + len },
     });
 
-    // Look up hint from meta FIRST (handles type punning and other resolved types)
-    const cached = analysisCache.get(params.textDocument.uri);
-    if (cached) {
+    // Look up hint from meta FIRST (handles type punning and other resolved
+    // types), in an analysis of the text as it is now that sees this name
+    const cached = analysisOf(params.textDocument.uri, text);
+    const known = cached !== null && answersAt(cached, wordInfo.start);
+    if (cached && known) {
       const { meta } = cached;
       // Meta uses "line:col" keys (0-indexed) - use word start position, not hover position
       const wordStartPos = offsetToPosition(text, wordInfo.start);
@@ -569,7 +653,8 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         const range = makeHoverRange(wordStartPos, hint.len, hint.exprStart);
 
         if (symbol) {
-          const display = formatLine(formatSymbolDisplay(symbol, typeStr));
+          if (!answersFor(cached, document, symbol)) return null;
+          const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
           let value = `\`\`\`encantis\n${display}\n\`\`\``;
           value += hintDetails(hint, meta);
           if (symbol.doc) {
@@ -604,8 +689,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         }
         // Add parent kind prefix for member access (e.g., "input c.y" vs just "c.y")
         const kindPrefix = hint.parentKind ? kindToPrefix(hint.parentKind) + ' ' : '';
-        const raw = hint.value
-          ? `${kindPrefix}${displayName}: ${typeStr} = ${hint.value}`
+        const shown = shownValue(cached, hint).value;
+        const raw = shown
+          ? `${kindPrefix}${displayName}: ${typeStr} = ${shown}`
           : `${kindPrefix}${displayName}: ${typeStr}`;
         return {
           contents: {
@@ -634,9 +720,9 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       // generic's type parameter or comptime parameter.
       const own: MetaSymbol['kind'][] = ['param', 'local', 'return', 'typeparam', 'comptime'];
       const symbol = meta.symbols.find(s => s.name === word && !own.includes(s.kind));
-      if (symbol) {
+      if (symbol && answersFor(cached, document, symbol)) {
         const typeStr = meta.types[symbol.type]?.type ?? 'unknown';
-        const display = formatLine(formatSymbolDisplay(symbol, typeStr));
+        const display = formatLine(formatSymbolDisplay(shownValue(cached, symbol), typeStr));
         let value = `\`\`\`encantis\n${display}\n\`\`\``;
         if (symbol.doc) {
           value += `\n\n${symbol.doc}`;
@@ -652,8 +738,10 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       const wordStartPos = offsetToPosition(text, wordInfo.start);
       const range = makeHoverRange(wordStartPos, word.length);
 
-      // Check for builtin function signature first
-      const builtinSig = BUILTIN_SIGNATURES[word];
+      // Check for builtin function signature first: only where an analysis
+      // of the text as it is now has no other thing of the name (a function
+      // or a local can take a builtin's name).
+      const builtinSig = known ? BUILTIN_SIGNATURES[word] : undefined;
       if (builtinSig) {
         const doc = builtinDocs[word];
         const value = doc
@@ -678,21 +766,20 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // The symbol a name at a position is, as its hint says: where it is defined
   // and where it is used, as the checker recorded them. A call in a
   // generic's body is a use of the functions its instances call. Only an
-  // analysis of the text as it is now answers: while the text does not parse
-  // (or is not analysed), the last analysis is of older text, where the name
-  // at this place was another one or meant something else.
-  function symbolAt(params: TextDocumentPositionParams): { symbol: MetaSymbol; uri: string } | null {
+  // analysis of the text as it is now answers (while the text does not
+  // parse, with what is broken left out, where it can: see answersAt).
+  function symbolAt(params: TextDocumentPositionParams): { symbol: MetaSymbol; uri: string; analysis: Analysis } | null {
     const document = documents.get(params.textDocument.uri);
-    const cached = analysisCache.get(params.textDocument.uri);
-    if (!document || !cached) return null;
+    if (!document) return null;
     const text = document.getText();
-    if (cached.text !== text) return null;
+    const cached = analysisOf(params.textDocument.uri, text);
+    if (!cached) return null;
     const word = getWordAtOffset(text, document.offsetAt(params.position));
-    if (!word) return null;
+    if (!word || !answersAt(cached, word.start)) return null;
     const at = offsetToPosition(text, word.start);
     const hint = cached.meta.hints[`${at.line}:${at.character}`];
     const symbol = hint?.symbol !== undefined ? cached.meta.symbols[hint.symbol] : undefined;
-    return symbol ? { symbol, uri: params.textDocument.uri } : null;
+    return symbol && answersFor(cached, document, symbol) ? { symbol, uri: params.textDocument.uri, analysis: cached } : null;
   }
 
   function locationOf(uri: string, symbol: MetaSymbol, key: string): Location {
@@ -708,7 +795,10 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   connection.onReferences((params: ReferenceParams): Location[] | null => {
     const found = symbolAt(params);
     if (!found) return null;
-    const { symbol, uri } = found;
+    const { symbol, uri, analysis } = found;
+    // A use in what was left out, or in a declaration that can differ once
+    // that is written again, may not be listed.
+    if (analysis.recovered?.unseenNames.has(symbol.name)) return null;
     const keys = params.context?.includeDeclaration ? [symbol.def, ...symbol.refs] : symbol.refs;
     return keys.map(key => locationOf(uri, symbol, key));
   });
@@ -803,61 +893,6 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     while (end < text.length && isWordChar(text[end])) end++;
     if (start === end) return null;
     return { word: text.slice(start, end), start, end };
-  }
-
-  // The literal that `offset` is in or on, read from the start of the text
-  // past comments and escapes: a string or a literal in single quotes ('a',
-  // 'ok'), from quote to quote, or a piece of a template's text, from its
-  // backtick or the } that closes an interpolation to its closing backtick
-  // or the next ${. Each can go on over lines, a template's text most of
-  // all, and only from the start of the text is it known whether a line
-  // starts in one. What a template's ${...} holds is read as code, where a
-  // quote may hold a } or a backtick. Null in code and in a comment.
-  function literalAt(text: string, offset: number): { word: string; start: number; end: number } | null {
-    // For each ${ that is open, how many braces were open where it opened:
-    // the } that closes it is the one that leaves that many open.
-    const interpolations: number[] = [];
-    let braces = 0;
-    let i = 0;
-    while (i < text.length && i <= offset) {
-      const ch = text[i];
-      if (ch === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
-        const close = text[i + 1] === '/' ? '\n' : '*/';
-        const at = text.indexOf(close, i + 2);
-        const end = at === -1 ? text.length : at + close.length;
-        if (offset < end) return null;
-        i = end;
-        continue;
-      }
-      if (ch === '"' || ch === "'") {
-        const start = i;
-        i++;
-        while (i < text.length && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
-        const end = Math.min(i + 1, text.length);
-        if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
-        i = end;
-        continue;
-      }
-      if (ch === '`' || (ch === '}' && interpolations.at(-1) === braces)) {
-        if (ch === '}') interpolations.pop();
-        const start = i + 1;
-        i = start;
-        while (i < text.length && text[i] !== '`' && !(text[i] === '$' && text[i + 1] === '{')) i += text[i] === '\\' ? 2 : 1;
-        const end = Math.min(i, text.length);
-        if (offset >= start && offset < end) return { word: text.slice(start, end), start, end };
-        if (i < text.length && text[i] === '$') {
-          interpolations.push(braces);
-          i += 2;
-        } else {
-          i++;
-        }
-        continue;
-      }
-      if (ch === '{') braces++;
-      else if (ch === '}') braces--;
-      i++;
-    }
-    return null;
   }
 
   function isWordChar(ch: string): boolean {

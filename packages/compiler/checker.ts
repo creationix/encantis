@@ -8413,7 +8413,7 @@ class CheckContext {
 
 // The names inferBuiltin answers to. What is asked of a name before a call
 // of it is inferred (whether x.sqrt() can be the call sqrt(x)) is asked here.
-const BUILTIN_NAMES: ReadonlySet<string> = new Set([
+export const BUILTIN_NAMES: ReadonlySet<string> = new Set([
   'memzero', 'memset', 'memcpy',
   'sqrt', 'ceil', 'floor', 'trunc', 'nearest', 'copysign',
   'min', 'max', 'abs',

@@ -427,24 +427,126 @@ function editedServer(text: string) {
   }
 }
 
-describe('definition and references of edited text', () => {
-  // While the text does not parse, the last analysis is of older text: the
-  // call of b was answered with a and a's uses.
-  test('an analysis of older text does not answer for the text as it is now', () => {
-    const before = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f() -> u32 => a()\n'
+describe('queries of edited text', () => {
+  const start = (location: unknown) => {
+    const { line, character } = (location as Location).range.start
+    return `${line}:${character}`
+  }
+  const shown = (hover: unknown) => (hover ? ((hover as Hover).contents as MarkupContent).value : null)
+
+  // While the text does not parse, the last analysis was of older text: the
+  // call of b was answered with a and a's uses, and hover described a (and a
+  // renamed local by its old name). The queries answer from an analysis of
+  // the text as it is now, with the line that does not parse left out.
+  test('while a line does not parse, the rest is answered as it is now', () => {
+    const before = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f(x: u32) -> u32 {\n  let y = x\n  return a() + y\n}\n'
     const server = editedServer(before)
-    const start = (location: unknown) => (location as { range: { start: { line: number; character: number } } }).range.start
-    expect(start(server.at('onDefinition', before.lastIndexOf('a()')))).toEqual({ line: 0, character: 5 })
-    const broken = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f() -> u32 => b()\nlet = \n'
+    expect(start(server.at('onDefinition', before.lastIndexOf('a()')))).toBe('0:5')
+    const broken = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f(x: u32) -> u32 {\n  let z = x\n  return b() + z\n}\nlet = \n'
     server.change(broken)
-    expect(server.at('onDefinition', broken.lastIndexOf('b()'))).toBeNull()
-    expect(server.at('onReferences', broken.lastIndexOf('b()'), { context: { includeDeclaration: true } })).toBeNull()
-    // Once it parses again, it is answered from its own analysis.
+    const call = broken.lastIndexOf('b()')
+    expect(shown(server.at('onHover', call))).toBe('```encantis\nfunc b() -> u32\n```')
+    expect(start(server.at('onDefinition', call))).toBe('1:5')
+    expect((server.at('onReferences', call, { context: { includeDeclaration: true } }) as unknown[]).map(start)).toEqual(['1:5', '4:9'])
+    expect(shown(server.at('onHover', broken.lastIndexOf('z')))).toBe('```encantis\nlet z:u32\n```')
+    // What does not parse is not answered for.
+    expect(server.at('onHover', broken.indexOf('let ='))).toBeNull()
+    // Once it parses, it is answered from its own analysis.
     const fixed = broken.replace('let = \n', '')
     server.change(fixed)
-    expect(start(server.at('onDefinition', fixed.lastIndexOf('b()')))).toEqual({ line: 1, character: 5 })
-    const refs = server.at('onReferences', fixed.lastIndexOf('b()'), { context: { includeDeclaration: true } }) as unknown[]
-    expect(refs.map(start)).toEqual([{ line: 1, character: 5 }, { line: 2, character: 26 }])
+    expect(start(server.at('onDefinition', fixed.lastIndexOf('b()')))).toBe('1:5')
+  })
+
+  // What was left out can declare a name the rest uses: without it, the
+  // analysis knows the name not at all and takes it for anything (here the
+  // type P, so that q was shown as an i32), or takes it for another thing
+  // (the other function h; a builtin, whose name a function there can
+  // take). What it says of a declaration that names such a name, of one
+  // that names what such a declaration declares (the global origin), of a
+  // generic one of them calls (its instances are made by its calls), and of
+  // what was left out itself is not shown.
+  test('what can differ once what is left out is written again is not answered for', () => {
+    const before = `type P = (x: i32, y: i32)
+func h(x: u32) -> u32 => x
+func id(comptime T: type, v: T) -> T => v
+func two() -> u32 => 2
+global origin: P = (x: 0, y: 0)
+export func f() -> u32 {
+  let r = h(two())
+  return min(r, two())
+}
+export func g(q: P) -> i32 => id(q).x
+export func d() -> i32 {
+  let o = origin
+  return 0
+}
+type Q = (p: P)
+global gq: Q
+export func dq() -> u32 {
+  let z = gq
+  return 1
+}
+func gone() -> u64 => 1
+export func e() -> u32 {
+  let w = gone()
+  return 1
+}
+func id2(comptime T: type, v: T) -> T => v
+export func k(n: u32) -> u32 => id2(n)
+export func s() -> []u8 => "abc"
+`
+    const server = editedServer(before)
+    expect(shown(server.at('onHover', before.indexOf('q: P')))).toBe('```encantis\ninput q:(x:i32, y:i32)\n```')
+    expect(shown(server.at('onHover', before.indexOf('=> v') + 3))).toContain('in `id(T = P)`')
+    expect(shown(server.at('onHover', before.indexOf('"abc"')))).toContain('"abc":[]u8 = 0x')
+    const broken = `${before.replace('y: i32)\n', 'y:\n').replace('func gone() -> u64 => 1', 'func gone() -> u64 =>')}func h(x: f64) -> []u8 {\n  let min = "min"\n  return h(id2(1.5)\n}\n`
+    server.change(broken)
+    const at = (text: string, skip = 0) => broken.indexOf(text) + skip
+    for (const query of ['onHover', 'onDefinition']) {
+      for (const offset of [at('h(two'), at('min(r'), at('h(x: u32)'), at('r = h'), at('q: P'), at('=> v', 3), at('o = origin'), at('z = gq'), at('w = gone'), broken.indexOf('=> v', at('func id2')) + 3, at('min = "'), at('h(id2')]) {
+        expect(server.at(query, offset)).toBeNull()
+      }
+    }
+    for (const offset of [at('h(x: u32)'), at('two()')]) {
+      expect(server.at('onReferences', offset, { context: { includeDeclaration: true } })).toBeNull()
+    }
+    // What names none of it still is, but where data is laid out is not
+    // known: what is left out can have data.
+    expect(shown(server.at('onHover', at('k(n')))).toBe('```encantis\nfunc k(n:u32) -> u32\n```')
+    expect(shown(server.at('onHover', at('(n)', 1)))).toBe('```encantis\ninput n:u32\n```')
+    expect(shown(server.at('onHover', at('"abc"')))).toBe('```encantis\n"abc":[]u8\n```')
+    expect(start(server.at('onDefinition', at('two()')))).toBe('3:5')
+  })
+
+  // Checked on its own (the web's editor reads no files), a module that
+  // imports a generic type lists no errors: nothing says what depends on
+  // what is left out, and nothing is answered for.
+  test('a module whose errors are left to its program is not answered for while it does not parse', async () => {
+    const before = 'import "./lib" "Vec" func Vec(comptime T: type) -> type\ntype P = (x: i32, y: i32)\nexport func g(q: P) -> i32 => q.x\n'
+    const server = editedServer(before)
+    // Its program is read first (here it cannot be): no file is read, and
+    // what is waited for is done before a timer is.
+    await Bun.sleep(0)
+    expect(shown(server.at('onHover', before.indexOf('q: P')))).toBe('```encantis\ninput q:(x:i32, y:i32)\n```')
+    const broken = before.replace('y: i32)\n', 'y:\n')
+    server.change(broken)
+    await Bun.sleep(0)
+    expect(server.at('onHover', broken.indexOf('q: P'))).toBeNull()
+  })
+
+  // Where no part of the text can be left out for the rest to parse, there
+  // is no analysis of it, and none of older text answers.
+  test('with no analysis of the text as it is now, nothing is answered from an older one', () => {
+    const before = 'func a() -> u32 => 1\nfunc b() -> u32 => 2\nexport func f() -> u32 => a()\n'
+    const server = editedServer(before)
+    expect(shown(server.at('onHover', before.lastIndexOf('a()')))).toBe('```encantis\nfunc a() -> u32\n```')
+    const broken = `${before.replace('=> a()', '=> b()')}${'let =\nfunc c() -> u32 => 3\n'.repeat(10)}`
+    server.change(broken)
+    const call = broken.lastIndexOf('b()')
+    expect(server.at('onHover', call)).toBeNull()
+    expect(server.at('onDefinition', call)).toBeNull()
+    // A primitive type is the same whatever the text says.
+    expect(shown(server.at('onHover', broken.indexOf('u32')))).toBe('32-bit unsigned integer')
   })
 })
 
