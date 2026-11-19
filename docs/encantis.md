@@ -1,8 +1,86 @@
 # Encantis Language Reference
 
-Encantis is a systems programming language that compiles to WebAssembly. It provides direct memory control, explicit types, and zero-cost abstractions while generating compact, efficient WASM modules.
+Encantis is a systems programming language that compiles to WebAssembly. A program is one or more source files (`.ents`), and they compile to one WebAssembly module. The language gives direct control of linear memory and has explicit types, and it has no hidden runtime: no garbage collector, no allocator, and no code that the source does not ask for. How a construct maps to WebAssembly is part of the language and is stated where the construct is described: a struct is held in registers, one wasm value per field; a slice is two `i32`s, an address and a length; a loop over a range is a wasm `loop`, and an index the compiler can prove in range is a plain load.
 
-**Grammar source of truth:** [`packages/compiler/encantis-grammar.ohm`](../packages/compiler/encantis-grammar.ohm) (authoritative). This document is an explanatory guide with examples; consult the Ohm grammar for exact syntax.
+This reference describes the whole language: its syntax as it is written, what each construct means, what is an error, what traps at run time, and how values are laid out in WebAssembly. [`docs/grammar.md`](grammar.md) has the grammar in EBNF, for depth; nothing here depends on it.
+
+## About This Reference
+
+### Examples
+
+Source code is shown in `ents` code blocks. The examples that the compiler can process are run by the project's test suite (`bun test spec`): each is parsed and checked, a whole program is also compiled to WebAssembly and validated, and its `test` blocks are run. So an `assert` in an example states what the compiled program computes.
+
+- A short example can be a fragment: a few statements or an expression without the function around them, or a declaration that uses names declared elsewhere.
+- A `test "name" { ... }` block shows results with `assert` ([Tests](#tests)).
+- A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more.
+- A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
+- A `text` block holds output, a program of several files, or syntax the compiler does not accept.
+- A feature that is designed but not implemented is labelled **Not implemented** where it is described, and its examples are not working code. [Implementation Status](#implementation-status) lists every such feature.
+
+### Tools
+
+The compiler's command-line tool is `encantis`:
+
+| Command | What it does |
+|---|---|
+| `encantis check <file>` | Parses and checks a program, its `test` blocks included; prints each error as `file:line:col: message` |
+| `encantis compile <file> [-o out.wat]` | Writes the program as WebAssembly text (WAT) |
+| `encantis wasm <file> [-o out.wasm]` | Writes the binary module; `-O` also optimizes it with binaryen, `--release` optimizes harder for size |
+| `encantis run <file> [args...]` | Compiles a WASI program and runs its `_start` export, with standard input and output |
+| `encantis test <file or directory>` | Runs the `test` blocks of each file ([Tests](#tests)) |
+| `encantis fmt <file...>` | Formats source files in place; `fmt --check` only reports the files that need it |
+| `encantis ast <file>` | Prints the syntax tree as JSON |
+
+`<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
+
+### A First Program
+
+<!-- spec:begin compile -->
+
+```ents
+func is_vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+
+// The number of vowels in text
+export func vowels(text: []u8) -> (n: u32) {
+  for c in text {
+    if is_vowel(c) { n += 1 }
+  }
+}
+
+test "vowels counts a, e, i, o and u" {
+  assert vowels("encantis") == 3
+  assert vowels("") == 0
+}
+```
+
+<!-- spec:end -->
+
+A module is a list of declarations, in any order. `vowels` is exported, so the host can call it: in WebAssembly it is a function exported as `vowels` with two `i32` parameters, the address and the length of `text`, and one `i32` result. `is_vowel` is not exported, and is called directly. A slice (`[]u8`) is a view of bytes in the module's memory; `"encantis"` is laid out in memory when the program is compiled and passed as one ([2.6](#26-slices)). `'a'` is the number 97 ([Codepoint Literals](#codepoint-literals)). `n` is a named result: it starts at zero and is returned when the function ends ([3.4](#34-functions)). The `test` block is compiled and run only by `encantis test`.
+
+## Implementation Status
+
+The compiler implements everything this reference describes except what this table lists. Each of these is labelled **Not implemented** in the section that describes it.
+
+| Feature | What the compiler does with it | Described in |
+|---|---|---|
+| Enum types, `enum Color { Red, Rgb(r: u8, g: u8, b: u8) }` | Parses the declaration and ignores it; naming the type is an error (`unknown type 'Color'`) | [2.9](#29-enum-types-algebraic-data-types) |
+| `match` patterns other than numbers, codepoints, bools and `_` | A tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`), and a guard (`(x, y) if x == y`) is a syntax error. A lower-case name as a pattern binds nothing (its uses are `unknown identifier`), and a variant or constructor pattern (`Red`, `Point(0, y)`) is accepted and never matches: do not write them | [5.4](#54-match-expressions), [6.3](#63-patterns-in-match-arms) |
+| Patterns in function signatures, `func to_polar Point(x, y) -> Polar(d, a)` | Reads the pattern as a generic type and refuses it (`'Point' is not a generic type`) | [6.2](#62-patterns-in-function-signatures) |
+| Constructor patterns in `if let` and `let`, `if let Rgb(r, g, b) = c`, `let Point(x, y) = p` | `if let` refuses one (`if let only supports simple bindings`); in a `let` it is a syntax error. `let (x:, y:) = p` destructures a struct | [6.4](#64-if-let-bindings), [6.5](#65-let-destructuring) |
+| Assigning a tuple of variables without `set`, `(q, r) = divmod(17, 5)` | A syntax error: write `set (q, r) = divmod(17, 5)` | [4.5](#45-assignment-and-compound-assignment) |
+| Destructuring a global, `global (a, b) = (1, 2)` | Refused: `global destructuring is not supported yet` | [3.3](#33-variables) |
+| Function values: a function held in a variable, parameter or field, called indirectly | Calling one is refused (`calling a function value is not supported yet: ...`). A program that stores or passes one passes the checker and does not assemble. A function given at compile time, a comptime function parameter, works | [3.4](#function-types-and-pointers), [8.6](#86-comptime-function-parameters) |
+| `inline func` | Parses `inline` and ignores it: the function is compiled and called as any other | [3.5](#35-inline-functions) |
+| Saturating arithmetic, `+\|`, `-\|`, `*\|` (and `+\|=`, `-\|=`, `*\|=`) | Accepts them and compiles them as the wrapping `+`, `-`, `*`: do not use them | [4.1](#41-arithmetic-operators) |
+| A load or store through a type pun, `ptr.u32 = v` | Refused: `ptr.u32` is the pointer as a `[*]u32`, so write `ptr.u32[0] = v` | [4.6](#46-pointer-operations) |
+| Reading a `*[?]T` (elements after a LEB128 length) | Lays one out, and refuses indexing it and its `.len` (`... is not supported yet: its length prefix is not read`) | [2.5](#25-pointer-types) |
+| Template literals as anything but a `[][]u8` | Refused where another type is wanted (`cannot assign []u8 to u8` for a `[]u8`) | [1.5](#template-literals) |
+| `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
+| A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
+| SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [13](#13-future-additions) |
 
 ---
 
@@ -4810,6 +4888,373 @@ Here `i32` stands for every integer type up to 32 bits: they all live in a wasm 
 | `continue` | `br` (to loop head) |
 | `continue when` | `br_if` (to loop head) |
 | `return` | `return` |
+
+---
+
+## Tests
+
+A `test` block is code that a module runs to check itself. It stands in the module beside the code it tests, and it is compiled only when tests are run: `encantis test` builds the module with its tests, while `encantis compile`, `wasm` and `run` leave the tests out, with everything declared inside them. `encantis check` checks them as part of the module.
+
+### Writing a Test
+
+`test` is followed by the test's name, a string, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
+
+<!-- spec:begin compile -->
+
+```ents
+export func area(w: u32, h: u32) -> u32 => w * h
+
+test "the area of a square" {
+  let side: u32 = 3
+  assert area(side, side) == 9
+  assert area(side, 0) == 0
+}
+```
+
+<!-- spec:end -->
+
+A test is declared at module level or inside another test. Its statements are the body of a function with no parameters and no result: a `let` in it is a variable of that test, and `return` ends the test, which then passes. A test calls any function of the module, exported or not, and reads and writes the module's globals and memory.
+
+`test` and `assert` are not reserved words: they can name a variable or a function.
+
+### `assert`
+
+`assert condition` is a statement. The condition is a `bool` (`condition must be bool, not u32`). When it is false the program traps: `assert c` compiles to `(if (i32.eqz c) (then (unreachable)))`.
+
+An `assert` is not only for tests. In a function it is a run-time check that stays in the compiled program, and a false condition stops the program with a trap, as the library's allocator does when it runs out of room ([The Library](#the-library)):
+
+<!-- spec:begin compile -->
+
+```ents
+// Half of an even number; an odd one is a mistake of the caller's
+export func half(n: u32) -> u32 {
+  assert n % 2 == 0
+  return n / 2
+}
+
+test "half of an even number" {
+  assert half(10) == 5
+}
+```
+
+<!-- spec:end -->
+
+`half(3)` traps. A trap ends the whole call: deferred expressions ([Defer](#defer)) do not run. A false `assert` written in a test's own statements also tells `encantis test` its line, before it traps ([Running Tests](#running-tests)).
+
+### Groups
+
+A test that holds other tests is a group. Its nested tests are run, each reported by its name after the group's: `rectangles > one row`. What a group declares is seen by every test inside it, so a group gathers what its tests share. The tests of a file run in the order they are written, on one instance of the module, so what one test leaves in a global or in memory is there for the next:
+
+<!-- spec:begin compile -->
+
+```ents
+global calls: u32 = 0
+
+export func area(w: u32, h: u32) -> u32 {
+  calls += 1
+  return w * h
+}
+
+test "a square" {
+  assert area(3, 3) == 9
+}
+
+test "rectangles" {
+  def wide = 10
+  func strip(h: u32) -> u32 => area(wide, h)
+
+  test "one row" {
+    assert strip(1) == wide
+  }
+  test "no rows" {
+    assert strip(0) == 0
+  }
+}
+
+test "the tests share one instance of the module" {
+  assert calls == 3
+}
+```
+
+<!-- spec:end -->
+
+A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (an open compiler bug). Give every test a name, and put statements only in a test that holds no tests.
+
+### Declarations in a Test
+
+A test can declare `def`, `data`, functions and imports, and these are the test's own: they are seen inside the test and the tests nested in it, and module code cannot use them.
+
+- A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only. The rest of the module reads the name as if the test were not there.
+- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. The compiler also gives it to the tests that come after it in the file (a compiler bug), so give a test's function a name the module does not use.
+- An import declared in a test is part of the test build only: a host function or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. As for functions, the compiler gives it to the later tests too.
+
+A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
+
+<!-- spec:begin compile -->
+
+```ents
+def size = 4
+func hash(k: u32) -> u32 => k
+func hash(k: u64) -> u32 => 1
+
+test "what a test cannot declare" {
+  func size() -> u32 => 4
+  func hash(k: u32) -> u32 => 0
+  func pick(comptime T: type, a: T) -> T => a
+  func Box(comptime T: type) -> type => (v: T)
+  assert size == 4
+}
+```
+
+```errors
+'size' is already declared
+'hash' is the name of several functions of the module: a function declared in a test cannot take it over
+a generic function is declared at module level, not inside a test
+a generic type is declared at module level, not inside a test
+```
+
+<!-- spec:end -->
+
+### Running Tests
+
+`encantis test file.ents` checks the module with its tests, compiles it, starts one instance of it and runs its tests in the order they are written. Given a directory, it does this for every `.ents` file under it. Only the tests of the files named are run, not those of the modules they import.
+
+A test passes when its statements run to their end (or to a `return`). It fails when an `assert` in it is false or when anything it calls traps: a false `assert` in a function, an import the test host does not provide (below), a division by zero, an access past the end of memory. Each test is reported on a line of its own, a failing `assert` of the test's own statements with its file, line and source, and a summary follows. Were the last `assert` of `no rows` above `assert strip(0) == 1`, in a file `area.ents`, `encantis test area.ents` would print:
+
+```text
+  pass: a square
+  pass: rectangles > one row
+  FAIL: rectangles > no rows
+         area.ents:20: assert strip(0) == 1
+  pass: the tests share one instance of the module
+
+3 passed, 1 failed
+```
+
+The exit status is 1 when a test fails and 0 otherwise. A file that does not check prints its errors and counts as one failure. A module that does not start (its start function traps, or its data does not fit its memory) fails each of its tests with `the module did not start: ...`. `--json` adds a last line with the counts and, for each test, its file, its name, whether it passed and the error it failed with. A file with no tests is skipped, and when no file has any the command says `No tests found`.
+
+### The Test Host
+
+Tests run without the program's host. `encantis test` gives each import of the module a stand-in:
+
+- WASI (`wasi_snapshot_preview1`): `fd_write` to file descriptor 1 or 2 writes to the standard output or error of `encantis test`, and `fd_read` from 0 reads nothing (the end of input). `proc_exit` fails the test, and every other WASI function returns 52 (`ENOSYS`). As under any WASI host, the module has to export its memory (`export memory`, [7.2](#72-exports)), or a WASI call fails the test.
+- Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
+- An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
+
+In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a compiler bug): give each test a name of its own.
+
+A test that holds no statements, `test "todo" {}`, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are compiler bugs.
+
+---
+
+## The Library
+
+The directory `lib/` holds modules written in Encantis for what most programs need: text input and output over WASI, parsing bytes, a bump allocator, and containers. They are source files: a program imports from them by relative path, restating each signature it uses ([7.1](#71-imports)), or copies a file next to its own. [`lib/README.md`](../lib/README.md) and the comments of each file give more detail.
+
+### Importing a Library Module
+
+A program in a directory beside `lib/`, which reads numbers one to a line and gives their median:
+
+<!-- spec:begin compile -->
+
+```ents
+import "../lib/stack" (
+  "mark" func mark() -> u32
+  "reset" func reset(m: u32)
+)
+import "../lib/vec" (
+  "Vec" func Vec(comptime T: type) -> type
+  "vec" func vec(comptime T: type, cap: u32) -> *mut Vec(T)
+  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
+  "items_mut" func items_mut(comptime T: type, v: *mut Vec(T)) -> []mut T
+)
+import "../lib/sort" "sort" func sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)
+import "../lib/text" (
+  "next_line" func next_line(s: []u8) -> (line: []u8, rest: []u8)
+  "parse_u64" func parse_u64(s: []u8) -> (value: u64, rest: []u8, ok: bool)
+)
+
+func ascending(a: u64, b: u64) -> bool => a < b
+
+// The median of the numbers in text, one to a line; a line without one is skipped
+export func median(text: []u8) -> u64 {
+  let scope = mark()
+  defer reset(scope)
+  let xs = vec(u64, 16)
+  let rest = text
+  while rest.len > 0 {
+    let (line:, rest: after) = next_line(rest)
+    let (value:, ok:) = parse_u64(line)
+    if ok { xs.push(value) }
+    rest = after
+  }
+  let sorted = xs.items_mut()
+  sorted.sort(ascending)
+  return sorted[sorted.len / 2] ?? 0
+}
+
+test "the median of three numbers" {
+  assert median("40\n7\nnone\n12\n") == 12
+  assert median("") == 0
+}
+```
+
+<!-- spec:end -->
+
+Each import names the module by its path from the importing file, without `.ents`, and lists what it uses: the name the module exports, in quotes, then the declaration. A generic function is imported with its comptime parameters, and a generic type as the function it is (`func Vec(comptime T: type) -> type`, [8.8](#88-generics-across-modules)). Each of the library's generics is compiled once for each type it is used with: `vec(u64, 16)` and `xs.push(value)` are a `vec` and a `push` for `u64`, and `sorted.sort(ascending)` a `sort` that calls `ascending` directly. `let scope = mark()` and `defer reset(scope)` free what the function allocates on the stack, on every way out of it.
+
+What a program gets of a library module: a generic is in the program only for the types it is used with, so a container costs what the same code written for one type would. The ordinary functions and the data of an imported module are in the program whether it uses them or not, as for any module: `stack.ents` brings its 256 KiB stack (zeros, which take no bytes in the `.wasm` file, [Data](#data--data-section-embedding)) and five functions, which `vec.ents`, `set.ents`, `map.ents` and `sort.ents` all import; `set.ents` brings its twelve `hash` and `eq` functions, and `map.ents` those too. `fixedvec.ents`, `ring.ents` and `bits.ents` hold generics only and import nothing. A module's tests are never part of a program that imports it.
+
+### `io`: Input and Output over WASI
+
+For programs that a WASI host runs, such as `encantis run`. The program exports its memory (`export memory`), which WASI reads and writes. Nothing allocates: input goes into a buffer the program gives, and output is written from the slices given.
+
+| Function | What it does |
+|---|---|
+| `read_all(buf: []mut u8) -> []u8` | Reads standard input into `buf`, until its end or until `buf` is full, and returns the part filled |
+| `print(s: []u8)` | Writes `s` to standard output |
+| `println(s: []u8)` | Writes `s` and a newline |
+| `print_u64(n: u64)`, `print_i64(n: i64)` | Writes `n` in decimal (with `-` when negative) and a newline |
+
+<!-- spec:begin compile -->
+
+```ents
+import "../lib/io" (
+  "read_all" func read_all(buf: []mut u8) -> []u8
+  "print_u64" func print_u64(n: u64)
+)
+import "../lib/text" (
+  "next_line" func next_line(s: []u8) -> (line: []u8, rest: []u8)
+  "parse_u64" func parse_u64(s: []u8) -> (value: u64, rest: []u8, ok: bool)
+)
+
+export memory
+
+data input = mut [0:u8; 65536]
+
+// The sum of the numbers in text, one to a line
+func total(text: []u8) -> (sum: u64) {
+  let rest = text
+  while rest.len > 0 {
+    let (line:, rest: after) = next_line(rest)
+    let (value:) = parse_u64(line)
+    sum += value
+    rest = after
+  }
+}
+
+// Prints the sum of the numbers on standard input
+export "_start" func main() {
+  print_u64(total(read_all(input)))
+}
+
+test "a total of three lines" {
+  assert total("12\n30\n\n") == 42
+}
+```
+
+<!-- spec:end -->
+
+`printf '1\n2\n39\n' | encantis run sum.ents` prints `42`.
+
+### `text`: Parsing Bytes
+
+Results are slices of the input; nothing is copied.
+
+| Function | What it does |
+|---|---|
+| `eq(a: []u8, b: []u8) -> bool` | Whether `a` and `b` hold the same bytes |
+| `starts_with(s: []u8, prefix: []u8) -> bool` | Whether `s` begins with `prefix` |
+| `index_of(s: []u8, c: u8) -> u32` | The index of the first `c` in `s`, or `s.len` when there is none |
+| `split_once(s: []u8, c: u8) -> (head: []u8, rest: []u8)` | The part before the first `c`, and the part after it (empty when there is no `c`) |
+| `next_line(s: []u8) -> (line: []u8, rest: []u8)` | The first line, without its `\n`, and what follows it; a last line with no `\n` is a line |
+| `skip_spaces(s: []u8) -> []u8` | `s` without its leading spaces |
+| `parse_u64(s: []u8) -> (value: u64, rest: []u8, ok: bool)` | The decimal number at the start of `s`, after any spaces; what follows it; whether there were digits (`value` is 0 when there were none) |
+| `parse_i64(s: []u8) -> (value: i64, rest: []u8, ok: bool)` | The same, with an optional `-` or `+` |
+
+### `stack`: A Bump Allocator
+
+A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing is freed one allocation at a time. A scope takes a mark and resets to it, and `defer` ties the reset to every way out of the scope: `let scope = mark()`, then `defer reset(scope)`. Scopes nest. A result that must outlive a scope is allocated before the scope starts.
+
+| Function | What it does |
+|---|---|
+| `mark() -> u32` | The top of the stack, as an address |
+| `reset(m: u32)` | Frees everything allocated since the mark `m` was taken |
+| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full |
+| `zeroed(n: u32) -> u32` | The same, the bytes set to zero |
+| `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place |
+
+An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `capacity` and `space` larger.
+
+### `vec`: A Growable Array
+
+`Vec(T)` is `(ptr: [*]mut T, len: u32, cap: u32)`, on the stack of `stack.ents`. It is used through the `*mut Vec(T)` that `vec` returns, and its functions are called as methods ([4.9](#49-method-call-syntax)): `v.push(x)`, `v.len`.
+
+| Function | What it does |
+|---|---|
+| `vec(comptime T: type, cap: u32) -> *mut Vec(T)` | An empty Vec with room for `cap` elements (at least one) |
+| `push(comptime T: type, v: *mut Vec(T), x: T)` | Adds `x` at the end. When it is full, one at the top of the stack grows in place; any other is copied to storage twice its size |
+| `pop(comptime T: type, v: *mut Vec(T)) -> T` | Takes the last element off. Traps when there is none |
+| `last(comptime T: type, v: *Vec(T)) -> T` | The last element. Traps when there is none |
+| `items(comptime T: type, v: *Vec(T)) -> []T` | The elements, valid until the next push |
+| `items_mut(comptime T: type, v: *mut Vec(T)) -> []mut T` | The same, to change in place |
+| `clear(comptime T: type, v: *mut Vec(T))` | Empties it and keeps its storage |
+
+An element type that is a fixed array makes the Vec a table of row pointers ([Nesting](#nesting)): a `Vec([3]i32)` cannot push a `[3]i32`. A struct with an array field lies in place, so `Vec((cells: [3]i32))` holds packed rows.
+
+### `fixedvec`, `ring`, `bits` and `fixedalloc`: Fixed Capacity
+
+Containers whose capacity is part of their type, a comptime value parameter ([8.7](#87-comptime-value-parameters)). Every index into them is proven by the capacity, so each load and store is a plain one, with no check. They are laid out where the program likes: in `data`, or on the stack with `fixedalloc.ents`.
+
+| Function | What it does |
+|---|---|
+| `FixedVec(comptime n: u32, comptime T: type) -> type` | `(len: u32#(n + 1), buf: *mut [n]T)`: at most `n` elements, never grown or copied |
+| `v.push(x) -> bool` | Adds `x` at the end; false, with nothing changed, when it is full |
+| `v.pop() -> T`, `v.last() -> T` | The last element, taken off or not. Traps when there is none |
+| `v.items() -> []T`, `v.items_mut() -> []mut T`, `v.clear()`, `v.full() -> bool` | As for a Vec; whether it is full |
+| `Ring(comptime n: u32#2147483649, comptime T: type) -> type` | `(head: u32#n, count: u32, items: *mut [n]T)`: the last `n` elements of a stream |
+| `r.push(x)` | Adds `x` after the newest; when the ring is full, in the oldest one's place |
+| `r.oldest(i: u32#n) -> T`, `r.newest() -> T`, `r.count`, `r.clear()` | The `i`-th oldest; the newest (traps when there is none); how many it holds; empties it |
+| `b.set_bit(i)`, `b.clear_bit(i)`, `b.has_bit(i) -> bool`, `b.count_bits() -> u32` | A bitset over a `*mut [w]u32` (`*[w]u32` to read), such as `data seen = mut [0:u32; 4]`: bit `i` is a `u32#(w * 32)` |
+| `fixedvec(comptime n: u32, comptime T: type) -> *mut FixedVec(n, T)`, `ring(comptime n: u32, comptime T: type) -> *mut Ring(n, T)` | In `fixedalloc.ents`: an empty one, its header and its `n` elements in one allocation on the stack |
+
+The functions of the first two take `comptime n: u32, comptime T: type` before the container, and those of `bits.ents` take `comptime w: u32`. `FixedVec` and `Ring` can also be laid out in `data`: `data cells = mut [0:u32; 8]` and `data v: FixedVec(8, u32) = mut (0, cells)`. `fixedvec.ents` and `vec.ents` both name their functions `push`, `pop` and so on, and a generic function's name is unique in its module ([8.1](#81-compile-time-parameters)), so a program that uses both renames one on import: `"push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool`, called as `v.fixed_push(x)`.
+
+### `set` and `map`: Hashing
+
+`Set(K)` and `Map(K, V)` hash with open addressing and double their table when it is half full, on the stack of `stack.ents`.
+
+| Function | What it does |
+|---|---|
+| `hashset(comptime K: type, bits: u32) -> *mut Set(K)` | An empty set of `2^bits` slots to start with |
+| `s.add(k) -> bool` | Adds `k`; true where it was not in the set |
+| `s.has(k) -> bool`, `s.count` | Whether `k` is in the set; how many keys it holds |
+| `map(comptime K: type, comptime V: type, bits: u32) -> *mut Map(K, V)` | An empty map |
+| `m.insert(k, v) -> bool` | Sets `k`'s value; true where `k` is new |
+| `m.lookup(k) -> ?*mut V` | A pointer to `k`'s value, to change in place, or none; valid until the next insert |
+| `m.get_or(k, fallback) -> V` | `k`'s value, or `fallback` where it has none |
+
+A set or a map calls `hash(k) -> u32` and `eq(a, b) -> bool` for its key type. `set.ents` has them for `u32`, `u64`, `i32`, `i64`, `[]u8` and `[]u32`. A key is copied into the set by value: a slice key is the slice, not its bytes, which must stay where they are while the set is used. For a key type of its own, a program writes `hash` and `eq` in the module that makes the set, and the set's generic code calls them ([8.8](#88-generics-across-modules)):
+
+```text
+type Cell = (x: i32, y: i32)
+func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
+func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+```
+
+A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' own functions, which makes the call ambiguous, and the library's functions come before a program's: keep such keys widened, in a `Set(u32)` or a `Set(i32)`.
+
+### `sort`: Sorting
+
+| Function | What it does |
+|---|---|
+| `sort(comptime T: type, xs: []mut T, comptime before: (T, T) -> bool)` | Sorts `xs` in place, stably: `before(a, b)` says that `a` comes first. Its scratch space is on the stack, freed before it returns |
+| `is_sorted(comptime T: type, xs: []T, comptime before: (T, T) -> bool) -> bool` | Whether `xs` is sorted |
+| `lower_bound(comptime T: type, xs: []T, x: T, comptime before: (T, T) -> bool) -> u32` | Where `x` goes in sorted `xs`: the first index whose element does not come before `x` |
+
+`before` is a comptime function parameter ([8.6](#86-comptime-function-parameters)): the name of a function declared at module level, in any module. Each comparator is its own copy of `sort`, which calls it directly.
+
+Complete programs that use the library are [`examples/aoc/day1.ents`](../examples/aoc/day1.ents), a WASI program for `encantis run`, and [`examples/containers/main.ents`](../examples/containers/main.ents), which uses every container with a key type of its own.
 
 ---
 
