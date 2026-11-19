@@ -4,13 +4,17 @@
 // standard I/O can be tested: writes to fds 1 and 2 go to the host's stdout and
 // stderr, stdin reads as empty, and other calls fail with ENOSYS. Any other
 // imported function is a stub that throws if a test calls it, so a module that
-// imports from its host can still have its other code tested.
+// imports from its host can still have its other code tested. An imported
+// global is given the zero of its wasm type (0, 0n, null), read from the
+// module's import section when its bytes are given, except one of a plain host
+// type, which is never null: it gets a stand-in, an empty frozen object, as a
+// host keeps that type's promise (programToWatWithTests lists them).
 
 const ENOSYS = 52
 const EBADF = 8
 
 export interface TestHost {
-  imports: Record<string, Record<string, (...args: never[]) => unknown>>
+  imports: Record<string, Record<string, ((...args: never[]) => unknown) | WebAssembly.Global>>
   // Call once the instance exists, so WASI calls can reach its memory.
   attach(instance: WebAssembly.Instance): void
 }
@@ -21,6 +25,10 @@ export function createTestHost(
   write: (fd: number, bytes: Uint8Array) => void = (fd, bytes) => {
     ;(fd === 2 ? process.stderr : process.stdout).write(bytes)
   },
+  // The module's bytes, for the types of the globals it imports
+  bytes?: Uint8Array,
+  // The imported globals that hold a plain host reference
+  standIns: readonly { module: string; name: string }[] = [],
 ): TestHost {
   let memory: WebAssembly.Memory | null = null
   const view = () => {
@@ -52,8 +60,15 @@ export function createTestHost(
     },
   }
 
-  const imports: Record<string, Record<string, (...args: never[]) => unknown>> = {
+  const imports: TestHost['imports'] = {
     test: { __assert_fail: (offset: number) => onAssertFail(offset) },
+  }
+  const plain = new Set(standIns.map((g) => `${g.module}\0${g.name}`))
+  for (const g of bytes ? importedGlobals(bytes) : []) {
+    const zero = plain.has(`${g.module}\0${g.name}`) ? Object.freeze({}) : ZEROS[g.type]
+    if (zero === undefined) continue
+    imports[g.module] ??= {}
+    imports[g.module][g.name] = new WebAssembly.Global({ value: g.type as keyof WebAssembly.ValueTypeMap, mutable: g.mutable }, zero)
   }
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.kind !== 'function' || (imp.module === 'test' && imp.name === '__assert_fail')) continue
@@ -75,4 +90,63 @@ export function createTestHost(
       memory = (found as WebAssembly.Memory | undefined) ?? null
     },
   }
+}
+
+// The zero of each wasm value type a JavaScript host can give (no v128)
+const ZEROS: Record<string, unknown> = { i32: 0, i64: 0n, f32: 0, f64: 0, externref: null, anyfunc: null }
+
+const VALUE_TYPES: Record<number, string> = { 0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64', 0x7b: 'v128', 0x70: 'anyfunc', 0x6f: 'externref' }
+
+// The globals a module imports, with their types, read from the import
+// section of its bytes (the JS API's Module.imports says only that each is a
+// global).
+export function importedGlobals(bytes: Uint8Array): { module: string; name: string; type: string; mutable: boolean }[] {
+  let at = 8
+  const u32 = (): number => {
+    let result = 0
+    let shift = 0
+    for (;;) {
+      const b = bytes[at++]
+      result |= (b & 0x7f) << shift
+      if ((b & 0x80) === 0) return result >>> 0
+      shift += 7
+    }
+  }
+  const name = (): string => {
+    const length = u32()
+    const text = new TextDecoder().decode(bytes.subarray(at, at + length))
+    at += length
+    return text
+  }
+  const limits = () => {
+    const flags = bytes[at++]
+    u32()
+    if (flags & 1) u32()
+  }
+  const found: { module: string; name: string; type: string; mutable: boolean }[] = []
+  while (at < bytes.length) {
+    const id = bytes[at++]
+    const size = u32()
+    const end = at + size
+    if (id !== 2) {
+      at = end
+      continue
+    }
+    for (let count = u32(); count > 0; count--) {
+      const module = name()
+      const field = name()
+      const kind = bytes[at++]
+      if (kind === 0) u32()
+      else if (kind === 1) {
+        at++
+        limits()
+      } else if (kind === 2) limits()
+      else if (kind === 3) {
+        const type = VALUE_TYPES[bytes[at++]] ?? 'unknown'
+        found.push({ module, name: field, type, mutable: bytes[at++] === 1 })
+      }
+    }
+    break
+  }
+  return found
 }

@@ -1345,6 +1345,19 @@ describe('the editor', () => {
     expect(scopes('comptime')).toEqual(['storage.type.encantis'])
     expect(scopes('comptimes')).toEqual([])
   })
+
+  // host is a type only as all of a type declaration, and not reserved: the
+  // declaration is highlighted, a variable named host is not.
+  test('a host type declaration is highlighted, and host elsewhere is a name', async () => {
+    const grammar = await Bun.file(new URL('../extension/encantis.tmlanguage.json', import.meta.url)).json()
+    const types: { name?: string; match: string; captures?: Record<string, { name: string }> }[] = grammar.repository.variables.patterns
+    const rule = types.find((p) => p.captures?.['4']?.name === 'support.type.host.encantis')
+    expect(rule).toBeDefined()
+    const re = new RegExp((rule as { match: string }).match)
+    expect(re.exec('type Canvas = host')?.[4]).toBe('host')
+    expect(re.test('type Canvas = hosts')).toBe(false)
+    expect(re.test('let host = 2')).toBe(false)
+  })
 })
 
 describe('what an instance leaves in the tables the editor reads', () => {

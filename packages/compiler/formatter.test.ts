@@ -156,6 +156,14 @@ describe('formatter', () => {
     expect(formatted).toBe('func Vec(comptime T:type) -> type => (ptr:[*]mut T, len:u32)\nfunc f(v:*Vec(u32)) -> u32 => Vec(u32)(v.ptr, 0).len\n')
   })
 
+  // A host type and its optional form are spaced as any type and ?*T are.
+  test('a host type and an optional one are spaced like any other type', () => {
+    const formatted = formatEncantis('type Canvas=host\nglobal c : ?Canvas=0\nfunc f(x :?Canvas ,y:Canvas)->Canvas=>x??y\n')
+    expect(formatted).toBe('type Canvas = host\nglobal c:?Canvas = 0\nfunc f(x:?Canvas, y:Canvas) -> Canvas => x ?? y\n')
+    expect(formatEncantis(formatted)).toBe(formatted)
+    expect(shape(formatted)).toEqual(shape('type Canvas = host\nglobal c: ?Canvas = 0\nfunc f(x: ?Canvas, y: Canvas) -> Canvas => x ?? y\n'))
+  })
+
   test('a comptime parameter and a type argument are spaced like any other', () => {
     const formatted = formatEncantis('func max( comptime   T:type ,a :T)->T=>a\nfunc f(a:i32)->i32=>max (i32 , -a)\n')
     expect(formatted).toBe('func max(comptime T:type, a:T) -> T => a\nfunc f(a:i32) -> i32 => max(i32, -a)\n')

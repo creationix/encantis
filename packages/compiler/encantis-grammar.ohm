@@ -160,6 +160,7 @@ Encantis {
            | "?" "[]" Type                     -- optSlice
            | "?" "*" mut Type                  -- optPointerMut
            | "?" "*" Type                      -- optPointer
+           | "?" typeIdent                     -- optNamed
            | "[" arrayFramings "]" mut Type     -- arrayMut
            | "[" arrayFramings "]" Type        -- array
            | ~BracketForm "[" Expr "]" mut Type  -- lengthMut

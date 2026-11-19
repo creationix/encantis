@@ -647,7 +647,11 @@ class MetaBuilder {
     const sym = this.checkResult.symbols.get(decl.ident.name)
     if (!sym || sym.kind !== 'type') return
 
-    const symbolIndex = this.addSymbol(decl.ident.name, 'type', sym.type, decl.ident.span.start)
+    // A host type is shown as what it is declared as (type Canvas = host),
+    // not as its own name; a name for one is that type.
+    const u = unwrap(sym.type)
+    const declared = u.kind === 'host' && !u.optional && u.name === decl.ident.name ? 'host' : sym.type
+    const symbolIndex = this.addSymbol(decl.ident.name, 'type', declared, decl.ident.span.start)
     this.typeRegistry.registerWithSymbol(sym.type, symbolIndex)
   }
 
@@ -1508,6 +1512,9 @@ class MetaBuilder {
       for (const arg of type.args) if (arg.kind !== 'ValueArg') this.generateHintsForTypeExpr(arg)
     }
     // Recurse into compound types
+    if (type.kind === 'OptionalType') {
+      this.generateHintsForTypeExpr(type.type)
+    }
     if (type.kind === 'PointerType') {
       this.generateHintsForTypeExpr(type.pointee)
     }

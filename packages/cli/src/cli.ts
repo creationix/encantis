@@ -575,7 +575,7 @@ switch (command) {
       const hasTests = entryMod?.module.decls.some(d => d.kind === 'TestDecl')
       if (!hasTests) continue
 
-      const { wat, testNames, testTitles } = programToWatWithTests(load.modules, check.results, entryPath)
+      const { wat, testNames, testTitles, standIns } = programToWatWithTests(load.modules, check.results, entryPath)
       if (testNames.length === 0) continue
 
       const w = await wabt()
@@ -594,8 +594,18 @@ switch (command) {
       const mod = await WebAssembly.compile(buffer)
       const source = entryMod?.source ?? ''
       let failedOffset = -1
-      const host = createTestHost(mod, (offset) => { failedOffset = offset })
-      const instance = await WebAssembly.instantiate(mod, host.imports)
+      const host = createTestHost(mod, (offset) => { failedOffset = offset }, undefined, buffer, standIns)
+      // A module that does not start (its start function traps, as for a
+      // host global that breaks its type's promise) runs none of its tests.
+      let instance: WebAssembly.Instance
+      try {
+        instance = await WebAssembly.instantiate(mod, host.imports)
+      } catch (e: any) {
+        console.error(`${testFile}: the module did not start: ${e.message}`)
+        totalFailed += testNames.length
+        for (const title of testTitles) allResults.push({ file: testFile, name: title, pass: false, error: `the module did not start: ${e.message}` })
+        continue
+      }
       host.attach(instance)
 
       for (const [t, name] of testNames.entries()) {

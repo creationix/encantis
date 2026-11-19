@@ -58,6 +58,20 @@ describe('gotoDefinition', () => {
 })
 
 describe('hover', () => {
+  // A host type is what it is declared as, a name for one is that type, and
+  // an array of them costs its registers, as it has no bytes.
+  test('shows a host type, a name for one and an array of them', () => {
+    const code = `type Canvas = host\ntype Screen = Canvas\ntype Maybe = ?Canvas\nfunc f(cs: [2]Canvas, s: Screen) -> Screen => s`
+    const { source, module, check } = setup(code)
+    expect(hover(source, module, check, code.indexOf('Canvas'))!.type).toBe('host')
+    expect(hover(source, module, check, code.indexOf('Screen'))!.type).toBe('Canvas')
+    expect(hover(source, module, check, code.indexOf('Maybe'))!.type).toBe('?Canvas')
+    expect(hover(source, module, check, code.indexOf('cs'))!.type).toBe('[2]Canvas (2 slots)')
+    const meta = buildMeta(module, source, { checkResult: check })
+    const shown = (name: string) => meta.types[meta.symbols.find((s) => s.name === name && s.kind === 'type')!.type].type
+    expect([shown('Canvas'), shown('Screen'), shown('Maybe')]).toEqual(['host', 'Canvas', '?Canvas'])
+  })
+
   test('shows function type', () => {
     const code = `func add(a: i32, b: i32) -> i32 => a + b`
     const { source, module, check } = setup(code)

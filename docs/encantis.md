@@ -361,12 +361,13 @@ It applies inside an `if` branch, to later `elif` and `else` branches (where ear
 
 ### 2.3 Value vs Reference Types
 
-Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value.**
+Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value**, with one kind that is neither: a host reference.
 
 | Category       | Types                               | Semantics               |
 |----------------|-------------------------------------|-------------------------|
 | **Values**     | primitives, tuples, structs, `[N]T` | passed by value, copied |
 | **References** | `*T`, `*[N]T`, `[*]T`, `[]T`        | pointer to memory       |
+| **Host references** | `type Canvas = host` ([2.13](#213-host-references)) | copied like a value, the host's object shared; never in memory |
 
 `[N]T` has brackets but is a value type — the `N` is a compile-time constant, so the compiler knows exactly how many wasm values to emit. The reference types all involve runtime indirection through memory addresses.
 
@@ -397,7 +398,7 @@ A fixed array that lies in memory, as a field of a struct a pointer points to (`
 
 Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
 
-A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). Nor has it a `.ptr`: a fixed array held by value is its elements, also where it is read out of memory, so `v.ptr` is `cannot take .ptr of [3]i32: a fixed array held by value has no address`. One that lies in memory has the address of its place, `(&p.items).ptr`. An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
 
 ### 2.5 Pointer Types
 
@@ -440,7 +441,7 @@ mp.wid               // 1 (sizeof(u8))
 
 #### Optional Types
 
-Pointers and slices can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
+Pointers, slices and host references ([2.13](#213-host-references)) can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
 
 ```ents
 ?*T              // optional pointer — either valid *T or none (ptr=0)
@@ -449,7 +450,7 @@ Pointers and slices can be **optional** using the `?` prefix. An optional pointe
 ?[*]T            // optional many-pointer
 ```
 
-Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
+Only pointer, slice and host reference types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid). A name for one is made optional the same way: with `type P = *u8`, `?P` is a `?*u8`, and in a generic, `?T` is the type `T` is given made optional, so `T` has to be one of these (`cannot make i32 optional: only a pointer, a slice or a host reference has a none`).
 
 None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
 
@@ -470,8 +471,15 @@ func find(key: u32) -> ?[]u8 {
 func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
 func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
 func unnamed() -> Entry => Entry(9, 0 as ?[]u8)
+type Name = []u8
+func named(s: ?Name) -> u32 => if let x = s { x.len } else { 99 }
+func keep(comptime T: type, x: ?T) -> ?T => x
 
 test "none is 0 for an optional pointer and an optional slice" {
+  assert named("ab") == 2
+  assert named(0) == 99
+  assert size(keep(find(2))) == 3
+  assert keep(find(1)) == 0
   assert find(1) == 0
   assert find(2) != 0
   assert size(find(2)) == 3
@@ -483,7 +491,7 @@ test "none is 0 for an optional pointer and an optional slice" {
 }
 ```
 
-Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none:
+Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none. An optional is used as its plain form only once resolved:
 
 ```ents
 func f(s: ?[]u8) -> bool {
@@ -491,12 +499,23 @@ func f(s: ?[]u8) -> bool {
   let b: []u8 = 0
   return s < 0
 }
+func g(p: ?*u8, s: ?[]u8) {
+  let q: *u8 = p
+  let t: []u8 = s
+  let u = s as []u8
+}
+type Count = u32
+func h(c: ?Count) {}
 ```
 
 ```errors
+cannot make Count optional: only a pointer, a slice or a host reference has a none
 cannot assign int(5) to ?[]u8
 cannot assign int(0) to []u8
 '<' cannot be applied to ?[]u8 and int(0)
+cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first
+cannot assign ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first
+cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first
 ```
 
 <!-- spec:end -->
@@ -517,6 +536,16 @@ Nothing is read through an optional before it is resolved: indexing it (`q[0]`),
 **Data section layout:** To ensure address `0` is never a valid data pointer, the compiler reserves the first 4 bytes of linear memory when any optional types are used and the first data entry would otherwise start at offset 0.
 
 **Assignability:** Non-optional values widen to optional implicitly (`*T` → `?*T`), but the reverse requires explicit unwrapping.
+
+**One rule for none.** What has a none is an optional, whatever it holds: `?*T`, `?[]T`, an optional host reference `?Canvas` ([2.13](#213-host-references)), and the optional function values still to come. For each of them alike:
+
+- none is written `0`, and `x == 0` / `x != 0` are the question whether it is none (an optional slice compares its pointer);
+- a global of one given no value starts as none;
+- `if let` and `??` give the plain value inside, and an optional is used as its plain form only once resolved (`cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first`).
+
+One thing differs, a `let` given no value. A `let` of an optional pointer or slice is then uninitialized, as a `let` of a number is ([3.3](#33-variables)): in a loop it holds what the last pass left in it. A `let` of an optional host reference is the exception: it is none, on every pass of a loop, so the module never holds on to a host object it did not mean to keep. An optional function value, held as a number as a pointer is, will be uninitialized as a pointer is.
+
+A plain type has no none, so `== 0` is no question of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer is the one that still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference (and a plain function value) has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one.
 
 #### Mutability
 
@@ -1123,7 +1152,7 @@ A cast converts between numbers and pointers, and turns a bool into a number (0 
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte. A generic type applied is a name of the same kind (8.5).
+A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte. A generic type applied is a name of the same kind (8.5). One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)), which is a type of its own, and one name of it is the same type in every module of a program.
 
 <!-- spec:begin compile -->
 
@@ -1215,13 +1244,13 @@ type '[65536]u8' is too large: written out in full it has more than 65536 parts
 
 <!-- spec:end -->
 
-A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool or a pointer is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
+A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference (2.13) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
 
 - The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
 - The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
 - A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
 
-A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)).
+A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)). Host references are the exception: they are never in memory, so where they alone take a count over its limit, the error says to hold fewer at once (`a host reference is held only in registers, never in memory: hold fewer at once`).
 
 <!-- spec:begin compile -->
 
@@ -1279,21 +1308,47 @@ type Canvas = host
 type Context = host
 ```
 
-Each declaration is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type, also across source modules: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares. `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
+Each name declared with `host` is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type program-wide, across source modules too: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares, and two modules that each declare `type Handle = host` have one type between them. So a library should choose a name that is its own (`FileHandle`, not `Handle`). Types are otherwise structural (2.11, 7.1, 8.4, 8.5); a host type is the one kind that is its name, and a message that meets two types of one name that are not one type says what each stands for (`cannot assign Canvas (i32) to Canvas (a host type)`). `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
 
 A host reference is held where registers are, and nowhere else:
 
 - as a parameter or a result of any function, an imported or exported one too, so the host gives references in and takes them back;
-- in a `let` variable or a global, an imported or exported global too;
+- in a `let` variable or a global: a global of a plain one is imported from the host, and the module's own globals, exported ones too, hold an optional one (below);
 - as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
 
-It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one. How a host reference is kept in memory is a design still to come.
+It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. How a host reference is kept in memory is a design still to come.
 
-Any host reference may be null: the host can give one (JavaScript's `null`), and so can the module. Null is written `0`, as none is for an optional pointer: `global ctx: Context = 0`, `return 0`, `context(0)`, `0 as Canvas`. A global or a `let` given no value is null too. `c == 0` and `c != 0` ask whether one is null. Every host type is nullable, so there is no `?Canvas`, and nothing is resolved before a reference is passed on: the module cannot look inside one, so null is only ever the host's to deal with.
+#### Never null, and optional
 
-Nothing else is computed with one: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast but `0 as Canvas` to or from a number or an address or another host type, and no condition. It is passed, returned, stored in a variable or a global, and read back.
+A plain host type is never null: a `Canvas` is always a value the host gave. So it has no default, as a plain function value has none (3.4):
 
-The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly a host reference is an `externref`.
+- a `let` of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
+- a global's value is a constant, and no constant is a `Canvas`, so a global of one (or of a struct or array that holds one) is imported from the host, which gives its value; the module's own global holds a `?Canvas`, none until it is set (`global 'g' needs a value: ..., and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none`);
+- a named result cannot hold one, since a named result starts with a default: return the value instead;
+- a `let` of one in a block that may not run (a branch, a loop's body, a match arm) is seen in that block alone, not after it as another variable is (3.3): after the block, it may never have been given its value (`'c' is seen only in the block it is declared in: that block may not have run here, ...`);
+- `0` is no `Canvas`, and neither is any other number: `c == 0` on a plain `Canvas` is an error that says to use `?Canvas`.
+
+A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer (2.5); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
+
+- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
+- it starts as none: a `let` or a global of one given no value is none;
+- `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
+- `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
+- a `Canvas` widens to a `?Canvas` implicitly (`c as ?Canvas` too), and a `?Canvas` is used as a `Canvas` only once resolved (`cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first`).
+
+`match` does not take a host reference, optional or not, as it does not take a pointer.
+
+#### At the boundary
+
+The module never makes a null `Canvas`. The host promises one too: where a value of a plain host type comes in from the host, as an exported function's parameter, an imported function's result or an imported global's value, it is checked once, as it comes in, and a null there traps (`unreachable`). So a host that breaks the promise stops the program at the boundary, not somewhere later. A call the module makes to one of its exported functions is not checked again: such a function is exported through an entry that checks what the host gives and then calls it. Nothing is checked anywhere else, nothing for a `?Canvas`, and a program that uses no host type compiles to the same bytes as it would without this rule. An imported global is checked when the module starts (a wasm start function).
+
+`encantis test` runs a module's tests with no host there: an imported function throws if a test calls it, and an imported global is given a value of its type that keeps its promise. For a plain host type that is a stand-in (an empty object), so the module starts and its tests run, those that never read the global too; an optional one is none, a number 0. Only the tests being run have their `test` blocks' imports: a library's test-only import is no part of a program that imports the library.
+
+For a JavaScript host, null is `null`. `undefined` (what a function that returns nothing gives, or a `Map.get` that finds nothing) is a value, not null: it passes for a `Canvas`, and `opt == 0` is false for it.
+
+Nothing else is computed with a host reference: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast to or from a number, an address or another host type (`0 as ?Canvas` is none, and `c as ?Canvas` widens), and no condition. It is passed, returned, stored in a variable or a global, and read back.
+
+The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` today. A later backend may hold a plain one as a `(ref extern)`, which the engine itself keeps from being null, and drop the boundary checks, with no change to the source.
 
 <!-- spec:begin compile -->
 
@@ -1306,29 +1361,108 @@ import "canvas" (
   "fill" func fill(ctx: Context, x: f32, y: f32, w: f32, h: f32)
 )
 
-global ctx: Context = 0
+// None until the host hands in a canvas.
+global ctx: ?Context = 0
 
 // The host hands the canvas in once; the module keeps what it needs.
 export func start(c: Canvas) {
-  if c != 0 { ctx = context(c) }
+  ctx = context(c)
 }
 
 // Nothing is drawn before there is something to draw on.
-export func draw(n: u32) {
-  return when ctx == 0
-  for i in n {
-    fill(ctx, i as f32 * 12.0, 0.0, 10.0, 10.0)
+export func draw(n: u32) -> u32 {
+  if let x = ctx {
+    for i in n {
+      fill(x, i as f32 * 12.0, 0.0, 10.0, 10.0)
+    }
+    return n
   }
+  return 0
 }
 
+export func started() -> bool => ctx != 0
 export func stop() { ctx = 0 }
 
 // A struct of a reference and a number is two values in registers.
 type Tagged = (c: Canvas, n: i32)
 export func tag(c: Canvas, n: i32) -> Tagged => Tagged(c, n + 1)
+
+// A plain one comes out of an optional one with ?? as well.
+export func or-else(maybe: ?Canvas, other: Canvas) -> Canvas => maybe ?? other
+
+test "nothing is drawn before there is a context" {
+  assert !started()
+  assert draw(3) == 0
+  stop()
+  assert ctx == 0
+  assert draw(3) == 0
+}
 ```
 
-Two host types are two types, neither is a number, and the one thing asked of a reference is whether it is null:
+`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type. `host` in parentheses is `host`, as any type is (2.7):
+
+```ents
+type Holder = (c: ?Canvas, n: i32)
+type Canvas = host
+type Screen = Canvas
+type Window = (host)
+export func window(w: Window) -> ?Window => w
+
+func keep(comptime T: type, x: ?T) -> ?T => x
+func pick(comptime T: type, x: ?T, d: T) -> T => x ?? d
+export func picked(o: ?Canvas, c: Canvas) -> Canvas => pick(o, c)
+export func held(h: Holder) -> ?Canvas => h.c
+export func screen(s: ?Screen) -> ?Canvas => keep(s)
+export func plain(c: Canvas) -> ?Screen => keep(c)
+
+test "an optional one starts as none" {
+  let none: ?Screen
+  assert none == 0
+  assert keep(none) == 0
+}
+```
+
+None is the literal `0` wherever an optional one is wanted: an element of an array literal or a repeat, a field, a branch with no type of its own, a `def` of 0, and an instance of a generic:
+
+```ents
+type Canvas = host
+type Pair = (cs: [2]?Canvas, n: i32)
+def nothing = 0
+
+global both-none: [2]?Canvas = [0, 0]
+
+export func pair(c: Canvas) -> [2]?Canvas => [c, 0]
+export func three() -> [3]?Canvas => [0; 3]
+export func field(c: Canvas) -> Pair => Pair([0, c], 1)
+export func pick(n: i32, c: ?Canvas) -> ?Canvas {
+  let x = if n == 0 { 0 } elif n == 1 { c } else { (0) }
+  let y = match n { 0 => c, _ => nothing }
+  return if x == 0 { y } else { x }
+}
+export func grouped(c: Canvas) -> [2]?Canvas => [c, (nothing)]
+export func untyped(c: ?Canvas) -> ?Canvas {
+  let xs = [c, 0]
+  let ys = [0, c]
+  return if xs[1] == 0 { ys[0] } else { c }
+}
+func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
+export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
+func given(comptime n: i32) -> ?Canvas => n
+export func signed() -> [2]?Canvas => [-0, given(1 - 1)]
+
+func none(a: [2]?Canvas) -> bool => a[0] == 0 && a[1] == 0
+test "none is 0 in each place" {
+  assert none([0, 0])
+  assert none(both-none)
+  assert none([nothing, (0)])
+  assert pick(0, 0) == 0
+  assert pick(2, 0) == 0
+  assert three()[2] == 0
+  assert none(signed())
+}
+```
+
+Two host types are two types, neither is a number, a plain one is never null, and the one thing asked of an optional one is whether it is none:
 
 ```ents
 type Canvas = host
@@ -1336,15 +1470,150 @@ type Context = host
 
 func a(c: Canvas) -> Context => c
 func b(c: Canvas) -> u32 => c as u32
-func c(x: Canvas, y: Canvas) -> bool => x == y
+func c(x: ?Canvas, y: ?Canvas) -> bool => x == y
 func d(x: Canvas) -> Canvas => 1 as Canvas
+func e() -> Canvas => 0
+func f(c: Canvas) -> bool => c == 0
+func g(x: ?Canvas) -> Canvas => x
+func h() -> ?Canvas => 0 as Canvas
+func i(x: Canvas, y: Canvas) -> bool => x != y
+type Point = (x: i32, y: i32)
+func j(p: ?Point) {}
+func n(c: Canvas) -> i32 {
+  let both = [0, c]
+  return both[1] + 1
+}
+func k() -> ?Canvas => 0 + 0
+func l(x: ?Canvas) -> bool => x == 1 - 1
+func m() -> ?Canvas => "".len as ?Canvas
+func o(c: Canvas) -> Context => c as Context
+func p(x: ?Canvas) -> Canvas => x as Canvas
+type Element = host
+func q() -> Element => 0
+func r() -> ?Canvas => -(0)
+func s(b: bool, x: ?Canvas) -> bool => x == if b { 0 + 0 } else { 0 }
+func t(n: i32, x: ?Canvas) -> bool => x == match n { 0 => 0, _ => 1 - 1 }
 ```
 
 ```errors
+cannot make Point optional: only a pointer, a slice or a host reference has a none
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
-'==' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is only compared with 0, to ask whether it is null
-cannot cast int(1) to Canvas
+'==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be none, which is only compared with 0
+cannot cast int(1) to Canvas: Canvas is a host reference, which is no number and no address
+cannot assign int(0) to Canvas: a Canvas is never null (a host reference that may be null is a ?Canvas)
+'==' cannot be applied to Canvas and int(0): a Canvas is never null
+cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
+cannot cast int(0) to Canvas: a Canvas is never null
+'!=' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is not compared
+elements have different types: int(0) and Canvas
+cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal
+cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
+cannot cast Canvas to Context: they are two host types, and neither is the other
+cannot cast ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
+cannot assign int(0) to Element: an Element is never null (a host reference that may be null is a ?Element)
+cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(0): none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal, and nothing computed is one
+```
+
+A reference is asked nothing but, for an optional one, whether it is none; and an array of them held in registers is reached by a constant index alone:
+
+```ents
+type Canvas = host
+
+func a(c: Canvas, d: Canvas) -> Canvas => c ?? d
+func b(c: Canvas) -> i32 => if let x = c { 1 } else { 0 }
+func c(c: ?Canvas) -> i32 => match c { 0 => 1, _ => 2 }
+func d(c: ?Canvas) -> i32 => if c { 1 } else { 0 }
+func e(c: Canvas) -> bool => !c
+func f(cs: [3]?Canvas, i: u32) -> ?Canvas => cs[i]
+func g(cs: [3]?Canvas) {
+  for c in cs {}
+}
+func h(c: Canvas) -> Canvas {
+  for x in [c, c] {
+    return x
+  }
+  return c
+}
+func k(c: ?Canvas) {
+  let cs: [3]?Canvas = [0, 0, 0]
+  cs[0..2] = c
+}
+```
+
+```errors
+?? requires an optional expression or bounds-checked index: a Canvas is never null
+if let requires an optional expression or bounds-checked index: a Canvas is never null
+cannot match ?Canvas against int(0): ?Canvas is a host reference that may be none: ask with == 0 or != 0, or resolve it with if let or ??
+condition must be bool, not ?Canvas: ?Canvas is a host reference that may be none
+operand of '!' must be bool, not Canvas: a Canvas is never null
+dynamic index on value type [3]?Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
+cannot iterate over [3]?Canvas: an array held in registers is not looped over, and a host reference is never in memory
+cannot iterate over [2]Canvas: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index
+cannot take a range of [3]?Canvas: an array held in registers has no range, and a host reference is never in memory: reach each element by a constant index
+```
+
+A plain host reference has no default, in a variable, a global or a named result, and in a struct or an array either:
+
+```ents
+type Canvas = host
+type Tagged = (c: Canvas, n: i32)
+
+global g: Canvas
+global none: ?Canvas
+import "env" "screen" global screen: Canvas
+global k: Canvas = screen
+
+func vars() {
+  let c: Canvas
+  let t: Tagged
+  let cs: [2]Canvas
+  let (p, q): (Canvas, i32)
+  let ok: ?Canvas
+}
+func result() -> (r: Canvas) {}
+func optional-result() -> (r: ?Canvas) {}
+func leak(b: bool, given: Canvas) -> Canvas {
+  if b {
+    let c: Canvas = given
+  }
+  return c
+}
+func arm(n: i32, given: Canvas) -> Tagged {
+  match n {
+    0 => { let t: Tagged = Tagged(given, 1) }
+    _ => {}
+  }
+  return t
+}
+func none-passes(n: u32, given: Canvas) -> [2]Canvas {
+  for i in n {
+    let a = [given, given]
+  }
+  return a
+}
+func optional(b: bool, given: Canvas) -> ?Canvas {
+  if b {
+    let o: ?Canvas = given
+  }
+  return o
+}
+```
+
+```errors
+global 'g' needs a value: a Canvas has no default (a ?Canvas starts as none), and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none
+global initializer must be a compile-time constant, and no constant is a Canvas
+'c' needs a value where it is declared: a Canvas has no default
+'t' needs a value where it is declared: Tagged holds Canvas, which has no default
+'cs' needs a value where it is declared: [2]Canvas holds Canvas, which has no default
+this let needs a value where it is declared: (Canvas, i32) holds Canvas, which has no default
+result 'r' cannot start with a default: a Canvas has no default (a ?Canvas starts as none); return the value instead
+'c' is seen only in the block it is declared in: that block may not have run here, and a Canvas has no default (a ?Canvas starts as none); declare it before the block, with its value
+'t' is seen only in the block it is declared in: that block may not have run here, and Tagged holds Canvas, which has no default
+'a' is seen only in the block it is declared in: that block may not have run here, and [2]Canvas holds Canvas, which has no default
 ```
 
 None is in memory, also inside a struct, and also when the type is declared after it is named:
@@ -1358,14 +1627,105 @@ func a(p: *Canvas) {}
 func b(s: []Canvas) {}
 func c(c: Canvas) -> u32 => sizeof(Canvas)
 func d(x: host) {}
+func e(p: *?Canvas) {}
+type Field = (c: host)
+func f(c: Canvas) -> u32 {
+  let p = &[c, c]
+  return p.len
+}
+func g() -> u32 {
+  let p = &[0 as ?Canvas; 4]
+  return p.len
+}
+func h(c: Canvas) -> u32 {
+  let cs = [c, c]
+  return cs.wid
+}
+func i(c: Canvas) {
+  let cs = [c, c]
+  let p = cs.ptr
+}
 ```
 
 ```errors
+'host' declares a host reference type
 cannot point to Holder: it holds Canvas, and a host reference has no bytes, so it is never in memory
 cannot point to Canvas: a host reference has no bytes
 cannot make a slice of Canvas: a host reference has no bytes
 'host' declares a host reference type
+cannot point to ?Canvas: a host reference has no bytes
 cannot take the size of Canvas: a host reference has no bytes
+cannot lay out [2]Canvas: it holds Canvas, and a host reference has no bytes, so it is never in memory
+cannot lay out [4]?Canvas: it holds ?Canvas
+cannot take the width of Canvas: a host reference has no bytes
+cannot take .ptr of [2]Canvas: a fixed array held by value has no address
+```
+
+Too many to hold at once is an error of the register limits (2.12), whose advice for a host reference is to hold fewer, not to put them behind a pointer; a value that is over the limit with the host references taken out still gets that advice:
+
+```ents
+type Canvas = host
+
+func a(cs: [1001]?Canvas) {}
+func b(c: ?Canvas) -> [1001]?Canvas => [c; 1001]
+func c(c: ?Canvas, buf: [1200]u8) {}
+func d(c: ?Canvas) {
+  let many: [60000]?Canvas = [c; 60000]
+}
+func e(on: bool, c: ?Canvas) {
+  let x = if on { [c; 1001] } else { [c; 1001] }
+}
+type One = (c: ?Canvas)
+func f(ones: [1001]One) {}
+```
+
+```errors
+the parameters are 1001 registers, more than the 1000 a wasm function takes — a host reference is held only in registers, never in memory: hold fewer at once
+the results are 1001 registers, more than the 1000 a wasm function gives back — a host reference is held only in registers, never in memory: hold fewer at once
+the parameters are 1201 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+the parameters are 1001 registers, more than the 1000 a wasm function takes — a host reference is held only in registers, never in memory: hold fewer at once
+function 'd' needs more than 50000 registers, the most a wasm function has (here many: [60000]?Canvas is 60000) — a host reference is held only in registers
+an if that gives [1001]?Canvas gives 1001 registers, more than the 1000 a wasm block gives back — a host reference is held only in registers
+```
+
+Nor is one behind a many-pointer or a framed array, laid out as `data`, or measured in an instance; and no number but the literal `0` is none of an optional one, which has no order either:
+
+```ents
+type Canvas = host
+
+func a(p: [*]Canvas) {}
+func b(p: *[2]Canvas) {}
+func c(p: [!]Canvas) {}
+data d = [0 as ?Canvas]
+func e() -> ?Canvas => 7
+func f(c: ?Canvas) -> bool => c < 0
+func size(comptime T: type) -> u32 => sizeof(T)
+func g() -> u32 => size(Canvas)
+```
+
+```errors
+cannot point to Canvas: a host reference has no bytes
+cannot point to [2]Canvas: it holds Canvas, and a host reference has no bytes
+cannot point to Canvas: a host reference has no bytes
+cannot lay out ?Canvas: a host reference has no bytes
+cannot assign int(7) to ?Canvas: none of a ?Canvas is written 0, the literal
+'<' cannot be applied to ?Canvas and int(0): ?Canvas is a host reference, which has no value the module can compute with
+cannot take the size of Canvas: a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global), in size(T = Canvas)
+```
+
+A generic type that would put one in memory is refused in the application that does, once for each application however often it is named (8.3), also when the type is named before the host type is declared:
+
+```ents
+func Ptr(comptime T: type) -> type => *T
+type P = Ptr(Canvas)
+type Canvas = host
+
+func a(p: Ptr(Canvas)) {}
+func b(p: P) {}
+```
+
+```errors
+cannot point to Canvas: a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global), in Ptr(Canvas)
 ```
 
 <!-- spec:end -->
@@ -1461,9 +1821,9 @@ let ptr:*u8       // uninitialized
 global total:i32 = 0
 ```
 
-A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
 
-A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+A global can be of any value type but one that holds a plain host reference: its value is a constant, and no constant is one, so such a global is imported from the host ([2.13](#213-host-references)). One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
 
 ```ents
 type Size = (w:i32, h:i32)
@@ -2947,6 +3307,34 @@ import "sys" "print"
 func print(msg:[]u8)
 ```
 
+A global can be imported from the host too. Its value is the host's, given once when the module starts, so it is read-only: assigning it, a field or an element of it, with `=`, a compound assignment or `set`, is an error. (A global imported from a source module is that module's own global, and is assigned as any global is.)
+
+<!-- spec:begin compile -->
+
+```ents
+type Size = (w: i32, h: i32)
+import "env" (
+  "width" global width: i32
+  "size" global size: Size
+  "cells" global cells: *mut [4]i32
+)
+
+func a() { width = 1 }
+func b() { width += 1 }
+func c() { size.h = 2 }
+func d() { set width = 3 }
+func e() { cells[0] = width + size.w }
+```
+
+```errors
+cannot assign to 'width': a global imported from the host is read-only
+cannot assign to 'width': a global imported from the host is read-only
+cannot assign to 'size': a global imported from the host is read-only
+cannot set 'width': a global imported from the host is read-only
+```
+
+<!-- spec:end -->
+
 #### Source modules
 
 A module string that starts with `./`, `../` or `/` names another source file (`.ents` is added): the two are compiled into one wasm module, and what is imported is what that file exports. Imports inside a `test` block are followed only when tests are built.
@@ -2958,7 +3346,7 @@ import "../lib/text" (
 )
 ```
 
-The signature an import writes is documentation: what the other module exports under the name is what is called, and the module that imports it is checked against that. A name that is not exported is `'add' is not exported from './util'`. Types are structural, so a struct type used across modules is declared again (or written out) where it is needed; a `type` is not imported.
+The signature an import writes is documentation: what the other module exports under the name is what is called, and the module that imports it is checked against that. A name that is not exported is `'add' is not exported from './util'`. Types are structural, so a struct type used across modules is declared again (or written out) where it is needed; a `type` is not imported. A host type is the exception that keeps the rule: it is its name, program-wide, so a module that shares `Canvas` with another declares `type Canvas = host` too, and is then given the same type ([2.13](#213-host-references)).
 
 A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them: see [8.7 Generics Across Modules](#88-generics-across-modules).
 
@@ -3271,7 +3659,7 @@ A call with the wrong number of arguments for the one function of its name is a 
 
 An *instance* is one generic function with all its comptime arguments fixed.
 
-- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. A number given for a value parameter is one too: two instances are one when theirs are the same number in the parameter's type. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
+- **Identity.** Two calls use the same instance when they name the same generic and their comptime arguments are equal. Types compare structurally, with aliases expanded: `Pt` and the struct `(q: i32, r: i32)` it names are one argument, and so are a type that refers to itself and an alias of it. A host type compares by its name, the one name it has program-wide ([2.13](#213-host-references)): `id(c)` for a `Canvas` and for a `Screen = Canvas` is one instance, and for a `Context` another. The names of a function type's parameters are not part of it. A function given for a comptime function parameter is an argument like a type: two instances are one when their functions are the same function. A number given for a value parameter is one too: two instances are one when theirs are the same number in the parameter's type. Explicit and inferred calls that arrive at the same arguments share the instance, and each call is still checked against the types as it wrote them.
 - **Once.** An instance is one function in the output however many calls use it. Across source modules, one whose body calls a function of the module that asked for it is one for each such module ([8.8](#88-generics-across-modules)).
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
@@ -3340,7 +3728,7 @@ Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a par
 
 A generic type is declared at module level, before or after its uses, and its name is unique among the types of its module. Nothing of it exists at run time: one that is never applied is only parsed, and `export func Vec(comptime T: type) -> type => ...` is accepted and gives the host nothing.
 
-**`Vec(u32)` is an alias with parameters.** It *is* the type `(ptr: [*]mut u32, len: u32, cap: u32)`, not a new, distinct type; this is the rule every type name already follows. A value built as a plain struct with those fields is a `Vec(u32)`; two generic types with the same body are interchangeable and functions instantiated for them share one copy; `Vec(u8)` and `Vec(u32)` differ because their bodies differ, and the error says so with the names:
+**`Vec(u32)` is an alias with parameters.** It *is* the type `(ptr: [*]mut u32, len: u32, cap: u32)`, not a new, distinct type; this is the rule every type name already follows, save a host type, which is its name ([2.13](#213-host-references)). A value built as a plain struct with those fields is a `Vec(u32)`; two generic types with the same body are interchangeable and functions instantiated for them share one copy; `Vec(u8)` and `Vec(u32)` differ because their bodies differ, and the error says so with the names:
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -4139,7 +4527,7 @@ let (ptr:, len:) = slice         // by name
 
 ### 9.6 Structs and Slices in Memory
 
-Any value type can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+Any value type but a host reference ([2.13](#213-host-references)) can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
 
 | Type | Bytes in memory |
 |------|-----------------|
@@ -4381,6 +4769,8 @@ if old == -1 {
 ---
 
 ## 11. WebAssembly Reference
+
+The compiler targets engines with WebAssembly 2.0, the one engine every program targets, and writes only what a program needs of it: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with no range fill or copy no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
 
 ### 11.1 Widening Instructions (implicit)
 

@@ -2,7 +2,7 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue, ungroupedType } from './ast'
+import { argValue, ungroupedType, walkFuncBody, walkStatement } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
@@ -14,6 +14,7 @@ import {
   type PointerRT,
   type TupleRT,
   type FuncRT,
+  type HostRT,
   primitive,
   pointer,
   slice,
@@ -38,6 +39,8 @@ import {
   typeParts,
   MAX_TYPE_PARTS,
   typeRegisters,
+  hostRegisters,
+  shownApart,
   MAX_PARAM_REGISTERS,
   MAX_RESULT_REGISTERS,
   MAX_FUNCTION_REGISTERS,
@@ -60,6 +63,7 @@ import {
   isBool,
   byteSize,
   hostIn,
+  plainHostIn,
   hostRef,
   isFixedSizes,
   isValueArray,
@@ -90,9 +94,12 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   // `alias`: a comptime function parameter inside an instance, which stands
-  // for the function of that name
-  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string }
-  | { kind: 'global'; type: ResolvedType }
+  // for the function of that name. `host`: imported from the host, whose
+  // results come in from outside the module.
+  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true }
+  // `fromHost`: imported from the host, which gives its value once: an
+  // immutable wasm global, read-only here
+  | { kind: 'global'; type: ResolvedType; fromHost?: true }
   // `valueParam`: a comptime value parameter's name inside an instance (see
   // bindComptimeValues)
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue; valueParam?: true }
@@ -403,13 +410,17 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 
 // A place in a module that adds `n` to one of the counts its wasm module is
 // held to (moduleSizeUses), with what to say of it
-type ModuleSizeUse = { at: number; n: number; shown: string | null }
+type ModuleSizeUse = { at: number; n: number; shown: string | null; host?: number }
 
 // The wasm module of a program has at most 1000000 globals, 100000 imports
 // and 100000 exports (MAX_MODULE_GLOBALS ..., the limits of the WebAssembly
 // JS API). Going over is
 // one error for each, where the count goes over, in the order the modules
 // were checked.
+// The advice where host references take a count over its limit: they have no
+// memory to go to.
+const HOLD_FEWER = 'a host reference is held only in registers, never in memory: hold fewer at once'
+
 function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
   const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
   const fix = 'share a large value through memory, behind a pointer'
@@ -420,10 +431,14 @@ function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Modu
   ] as const
   for (const limit of limits) {
     let total = 0
+    let host = 0
     for (const { ctx, use } of counted.flatMap(({ ctx, uses }) => [...uses[limit.of]].sort((a, b) => a.at - b.at).map((use) => ({ ctx, use })))) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      host = Math.min(host + (use.host ?? 0), Number.MAX_SAFE_INTEGER)
       if (total <= limit.most) continue
-      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
+      // What host references alone take over the limit cannot go to memory.
+      const fix = total - host <= limit.most ? HOLD_FEWER : limit.fix
+      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${fix}`)
       break
     }
   }
@@ -1085,17 +1100,17 @@ class CheckContext {
   // not in a struct or an array that is. A type written before the types of
   // its module are all declared may name one still to come (*Holder, with
   // Holder below), so it is looked at once they are.
-  private hostChecks: { type: ResolvedType; at: number; doing: string }[] | null = []
+  private hostChecks: { type: ResolvedType; at: number; doing: string; applying: CheckContext['applyStack'][number] | undefined }[] | null = []
 
   private neverInMemory(type: ResolvedType, at: number, doing: string): void {
     if (this.hostChecks) {
-      this.hostChecks.push({ type, at, doing })
+      this.hostChecks.push({ type, at, doing, applying: this.applyStack.at(-1) })
       return
     }
     const host = hostIn(type)
     if (!host) return
     const shown = typeToString(type)
-    const holds = shown === host.name ? '' : `it holds ${host.name}, and `
+    const holds = shown === typeToString(host) ? '' : `it holds ${typeToString(host)}, and `
     this.error(at, `cannot ${doing} ${shown}: ${holds}a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global)`)
   }
 
@@ -1103,11 +1118,21 @@ class CheckContext {
   private typesDeclared(): void {
     const waiting = this.hostChecks ?? []
     this.hostChecks = null
-    for (const check of waiting) this.neverInMemory(check.type, check.at, check.doing)
+    for (const check of waiting) {
+      const stack = this.applyStack
+      const error = this.applyError
+      this.applyStack = check.applying ? [check.applying] : []
+      try {
+        this.neverInMemory(check.type, check.at, check.doing)
+      } finally {
+        this.applyStack = stack
+        this.applyError = error
+      }
+    }
   }
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
-    this.neverInMemory(serializationType.element, expr.span.start, 'lay out in memory')
+    this.neverInMemory(serializationType.element, expr.span.start, 'lay out')
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
     this.pendingLiterals.push({ id, expr })
   }
@@ -1386,7 +1411,8 @@ class CheckContext {
             this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest, `${decl.module}:${item.name}`)
           } else {
             const sig = this.resolveSignature(item.item.signature)
-            this.declareFunc(item.item, name, { kind: 'func', type: sig, inline: false }, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
+            const sym: Symbol = isSource ? { kind: 'func', type: sig, inline: false } : { kind: 'func', type: sig, inline: false, host: true }
+            this.declareFunc(item.item, name, sym, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
           }
           break
         }
@@ -1416,7 +1442,7 @@ class CheckContext {
             this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type: exported.type })
           } else {
             const type = this.resolveHeld(item.item.type)
-            this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type })
+            this.moduleScope.symbols.set(item.item.ident, isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true })
           }
           break
         }
@@ -1717,8 +1743,10 @@ class CheckContext {
     this.declaringType = true
     let resolved: ResolvedType
     try {
-      // `type Canvas = host` is a type of its own, named by its declaration.
-      resolved = decl.type.kind === 'HostType' ? hostRef(name) : this.resolveType(decl.type)
+      // `type Canvas = host` is a type of its own, named by its declaration,
+      // and so is `type Canvas = (host)`: parentheses around a type only
+      // group it (2.7).
+      resolved = ungroupedType(decl.type).kind === 'HostType' ? hostRef(name) : this.resolveType(decl.type)
     } finally {
       this.declaringType = false
     }
@@ -1897,7 +1925,10 @@ class CheckContext {
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
-    const inferredType = this.inferExpr(decl.value)
+    // With a declared type the value is checked against it below: an array
+    // literal's elements are not settled on a type of their own here.
+    const inferredType = decl.type ? this.inferExprInner(decl.value, true) : this.inferExpr(decl.value)
+    if (decl.type) this.exprTypes.set(decl.value, inferredType)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
     // Use span-based key for data inside test blocks to avoid name collisions
@@ -2628,8 +2659,12 @@ class CheckContext {
       type = primitive('i32')
     }
 
+    // A global's value is a constant, and no constant is a plain host
+    // reference: a global that holds one is imported from the host.
+    const missing = decl.type && !decl.value ? noDefault(type) : null
+    if (missing) this.error(decl.span.start, `global '${name}' needs a value: ${missing}, ${noConstant(type)}`)
     if (decl.value && !this.isConstantInitializer(decl.value)) {
-      this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
+      this.error(decl.value.span.start, `global initializer must be a compile-time constant${noDefault(type) ? `, ${noConstant(type)}` : ''}`)
     }
     const written = decl.type
     const held = type
@@ -2773,6 +2808,7 @@ class CheckContext {
     // A test of statements is a function of its own (nested tests and the
     // functions it declares are theirs).
     const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
+    this.seenInItsBlock(stmts)
     this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
     this.variables = prevVariables
   }
@@ -2936,6 +2972,7 @@ class CheckContext {
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
     this.settleLiterals()
+    this.seenInItsBlock(decl.body)
     const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
     this.checkSize(`function '${name ?? 'anonymous'}'`, decl.span, decl.body.kind === 'Block' ? decl.body.stmts : decl.body.expr)
     this.variables = prevVariables
@@ -2971,6 +3008,10 @@ class CheckContext {
         if (param?.kind === 'param' && !typeEquals(unwrap(param.type), unwrap(resolvedType))) {
           this.error(field.span.start, `result '${field.ident}' is the parameter '${field.ident}', so it has its type: ${typeToString(param.type)}, not ${typeToString(resolvedType)}`)
         }
+        // A named result starts with a default, which a plain host
+        // reference has none of.
+        const missing = kind === 'return' && param?.kind !== 'param' ? noDefault(resolvedType) : null
+        if (missing) this.error(field.span.start, `result '${field.ident}' cannot start with a default: ${missing}; return the value instead`)
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
@@ -3078,6 +3119,15 @@ class CheckContext {
           while (written.kind === 'MemberExpr' && written.member.kind === 'field') written = written.object
           this.writingTo = written.kind === 'IndexExpr' ? written : null
           targetType = this.inferExpr(stmt.target)
+          // A global the host gives is read-only, and so is each part of it
+          // held in registers (a field, an element).
+          const imported = this.hostGlobalWritten(stmt.target)
+          if (imported) {
+            this.error(stmt.target.span.start, `cannot assign to '${imported}': ${READ_ONLY_IMPORT}`)
+            this.writingTo = null
+            this.inferExpr(stmt.value)
+            break
+          }
         }
         // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
         // so there is no place behind it to store to. The place is p.u32[0].
@@ -3137,8 +3187,14 @@ class CheckContext {
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
           elemType = this.rowOf(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
-          this.error(stmt.iterable.span.start,
-            `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+          // An array held in registers, in a variable or written out where it
+          // is looped over; its variable is of its element type all the same,
+          // so the body says nothing more of it.
+          const element = iterableType.kind === 'array' || iterableType.kind === 'comptime_array' ? iterableType.element : null
+          this.error(stmt.iterable.span.start, element && hostIn(element)
+            ? `cannot iterate over ${typeToString(iterableType)}: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index`
+            : `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+          elemType = element && hostIn(element) ? element : RECOVERY
         } else if (!isInteger(iterableType) || (byteSize(iterableType) ?? 8) > 4) {
           // The loop variable is a u32 compared with the count.
           this.error(stmt.iterable.span.start, `a loop count must be an integer of at most 32 bits, not ${typeToString(iterableType)}`)
@@ -3291,6 +3347,12 @@ class CheckContext {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
     }
+    // A variable of a plain host type gets its value where it is declared.
+    const missing = stmt.type && !stmt.value ? noDefault(type) : null
+    if (missing) {
+      const named = stmt.pattern.kind === 'IdentPattern' ? `'${stmt.pattern.name}'` : 'this let'
+      this.error(stmt.span.start, `${named} needs a value where it is declared: ${missing}`)
+    }
     // The variable is held by value: said where its type is written, or else
     // at the variable
     const written = stmt.type
@@ -3299,6 +3361,25 @@ class CheckContext {
 
     // Add bindings from pattern and record types
     this.bindPattern(stmt.pattern, type)
+  }
+
+  // The global imported from the host that an assignment's target is, or a
+  // part of held in registers (a field, an element of a fixed array), by
+  // name; null for any other target. What a pointer in it points to is
+  // memory, which is written as any memory is.
+  private hostGlobalWritten(target: AST.Expr): string | null {
+    let at = ungrouped(target)
+    while ((at.kind === 'MemberExpr' && at.member.kind === 'field') || at.kind === 'IndexExpr') {
+      const object = at.object
+      const held = this.exprTypes.get(object)
+      if (!held) return null
+      const u = unwrap(held)
+      if (u.kind === 'pointer' || u.kind === 'slice' || (u.kind === 'array' && !isValueArray(u))) return null
+      at = ungrouped(object)
+    }
+    if (at.kind !== 'IdentExpr') return null
+    const sym = this.lookup(at.name)
+    return sym?.kind === 'global' && sym.fromHost ? at.name : null
   }
 
   checkSetStmt(stmt: AST.SetStmt): void {
@@ -3372,6 +3453,8 @@ class CheckContext {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
         } else if (!isVariable(sym)) {
           this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': ${notAVariable(sym)}`)
+        } else if (sym.kind === 'global' && sym.fromHost) {
+          this.error(pattern.span.start, `cannot set '${pattern.name}': ${READ_ONLY_IMPORT}`)
         }
         // The variable set is used here, as an assignment's target is
         this.recordReference(pattern.name, pattern.span.start)
@@ -3400,6 +3483,8 @@ class CheckContext {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             } else if (!isVariable(sym)) {
               this.error(pattern.span.start, `cannot set '${declaredName(varName)}': ${notAVariable(sym)}`)
+            } else if (sym.kind === 'global' && sym.fromHost) {
+              this.error(pattern.span.start, `cannot set '${varName}': ${READ_ONLY_IMPORT}`)
             }
             this.recordReference(varName, namedPartAt(element))
             // As in a let: a part names a field the value has, or nothing
@@ -3432,6 +3517,51 @@ class CheckContext {
     let scope = this.currentScope
     while (scope.bindings && scope.parent) scope = scope.parent
     return scope
+  }
+
+  // Where each variable a let declares is declared
+  private letAt = new WeakMap<Symbol, number>()
+
+  // A let is seen to the end of its function, also after the block it is in
+  // has ended (3.3). A variable of a type that has no default (noDefault: it
+  // holds a plain host reference, and so will a plain function value) gets
+  // its value where it is declared, so after a block that may not have run
+  // (a branch, a loop's body, a match arm) it may have none. Such a variable
+  // is seen in the block it is declared in alone. Checked once the body is,
+  // from the variable each name was read as.
+  private seenInItsBlock(body: AST.FuncBody | readonly AST.Statement[]): void {
+    const blocks: AST.Block[] = []
+    const reads: AST.IdentExpr[] = []
+    const visitor: AST.ASTVisitor = {
+      visitBlock: (block) => {
+        blocks.push(block)
+      },
+      visitIdentExpr: (read) => {
+        reads.push(read)
+      },
+    }
+    if ('kind' in body) walkFuncBody(body, visitor)
+    else for (const stmt of body) walkStatement(stmt, visitor)
+    // The body itself always runs.
+    const inner = blocks.filter((block) => block !== body)
+    if (inner.length === 0) return
+    const innermost = (at: number): AST.Block | null => {
+      let found: AST.Block | null = null
+      for (const block of inner) {
+        if (at < block.span.start || at >= block.span.end) continue
+        if (!found || block.span.start >= found.span.start) found = block
+      }
+      return found
+    }
+    for (const read of reads) {
+      const sym = this.readAs.get(read)
+      const at = sym && this.letAt.get(sym)
+      if (sym?.kind !== 'local' || at === undefined) continue
+      const why = noDefault(sym.type)
+      const block = why && innermost(at)
+      if (!block || (read.span.start >= block.span.start && read.span.start < block.span.end)) continue
+      this.error(read.span.start, `'${read.name}' is seen only in the block it is declared in: that block may not have run here, and ${why}; declare it before the block, with its value`)
+    }
   }
 
   // Declares a variable that a `for`, an `if let` or a match arm binds, in
@@ -3477,6 +3607,7 @@ class CheckContext {
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
         this.letScope().symbols.set(pattern.name, sym)
+        this.letAt.set(sym, pattern.span.start)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
         this.noteVariable(pattern.span.start, pattern.name, type)
@@ -3541,6 +3672,7 @@ class CheckContext {
     const sym: Symbol = { kind: 'local', type }
     this.letScope().symbols.set(varName, sym)
     const at = namedPartAt(element)
+    this.letAt.set(sym, at)
     this.types.set(typeKey(at, 'Binding'), type)
     this.recordDefinition(varName, at, sym)
     this.noteVariable(at, varName, type)
@@ -3929,7 +4061,36 @@ class CheckContext {
       case 'HostType':
         this.error(type.span.start, `'host' declares a host reference type: write 'type Canvas = host' and use Canvas`)
         return RECOVERY
+
+      case 'OptionalType': {
+        // ?Canvas is the host type the name stands for, as one that may be
+        // null. A name declared further down is known by its declaration.
+        // ?P for a name of a pointer or a slice is that pointer or slice made
+        // optional, as ?*T and ?[]T are where they are written, and so is ?T
+        // for a type parameter given one.
+        const inner = this.resolveType(type.type)
+        if (inner === RECOVERY) return RECOVERY
+        const u = unwrap(inner)
+        const host = u.kind === 'host' ? u : this.hostDeclared(type.type)
+        if (host) return hostRef(host.name, true)
+        if (u.kind === 'pointer' || u.kind === 'slice') return optionalOf(inner)
+        const shown = u.kind === 'forward_ref' ? typeText(type.type) : typeToString(inner)
+        this.error(type.span.start, `cannot make ${shown} optional: only a pointer, a slice or a host reference has a none`)
+        return RECOVERY
+      }
     }
+  }
+
+  // The host type a type as written names, through the module's type
+  // declarations as written, or null: what a name declared further down
+  // stands for, before it is resolved.
+  private hostDeclared(type: AST.Type, seen = new Set<string>()): HostRT | null {
+    const t = ungroupedType(type)
+    if (t.kind !== 'TypeRef' || seen.has(t.name)) return null
+    seen.add(t.name)
+    const body = this.typeBodies.get(t.name)
+    if (!body) return null
+    return ungroupedType(body).kind === 'HostType' ? hostRef(t.name) : this.hostDeclared(body, seen)
   }
 
   // The number a length or a bound is written as: any compile-time constant,
@@ -4054,19 +4215,21 @@ class CheckContext {
   // parameter or the result that goes over.
   private checkSignatureSize(input: AST.Type, params: ResolvedField[], output: AST.Type, returns: ResolvedField[]): void {
     const memo = new Map<ResolvedType, number>()
-    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number) => string) => {
+    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number, fix: string | null) => string) => {
       const counts = fields.map((f) => (f.type === RECOVERY ? 0 : typeRegisters(f.type, memo)))
       const total = counts.reduce((a, b) => Math.min(a + b, Number.MAX_SAFE_INTEGER), 0)
       if (total <= limit) return
+      const host = fields.reduce((a, f) => Math.min(a + (f.type === RECOVERY ? 0 : hostRegisters(f.type)), Number.MAX_SAFE_INTEGER), 0)
       const at = written.kind === 'CompositeType' && written.fields.length === fields.length ? written.fields : null
       let index = 0
       for (let sum = counts[0]; sum <= limit; sum += counts[index]) index++
-      this.error(at ? at[index].span.start : written.span.start, message(total))
+      // What host references alone take over the limit has no pointer to go behind.
+      this.error(at ? at[index].span.start : written.span.start, message(total, total - host <= limit ? HOLD_FEWER : null))
     }
-    over(input, params, MAX_PARAM_REGISTERS, (n) =>
-      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer`)
-    over(output, returns, MAX_RESULT_REGISTERS, (n) =>
-      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
+    over(input, params, MAX_PARAM_REGISTERS, (n, fix) =>
+      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — ${fix ?? 'pass a large value by pointer'}`)
+    over(output, returns, MAX_RESULT_REGISTERS, (n, fix) =>
+      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — ${fix ?? 'give a large value back through a pointer'}`)
   }
 
   // Convert a Type to a list of fields (for function params/returns)
@@ -4132,7 +4295,7 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const held = (at: number, name: string, type: ResolvedType | undefined): ModuleSizeUse => {
       const n = type ? typeRegisters(type, memo) : 1
-      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null }
+      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null, host: type ? hostRegisters(type) : 0 }
     }
     for (const decl of module.decls) {
       const item = decl.kind === 'ExportDecl' ? decl.item : decl
@@ -4194,13 +4357,14 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
     // What adds to the count, where, and what to say of it if it goes over there
-    type Use = { at: number; n: number; shown: () => string | null }
+    // `host`: of those, the registers of host references, which no memory holds
+    type Use = { at: number; n: number; shown: () => string | null; host?: number }
     const uses: Use[] = []
     // A signature over its own limits has its error (checkSignatureSize).
     const signature = { param: 0, return: 0 }
     for (const [at, { name, type, of }] of this.variables ?? []) {
       const n = registers(type)
-      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null) })
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type) })
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
@@ -4214,14 +4378,15 @@ class CheckContext {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
       const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
-      uses.push({ at: site, n: own, shown })
+      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0 })
     }
     // A block's value, which a wasm block gives back
     const blockValue = (expr: AST.Expr, what: string) => {
       const type = this.exprTypes.get(expr)
       const n = registers(type)
       if (type && n > MAX_RESULT_REGISTERS && clean) {
-        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — let it give a pointer to the value instead`)
+        const fix = n - hostRegisters(type) <= MAX_RESULT_REGISTERS ? HOLD_FEWER : 'let it give a pointer to the value instead'
+        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — ${fix}`)
       }
     }
     // Where a value is stored or read in part, the place it names is not
@@ -4462,12 +4627,16 @@ class CheckContext {
     if (hasErrors() || signature.param > MAX_PARAM_REGISTERS || signature.return > MAX_RESULT_REGISTERS) return
     uses.sort((a, b) => a.at - b.at)
     let total = 0
+    let host = 0
     for (const use of uses) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      host = Math.min(host + (use.host ?? 0), Number.MAX_SAFE_INTEGER)
       if (total <= MAX_FUNCTION_REGISTERS) continue
       const shown = use.shown()
       const here = shown ? ` (here ${shown})` : ''
-      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)`)
+      const fix = total - host <= MAX_FUNCTION_REGISTERS ? HOLD_FEWER
+        : 'keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)'
+      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — ${fix}`)
       return
     }
   }
@@ -6485,14 +6654,28 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
-    // A host reference may be null, written 0: it is compared with 0, and
-    // only for equality, as an optional is, and with nothing else.
+    // An optional host reference may be none, written 0: it is compared
+    // with 0, and only for equality, as an optional pointer is, and with
+    // nothing else. A plain one is never null.
     const host = (type: ResolvedType) => unwrap(type).kind === 'host'
     const isZero = (type: ResolvedType) => {
       const t = unwrap(type)
       return t.kind === 'comptime_int' && t.value === 0n
     }
-    if (((host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))) && (expr.op === '==' || expr.op === '!=')) return
+    // A constant met by an optional one asks the null question, and is
+    // answered only for the literal 0 (0 + 0 and 1 - 1 are no none).
+    const constant = (type: ResolvedType) => unwrap(type).kind === 'comptime_int'
+    const optional = (type: ResolvedType) => host(type) && !!(unwrap(type) as HostRT).optional
+    const asked = (optional(leftType) && constant(rightType)) || (constant(leftType) && optional(rightType))
+      || (host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))
+    if (asked && (expr.op === '==' || expr.op === '!=')) {
+      const ref = unwrap(host(leftType) ? leftType : rightType) as HostRT
+      const zero = host(leftType) ? expr.right : expr.left
+      const said = `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}`
+      if (!ref.optional) this.error(expr.span.start, `${said}: ${neverNull(ref)}`)
+      else if (!this.writtenZero(zero)) this.error(expr.span.start, `${said}: ${noneIsWritten(ref)}`)
+      return
+    }
     // An optional slice is none where its pointer is 0: it is compared with
     // 0, and only for equality, as an optional pointer is.
     const optionalSlice = (type: ResolvedType) => {
@@ -6541,21 +6724,63 @@ class CheckContext {
     return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
   }
 
+  // Whether a constant is none as it is written: the literal 0 (-0 is one,
+  // written with its sign), also in parentheses, or as each value of an if or
+  // a match. Nothing computed is (0 + 0, -(0), "".len), whatever its value.
+  // A def's name is its value written there, and a value parameter's is the
+  // number its call gave (8.7), before this is asked: `def z = 0` and a
+  // parameter given 0 are the literal 0 here, `def z = 0 + 0` is 0 + 0.
+  private writtenZero(expr: AST.Expr): boolean {
+    const e = ungrouped(expr)
+    switch (e.kind) {
+      case 'LiteralExpr':
+        return e.value.kind === 'int' && e.value.value === 0n
+      case 'IfExpr': {
+        if (e.pattern || !e.else_) return false
+        const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
+        return bodies.every((body) => bodyExits(body) || this.branchZero(body))
+      }
+      case 'MatchExpr':
+        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body))
+      default:
+        return false
+    }
+  }
+
+  private branchZero(body: AST.FuncBody | AST.Expr): boolean {
+    const value = bodyValue(body)
+    return value !== null && this.writtenZero(value)
+  }
+
   // What is wrong with a cast, if anything. A function's name cast to a
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
     // A host reference is no number and no address: nothing converts to or
-    // from one, and one host type is not another.
-    const host = hostIn(from) ?? hostIn(to)
-    const nullRef = unwrap(to).kind === 'host' && unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
-    if (host && !typeEquals(from, to) && !nullRef) {
-      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${host.name} is a host reference, which is no number and no address`
+    // from one, and one host type is not another. 0 is an optional one's
+    // none, and a plain one widens to its optional.
+    const fromHost = unwrap(from)
+    const toHost = unwrap(to)
+    const host = fromHost.kind === 'host' ? fromHost : toHost.kind === 'host' ? toHost : null
+    const fits = toHost.kind === 'host' && typeAssignable(to, from)
+    if (host && toHost.kind === 'host' && toHost.optional && unwrap(from).kind === 'comptime_int' && !this.writtenZero(operand)) {
+      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${noneIsWritten(toHost)}`
+    }
+    if (host && !typeEquals(from, to) && !fits) {
+      const zero = unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
+      if (zero && toHost.kind === 'host') return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${neverNull(toHost)}`
+      const none = unresolvedOptional(from, to)
+      if (none) return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${none}`
+      const [shownFrom, shownTo] = shownApart(from, to)
+      if (fromHost.kind === 'host' && toHost.kind === 'host') return `cannot cast ${shownFrom} to ${shownTo}: they are two host types, and neither is the other`
+      return `cannot cast ${shownFrom} to ${shownTo}: ${host.name} is a host reference, which is no number and no address`
     }
     const named = this.functionNamed(operand)
     if (named && unwrap(to).kind !== 'func') {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
     }
-    return castProblem(from, to)
+    const problem = castProblem(from, to)
+    const none = problem && !problem.includes(': ') ? unresolvedOptional(from, to) : null
+    return none ? `${problem}: ${none}` : problem
   }
 
   private checkCondition(expr: AST.Expr): void {
@@ -6578,7 +6803,7 @@ class CheckContext {
   // implicit truthiness.
   private requireBool(expr: AST.Expr, type: ResolvedType, what: string): void {
     if (type !== RECOVERY && !isBool(type)) {
-      this.error(expr.span.start, `${what} must be bool, not ${typeToString(type)}`)
+      this.error(expr.span.start, `${what} must be bool, not ${typeToString(type)}${nullQuestion(type)}`)
     }
   }
 
@@ -6598,8 +6823,19 @@ class CheckContext {
     const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr'
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
+    // None of an optional host reference is written 0, the literal: nothing
+    // computed is one, whatever its value.
+    if (to.kind === 'host' && to.optional && from.kind === 'comptime_int' && !this.writtenZero(expr)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}: ${noneIsWritten(to)}`)
+      return
+    }
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${reordered(from, to, typeToString(expected))}`,
+      // 0 is none of a plain host reference, which is never null.
+      const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
+        : unresolvedOptional(actual, expected) ? `: ${unresolvedOptional(actual, expected)}`
+        : reordered(from, to, typeToString(expected))
+      const [shownActual, shownExpected] = shownApart(actual, expected)
+      this.error(expr.span.start, `${prefix}cannot assign ${shownActual} to ${shownExpected}${why}`,
         this.rowNote(expr.span.start, actual, expected))
       return
     }
@@ -6610,6 +6846,10 @@ class CheckContext {
       // A constant address is a 32-bit value, whatever it's computed from.
       this.coerce(expr, actual, addressType(from), prefix)
       this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'host' && from.kind === 'comptime_int') {
+      // 0 for an optional host reference, none: the type goes down to the
+      // literal, through parentheses and the branches of an if or a match.
+      this.typeConstant(expr, expected, actual)
     } else if (to.kind === 'slice' && from.kind === 'comptime_int') {
       // 0 for an optional slice: the address 0, and a length of 0.
       this.coerce(expr, actual, addressType(from), prefix)
@@ -6647,7 +6887,13 @@ class CheckContext {
         const inner = ungrouped(element).kind
         if ((structs && inner === 'TupleExpr') || (rows && (inner === 'ArrayExpr' || inner === 'RepeatExpr'))) {
           this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
-        } else if (type) this.coerce(element, type, elementType, prefix)
+        } else if (type) {
+          // An element already converted to this type, a 0 met by an
+          // optional slice among the others of an untyped literal
+          // (settleMixed), is that already.
+          const done = this.coercions.get(element)
+          if (!done || !typeEquals(done, elementType)) this.coerce(element, type, elementType, prefix)
+        }
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
@@ -6812,6 +7058,7 @@ class CheckContext {
       const addr = this.addressOfIndex(expr.operand)
       if (addr) return addr
     }
+    const said = this.errorsReported
     const operandType = this.inferExpr(expr.operand)
     const operand = unwrap(operandType)
 
@@ -6859,6 +7106,26 @@ class CheckContext {
           const dataId = litExpr.span.start
           if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') {
             (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
+          }
+          // An array literal with no type written is laid out as the type a
+          // let of it holds ([a, b] of i32s is a [2]i32, ["ab", "cde"] two
+          // slices), as it is where a pointer to that type is wanted: its
+          // elements meet that type, and the ones known only when the
+          // program runs are stored into its cell.
+          // (One that is wrong already, or holds a host reference, is
+          // refused as it is.)
+          const settled = this.errorsReported === said && !hostIn(operandType)
+          if (settled && (litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') && operandType.kind === 'comptime_array') {
+            const cell = this.concretize(operandType)
+            if (unwrap(cell).kind === 'array') {
+              const wanted = pointer(cell, false, true)
+              this.mutLiterals++
+              try {
+                return this.checkExpr(expr, wanted)
+              } finally {
+                this.mutLiterals--
+              }
+            }
           }
           const arrType: ArrayRT = { kind: 'array', element: operandType, sizes: [1] }
           // &literal is a writable cell of its own: never share its bytes.
@@ -6967,6 +7234,16 @@ class CheckContext {
         // Array type built-in fields: .ptr, .len, .wid
         if (unwrappedType.kind === 'array') {
           if (expr.member.name === 'ptr') {
+            // A fixed array held by value is its elements, in registers or
+            // read out of memory: there is no address to give. One that lies
+            // in memory has the address of the place, given with &.
+            if (isValueArray(unwrappedType)) {
+              const text = exprText(expr.object)
+              const place = text && this.placeAddress(expr.object, objType) ? ` (where it lies in memory, (&${text}).ptr is its address)` : ''
+              this.error(expr.span.start, `cannot take .ptr of ${typeToString(objType)}: a fixed array held by value has no address${place}`)
+              return RECOVERY
+            }
+            this.neverInMemory(unwrappedType.element, expr.span.start, 'point to')
             return manyPointer(unwrappedType.element)
           }
           if (expr.member.name === 'len') {
@@ -6980,6 +7257,12 @@ class CheckContext {
             return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
           }
           if (expr.member.name === 'wid') {
+            // The width of an element is its size in memory, which a host
+            // reference has none of (as sizeof).
+            if (hostIn(unwrappedType.element)) {
+              this.neverInMemory(unwrappedType.element, expr.span.start, 'take the width of')
+              return primitive('u32')
+            }
             const ws = byteSize(unwrappedType.element)
             if (ws !== null) return comptimeInt(BigInt(ws))
             return primitive('u32')
@@ -7158,8 +7441,13 @@ class CheckContext {
         proven = true // already reported; don't add a second error
       }
     } else {
-      this.error(expr.span.start, `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
-      return slice(primitive('u8'))
+      // An array of host references has no range: it is held in registers,
+      // and none is ever in memory for a slice to reach.
+      const element = objType.kind === 'array' || objType.kind === 'comptime_array' ? objType.element : null
+      this.error(expr.span.start, element && hostIn(element)
+        ? `cannot take a range of ${typeToString(objType)}: an array held in registers has no range, and a host reference is never in memory: reach each element by a constant index`
+        : `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
+      return RECOVERY
     }
     return slice(elem, mutable, !proven)
   }
@@ -7517,7 +7805,25 @@ class CheckContext {
         : unproven(elem, `runtime index on ${shown}`)
     }
 
+    // An array literal indexed where it is written ([a, b][1]) is its
+    // elements, held in registers as a value array's are: one is picked by
+    // a constant index, and nothing is read from memory.
     if (objType.kind === 'comptime_array') {
+      // Its elements are written out as the type they settle on, as for a
+      // let: ["ab", "cde"] holds two slices, not the pointers it is made of.
+      this.settleLiteral(expr.object, this.concretize(objType))
+      const idx = this.evalComptimeExpr(expr.index)
+      if (idx === null || idx.kind !== 'int') {
+        this.error(expr.index.span.start, hostIn(objType.element)
+          ? `dynamic index on an array literal of ${typeToString(objType.element)} — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory`
+          : `dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time`)
+      } else if (idx.value < 0n || idx.value >= BigInt(objType.count)) {
+        this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${objType.count}]${typeToString(objType.element)}`)
+      } else if (expr.index.kind !== 'LiteralExpr') {
+        // Codegen picks the element by the index's value, which only a
+        // literal shows: [x, y][0 + 1] and [x, y][(1)] have theirs recorded.
+        this.constants.set(expr.index, idx)
+      }
       return objType.element
     }
 
@@ -7538,7 +7844,11 @@ class CheckContext {
         const n = objType.sizes[0]
         const idx = this.evalComptimeExpr(expr.index)
         if (idx === null || idx.kind !== 'int') {
-          this.error(expr.index.span.start, `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
+          // A host reference is never in memory: no pointer or slice reaches
+          // one, so the only way to an element is a constant index.
+          this.error(expr.index.span.start, hostIn(objType.element)
+            ? `dynamic index on value type [${n}]${typeToString(objType.element)} — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory`
+            : `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
         } else if (idx.value < 0n || idx.value >= BigInt(n)) {
           this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${n}]${typeToString(objType.element)}`)
         } else if (expr.index.kind !== 'LiteralExpr') {
@@ -7639,7 +7949,7 @@ class CheckContext {
       // Primitive element: leftType is already the unwrapped element type
       elemType = leftType
     } else {
-      this.error(expr.span.start, '?? requires an optional expression or bounds-checked index')
+      this.error(expr.span.start, `?? requires an optional expression or bounds-checked index${nullQuestion(leftType)}`)
       elemType = leftType
     }
 
@@ -7691,10 +8001,25 @@ class CheckContext {
     const elementType = typedByContext ? this.unifyTypes(elemTypes)
       : numbers ? this.unifyElements(expr.elements, elemTypes)
       : tuples ? this.settleTuples(expr.elements, elemTypes)
-      : this.unifyTypes(elemTypes)
+      : this.settleMixed(expr.elements, elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(elementType, expr.elements.length)
+  }
+
+  // Elements of more than one kind: what unifyTypes settles on when each
+  // value among them is of that type (literal rows are checked where the
+  // array gets its type), else the one type they all widen to, as for
+  // numbers. A constant among them meets the others' type: [0, c] is a
+  // [2]?Canvas for c: ?Canvas, and [0, s] no [2]i32 holding a slice.
+  private settleMixed(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    const type = this.unifyTypes(types)
+    const literal = (t: ResolvedType) => t.kind === 'comptime_array' || t.kind === 'comptime_list'
+    if (!types.some((t) => isComptimeNumber(unwrap(t))) && types.every((t) => literal(unwrap(t)) || typeAssignable(type, t))) return type
+    // Elements with no one type are that one error, and nothing more is
+    // said of them.
+    const settled = this.unifyElements(elements, types)
+    return this.commonType(types).odd ? RECOVERY : settled
   }
 
   // The element type of an array literal of numbers with no declared type:
@@ -7906,7 +8231,7 @@ class CheckContext {
       // Primitive element: condType is already the unwrapped element type
       elemType = condType
     } else {
-      this.error(expr.span.start, 'if let requires an optional expression or bounds-checked index')
+      this.error(expr.span.start, `if let requires an optional expression or bounds-checked index${nullQuestion(condType)}`)
       elemType = condType
     }
     const unwrapped = elemType
@@ -8013,7 +8338,7 @@ class CheckContext {
         if (!type || !comparable || !typeAssignable(subject, type)) {
           const shown = type ? typeToString(type) : 'a string'
           const hint = value.kind === 'string' && isInteger(subject) ? ` — ${notACharacter(value.bytes)}` : ''
-          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}`)
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}${nullQuestion(subjectType)}`)
         }
       }
     }
@@ -10053,6 +10378,8 @@ function typeText(type: AST.Type): string {
       return 'type'
     case 'HostType':
       return 'host'
+    case 'OptionalType':
+      return `?${typeText(type.type)}`
   }
 }
 
@@ -10325,6 +10652,8 @@ function mentionsUnbound(
   switch (type.kind) {
     case 'TypeRef':
       return typeParams.includes(type.name) && !bound.has(type.name)
+    case 'OptionalType':
+      return inner(type.type)
     case 'PointerType':
       return inner(type.pointee)
     case 'IndexedType':
@@ -10397,6 +10726,13 @@ function matchType(
       // `value`: nothing but tuples lies between the argument and this part
       // of it, so it is a value the argument holds, not memory it points to.
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)
+      return
+    case 'OptionalType':
+      // ?T laid over a host reference, a pointer or a slice, optional or not,
+      // gives T the plain one. Over anything else it gives T that type, which
+      // ?T then says has no none.
+      if (u.kind === 'host') matchType(pattern.type, hostRef(u.name), typeParams, bound, value, expand, expanding)
+      else matchType(pattern.type, isOptional(u) ? unwrapOptional(u) : actual, typeParams, bound, value, expand, expanding)
       return
     case 'PointerType':
       // A many-pointer is not a pointer to something T could be: what it
@@ -10843,7 +11179,7 @@ const NO_SUBST: Subst = () => undefined
 
 const TYPE_KINDS: ReadonlySet<string> = new Set([
   'PrimitiveType', 'PointerType', 'IndexedType', 'CompositeType', 'ComptimeIntType', 'ComptimeFloatType',
-  'TypeRef', 'TypeApply', 'TypeType', 'BoundType', 'FuncType',
+  'TypeRef', 'TypeApply', 'TypeType', 'BoundType', 'FuncType', 'HostType', 'OptionalType',
 ])
 function isTypeNode(node: AST.Type | AST.Expr | AST.ValueArg): node is AST.Type {
   return TYPE_KINDS.has(node.kind)
@@ -11020,9 +11356,66 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
   // A host reference is opaque: not even two of them are compared.
   const host = hostIn(left) ?? hostIn(right)
   if (!host) return said
-  return op === '==' || op === '!='
-    ? `${said}: ${host.name} is a host reference, which is only compared with 0, to ask whether it is null`
-    : `${said}: ${host.name} is a host reference, which has no value the module can compute with`
+  if (op !== '==' && op !== '!=') return `${said}: ${typeToString(host)} is a host reference, which has no value the module can compute with`
+  return host.optional
+    ? `${said}: ${typeToString(host)} is a host reference that may be none, which is only compared with 0, to ask whether it is`
+    : `${said}: ${host.name} is a host reference, which is not compared (one that may be none, a ?${host.name}, is compared with 0)`
+}
+
+// Why an optional pointer, slice or host reference is not its plain form:
+// it may be none, until it is resolved. Null for any other two types.
+function unresolvedOptional(from: ResolvedType, to: ResolvedType): string | null {
+  if (!isOptional(from) || isOptional(to) || !typeAssignable(to, unwrapOptional(from))) return null
+  return `it may be none — resolve it with 'if let' or '??' first`
+}
+
+// "a" or "an", as a type's name is said: an Element, a Canvas
+function article(name: string): string {
+  return /^[aeiou]/i.test(name) ? 'an' : 'a'
+}
+
+// Why a constant that is not the literal 0 is no none of an optional host
+// reference
+function noneIsWritten(host: HostRT): string {
+  return `none of a ${typeToString(host)} is written 0, the literal, and nothing computed is one`
+}
+
+// What to say where a host reference is asked a question it has no answer
+// to (a condition, ??, if let, match): whether it is null, and how that is
+// asked. Empty for any other type.
+function nullQuestion(type: ResolvedType): string {
+  const host = hostIn(type)
+  if (!host) return ''
+  const u = unwrap(type)
+  if (u.kind !== 'host') return `: ${typeToString(type)} holds ${typeToString(host)}, a host reference`
+  return u.optional
+    ? `: ${typeToString(u)} is a host reference that may be none: ask with == 0 or != 0, or resolve it with if let or ??`
+    : `: ${neverNull(u)}`
+}
+
+// Why 0, or a question of null, does not fit a plain host reference
+function neverNull(host: HostRT): string {
+  return `${article(host.name)} ${host.name} is never null (a host reference that may be null is a ?${host.name})`
+}
+
+// Why a variable of a type has no default, where it holds a plain host
+// reference, or null
+function noDefault(type: ResolvedType): string | null {
+  const host = plainHostIn(type)
+  if (!host) return null
+  const shown = typeToString(type)
+  return shown === host.name
+    ? `${article(host.name)} ${host.name} has no default (a ?${host.name} starts as none)`
+    : `${shown} holds ${host.name}, which has no default`
+}
+
+// What a global of a type with no default can be: no constant is a plain
+// host reference, so one that holds it is imported, and the module's own
+// holds an optional one.
+function noConstant(type: ResolvedType): string {
+  const host = plainHostIn(type)
+  const name = host ? host.name : typeToString(type)
+  return `and no constant is ${article(name)} ${name}: import the global from the host, or make it hold a ?${name}, which starts as none`
 }
 
 // Why an operator can't take an operand of this type, or null when it can.
@@ -11053,8 +11446,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
   // 0 is none for an optional slice, as it is for an optional pointer.
   if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
-  // And 0 is the null host reference.
-  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'host') return null
+  // And 0 is none for an optional host reference.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'host' && t.optional) return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot
@@ -11325,6 +11718,9 @@ function patternNames(pattern: AST.MatchPattern): string[] {
       return []
   }
 }
+
+// Why a global imported from the host is not assigned to
+const READ_ONLY_IMPORT = 'a global imported from the host is read-only (its value is the host\'s, given once)'
 
 // Why a name cannot be assigned to: what it is, where that is not plain
 function notAVariable(sym: Symbol): string {

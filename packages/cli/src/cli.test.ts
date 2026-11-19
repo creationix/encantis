@@ -423,3 +423,44 @@ Bun.plugin({
     expect(throws.stderr).toContain('Error: binaryen failed: Aborted(')
   }, 60_000)
 })
+
+// encantis test gives each imported global the zero of its type. A module
+// whose start function traps (a plain host global given null, against the
+// promise of its type) runs none of its tests, and says why, without
+// crashing.
+describe('encantis test and imported globals', () => {
+  async function runTests(source: string) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = join(dir, 'globals.ents')
+      await writeFile(file, source)
+      const run = Bun.spawnSync([process.execPath, CLI, 'test', file])
+      return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  test('a module that imports globals has its tests run', async () => {
+    const { exitCode, stdout } = await runTests('type Canvas = host\nimport "env" (\n  "c" global c: ?Canvas\n  "n" global n: u32\n)\ntest "zeros" {\n  assert c == 0\n  assert n == 0\n}\n')
+    expect(stdout).toContain('pass: zeros')
+    expect(exitCode).toBe(0)
+  })
+
+  // A plain host global is never null: the test host gives it a stand-in,
+  // and the module's start check passes.
+  test('a module that imports a plain host global has its tests run', async () => {
+    const { exitCode, stdout } = await runTests('type Canvas = host\nimport "env" "c" global c: Canvas\nexport func f() -> Canvas => c\nexport func add(a: i32, b: i32) -> i32 => a + b\ntest "adds" {\n  assert add(1, 2) == 3\n}\n')
+    expect(stdout).toContain('pass: adds')
+    expect(exitCode).toBe(0)
+  })
+
+  // Data larger than a memory with a fixed maximum does not fit when the
+  // module is instantiated.
+  test('a module that does not start fails its tests and says why', async () => {
+    const { exitCode, stdout, stderr } = await runTests('memory 1 1\ndata big = [1:u8; 70000]\nexport func f() -> u32 => big.len\ntest "never runs" {\n  assert true\n}\n')
+    expect(stderr).toContain('the module did not start')
+    expect(stdout).toContain('0 passed, 1 failed')
+    expect(exitCode).toBe(1)
+  })
+})

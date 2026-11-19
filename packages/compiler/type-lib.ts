@@ -33,6 +33,9 @@ export function astToResolved(ast: AST.Type): ResolvedType {
     case 'HostType':
       throw new Error('a host type is declared (type Canvas = host), not written in place')
 
+    case 'OptionalType':
+      throw new Error(`?${ast.type.kind === 'TypeRef' ? ast.type.name : 'T'} names a host type, which cannot be resolved without context`)
+
     case 'PrimitiveType':
       // A bound written as a name or an expression needs the checker.
       if (ast.bound) throw new Error(`a range bound written as an expression cannot be resolved without context`)

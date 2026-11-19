@@ -588,6 +588,34 @@ func found(i: u32, xss: [][]i32) -> u32 {
 
 <!-- spec:end -->
 
+An array literal with no type written, of elements of more than one kind, is of the one type they all widen to, and a constant among them meets that type: `[0, p]` is a `[2]?*u8` for `p: ?*u8`, still to be resolved before it is used. Elements with no one such type are an error, not an array of the first one's type:
+
+```ents
+func a(p: ?*u8) -> ?*u8 {
+  let ps = [0, p]
+  return ps[1]
+}
+func d(s: ?[]u8) -> ?[]u8 {
+  let ss = [s, 0]
+  return ss[1]
+}
+func b(s: []u8) -> u32 {
+  let ss = [0, s]
+  return 1
+}
+func c(n: i32, p: *u8) -> u32 {
+  let xs = [p, n]
+  return 1
+}
+data names: []?[]u8 = [0, "ab", "cde"]
+data rows: []?[]i32 = [[1, 2], 0, [3]]
+```
+
+```errors
+elements have different types: int(0) and []u8
+elements have different types: i32 and *u8
+```
+
 ## Destructuring
 
 A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.
@@ -909,6 +937,83 @@ cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at
 cannot assign to .f64: it is the pointer as [*]mut f64
 cannot assign to .u16: it is the pointer as [*]mut u16
 ```
+
+A fixed array held by value has no `.ptr`, in registers or read out of memory; one that lies in memory has the address of its place:
+
+```ents
+type Row = (cells: [2]i32, n: i32)
+
+func a(x: i32, y: i32) -> u32 {
+  let v = [x, y]
+  return v.ptr as u32
+}
+func b(p: *Row) -> u32 => p.cells.ptr as u32
+func c(p: *Row) -> u32 => (&p.cells).ptr as u32
+```
+
+```errors
+cannot take .ptr of [2]i32: a fixed array held by value has no address
+cannot take .ptr of [2]i32: a fixed array held by value has no address (where it lies in memory, (&p.cells).ptr is its address)
+```
+
+An array literal indexed where it is written is its elements, held in registers: a constant index picks one, and any other is an error, as for a fixed array in a variable:
+
+```ents
+type Canvas = host
+
+func a(x: u32, y: u32) -> u32 => [x, y][1]
+func b(x: u32, y: u32, i: u32) -> u32 => [x, y][i]
+func c(i: u32) -> i32 => [10, 20, 30][i] ?? 7
+func d(c: Canvas, i: u32) -> Canvas => [c, c][i]
+func e(x: u32) -> u32 => [x, x][2]
+```
+
+```errors
+dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time
+dynamic index on an array literal — its elements are held in registers
+dynamic index on an array literal of Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
+index 2 out of bounds for [2]u32
+```
+
+A constant index is any the compiler works out, not only a literal: `(1)`, `0 + 1`, `1 - 1` or a `def`. The elements are the type the literal settles on, as they are in a `let`: strings of different lengths are slices. Laid out in memory with `&`, a literal with no type written is that type too, and is indexed at run time:
+
+<!-- spec:begin compile -->
+
+```ents
+type Canvas = host
+
+def one = 1
+
+func a(x: i32, y: i32) -> i32 => [x, y][(1)]
+func b(x: i32, y: i32) -> i32 => [x, y][0 + 1]
+func c(x: i32, y: i32) -> i32 => [x, y][1 - 1]
+func d(x: i32, y: i32) -> i32 => [x, y][one]
+func e() -> u32 => ["ab", "cde"][0 + 1].len
+func f(c: Canvas, d: Canvas) -> Canvas => [c, d][0 + 1]
+func g(x: i32, y: i32, i: u32#2) -> i32 {
+  let p = &[x, y]
+  return p[i]
+}
+func h(i: u32#3) -> i32 {
+  let p = &[10, 20, 30]
+  return p[i]
+}
+func k(i: u32#2) -> u32 => (&["ab", "cde"])[i].len
+
+test "a constant index picks an element, and a literal laid out with & is indexed at run time" {
+  assert a(7, 9) == 9
+  assert b(7, 9) == 9
+  assert c(7, 9) == 7
+  assert d(7, 9) == 9
+  assert e() == 3
+  assert g(7, 9, 0) == 7
+  assert g(7, 9, 1) == 9
+  assert h(2) == 30
+  assert k(1) == 3
+}
+```
+
+<!-- spec:end -->
 
 ## Structs in array literals
 

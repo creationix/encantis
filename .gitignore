@@ -6,3 +6,5 @@ dist/
 out/
 *.vsix
 release/
+*.orig
+*.rej
