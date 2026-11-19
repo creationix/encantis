@@ -42,6 +42,7 @@
       "name": "encantis-vscode-ext",
       "version": "0.2.1",
       "dependencies": {
+        "@encantis/cli": "workspace:*",
         "@encantis/compiler": "workspace:*",
         "binaryen": "129.0.0",
         "vscode-languageclient": "^9.0.1",

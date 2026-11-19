@@ -1,7 +1,12 @@
 .vscode/
 src/
+scripts/
 out/
 node_modules/
-*.ts
+**/*.ts
+**/*.map
 tsconfig.json
 .gitignore
+color-palette-preview.html
+icon-196.png
+*.vsix

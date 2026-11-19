@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { LanguageClient, type LanguageClientOptions } from 'vscode-languageclient/browser';
 
-import { WAT_SCHEME, WatPreviewProvider } from './watPreviewProvider';
+import { registerWatPreview } from '../watPreviewProvider';
 
 let client: LanguageClient;
 
@@ -16,93 +16,24 @@ export function activate(context: vscode.ExtensionContext): void {
   // -------------------------------------------------------------------------
 
   const serverMain = vscode.Uri.joinPath(context.extensionUri, 'dist/web/server.js');
-  
-  const worker = new Worker(serverMain.toString());
+  const worker = new Worker(serverMain.toString(true));
 
+  // Every document of the language: in a web editor files are not file:
+  // URIs (vscode-vfs: on github.dev, vscode-test-web: under test).
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'encantis' }],
-    synchronize: {},
-    initializationOptions: {},
+    documentSelector: [{ language: 'encantis' }],
   };
 
-  client = new LanguageClient(
-    'encantisLanguageServer',
-    'Encantis Language Server',
-    clientOptions,
-    worker
-  );
-
+  client = new LanguageClient('encantisLanguageServer', 'Encantis Language Server', clientOptions, worker);
   client.start();
 
   // -------------------------------------------------------------------------
-  // WAT Preview Feature
+  // WAT Preview Feature (not optimized: binaryen is for the desktop)
   // -------------------------------------------------------------------------
 
-  const watProvider = new WatPreviewProvider();
-
-  // Register content provider for 'encantis-wat' scheme
-  const providerRegistration = vscode.workspace.registerTextDocumentContentProvider(
-    WAT_SCHEME,
-    watProvider
-  );
-
-  // Command: Open WAT Preview (in new tab)
-  const openPreviewCommand = vscode.commands.registerCommand(
-    'encantis.openWatPreview',
-    () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'encantis') {
-        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-        return;
-      }
-
-      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-      vscode.workspace.openTextDocument(watUri).then(doc => {
-        vscode.window.showTextDocument(doc, { preview: false });
-      });
-    }
-  );
-
-  // Command: Open WAT Preview to Side (split view)
-  const openPreviewSideCommand = vscode.commands.registerCommand(
-    'encantis.openWatPreviewSide',
-    () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'encantis') {
-        vscode.window.showErrorMessage('Open an Encantis (.ents) file first');
-        return;
-      }
-
-      const watUri = WatPreviewProvider.encodeUri(editor.document.uri);
-      vscode.workspace.openTextDocument(watUri).then(doc => {
-        vscode.window.showTextDocument(doc, {
-          viewColumn: vscode.ViewColumn.Beside,
-          preview: false,
-          preserveFocus: true,
-        });
-      });
-    }
-  );
-
-  // Auto-refresh preview when source changes
-  const changeSubscription = vscode.workspace.onDidChangeTextDocument(e => {
-    if (e.document.languageId === 'encantis') {
-      watProvider.refresh(e.document.uri);
-    }
-  });
-
-  context.subscriptions.push(
-    watProvider,
-    providerRegistration,
-    openPreviewCommand,
-    openPreviewSideCommand,
-    changeSubscription
-  );
+  registerWatPreview(context);
 }
 
 export function deactivate(): Thenable<void> | undefined {
-  if (!client) {
-    return undefined;
-  }
-  return client.stop();
+  return client?.stop();
 }
