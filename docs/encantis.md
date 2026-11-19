@@ -31,7 +31,9 @@ The compiler's command-line tool is `encantis`:
 | `encantis fmt <file...>` | Formats source files in place; `fmt --check` only reports the files that need it |
 | `encantis ast <file>` | Prints the syntax tree as JSON |
 
-`<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
+`<file>` is the program's entry module: the files it imports are found from it ([7.1](#71-imports)). The commands `hover`, `definition`, `references`, `symbols`, `signature` and `rename` answer an editor's questions, `meta` prints what the editor is told about a file (its symbols, types, hints and warnings) as JSON, and the VS Code extension in `packages/extension` uses the same compiler for its diagnostics and hovers.
+
+Besides errors, the checker gives warnings, which never stop a build: `'f' is never used` ([3](#3-declarations)), `'max' replaces the builtin max in this module` ([10](#10-builtin-functions)), `memset length is not a compile-time constant — cannot verify bounds (buffer is 8 bytes)` ([10.3](#103-memory-builtins)), `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API` ([7.2](#what-the-host-sees)) and `imported generic types are resolved only when the program is checked` ([7.1](#source-modules)). The editor and `meta` show them; `check`, `compile`, `wasm` and `test` do not print them (a known bug).
 
 ### A First Program
 
@@ -3357,7 +3359,7 @@ cannot point to Canvas: a host reference has no bytes, so it is never in memory 
 
 ## 3. Declarations
 
-A module is a list of declarations. This chapter covers those that name a value or code: `def` (a constant), `data` (bytes laid out in memory), `let` and `global` (variables) and `func` (functions). A type is declared with `type` ([2.11](#211-type-names)) or `enum` ([2.9](#29-enum-types-algebraic-data-types)); `import`, `export` and `memory` are in [7. Modules](#7-modules); a `test` block holds code that checks the module, run by `encantis test`.
+A module is a list of declarations. This chapter covers those that name a value or code: `def` (a constant), `data` (bytes laid out in memory), `let` and `global` (variables) and `func` (functions). A type is declared with `type` ([2.11](#211-type-names)) or `enum` ([2.9](#29-enum-types-algebraic-data-types)); `import`, `export` and `memory` are in [7. Modules](#7-modules); a `test` block holds code that checks the module, run by `encantis test` ([Tests](#tests)).
 
 Where each declaration can stand:
 
@@ -3401,7 +3403,7 @@ global initializer must be a compile-time constant
 
 **Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter can ([3.4](#34-functions)).
 
-**Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build. The editor and `encantis meta` show warnings; `encantis check`, `compile` and `test` do not print them (a known bug).
+**Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build, and the command line does not print it ([Tools](#tools)).
 
 ### 3.1 Definitions (`def`)
 
@@ -3584,7 +3586,7 @@ data 'xs' is laid out at compile time: its values must be constants
 
 <!-- spec:end -->
 
-The blocks are laid out one after another from address 8 up, with no padding between them and none inside them ([9. Memory Model](#9-memory-model)): an address need not be a multiple of its type's size, which wasm loads and stores allow.
+The blocks are laid out one after another from address 8 up, with no padding between them and none inside them: an address need not be a multiple of its type's size, which wasm loads and stores allow. Where data lies in memory, and how equal constant literals share their bytes, is in [9.0](#90-data-layout).
 
 A `data` block declared in a `test` block is that test's, as a `def` there is. The name is no variable: assigning it is an error (`cannot assign to 'buf': it is not a variable`); what it points to is written through it, when it is `mut`.
 
@@ -3797,7 +3799,7 @@ A cast of an address is a constant when it keeps the address whole: to another p
 
 A function declaration is `func`, the function's name, its parameters in parentheses, `->` and its results, and its body:
 
-- **Parameters** are separated by commas: `name: Type` each. A parameter can leave its name out, `func skip(u32, n: u32)`, and then it cannot be read: it is there to match a signature. With a single unnamed parameter the parentheses can go too: `func ignore i32 -> i32 => 0`. A `comptime` parameter makes the function generic ([8. Generics](#8-generics)).
+- **Parameters** are separated by commas: `name: Type` each. A parameter can leave its name out, `func skip(u32, n: u32)`, and then it cannot be read: it is there to match a signature. With a single unnamed parameter the parentheses can go too: `func ignore i32 -> i32 => 0`. Such a parameter is left out of the compiled wasm function, so a call that passes it gives a module that does not assemble, and an exported one is exported with fewer parameters (a known bug). A `comptime` parameter makes the function generic ([8. Generics](#8-generics)).
 - **Results** follow `->`: none (leave out `->`, or write `-> ()`), one type (`-> u32`), several in parentheses (`-> (u32, u32)`), or several with names (`-> (q: u32, r: u32)`). One type in parentheses without a name is that type, so `-> (u32)` is one result, and `-> ((q: u32, r: u32))` is one result that is a struct. Name every result or none: with a mix such as `-> (a: u32, u32)` a block body that ends without `return` gives a module that does not assemble (a known bug).
 - **The body** is `=> expression` or a block of statements in braces.
 - `inline` may stand before `func` ([3.5](#35-inline-functions)), and `export` before both ([7.2](#72-exports)).
@@ -4133,7 +4135,7 @@ export func hash(k: u64) -> u32 => 1
 export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)
 ```
 
-Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function; a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
+Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function inside that test ([Declarations in a Test](#declarations-in-a-test)); a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
 
 Nothing but functions shares a name. A global, `def`, `data` or import has its name to itself in its module, and a function cannot take the name of one, nor can a function or an import declared in a `test`:
 
