@@ -1901,7 +1901,10 @@ class CheckContext {
   collectData(decl: AST.DataDecl): void {
     if (this.currentScope === this.moduleScope && this.takenByGeneric(decl.ident, decl.span.start)) return
     if (this.currentScope === this.moduleScope && this.takenByAnother(decl.ident, decl.span.start, 'value')) return
-    const inferredType = this.inferExpr(decl.value)
+    // With a declared type the value is checked against it below: an array
+    // literal's elements are not settled on a type of their own here.
+    const inferredType = decl.type ? this.inferExprInner(decl.value, true) : this.inferExpr(decl.value)
+    if (decl.type) this.exprTypes.set(decl.value, inferredType)
     const declaredType = decl.type ? this.resolveType(decl.type) : null
 
     // Use span-based key for data inside test blocks to avoid name collisions
@@ -7818,10 +7821,25 @@ class CheckContext {
     const elementType = typedByContext ? this.unifyTypes(elemTypes)
       : numbers ? this.unifyElements(expr.elements, elemTypes)
       : tuples ? this.settleTuples(expr.elements, elemTypes)
-      : this.unifyTypes(elemTypes)
+      : this.settleMixed(expr.elements, elemTypes)
 
     // Return comptime array literal - can coerce to []T, *[N]T, [N]T
     return comptimeArrayLiteral(elementType, expr.elements.length)
+  }
+
+  // Elements of more than one kind: what unifyTypes settles on when each
+  // value among them is of that type (literal rows are checked where the
+  // array gets its type), else the one type they all widen to, as for
+  // numbers. A constant among them meets the others' type: [0, c] is a
+  // [2]?Canvas for c: ?Canvas, and [0, s] no [2]i32 holding a slice.
+  private settleMixed(elements: AST.Expr[], types: ResolvedType[]): ResolvedType {
+    const type = this.unifyTypes(types)
+    const literal = (t: ResolvedType) => t.kind === 'comptime_array' || t.kind === 'comptime_list'
+    if (!types.some((t) => isComptimeNumber(unwrap(t))) && types.every((t) => literal(unwrap(t)) || typeAssignable(type, t))) return type
+    // Elements with no one type are that one error, and nothing more is
+    // said of them.
+    const settled = this.unifyElements(elements, types)
+    return this.commonType(types).odd ? RECOVERY : settled
   }
 
   // The element type of an array literal of numbers with no declared type:

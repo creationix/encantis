@@ -588,6 +588,30 @@ func found(i: u32, xss: [][]i32) -> u32 {
 
 <!-- spec:end -->
 
+An array literal with no type written, of elements of more than one kind, is of the one type they all widen to, and a constant among them meets that type: `[0, p]` is a `[2]?*u8` for `p: ?*u8`, still to be resolved before it is used. Elements with no one such type are an error, not an array of the first one's type:
+
+```ents
+func a(p: ?*u8) -> ?*u8 {
+  let ps = [0, p]
+  return ps[1]
+}
+func b(s: []u8) -> u32 {
+  let ss = [0, s]
+  return 1
+}
+func c(n: i32, p: *u8) -> u32 {
+  let xs = [p, n]
+  return 1
+}
+data names: []?[]u8 = [0, "ab", "cde"]
+data rows: []?[]i32 = [[1, 2], 0, [3]]
+```
+
+```errors
+elements have different types: int(0) and []u8
+elements have different types: i32 and *u8
+```
+
 ## Destructuring
 
 A named part of a pattern names a field of the value, in a `set` as in a `let`. A part that names no field would leave its variable as it was.

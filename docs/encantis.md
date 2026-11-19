@@ -1405,7 +1405,8 @@ export func pick(n: i32, c: ?Canvas) -> ?Canvas {
 export func grouped(c: Canvas) -> [2]?Canvas => [c, (nothing)]
 export func untyped(c: ?Canvas) -> ?Canvas {
   let xs = [c, 0]
-  return xs[1]
+  let ys = [0, c]
+  return if xs[1] == 0 { ys[0] } else { c }
 }
 func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
 export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
@@ -1438,6 +1439,10 @@ func h() -> ?Canvas => 0 as Canvas
 func i(x: Canvas, y: Canvas) -> bool => x != y
 type Point = (x: i32, y: i32)
 func j(p: ?Point) {}
+func n(c: Canvas) -> i32 {
+  let both = [0, c]
+  return both[1] + 1
+}
 func k() -> ?Canvas => 0 + 0
 func l(x: ?Canvas) -> bool => x == 1 - 1
 func m() -> ?Canvas => "".len as ?Canvas
@@ -1454,6 +1459,7 @@ cannot assign int(0) to Canvas: a Canvas is never null (a host reference that ma
 cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first
 cannot cast int(0) to Canvas: a Canvas is never null
 '!=' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is not compared
+elements have different types: int(0) and Canvas
 cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
 '==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal
 cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
