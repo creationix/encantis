@@ -450,7 +450,7 @@ Pointers, slices and host references ([2.13](#213-host-references)) can be **opt
 ?[*]T            // optional many-pointer
 ```
 
-Only pointer, slice and host reference types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
+Only pointer, slice and host reference types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid). A name for one is made optional the same way: with `type P = *u8`, `?P` is a `?*u8`, and in a generic, `?T` is the type `T` is given made optional, so `T` has to be one of these (`cannot make i32 optional: only a pointer, a slice or a host reference has a none`).
 
 None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
 
@@ -471,8 +471,15 @@ func find(key: u32) -> ?[]u8 {
 func size(s: ?[]u8) -> u32 => if let x = s { x.len } else { 99 }
 func cell(p: ?*u32) -> u32 => if p == 0 { 0 } else { 1 }
 func unnamed() -> Entry => Entry(9, 0 as ?[]u8)
+type Name = []u8
+func named(s: ?Name) -> u32 => if let x = s { x.len } else { 99 }
+func keep(comptime T: type, x: ?T) -> ?T => x
 
 test "none is 0 for an optional pointer and an optional slice" {
+  assert named("ab") == 2
+  assert named(0) == 99
+  assert size(keep(find(2))) == 3
+  assert keep(find(1)) == 0
   assert find(1) == 0
   assert find(2) != 0
   assert size(find(2)) == 3
@@ -497,9 +504,12 @@ func g(p: ?*u8, s: ?[]u8) {
   let t: []u8 = s
   let u = s as []u8
 }
+type Count = u32
+func h(c: ?Count) {}
 ```
 
 ```errors
+cannot make Count optional: only a pointer, a slice or a host reference has a none
 cannot assign int(5) to ?[]u8
 cannot assign int(0) to []u8
 '<' cannot be applied to ?[]u8 and int(0)
@@ -1484,7 +1494,7 @@ func t(n: i32, x: ?Canvas) -> bool => x == match n { 0 => 0, _ => 1 - 1 }
 ```
 
 ```errors
-cannot make Point optional: a name is made optional only for a host type
+cannot make Point optional: only a pointer, a slice or a host reference has a none
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
 '==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be none, which is only compared with 0

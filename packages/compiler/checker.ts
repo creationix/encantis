@@ -4065,12 +4065,17 @@ class CheckContext {
       case 'OptionalType': {
         // ?Canvas is the host type the name stands for, as one that may be
         // null. A name declared further down is known by its declaration.
+        // ?P for a name of a pointer or a slice is that pointer or slice made
+        // optional, as ?*T and ?[]T are where they are written, and so is ?T
+        // for a type parameter given one.
         const inner = this.resolveType(type.type)
         if (inner === RECOVERY) return RECOVERY
         const u = unwrap(inner)
         const host = u.kind === 'host' ? u : this.hostDeclared(type.type)
         if (host) return hostRef(host.name, true)
-        this.error(type.span.start, `cannot make ${typeText(type.type)} optional: a name is made optional only for a host type (a pointer or a slice is optional where it is written, as ?*T or ?[]T)`)
+        if (u.kind === 'pointer' || u.kind === 'slice') return optionalOf(inner)
+        const shown = u.kind === 'forward_ref' ? typeText(type.type) : typeToString(inner)
+        this.error(type.span.start, `cannot make ${shown} optional: only a pointer, a slice or a host reference has a none`)
         return RECOVERY
       }
     }
@@ -10723,8 +10728,11 @@ function matchType(
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)
       return
     case 'OptionalType':
-      // ?T laid over a host reference, optional or not, gives T the plain one.
+      // ?T laid over a host reference, a pointer or a slice, optional or not,
+      // gives T the plain one. Over anything else it gives T that type, which
+      // ?T then says has no none.
       if (u.kind === 'host') matchType(pattern.type, hostRef(u.name), typeParams, bound, value, expand, expanding)
+      else matchType(pattern.type, isOptional(u) ? unwrapOptional(u) : actual, typeParams, bound, value, expand, expanding)
       return
     case 'PointerType':
       // A many-pointer is not a pointer to something T could be: what it
