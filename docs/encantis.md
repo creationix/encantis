@@ -1137,7 +1137,7 @@ This is the whole list. Each conversion applies wherever a value meets a declare
 | a tuple literal | a struct or tuple type | by name where it has names, by position where not ([2.8](#struct-constructors)), each element converted |
 | a struct, tuple or fixed array value | one with the same names whose fields convert with no change in wasm value | `(x: i8, y: i8)` → `(x: i32, y: i32)`, `[3]u8` → `[3]u32` ([9.2](#structural-coercion)) |
 
-A slice converts to a slice of other elements only when each element is read the same in memory: `[]mut []mut u8` → `[][]u8`. Otherwise a pointer's target type does not change, but for the outer `mut`: `*[8]u8` is no `*[4]u8`, `*[4]u8` no `*u8`, and `*u8` no `*u16`. Function types convert only to the same function type.
+A slice converts to a const slice of other elements when each element is read the same in memory: `[]mut []mut u8` → `[][]u8`, `[]u32#4` → `[]u32`. A mutable slice or many-pointer keeps its element type, also when it is made from a `*mut [N]T`, since what is written through it must be a value of that type: a `[]mut u32#4` (or a `*mut [4]u32#4`) is no `[]mut u32`, and a `[]mut []mut u8` no `[]mut []u8`. Otherwise a pointer's target type does not change, but for the outer `mut`: `*[8]u8` is no `*[4]u8`, `*[4]u8` no `*u8`, and `*u8` no `*u16`. Function types convert only to the same function type.
 
 <!-- spec:begin compile -->
 
@@ -1469,7 +1469,7 @@ What a cast refuses:
 - **An optional slice or host reference to its plain form.** It may be none: `cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first`. An optional pointer is an address, and casts to any pointer as an address does: `p as *u8` with `p: ?*u8` checks nothing.
 - **A host reference** to or from anything but its optional form ([2.13](#213-host-references)).
 - **A function's name** to a number or an address: a function has no run-time value ([Function Types and Pointers](#function-types-and-pointers)).
-- **Between an integer of 128 bits or more and a float**: `cannot cast u128 to f64: not supported yet`. *Not implemented.* Cast through `u64` or `i64`.
+- **Between an integer of 128 bits or more and a float**: `cannot cast u128 to f64: not supported yet`. *Not implemented.* Cast through `u64` or `i64` where the value fits one.
 
 A cast to a ranged type (`x as u32#8`) is not checked: it says the value is in range, and the compiler takes the program's word for it, as it does for a many-pointer's index. An index it proves is not bounds-checked, so a wrong one reads or writes past the array. Write it only where the value is known to be in range (the library's `FixedVec` writes `(v.len - 1) as u32#n` after `assert v.len > 0`); otherwise compare, which narrows the range and is the check ([Ranged Integers](#ranged-integers)).
 
@@ -1714,10 +1714,14 @@ Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to,
 
 A host reference is a value of the host's (a JavaScript object, a DOM element, a file the host has open) that the module holds and hands back but cannot look into. Its type is declared with `host` as the whole of a type declaration:
 
+<!-- spec:begin compile -->
+
 ```ents
 type Canvas = host
 type Context = host
 ```
+
+<!-- spec:end -->
 
 Each name declared with `host` is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type program-wide, across source modules too: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares, and two modules that each declare `type Handle = host` have one type between them. So a library should choose a name that is its own (`FileHandle`, not `Handle`). Types are otherwise structural (2.11, 7.1, 8.4, 8.5); a host type is the one kind that is its name, and a message that meets two types of one name that are not one type says what each stands for (`cannot assign Canvas (i32) to Canvas (a host type)`). `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
 
