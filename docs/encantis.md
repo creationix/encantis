@@ -1600,6 +1600,31 @@ function 'd' needs more than 50000 registers, the most a wasm function has (here
 an if that gives [1001]?Canvas gives 1001 registers, more than the 1000 a wasm block gives back — a host reference is held only in registers
 ```
 
+Nor is one behind a many-pointer or a framed array, laid out as `data`, or measured in an instance; and no number but the literal `0` is none of an optional one, which has no order either:
+
+```ents
+type Canvas = host
+
+func a(p: [*]Canvas) {}
+func b(p: *[2]Canvas) {}
+func c(p: [!]Canvas) {}
+data d = [0 as ?Canvas]
+func e() -> ?Canvas => 7
+func f(c: ?Canvas) -> bool => c < 0
+func size(comptime T: type) -> u32 => sizeof(T)
+func g() -> u32 => size(Canvas)
+```
+
+```errors
+cannot point to Canvas: a host reference has no bytes
+cannot point to [2]Canvas: it holds Canvas, and a host reference has no bytes
+cannot point to Canvas: a host reference has no bytes
+cannot lay out ?Canvas: a host reference has no bytes
+cannot assign int(7) to ?Canvas: none of a ?Canvas is written 0, the literal
+'<' cannot be applied to ?Canvas and int(0): ?Canvas is a host reference, which has no value the module can compute with
+cannot take the size of Canvas: a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global), in size(T = Canvas)
+```
+
 A generic type that would put one in memory is refused in the application that does, once for each application however often it is named (8.3), also when the type is named before the host type is declared:
 
 ```ents

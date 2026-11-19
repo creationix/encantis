@@ -11264,7 +11264,7 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
   // A host reference is opaque: not even two of them are compared.
   const host = hostIn(left) ?? hostIn(right)
   if (!host) return said
-  if (op !== '==' && op !== '!=') return `${said}: ${host.name} is a host reference, which has no value the module can compute with`
+  if (op !== '==' && op !== '!=') return `${said}: ${typeToString(host)} is a host reference, which has no value the module can compute with`
   return host.optional
     ? `${said}: ${typeToString(host)} is a host reference that may be null, which is only compared with 0, to ask whether it is`
     : `${said}: ${host.name} is a host reference, which is not compared (one that may be null, a ?${host.name}, is compared with 0)`
