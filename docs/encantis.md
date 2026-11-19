@@ -2203,62 +2203,224 @@ inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
 
 ## 4. Expressions & Operators
 
+An expression computes a value. Its forms are:
+
+- a literal ([1.5](#15-literals)), and the name of a variable, a parameter, a global, a `def` or a `data` block;
+- a call `f(a, b)` ([3.4](#34-functions)), a struct constructor `Point(1, 2)` ([2.8](#struct-constructors)), a tuple `(a, b)` or `(x: 1, y: 2)` ([2.7](#27-tuple-types));
+- an `if` or a `match` that gives a value ([5.1](#51-conditionals), [5.4](#54-match-expressions)), which stands wherever a name could: `x + if c { 1 } else { 2 }`;
+- `sizeof(T)`, the size of a type in bytes, a `u32` constant, and `sizeof data`, the address just past the program's data ([9.0](#90-data-layout));
+- a cast `x as T` or `T(x)` and an annotation `x: T` ([2.10](#210-type-conversions));
+- the operators of this chapter, and the postfix forms: a member `x.f`, an index `x[i]`, a range `x[a..b]`, a call and a method call `x.f(a)` ([4.4](#44-unary-operators)).
+
+Assignment is a statement, not an expression: `x = v` gives no value ([4.5](#45-assignment-and-compound-assignment)).
+
+#### Precedence
+
+From the loosest binding to the tightest:
+
+| Operators | Grouping | Note |
+|-----------|----------|------|
+| `??` | one per expression | the left side is a postfix expression ([The `??` Operator](#the--operator)) |
+| `\|\|` | left to right | |
+| `&&` | left to right | |
+| `!` (prefix) | | negates a whole comparison: `!x > 3` is `!(x > 3)` |
+| `==` `!=` `<` `>` `<=` `>=` | left to right | `a < b < c` compares the bool `a < b` with `c`, an error |
+| `\|` | left to right | |
+| `^` | left to right | |
+| `&` | left to right | |
+| `<<` `>>` `<<<` `>>>` | left to right | |
+| `+` `-` | left to right | |
+| `*` `/` `%` | left to right | |
+| `-` `~` `&` `mut` (prefix) | right to left: `-~x` is `-(~x)` | |
+| `x as T`, `x: T` | one per operand | `1 as u8 as u16` is a syntax error: `(1 as u8) as u16` |
+| `.f` `.0` `.*` `.u32` `[i]` `[a..b]` `(args)` (postfix) | left to right | |
+
+Where this differs from C:
+
+- The bitwise operators bind tighter than the comparisons: `x & 1 == 0` is `(x & 1) == 0`.
+- `!` binds looser than a comparison, and takes a bool: `!a == b` is `!(a == b)`.
+- A cast binds tighter than every prefix operator: `-x as i32` is `-(x as i32)`, and `&p[1] as [*]u8` is `&(p[1] as [*]u8)`; write `(&p[1]) as [*]u8` for the address cast.
+- `??` binds loosest of all: `xs[i] ?? 0 == 0` is `xs[i] ?? (0 == 0)`; write `(xs[i] ?? 0) == 0`.
+- `-` written before a number is part of the number: `-128:i8` is one constant, and `-1 as u32` is the constant 4294967295.
+
+<!-- spec:begin compile -->
+
+```ents
+func even(x: u32) -> bool => x & 1 == 0           // (x & 1) == 0
+func small(x: u32) -> bool => !x > 3              // !(x > 3)
+func shift() -> u32 => 1 << 2 + 3                 // 1 << 5
+func either(a: bool, b: bool, c: bool) -> bool => a || b && c
+func flip(x: u32) -> i32 => -x as i32             // -(x as i32)
+func step(c: bool, x: u32) -> u32 => x + if c { 1 } else { 10 }
+
+test "precedence" {
+  assert even(6) && !even(7)
+  assert small(2) && !small(4)
+  assert shift() == 32
+  assert either(true, false, false)
+  assert flip(5) == -5
+  assert step(false, 5) == 15
+}
+```
+
+```ents
+func between(a: u32, b: u32, c: u32) -> bool => a < b < c
+```
+
+```errors
+'<' cannot be applied to bool: cast it to an integer first
+```
+
+<!-- spec:end -->
+
+#### Evaluation Order
+
+An expression is evaluated left to right, and each of its parts exactly once: the left operand of an operator before the right one, a function before its arguments and the arguments in the order written (the receiver of a method call first, [4.9](#49-method-call-syntax); named arguments in the order written too, [2.8](#struct-constructors)). Every operand is computed before its operator applies. Only these evaluate a part when it is needed and not otherwise: `&&` and `||` their right side, `??` its fallback, and `if` and `match` the branch they take. An assignment computes the address of its target first, then the value, then stores it ([4.5](#45-assignment-and-compound-assignment)).
+
+<!-- spec:begin compile -->
+
+```ents
+data trail = mut [0:u32; 8]
+global count: u32 = 0
+
+func note(v: u32) -> u32 {
+  trail[count & 7] = v
+  count += 1
+  return v
+}
+func pair(a: u32, b: u32) -> u32 => a * 10 + b
+func seen() -> u32 => trail[0] * 1000 + trail[1] * 100 + trail[2] * 10 + trail[3]
+
+test "operands and arguments are evaluated left to right, once" {
+  let r = note(1) - note(2) + pair(note(3), note(4))
+  assert seen() == 1234
+  assert count == 4
+  let f = note(0) == 1 && note(9) == 9           // the right side is not needed
+  assert count == 5
+}
+```
+
+<!-- spec:end -->
+
+A trailing comma is accepted after the last element of an array literal (`[1, 2,]`), the last variant of an enum and a `match` arm. Anywhere else it is a syntax error: in the arguments of a call or a constructor, a tuple, a parameter list, a struct type's fields and a pattern.
+
 ### 4.1 Arithmetic Operators
 
 | Operator | Description | Types |
 |----------|-------------|-------|
-| `+` | addition | numeric |
-| `-` | subtraction | numeric |
-| `*` | multiplication | numeric |
-| `/` | division | numeric |
-| `%` | remainder | integers only |
-| `+\|` | saturating add (not yet implemented) | integers |
-| `-\|` | saturating subtract (not yet implemented) | integers |
-| `*\|` | saturating multiply (not yet implemented) | integers |
+| `+` | addition | numbers |
+| `-` | subtraction | numbers |
+| `*` | multiplication | numbers |
+| `/` | division | numbers |
+| `%` | remainder | integers |
 
-The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result. Types neither of which holds the other, such as `i32` and `u32`, need a cast.
+The two operands have one type, after [implicit widening](#implicit-widening), and that is the type of the result: a `u8` and a `u32` add as `u32`s, an `i32` and an `f64` as `f64`s. Types neither of which holds the other, such as `i32` and `u32`, need a cast (`mismatched operands for '+': i32 and u32 (cast one side explicitly)`). A constant takes the type of the other operand, and has to fit it: `x + 1` with a `u8` `x` is a `u8` addition. An operation on constants alone is computed exactly when the program is compiled, with no width to wrap in ([Comptime Literal Promotion](#comptime-literal-promotion)): `0xFFFFFFFF + 1` is 4294967296, which is an error where a `u32` is wanted. A `bool` takes no arithmetic (`'+' cannot be applied to bool: cast it to an integer first`), and a pointer takes `+` and `-` of an integer ([4.6](#46-pointer-operations)).
 
-Saturating operators clamp at type boundaries instead of wrapping:
+**Integers wrap.** `+`, `-` and `*` on integers never trap: the result is reduced to the width of its type, in two's complement, as wasm's `i32.add` and `i64.mul` do. An `i8`, `u8`, `i16` or `u16` is computed in an `i32` and brought back to its width after each operation ([2.2](#22-primitive-types)): `200:u8 + 100` is 44, `100:i8 + 100` is -56. Negation is `0 - x`, so it is allowed on an unsigned type and wraps too: `-x` with a `u32` of 1 is 4294967295.
+
+**Division.** `/` and `%` are signed or unsigned as the operands' type is (`i32.div_s` or `i32.div_u`, `i32.rem_s` or `i32.rem_u`). Integer division truncates toward zero, and the remainder has the sign of the dividend: `-7 / 2` is -3, `-7 % 2` is -1, `7 % -2` is 1. These trap:
+
+- an integer `/` or `%` by zero;
+- an `i32` or `i64` `/` of its most negative value by -1, whose quotient does not fit (`%` of the same is 0).
+
+An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 128, wrapped back to -128. A divisor that is the constant 0 is not caught when the program is compiled: `x / 0` compiles to a division that traps when it runs.
+
+**Floats** follow IEEE 754, as wasm's `f64.div` does, and never trap: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN. `%` takes integers only (`'%' needs integer operands, not f64`).
+
+**Wide integers** (`i128` and up) take `+`, `-` and `*`, which wrap as any integer does; `/` and `%` on them are not supported yet (`'/' on u128 is not supported yet`).
+
+<!-- spec:begin compile -->
 
 ```ents
-let a:u8 = 250
-let b = a +| 10      // 255 (clamped, not 4)
-let c = a -| 255     // 0 (clamped, not wraparound)
+func add8(a: u8, b: u8) -> u8 => a + b
+func neg(x: u32) -> u32 => -x
+func quot(a: i32, b: i32) -> i32 => a / b
+func rem(a: i32, b: i32) -> i32 => a % b
+func half(n: u32) -> u32 => n / 2
+func ratio(a: f64, b: f64) -> f64 => a / b
 
-let x:i8 = 100
-let y = x +| 50      // 127 (max i8)
-let z = x -| 200     // -128 (min i8)
+test "integers wrap, division truncates toward zero" {
+  assert add8(200, 100) == 44
+  assert neg(1) == 0xFFFFFFFF
+  assert quot(-7, 2) == -3
+  assert rem(-7, 2) == -1
+  assert rem(7, -2) == 1
+  assert rem(-2147483648, -1) == 0
+  assert half(0xFFFFFFFF) == 0x7FFFFFFF        // unsigned division
+  assert ratio(1.0, 0.0) > 1.0e308             // infinity
+  let nan = ratio(0.0, 0.0)
+  assert nan != nan
+}
 ```
+
+```ents
+func mixed(a: i32, b: u32) -> i32 => a + b
+func both(a: bool, b: bool) -> bool => a + b
+func frac(x: f64) -> f64 => x % 1.0
+```
+
+```errors
+mismatched operands for '+': i32 and u32 (cast one side explicitly)
+'+' cannot be applied to bool: cast it to an integer first
+'%' needs integer operands, not f64
+```
+
+<!-- spec:end -->
+
+> **Not implemented: saturating arithmetic.** `+|`, `-|` and `*|` (and `+|=`, `-|=`, `*|=`) are meant to clamp at the bounds of the type instead of wrapping: `250:u8 +| 10` is to be 255, and `3:u8 -| 5` 0. The parser accepts them, but the compiler computes them as the wrapping `+`, `-` and `*` (a known bug), so a program must not use them yet. On a wide integer they are an error (`'+|' on u128 is not supported yet`). They bind as `+` and `*` do.
 
 ### 4.2 Bitwise Operators
 
 | Operator | Description | Types |
 |----------|-------------|-------|
-| `&` | bitwise AND | integers |
-| `\|` | bitwise OR | integers |
-| `^` | bitwise XOR | integers |
+| `&` | bitwise AND | integers, bools |
+| `\|` | bitwise OR | integers, bools |
+| `^` | bitwise XOR | integers, bools |
 | `<<` | shift left | integers |
 | `>>` | shift right | integers |
 | `<<<` | rotate left | integers |
 | `>>>` | rotate right | integers |
 
-`&`, `|` and `^` also take two bools. `>>` keeps the sign of a signed value.
+`&`, `|` and `^` take two integers of one type after widening, as arithmetic does, or two bools; on bools they evaluate both sides, where `&&` and `||` may skip the right one. A float is no operand (`'&' needs integer operands, not f64`). `>>` keeps the sign of a signed value (`i32.shr_s`) and shifts zeros into an unsigned one (`i32.shr_u`).
 
-`~` of a constant is a bit pattern in the type it's used as, so it fits an unsigned type that holds its operand: `~7` is `0xfffffff8` as a `u32`. A negative constant doesn't: `x & -8` needs a signed `x`.
-
-```ents
-func align(n: u32) -> u32 => (n + 7) & ~7     // round up to a multiple of 8
-func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
-```
+`~` of a constant is a bit pattern in the type it's used as, so it fits an unsigned type that holds its operand: `~7` is `0xfffffff8` as a `u32`. A negative constant doesn't: `x & -8` needs a signed `x` (`cannot assign int(-8) to u32`).
 
 The count of a shift or rotate can be any integer type: it doesn't have to match the value, and only its low bits are used: the count modulo the width the value is shifted in, which is 32 bits for a value of 32 bits or fewer and the value's own width otherwise. So `x << 32` on a `u32` is `x`, and on a `u8` too, while `x << 8` on a `u8` is 0. The result has the value's type. If the count's type is wider than the value's, a shift widens the value to that width first, keeping its sign: with a `u8` value and a `u32` count, `x << n` is a `u32`. A constant value has no type of its own and takes the count's: `1 << n` with a `u8` count is a `u8`, so give the `1` a type (`1:u32 << n`) when the result should be wider.
 
 A rotation is always within the value's own width, whatever the count's type: `x <<< 1` on a `u8` moves its top bit to the bottom.
 
+<!-- spec:begin compile -->
+
 ```ents
+func align(n: u32) -> u32 => (n + 7) & ~7      // round up to a multiple of 8
+func low_byte(x: u64) -> u64 => x & ~(~0 << 8)
+func halve(x: i32) -> i32 => x >> 1            // keeps the sign
+func spread(b: u8, n: u32) -> u32 => b << n    // shifted as a u32: the count is wider
+func bit(n: u8) -> u8 => 1 << n                // the 1 takes the count's type
 func rotr(x: u32, n: u32) -> u32 => x >>> n
 func swap_nibbles(b: u8) -> u8 => b <<< 4
+
+test "bits" {
+  assert align(9) == 16
+  assert low_byte(0x1234) == 0x34
+  assert halve(-8) == -4
+  assert spread(0x80, 4) == 0x800
+  assert bit(7) == 128
+  assert bit(8) == 0
+  assert rotr(1, 1) == 0x80000000
+  assert swap_nibbles(0x12) == 0x21
+}
 ```
+
+```ents
+func mask(x: u32) -> u32 => x & -8
+```
+
+```errors
+cannot assign int(-8) to u32
+```
+
+<!-- spec:end -->
 
 ### 4.3 Comparison Operators
 
@@ -2271,93 +2433,259 @@ func swap_nibbles(b: u8) -> u8 => b <<< 4
 | `==` | equal |
 | `!=` | not equal |
 
-All comparisons return `bool`. The operands widen to one type, as for arithmetic. `==` and `!=` also compare bools and pointers; the ordering operators also compare pointers.
+A comparison gives a `bool`. What it compares:
 
-`&&` and `||` take bools and evaluate the right side only when it's needed.
+- **Numbers**, of one type after widening, as for arithmetic: an `i32` and a `u32` need a cast. Signed types compare signed (`i32.lt_s`) and unsigned ones unsigned (`i32.lt_u`). Floats compare as IEEE 754 says: NaN is unequal to everything, itself included, so `x != x` is true only for a NaN. Wide integers compare with all six.
+- **Bools**, with `==` and `!=` only (`'<' cannot be applied to bool: cast it to an integer first`).
+- **Pointers**, with all six, as unsigned addresses. A pointer compares with any other pointer and with an integer of at most 32 bits. An optional pointer compares too, and `p == 0` asks whether it is none ([Optional Types](#optional-types)).
+- **Optional slices and optional host references**, only with the literal `0`, by `==` and `!=` ([Optional Types](#optional-types), [2.13](#213-host-references)).
+
+Nothing else compares: a struct, a tuple, a slice or an array is no operand (`'==' cannot be applied to Point and Point`). Compare them part by part: the fields, or the lengths and then the elements.
+
+Comparisons group left to right but do not chain: `a < b < c` compares the bool `a < b` with `c`, which is an error. Write `a < b && b < c`.
+
+`&&` and `||` take two bools and evaluate the right side only when it decides the result. `!` takes a bool (`operand of '!' must be bool, not u32`); it binds looser than a comparison, so `!x == y` is `!(x == y)`.
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: i32, y: i32)
+
+func same(p: Point, q: Point) -> bool => p.x == q.x && p.y == q.y
+func below(a: i32, b: i32) -> bool => a < b
+func below_u(a: u32, b: u32) -> bool => a < b
+func inside(lo: u32, x: u32, hi: u32) -> bool => lo <= x && x < hi
+func is_nan(x: f64) -> bool => x != x
+func before(p: [*]u8, q: [*]u8) -> bool => p < q
+
+test "comparisons" {
+  assert same(Point(1, 2), Point(1, 2))
+  assert below(-1, 0)
+  assert !below_u(0xFFFFFFFF, 0)
+  assert inside(2, 3, 4)
+  assert is_nan(0.0 / 0.0)
+  assert before(8 as [*]u8, 0x80000000 as [*]u8)       // unsigned addresses
+}
+```
+
+```ents
+type Point = (x: i32, y: i32)
+
+func same(p: Point, q: Point) -> bool => p == q
+func equal(s: []u8, t: []u8) -> bool => s == t
+func older(a: bool, b: bool) -> bool => a < b
+func not(x: u32) -> bool => !x
+```
+
+```errors
+'==' cannot be applied to Point and Point
+'==' cannot be applied to []u8 and []u8
+'<' cannot be applied to bool: cast it to an integer first
+operand of '!' must be bool, not u32
+```
+
+<!-- spec:end -->
 
 ### 4.4 Unary Operators
 
-| Operator | Description |
-|----------|-------------|
-| `-x` | negation (numbers) |
-| `!x` | logical NOT (bool only) |
-| `~x` | bitwise NOT (integers) |
-| `x.*` | dereference |
+The prefix operators:
 
-For slice/array length and pointer extraction, use property access: `slice.len`, `slice.ptr`.
+| Operator | Meaning | Operand | See |
+|----------|---------|---------|-----|
+| `-x` | negation | a number; before a number literal it is part of the literal | [4.1](#41-arithmetic-operators) |
+| `~x` | bitwise NOT | an integer | [4.2](#42-bitwise-operators) |
+| `!x` | logical NOT, binding looser than comparisons | a bool | [4.3](#43-comparison-operators) |
+| `&x` | the address of a literal, an element or a value in memory | | [Element Addresses and Writes](#element-addresses-and-writes) |
+| `mut x` | a writable literal of its own | a literal | [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) |
+
+The postfix forms, which bind tightest and apply left to right:
+
+| Form | Meaning | See |
+|------|---------|-----|
+| `x.name`, `x.0` | a field of a struct or tuple, also through a pointer to one | [2.7](#27-tuple-types), [2.8](#struct-field-access) |
+| `p.*` | the value a `*T` points to | [2.5](#25-pointer-types) |
+| `s.len`, `s.ptr`, `s.wid` | the length, the pointer and the element width of a slice or array pointer | [2.5](#25-pointer-types), [2.6](#26-slices) |
+| `p.u32` | memory at `p` seen as a `[*]u32` | [Type-Punned Memory Access](#type-punned-memory-access) |
+| `x[i]` | an element | [4.7](#47-bounds-checked-indexing) |
+| `x[a..b]` | a range of elements, as a slice | [4.8](#48-slicerange-syntax) |
+| `f(a, b)` | a call | [3.4](#34-functions) |
+| `x.f(a, b)` | a method call, `f(x, a, b)` | [4.9](#49-method-call-syntax) |
+
+<!-- spec:begin compile -->
+
+```ents
+func flag(b: bool) -> bool => -b
+func invert(x: f64) -> f64 => ~x
+```
+
+```errors
+'-' needs a number, not bool
+'~' needs an integer, not f64
+```
+
+`mut` before anything but a literal is a syntax error:
+
+```ents
+func cell(x: u32) -> u32 {
+  let p = mut x
+  return 0
+}
+```
+
+```errors
+mut goes before a literal (an array, a string or a tuple), not before x
+```
+
+<!-- spec:end -->
 
 ### 4.5 Assignment and Compound Assignment
 
+`target = value` stores a value. The target is a name followed by any number of suffixes, each a field `.x`, a tuple element `.0`, a dereference `.*`, an index `[i]`, a range `[a..b]` or a type view `.u32`:
+
+| Target | What is written |
+|--------|-----------------|
+| `x` | a variable: a local, a parameter, a named result or a global |
+| `p.x`, `t.0` | a field of a struct or tuple variable, or of the struct a pointer points to |
+| `p.*` | the value a `*mut T` points to |
+| `xs[i]` | an element, at an index known to be in range ([Element Addresses and Writes](#element-addresses-and-writes)) |
+| `xs[a..b]` | every element of a range: a fill or a copy ([Filling and Copying](#filling-and-copying)) |
+| `p.u32[i]` | an element of a type view ([Type-Punned Memory Access](#type-punned-memory-access)) |
+
+A name alone has to be a variable: a `def`, a `data` block and a function are not (`cannot assign to 'buf': it is not a variable`), and neither is a global imported from the host, which is read-only. With a suffix the name can be anything that leads to a place, so `buf[0] = 1` writes into a `data` block. Writing through a pointer needs a `*mut` one ([Mutability](#mutability)): `cannot write through const pointer — use *mut for mutable access`. Anything else is not a target, and is a syntax error: the result of a call (`get()[1] = 5`), an expression in parentheses (`(p.*).x = 5`) and several variables (`(a, b) = v`, which is written `set (a, b) = v`, below). Name a call's result first: `let p = get()`, then `p[1] = 5`.
+
+The value is checked against the target's type, as a `let` with that type checks it: a constant takes the type, and a narrower number widens to it.
+
+<!-- spec:begin compile -->
+
 ```ents
-x = 42                   // simple variable assignment
-arr[i] = value           // indexed assignment
-ptr.* = value            // dereference assignment
-ptr.u32 = value          // type-punned memory write
-(a, b) = divmod(10, 3)   // tuple destructuring
+type Point = (x: i32, y: i32)
+
+data cells = mut [0:u32; 4]
+global total: u64 = 0
+
+func cell() -> *mut [4]u32 => cells
+
+func fill(p: Point, n: u32) -> i32 {
+  p.x = 5                       // a field of a variable
+  let c = cell()
+  c[1] = n                      // through the pointer a call gave
+  cells[3] = 7                  // into a data block
+  total = n                     // n widens to u64
+  return p.x + p.y
+}
+
+test "assignment" {
+  assert fill(Point(1, 2), 9) == 7
+  assert cells[1] == 9 && cells[3] == 7
+  assert total == 9
+}
 ```
 
-Assignment targets (lvalues) can be:
+```ents
+data cells = mut [0:u32; 4]
 
-| Target | Description |
-|--------|-------------|
-| `name` | Local or global variable |
-| `arr[i]` | Array/slice element |
-| `ptr.*` | Dereferenced pointer |
-| `ptr.T` | Type-punned memory location |
-| `(a, b, ...)` | Positional destructuring |
-| `(x:, y:, ...)` | Named destructuring (trailing colon) |
+func cell() -> *mut [4]u32 => cells
+func f() { cell()[1] = 5 }
+```
 
-> **Status: the type-punned write is not implemented.** `ptr.T` is the pointer as a `[*]T` (see [Type-Punned Memory Access](#type-punned-memory-access)), so `ptr.u32 = value` is a compile error: write `ptr.u32[0] = value`.
+```errors
+Expected "}"
+```
+
+```ents
+type Point = (x: i32, y: i32)
+def limit = 10
+data buf = mut [0:u8; 4]
+
+func f(p: *Point) {
+  p.x = 1
+  buf = buf
+  limit = 3
+}
+```
+
+```errors
+cannot write through const pointer — use *mut for mutable access
+cannot assign to 'buf': it is not a variable
+cannot assign to 'limit': it is not a variable
+```
+
+<!-- spec:end -->
 
 An assignment reads its whole value before it writes any of it, so a value can be rebuilt from itself, in a variable or in memory:
 
-```ents
-type Point = (x:i32, y:i32)
+<!-- spec:begin compile -->
 
-func flip(p:Point, q:*mut Point) -> Point {
+```ents
+type Point = (x: i32, y: i32)
+
+data spot = mut [Point(1, 2)]
+
+func flip(p: Point, q: *mut Point) -> Point {
   p = Point(p.y, p.x)          // swaps the fields
   q.* = Point(q.y, q.x)        // and so does this, in memory
   return p
 }
+
+test "the value is read before it is written" {
+  let p = flip(Point(3, 4), &spot[0])
+  assert p.x == 4 && p.y == 3
+  assert spot[0].x == 2 && spot[0].y == 1
+}
 ```
+
+<!-- spec:end -->
 
 The same holds for a struct, tuple or slice copied over a place that partly overlaps the one it is read from, and for a value that writes on its way: after `q.* = Point(1, if c { q.x = 9 ... })`, `q.x` is 1. A wide integer (`i128` and up) is one scalar, stored limb by limb from the lowest, so it must not partly overlap its source.
 
 The target's address is evaluated once, and before the value, also for a compound assignment: `xs[next()] += 1` calls `next` one time, and `p.* = if c { p = q ... }` writes where `p` pointed before.
 
-> **Status: Destructuring is not yet fully implemented in codegen.**
+#### Assigning Several Variables
 
-Positional destructuring unpacks multiple values in a single assignment:
+`set` assigns to variables that exist, through a pattern, as `let` declares new ones ([3.3](#33-variables)). The parts of the pattern are positional, `set (q, r) = divmod(17, 5)`, or by field name, `set (x: a, y: b) = p`, with `set (x:, y:) = p` short for `set (x: x, y: y) = p`; a part can be a pattern itself, `set (low, (high, wide)) = ...`. Without parentheses, `set q, r = v` is the positional form. `set x = v` with a single name is `x = v`. A tuple, a struct and the several results of a call can be taken apart; a slice cannot (`cannot destructure non-tuple type in set: []u8`: read its `.ptr` and `.len`), and neither can a pointer (take apart `p.*`).
 
-```ents
-(q, r) = divmod(17, 5)   // q = 3, r = 2
-(x, y) = (y, x)          // swap values
-(ptr, len) = slice       // extract components from multi-value types
-```
+The whole value is computed before any variable is set, so `set a, b = (b, a)` swaps two variables.
 
-Named destructuring extracts fields by name (trailing colon):
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:f64, y:f64)
-let p = Point(3.0, 4.0)
+type Point = (x: f64, y: f64)
 
-// Shorthand: trailing colon means variable names match field names
-let (x:, y:) = p           // declares x = 3.0, y = 4.0
+func divmod(a: u32, b: u32) -> (u32, u32) => (a / b, a % b)
 
-// Explicit: rename fields to different variables
-let (x: px, y: py) = p     // declares px = 3.0, py = 4.0
+func digits(n: u32) -> u32 {
+  let q: u32 = 0
+  let r: u32 = 0
+  set q, r = divmod(n, 10)
+  return q + r
+}
 
-// Use set to assign to existing variables
-let a:f64
-let b:f64
-set (x: a, y: b) = p       // assigns a = 3.0, b = 4.0
+func swapped(a: u32, b: u32) -> u32 {
+  set a, b = (b, a)
+  return a * 10 + b
+}
+
+func spread(p: Point) -> f64 {
+  let x: f64 = 0
+  let low: f64 = 0
+  let high: f64 = 0
+  set (x:, y: low) = p          // x = p.x, low = p.y
+  set (low, high) = (low - 1.0, high + 1.0)
+  return x + low + high
+}
+
+test "set takes a value apart into existing variables" {
+  assert digits(42) == 6
+  assert swapped(1, 2) == 21
+  assert spread(Point(5.0, 2.0)) == 7.0
+}
 ```
 
-A named part names a field of the value, in a `set` as in a `let`: `set (z: a) = p` is an error, `field 'z' not found in Point`.
+<!-- spec:end -->
 
-Any type with multiple underlying values can be destructured (slices, tuples, structs, etc).
+`set` assigns what `=` would: a tuple literal, or an `if` or `match` whose branches give one, is checked against the types of the variables it sets, as a `let` with those types would check it. Each constant takes its variable's type and each value widens to it:
 
-`set` assigns what `=` would: a tuple literal, or an `if` or `match` whose branches give one, is checked against the types of the variables it sets, as a `let` with those types would check it. Each constant takes its variable's type and each value widens to it, and a part of the pattern can be a pattern itself:
+<!-- spec:begin compile -->
 
 ```ents
 func parts(n: i32) -> f64 {
@@ -2369,15 +2697,45 @@ func parts(n: i32) -> f64 {
   set (low, (high, wide)) = (1, (2, 3))
   return mean + ((low + high) as f64)
 }
+
+test "set checks a literal against its variables" {
+  assert parts(4) == 7.0
+}
 ```
 
-Any other value is already on the stack, and each field has to be held the way its variable is: `set (wide, ratio) = pair()`, where `pair` returns `(i32, f32)`, is an error (`cannot set 'wide' (i64) from a field of type i32`).
+<!-- spec:end -->
 
-`=`, a compound assignment and `set` assign to variables: locals, parameters, named results and globals. A `def`, a `data` block and a function are not variables, and naming one is an error (`cannot assign to 'buf': it is not a variable`, `cannot set 'buf': it is not a variable`).
+Any other value is already computed, in its own types, and each field has to be held the way its variable is: nothing widens it on the way. A named part names a field the value has, and every variable has to exist:
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: f64, y: f64)
+
+func pair() -> (i32, f32) => (1, 2.0)
+
+func f(p: Point) {
+  let wide: i64 = 0
+  let ratio: f32 = 0
+  set (wide, ratio) = pair()
+  set (z: ratio) = p
+  set sum = 1
+}
+```
+
+```errors
+cannot set 'wide' (i64) from a field of type i32
+field 'z' not found in Point
+cannot set 'sum': not defined (use 'let' to create a new binding)
+```
+
+<!-- spec:end -->
+
+A pattern with more parts than the value has fields is an error, as it is for `let` (`tuple has 2 fields, but pattern has 3`). A pattern with fewer parts sets the first fields and leaves the rest.
 
 #### Compound Assignment
 
-Compound assignment combines an operation with assignment. Works with any valid lvalue:
+Compound assignment combines an operation with assignment, on any target:
 
 | Operator | Equivalent |
 |----------|------------|
@@ -2393,61 +2751,166 @@ Compound assignment combines an operation with assignment. Works with any valid 
 | `x >>= n` | `x = x >> n` |
 | `x <<<= n` | `x = x <<< n` |
 | `x >>>= n` | `x = x >>> n` |
-| `x +\|= n` | `x = x +\| n` |
-| `x -\|= n` | `x = x -\| n` |
-| `x *\|= n` | `x = x *\| n` |
 
-```ents
-count += 1               // increment variable
-arr[i] += delta          // modify array element
-ptr.* ^= mask            // XOR through pointer
-```
-
-The result goes back into `x`, so `n` widens to the type of `x`, never the other way: `total += small` is fine, `small += total` needs `small += total as i32`. A shift count (`x <<= n`) can be any integer type.
+The target is evaluated once, so `xs[next()] += 1` calls `next` one time. The result goes back into `x`, so `n` widens to the type of `x`, never the other way: with `total: u32` and `small: u8`, `total += small` is fine and `small += total` is an error (`cannot assign u32 to u8`): write `small += total as u8`. A shift count (`x <<= n`) can be any integer type. A pointer takes `+=` and `-=` of a byte count ([4.6](#46-pointer-operations)). `+|=`, `-|=` and `*|=` are the saturating operators, which are not implemented ([4.1](#41-arithmetic-operators)).
 
 The result has to fit a range `x`'s type carries ([Ranged Integers](#ranged-integers)), as in the plain `x = x op n`: with `let i = k & 15` (a `u32#16`), `i &= 7`, `i >>= 1` and `i %= 9` keep it, while `i += 1`, `i -= 1`, `i <<= 1` and `i *= 3` are errors (`cannot assign u32#17 to u32#16 (the result of '+=')`), since `buf[i]` on a `*[16]u8` is proven by the range. Only a constant `n` gives the result a range; to step a ranged index, bring it back into range (`i = (i + 1) & 15`) or keep it in a plain `u32`.
+
+<!-- spec:begin compile -->
+
+```ents
+data counts = mut [0:u32; 16]
+global calls: u32 = 0
+
+func slot(k: u32) -> u32#16 {
+  calls += 1
+  return k & 15
+}
+
+func tally(k: u32, n: u8) {
+  counts[slot(k)] += n          // slot is called once; n widens to u32
+}
+
+func mix(h: u32, b: u8) -> u32 {
+  h ^= b
+  h *= 16777619
+  h <<<= 5
+  return h
+}
+
+test "compound assignment" {
+  tally(17, 3)
+  tally(1, 4)
+  assert counts[1] == 7
+  assert calls == 2
+  assert mix(0, 1) == 0x20003260
+}
+```
+
+```ents
+func f(small: u8, total: u32, k: u32) {
+  small += total
+  let i = k & 15
+  i += 1
+}
+```
+
+```errors
+cannot assign u32 to u8
+cannot assign u32#17 to u32#16 (the result of '+=')
+```
+
+<!-- spec:end -->
 
 ### 4.6 Pointer Operations
 
 #### Arithmetic
 
-Only many-pointers are allowed to do pointer arithmetic. Single pointers and fat slices do not support arithmetic.
+`p + n` and `p - n`, with `p` a many-pointer `[*]T` and `n` an integer of at most 32 bits, move `p` by `n` **bytes**, not elements, and give a `[*]T` again; `p += n` and `p -= n` move a pointer variable. To step by elements, multiply by the element width (`p + i * p.wid`), or take an element's address with `&p[i]` ([Element Addresses and Writes](#element-addresses-and-writes)). The distance between two pointers in bytes is the difference of their addresses: `(q as u32) - (p as u32)`. Pointers compare as unsigned addresses ([4.3](#43-comparison-operators)), which is how a loop walks one to an end:
 
-| Expression | Result |
-|------------|--------|
-| `ptr + n` | offset forward by n bytes |
-| `ptr - n` | offset backward by n bytes |
-| `ptr - ptr` | byte distance between pointers |
+<!-- spec:begin compile -->
+
+```ents
+data words = [10:u32, 20, 30, 40]
+
+func sum(p: [*]u32, n: u32) -> u32 {
+  let total: u32 = 0
+  let end = p + n * p.wid
+  while p < end {
+    total += p[0]
+    p += p.wid                  // 4 bytes on: the next u32
+  }
+  return total
+}
+
+func gap(p: [*]u32, q: [*]u32) -> u32 => (q as u32) - (p as u32)
+
+test "pointer arithmetic counts bytes" {
+  assert sum(words, 4) == 100
+  assert sum((words as [*]u32) + 8, 2) == 70
+  assert gap(words, (words as [*]u32) + 12) == 12
+}
+```
+
+```ents
+func skip(s: []u8) -> []u8 => s + 1
+func next(p: ?*u8) -> ?*u8 => p + 1
+```
+
+```errors
+'+' cannot be applied to []u8 and int(1)
+cannot use '+' on ?*u8: it may be none — resolve it with 'if let' or '??' first
+```
+
+<!-- spec:end -->
+
+A slice takes no arithmetic: take a range of it instead (`s[1..]`, [4.8](#48-slicerange-syntax)). An optional pointer is resolved first. Write the pointer first: `n + p` is not a pointer.
+
+> **Status: pointer arithmetic is not yet checked to these rules.** The compiler also accepts `+` and `-` on a `*T` and a `*[N]T` (where `p + 4` on a `*[4]u32` still claims four elements, with nothing checked), any other operator on a pointer (`p * 2`, `p & 7`, `p + q`), and gives `p - q` the pointer's type instead of a number. Write only the forms above.
 
 #### Indexing
 
+`p[i]` on a many-pointer `[*]T` is the element `i` places on: the byte offset is `i * sizeof(T)`, so `ptr + n` counts bytes where `ptr[n]` counts elements. A many-pointer has no length, so its index is never checked ([4.7](#47-bounds-checked-indexing)), and `p[-1]` is the element before the one `p` points to.
+
+A `*T` points to one `T`: `p[0]` is that `T`, as `p.*` is, and any other index is an error (`cannot index *u8 past its one element: read it with .*, or index a [*]u8`). A pointer to elements read one after another is a `[*]T`; on a `[*]T`, read the first element as `p[0]`.
+
+An array pointer, a slice and their elements are indexed with a bounds check where the index is not known to be in range: [4.7](#47-bounds-checked-indexing).
+
+<!-- spec:begin compile -->
+
 ```ents
-let arr:[*]i32 = ...
-arr[2]          // offset by 2 elements (8 bytes for i32)
-(arr + 8).*     // equivalent to arr[2]
+data nums = [10:i32, 20, 30, 40]
+
+func third(p: [*]i32) -> i32 => p[2]          // 8 bytes on
+func before(p: [*]i32) -> i32 => p[-1]
+func first(p: *i32) -> i32 => p[0]            // the same as p.*
+
+test "a many-pointer indexes by elements" {
+  assert third(nums) == 30
+  assert third((nums as [*]i32) + 4) == 40
+  assert before((nums as [*]i32) + 8) == 20
+  assert first(&nums[1]) == 20
+}
 ```
 
-Note: `ptr + n` offsets by bytes, `ptr[n]` offsets by elements.
+```ents
+func second(p: *i32) -> i32 => p[1]
+```
 
-A `*T` points to one `T`: `p[0]` is that `T`, as `p.*` is, and any other index is an error (`cannot index *u8 past its one element: read it with .*, or index a [*]u8`). A pointer to bytes read one after another is a `[*]u8`.
+```errors
+cannot index *i32 past its one element: read it with .*, or index a [*]i32
+```
 
-For arrays and slices with known bounds, runtime indexing is bounds-checked. See [4.7 Bounds-Checked Indexing](#47-bounds-checked-indexing) for details on how `if let`, `??`, and optional types interact with indexing.
+<!-- spec:end -->
 
 #### Type-Punned Memory Access
 
-Read or write memory as a specific type:
+A type view reads and writes memory as a primitive type other than the one it holds. `p.T`, where `T` is the name of a primitive type (an integer type, `f32`, `f64` or `bool`), is the address of `p` as a `[*]T`, or a `[*]mut T` when `p` is a mutable pointer. So `p.u32[i]` is the `i`-th 32-bit word from `p` (bytes `4 * i` to `4 * i + 3`, little-endian), and `p.u32[i] = v` writes one. `p` is any pointer: a `*T`, a `*[N]T`, a `[*]T`. Like every many-pointer index, a view's index is never checked: it is the explicit way to read memory without a bounds check, where `p[i]` on an array pointer is checked.
+
+<!-- spec:begin compile -->
 
 ```ents
-ptr.u32             // read 4 bytes as u32
-ptr.u32 = value     // write u32
-ptr.f64             // read 8 bytes as f64
+data block = mut [1:u8, 2, 3, 4, 5, 6, 7, 8]
 
-// Compound types need parentheses
-ptr.(MyStruct)
-ptr.([]u8)
+func word(i: u32) -> u32 => block.u32[i]      // bytes 4i to 4i + 3
+func set_word(i: u32, v: u32) { block.u32[i] = v }
+func half(p: [*]u8, i: u32) -> u16 => p.u16[i]
+func low(x: *u64) -> u32 => x.u32[0]
+
+test "a view reads memory as another primitive type" {
+  assert word(1) == 0x08070605                 // little-endian
+  set_word(0, 0x0A0B0C0D)
+  assert block[0] == 0x0D
+  assert half(block, 1) == 0x0A0B
+  assert low(&0x1122334455667788) == 0x55667788
+}
 ```
 
-> **Status: `ptr.T` does not load or store yet.** It is the pointer itself as a `[*]T`, so the value is its element: read `ptr.u32[0]`, write `ptr.u32[0] = value`. Assigning to the pun (`ptr.u32 = value`) is a compile error.
+<!-- spec:end -->
+
+Write a view on a pointer. On a slice, use its pointer (`s.ptr.u16[i]`, with `s.len` to bound `i`): a view written directly on a slice, on an array held in registers or on a number is accepted by the checker but compiles wrongly (a known bug), so it must not be used.
+
+> **Not implemented:** a view as the single value at `p`. `p.u32` is the pointer, not the `u32` it points at, so assigning to it is an error (`cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one`): read `p.u32[0]` and write `p.u32[0] = v`. Views of a compound type (a struct, a slice) are not implemented either and do not parse; cast the pointer instead (`p as *Point`, [Explicit Casts](#explicit-casts)).
 
 A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included (§1.2), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
 
@@ -2469,59 +2932,102 @@ no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
 
 An index is an integer of at most 32 bits, signed or not (`an index must be an integer of at most 32 bits, not i64`); a constant bit pattern is the `u32` it stands for (`~4294967293` is 2, [4.2](#42-bitwise-operators)). It is an offset into 32-bit memory, read as an unsigned number, so a negative one is past any length: `xs[i] ?? 0` with `i: i32` equal to `-1` is `0`, and a negative constant index into a `*[N]T` is an error. A many-pointer checks nothing, and there `p[-1]` is the element before the one `p` points to.
 
-Array and slice indexing follows strict rules based on whether the index is known at compile time:
+Whether an index into an array pointer or a slice is checked depends on what is known about it when the program is compiled.
 
-**Compile-time constant indices** are statically verified against the known array length:
+**A proven index** needs no check. A constant index into a `*[N]T` is checked against `N` when the program is compiled, and so is a ranged index (`u32#4`, [Ranged Integers](#ranged-integers)), whose type says it is below its bound:
 
-```ents
-data table = [10, 20, 30, 40]    // *[4]i32
-let x = table[0]                  // OK: 0 < 4
-let y = table[3]                  // OK: 3 < 4
-let z = table[4]                  // compile error: index 4 out of bounds for *[4]i32
-```
-
-A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index (`u32#4`) proves itself against a `*[N]T` the same way a constant does ([Ranged Integers](#ranged-integers)). One whose range may pass N proves nothing, and is checked like any run-time index: its element is an optional where it can be one, and `if let` or `??` resolves it; anywhere else it is an error (`index type u32#5 may exceed *[4]u8 bounds`).
-
-**Runtime indices** produce an optional result when the element type is a pointer or slice, since the access might be out of bounds (the row pointers of a table are the exception, see [Nesting](#nesting)):
+<!-- spec:begin compile -->
 
 ```ents
-data names:[][]u8 = ["Alice", "Bob", "Charlie"]
-let name = names[i]               // type: ?[]u8 (optional — might be OOB)
-```
+data table = [10, 20, 30, 40]               // *[4]i32
 
-The optional result must be resolved before use via `if let` or `??`:
+func ends() -> i32 => table[0] + table[3]   // 0 and 3 are below 4
+func pick(i: u32#4) -> i32 => table[i]      // so is any u32#4
 
-```ents
-// Resolve with fallback value
-let name = names[i] ?? "Unknown"  // type: []u8
-
-// Resolve with branching
-if let name = names[i] {
-  // name is []u8 here, guaranteed in bounds
-  print(name)
-} else {
-  print("not found")
+test "a proven index is read directly" {
+  assert ends() == 50
+  assert pick(2) == 30
 }
 ```
 
-**Primitive element types** cannot be optional (no sentinel value exists for `u8`, `i32`, etc.), so runtime indexing into arrays of primitives requires immediate resolution:
+```ents
+data table = [10, 20, 30, 40]
+
+func past() -> i32 => table[4]
+func wide(i: u32#5) -> i32 => table[i]
+```
+
+```errors
+index 4 out of bounds for *[4]i32
+index type u32#5 may exceed *[4]i32 bounds
+```
+
+<!-- spec:end -->
+
+A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index whose range may pass `N` proves nothing, and is checked like any run-time index: its element is an optional where it can be one, and `if let` or `??` resolves it; anywhere else it is an error.
+
+**A run-time index** is checked when the program runs. Where the element is a pointer or a slice, the element read is an optional, none when the index is out of range (the row pointers of a table are the exception, see [Nesting](#nesting)): `names[i]` on a `[][]u8` is a `?[]u8`. `??` gives a fallback for none, and `if let` branches on it:
+
+<!-- spec:begin compile -->
+
+```ents
+data names: [][]u8 = ["Alice", "Bob", "Charlie"]
+
+func name(i: u32) -> []u8 => names[i] ?? "Unknown"
+
+func initial(i: u32) -> u8 {
+  if let n = names[i] {         // n is a []u8 here: i was in range
+    return n[0] ?? '?'
+  }
+  return '-'
+}
+
+test "a run-time index is resolved with ?? or if let" {
+  assert name(1).len == 3
+  assert name(7).len == 7
+  assert initial(2) == 'C'
+  assert initial(3) == '-'
+}
+```
+
+<!-- spec:end -->
+
+**Primitive element types** have no optional form (no value of a `u8` or an `i32` is left over to mean none), so a run-time index into an array of numbers is resolved where it is written, by `??` or `if let`:
+
+<!-- spec:begin compile -->
 
 ```ents
 data values = [1, 2, 3, 4]
-let v = values[i]                 // type error: no ?i32 type exists
-let v = values[i] ?? 0            // OK: resolved immediately
-if let v = values[i] { ... }      // OK: resolved with branching
-```
 
-**Explicit optional storage:** When inferring an optional type, you can also store the result for later resolution:
+func get(i: u32) -> i32 => values[i] ?? 0
+func twice(i: u32) -> i32 {
+  if let v = values[i] {
+    return v * 2
+  }
+  return -1
+}
+
+test "an element of numbers is resolved on the spot" {
+  assert get(3) == 4
+  assert get(4) == 0
+  assert twice(1) == 4
+  assert twice(-1 as u32) == -1
+}
+```
 
 ```ents
-let msg = strings[idx]            // inferred as ?[]u8
-// ... later ...
-let resolved = msg ?? "default"   // resolve when needed
+data values = [1, 2, 3, 4]
+
+func get(i: u32) -> i32 => values[i]
 ```
 
-This generates a bounds check that produces either the real value or the zero sentinel, then a separate null check when unwrapping. If `msg` is only used once, wasm-opt will typically fuse these into a single bounds check. An optional element is never read through before it is resolved (see [Optional Types](#optional-types)): `names[i][0]` and `names[i].len` are errors, `(names[i] ?? "").len` is not. The slice that `??` gives has a run-time length of its own, so an index into it is resolved again:
+```errors
+runtime index on *[4]i32 requires 'if let' or '??' (no optional type for i32)
+```
+
+<!-- spec:end -->
+
+An optional element can be kept and resolved later. The index is checked where the element is read, which gives the element or none (0); `??` or `if let` tests that where it resolves it. An optional is never read through before it is resolved ([Optional Types](#optional-types)): `names[i][0]` and `names[i].len` are errors, `(names[i] ?? "").len` is not. The slice that `??` gives has a run-time length of its own, so an index into it is resolved again:
 
 <!-- spec:begin compile -->
 
@@ -2530,9 +3036,17 @@ data names: [][]u8 = ["ab", "cde"]
 
 func first(i: u32) -> u8 => (names[i] ?? "")[0] ?? 0
 
+func size(i: u32) -> u32 {
+  let held = names[i]           // a ?[]u8
+  let n = held ?? "none"
+  return n.len
+}
+
 test "a slice that ?? gives is indexed like any slice" {
   assert first(1) == 99
   assert first(5) == 0
+  assert size(0) == 2
+  assert size(9) == 4
 }
 ```
 
@@ -2540,10 +3054,12 @@ test "a slice that ?? gives is indexed like any slice" {
 data names: [][]u8 = ["ab", "cde"]
 
 func first(i: u32) -> u8 => (names[i] ?? "")[0]
+func size(i: u32) -> u32 => names[i].len
 ```
 
 ```errors
 index 0 on []u8 requires 'if let' or '??': a slice's length is only known at run time (no optional type for u8)
+cannot use .len on ?[]u8: it may be none — resolve it with 'if let' or '??' first
 ```
 
 <!-- spec:end -->
@@ -2552,37 +3068,72 @@ When the elements are optionals themselves (`[]?*T`), the element of an index th
 
 #### The `??` Operator
 
-The coalesce operator `??` resolves an optional or out-of-bounds index with a fallback value:
+`a ?? b` is the value of `a`, an optional or an index that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index out of range. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it.
+
+`??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. It does not chain: `a ?? b ?? c` is a syntax error, and since the fallback is not optional, `(a ?? b) ?? c` has nothing left to resolve. To try one optional after another, use `if let`.
+
+<!-- spec:begin compile -->
 
 ```ents
-let name = names[i] ?? "Unknown"     // bounds-checked index with fallback
-let ptr = optional_ptr ?? default    // null-checked pointer with fallback
+data names: [][]u8 = ["ab", "cde"]
+data primes = [2:u32, 3, 5, 7]
+
+func name(i: u32) -> []u8 => names[i] ?? "?"
+func read(p: ?*u32) -> u32 => (p ?? &0).*
+func missing(i: u32) -> bool => (primes[i] ?? 0) == 0
+
+test "?? gives a fallback" {
+  assert name(1).len == 3
+  assert name(9).len == 1
+  assert read(&primes[3]) == 7
+  assert read(0) == 0
+  assert missing(4) && !missing(0)
+}
 ```
 
-The fallback value must be assignable to the element/unwrapped type. The result type is the non-optional type. Where the whole is given for the const pointer or slice that the left side's value is the mutable one of, the fallback is given for that type: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`, and the literal there is constant ([1.5](#the-mut-keyword-on-literals)). With a mutable one wanted, or none (`let s = buf[i..] ?? mut ""`), the fallback is for the mutable type.
+```ents
+data primes = [2:u32, 3, 5, 7]
+
+func pick(i: u32, j: u32) -> u32 => (primes[i] ?? primes[j]) ?? 1
+```
+
+```errors
+runtime index on *[4]u32 requires 'if let' or '??' (no optional type for u32)
+?? requires an optional expression or bounds-checked index
+```
+
+<!-- spec:end -->
+
+Where the whole is given for the const pointer or slice that the left side's value is the mutable one of, the fallback is given for that type: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`, and the literal there is constant ([1.5](#the-mut-keyword-on-literals)). With a mutable one wanted, or none (`let s = buf[i..] ?? mut ""`), the fallback is for the mutable type.
 
 #### `if let` Bindings
 
-`if let` checks an optional value or performs a bounds-checked index, binding the result on success:
+`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index ([4.7](#47-bounds-checked-indexing)) or range ([4.8](#48-slicerange-syntax)) that is in range. Otherwise it runs its `else` branch, if it has one. The binding has the plain type: a `*T` for a `?*T`, a `[]T` for a `?[]T`, the element for an index.
+
+<!-- spec:begin compile -->
 
 ```ents
-// Bounds-checked indexing
-if let name = names[i] {
-  // name is []u8 — guaranteed in bounds
-  print(name)
+type Node = (value: u32, next: ?*Node)
+
+data nodes = mut [Node(1, 0), Node(2, 0)]
+
+func total(n: *Node) -> u32 {
+  if let next = n.next {        // next is a *Node: the field was not none
+    return n.value + total(next)
+  }
+  return n.value
 }
 
-// Optional pointer unwrapping
-if let data = entry.dynamic {
-  // data is *Dynamic — guaranteed non-null
-  process(data)
-} else {
-  // entry.dynamic was none (ptr=0)
-  handle_missing()
+test "if let unwraps an optional pointer" {
+  assert total(&nodes[0]) == 1
+  nodes[0].next = &nodes[1]
+  assert total(&nodes[0]) == 3
 }
 ```
 
-`if let` works with any expression that produces an optional type (`?*T`, `?[]T`) or with index expressions that would produce an optional result.
+<!-- spec:end -->
+
+`if let` takes an expression that gives an optional (`?*T`, `?[]T`, `?Host`) or an index or range that would give one. On a many-pointer, which has no length, there is nothing to check, and `if let` and `??` are errors (see [Element Addresses and Writes](#element-addresses-and-writes)).
 
 <!-- spec:begin compile -->
 
@@ -2640,17 +3191,31 @@ test "an if let binding is a variable of its first branch" {
 
 It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
 
+<!-- spec:begin compile -->
+
 ```ents
 data scores = [95, 87, 42]:*[_]i32
 
 func score(i: u32, lenient: bool) -> i64 => if let s = scores[i] { s } elif lenient { 50 } else { -1 }
+
+test "if let gives a value" {
+  assert score(1, false) == 87
+  assert score(7, true) == 50
+  assert score(7, false) == -1
+}
 ```
+
+<!-- spec:end -->
 
 #### Element Addresses and Writes
 
 Writing `items[i] = v` follows the same rules as reading: the index must be proven in range (a constant or a ranged index into a `*[N]T`), or the write is an error, whatever the element is: `ps[i] = q` with a `*mut [4]*u8` and `i: u32` is refused (`writing to an element needs an index known to be in range`) although `ps[i]` reads as an optional. On a slice no index is proven. For an index that can't be proven, take the element's address: `&items[i]` on a slice or `*[N]T` is `?*T`, none when `i` is out of range, so the check is visible in the code:
 
+<!-- spec:begin compile -->
+
 ```ents
+data buf = mut [0:u8; 4]
+
 func put(s: []mut u8, i: u32, v: u8) -> bool {
   if let p = &s[i] {
     p.* = v
@@ -2658,13 +3223,31 @@ func put(s: []mut u8, i: u32, v: u8) -> bool {
   }
   return false
 }
+
+test "a write at a run-time index goes through the element's address" {
+  assert put(buf, 3, 9)
+  assert !put(buf, 4, 9)
+  assert buf[3] == 9
+}
 ```
+
+```ents
+func put(s: []mut u8, i: u32, v: u8) {
+  s[i] = v
+}
+```
+
+```errors
+writing to an element of a slice needs its index checked: use if let on its address (&s[i])
+```
+
+<!-- spec:end -->
 
 With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. `if let` and `??` have nothing to check on its index, and are errors there (`if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly`), unless its elements are optionals themselves. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
 
 <!-- spec:begin compile -->
 
-`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), an element of an array, slice or many-pointer, or a value that lies in memory, a field of a struct a pointer points to or a part of one (`&p.pos` is a `*mut Vec2` when `p` is a `*mut Body`, [9.6](#fixed-arrays-in-place)). A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), an element of an array, slice or many-pointer, or a value that lies in memory, a field of a struct a pointer points to or a part of one (`&p.pos` is a `*mut Vec2` when `p` is a `*mut Body`, [9.6](#fixed-arrays-in-place)). The cell of a literal is one for its place in the source, kept from one evaluation to the next ([1.5](#the-mut-keyword-on-literals)). A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
 
 ```ents
 func get(p: *i32) -> i32 => p.*
@@ -2680,41 +3263,106 @@ func value(x: i32) -> i32 => get(&x)
 
 <!-- spec:end -->
 
+A value that is already a pointer is not given a cell: `&` before it gives the pointer itself. So `&p`, with `p` a pointer variable, is `p`, and `&"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy: write `mut "abc"` for that. Whether `&` of a pointer stays allowed is undecided, so do not write it. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
+
 ### 4.8 Slice/Range Syntax
 
-A range makes a slice over part of an array or slice, with no copying:
+A range makes a slice over part of an array or slice, with no copying. It is written only in brackets after the value it ranges over; `a..b` alone is no value (a counted loop is `for i in n`, [5.2](#52-loops)):
 
-```ents
-let arr:*[16]u8 = ...
-arr[2..8]       // []u8 from index 2 to 7 (length 6)
-arr[8..]        // []u8 from 8 to end
-arr[..4]        // []u8 from 0 to 3
-arr[..]         // []u8 whole array as slice
-```
+| Form | Elements |
+|------|----------|
+| `xs[a..b]` | from index `a` up to, not including, `b`: `b - a` of them |
+| `xs[a..]` | from `a` to the end |
+| `xs[..b]` | the first `b` |
+| `xs[..]` | all of them, as a slice |
 
 Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not, and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
 
 - On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
 - Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
-- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]`.
+- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]` (`a range on a many-pointer needs an end: it has no length`).
 
 A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
 
-#### Filling and Copying
-
-Assigning to a range fills it or copies into it:
+<!-- spec:begin compile -->
 
 ```ents
-buffer[0..1024] = 0       // fill: every element gets the value
-cv[0..8] = hs[0..8]       // copy 8 elements
-cv[8..16] = iv            // a *[8]T copies all of its elements
+data bytes = [1:u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+func sizes() -> u32 => bytes[2..8].len * 1000 + bytes[8..].len * 100 + bytes[..4].len * 10 + bytes[..].len
+func head(n: u32#9) -> []u8 => bytes[..n]                  // n <= 8 < 16: proven
+func rest(s: []u8, i: u32) -> []u8 => s[i..] ?? ""
+func span(p: [*]u8, n: u32) -> []u8 => p[0..n]             // unchecked
+
+test "ranges" {
+  assert sizes() == 6856
+  assert head(3).len == 3
+  assert rest("hello", 2).len == 3
+  assert rest("hello", 9).len == 0
+  assert span(bytes, 5).len == 5
+}
 ```
+
+```ents
+data four = [1, 2, 3, 4]
+
+func before() -> u32 => four[-1..2].len
+func tail(p: [*]u8) -> []u8 => p[2..]
+```
+
+```errors
+range -1..2 is out of bounds for *[4]i32
+a range on a many-pointer needs an end: it has no length
+```
+
+<!-- spec:end -->
+
+#### Filling and Copying
+
+Assigning to a range fills it or copies into it: `buffer[..] = 0` gives every element the value, and `cv[0..8] = hs[0..8]` copies 8 elements.
 
 What is assigned says which. A value that can be assigned to one element is a fill, whatever the element is, and even where it is an array of elements as well (a `Node` of `type Node = *[2]Node`): a number, a struct (`points[0..n] = origin`), a slice (`names[0..3] = "?"` makes each of three `[]u8` the same one-byte string), a pointer, and in a table a row pointer, so every row of the range then points at the same cells. Anything else is the elements to copy: a slice or a pointer to an array of the element type, an array literal (`buf[0..2] = [1, 2]`, laid out as the range's elements are), or an array held in registers, which is stored element by element. A table's rows are copied as its row pointers, so rows of a const table do not go into a mutable one (`cannot copy *[2][3]i32 into a range of *mut [3]i32: its rows are *[3]i32`), as `m[i] = r` is refused for them; an array literal copied there is written `mut`. A value that is neither is refused as the one it was meant as: a value of the element type as written, a `[3]i32` in registers or a const row for a `*mut [2][3]i32`, as a fill (`fill value: cannot assign [3]i32 to *mut [3]i32`, as `m[i] = r` says), anything else as a copy (`cannot copy []u8 into a range of []i32`).
 
 A fill of bytes, or of zeros of any element (a struct of zeros, a wide integer 0, none for an optional slice), is one `memory.fill`; any other fill computes the value once and stores it into each element in a loop. A copy is one `memory.copy`, or the stores of an array held in registers.
 
-The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side; for a length known only at runtime, use `memcpy` (§10.3), where the length is written out.
+The range is written, so it must be known to fit without a runtime check, like an indexed write: constant or ranged bounds on a `*[N]T`, the whole of a slice (`s[..]`), or any range of a many-pointer. A fill can have a runtime length (`buf[..n] = 0` with `n: u32#17` on a `*[16]u8`). A copy needs both lengths known at compile time and equal, so it can't overrun either side. With a length known only at run time, `memcpy` ([10.3](#103-memory-builtins)) copies into an array pointer, with the length written out; into a slice of run-time length, copy element by element.
+
+<!-- spec:begin compile -->
+
+```ents
+data hs = [1:u32, 2, 3, 4, 5, 6, 7, 8]
+data iv = [9:u32, 10, 11, 12, 13, 14, 15, 16]
+data cv = mut [0:u32; 16]
+
+func load() {
+  cv[..] = 0                    // fill: every element gets the value
+  cv[0..8] = hs[0..8]           // copy 8 elements
+  cv[8..16] = iv                // a *[8]u32 copies all of its elements
+}
+
+func mark(n: u32#17) {
+  cv[..n] = 7                   // a fill can have a run-time length
+}
+
+test "a range assignment fills or copies" {
+  load()
+  assert cv[0] == 1 && cv[7] == 8 && cv[8] == 9 && cv[15] == 16
+  mark(2)
+  assert cv[1] == 7 && cv[2] == 3
+}
+```
+
+```ents
+func copy(d: []mut u8, s: []u8) { d[..] = s }
+func clear(d: []mut u8, n: u32) { d[..n] = 0 }
+```
+
+```errors
+copying into a range needs both lengths known at compile time; use memcpy for a runtime length
+writing to a range needs bounds known to fit: use constant or ranged bounds (on a slice, only s[..])
+```
+
+<!-- spec:end -->
 
 ### 4.9 Method-Call Syntax
 
