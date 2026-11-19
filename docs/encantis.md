@@ -258,201 +258,518 @@ The difference between `data` and an inline literal: `data` gives the allocation
 
 ## 2. Type System
 
+A type is a number or a bool ([2.2](#22-primitive-types)), a value made of other values — a tuple, a struct or a fixed array ([2.7](#27-tuple-types), [2.8](#28-struct-types), [2.4](#24-fixed-arrays-value-type)) — or a reference to memory: a pointer or a slice ([2.5](#25-pointer-types), [2.6](#26-slices)). A host reference ([2.13](#213-host-references)) is a kind of its own. A value is held in registers (wasm locals, parameters, results and globals); only what a pointer or a slice points at is in linear memory ([2.3](#23-value-vs-reference-types)). Types are structural: two types written alike are one type, whatever they are named ([2.11](#211-type-names)); a host type is the one exception. Conversions are in [2.10](#210-type-conversions), and the limits on a type's size in [2.12](#212-limits).
+
 ### 2.1 Unified Value Model
 
-Encantis has a unified model for compound values:
+A compound value is several values held together, and it is held the way its parts are: a tuple, a struct and a fixed array are their parts, one after another, in registers — one wasm value for each part, or several for a part that is itself compound — and a slice is two, its pointer and its length. None of them is in memory unless a pointer points at it.
 
-| Level               | Description                          | Access          |
-|---------------------|--------------------------------------|-----------------|
-| **Multiple values** | Base concept - zero or more values   | positional      |
-| **Tuple**           | Multiple values with indices         | `.0`, `.1`, ... |
-| **Struct**          | Tuple with named fields              | `.name`         |
-| **Slice**           | Struct `(ptr:*T, len:u32)` via `[]T` | `.ptr`, `.len`  |
+| Kind | Written | Its parts | Reached by | Wasm values |
+|------|---------|-----------|------------|-------------|
+| Tuple ([2.7](#27-tuple-types)) | `(u32, f64)` | values, by position | `.0`, `.1`, ... | one per part |
+| Struct ([2.8](#28-struct-types)) | `(x: f32, y: f32)` | named fields, which have positions too | `.x`, or `.0` | one per field |
+| Fixed array ([2.4](#24-fixed-arrays-value-type)) | `[4]u32` | N elements of one type | `[k]`, `k` a constant | one per element |
+| Slice ([2.6](#26-slices)) | `[]u8` | a pointer and a length | `.ptr`, `.len`, `[i]` | two `i32`s |
 
-Each level is a superset of the one above:
+A function with several results returns them as a tuple. `let` takes a tuple or a struct apart by position (`let q, r = f()` is `let (q, r) = f()`) or by name (`let (x:, y:) = p` binds the fields `x` and `y`), and `set` does the same to variables that already exist ([6.5](#65-let-destructuring)):
 
-- All slices are structs (with fields `ptr` and `len`)
-- All structs are tuples (fields have positions)
-- All tuples are multiple values
-
-This unification means the same patterns work everywhere:
+<!-- spec:begin compile -->
 
 ```ents
-// Function calls: positional arguments
-distance(p1, p2)
+type Point = (x: f32, y: f32)
 
-// Function returns: destructure multiple values or tuples
-let d, a = to_polar(point)    // multiple values by position
-let (d:, a:) = get_tuple()    // tuple destructuring by name
+func divmod(a: u32, b: u32) -> (u32, u32) => (a / b, a % b)
+func swap(p: Point) -> Point => (p.y, p.x)
 
-// Slices work like structs
-let (ptr, len) = slice        // by position
-let (ptr:, len:) = slice      // by name
+test "taken apart by position or by name" {
+  let q, r = divmod(17, 5)
+  assert q == 3 && r == 2
+  let (x:, y:) = swap(Point(1.0, 2.0))
+  assert x == 2.0 && y == 1.0
+  set (q, r) = divmod(9, 4)
+  assert q == 2 && r == 1
+  let p = Point(3.0, 4.0)
+  assert p.0 == p.x
+}
 ```
 
-The `let` keyword creates new bindings, `set` assigns to existing variables:
+The four kinds are related, but no one of them is another:
+
+- A struct's fields have positions as a tuple's do (`p.0` is `p.x`), but a struct value is not a tuple value without names, nor the other way round: `cannot assign Point to (f32, f32)`. A tuple literal without names gives a struct its fields by position ([2.8](#struct-constructors)).
+- A fixed array and a tuple of the same element type are different types: a tuple literal is no array (`cannot assign (int(1), int(2)) to [2]u16`), and an array has no `.0`.
+- A slice is made from a tuple of a pointer and a length, `(p, n)` or `(ptr: p, len: n)`, wherever a slice is wanted ([2.6](#26-slices)), but it is not a struct: a pattern does not take it apart (`cannot destructure non-tuple type: []u8`), and it does not convert to or from a struct of the same layout. Read its `.ptr` and `.len`.
+- A tuple is one value: given to a function of two parameters it is one argument, not two.
+- `==` and `!=` compare numbers, bools and addresses, not compound values: compare a struct, a tuple, an array or a slice part by part.
 
 ```ents
-let (x:, y:) = point          // declares x and y (by name)
-set (x:, y:) = other_point    // updates existing x and y
+type Point = (x: f32, y: f32)
+type Span = (ptr: [*]u8, len: u32)
+
+func divmod(a: u32, b: u32) -> (u32, u32) => (a / b, a % b)
+func scale(q: u32, r: u32) -> u32 => q * 10 + r
+
+func a(p: Point) -> (f32, f32) => p
+func b(s: []u8) -> u32 {
+  let (p, n) = s
+  return 0
+}
+func c(s: []u8) -> Span => s
+func d() -> u32 => scale(divmod(17, 5))
+func e(p: Point, q: Point) -> bool => p == q
 ```
+
+```errors
+cannot assign Point to (f32, f32)
+cannot destructure non-tuple type: []u8
+cannot assign []u8 to Span
+'scale' expected 2 arguments, got 1
+argument 1: cannot assign (u32, u32) to u32
+'==' cannot be applied to Point and Point
+```
+
+<!-- spec:end -->
 
 ### 2.2 Primitive Types
 
-| Category | Types |
-|----------|-------|
-| Signed integers | `i8`, `i16`, `i32`, `i64`, `i128`, `i256`, `i512` |
-| Unsigned integers | `u8`, `u16`, `u32`, `u64`, `u128`, `u256`, `u512` |
-| Floating point | `f32`, `f64` |
-| Boolean | `bool` |
+| Category | Types | Wasm value | Bytes in memory |
+|----------|-------|------------|-----------------|
+| Signed integers | `i8`, `i16`, `i32`, `i64` | `i32`, or `i64` for `i64` | 1, 2, 4, 8 |
+| Unsigned integers | `u8`, `u16`, `u32`, `u64` | `i32`, or `i64` for `u64` | 1, 2, 4, 8 |
+| Wide integers | `i128`, `u128`, `i256`, `u256`, `i512`, `u512` | 2, 4 or 8 `i64`s | 16, 32, 64 |
+| Floating point | `f32`, `f64` | `f32`, `f64` | 4, 8 |
+| Boolean | `bool` | `i32`, 0 or 1 | 1 |
 
-**Note on `bool`:** Semantically equivalent to `u1`, but integers cannot be used where booleans are expected.
+Integer arithmetic wraps: a result is reduced to its type's width, in two's complement, and never traps on overflow. A type narrower than 32 bits is held in an `i32` that always holds a value of that type, so the compiler masks (unsigned) or sign-extends (signed) what an operation leaves there: `250:u8 + 10` is 4, and `127:i8 + 1` is -128. Whether an integer is signed is its type's affair: `i32` and `u32` are the same wasm `i32`, and the operator picks the signed or the unsigned instruction (`/`, `%`, `>>`, the comparisons, widening). The operators themselves are in chapter 4.
 
-**Large integers:** `i128`/`u128` through `i512`/`u512` are lowered to multiple `i64` values. Bitwise operations (XOR, AND, OR) are efficient; arithmetic requires multi-instruction sequences.
+<!-- spec:begin compile -->
+
+```ents
+func add8(a: u8, b: u8) -> u8 => a + b
+func inc8(a: i8) -> i8 => a + 1
+func dec(a: u32) -> u32 => a - 1
+func bit(b: bool) -> u32 => b as u32
+
+test "integers wrap at their width" {
+  assert add8(250, 10) == 4
+  assert inc8(127) == -128
+  assert dec(0) == 4294967295
+  assert bit(3 > 2) == 1
+}
+```
+
+<!-- spec:end -->
+
+A number written without a type, `300` or `2.5`, has none of its own until its use gives it one ([1.5](#integer-literals), [2.10](#comptime-literal-promotion)); a message shows it as `int(300)` or `float(2.5)`, as in `cannot assign int(300) to u8`.
+
+**`bool`** is `true` or `false`, and no number. A condition is a `bool`, and an integer is not one; arithmetic and ordering do not take a `bool`. `==`, `!=`, `!`, `&&`, `||` and the bitwise `&`, `|`, `^` do. `b as u32` is 0 or 1; nothing casts to a `bool`, so a number is tested with a comparison, `x != 0` ([2.10](#explicit-casts)).
+
+<!-- spec:begin compile -->
+
+```ents
+func ready(n: u32) -> bool {
+  if n { return true }
+  let b: bool = 1
+  return b + 1
+}
+```
+
+```errors
+condition must be bool, not u32
+cannot assign int(1) to bool
+'+' cannot be applied to bool: cast it to an integer first
+```
+
+<!-- spec:end -->
+
+**Wide integers.** An `i128` or `u128` is two `i64`s, an `i256` or `u256` four, an `i512` or `u512` eight, least significant first, in registers and in memory alike (in memory, little-endian 64-bit limbs one after another, [9.6](#96-structs-and-slices-in-memory)). These work on them, through helper functions the compiler adds to the module or short `i64` sequences: `+`, `-` and `*` (wrapping, as on any integer), negation, `~`, `&`, `|`, `^`, the shifts and rotations, all six comparisons (signed or unsigned as the type is), widening from a narrower integer and between wide types, casts to a narrower integer (the low bits) and between signed and unsigned, and the builtins `min`, `max` and `abs` ([10.1](#101-numeric-builtins)). Not supported yet, and compile errors: `/` and `%`, the saturating operators, casts to and from a float, and the bit counts `clz`, `ctz` and `popcnt`.
+
+<!-- spec:begin compile -->
+
+```ents
+func wide(a: u64, b: u64) -> u128 => (a as u128) * b
+func low(x: u128) -> u64 => x as u64
+func high(x: u128) -> u64 => (x >> 64) as u64
+func less(a: i128, b: i128) -> bool => a < b
+
+test "a u128 holds the whole product of two u64s" {
+  let p = wide(0xFFFFFFFFFFFFFFFF, 3)
+  assert high(p) == 2
+  assert low(p) == 0xFFFFFFFFFFFFFFFD
+  assert less(-1, 0)
+  assert min(p, 7) == 7
+}
+```
+
+```ents
+func half(x: u128) -> u128 => x / 2
+func ratio(x: u128) -> f64 => x as f64
+func bits(x: u128) -> u8 => popcnt(x)
+```
+
+```errors
+'/' on u128 is not supported yet
+cannot cast u128 to f64: not supported yet
+popcnt requires i32, u32, i64 or u64, got u128
+```
+
+<!-- spec:end -->
 
 #### Ranged Integers
 
-Unsigned integer types can carry an upper bound using `#`: `u32#N` means values in the range `[0, N)` (0 through N-1). The bound is checked at compile time and erased at runtime — a `u32#6` is still a `u32` in WebAssembly.
+An unsigned integer type can carry an upper bound: `u32#N` holds the values 0 through N - 1. The bound is a compile-time fact and nothing more: a `u32#6` is a plain `u32` in WebAssembly, and no instruction checks it. What it buys is an index that needs no bounds check ([4.7](#47-bounds-checked-indexing)).
 
-The bound is a number, a name (`u32#size` with a `def size`, or a comptime value parameter, `u32#n`), or any compile-time constant in parentheses, `u32#(n + 1)`, computed exactly as a length is ([2.4](#24-fixed-arrays-value-type)). It is at least 1, since `u32#0` would have no values (`range bound must be at least 1: u32#0 has no values`), and at most the number of values its type has: `u8#256` is every `u8`, and `u8#300` is `range bound 300 is too large for u8, which has 256 values`.
+The `#` follows an unsigned type name (`u8` to `u512`) directly, with no space on either side. The bound written after it is decimal digits or a name — a `def` or a comptime value parameter ([8.7](#87-comptime-value-parameters)) — and any other constant is written in parentheses: `u32#(0x10)`, `u32#(n - 1)`. It is computed exactly, as a length is ([2.4](#24-fixed-arrays-value-type)). A bound is at least 1 (`range bound must be at least 1: u32#0 has no values`) and at most the number of values the type has: `u8#256` is every `u8`, and `u8#300` is `range bound 300 is too large for u8, which has 256 values`. Signed and float types take no bound, and `i32#4`, `u32 #6`, `u32#0x10` are syntax errors; `u32#n-1` names `n-1` (a hyphen joins a name, [1.2](#12-identifiers)).
+
+A value has a range when the compiler can see one:
+
+- a constant that fits it: `let i: u32#6 = 5`;
+- the index of a counted loop, `for i in 6` (a `u32#6`), or `for i in n` with `n` a `def` or a value parameter ([5.2](#52-loops));
+- an operator with a constant `K` — a literal, a `def` or a value parameter, not an `if` of constants:
+  - `x + K`, with `x` ranged (`#N`), is `#(N + K)`, and `x * K` (K above 0) is `#((N - 1) * K + 1)`: a `u32#4 * 2` is a `u32#7`. The constant may stand on either side;
+  - for any unsigned `x`, ranged or not, `x & K` (either side) is `#(K + 1)`, `x % K` (K above 0, on the right) is `#K`, and `x >> K` keeps the bits that are left: a `u32 >> 29` is a `u32#8`, a `u32#256 >> 5` a `u32#8`. The count is the one the shift takes ([4.2](#42-bitwise-operators)): `x >> 32` on a `u32` is `x`, with no range. When `x` has a smaller range of its own, it keeps that one;
+  - a `u8` or a `u16` is bounded by its width, so a `u8` indexes a `*[256]T` with no check;
+- `min` and `max` of ranged values, which have the larger of their ranges ([10.1](#101-numeric-builtins));
+- a comparison that narrows it (below);
+- a cast, `x as u32#N`, which is not checked (below).
+
+Nothing else gives a range: `x - K`, `x / K`, `x | K`, `x << K` and arithmetic on two variables are plain `u32`s. So a proven index is written with the operators that keep one: `h >> 5`, not `h / 32`.
+
+<!-- spec:begin compile -->
 
 ```ents
-func get(buf: *[120]u64, i: u32#6) -> u64 => buf[i * 20]
-//                            ^^^^ index is statically known to be < 6
-//                                 so buf[i * 20] needs no bounds check
-```
+def size = 8
 
-**Range propagation:** Arithmetic on ranged types propagates the bound:
+data squares = [0:u32, 1, 4, 9, 16, 25, 36, 49]
 
-```ents
-for i in 6 {           // i has type u32#6 (values 0..5)
-  let offset = i * 20  // offset has type u32#101 (max value: 5*20=100)
+func square(i: u32#size) -> u32 => squares[i]
+func masked(x: u32) -> u32 => squares[x & 7]
+func top(x: u32) -> u32 => squares[x >> 29]
+func odd(i: u32#4) -> u32 => squares[i * 2 + 1]
+func bucket(h: u32#256) -> u32 => squares[h >> 5]
+func evens() -> u32 {
+  let t: u32 = 0
+  for i in 4 { t += squares[i * 2] }
+  return t
+}
+func last(i: u32#(size - 1)) -> u32 => squares[i + 1]
+func nibble(x: u32#(0x10)) -> u32 => squares[x >> 1]
+
+test "a ranged index needs no check" {
+  assert square(3) == 9
+  assert masked(13) == 25
+  assert top(0xFFFFFFFF) == 49
+  assert odd(3) == 49
+  assert bucket(255) == 49
+  assert evens() == 56
+  assert last(6) == 49
+  assert nibble(15) == 49
 }
 ```
 
-**Safe indexing:** When the index type's bound is within the array size, the compiler skips the bounds check entirely:
+An index whose range may pass the length proves nothing, and is checked like any run-time index ([4.7](#47-bounds-checked-indexing)): it is resolved with `if let` or `??`, and anywhere else it is an error:
 
 ```ents
-data table = [10, 20, 30, 40]  // *[4]i32
-for i in 4 {                    // i: u32#4
-  table[i]                      // no bounds check needed: max index 3 < 4
+data squares = [0:u32, 1, 4, 9, 16, 25, 36, 49]
+
+func a(h: u32#256) -> u32 => squares[h / 32]
+func b(i: u32#8) -> u32 => squares[i - 1]
+func c(i: u32#8) -> u32 => squares[i + 1]
+func d(i: u32#4, j: u32#4) -> u32 => squares[i + j]
+```
+
+```errors
+runtime index on *[8]u32 requires 'if let' or '??' (no optional type for u32)
+runtime index on *[8]u32 requires 'if let' or '??' (no optional type for u32)
+index type u32#9 may exceed *[8]u32 bounds
+runtime index on *[8]u32 requires 'if let' or '??' (no optional type for u32)
+```
+
+<!-- spec:end -->
+
+**Assigning.** A ranged type takes a value whose range fits in it — `u8#8` fits `u8#16`, which fits `u8` — and widens to its plain type and on, like it (`u32#4` to `u32` to `i64`). A plain value, or a constant too large, is an error. A variable keeps the type it is declared with, also one `let` infers: `let k = x & 15` is a `u32#16`, so `k = x` is refused, and a compound assignment has to leave the result in the range (`k &= 7`, `k >>= 1` and `k %= 4` do; `k += 1` does not). A variable meant to take any value is given its plain type, `let k: u32 = x & 15`.
+
+<!-- spec:begin compile -->
+
+```ents
+func f(x: u32) -> u32 {
+  let i: u32#6 = 6
+  let j: u32#6 = x
+  let k = x & 15
+  k += 1
+  k = x
+  return 0
 }
 ```
 
-**Widening:** A narrower ranged type is assignable to a wider one: `u8#8` fits `u8#16` fits `u8`.
+```errors
+cannot assign int(6) to u32#6
+cannot assign u32 to u32#6
+cannot assign u32#17 to u32#16 (the result of '+=')
+cannot assign u32 to u32#16
+```
 
-**Ranges from operators:** For an unsigned `x` and a constant `K`, `x & K` is `#(K+1)`, `x % K` is `#K`, and `x >> K` keeps the bits that are left (`u32 >> 28` is `u32#16`). The count is the one the shift takes (§4.2): `x >> 32` on a `u32` is `x`, with no range, and `x >> 60` is `x >> 28`. A `u8` or `u16` is bounded by its width, so a `u8` always indexes a `*[256]T` without a check.
+<!-- spec:end -->
 
-**Narrowing:** Comparing an unsigned variable with a constant narrows its range wherever the comparison is known to hold:
+**Narrowing.** Comparing an unsigned variable (a parameter or a `let`) with a constant narrows its range wherever the comparison is known to hold: inside an `if` branch, in the later `elif` and `else` branches (where the earlier conditions are false), and in the rest of a block after `return`, `break` or `continue when c`, or after an `if c { ... }` whose branch always exits. `!` turns a comparison around, `&&` combines bounds, and `||` narrows only where it is false. The comparison written is the bounds check, so nothing else runs.
+
+<!-- spec:begin compile -->
 
 ```ents
 data buf = mut [0:u8; 12]
 
-func f(x: u32) -> u8 {
+func put(x: u32, v: u8) {
   if x < 12 {
-    buf[x] = 1               // x: u32#12 here
+    buf[x] = v                   // x is a u32#12 in this branch
   }
+}
+func get(x: u32) -> u8 {
   return 0 when x >= 12
-  return buf[x]              // and here: the return above guards it
+  return buf[x]                  // and here: the return above guards it
+}
+func sum(x: u32, y: u32) -> u8 {
+  if x >= 12 || y >= 12 { return 0 }
+  return buf[x] + buf[y]         // both are below 12 where the || is false
+}
+
+test "a comparison with a constant narrows" {
+  put(3, 7)
+  put(40, 9)
+  assert get(3) == 7
+  assert get(40) == 0
+  assert sum(3, 3) == 14
 }
 ```
 
-It applies inside an `if` branch, to later `elif` and `else` branches (where earlier conditions are false), and to the rest of a block after `return`, `break` or `continue when c`, or after `if c { ... }` whose branch always exits. `&&` combines bounds; `||` only narrows when it's false. A variable assigned anywhere in the narrowed region isn't narrowed. The comparison you write is the bounds check, so nothing extra runs.
+Nothing else narrows: a signed variable, a field (`c.at < 12`), a comparison with a variable, a `while` condition, and a variable assigned anywhere in the region the comparison would cover.
 
+```ents
+data buf = mut [0:u8; 12]
+type Cursor = (at: u32)
+
+func a(x: i32) -> u8 {
+  return 0 when x < 0 || x >= 12
+  return buf[x]
+}
+func b(c: Cursor) -> u8 {
+  return 0 when c.at >= 12
+  return buf[c.at]
+}
+func c(x: u32, n: u32) -> u8 {
+  return 0 when x >= n
+  return buf[x]
+}
+```
+
+```errors
+runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
+runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
+runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
+```
+
+<!-- spec:end -->
+
+**A cast is a promise.** `x as u32#N` gives `x` the range with no check: it is how a program states a fact the compiler cannot see, as `lib/fixedvec.ents` does after `assert v.len > 0` with `(v.len - 1) as u32#n`. A value outside the range is then used as if it were in it, and an index proven by it reads or writes past the array unchecked. Where the fact is not certain, compare instead, and let narrowing give the range.
 ### 2.3 Value vs Reference Types
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value**, with one kind that is neither: a host reference.
 
 | Category       | Types                               | Semantics               |
 |----------------|-------------------------------------|-------------------------|
-| **Values**     | primitives, tuples, structs, `[N]T` | passed by value, copied |
-| **References** | `*T`, `*[N]T`, `[*]T`, `[]T`        | pointer to memory       |
+| **Values**     | primitives, tuples, structs, `[N]T` | held in registers; passed and assigned by copying |
+| **References** | `*T`, `*[N]T`, `*[!]T`, `[*]T`, `[]T`, and their `?` forms | an address (and a slice's length) held in registers, pointing at memory |
 | **Host references** | `type Canvas = host` ([2.13](#213-host-references)) | copied like a value, the host's object shared; never in memory |
 
-`[N]T` has brackets but is a value type — the `N` is a compile-time constant, so the compiler knows exactly how many wasm values to emit. The reference types all involve runtime indirection through memory addresses.
+`[N]T` has brackets but is a value: `N` is a compile-time constant, so the compiler knows how many wasm values it takes. A reference is reached through an address in linear memory.
 
-Mutating a value parameter does NOT affect the caller. Mutating through a reference DOES.
+A parameter is a variable of its function. Assigning to it, or to a field or element of it, changes the function's copy and nothing of the caller's; writing through a reference changes the memory it points at, which the caller sees:
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: i32, y: i32)
+
+data origin: Point = mut (0, 0)
+
+func moved(p: Point) -> Point {
+  p.x += 1                       // the function's own copy
+  return p
+}
+func move(p: *mut Point) {
+  p.x += 1                       // the memory p points at
+}
+
+test "a value is copied, a reference shares" {
+  let p = Point(1, 2)
+  let q = moved(p)
+  assert p.x == 1 && q.x == 2
+  move(origin)
+  move(origin)
+  assert origin.x == 2
+}
+```
+
+<!-- spec:end -->
 
 ### 2.4 Fixed Arrays (Value Type)
 
-`[N]T` is a fixed-size array of N elements, passed by value. Like tuples, small fixed arrays compile to multiple wasm values — no memory allocation.
+`[N]T` is N elements of `T`, held by value: like a tuple, it is N times the wasm values of `T` (`[4]u8` is four `i32`s, `[2]u128` four `i64`s), in no memory. It is copied when it is passed, returned or assigned.
+
+**Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type, the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions ([Nesting](#nesting)) is read only between decimal numbers. A length is at least 0 (`[0]u8` holds nothing; `array length cannot be negative: it is -1`), an integer (`array length must be an integer: it is float(2)`) and at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name ([1.2](#12-identifiers)), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
+
+**A length from the literal.** `[_]` in the type given to a literal with `:` takes its length from the literal: `[95, 87, 42]:*[_]i32` is a `*[3]i32`, and `data scores = [95, 87, 42]:*[_]i32` names one. Not implemented: `[_]` as the declared type of a variable, a global or a `data` (`data d: *[_]u8 = [1, 2, 3]`), and a `[_]T` held by value; write the type on the literal instead.
+
+**Indexing.** The elements are registers, which wasm cannot index by a run-time value, so an array held in registers is indexed only by a compile-time constant, checked against N when the program is compiled. A run-time index, a ranged one too, is an error: an array that is indexed at run time belongs in memory, behind a pointer or a slice. An element of an array variable can be assigned, `v[1] = 9`. An array that lies in memory as a field of a struct a pointer points to (`p.items`) has an address, and there it is indexed by any index as the `*[N]T` it is: see [Fixed Arrays in Place](#fixed-arrays-in-place).
+
+**Members.** `v.len` is N and `v.wid` is `sizeof(T)`, both constant `u32`s ([2.5](#25-pointer-types)). `v.ptr` is an error: an array held by value is its elements and has no address, also where it was read out of memory (`p.*`). One that lies in memory has the address of its place, `(&p.items).ptr`.
+
+**No address.** Since it has none, an array held in registers is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is `cannot assign [3]i32 to *[3]i32`, and `v.sum()` is `the receiver is a [3]i32, which is held in registers and has no address`. An element loop needs a slice or a pointer (`cannot iterate over [3]u32`), and `==` does not compare arrays. An array literal is laid out in memory where a pointer or a slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+
+Fixed arrays suit small data that is read by constant positions: the limbs of a number, the channels of a colour, the coordinates of a vector.
+
+<!-- spec:begin compile -->
 
 ```ents
-[5]u64              // 5 u64 values (same wasm representation as a 5-tuple)
-[4]u8               // 4 u8 values
-[3](f32, f32)       // 3 pairs of f32
+type Rgba = [4]u8
+
+func gray(c: Rgba) -> u8 => ((c[0] as u32 + c[1] + c[2]) / 3) as u8
+func opaque(c: Rgba) -> Rgba {
+  c[3] = 255
+  return c
+}
+
+test "a fixed array is values in registers" {
+  let c: Rgba = [30, 60, 90, 0]
+  assert gray(c) == 60
+  assert opaque(c)[3] == 255
+  assert c[3] == 0
+  assert c.len == 4 && c.wid == 1
+}
 ```
-
-**Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type, the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions (2.5) is read only between decimal numbers. A length is at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name (1.2), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
-
-A fixed array held in registers can only be indexed by **compile-time constant** expressions, since its elements live in registers, not addressable memory:
 
 ```ents
-let v: [4]u32 = [1, 2, 3, 4]
-let x = v[0]        // OK: constant index
-let y = v[3]        // OK: constant index
-let z = v[i]        // ERROR: dynamic index requires memory — use a slice or pointer
+func pick(v: [4]u8, i: u32, k: u32#4) -> u8 {
+  let a = v[i]
+  let b = v[k]
+  let c = v[4]
+  let p = v.ptr
+  return 0
+}
+func total(v: [3]u32) -> u32 {
+  let t: u32 = 0
+  for x in v { t += x }
+  return t
+}
+func sum(r: *[3]i32) -> i32 => r[0] + r[1] + r[2]
+func pass(v: [3]i32) -> i32 => sum(v)
+func literal() -> i32 => sum([1, 2, 3])
 ```
 
-A fixed array that lies in memory, as a field of a struct a pointer points to (`p.items`), has an address, and there it is indexed by any index as the `*[N]T` it is: see [Fixed Arrays in Place](#fixed-arrays-in-place).
+```errors
+dynamic index on value type [4]u8 — use a pointer or slice for dynamic access
+dynamic index on value type [4]u8 — use a pointer or slice for dynamic access
+index 4 out of bounds for [4]u8
+cannot take .ptr of [4]u8: a fixed array held by value has no address
+cannot iterate over [3]u32: use a count, a slice, or a pointer to a fixed-size array
+argument 1: cannot assign [3]i32 to *[3]i32
+```
 
-Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
-
-A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). Nor has it a `.ptr`: a fixed array held by value is its elements, also where it is read out of memory, so `v.ptr` is `cannot take .ptr of [3]i32: a fixed array held by value has no address`. One that lies in memory has the address of its place, `(&p.items).ptr`. An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+<!-- spec:end -->
 
 ### 2.5 Pointer Types
 
-All pointers are `u32` (wasm 32-bit address space). Every pointer type starts with `*` or uses brackets, making references visually distinct from values.
+A pointer is an address in the module's one 32-bit linear memory: one wasm `i32` in registers, 4 bytes in memory. Every pointer type starts with `*` or a bracket form, so a reference never looks like a value. What it points at decides how it is read:
 
-| Type       | Meaning                          | `.len`          | `.wid`              | Indexing                         |
-|------------|----------------------------------|-----------------|---------------------|----------------------------------|
-| `*T`       | pointer to one T                 | N/A             | `sizeof(T)`         | `.*` to dereference              |
-| `*[N]T`    | pointer to N elements            | N (comptime)    | `sizeof(T)`         | `[i]`                            |
-| `*[!]T`    | pointer to null-terminated       | scans, O(n)     | `sizeof(T)`         | `[i]`                            |
-| `*[N][M]T` | pointer to a table of N rows     | N (comptime)    | 4 (a row pointer)   | `[i]` → `*[M]T`, loaded          |
-| `*[NxM]T`  | pointer to N×M packed 2D         | N (comptime)    | `sizeof(T)`         | `[i]` → `*[M]T`, computed        |
-| `[*]T`     | many-pointer (no bounds)         | N/A             | `sizeof(T)`         | `[i]` (unchecked)                |
-| `[]T`      | slice (fat pointer)              | runtime         | `sizeof(T)`         | `[i]`                            |
+| Type | Points at | `.len` | `.wid` | `.ptr` | `p[i]` |
+|------|-----------|--------|--------|--------|--------|
+| `*T` | one `T`; `p.*` is it | — | — | — | `p[0]` only, as `p.*` ([4.6](#46-pointer-operations)) |
+| `*[N]T` | N elements; `p.*` loads all N as a `[N]T` | N | `sizeof(T)` | `[*]T` | checked against N ([4.7](#47-bounds-checked-indexing)) |
+| `*[NxM]T` | N rows of M elements, packed | N | `sizeof(T)` | `[*]T` | row `i`, a `*[M]T` at `i × M × sizeof(T)`, checked against N |
+| `*[N][M]T` | a table: N pointers to rows of M ([Nesting](#nesting)) | N | 4 | `[*][M]T` | row pointer `i`, loaded, checked against N |
+| `*[!]T` | elements up to the first all-zero one | scanned | `sizeof(T)` | `[*]T` | checked against the scanned length |
+| `[*]T` | elements, of a count it does not know | — | `sizeof(T)` | itself | not checked |
+| `[]T` | a slice: pointer and length ([2.6](#26-slices)) | at run time | `sizeof(T)` | `[*]T` | checked against `.len` |
+| `[N]T` | (a value, [2.4](#24-fixed-arrays-value-type)) | N | `sizeof(T)` | — | constant index only |
 
-`.len` is the element count. `.wid` is the byte width of each element (compile-time constant). Together they give the total byte size: `data.len * data.wid`. A packed `*[NxM]T` counts its rows (`.len` is N, as `p[i]` takes a row) but measures an element (`.wid` is `sizeof(T)`), so its size is `p.len * M * p.wid`.
+`.len` is the number of elements (of rows, for `*[NxM]T` and a table), `.wid` the bytes of one element (a row pointer's 4 in a table), and both are `u32`s, constants where the type has the number: `p.len * p.wid` is the bytes a `*[N]T` points at, and `p.len * M * p.wid` those of a packed `*[NxM]T`. A `*T` has no `.len` or `.wid` (`no field 'wid' on type *u64`): `sizeof(T)` is its size. `.ptr` is the address as a many-pointer, `[*]T`; a `[*]T` has no `.len`. Besides these, a pointer to a struct reaches its fields (`p.x`), a pointer to a tuple its parts (`p.0`), through the one pointer ([9.6](#96-structs-and-slices-in-memory)), and every pointer has the type views `p.u8` ... `p.f64` ([4.6](#type-punned-memory-access)).
 
-A `*[!]T` ends at its first element whose bytes are all zero (the terminator the literal is laid out with: one whole element of zeros, a struct's or a slice's `(ptr, len)` too, so the elements of a `*[!][]u8` are pairs as in any array of slices), so `.len` reads elements until it finds it; the scan reads each element as one integer, so `T` must be 1, 2, 4 or 8 bytes wide. Its length known only at run time, an index into a `*[!]T` is checked as one into a slice is ([4.7](#47-bounds-checked-indexing)): `z[i] ?? 0`, `if let x = z[1]`, each scanning for the length. A `[!]T` written without the `*` is held as the same pointer, and reads the same way. Neither is a slice until its length is scanned for: `(z.ptr, z.len)` makes one ([9.5](#95-array-type-conversions)), and passing a `[!]u8` where a `[]u8` is wanted is an error (as it is for a packed `[NxM]T` written without the `*`; `*[NxM]T` is a slice of its N×M elements).
-
-> **Status: a `*[?]T` (a length prefix in LEB128, then the elements) is laid out but not read yet:** indexing one and `.len` are compile errors (`indexing *[?]u8 is not supported yet: its length prefix is not read`).
+<!-- spec:begin compile -->
 
 ```ents
-let p: *u8 = ...
-let v = p.*          // dereference single pointer
+type Pair = (a: u16, b: u16)
 
-let buf: *[16]u8 = ...
-buf[0]               // index into array pointer
-buf.len              // 16 (compile-time constant)
-buf.wid              // 1 (sizeof(u8), compile-time constant)
+data count = mut 0:u32
+data table: *[4]u16 = [10, 20, 30, 40]
+data name: *[!]u8 = "ada"
+data pairs: *[2]Pair = [(1, 2), (3, 4)]
 
-let s: []u64 = ...
-s.len                // element count (runtime)
-s.wid                // 8 (sizeof(u64), compile-time constant)
-s.ptr                // raw pointer ([*]u64)
+func bump(p: *mut u32) -> u32 {
+  p.* += 1                         // .* is the u32 at p
+  return p.*
+}
+func whole(p: *[4]u16) -> [4]u16 => p.*      // the four elements, loaded
+func bytes(p: *[4]u16) -> u32 => p.len * p.wid
+func peek(p: [*]u16, i: u32) -> u16 => p[i]   // no length: unchecked
+func second(p: *Pair) -> u16 => p.b           // a field through the pointer
 
-let mp: [*]u8 = ...
-mp[i]                // caller must ensure bounds
-mp.wid               // 1 (sizeof(u8))
+test "pointers" {
+  assert bump(count) == 1
+  assert bump(count) == 2
+  assert whole(table)[3] == 40
+  assert bytes(table) == 8
+  assert peek(table.ptr, 2) == 30
+  assert name.len == 3
+  assert (name[1] ?? 0) == 'd'
+  assert second(&pairs[1]) == 4
+}
 ```
 
+<!-- spec:end -->
+
+**An address as a constant.** A plain pointer (`*T`, `*[N]T`, `*[!]T`, `[*]T`, mutable or not) is an address, and an integer constant that fits 32 bits stands for one with no cast: `global words: [*]mut u32 = 0` is a pointer that a function sets before it is used. A constant that fits an `i32` or a `u32` is taken as its 32-bit pattern (`-1` is the address 4294967295), and one that fits neither is an error (`cannot assign int(5000000000) to u32`). A value of an integer type needs a cast, `x as *u32` ([2.10](#explicit-casts)). A slice is never a number: `cannot assign int(0) to []u8`. A plain pointer 0 is an address like any other, not none, so nothing stops a read through it; where "no pointer" is meant, use an optional, `?*T` (below).
+
+<!-- spec:begin compile -->
+
+```ents
+data space = mut [0:u32; 4]
+
+global words: [*]mut u32 = 0          // an address, set before it is used
+
+func setup() { words = space as [*]mut u32 }
+
+test "a constant address for a plain pointer" {
+  setup()
+  words[1] = 5
+  assert space[1] == 5
+}
+```
+
+```ents
+func f(x: u32) -> *u32 => x
+func g() -> []u8 => 0
+```
+
+```errors
+cannot assign u32 to *u32
+cannot assign int(0) to []u8
+```
+
+<!-- spec:end -->
+
+**Null-terminated arrays.** A `*[!]T` ends at its first element whose bytes are all zero (the terminator the literal is laid out with: one whole element of zeros, a struct's or a slice's `(ptr, len)` too, so the elements of a `*[!][]u8` are pairs as in any array of slices), so `.len` reads elements until it finds it; the scan reads each element as one integer, so `T` must be 1, 2, 4 or 8 bytes wide (`cannot find the length of *[!]Rgb: the scan for its zero end needs elements of 1, 2, 4 or 8 bytes`). Its length known only at run time, an index into a `*[!]T` is checked as one into a slice is ([4.7](#47-bounds-checked-indexing)): `z[i] ?? 0`, `if let x = z[1]`, each scanning for the length. `[!]T` written without the `*` is the same type, held as the same pointer. Neither is a slice until its length is scanned for: `(z.ptr, z.len)` makes one ([9.5](#95-array-type-conversions)), and passing a `*[!]u8` where a `[]u8` is wanted is an error. A packed array is written with its `*`, `*[NxM]T`, and it converts to a slice of its N×M elements.
+
+**Length-prefixed arrays.** Not implemented: a `*[?]T` (a length in LEB128, then the elements) is laid out but not read: indexing one and `.len` are compile errors (`indexing *[?]u8 is not supported yet: its length prefix is not read`).
+
+**Framings with dimensions.** Not implemented: a framing combined with another dimension — `*[5x!]T`, `*[!x!]T`, `*[5x?]T` — is accepted by the grammar and the checker, but neither laid out nor read as the framings say. Write a table of framed rows instead, `*[5][!]T` ([Nesting](#nesting)).
 #### Optional Types
 
-Pointers, slices and host references ([2.13](#213-host-references)) can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
+A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **optional**: it then holds a value or none. `?` is written directly before `*`, `[]`, `[*]` or a type name: `?*T`, `?*mut T`, `?*[N]T`, `?*[!]T`, `?[*]T`, `?[]T`, `?[]mut T`, `?Name`. Anything else after `?` is a syntax error: `?u32`, `?[4]u8`, `?[!]u8`, `?(*u8)`, `??*u8`. A number has no none, since every bit pattern of a `u8` is a value, and neither has a tuple, a struct or a fixed array. A name is made optional when it names a pointer, a slice or a host type: with `type P = *u8`, `?P` is a `?*u8`, and with `type Count = u32`, `?Count` is `cannot make Count optional: only a pointer, a slice or a host reference has a none`. A type parameter is checked the same way in each instance: `?T` given `T = u32` is that error, `in keep(T = u32)`.
 
-```ents
-?*T              // optional pointer — either valid *T or none (ptr=0)
-?[]T             // optional slice — either valid []T or none (ptr=0)
-?*[N]T           // optional pointer to array
-?[*]T            // optional many-pointer
-```
+**None** is written `0` wherever an optional is wanted — a `let`, a result, an argument, a field, a global, an element of a literal or of `data` — and in a cast, `0 as ?[]u8` as `0 as ?*u8`. An optional slice that is none is the pointer 0 with the length 0; any slice whose pointer is 0 is none once it is optional. Program data starts at address 8 ([9.0](#90-data-layout)), so no `data` and no literal has the address 0, and an empty slice of real memory (`""`, `p[0..0]`) is not none.
 
-Only pointer, slice and host reference types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid). A name for one is made optional the same way: with `type P = *u8`, `?P` is a `?*u8`, and in a generic, `?T` is the type `T` is given made optional, so `T` has to be one of these (`cannot make i32 optional: only a pointer, a slice or a host reference has a none`).
-
-None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
+- `x == 0` and `x != 0` ask whether it is none (an optional slice compares its pointer). An optional slice compares with nothing but `0`, and with `==` and `!=` only; an optional pointer compares as a pointer does.
+- A plain value widens to an optional implicitly: a `*T` passes for a `?*T`, a `[]T` for a `?[]T`, also as an argument or a result.
+- A global of an optional type given no value starts as none. A `let` of an optional pointer or slice given no value is uninitialized, as a `let` of a number is ([3.3](#33-variables)): in a loop it keeps what the last pass left in it. (A `let` of an optional host reference starts as none, [2.13](#never-null-and-optional).)
+- In WebAssembly an optional is held as its plain form is: an `i32` for a pointer, two for a slice, an `externref` for a host reference.
 
 <!-- spec:begin compile -->
 
@@ -485,13 +802,54 @@ test "none is 0 for an optional pointer and an optional slice" {
   assert size(find(2)) == 3
   assert size(find(3)) == 99
   assert size(0) == 99
+  assert size("") == 0
   assert last == 0
   assert cell(0) == 0
   assert unnamed().name == 0
 }
 ```
 
-Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none. An optional is used as its plain form only once resolved:
+<!-- spec:end -->
+
+**Resolving.** An optional is used as its plain form only once it is resolved, and two things resolve one: `if let v = x { ... }`, which gives the plain value `v` in its first branch ([`if let` Bindings](#if-let-bindings)), and `x ?? fallback`, which is `x`'s value, or `fallback` where `x` is none ([The `??` Operator](#the--operator)). Until then nothing is read through it: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type view), a range of it, a loop over it and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared, as above, and passed where an optional is wanted.
+
+<!-- spec:begin compile -->
+
+```ents
+type Node = (next: ?*Node, value: u32)
+
+data tail: Node = (0, 30)
+data head: Node = (tail, 10)
+
+func value-after(n: *Node) -> u32 {
+  if let next = n.next {
+    return next.value
+  }
+  return 0
+}
+func next-or-self(n: *Node) -> *Node => n.next ?? n
+
+test "if let and ?? give the plain pointer" {
+  assert value-after(head) == 30
+  assert value-after(tail) == 0
+  assert next-or-self(tail).value == 30
+}
+```
+
+A comparison with `0` asks and resolves nothing: it does not change the type of `x`, inside an `if` or after a guard, so `return 0 when p == 0` leaves `p` a `?*u32`. An early exit on none is written with `if let ... else`, or with a fallback:
+
+```ents
+func read(p: ?*u32) -> u32 {
+  return 0 when p == 0
+  return p.*
+}
+```
+
+```errors
+cannot dereference ?*u32: it may be none — resolve it with 'if let' or '??' first
+```
+
+No other number is none, a plain slice has no none, and an optional slice is only ever equal or not to none:
 
 ```ents
 func f(s: ?[]u8) -> bool {
@@ -520,81 +878,80 @@ cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' f
 
 <!-- spec:end -->
 
-Optional values cannot be used directly where non-optional values are expected. You must resolve them using `if let` or `??`:
-
-```ents
-let p: ?*u8 = get_optional_ptr()
-p.*                              // type error: ?*u8 is not *u8
-if let val = p { val.* }         // OK: unwrapped inside if-let
-p ?? default_ptr                 // OK: resolved with fallback
-```
-
-Nothing is read through an optional before it is resolved: indexing it (`q[0]`), dereferencing it (`p.*`), a member of it (`p.x`, `s.len`, `s.ptr`, a type pun), a range of it, a loop over it, and moving it (`p + 4`) are all errors (`cannot index ?*[3]i32: it may be none — resolve it with 'if let' or '??' first`). It can be compared (an optional slice only with `0`), and passed where an optional is expected.
-
-**Representation:** At the WASM level, optional pointers/slices have the same representation as their non-optional counterparts — a single `i32` for pointers, `(i32, i32)` for slices. The value `0` (null pointer) means "none." For slices, `ptr=0` means none (distinguishable from an empty slice which has `ptr≠0, len=0`).
-
-**Data section layout:** To ensure address `0` is never a valid data pointer, the compiler reserves the first 4 bytes of linear memory when any optional types are used and the first data entry would otherwise start at offset 0.
-
-**Assignability:** Non-optional values widen to optional implicitly (`*T` → `?*T`), but the reverse requires explicit unwrapping.
-
-**One rule for none.** What has a none is an optional, whatever it holds: `?*T`, `?[]T`, an optional host reference `?Canvas` ([2.13](#213-host-references)), and the optional function values still to come. For each of them alike:
-
-- none is written `0`, and `x == 0` / `x != 0` are the question whether it is none (an optional slice compares its pointer);
-- a global of one given no value starts as none;
-- `if let` and `??` give the plain value inside, and an optional is used as its plain form only once resolved (`cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first`).
-
-One thing differs, a `let` given no value. A `let` of an optional pointer or slice is then uninitialized, as a `let` of a number is ([3.3](#33-variables)): in a loop it holds what the last pass left in it. A `let` of an optional host reference is the exception: it is none, on every pass of a loop, so the module never holds on to a host object it did not mean to keep. An optional function value, held as a number as a pointer is, will be uninitialized as a pointer is.
-
-A plain type has no none, so `== 0` is no question of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer is the one that still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference (and a plain function value) has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one.
+**Plain types and 0.** A plain type has no none, so `== 0` asks nothing of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one ([2.13](#never-null-and-optional)).
 
 #### Mutability
 
-By default, pointers are **read-only** (`const`). Add `mut` to allow writes:
+A pointer is **read-only** unless it is written with `mut`, and so is a slice and a many-pointer:
+
+| Read-only | Writable | |
+|-----------|----------|-|
+| `*T` | `*mut T` | one `T` |
+| `*[N]T` | `*mut [N]T` | N elements (and every other array pointer: `*mut [!]T`, `*mut [N][M]T`, ...) |
+| `[*]T` | `[*]mut T` | a many-pointer |
+| `[]T` | `[]mut T` | a slice |
+
+Only a `mut` one is written through: with `p` read-only, an assignment to `p.*`, to an element `p[i]`, to a field `p.x`, or through the address `&p[i]` of an element is `cannot write through const pointer — use *mut for mutable access`. A mutable pointer passes where a read-only one of the same type is wanted (the same holds for a slice and a many-pointer, and a `*mut [N]T` becomes a `[]mut T` or a `[]T`), and never the other way round. So a function takes a read-only pointer or slice unless it writes, and then any caller can pass what it has.
+
+`mut` belongs to one pointer: in `*mut *u8` the pointer that is pointed at can be replaced (`p.* = q`), but the byte it points at cannot be written (`p.*.* = 1` is refused). A `data` without `mut` is read-only, and so is a literal: where a mutable pointer or slice is wanted, a literal is written with `mut`, which gives it memory of its own ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). A cast between pointer types converts the address, and the type it gives may be `mut` (`p as *mut u8`); a slice is not cast (`cannot cast []u8 to []mut u8`).
+
+<!-- spec:begin compile -->
 
 ```ents
-*T                   // read-only pointer (default)
-*mut T               // mutable pointer
-[]u8                 // read-only slice (default)
-[]mut u8             // mutable slice
-[*]u8                // read-only many-pointer (default)
-[*]mut u8            // mutable many-pointer
+data buf = mut [0:u8; 4]
+data text = "hi"
+
+func size(msg: []u8) -> u32 => msg.len        // reads only: a const slice
+func put(dst: []mut u8, v: u8) -> bool {       // writes: a mutable slice
+  if let p = &dst[0] {
+    p.* = v
+    return true
+  }
+  return false
+}
+
+test "a mutable pointer passes where a const one is wanted" {
+  assert size(buf) == 4
+  assert put(buf, 7)
+  assert buf[0] == 7
+  assert size(text) == 2
+  assert put(mut "ab", 1)
+}
 ```
 
 ```ents
-func print(msg: []u8)            // read-only: cannot write through msg
-func fill(buf: []mut u8)         // mutable: can write through buf
+data text = "hi"
 
-data buf = mut [0:u8; 1024]
-data text = "hello"
-print(buf)                        // OK: mutable → const (implicit coercion)
-fill(buf)                         // OK: mutable → mutable
-print("hello")                    // OK: const literal → const param
-fill(text)                        // ERROR: const data → mutable param
-fill("hello")                     // ERROR: a literal is constant: write `mut "hello"` for a []mut u8
-fill(mut "hello")                 // OK: a mutable copy of its own
+func put(dst: []mut u8, v: u8) -> bool => false
+func a() -> bool => put(text, 1)
+func b() -> bool => put("hi", 1)
+func c(p: *u8) { p.* = 1 }
+func d(p: *u8) -> *mut u8 => p
+func e(p: *mut *u8) { p.*.* = 1 }
 ```
 
-**Coercion:** mutable pointers implicitly coerce to read-only (widening). The reverse is an error.
+```errors
+argument 1: cannot assign *[2]u8 to []mut u8
+argument 1: a literal is constant: write `mut "hi"` for a []mut u8
+cannot write through const pointer — use *mut for mutable access
+cannot assign *u8 to *mut u8
+cannot write through const pointer — use *mut for mutable access
+```
 
-See [The `mut` Keyword on Literals](#the-mut-keyword-on-literals) for how `mut` interacts with literal expressions and `data` declarations.
+<!-- spec:end -->
 
 #### Nesting
 
-```ents
-*[]T        // pointer to a slice (points to ptr+len pair)
-*[N][M]T    // pointer to N pointers to M-element arrays
-*[NxM]T     // pointer to N×M packed elements (contiguous 2D)
-```
+A pointer can point at any type that lies in memory: `*[]T` points at a slice (its pointer and length, 8 bytes), `**T` at a pointer, `*[N]Point` at N structs. Arrays of arrays are written two ways:
+
+| Type | In memory | `p[i]` |
+|------|-----------|--------|
+| `*[NxM]T` | N×M elements in one packed block | the address of row `i`, computed |
+| `*[N][M]T` | a table: N row pointers, each row laid out on its own | row pointer `i`, loaded |
 
 The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table. Rows that are framed or packed are laid out on their own too: an element of `*[N][!]T` is a `*[!]T`, and one of `*[N][AxB]T` a `*[AxB]T` (so `m[i][j][k]` is cell `k` of row `j` of block `i`); a `*[!][M]T` is a table whose row pointers end with a null one.
 
-```ents
-data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
-data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]   // a slice of three row pointers
-
-func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
-func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
-```
+A fixed array that is a field of a struct is the exception: it lies in place, packed, wherever the struct is ([Fixed Arrays in Place](#fixed-arrays-in-place)). A generic type that puts a type parameter behind a pointer makes a table of it too when it is given a fixed array, so a row that should lie in place is wrapped in a one-field struct: `Vec((cells: [3]i32))` ([8.5](#85-generic-types)).
 
 In a table:
 
@@ -609,52 +966,134 @@ In a table:
 - `m.*` is an error: the rows lie apart, so there is no `[N][M]T` to load or store whole.
 - A table written as a literal is laid out when the program is compiled, rows and table alike, so its values must be constants (a framed or packed row is held as its pointer, so a variable can stand for one). With `mut` each row is its own: `data board: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros, not one row twice.
 
-### 2.6 Slices
-
-`[]T` is a fat pointer: a `(ptr: [*]T, len: u32)` pair. Slices are the standard way to pass variable-length data.
+<!-- spec:begin compile -->
 
 ```ents
-let text: []u8 = "hello"        // read-only slice (default)
-let buf: []mut u8 = get-buf()   // mutable slice
+data grid: *[2][3]i32 = [[7, 1, 2], [3, 4, 5]]   // two rows, then a table of their two addresses
+data rows: [][2]i32 = [[7, 1], [3, 4], [5, 6]]   // a slice of three row pointers
+data board: *mut [2][3]i32 = mut [[0; 3]; 2]
+data spare = mut [9:i32, 9, 9]
 
-text.ptr        // extract pointer
-text.len        // get length (u32)
-text[i] ?? 0    // element access (read), checked against text.len
-if let p = &buf[i] { p.* = 0 }   // element write (only on []mut)
+func cell(i: u32#2, j: u32#3) -> i32 => grid[i][j]
+func row-sum(i: u32) -> i32 => if let r = grid[i] { r[0] + r[1] + r[2] } else { 0 }
+func second(i: u32) -> i32 => (rows[i] ?? [-1, -1])[1]
+func total() -> i32 {
+  let t = 0
+  for row in grid {
+    for v in row { t += v }
+  }
+  return t
+}
+
+test "a table is row pointers" {
+  assert cell(1, 2) == 5
+  assert row-sum(0) == 10
+  assert row-sum(5) == 0
+  assert second(1) == 4
+  assert second(3) == -1
+  assert total() == 22
+  assert grid.len == 2 && grid.wid == 4 && grid[1].len == 3
+  assert grid[1].*[2] == 5
+  board[0][2] = 4
+  board[1] = spare
+  assert board[0][2] == 4 && board[1][0] == 9
+}
 ```
 
-A slice's length is a run-time value, so no index into a slice is known to be in range at compile time, a constant one either: every element read is checked against `.len` and resolved with `if let` or `??` ([4.7](#47-bounds-checked-indexing)), and an element is written through its address.
+<!-- spec:end -->
+### 2.6 Slices
 
-Slices are value types at the language level (the ptr+len pair is copied), but the data they point to is shared. Mutating through a `[]mut` slice affects the underlying memory.
+`[]T` is a pointer and a length, `(ptr: [*]T, len: u32)`: two `i32`s in registers, and 8 bytes in memory, the pointer and then the length. It is the standard way to pass data whose length is known only when the program runs. `[]mut T` is the one that can be written through ([Mutability](#mutability)).
+
+- `s.ptr` is the pointer, a `[*]T` (a `[*]mut T` for a `[]mut T`), `s.len` the number of elements, a `u32`, and `s.wid` the bytes of one element, a constant.
+- A `*[N]T` becomes a slice of its N elements wherever a slice is wanted, and so does a string or an array literal; a range `p[a..b]` is a slice of part of an array or of another slice ([4.8](#48-slicerange-syntax)).
+- A tuple of a pointer and a length is a slice wherever a slice is wanted: `(p, n)`, or `(ptr: p, len: n)` in either order. A many-pointer alone is not a slice, since it has no length (`cannot assign [*]u32 to []u32`), nor is a `*[!]T` until its length is scanned, `(z.ptr, z.len)`, nor any number.
+- The length is known only at run time, so no index into a slice is proven when the program is compiled, a constant one either: every element read is checked against `.len` and resolved with `if let` or `??` ([4.7](#47-bounds-checked-indexing)), and an element is written through its address, `if let p = &s[i] { p.* = v }`.
+- `for x in s` loads each element in turn, and `for i, x in s` gives its index too ([5.2](#52-loops)).
+- A slice is a value: passing or assigning one copies the pointer and the length, and the elements are shared. Writing through a `[]mut T` changes the memory every slice of it sees.
+
+<!-- spec:begin compile -->
+
+```ents
+data primes = [2:u32, 3, 5, 7, 11]
+
+func sum(xs: []u32) -> u32 {
+  let t: u32 = 0
+  for x in xs { t += x }
+  return t
+}
+func at(xs: []u32, i: u32) -> u32 => xs[i] ?? 0
+func view(p: [*]u32, n: u32) -> []u32 => (p, n)
+func clear(xs: []mut u32) {
+  for i in xs.len {
+    if let p = &xs[i] { p.* = 0 }
+  }
+}
+
+test "a slice is a pointer and a length" {
+  assert sum(primes) == 28
+  assert sum(primes[1..3]) == 8
+  let s = view(primes.ptr, 2)
+  assert s.len == 2 && s.wid == 4
+  assert at(s, 1) == 3
+  assert at(s, 2) == 0
+  let scratch: []mut u32 = mut [1, 2, 3]
+  clear(scratch)
+  assert sum(scratch) == 0
+}
+```
+
+```ents
+func view(p: [*]u32) -> []u32 => p
+func first(xs: []u32) -> u32 => xs[0]
+```
+
+```errors
+cannot assign [*]u32 to []u32
+index 0 on []u32 requires 'if let' or '??': a slice's length is only known at run time (no optional type for u32)
+```
+
+<!-- spec:end -->
 
 #### Static Memory Allocation
 
-Use `data` to allocate in the wasm data section:
+The memory a slice views is laid out by `data` ([3.2](#32-data-declarations-data)) or by a literal given where a slice is wanted ([1.5](#array-literals)). `data` names a pointer to its literal, a `*[N]T` or, with `mut`, a `*mut [N]T`, and that becomes a `[]T` or a `[]mut T` wherever one is wanted ([9.5](#95-array-type-conversions)):
+
+<!-- spec:begin compile -->
 
 ```ents
-data table = [1:u64, 2, 3, 4]          // table: *[4]u64 (const, deduplicable)
+data table = [1:u64, 2, 3, 4]          // table: *[4]u64 (const)
 data key = x"9d61b19deffd5a60"          // key: *[8]u8 (const)
-data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, unique)
+data buf = mut [0:u8; 1024]             // buf: *mut [1024]u8 (mutable, its own)
+
+func sum(xs: []u64) -> u64 {
+  let t: u64 = 0
+  for x in xs { t += x }
+  return t
+}
+
+test "data is viewed as slices" {
+  assert sum(table) == 10
+  assert sum(table[2..]) == 7
+  assert key.len == 8 && buf.len == 1024
+}
 ```
 
-The inferred type is `*[N]T` (const) or `*mut [N]T` (when `mut` is used). These auto-coerce to `[]T` or `[]mut T` wherever one is expected (9.5).
+<!-- spec:end -->
 
 ### 2.7 Tuple Types
 
-```ents
-(i32, i32)           // pair of i32
-(f64, f64, f64)      // triple of f64
-```
+A tuple is values of any types, by position: `(i32, i32)` is a pair of `i32`s, `(u8, f64, bool)` three values of three types.
 
-Standard tuple semantics:
-
-- `()` is void (0-tuple)
-- `(x)` is grouping, not a tuple — the type is just `x`
-- `(x, y, ...)` is a tuple (2+ elements)
+- `()` is void, the empty tuple: the type of a function with no result.
+- `(x)` is grouping, not a tuple — the type is just `x`.
+- `(x, y, ...)` is a tuple, of two or more parts.
 
 Grouping holds wherever a type is written: after a colon, in a `type` declaration, in a cast, as a type argument, and as the type a constructor call names, so `x: (u32)` takes a `u32` and `(Point)(1.0, 2.0)` is `Point(1.0, 2.0)`. A field with a name makes a struct of one field: `(v: f64)`. After `->` the parentheses list the results: `-> (u32)` is one `u32`, `-> (q: i32, r: i32)` two named results, and `-> ((q: i32, r: i32))` one result that is a struct.
 
-Tuples compile to multiple wasm values — no memory, no pointers. Access elements by position or name:
+A tuple is held as its parts, each in registers of its own: no memory, no pointer. A tuple of tuples is all their parts, and a function's results are a tuple returned as several wasm results. `t.0`, `t.1`, ... reach the parts, and chain, `t.0.1`; a position past the last is `invalid tuple index`. A tuple literal is written the same way, `(a, b)`, and its parts take their types from where it is used, or their defaults ([3.3](#33-variables)). Two tuple types are one type when their parts are, in order.
+
+<!-- spec:begin compile -->
 
 ```ents
 type Fe = (u64, u64, u64, u64, u64)
@@ -664,41 +1103,60 @@ func fe-zero() -> Fe => (0, 0, 0, 0, 0)
 func fe-add(a: Fe, b: Fe) -> Fe => (
   a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4
 )
+
+test "a tuple is its values" {
+  let one: Fe = (1, 0, 0, 0, 2)
+  let two = fe-add(one, one)
+  assert two.0 == 2 && two.4 == 4
+  assert fe-add(fe-zero(), one).4 == 2
+}
 ```
 
-Tuples and fixed arrays `[N]T` are closely related — both are value types stored in registers. The difference: tuples can have mixed field types and named fields; fixed arrays have uniform element type and integer indices.
+<!-- spec:end -->
 
-The key distinction: **tuples are values** (registers, stack, multi-value returns), **arrays are memory** (linear memory, pointer-indexed).
+Tuples and fixed arrays `[N]T` are both values held in registers. A tuple's parts may have different types, and names (it is then a struct); an array's elements have one type and are reached by a constant index, `v[k]` — by a run-time index only through a pointer or a slice, in memory ([2.4](#24-fixed-arrays-value-type)). Neither converts to the other ([2.1](#21-unified-value-model)).
 
 ### 2.8 Struct Types
 
-Structs are tuples with named fields, using the same `()` syntax:
+A struct is a tuple whose fields have names, written with the same parentheses:
+
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:f32, y:f32)
-type Rect = (origin:Point, size:(w:f32, h:f32))
-type Color = (r:u8, g:u8, b:u8, a:u8)
+type Point = (x: f32, y: f32)
+type Rect = (origin: Point, size: (w: f32, h: f32))
+type Color = (r: u8, g: u8, b: u8, a: u8)
 ```
+
+<!-- spec:end -->
+
+A struct is held as its fields, in registers, in the order they are declared ([9.3](#93-wasm-type-mapping)); in memory they lie one after another, with no padding ([9.6](#96-structs-and-slices-in-memory)). Its fields keep their positions, so `p.0` is `p.x`. Struct types are structural: two struct types with the same field names and types in the same order are one type, whatever they are called ([2.11](#211-type-names)), and a value whose fields are held the same way passes for one (`(x: i8, y: i8)` for `(x: i32, y: i32)`, [9.2](#structural-coercion)). A struct is not compared with `==` ([2.1](#21-unified-value-model)).
 
 #### Struct Constructors
 
-Two constructor syntaxes are supported:
+A struct type's name called like a function makes one, with a value for every field: positionally in declaration order, or by name in any order. A field whose value is a variable of the field's name is written with a trailing colon, `(x:, y:)` for `(x: x, y: y)`. Every field gets a value: there are no defaults (`Point expects 2 fields, got 1: no value for y`).
+
+<!-- spec:begin compile -->
 
 ```ents
-// Positional (fields in declaration order)
-let p = Point(1.0, 2.0)
+type Point = (x: f32, y: f32)
+type Size = (w: f32, h: f32)
+type Rect = (origin: Point, size: Size)
 
-// Named (any order, self-documenting)
-let q = Point(y: 4.0, x: 3.0)
+func area(r: Rect) -> f32 => r.size.w * r.size.h
+func at(x: f32, y: f32) -> Point => (x:, y:)
 
-// Nested structs
-let r = Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
-
-// Shorthand: trailing colon when variable name matches field name
-let x = 3.0
-let y = 4.0
-let p = (x:, y:)             // equivalent to (x: x, y: y)
+test "constructors" {
+  let p = Point(1.0, 2.0)                       // positional
+  let q = Point(y: 4.0, x: 3.0)                 // by name, any order
+  let r = Rect(p, (w: 10.0, h: 5.0))            // nested
+  assert q.x == 3.0
+  assert area(r) == 50.0
+  assert at(5.0, 6.0).y == 6.0
+}
 ```
+
+<!-- spec:end -->
 
 <!-- spec:begin compile -->
 
@@ -793,24 +1251,19 @@ test "values in the order written, fields by name" {
 ```
 
 <!-- spec:end -->
-
 #### Struct Field Access
 
-```ents
-let p:Point = Point(3.0, 4.0)
-let x = p.x              // field read
-p.y = 5.0                // field write
-```
+A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call, and fields of fields chain. In a variable, each field is a register of its own, and assigning one changes that register. Through a pointer, `p.x` reads or writes memory ([9.6](#96-structs-and-slices-in-memory)), and a write needs a `*mut` pointer. A field of a call's result is read and the rest dropped.
 
-A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call. Fields of fields chain.
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:f32, y:f32)
-type Rect = (origin:Point, size:(w:f32, h:f32))
+type Point = (x: f32, y: f32)
+type Rect = (origin: Point, size: (w: f32, h: f32))
 
 func bounds() -> Rect => Rect(Point(0.0, 0.0), (w: 100.0, h: 50.0))
 
-func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
+func nudge(p: *mut Point, list: [*]mut Rect, i: u32) -> f32 {
   p.x = 0.0                    // a field of the Point that p points to
   p.y += 1.0
   list[i].origin.x = p.x       // a field of a field of an element
@@ -818,10 +1271,18 @@ func nudge(p:*mut Point, list:[*]mut Rect, i:u32) -> f32 {
   r.size.w = 2.0               // a field of a field of a variable
   return bounds().size.h       // a field of a call's result
 }
+
+data spot: Point = mut (5.0, 5.0)
+data rects: *mut [2]Rect = mut [((1.0, 1.0), (2.0, 2.0)), ((3.0, 3.0), (4.0, 4.0))]
+
+test "fields wherever the struct is" {
+  assert nudge(spot, rects as [*]mut Rect, 1) == 50.0
+  assert spot.y == 6.0
+  assert rects[1].origin.x == 0.0
+}
 ```
 
-`p.x` through a pointer reads or writes memory (§9.6), and a write needs a `*mut` pointer. In a variable, each field is a register of its own.
-
+<!-- spec:end -->
 #### Types That Refer to Themselves
 
 A type can refer to itself through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
