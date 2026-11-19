@@ -583,18 +583,23 @@ func draw(width: f32, height: f32) {
     rect(width - 160.0, 32.0, 120.0 * ready, 3.0, if ready >= 1.0 { amber } else { 0x6f5bd6ff })
   }
 
+  // The words across the middle shrink with a narrow canvas (a phone held
+  // upright), so that the longest line, about 460 pixels, still fits.
+  let k = max(min((width - 24.0) / 460.0, 1.0), 0.5)
   let cx = width * 0.5
   let cy = height * 0.5
   if world.mode == mode-title {
-    text(cx, cy - 30.0, 56.0, true, amber, "LANTERN")
-    text(cx, cy + 10.0, 18.0, true, pale, "collect the sparks, dash through the wisps")
-    text(cx, cy + 40.0, 16.0, true, 0x9aa0d0ff, "arrows, WASD or a gamepad to move; space or A to dash")
-    text(cx, cy + 80.0, 20.0, true, fade(pale, 0.6 + 0.4 * sin(world.clock * 4.0)), "press enter or start")
+    text(cx, cy - 30.0 * k, 56.0 * k, true, amber, "LANTERN")
+    text(cx, cy + 10.0 * k, 18.0 * k, true, pale, "collect the sparks, dash through the wisps")
+    text(cx, cy + 40.0 * k, 16.0 * k, true, 0x9aa0d0ff, "move: arrows, WASD, a stick, or drag")
+    text(cx, cy + 62.0 * k, 16.0 * k, true, 0x9aa0d0ff, "dash: space, A, or a second finger")
+    let blink = fade(pale, 0.6 + 0.4 * sin(world.clock * 4.0))
+    text(cx, cy + 100.0 * k, 20.0 * k, true, blink, "press enter, start, or tap")
   } elif world.mode == mode-dead && world.clock > 0.6 {
-    text(cx, cy - 10.0, 36.0, true, pale, "the dark took you")
-    text(cx, cy + 30.0, 18.0, true, amber, "press enter to try again")
+    text(cx, cy - 10.0 * k, 36.0 * k, true, pale, "the dark took you")
+    text(cx, cy + 30.0 * k, 18.0 * k, true, amber, "enter or tap to try again")
   } elif world.mode == mode-clear {
-    text(cx, cy, 36.0, true, amber, "the room is lit")
+    text(cx, cy, 36.0 * k, true, amber, "the room is lit")
   }
 }
 

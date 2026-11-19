@@ -14,7 +14,7 @@
 // game's until the next call into it, so they are read right after frame().
 //
 // readCommands() is the whole contract and runs anywhere; start() wires it
-// to a canvas, the keyboard, gamepads and Web Audio.
+// to a canvas, the keyboard, gamepads, touch and Web Audio.
 
 export const BUTTON = { left: 1, right: 2, up: 4, down: 8, dash: 16, start: 32 }
 
@@ -104,8 +104,10 @@ function synth() {
     audio ??= new AudioContext()
     if (audio.state === 'suspended') audio.resume()
   }
+  // A touch counts as a gesture when it lifts, a key or a click when it goes down.
   addEventListener('keydown', wake)
   addEventListener('pointerdown', wake)
+  addEventListener('pointerup', wake)
   return (from, to, secs, volume, wave) => {
     if (!audio || audio.state !== 'running' || secs <= 0) return
     const t = audio.currentTime
@@ -157,6 +159,12 @@ export async function start({ canvas, wasm, asset, seed = (Math.random() * 2 ** 
   game.init(seed)
 
   let keys = 0
+  // Touch: one finger is a stick, from where it went down to where it is now,
+  // full at 48 pixels; going down, it also presses start. A second finger
+  // held anywhere is dash.
+  let stick = null
+  let dash = 0
+  let tap = 0
   addEventListener('keydown', (e) => {
     const bit = KEYS[e.code]
     if (!bit) return
@@ -168,7 +176,38 @@ export async function start({ canvas, wasm, asset, seed = (Math.random() * 2 ** 
   })
   addEventListener('blur', () => {
     keys = 0
+    stick = null
+    dash = 0
   })
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return
+    if (!stick) {
+      stick = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: 0, y: 0 }
+      tap = BUTTON.start
+    } else {
+      dash = e.pointerId
+    }
+    e.preventDefault()
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    if (stick?.id !== e.pointerId) return
+    const dx = (e.clientX - stick.x0) / 48
+    const dy = (e.clientY - stick.y0) / 48
+    const len = Math.max(Math.hypot(dx, dy), 1)
+    stick.x = dx / len
+    stick.y = dy / len
+  })
+  const lift = (e) => {
+    if (stick?.id === e.pointerId) stick = null
+    if (dash === e.pointerId) dash = 0
+  }
+  canvas.addEventListener('pointerup', lift)
+  canvas.addEventListener('pointercancel', lift)
+  const touch = () => {
+    const buttons = tap | (dash ? BUTTON.dash : 0)
+    tap = 0
+    return { buttons, x: stick?.x ?? 0, y: stick?.y ?? 0 }
+  }
 
   // The canvas is as big as the page lays it out, in device pixels, and the
   // game draws in CSS pixels.
@@ -193,7 +232,8 @@ export async function start({ canvas, wasm, asset, seed = (Math.random() * 2 ** 
   const tick = (now) => {
     if (!running) return
     const pad = gamepad()
-    const count = game.frame(now - last, width, height, keys | pad.buttons, pad.x, pad.y)
+    const t = touch()
+    const count = game.frame(now - last, width, height, keys | pad.buttons | t.buttons, pad.x || t.x, pad.y || t.y)
     last = now
     readCommands(game.memory, game.commands(), count, on)
     requestAnimationFrame(tick)

@@ -1,0 +1,48 @@
+name: Pages
+
+# Builds the browser games (examples/browser) with the release build and
+# publishes them on GitHub Pages: Lantern at the site's root, the starter
+# template at ?game=starter. Pages is turned on once, in Settings → Pages,
+# with "GitHub Actions" as its source.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push waits rather than cancels one that
+# is half done.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the games
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun examples/browser/build.ts
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/browser/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -4,9 +4,9 @@ A complete small game and a starter template, run by one small host.
 
 | File | What it is |
 | --- | --- |
-| [`lantern.ents`](lantern.ents) | **Lantern**, an arena game: collect the sparks, dash through the wisps. Animation, keyboard and gamepad input, sound, any canvas size, and its levels loaded from a file. |
+| [`lantern.ents`](lantern.ents) | **Lantern**, an arena game: collect the sparks, dash through the wisps. Animation, keyboard, gamepad and touch input, sound, any canvas size, and its levels loaded from a file. |
 | [`starter.ents`](starter.ents) | The smallest game on the same contract: a dot to steer to a target. Copy it to start your own. |
-| [`host.js`](host.js) | The host: loads a game, gives it its asset, feeds it input and plays the commands it leaves in memory on a canvas and through Web Audio. |
+| [`host.js`](host.js) | The host: loads a game, gives it its asset, feeds it input (keys, gamepads, touch) and plays the commands it leaves in memory on a canvas and through Web Audio. |
 | [`index.html`](index.html) | The page. `?game=starter` runs the template. |
 | [`levels.txt`](levels.txt) | Lantern's five levels, as text. |
 | [`build.ts`](build.ts) | Builds both into `dist/` and reports what each part weighs. |
@@ -22,7 +22,9 @@ bun examples/browser/build.ts
 python3 -m http.server --directory examples/browser/dist 8000
 ```
 
-Then open <http://localhost:8000>. Arrows or WASD move, space dashes, enter starts; on a gamepad, the left stick or the d-pad moves, A dashes, Start starts.
+Then open <http://localhost:8000>. Arrows or WASD move, space dashes, enter starts; on a gamepad, the left stick or the d-pad moves, A dashes, Start starts; on a touch screen, a tap starts, dragging a finger steers (from where it went down), and a second finger dashes.
+
+The [Pages workflow](../../.github/workflows/pages.yml) builds the same `dist/` on each push to `main` and publishes it on the repository's GitHub Pages site, once Pages is turned on with "GitHub Actions" as its source (Settings → Pages).
 
 ## What it weighs
 
@@ -30,15 +32,15 @@ Then open <http://localhost:8000>. Arrows or WASD move, space dashes, enter star
 
 | File | Bytes | gzip | brotli |
 | --- | ---: | ---: | ---: |
-| `lantern.wasm` | 7181 | 3490 | 3303 |
+| `lantern.wasm` | 7312 | 3555 | 3351 |
 | `starter.wasm` | 966 | 586 | 551 |
-| `host.js` (minified) | 3498 | 1726 | 1534 |
-| `index.html` | 724 | 462 | 312 |
+| `host.js` (minified) | 4139 | 1954 | 1756 |
+| `index.html` | 744 | 475 | 321 |
 | `levels.txt` | 1754 | 188 | 166 |
-| **Lantern, all four files** | **13157** | **5866** | **5315** |
-| **starter, its three files** | **5188** | **2774** | **2397** |
+| **Lantern, all four files** | **13949** | **6172** | **5594** |
+| **starter, its three files** | **5849** | **3015** | **2628** |
 
-Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, the level shelf and its strings) reaches byte 42897 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
+Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, the level shelf and its strings) reaches byte 42921 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
 
 The numbers come from `dist/sizes.json`, which the build writes; run it again after a change. Both games' release builds are also held to size budgets in `scripts/size-budgets.json`, so `bun test` (and CI) fails when one grows past its budget; `bun run size --update` sets new ones when the growth is meant.
 
