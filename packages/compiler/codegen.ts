@@ -2624,7 +2624,14 @@ function enterDeclared(stmt: AST.LetStmt | AST.ForStmt, ctx: CodegenContext): vo
 function letToWat(stmt: AST.LetStmt, ctx: CodegenContext): string {
   if (!stmt.value) {
     enterDeclared(stmt, ctx)
-    return '' // Declaration only, no initialization
+    // An optional host reference given no value is none, on every pass of
+    // a loop too: wasm sets a local to null once per call. (A number given
+    // no value is uninitialized, 3.3, and gets nothing.)
+    const sets: string[] = []
+    for (const [, names] of ctx.declared?.get(stmt) ?? []) {
+      for (const n of names) if (ctx.claimed?.get(n)?.endsWith(' externref')) sets.push(`(local.set $${n} (ref.null extern))`)
+    }
+    return sets.join('\n')
   }
   // The value is computed before the variable is there.
   const valueWat = exprToWat(stmt.value, ctx)

@@ -209,6 +209,32 @@ export func gen(c: Canvas) -> [2]?Canvas => pr(c)
     expect(m.gen(o)).toEqual([o, null])
   })
 
+  // Wasm sets a local to null once per call: a let given no value is none
+  // on each pass of a loop all the same, in a struct or an array too.
+  test('an optional one given no value is none on every pass of a loop', async () => {
+    const source = `type Canvas = host
+type Pair = (c: ?Canvas, n: i32)
+import "env" "mk" func mk() -> Canvas
+export func run() -> u32 {
+  let made: u32 = 0
+  for i in 3 {
+    let c: ?Canvas
+    let p: Pair
+    let cs: [2]?Canvas
+    if c == 0 && p.c == 0 && cs[1] == 0 {
+      c = mk()
+      p.c = mk()
+      cs[1] = mk()
+      made += 1
+    }
+  }
+  return made
+}
+`
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), { env: { mk: () => ({ made: 1 }) } })
+    expect((instance.exports.run as CallableFunction)()).toBe(3)
+  })
+
   // The host promises a plain one is never null. Where one comes in from the
   // host it is checked, once, and a broken promise traps there.
   test('a plain one the host gives as null traps where it comes in', async () => {
