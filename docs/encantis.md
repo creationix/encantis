@@ -14,7 +14,7 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
 - A `test "name" { ... }` block shows results with `assert` ([Tests](#tests)).
 - A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
-- A `text` block holds output, a program of several files, or syntax the compiler does not accept.
+- A `text` block holds output, code for another language, or a program of several files.
 - A feature that is designed but not implemented is labelled **Not implemented** where it is described, and its examples are not working code. [Implementation Status](#implementation-status) lists every such feature.
 
 ### Tools
@@ -5260,61 +5260,249 @@ Complete programs that use the library are [`examples/aoc/day1.ents`](../example
 
 ## 12. Examples
 
-### Hello World
+Small programs that use the features of the earlier chapters together. Each one compiles, and its `test` blocks show what it computes.
+
+### Hello, World
+
+A program for a WASI host, run with `encantis run hello.ents`:
+
+<!-- spec:begin compile -->
 
 ```ents
-export "mem" memory 1
+import "wasi_snapshot_preview1" "fd_write"
+  func fd_write(fd: i32, iovs: [][]u8, written: *mut u32) -> i32
 
-// Import JavaScript console.log
-import "env" "log" func log([]u8)
+export memory
 
-export "main"
-func main() {
-  // Log "Hello, World!" to console
-  // JavaScript host will receive the string pointer and length and read from linear memory
+def stdout = 1
+
+func greet(name: []u8) {
+  fd_write(stdout, `Hello, ${name}!\n`, &0:u32)
+}
+
+export "_start" func main() {
+  greet("World")
+}
+```
+
+<!-- spec:end -->
+
+WASI's `fd_write` takes a list of byte ranges, each an address and a length in memory, which is how a `[][]u8` is laid out; the template literal is such a list, `"Hello, "`, `name` and `"!\n"` ([Template Literals](#template-literals)). `&0:u32` is a cell of memory for the count `fd_write` writes back, and its result, an error code, is dropped. WASI reads the module's memory, so the program exports it. `_start` is the function a WASI host runs.
+
+For a JavaScript host the program imports a function of its own and exports what the host calls:
+
+<!-- spec:begin compile -->
+
+```ents
+import "env" "log" func log(msg: []u8)
+
+export memory
+
+export func main() {
   log("Hello, World!\n")
 }
 ```
 
+<!-- spec:end -->
+
+The slice reaches the host as two numbers, the address and the length of the bytes, which the host reads from the exported memory:
+
+```text
+const { instance } = await WebAssembly.instantiateStreaming(fetch("hello.wasm"), {
+  env: {
+    log: (ptr, len) => console.log(new TextDecoder().decode(
+      new Uint8Array(instance.exports.memory.buffer, ptr, len))),
+  },
+})
+instance.exports.main()
+```
+
 ### Fibonacci
 
+<!-- spec:begin compile -->
+
 ```ents
-export "fib"
-func fib(n:i32)->i32 {
-  if n < 2 {
-    return n
+// Recursive, with an expression body
+export func fib(n: u32) -> u32 => if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+
+// Iterative: the pair (a, b) steps along the sequence, both at once
+export func fib_fast(n: u32) -> (a: u64) {
+  let b: u64 = 1
+  for i in n {
+    set (a, b) = (b, a + b)
   }
-  return fib(n - 1) + fib(n - 2)
 }
 
-// Or with expression body:
-func fib2(n:i32)->i32 =>
-  if n < 2 { n } else { fib2(n - 1) + fib2(n - 2) }
-```
-
-### Sum Array
-
-```ents
-// Named return value, for..in iterator over slice
-func sum(arr:[]i32)->(total:i32) {
-  total = 0
-  for elem in arr {
-    total += elem
-  }
+test "the two agree" {
+  assert fib(10) == 55
+  assert fib_fast(10) == 55
+  assert fib_fast(90) == 2880067194370816120
 }
 ```
 
-Named return values are declared in the signature and implicitly returned. The `for..in` loop iterates over elements when given a slice.
+<!-- spec:end -->
+
+`fib_fast` returns its named result `a`, which starts at zero. `set (a, b) = (b, a + b)` reads the whole tuple before it assigns either variable ([4.5](#45-assignment-and-compound-assignment)).
+
+### Sum of a Slice
+
+<!-- spec:begin compile -->
+
+```ents
+export func sum(xs: []i32) -> (total: i32) {
+  for x in xs {
+    total += x
+  }
+}
+
+test "sum" {
+  assert sum([1, 2, 3]) == 6
+  assert sum([]) == 0
+}
+```
+
+<!-- spec:end -->
+
+A loop over a slice reads each element once and needs no bounds check ([5.2](#52-loops)). An array literal given for a slice is laid out in memory ([Array Literals](#array-literals)).
+
+### Hex Digits
+
+<!-- spec:begin compile -->
+
+```ents
+data digits = "0123456789abcdef"
+
+// The 4 bytes of a word as 8 hex digits
+export func to_hex(bytes: *[4]u8, out: *mut [8]u8) {
+  for i in bytes.len {
+    let b = bytes[i]
+    out[i * 2] = digits[b >> 4]
+    out[i * 2 + 1] = digits[b & 15]
+  }
+}
+
+data word = [0xde:u8, 0xad, 0xbe, 0xef]
+data text = mut [0:u8; 8]
+
+test "to_hex" {
+  to_hex(word, text)
+  assert text[0] == 'd'
+  assert text[7] == 'f'
+}
+```
+
+<!-- spec:end -->
+
+Every index here is proven in range when the program is compiled, so each one is a plain load or store with no check ([Ranged Integers](#ranged-integers)): `i` counts to the constant `bytes.len` and is a `u32#4`, so `i * 2 + 1` is below 8, and a `u8` shifted right by 4, or masked with 15, is below 16.
+
+### Looking Up a Record
+
+<!-- spec:begin compile -->
+
+```ents
+type Planet = (name: []u8, moons: u32)
+
+data planets: *[4]Planet = [("Mercury", 0), ("Venus", 0), ("Earth", 1), ("Mars", 2)]
+
+func same(a: []u8, b: []u8) -> bool {
+  return false when a.len != b.len
+  for i, c in a {
+    return false when c != (b[i] ?? 0)
+  }
+  return true
+}
+
+// The planet of that name, or none
+func find(name: []u8) -> ?*Planet {
+  for i in planets.len {
+    let p = &planets[i]
+    return p when same(p.name, name)
+  }
+  return 0
+}
+
+export func moons(name: []u8) -> u32 => if let p = find(name) { p.moons } else { 0 }
+
+test "a planet is found by name" {
+  assert moons("Mars") == 2
+  assert moons("Pluto") == 0
+  assert find("Venus") != 0
+}
+```
+
+<!-- spec:end -->
+
+`planets` is laid out in the data section: four structs, each a slice and a number. `&planets[i]` is the address of one, a `*Planet`, and `p.name` reads its field from memory. `find` returns an optional pointer, none (`0`) when no planet has the name, and `if let` gives the plain pointer where there is one ([Optional Types](#optional-types)). In `same`, `b[i]` is checked against `b.len` at run time, and `?? 0` gives the value to use when it is out of range ([4.7](#47-bounds-checked-indexing)).
+
+### Month Names
+
+<!-- spec:begin compile -->
+
+```ents
+data months: [][]u8 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// Months count from 1; any other number has no name
+export func month(m: u32) -> []u8 => months[m - 1] ?? "?"
+
+test "month" {
+  assert month(1).len == 3
+  assert (month(12)[0] ?? 0) == 'D'
+  assert (month(0)[0] ?? 0) == '?'
+}
+```
+
+<!-- spec:end -->
+
+`m - 1` wraps for `m == 0` to the largest `u32`, which is past the end of `months`, so `??` gives `"?"`.
+
+### A Generic Function
+
+<!-- spec:begin compile -->
+
+```ents
+// How many elements of xs `keep` says yes to
+func count(comptime T: type, xs: []T, comptime keep: (T) -> bool) -> (n: u32) {
+  for x in xs {
+    if keep(x) { n += 1 }
+  }
+}
+
+func passing(score: u32) -> bool => score >= 50
+func negative(x: i64) -> bool => x < 0
+
+test "one count for each element type and test" {
+  let scores: []u32 = [72, 41, 50, 99]
+  assert scores.count(passing) == 3
+  assert count([-1:i64, 2, -3], negative) == 2
+}
+```
+
+<!-- spec:end -->
+
+`count` is compiled once for each element type and test function it is called with: `scores.count(passing)` is a `count` for `u32` that calls `passing` directly, with no function table ([8. Generics](#8-generics)). `T` is taken from the arguments, and the first argument can be written as the receiver of a method call ([4.9](#49-method-call-syntax)).
+
+### Complete Programs
+
+The directory `examples/` holds larger programs, each built and tested with the compiler:
+
+- [`examples/aoc/day1.ents`](../examples/aoc/day1.ents): a WASI program that reads its input and prints an answer, with the library's `io` and `text` ([The Library](#the-library)); `encantis run examples/aoc/day1.ents < input.txt`.
+- [`examples/containers/main.ents`](../examples/containers/main.ents): the library's Vec, Set, Map and sort used with a struct type of the program's own.
+- [`examples/generics/`](../examples/generics): generic functions and types, method calls and comptime function and value parameters.
+- [`examples/browser/lantern.ents`](../examples/browser/lantern.ents): a browser game that imports nothing. Each frame the page calls its exported `frame()`, and it leaves drawing and sound commands in its memory for the page to play.
+- [`examples/types/host.ents`](../examples/types/host.ents): host references, the host's objects held by the module ([2.13](#213-host-references)).
+- [`examples/crypto/`](../examples/crypto): hashes, a permutation, signatures and encodings (SHA-256, BLAKE2b, xxHash, Gimli, Ed25519, base64url and others), written with fixed arrays, wide integers and memory.
 
 ---
 
 ## 13. Future Additions
 
-Features under consideration for future versions of Encantis.
+Features under consideration for later versions of Encantis. None of them is implemented: the syntax of each is a syntax error, and its examples are not working code. The features designed in the earlier chapters but not implemented (enums, function values, struct patterns and others) are described where they belong and listed in [Implementation Status](#implementation-status).
 
 ### SIMD Support
 
-Access to WASM's 128-bit vector operations:
+**Not implemented:** there is no `v128` type, and the compiler writes no SIMD instruction ([11](#11-webassembly-reference)).
+
+Access to WebAssembly's 128-bit vector operations:
 
 ```ents
 let a:v128 = v128_load(ptr)
@@ -5325,9 +5513,11 @@ let sum = i32x4_add(a, b)
 let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 ```
 
-**Why:** WASM has full SIMD support via v128 types. Crypto, hashing, image processing, and numerical code can see 2-4x speedups. xxHash and Gimli both have vectorized variants that significantly outperform scalar implementations.
+**Why:** WebAssembly has SIMD over `v128` values. Crypto, hashing, image processing and numerical code can run several times faster with it: xxHash and Gimli both have vectorized variants that outperform their scalar forms.
 
 ### Comptime Evaluation
+
+**Not implemented:** `comptime func` is a syntax error.
 
 Generic functions and generic types take types, functions and numbers at compile time ([8. Generics](#8-generics)). The same mechanism is meant to carry more:
 
@@ -5344,13 +5534,15 @@ comptime func generate_table() -> *[256]u8 {
 def crc_table = generate_table()
 ```
 
-This is not parsed today. Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body, recursion on a value parameter that ends) comes after it.
+Compile-time control flow (a comptime `if` that picks a type or a branch, a generic type with a block body, recursion on a value parameter that ends) would follow it.
 
-**Why:** Compile-time values remove the last reasons to duplicate a function. Compile-time execution enables computing lookup tables, buffer sizes, and constants at compile time, reducing runtime overhead and allowing complex initialization without startup cost.
+**Why:** Compile-time values remove the last reasons to duplicate a function. Compile-time execution computes lookup tables, buffer sizes and constants when the program is compiled, so they cost nothing when it runs, and complex initialization needs no start-up code.
 
 ### Module System
 
-Source modules exist today ([7.1](#71-imports)): a file imports the functions, globals and generics another file exports, by their signatures. What a module system would add is importing a module's names without restating them:
+**Not implemented:** `module` and `use` are syntax errors.
+
+Source modules ([7.1](#71-imports)) import the functions, globals and generics another file exports, each by its signature, and a type is declared again where it is used. A module system would import a module's names without restating them:
 
 ```ents
 // In math/vector.ents
@@ -5365,11 +5557,13 @@ use math.vector (Vec3, dot)
 use math.vector as vec
 ```
 
-**Why:** Larger projects split code across files, and restating every signature at each import is the cost of that today.
+**Why:** Larger projects split their code across files, and restating every signature at each import is what that costs without one.
 
 ### Operator Overloading via Method Calls
 
-Operators could desugar to function calls, allowing user-defined types to support standard operators through regular function definitions:
+**Not implemented:** a function cannot be named by an operator.
+
+Operators could stand for function calls, so that a type of the program's own supports the standard operators through ordinary function declarations:
 
 ```ents
 type Vec2 = (x:f64, y:f64)
@@ -5380,17 +5574,19 @@ func +(a:Vec2, b:Vec2) -> Vec2 =>
 func *(v:Vec2, s:f64) -> Vec2 =>
   Vec2(v.x * s, v.y * s)
 
-// Now works naturally:
+// would then be
 let result = (a + b) * 2.0
 ```
 
-Functions already share a name when their parameter types differ ([3.4](#functions-that-share-a-name)), so one operator name can have an implementation for each pair of types, and the compiler would pick one by the operand types as it does for any call.
+Functions share a name when their parameter types differ ([Functions That Share a Name](#functions-that-share-a-name)), so one operator could have an implementation for each pair of types, and the compiler would pick one by the operand types as it does for any call.
 
-**Why:** Unifies operators with method-call syntax ([4.9](#49-method-call-syntax)): no special mechanism needed. Operators become functions that share a name, resolved by the rules calls already follow. This keeps the language simple while enabling expressive numeric and container types.
+**Why:** It unifies operators with method-call syntax ([4.9](#49-method-call-syntax)): no special mechanism is needed. Operators become functions that share a name, resolved by the rules calls already follow. This keeps the language simple while allowing expressive numeric and container types.
 
 ### Closures
 
-Functions that capture variables from their enclosing scope. Unlike plain function pointers (which are just table indices), closures carry attached state:
+**Not implemented:** there is no closure syntax, and function values, which closures would build on, are not implemented either ([Function Types and Pointers](#function-types-and-pointers)).
+
+Functions that capture variables from their enclosing scope. A plain function value is designed as an index into the function table; a closure would carry state as well:
 
 ```ents
 func make_counter(start: i32) -> () -> i32 {
@@ -5424,4 +5620,4 @@ counter()  // 2
 - Capture semantics: by-value (copy) or by-reference (requires lifetime tracking)?
 - Should closure types be distinct from function types, or unified with automatic coercion?
 
-**Why:** Enables functional patterns (map/filter/reduce with inline logic), callbacks with context, and eliminates manual environment-passing boilerplate. WebAssembly's GC proposal (now shipped) makes closure environments easier to manage without manual memory allocation.
+**Why:** Closures allow functional patterns (map, filter and reduce with the logic written in place), callbacks with context, and remove the boilerplate of passing an environment by hand. Engines with WebAssembly's garbage collection could hold closure environments without manual memory allocation, though the compiler targets WebAssembly 2.0, which has none ([11](#11-webassembly-reference)).
