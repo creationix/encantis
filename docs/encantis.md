@@ -59,10 +59,10 @@ A file whose first two characters are `#!` starts with a shebang line, which is 
 
 ```ents
 #!/usr/bin/env encantis run
-export "_start" func main() {}
+export func answer() -> u32 => 42
 
-test "a shebang line is a comment" {
-  main()
+test "the first line is skipped" {
+  assert answer() == 42
 }
 ```
 
@@ -246,7 +246,7 @@ An integer literal is decimal, or has a prefix that names its radix:
 - The prefixes are lowercase: `0X1F` is a syntax error.
 - Leading zeros change nothing: `007` is the decimal 7, not octal.
 - There are no digit separators: `1_000` is a syntax error.
-- Each digit is one of its radix: `0b2` and `0o8` are no literals.
+- Each digit is one of its radix: `0b2` and `0o8` are not literals.
 - A `-` before a literal is part of it, with or without a space: `-0x10` is the constant -16, and `-2147483648` is an `i32` constant, not the negation of a number too large for one.
 - A literal is a number, not a bit pattern: `0xFFFFFFFF` is 4294967295, which a `u32` holds and an `i32` does not (for the `i32` with those bits, write `-1`, or `0xFFFFFFFF as i32`).
 
@@ -268,7 +268,7 @@ test "integer literals" {
   assert 0dB == 11
   assert 007 == 7
   assert -0x10 == -16
-  assert 0x1234 & mask == 0x34
+  assert (0x1234 & mask) == 0x34
 }
 
 test "an untyped integer constant is an i32 when it fits, else an i64" {
@@ -330,7 +330,7 @@ test "float literals" {
   assert half(3.0) == 1.5
   assert 1.5e3 == 1500.0
   assert 2.5E-1 == 0.25
-  assert third(1.5:f32) == 0.5
+  assert third(1.5) == 0.5
   let one: f64 = 1
   assert one == 1.0
   assert 1.0 / -0.0 < 0.0
@@ -584,7 +584,7 @@ test "a template is the array literal of its fragments" {
   assert count(`Hi ${name}!`) == 3
   assert count(`${name}${name}`) == 2
   assert count(``) == 0
-  assert total(`a \` and a \${`) == 12
+  assert total(`a \` and a \${`) == 12     // the text a ` and a ${
 }
 ```
 
@@ -684,7 +684,14 @@ argument 1: cannot assign [3]i32 to []i32
 
 #### Literals in Memory
 
-A literal is laid out in memory in four cases: a string (always), any literal where a pointer or a slice is wanted (an argument, a typed `let`, a returned value, a field), a literal after `&` ([4.7](#element-addresses-and-writes)), and the value of a `data` declaration ([3.2](#32-data-declarations-data)).
+A literal is laid out in memory in four cases:
+
+- a string, always;
+- an array literal, a template among them, where a pointer or a slice is wanted: an argument, a typed `let`, an assignment, a returned value, a field;
+- any literal after `&` ([4.7](#element-addresses-and-writes));
+- the value of a `data` declaration ([3.2](#32-data-declarations-data)).
+
+A number or a tuple where a pointer is wanted is not laid out: write `&` before it, `&0:u32` for a `*mut u32` and `&(1, 2)` for a `*mut Point`.
 
 A literal laid out in a function is one cell for its place in the source, in the data section. The compiler writes its constant parts there once, when it builds the module, and never again; the parts known only at run time (`[x, 2]`) are stored into the cell each time the literal is evaluated, in the order written. Nothing is allocated when the function runs, and so:
 
@@ -692,7 +699,7 @@ A literal laid out in a function is one cell for its place in the source, in the
 - What is written through a pointer to a cell stays there: the next evaluation, the next call and a recursive call all see the same cell, like a `static` in C. A cell that must start from its literal's value on each call is set there (`n.* = 0`), or is a variable instead, when it needs no address.
 - A pointer kept from an earlier evaluation sees the values of the later one.
 
-A literal with run-time parts, and every `mut` literal, is a cell of its own, never shared with another literal; equal constant literals may share theirs.
+A literal with run-time parts, and every `mut` or `&` literal, is a cell of its own, never shared with another literal; equal constant literals may share theirs.
 
 <!-- spec:begin compile -->
 
@@ -723,9 +730,9 @@ Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the sam
 
 A literal is constant unless it is written with `mut`, wherever it is: where a mutable pointer or slice is wanted, a literal without `mut` is an error that shows it written with the keyword. `let buf: []mut u8 = [0:u8; 20]` is ``a literal is constant: write `mut [0:u8; 20]` for a []mut u8``; the same goes for `data s: []mut i32 = [20, 8]`, an argument `"abc"` for a `[]mut u8` parameter (`mut "abc"`), a slice field of a struct (`Buf(mut [0:u8; 4], 0)`), an element of a slice of mutable slices (`data q: *[2][]mut u8 = [mut "ab", mut "cd"]`), the table literal of a `*mut [N][M]T` and a template literal for a `[]mut []u8` (``mut `a${x}b` ``). The receiver of a method call is shown in parentheses, ``receiver: a literal is constant: write `(mut "abc")` for a []mut u8``, as `mut` goes on the literal itself: `mut "abc".fill()` would be `mut` of the call, and is a syntax error that says so. Only where a mutable pointer or slice is wanted: the fallback of `??` is given for what the whole is given for ([4.7](#the--operator)), so in `println(digits[i..] ?? "")`, with `digits` a `*mut [24]u8` and `println` taking a `[]u8`, `""` needs no `mut`.
 
-`mut` makes the literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `mut` goes before a literal: an array, a string, a template, a tuple or a number; before anything else it is a syntax error (`mut goes before a literal (an array, a string or a tuple), not before …`).
+`mut` makes the literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `mut` goes before a literal of any kind; before anything else it is a syntax error (`mut goes before a literal (an array, a string or a tuple), not before …`).
 
-`mut` does not choose where a literal lives; the type it meets does, as for any literal. A string is always in memory, so `mut "hello"` is a `*mut [5]u8`. An array literal given for a `*mut [N]T` or a `[]mut T` is laid out in a writable cell. With nothing to give it a type, a number, a tuple or an array stays a value in registers, where it is a variable's own and writable anyway, and `mut` changes nothing: `let q = mut [1, 2, 3]` is the `[3]i32` that `[1, 2, 3]` is. For a writable cell, write `&` before the literal: `&0:u32` is a `*mut u32`, `&[1, 2, 3]` a `*mut [3]i32`, `&(1.0, 2.0)` a `*mut (f64, f64)`, each a cell of its own, so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`. `&` before a string is not needed: a string is already its address.
+`mut` does not choose where a literal lives; the type it meets does, as for any literal. A string is always in memory, so `mut "hello"` is a `*mut [5]u8`. An array literal given for a `*mut [N]T` or a `[]mut T` is laid out in a writable cell. With nothing to give it a type, a number, a tuple or an array stays a value in registers, where it is a variable's own and writable anyway, and `mut` changes nothing: `let q = mut [1, 2, 3]` is the `[3]i32` that `[1, 2, 3]` is. For a writable cell, write `&` before the literal: `&0:u32` is a `*mut u32`, `&[1, 2, 3]` a `*mut [3]i32`, `&(1.0, 2.0)` a `*mut (f64, f64)`, each a cell of its own, so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`. A number or a tuple is laid out only by `&`: for a `*mut u32`, write `&5`, not `mut 5`. `&` before a string is not needed: a string is already its address.
 
 | Written | With nothing to give it a type |
 |---------|--------------------------------|
@@ -901,7 +908,7 @@ func f(done: bool) {
 
 func h() {
   return
-  g()
+  g()               // read as return g()
 }
 ```
 
