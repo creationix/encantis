@@ -1734,123 +1734,409 @@ cannot point to Canvas: a host reference has no bytes, so it is never in memory 
 
 ## 3. Declarations
 
+A module is a list of declarations. This chapter covers those that name a value or code: `def` (a constant), `data` (bytes laid out in memory), `let` and `global` (variables) and `func` (functions). A type is declared with `type` ([2.11](#211-type-names)) or `enum` ([2.9](#29-enum-types-algebraic-data-types)); `import`, `export` and `memory` are in [7. Modules](#7-modules); a `test` block holds code that checks the module, run by `encantis test`.
+
+Where each declaration can stand:
+
+| Where | What it holds |
+|---|---|
+| The module | every declaration: `func`, `def`, `data`, `global`, `type`, `enum`, `import`, `export`, `memory`, `test` |
+| A `test` block | `def`, `data`, `func`, `import`, nested `test` blocks, and statements |
+| A function body | statements only: `let`, `set`, assignments, loops, `return` and the rest of [5. Statements & Control Flow](#5-statements--control-flow), and expressions |
+
+Anything else is a syntax error at its keyword: a `def`, `data`, `global`, `type` or `func` in a function body, a `global`, `type`, `enum`, `memory` or `export` in a test.
+
+**Order.** The declarations of a module can stand in any order. A function body sees every name of the module, declared above it or below it, and a type sees every type and `def` of the module wherever they are declared (`type Row = [n]u8` can come before `def n = 4`). A value worked out when the program is compiled sees only what is declared above it: the value of a `def`, the values of a `data` block and the initializer of a `global` can name the defs and the data declared before them, and a name declared further down is `unknown identifier`.
+
+<!-- spec:begin compile -->
+
+```ents
+export func area() -> u32 => side * side     // side is declared below: a body sees it
+
+def side = 6
+def half = side / 2                           // side is declared above
+global start: u32 = half                      // so is half
+
+test "a body sees the whole module" {
+  assert area() == 36
+  assert start == 3
+}
+```
+
+```ents
+global limit: u32 = step * 4
+def step = 2
+```
+
+```errors
+unknown identifier 'step'
+cannot assign i32 to u32
+global initializer must be a compile-time constant
+```
+
+<!-- spec:end -->
+
+**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter can ([3.4](#34-functions)).
+
+**Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build. The editor and `encantis meta` show warnings; `encantis check`, `compile` and `test` do not print them.
+
 ### 3.1 Definitions (`def`)
 
-`def` binds compile-time constant values. The value is inlined at every use site — no memory, no pointer, no address.
+`def name = value` names a compile-time constant. Each use of the name is the value, as if it were written there in parentheses: a `def` takes no memory, has no address and is no wasm global, and where it is used the output has a constant (`i32.const`, `f64.const`, ...).
+
+The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with the arithmetic operators (`+ - * / %`), the bitwise and shift operators, unary `-` and `~`, and `sizeof(T)`. A comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), a global and a variable are not constants (`def value must be a compile-time constant`). A `def` always has a value: `def buf: [4096]u8` is a syntax error.
+
+With no type written, a `def` is an untyped constant: each use takes the type that use wants, as the literal itself would, and where nothing says, the literal's default type ([Integer Literals](#integer-literals)). Each use is checked on its own, so a `def page = 64 * 1024` is a `u64` in one place and an `f64` in another, and used as a `u16` it is `cannot assign int(65536) to u16`. With a type, `def mask: u32 = 0xff` (or `def mask = 0xff:u32`), it is of that type at every use, and widens from there as any `u32` does.
+
+<!-- spec:begin compile -->
 
 ```ents
-def prime32-1 = 2654435761
-def max-size = 1024
+def page = 64 * 1024        // untyped: the type of each use
+def mask: u32 = 0xff        // typed: a u32 at every use
+def slots = 8
+def newline = '\n'
+
+data cells = mut [0:u32; slots]
+
+func pages(bytes: u64) -> u64 => (bytes + page - 1) / page
+func fraction(bytes: f64) -> f64 => bytes / page
+func low(x: u32) -> u32 => x & mask
+func is_newline(c: u8) -> bool => c == newline
+
+test "a def is its value at each use" {
+  assert pages(100000) == 2
+  assert fraction(32768.0) == 0.5
+  assert low(0x1234) == 0x34
+  assert is_newline(10)
+  assert cells.len == slots
+}
+```
+
+<!-- spec:end -->
+
+A `def` names a number, never something laid out in memory: an array, a string or a tuple is not a `def`'s value. A table of values is `data` ([3.2](#32-data-declarations-data)), and a pair is two defs.
+
+<!-- spec:begin compile -->
+
+```ents
 def origin = (0.0, 0.0)
-def mask51 = 0x7FFFFFFFFFFFF:u64
+def primes = [2, 3, 5, 7]
+def small = 300
 
-// Using definitions — values are inlined
-let hash: u32 = seed + prime32-1
+func f() -> u8 => small
 ```
 
-`def` is pure substitution. The compiler replaces every reference to the name with the value. Types are inferred from the value or declared on the left:
-
-```ents
-def max-size = 1024              // inferred i32
-def max-len: u32 = 1024          // explicit u32
+```errors
+def cannot contain array/string literals — use 'data origin = ...' instead
+def value must be a compile-time constant
+def cannot contain array/string literals — use 'data primes = ...' instead
+def value must be a compile-time constant
+cannot assign int(300) to u8
 ```
 
-Each place the name is written is a use of the def, also where its value is an expression (`def next = 'a' + 1`): the editor shows the def there and goes from there to it, its references are those places, and a def used nowhere is reported as never used.
+<!-- spec:end -->
+
+Two values the rules allow are refused by the compiler, which is a known bug: a value written whole in parentheses, `def k = (1 + 2)`, gets the tuple's error (write `def k = 1 + 2`), and a cast, `def big = 122 as u32`, gets `def value must be a compile-time constant` (write the type with `:`, `def big = 122:u32`). A typed `def` whose value does not fit its type, `def small: u8 = 300`, is reported where it is used, not where it is declared.
+
+A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
+
+A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`). A parameter must not take one either: the compiler accepts such a parameter, and every read of it gives the def's value instead of the argument (a known bug).
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
+Each place the name is written is a use of the def, also where its value is an expression (`def next = 'a' + 1`): the editor shows the def there and goes from there to it, its references are those places, and a def used nowhere is reported as never used.
+
 ### 3.2 Data Declarations (`data`)
 
-`data` allocates a value in the wasm data section and binds the name to a pointer.
+`data name = literal` lays the literal out in the module's memory and binds the name to its address. The bytes are a wasm data segment: they are in memory when the module starts, and no code fills them in. The name is a constant pointer, and a use of it compiles to `i32.const` of the address. A module that has data has a memory ([7.3](#73-memory-declarations)).
+
+| Value | The name is |
+|---|---|
+| an array literal, `[1:u64, 2, 3]` | `*[3]u64` |
+| a repeat literal, `[0:u8; 1024]` | `*[1024]u8` |
+| a string, `"hello"`, `x"9d61b19d"` | `*[5]u8`, `*[4]u8` |
+| an array of tuples, `[(0, 0), (4, 3)]` | `*[2](i32, i32)` |
+| a tuple, `(0.0, 0.0)` | `*(f64, f64)` |
+| a number, `5` or `5:u8` | `*i32`, `*u8` |
+| any of these written `mut` | the same pointer, `*mut` |
+
+An untyped number takes its default type, as in a `let` ([Integer Literals](#integer-literals)). The array pointer `*[N]T` keeps the length in its type, so `.len` is a constant, and it converts to `[]T` or `[*]T` wherever one of those is wanted ([9.5](#95-array-type-conversions)): the form without a type is the usual one.
+
+<!-- spec:begin compile -->
 
 ```ents
-data buf = [0:u8; 1024]             // buf: *[1024]u8
-data key = x"9d61b19deffd5a60"      // key: *[8]u8
-data table = [1:u64, 2, 3, 4]       // table: *[4]u64
-data msg = "hello"                   // msg: *[5]u8
-data origin = (0.0, 0.0)            // origin: *(f64, f64)
-data corners = [(0, 0), (4, 3)]     // corners: *[2](i32, i32)
+data zeros = [0:u8; 1024]           // *[1024]u8
+data key = x"9d61b19deffd5a60"      // *[8]u8
+data table = [1:u64, 2, 3, 4]       // *[4]u64
+data msg = "hello"                  // *[5]u8
+data origin = (0.0, 0.0)            // *(f64, f64)
+data corners = [(0, 0), (4, 3)]     // *[2](i32, i32)
+
+func sum(xs: []u64) -> (total: u64) {
+  for x in xs {
+    total += x
+  }
+}
+
+test "data is a pointer to its bytes" {
+  assert zeros.len == 1024
+  assert key[0] == 0x9d
+  assert sum(table) == 10
+  assert msg.len == 5
+  assert origin.1 == 0.0
+  assert corners[1].0 == 4
+}
 ```
 
-The inferred type is the tightest pointer (`*[N]T`), which auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5). Annotate the LHS to force a specific type:
+<!-- spec:end -->
+
+**A type written for data** means one of two things, by the value:
+
+- For an array, repeat or string literal, it is the type of the name: a pointer or a slice to the elements. `data cells: *[3]i32 = [1, 2, 3]` is a `*[3]i32`, `data view: []u8 = "hello"` a slice, whose type does not hold the length, and `data name: *[!]u8 = "hi"` a framed pointer ([2.5](#25-pointer-types)). A value array, `data c: [3]i32 = [...]`, is not such a type: the compiler accepts it, and the module does not assemble (a known bug).
+- For a number, a tuple or a struct, it is the type of the value laid out, and the name points to it. `data stats: Tally = mut (0, 0)` is a `*mut Tally`, `data limit: u32 = 100` a `*u32`. So write the value's type here, not a pointer: `data p: *mut Tally = mut (0, 0)` would be a `*mut *mut Tally`, a cell that holds a pointer, and the compiler leaves that cell 0 and lays out no `Tally` (a known bug).
+
+<!-- spec:begin compile -->
 
 ```ents
-data buf = [0:u8; 1024]             // *[1024]u8 (best practice)
-data view: []u8 = [0:u8; 1024]      // []u8 (slice, loses compile-time length)
+type Tally = (count: u32, total: u64)
+
+data stats: Tally = mut (0, 0)        // *mut Tally
+data limit: u32 = 100                 // *u32
+data primes: *[4]u16 = [2, 3, 5, 7]   // *[4]u16
+data name: []u8 = "encantis"          // []u8
+
+func add(x: u32) {
+  stats.count += 1
+  stats.total += x
+}
+
+test "the type is the value's, or the pointer to an array's elements" {
+  add(30)
+  add(12)
+  assert stats.count == 2
+  assert stats.total == 42
+  assert limit.* == 100
+  assert primes[3] == 7
+  assert name.len == 8
+}
 ```
 
-An element can be a struct. A tuple gives its fields by position, or by name where it names them, as anywhere a tuple becomes a struct ([2.8](#struct-constructors)); so does a constructor. A slice field written as a string or an array literal points at that literal, which is laid out on its own:
+<!-- spec:end -->
+
+An element can be a struct. A tuple gives its fields by position, or by name where it names them, as anywhere a tuple becomes a struct ([2.8](#struct-constructors)); so does a constructor. A slice field written as a string or an array literal points at that literal, which is laid out on its own.
+
+Data is laid out when the program is compiled, so each value in it is known by then: a literal, a constant expression (`1 + 1`, `k * 2` with `def k = 4`, `sizeof(u64)`, `~0`), or the name of other data declared before it, which is that data's address (for a slice field, its address and length). Anything else is an error, `data 'xs' is laid out at compile time: its values must be constants`.
+
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:i32, y:i32)
-type City = (name:[]u8, at:Point)
+type Point = (x: i32, y: i32)
+type City = (name: []u8, at: Point)
+type Ref = (p: *[3]i32, n: u32)
 
-data cities:*[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
-```
-
-Data is laid out when the program is compiled, and no code fills it in later, so each value in it is known by then: a literal, a constant expression (`1 + 1`, `k * 2` with `def k = 4`, `sizeof(u64)`, `~0`), or the name of other data declared before it, which is that data's address (for a slice field, its address and length). Anything else is an error, `data 'xs' is laid out at compile time: its values must be constants`.
-
-```ents
 def k = 4
-type Ref = (p:*[3]i32, n:u32)
 
-data ones:*[3]i32 = [1, 1, 1]
-data xs:*[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]   // 2, 8, 8, 0xFFFFFFFF
-data refs:*[1]Ref = [(ones, 3)]                       // the address of ones, and 3
+data cities: *[2]City = [("Oslo", (3, 4)), City(at: Point(y: 2, x: 1), name: "Rome")]
+data ones = [1:i32, 1, 1]
+data xs: *[4]u32 = [1 + 1, k * 2, sizeof(u64), ~0]   // 2, 8, 8, 0xFFFFFFFF
+data refs: *[1]Ref = [(ones, 3)]                     // the address of ones, and 3
+
+test "data values are constants" {
+  assert cities[0].name.len == 4
+  assert cities[1].at.x == 1
+  assert xs[3] == 0xFFFFFFFF
+  assert refs[0].p[2] == 1
+  assert refs[0].n == 3
+}
 ```
+
+```ents
+func two() -> u32 => 2
+data xs = [1, two()]
+```
+
+```errors
+data 'xs' is laid out at compile time: its values must be constants
+```
+
+<!-- spec:end -->
+
+The blocks are laid out one after another from address 8 up, with no padding between them and none inside them ([9. Memory Model](#9-memory-model)): an address need not be a multiple of its type's size, which wasm loads and stores allow.
+
+A `data` block declared in a `test` block is that test's, as a `def` there is. The name is no variable: assigning it is an error (`cannot assign to 'buf': it is not a variable`); what it points to is written through it, when it is `mut`.
 
 #### Mutability
 
-Data is const unless its literal is `mut`, and a mutable type needs a `mut` literal ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). Const data may share its bytes with equal literals; mutable data is its own:
+Data is const unless its literal is `mut`, and a mutable type needs a `mut` literal ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)). A static buffer is `data` with a `mut` literal, `data buf = mut [0:u8; 4096]`, a `*mut [4096]u8` of zeros. Const data may share its bytes with other const data and with constant literals elsewhere in the program that are equal to it; mutable data is its own:
+
+<!-- spec:begin compile -->
 
 ```ents
-data table = [0:u8; 256]            // *[256]u8: shared, may be deduplicated
-data buffer = mut [0:u8; 1024]      // *mut [1024]u8: unique, never deduplicated
-data counts: []mut u32 = mut [0, 0] // []mut u32: unique
-data sums: []mut u32 = [0, 0]       // ERROR: a literal is constant: write `mut [0, 0]` for a []mut u32
+data table = [1:u8, 2, 3]           // *[3]u8: may share its bytes
+data again = [1:u8, 2, 3]           // equal: here the same bytes
+data buffer = mut [0:u8; 16]        // *mut [16]u8: its own bytes
+data counts: []mut u32 = mut [0, 0] // []mut u32: its own
+
+func bump(i: u32#16) -> u8 {
+  buffer[i] += 1
+  return buffer[i]
+}
+
+test "mutable data is written through its name" {
+  assert table as u32 == again as u32
+  assert bump(3) == 1
+  assert bump(3) == 2
+  if let c = &counts[1] {
+    c.* = 9
+  }
+  assert (counts[1] ?? 0) == 9
+}
 ```
+
+```ents
+data sums: []mut u32 = [0, 0]
+```
+
+```errors
+a literal is constant: write `mut [0, 0]` for a []mut u32
+```
+
+<!-- spec:end -->
 
 ### 3.3 Variables
 
-```ents
-// Mutable let variable
-let count:i32 = 0
-let ptr:*u8       // uninitialized
+A `let` declares a variable of a function; a `global` declares a variable of the module. A variable holds a value: it lives in wasm locals or globals, one for each wasm value of its type (a struct one for each field, a slice its pointer and its length), never in memory.
 
-// Global variable (a wasm global)
-global total:i32 = 0
+| Form | Declares |
+|---|---|
+| `let x: T = v` | `x` of type `T`, set to `v` |
+| `let x = v` | `x` of the type of `v` |
+| `let x: T` | `x` of type `T`, zero (see below) |
+| `let (a, b) = v`, `let a, b = v` | one variable for each element of a tuple or a function's results, by position |
+| `let (x:, y: py) = v` | by field name: `x` and `py` hold the fields `x` and `y` |
+| `let (a, (b, c)) = v` | nested, by position |
+| `let (a, b): (u32, u32) = v` | with a type for the whole |
+| `set a, b = v`, `set (x:, y:) = v` | assigns variables that exist, with the same patterns ([4.5](#45-assignment-and-compound-assignment)) |
+| `global x: T = v`, `global x = v`, `global x: T` | a variable of the module |
+
+A `let` needs a type or a value (`let needs type annotation or initializer`), and so does a `global` (`global needs type annotation or initializer`). A pattern may bind fewer elements than the value has: `let (a, b) = (1, 2, 3)` binds the first two. A named part binds a plain name, not a pattern. The list without parentheses takes no type (`let a, b: u32 = ...` is a syntax error): write `let (a, b): (u32, u32) = ...`. A global binds one name: `global (lo, hi) = ...` is `global destructuring is not supported yet`.
+
+<!-- spec:begin compile -->
+
+```ents
+type Body = (pos: (x: f64, y: f64), vel: (x: f64, y: f64))
+
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
+func body() -> Body => ((1.0, 2.0), (3.0, 4.0))
+
+test "binding forms" {
+  let n: u32 = 17
+  let half = n / 2                 // a u32, as n is
+  let q, r = divmod(n, 5)          // by position: 3 and 2
+  let (pos:, vel: v) = body()      // by name: pos, and vel bound as v
+  let (a, (b, c)) = (1, (2, 3))    // nested
+  set q, r = (r, q)                // existing variables: a swap
+  assert half == 8
+  assert q == 2
+  assert r == 3
+  assert pos.x + v.y == 5.0
+  assert a + b + c == 6
+}
 ```
 
-A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+```ents
+global (lo, hi) = (1:u32, 2:u32)
+global spare
 
-A global can be of any value type but one that holds a plain host reference: its value is a constant, and no constant is one, so such a global is imported from the host ([2.13](#213-host-references)). One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+func f() -> u32 {
+  let y
+  return 1
+}
+```
+
+```errors
+global destructuring is not supported yet
+global needs type annotation or initializer
+let needs type annotation or initializer
+```
+
+<!-- spec:end -->
+
+**Zero at the start.** Every variable of a function, each `let` and each named result ([3.4](#34-functions)), is zero when the function is entered: 0, `false`, a null pointer, an empty slice, none for an optional, and each part of a struct or array zero. A `let` with a value sets it each time control reaches the `let`. A `let` without one sets nothing: it holds what it held, so in a loop it holds what the last pass left. A `let` of an optional host reference is the exception: it is none on every pass ([2.13](#213-host-references)).
+
+<!-- spec:begin compile -->
 
 ```ents
-type Size = (w:i32, h:i32)
+func last_even(xs: []u32) -> u32 {
+  let found: u32                   // 0 until it is set
+  for x in xs {
+    if x % 2 == 0 {
+      found = x
+    }
+  }
+  return found
+}
 
-global order:[]i32 = (0, 0)        // two wasm globals: the pointer and the length
-global size:Size = Size(3, 4)      // one per field
-global scratch:Size                // zero until it's set
+func counts(n: u32) -> u32 {
+  let total: u32 = 0
+  for i in n {
+    let seen: u32                  // not reset: it keeps the last pass's value
+    seen += 1
+    total += seen
+  }
+  return total
+}
 
-func keep(list:[]i32) -> u32 {
+test "a let without a value starts at zero and is never reset" {
+  assert last_even([3, 8, 5, 4, 7]) == 4
+  assert last_even([1, 3]) == 0
+  assert counts(3) == 1 + 2 + 3
+}
+```
+
+<!-- spec:end -->
+
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+
+**Globals.** A `global` is a variable of the module. It keeps its value from one call into the module to the next, and every function of the module reads and assigns it. Each is a mutable wasm global; one of a type that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one for each value, so it works as a local of the same type does. A global can be of any value type but one that holds a plain host reference: its value is a constant, and no constant is one, so such a global is imported from the host ([2.13](#213-host-references)). A global imported from the host is read-only ([7.1](#71-imports)); one is exported with `export global` ([7.2](#72-exports)). A value that never changes is better a `def`, which costs nothing.
+
+A global starts as its initializer, or zero without one:
+
+<!-- spec:begin compile -->
+
+```ents
+type Size = (w: i32, h: i32)
+
+global order: []i32                // two wasm globals: the pointer and the length, zero
+global size: Size = Size(3, 4)     // one for each field
+global scratch: Size               // zero until it's set
+
+data primes = [2:i32, 3, 5, 7]
+
+func keep(list: []i32) -> u32 {
   order = list
   size.h += 1
   scratch = size
   return order.len
 }
+
+test "a global keeps its value between calls" {
+  assert order.len == 0
+  assert scratch.w == 0
+  assert keep(primes) == 4
+  assert scratch.h == 5
+  assert keep(primes) == 4
+  assert scratch.h == 6
+}
 ```
 
-Type annotations are optional when the type can be inferred from the initializer:
+<!-- spec:end -->
 
-```ents
-global counter = 0:u32           // type inferred from suffix
-let result = compute()           // type inferred from return type
-let pair = (1.0, 2.0)            // type inferred as (f64, f64)
-```
+A constant with no type, alone or as an element of a tuple, takes its default type ([Integer Literals](#integer-literals)), the same for a `let` and a `global`: `global big = 2147483648` is an `i64` and `let t = (3000000000, 1)` an `(i64, i32)`. The variable is of that type from then on, so `global count = 0` holds any `i32` it is assigned.
 
-A constant with no type, alone or as an element of a tuple, takes its default type ([1.5](#integer-literals)), the same for a `let` and a `global`: `global big = 2147483648` is an `i64` and `let t = (3000000000, 1)` an `(i64, i32)`. The variable is of that type from then on, so `global count = 0` holds any `i32` it is assigned.
+A global's initializer is a compile-time constant: a literal, an expression of literals and defs (as for a `def`, [3.1](#31-definitions-def)), the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. It sees only the defs and data declared above it, and never another global (`global initializer must be a compile-time constant`). The compiler works out each value, so it can be written as it's meant:
 
-A global's initializer is a compile-time constant: a literal, an expression of literals and defs, the address of a `data` block, or a cast of one of these. For a global of several values it's a constructor, tuple or array of those, or a string or `data` array for a slice. The compiler works out each value, so it can be written as it's meant:
+<!-- spec:begin compile -->
 
 ```ents
 def page = 64 * 1024
@@ -1863,7 +2149,22 @@ global span: (u32, f64) = (4 * page, 1 / 4.0)
 global bits: u32 = -1 as u32     // 4294967295
 global low: u8 = 300 as u8       // 44, as the cast gives at run time
 global bytes: [*]u8 = table as [*]u8
+global halves: f64 = 7 / 2       // 3.5: the division is an f64 one
+global pairs: i32 = 7 / 2        // 3
+
+test "an initializer is worked out as the program would" {
+  assert limit == 262144
+  assert mask == 0xFFFFF000
+  assert span.1 == 0.25
+  assert bits == 4294967295
+  assert low == 44
+  assert bytes[2] == 2
+  assert halves == 3.5
+  assert pairs == 3
+}
 ```
+
+<!-- spec:end -->
 
 The value is the one the expression has at run time, in the types its parts have: `7 / 2` starts an `f64` global as 3.5 and an `i32` one as 3, and `200:u8 + 100:u8` is 44 whatever the global's type.
 
@@ -1871,33 +2172,159 @@ A cast of an address is a constant when it keeps the address whole: to another p
 
 ### 3.4 Functions
 
+A function declaration is `func`, the function's name, its parameters in parentheses, `->` and its results, and its body:
+
+- **Parameters** are separated by commas: `name: Type` each. A parameter can leave its name out, `func skip(u32, n: u32)`, and then it cannot be read: it is there to match a signature. With a single unnamed parameter the parentheses can go too, `func double i32 -> i32 => 0`, which is rarely clearer. A `comptime` parameter makes the function generic ([8. Generics](#8-generics)).
+- **Results** follow `->`: none (leave out `->`, or write `-> ()`), one type (`-> u32`), several in parentheses (`-> (u32, u32)`), or several with names (`-> (q: u32, r: u32)`). One type in parentheses without a name is that type, so `-> (u32)` is one result, and `-> ((q: u32, r: u32))` is one result that is a struct. Name every result or none: with a mix such as `-> (a: u32, u32)` a block body that ends without `return` gives a module that does not assemble (a known bug).
+- **The body** is `=> expression` or a block of statements in braces.
+- `inline` may stand before `func` ([3.5](#35-inline-functions)), and `export` before both ([7.2](#72-exports)).
+
+<!-- spec:begin compile -->
+
 ```ents
-// Basic function with block body
-func add(a:i32, b:i32) -> i32 {
+global calls: u32 = 0
+
+func add(a: i32, b: i32) -> i32 {
   return a + b
 }
 
-// No return type (void)
-func greet() {
-  log("hello")
-}
+func square(x: i32) -> i32 => x * x               // expression body
 
-// Expression body (single expression, implicit return)
-func square(x:i32) -> i32 => x * x
-
-// Named return value (implicitly returned at end)
-func double(x:i32) -> (result:i32) {
-  result = x * 2
-}
-
-// Multiple return values
-func divmod(a:i32, b:i32) -> (q:i32, r:i32) {
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) {  // named results
   q = a / b
   r = a % b
 }
+
+func count() {                                     // no result
+  calls += 1
+}
+
+test "the four shapes of a function" {
+  assert add(2, 3) == 5
+  assert square(-4) == 16
+  let q, r = divmod(17, 5)
+  assert q == 3
+  assert r == 2
+  count()
+  count()
+  assert calls == 2
+}
 ```
 
-Named return values are declared in the signature with `-> (name:type)`. They act as pre-declared lets and are implicitly returned when the function ends. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
+<!-- spec:end -->
+
+Each function is one wasm function. A parameter is one wasm parameter for each wasm value of its type (a struct one for each field, a slice its pointer and its length), the results are the function's wasm results (several where there are several), and a named result is a local of the function. A call by name is a wasm `call`. Every function of the module is in the output, whether anything calls it or not. `divmod` above is:
+
+```wat
+(func $divmod (param $a i32) (param $b i32) (result i32 i32)
+  (local $q i32)
+  (local $r i32)
+  (local.set $q (i32.div_u (local.get $a) (local.get $b)))
+  (local.set $r (i32.rem_u (local.get $a) (local.get $b)))
+  (local.get $q)
+  (local.get $r)
+)
+```
+
+A function can call any function of the module, declared above or below it, and itself: recursion is a plain wasm call on the engine's stack, and a call nested too deep traps.
+
+**Parameters are variables.** A parameter holds a copy of its argument: assigning the parameter, or a field of a struct parameter, changes the function's copy only. A pointer parameter points into the caller's memory, and what is written through it is seen there; only a `*mut` pointer takes writes ([2.5](#25-pointer-types)).
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: i32, y: i32)
+
+func moved(p: Point, dx: i32) -> Point {
+  p.x += dx                       // the function's own copy
+  return p
+}
+
+func move(p: *mut Point, dx: i32) {
+  p.x += dx                       // the caller's memory
+}
+
+data spot: Point = mut (1, 2)
+
+test "a value is copied, a pointer is shared" {
+  let a = Point(1, 2)
+  let b = moved(a, 10)
+  assert a.x == 1
+  assert b.x == 11
+  move(spot, 10)
+  assert spot.x == 11
+}
+```
+
+<!-- spec:end -->
+
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body. It must not have a def's name: such a parameter is accepted, and reading it gives the def's value (a known bug).
+
+**Returning.** An expression body is the function's result. A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
+
+- a `return` (not `return ... when ...`),
+- a `loop` with no `break` out of it,
+- an `if` with an `else`, whose every branch ends in one of these, or
+- a `match` with a `_` arm, whose every arm ends in one of these.
+
+Anything else is `function 'f' can reach its end without returning a value`: a `while true` loop, a statement after the last `return`, and a trailing value. With an unnamed result the last expression of a block body is not returned: write `return`, or an expression body (`=> if c { 1 } else { 2 }`).
+
+A bare `return` is for a function with no result, or with named results; with an unnamed result it is `return needs a value: the function returns u32`, and a value returned from a function with no result is `cannot assign int(1) to ()`. An expression written as a statement is evaluated and its value dropped: `bump()` alone calls `bump` and drops its result.
+
+<!-- spec:begin compile -->
+
+```ents
+func sign(x: i32) -> i32 {
+  if x < 0 {
+    return -1
+  } elif x > 0 {
+    return 1
+  } else {
+    return 0
+  }
+}
+
+func first_set(bits: u32) -> u32 {
+  let i: u32 = 0
+  loop {
+    return i when bits & (1 << i) != 0 || i == 31
+    i += 1
+  }
+}
+
+func pick(c: bool) -> u32 => if c { 1 } else { 2 }
+
+test "every path returns" {
+  assert sign(-5) == -1
+  assert sign(0) == 0
+  assert first_set(0b1000) == 3
+  assert pick(false) == 2
+}
+```
+
+```ents
+func one() -> u32 { 1 }
+func two(c: bool) -> u32 {
+  if c { return 2 }
+}
+func three() -> u32 {
+  while true { return 3 }
+}
+func four() -> u32 { return }
+```
+
+```errors
+function 'one' can reach its end without returning a value
+function 'two' can reach its end without returning a value
+function 'three' can reach its end without returning a value
+return needs a value: the function returns u32
+```
+
+<!-- spec:end -->
+
+**Named results.** Named results are variables of the function, declared in the signature, `-> (name: Type)`. Each starts at zero, as every variable of a function does ([3.3](#33-variables)). The function returns them as they are when it ends: when control reaches the end of the body, at a bare `return`, or at `return value`, which gives values for them. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
+
+<!-- spec:begin compile -->
 
 ```ents
 func split(n: u32) -> (hi: u32, lo: u32) => (n >> 16, n & 0xffff)
@@ -1910,14 +2337,31 @@ func swapped(n: u32) -> (lo: u32, hi: u32) {
   split(n << 16 | n >> 16)               // split's hi and lo fill lo and hi, in order
 }
 
-func turned(n: u32) -> (lo: u32, hi: u32) => split(n << 16 | n >> 16)   // the same, as an expression body
-
 func named(n: u32) -> (hi: u32, lo: u32) => (lo: n & 0xffff, hi: n >> 16)  // a literal with names, by name
 
 func picked(c: bool, n: u32) -> (lo: u32, hi: u32) {
   if c { split(n) } else { (hi: 1, lo: 2) }   // in order in one branch, by name in the other
 }
+
+func total(xs: []u32) -> (sum: u32) {
+  for x in xs {
+    sum += x                             // sum starts at 0
+  }
+}
+
+test "named results" {
+  let (hi:, lo:) = split(0x12345678)
+  assert hi == 0x1234 && lo == 0x5678
+  let wide, ratio = halves(0x1234)
+  assert wide == 0x12 && ratio == 52.0
+  assert swapped(0x12345678).lo == 0x5678
+  assert named(0x12345678).hi == 0x1234
+  assert picked(false, 0).hi == 1
+  assert total([1, 2, 3]) == 6
+}
 ```
+
+<!-- spec:end -->
 
 <!-- spec:begin compile -->
 
@@ -1944,6 +2388,8 @@ result 'n' is the parameter 'n', so it has its type: u32, not u64
 ```
 
 <!-- spec:end -->
+
+**A function has a name.** A module-level `func(x: i32) -> i32 => x + 1` without one is accepted and left out of the module, and `export "inc" func(...)` gives a module that does not assemble: both are known bugs, so name every function. An import item can leave the name out ([7.1](#71-imports)).
 
 A function that takes a type as a parameter, `func max(comptime T: type, a: T, b: T) -> T`, is generic: see [8. Generics](#8-generics).
 
@@ -2062,7 +2508,7 @@ export func hash(k: u64) -> u32 => 1
 export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)
 ```
 
-Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function, as it always has; a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
+Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function; a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
 
 Nothing but functions shares a name. A global, `def`, `data` or import has its name to itself in its module, and a function cannot take the name of one, nor can a function or an import declared in a `test`:
 
@@ -2084,120 +2530,142 @@ A function or a global of another source module imported twice under one name is
 
 #### Calling Conventions
 
-Functions are called with positional arguments only:
-
-```ents
-// Positional arguments (in declaration order)
-add(1, 2)
-divmod(17, 5)
-
-// Receive multiple return values
-let q, r = divmod(17, 5)
-
-// Destructure tuple return values (parens match the tuple)
-let (x:, y:) = get_point()
-```
+A call names the function and gives its arguments in parentheses, by position: the first argument goes to the first parameter, and so on. Each argument is evaluated once, left to right, before the call. A call of a function with several results is one value, a tuple of them: bind its parts (`let q, r = divmod(17, 5)`, or by name `let (q:, r:) = ...`), keep it whole (`let d = divmod(9, 4)`, then `d.q`), or take one part (`divmod(7, 2).r`). It is not spread over the parameters of another call.
 
 <!-- spec:begin compile -->
 
-An argument goes to the parameter at its place, so a call of a function, or of a builtin, names none of them (only a constructor's arguments can have names, [2.8](#struct-constructors)):
+```ents
+global trace: u32 = 0
+
+func note(d: u32) -> u32 {
+  trace = trace * 10 + d
+  return d
+}
+
+func three(a: u32, b: u32, c: u32) -> u32 => a * 100 + b * 10 + c
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
+
+test "arguments are evaluated left to right" {
+  assert three(note(1), note(2), note(3)) == 123
+  assert trace == 123
+}
+
+test "several results are one value" {
+  let q, r = divmod(17, 5)
+  let d = divmod(9, 4)
+  assert q * 10 + r == 32
+  assert d.q * 10 + d.r == 21
+  assert divmod(7, 2).r == 1
+}
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+A call names none of the parameters, also a call of a builtin (only a constructor's arguments can have names, [2.8](#struct-constructors)), and gives each one argument:
 
 ```ents
 func sub(a: i32, b: i32) -> i32 => a - b
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
 
 func f() -> i32 => sub(b: 1, a: 2)
 func g(x: f64) -> f64 => sqrt(v: x)
+func h() -> u32 => three(divmod(7, 2))
+func three(a: u32, b: u32) -> u32 => a + b
 ```
 
 ```errors
 'sub' takes positional arguments
 'sqrt' takes positional arguments
+'three' expected 2 arguments, got 1
+argument 1: cannot assign (q: u32, r: u32) to u32
 ```
 
 <!-- spec:end -->
 
+A function whose first parameter is the value it works on can also be called as a method of its first argument, `xs.total()` for `total(xs)` ([4.9](#49-method-call-syntax)).
+
 #### Function Types and Pointers
 
-> **Status: not yet implemented.** Function types are checked, but a function value has no run-time form yet. Calling one is a compile error (`calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called`), and a program that only stores or passes one does not assemble. A function's name is no number either: cast to a number or an address, or compared, it is a compile error (`cannot cast func() -> u32 to u32: 'f' is a function, which has no run-time value yet`). To give a function to another function today, pass it at compile time: see [8.6 Comptime Function Parameters](#86-comptime-function-parameters).
+A function type is written `(A, B) -> R`: the parameter types in parentheses, `->`, the result. One parameter needs no parentheses (`i32 -> i32`), `-> ()` is no result, and names are allowed (`(x: i32) -> (r: i32)`). `->` groups to the right: `i32 -> i32 -> i32` is `i32 -> (i32 -> i32)`. A type operator written before a parameter takes the whole function type instead: `[]u8 -> ()` is a slice of functions, `[](u8 -> ())`, and `*u8 -> u32` a pointer to a function. So write the parameters of a function type in parentheses, `([]u8) -> ()`.
 
-Function names are first-class values with types corresponding to their signatures. At runtime, function values are opaque indices into WebAssembly's function table.
+A function is given to another function at compile time, for a comptime function parameter: each function given makes a copy of the callee that calls it directly ([8.6](#86-comptime-function-parameters)).
+
+<!-- spec:begin compile -->
 
 ```ents
-// Function type syntax: input -> output
-let callback: i32 -> i32 = double
-let binary_op: (i32, i32) -> i32 = add
+func twice(comptime f: (u32) -> u32, x: u32) -> u32 => f(f(x))
+func inc(x: u32) -> u32 => x + 1
+func dbl(x: u32) -> u32 => x * 2
 
-// Calling through function pointers
-let result = callback(5)    // calls double(5)
-
-// Higher-order functions
-func apply(x: i32, f: i32 -> i32) -> i32 {
-  return f(x)
-}
-
-func map(arr: []i32, f: i32 -> i32) -> []i32 {
-  // apply f to each element
-}
-
-// Functions that return functions
-func get_op(add: bool) -> (i32, i32) -> i32 {
-  if add { return add_fn } else { return sub_fn }
+test "a function given at compile time" {
+  assert twice(inc, 5) == 7
+  assert twice(dbl, 5) == 20
 }
 ```
 
-Function types require explicit return types — use `-> ()` for void-returning functions:
+<!-- spec:end -->
+
+> **Not implemented: function values at run time.** A function has no run-time value: no variable, parameter, global, field or memory holds one, and nothing calls through one (an indirect call). Their design is under discussion. Calling a variable or a parameter of a function type is an error, and so is casting or comparing a function's name. Giving a function for a parameter that is not `comptime`, or storing one, is not refused by the compiler, and the module does not assemble (a known bug). A function type written for a global, a parameter or a field compiles to an `i32` that nothing can call.
+
+<!-- spec:begin compile -->
 
 ```ents
-// Callback that takes a key and returns nothing
-func walk(tree: *Tree, visitor: []u8 -> ()) {
-  // call visitor(key) for each key in tree
-}
+func inc(x: i32) -> i32 => x + 1
+func dec(x: i32) -> i32 => x - 1
+
+func apply(f: (i32) -> i32, x: i32) -> i32 => f(x)
+func address() -> u32 => inc as u32
+func same() -> bool => inc == dec
 ```
 
-The `->` operator is right-associative, enabling curried function types:
-
-```ents
-// Curried function type: takes i32, returns function
-let curried: i32 -> i32 -> i32   // same as: i32 -> (i32 -> i32)
+```errors
+calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (i32) -> i32), can be called
+cannot cast func(x: i32) -> i32 to u32: 'inc' is a function, which has no run-time value yet
+'==' cannot be applied to func(x: i32) -> i32 and func(x: i32) -> i32: 'inc' is a function, which has no run-time value yet
 ```
+
+<!-- spec:end -->
 
 ### 3.5 Inline Functions
 
-> **Status: Parsed but not yet implemented** — `inline` is accepted by the parser but functions are compiled as regular calls.
+> **Not implemented:** `inline` is accepted and has no effect. An `inline func` is an ordinary function, and each call of it is a wasm `call`.
 
-Inline functions are guaranteed to be inlined at each call site. Unlike `def` which performs textual substitution, inline functions have proper type checking and evaluate each argument exactly once:
+`inline` stands before `func` (and after `export`: `export inline func`). An inline function is meant to have its body put in at each call site, with each argument evaluated once into a local of the caller. A program behaves the same either way: inlining changes only its speed and size.
+
+<!-- spec:begin compile -->
 
 ```ents
-// Inline function with expression body
-inline func square(x:i32) -> i32 => x * x
+def prime32-1 = 2654435761:u32
+def prime32-2 = 2246822519:u32
 
-// Inline function with block body
-inline func round32(seed:u32, value:u32) -> u32 {
-  seed += value * prime32-2
-  seed <<<= 13
-  seed *= prime32-1
-  return seed
+inline func round32(acc: u32, lane: u32) -> (acc: u32) {
+  acc += lane * prime32-2
+  acc <<<= 13
+  acc *= prime32-1
+}
+
+test "an inline function is called as any function is" {
+  assert round32(0, 0) == 0
+  assert round32(1, 0) == 0xef362000
+  assert round32(0, 1) == 0x8df8c7ad
 }
 ```
 
-Key differences from `def`:
+<!-- spec:end -->
 
-| Feature | `def` | `inline func` |
-|---------|-------|---------------|
-| Type checking | None (textual) | Full |
-| Argument evaluation | Multiple (substituted) | Once |
-| Can have locals | No | Yes |
-| Can have control flow | No | Yes |
+A `def` and an `inline func` both cost no call, the one now and the other once inlining is implemented; they differ in what they are:
 
-Use `def` for simple literal constants. Use `inline func` when you need type safety and guaranteed single evaluation of arguments:
+| | `def` | `inline func` |
+|---|---|---|
+| What it is | a constant: one value | a function: parameters and a body |
+| Checked | at each use, in the type the use wants | once, as any function |
+| Arguments | none | each evaluated once |
+| Locals and control flow | no | yes |
+| In the output | a constant at each use | a function, called with `call` |
 
-```ents
-def pi = 3.14159:f64              // simple constant
-inline func clamp(x:i32, lo:i32, hi:i32) -> i32 =>
-  if x < lo { lo }
-  elif x > hi { hi }
-  else { x }
-```
+A value known when the program is compiled is a `def`; anything that computes from arguments is a function.
 
 ---
 
