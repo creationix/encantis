@@ -1385,6 +1385,42 @@ test "an optional one starts as none" {
 }
 ```
 
+None is the literal `0` wherever an optional one is wanted: an element of an array literal or a repeat, a field, a branch with no type of its own, a `def` of 0, and an instance of a generic:
+
+```ents
+type Canvas = host
+type Pair = (cs: [2]?Canvas, n: i32)
+def nothing = 0
+
+global both-none: [2]?Canvas = [0, 0]
+
+export func pair(c: Canvas) -> [2]?Canvas => [c, 0]
+export func three() -> [3]?Canvas => [0; 3]
+export func field(c: Canvas) -> Pair => Pair([0, c], 1)
+export func pick(n: i32, c: ?Canvas) -> ?Canvas {
+  let x = if n == 0 { 0 } elif n == 1 { c } else { (0) }
+  let y = match n { 0 => c, _ => nothing }
+  return if x == 0 { y } else { x }
+}
+export func grouped(c: Canvas) -> [2]?Canvas => [c, (nothing)]
+export func untyped(c: ?Canvas) -> ?Canvas {
+  let xs = [c, 0]
+  return xs[1]
+}
+func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
+export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
+
+func none(a: [2]?Canvas) -> bool => a[0] == 0 && a[1] == 0
+test "none is 0 in each place" {
+  assert none([0, 0])
+  assert none(both-none)
+  assert none([nothing, (0)])
+  assert pick(0, 0) == 0
+  assert pick(2, 0) == 0
+  assert three()[2] == 0
+}
+```
+
 Two host types are two types, neither is a number, a plain one is never null, and the one thing asked of an optional one is whether it is none:
 
 ```ents
@@ -1402,6 +1438,9 @@ func h() -> ?Canvas => 0 as Canvas
 func i(x: Canvas, y: Canvas) -> bool => x != y
 type Point = (x: i32, y: i32)
 func j(p: ?Point) {}
+func k() -> ?Canvas => 0 + 0
+func l(x: ?Canvas) -> bool => x == 1 - 1
+func m() -> ?Canvas => "".len as ?Canvas
 ```
 
 ```errors
@@ -1415,6 +1454,9 @@ cannot assign int(0) to Canvas: a Canvas is never null (a host reference that ma
 cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first
 cannot cast int(0) to Canvas: a Canvas is never null
 '!=' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is not compared
+cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal
+cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
 ```
 
 A plain host reference has no default, in a variable, a global or a named result, and in a struct or an array either:

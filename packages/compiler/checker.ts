@@ -6533,9 +6533,18 @@ class CheckContext {
       const t = unwrap(type)
       return t.kind === 'comptime_int' && t.value === 0n
     }
-    if (((host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))) && (expr.op === '==' || expr.op === '!=')) {
+    // A constant met by an optional one asks the null question, and is
+    // answered only for the literal 0 (0 + 0 and 1 - 1 are no none).
+    const constant = (type: ResolvedType) => unwrap(type).kind === 'comptime_int'
+    const optional = (type: ResolvedType) => host(type) && !!(unwrap(type) as HostRT).optional
+    const asked = (optional(leftType) && constant(rightType)) || (constant(leftType) && optional(rightType))
+      || (host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))
+    if (asked && (expr.op === '==' || expr.op === '!=')) {
       const ref = unwrap(host(leftType) ? leftType : rightType) as HostRT
-      if (!ref.optional) this.error(expr.span.start, `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}: ${neverNull(ref)}`)
+      const zero = host(leftType) ? expr.right : expr.left
+      const said = `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}`
+      if (!ref.optional) this.error(expr.span.start, `${said}: ${neverNull(ref)}`)
+      else if (!this.writtenZero(zero)) this.error(expr.span.start, `${said}: ${noneIsWritten(ref)}`)
       return
     }
     // An optional slice is none where its pointer is 0: it is compared with
@@ -6586,6 +6595,40 @@ class CheckContext {
     return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
   }
 
+  // Whether a constant is none as it is written: the literal 0, also in
+  // parentheses, as each value of an if or a match, or as the name of a def
+  // of one (or of a value parameter given 0). Nothing computed is (0 + 0,
+  // "".len), whatever its value.
+  private writtenZero(expr: AST.Expr, seen = new Set<string>()): boolean {
+    const e = ungrouped(expr)
+    switch (e.kind) {
+      case 'LiteralExpr':
+        return e.value.kind === 'int' && e.value.value === 0n
+      case 'IdentExpr': {
+        const sym = this.lookup(e.name)
+        if (sym?.kind !== 'def' || seen.has(e.name)) return false
+        if (sym.valueParam) return sym.value.kind === 'int' && sym.value.value === 0n
+        seen.add(e.name)
+        const decl = this.defDecls.get(e.name)
+        return decl !== undefined && this.writtenZero(decl.value, seen)
+      }
+      case 'IfExpr': {
+        if (e.pattern || !e.else_) return false
+        const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
+        return bodies.every((body) => bodyExits(body) || this.branchZero(body, seen))
+      }
+      case 'MatchExpr':
+        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body, seen))
+      default:
+        return false
+    }
+  }
+
+  private branchZero(body: AST.FuncBody | AST.Expr, seen: Set<string>): boolean {
+    const value = bodyValue(body)
+    return value !== null && this.writtenZero(value, seen)
+  }
+
   // What is wrong with a cast, if anything. A function's name cast to a
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
@@ -6595,6 +6638,9 @@ class CheckContext {
     const host = hostIn(from) ?? hostIn(to)
     const toHost = unwrap(to)
     const fits = toHost.kind === 'host' && typeAssignable(to, from)
+    if (host && toHost.kind === 'host' && toHost.optional && unwrap(from).kind === 'comptime_int' && !this.writtenZero(operand)) {
+      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${noneIsWritten(toHost)}`
+    }
     if (host && !typeEquals(from, to) && !fits) {
       const zero = unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
       if (zero && toHost.kind === 'host') return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${neverNull(toHost)}`
@@ -6647,6 +6693,12 @@ class CheckContext {
     const literal = expr.kind === 'ArrayExpr' || expr.kind === 'RepeatExpr'
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
+    // None of an optional host reference is written 0, the literal: nothing
+    // computed is one, whatever its value.
+    if (to.kind === 'host' && to.optional && from.kind === 'comptime_int' && !this.writtenZero(expr)) {
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}: ${noneIsWritten(to)}`)
+      return
+    }
     if (!elementwise && !typeAssignable(expected, actual)) {
       // 0 is none of a plain host reference, which is never null.
       const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
@@ -6663,6 +6715,10 @@ class CheckContext {
       // A constant address is a 32-bit value, whatever it's computed from.
       this.coerce(expr, actual, addressType(from), prefix)
       this.exprTypes.set(expr, expected)
+    } else if (to.kind === 'host' && from.kind === 'comptime_int') {
+      // 0 for an optional host reference, none: the type goes down to the
+      // literal, through parentheses and the branches of an if or a match.
+      this.typeConstant(expr, expected, actual)
     } else if (to.kind === 'slice' && from.kind === 'comptime_int') {
       // 0 for an optional slice: the address 0, and a length of 0.
       this.coerce(expr, actual, addressType(from), prefix)
@@ -6823,6 +6879,8 @@ class CheckContext {
         // A constant with a fixed form (items.len, sizeof(T)) is emitted in its
         // default type and converted like any other value.
         if (isComptimeNumber(unwrap(type))) return
+        // A def of 0 where an optional host reference is wanted is none.
+        if (unwrap(type).kind === 'host') break
         const own = this.concretize(actual)
         this.exprTypes.set(expr, own)
         const from = unwrap(own)
@@ -11087,6 +11145,12 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
     : `${said}: ${host.name} is a host reference, which is not compared (one that may be null, a ?${host.name}, is compared with 0)`
 }
 
+// Why a constant that is not the literal 0 is no none of an optional host
+// reference
+function noneIsWritten(host: HostRT): string {
+  return `none of a ${typeToString(host)} is written 0, the literal, and nothing computed is one`
+}
+
 // Why 0, or a question of null, does not fit a plain host reference
 function neverNull(host: HostRT): string {
   return `a ${host.name} is never null (a host reference that may be null is a ?${host.name})`
@@ -11301,7 +11365,7 @@ function rowsAdvice(row: ResolvedType): string {
 // settled on (settleLiteral): it holds slices, or it writes out rows, each of
 // which has to be a row of that type.
 function settles(expr: AST.Expr, type: ResolvedType): boolean {
-  return holdsSlice(type) || writesRows(expr)
+  return holdsSlice(type) || hostIn(type) !== null || writesRows(expr)
 }
 
 // An array literal of array literals, itself or as an element of a tuple.

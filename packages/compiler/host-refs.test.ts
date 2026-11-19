@@ -159,6 +159,56 @@ export func unset() -> ?Canvas {
     expect(m.widened(a)).toBe(a)
   })
 
+  // A 0 that reaches its place only through a conversion (an element of a
+  // literal, a branch with no type of its own, a def, an instance) is the
+  // null reference as well, not an i32.
+  test('none written 0 is null wherever it is written', async () => {
+    const source = `type Canvas = host
+type W = (cs: [2]?Canvas, n: i32)
+def z = 0
+def zz = z
+global g: [2]?Canvas = [0, 0]
+export func pair(c: Canvas) -> [2]?Canvas => [c, 0]
+export func rep() -> [3]?Canvas => [0; 3]
+export func glob() -> [2]?Canvas => g
+func take(a: [2]?Canvas) -> ?Canvas => a[1]
+export func arg(c: Canvas) -> ?Canvas => take([c, 0])
+export func field(c: Canvas) -> W => W([0, c], 1)
+export func elf(n: i32, c: ?Canvas) -> ?Canvas {
+  let x = if n == 0 { 0 } elif n == 1 { c } else { 0 }
+  return x
+}
+export func mat(n: i32, c: ?Canvas) -> ?Canvas {
+  let x = match n { 0 => 0, _ => c }
+  return x
+}
+export func eqif(b: bool, c: Canvas) -> bool => (if b { c as ?Canvas } else { 0 }) == 0
+export func paren(c: Canvas) -> [2]?Canvas => [c, (0)]
+export func defz(c: Canvas) -> [2]?Canvas => [c, zz]
+export func untyped(c: ?Canvas) -> ?Canvas {
+  let xs = [c, 0]
+  return xs[1]
+}
+func pr(comptime T: type, x: T) -> [2]?T => [x, 0]
+export func gen(c: Canvas) -> [2]?Canvas => pr(c)
+`
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
+    const m = instance.exports as Record<string, CallableFunction>
+    const o = { name: 'o' }
+    expect(m.pair(o)).toEqual([o, null])
+    expect(m.rep()).toEqual([null, null, null])
+    expect(m.glob()).toEqual([null, null])
+    expect(m.arg(o)).toBe(null)
+    expect(m.field(o)).toEqual([null, o, 1])
+    expect([m.elf(0, o), m.elf(1, o), m.elf(2, o)]).toEqual([null, o, null])
+    expect([m.mat(0, o), m.mat(1, o)]).toEqual([null, o])
+    expect([m.eqif(1, o), m.eqif(0, o)]).toEqual([0, 1])
+    expect(m.paren(o)).toEqual([o, null])
+    expect(m.defz(o)).toEqual([o, null])
+    expect(m.untyped(o)).toBe(null)
+    expect(m.gen(o)).toEqual([o, null])
+  })
+
   // The host promises a plain one is never null. Where one comes in from the
   // host it is checked, once, and a broken promise traps there.
   test('a plain one the host gives as null traps where it comes in', async () => {
