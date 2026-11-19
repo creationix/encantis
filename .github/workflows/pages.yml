@@ -1,9 +1,13 @@
 name: Pages
 
-# Builds the browser games (examples/browser) with the release build and
-# publishes them on GitHub Pages: Lantern at the site's root, the starter
-# template at ?game=starter. Pages is turned on once, in Settings → Pages,
-# with "GitHub Actions" as its source.
+# Publishes the GitHub Pages site: the repository rendered by Jekyll, as
+# Pages' "Deploy from a branch" mode renders it (the README at the root, the
+# docs at their paths), plus the browser games built with the release build
+# at lantern/ (the starter at lantern/?game=starter).
+#
+# Pages runs this workflow once its source is "GitHub Actions" (Settings →
+# Pages). While the source is still a branch, Pages also builds the branch
+# on each push, and whichever deployment ends last is the site.
 on:
   push:
     branches: [main]
@@ -20,18 +24,29 @@ concurrency:
 
 jobs:
   build:
-    name: Build the games
+    name: Build the site and the games
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The site as the branch mode builds it, from the clean checkout (before
+      # node_modules exists).
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun examples/browser/build.ts
+      # Jekyll's container leaves _site owned by root.
+      - name: Add the games at lantern/
+        run: |
+          sudo mkdir -p _site/lantern
+          sudo cp -r examples/browser/dist/. _site/lantern/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: examples/browser/dist
+          path: _site
 
   deploy:
     name: Deploy to GitHub Pages

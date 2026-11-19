@@ -24,7 +24,7 @@ python3 -m http.server --directory examples/browser/dist 8000
 
 Then open <http://localhost:8000>. Arrows or WASD move, space dashes, enter starts; on a gamepad, the left stick or the d-pad moves, A dashes, Start starts; on a touch screen, a tap starts, dragging a finger steers (from where it went down), and a second finger dashes.
 
-The [Pages workflow](../../.github/workflows/pages.yml) builds the same `dist/` on each push to `main` and publishes it on the repository's GitHub Pages site, once Pages is turned on with "GitHub Actions" as its source (Settings → Pages).
+Or play it at <https://creationix.github.io/encantis/lantern/>: the [Pages workflow](../../.github/workflows/pages.yml) builds the same `dist/` on each push to `main` and publishes it at `lantern/` on the repository's Pages site, beside the rendered README and docs. Pages runs it once its source is "GitHub Actions" (Settings → Pages).
 
 ## What it weighs
 
