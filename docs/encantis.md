@@ -70,11 +70,7 @@ test "the first line is skipped" {
 
 ### 1.2 Identifiers
 
-An identifier (a name) starts with a lowercase ASCII letter `a`–`z` and goes on with ASCII letters, digits, `_` and `-`. It names a variable, a parameter, a function, a field, a `def`, a `data` block or a global:
-
-```text
-count   prime32-1   merge-round64   my_var_2   x2
-```
+An identifier (a name) starts with a lowercase ASCII letter `a`–`z` and goes on with ASCII letters, digits, `_` and `-`. It names a variable, a parameter, a function, a field, a `def`, a `data` block or a global: `count`, `prime32-1`, `merge-round64`, `my_var_2`, `x2`.
 
 - A name never starts with `_`, a digit or an uppercase letter: `_count`, `2x` and `Count` are not names (`Count` is a type name, [1.3](#13-type-identifiers)). `_` alone is not a name either: it is the wildcard of a match arm ([6.3](#63-patterns-in-match-arms)) and the length left to the compiler in `[_]T`.
 - A hyphen after the first letter is part of the name, wherever the name stands: `n-1` is one name, not `n` minus 1, and after a dot `x.u32-count` is the member `u32-count`. So subtraction is written with spaces, `n - 1`, and the formatter prints every binary `-` that way.
