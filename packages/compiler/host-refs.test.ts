@@ -271,6 +271,9 @@ export func lengths(i: u32#2) -> u32 => (&["ab", "cde"])[i].len
       const source = `type Canvas = host\nexport func f(b: bool, n: u32, given: Canvas) -> Canvas {\n  ${body}\n}\n`
       expect(() => watOfSource(source)).toThrow("'c' is seen only in the block it is declared in: that block may not have run here")
     }
+    // A test's statements are a body of their own, with the same rule.
+    const tested = `type Canvas = host\nimport "env" "screen" global screen: Canvas\ntest "t" {\n  let n = 1\n  if n == 2 {\n    let c = screen\n  }\n  let o: ?Canvas = c\n  assert o != 0\n}\n`
+    await expect(runTestsOfSource(tested)).rejects.toThrow("'c' is seen only in the block it is declared in: that block may not have run here")
     const source = `type Canvas = host
 import "env" "show" func show(c: Canvas) -> i32
 export func inside(b: bool, given: Canvas) -> i32 {
