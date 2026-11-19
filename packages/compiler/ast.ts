@@ -913,7 +913,7 @@ function walkDeclaration(decl: Declaration, visitor: ASTVisitor): void {
   }
 }
 
-function walkFuncBody(body: FuncBody, visitor: ASTVisitor): void {
+export function walkFuncBody(body: FuncBody, visitor: ASTVisitor): void {
   if (body.kind === 'Block') {
     if (visitor.visitBlock?.(body) !== false) {
       for (const stmt of body.stmts) {
@@ -927,7 +927,7 @@ function walkFuncBody(body: FuncBody, visitor: ASTVisitor): void {
   }
 }
 
-function walkStatement(stmt: Statement, visitor: ASTVisitor): void {
+export function walkStatement(stmt: Statement, visitor: ASTVisitor): void {
   switch (stmt.kind) {
     case 'LetStmt':
       if (visitor.visitLetStmt?.(stmt) !== false) {

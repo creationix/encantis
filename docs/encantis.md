@@ -1304,6 +1304,7 @@ A plain host type is never null: a `Canvas` is always a value the host gave. So 
 
 - a `let` or a global of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
 - a named result cannot hold one, since a named result starts with a default: return the value instead;
+- a `let` of one in a block that may not run (a branch, a loop's body, a match arm) is seen in that block alone, not after it as another variable is (3.3): after the block, it may never have been given its value (`'c' is seen only in the block it is declared in: that block may not have run here, ...`);
 - `0` is no `Canvas`, and neither is any other number: `c == 0` on a plain `Canvas` is an error that says to use `?Canvas`.
 
 A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer (2.5); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
@@ -1523,6 +1524,31 @@ func vars() {
 }
 func result() -> (r: Canvas) {}
 func optional-result() -> (r: ?Canvas) {}
+func leak(b: bool, given: Canvas) -> Canvas {
+  if b {
+    let c: Canvas = given
+  }
+  return c
+}
+func arm(n: i32, given: Canvas) -> Tagged {
+  match n {
+    0 => { let t: Tagged = Tagged(given, 1) }
+    _ => {}
+  }
+  return t
+}
+func none-passes(n: u32, given: Canvas) -> [2]Canvas {
+  for i in n {
+    let a = [given, given]
+  }
+  return a
+}
+func optional(b: bool, given: Canvas) -> ?Canvas {
+  if b {
+    let o: ?Canvas = given
+  }
+  return o
+}
 ```
 
 ```errors
@@ -1531,6 +1557,9 @@ global 'g' needs a value: a Canvas has no default (a ?Canvas starts as none)
 't' needs a value where it is declared: Tagged holds Canvas, which has no default
 'cs' needs a value where it is declared: [2]Canvas holds Canvas, which has no default
 result 'r' cannot start with a default: a Canvas has no default (a ?Canvas starts as none); return the value instead
+'c' is seen only in the block it is declared in: that block may not have run here, and a Canvas has no default (a ?Canvas starts as none); declare it before the block, with its value
+'t' is seen only in the block it is declared in: that block may not have run here, and Tagged holds Canvas, which has no default
+'a' is seen only in the block it is declared in: that block may not have run here, and [2]Canvas holds Canvas, which has no default
 ```
 
 None is in memory, also inside a struct, and also when the type is declared after it is named:
@@ -1735,7 +1764,7 @@ let ptr:*u8       // uninitialized
 global total:i32 = 0
 ```
 
-A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
 
 A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
 

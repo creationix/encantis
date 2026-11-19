@@ -2,7 +2,7 @@
 // Produces a TypeCheckResult with concrete types attached to all AST nodes
 
 import type * as AST from './ast'
-import { argValue, ungroupedType } from './ast'
+import { argValue, ungroupedType, walkFuncBody, walkStatement } from './ast'
 import { isSourceImport, resolveModulePath } from './loader'
 import {
   type ResolvedType,
@@ -2806,6 +2806,7 @@ class CheckContext {
     // A test of statements is a function of its own (nested tests and the
     // functions it declares are theirs).
     const stmts = decl.children.filter((item): item is AST.Statement => STATEMENT_KINDS.has(item.kind))
+    this.seenInItsBlock(stmts)
     this.checkSize(`test "${decl.name ?? ''}"`, decl.span, stmts)
     this.variables = prevVariables
   }
@@ -2969,6 +2970,7 @@ class CheckContext {
     this.currentScope = prevScope
     this.currentReturnType = prevReturnType
     this.settleLiterals()
+    this.seenInItsBlock(decl.body)
     const name = this.currentInstance?.decl === decl ? this.currentInstance.of.ident : decl.ident
     this.checkSize(`function '${name ?? 'anonymous'}'`, decl.span, decl.body.kind === 'Block' ? decl.body.stmts : decl.body.expr)
     this.variables = prevVariables
@@ -3511,6 +3513,51 @@ class CheckContext {
     return scope
   }
 
+  // Where each variable a let declares is declared
+  private letAt = new WeakMap<Symbol, number>()
+
+  // A let is seen to the end of its function, also after the block it is in
+  // has ended (3.3). A variable of a type that has no default (noDefault: it
+  // holds a plain host reference, and so will a plain function value) gets
+  // its value where it is declared, so after a block that may not have run
+  // (a branch, a loop's body, a match arm) it may have none. Such a variable
+  // is seen in the block it is declared in alone. Checked once the body is,
+  // from the variable each name was read as.
+  private seenInItsBlock(body: AST.FuncBody | readonly AST.Statement[]): void {
+    const blocks: AST.Block[] = []
+    const reads: AST.IdentExpr[] = []
+    const visitor: AST.ASTVisitor = {
+      visitBlock: (block) => {
+        blocks.push(block)
+      },
+      visitIdentExpr: (read) => {
+        reads.push(read)
+      },
+    }
+    if ('kind' in body) walkFuncBody(body, visitor)
+    else for (const stmt of body) walkStatement(stmt, visitor)
+    // The body itself always runs.
+    const inner = blocks.filter((block) => block !== body)
+    if (inner.length === 0) return
+    const innermost = (at: number): AST.Block | null => {
+      let found: AST.Block | null = null
+      for (const block of inner) {
+        if (at < block.span.start || at >= block.span.end) continue
+        if (!found || block.span.start >= found.span.start) found = block
+      }
+      return found
+    }
+    for (const read of reads) {
+      const sym = this.readAs.get(read)
+      const at = sym && this.letAt.get(sym)
+      if (sym?.kind !== 'local' || at === undefined) continue
+      const why = noDefault(sym.type)
+      const block = why && innermost(at)
+      if (!block || (read.span.start >= block.span.start && read.span.start < block.span.end)) continue
+      this.error(read.span.start, `'${read.name}' is seen only in the block it is declared in: that block may not have run here, and ${why}; declare it before the block, with its value`)
+    }
+  }
+
   // Declares a variable that a `for`, an `if let` or a match arm binds, in
   // `scope`, the scope its body is checked in. It never has the name of a
   // variable the body would see without it: a parameter, a named result, a
@@ -3554,6 +3601,7 @@ class CheckContext {
         this.declare(pattern)
         const sym: Symbol = { kind: 'local', type }
         this.letScope().symbols.set(pattern.name, sym)
+        this.letAt.set(sym, pattern.span.start)
         this.types.set(typeKey(pattern.span.start, pattern.kind), type)
         this.recordDefinition(pattern.name, pattern.span.start, sym)
         this.noteVariable(pattern.span.start, pattern.name, type)
@@ -3618,6 +3666,7 @@ class CheckContext {
     const sym: Symbol = { kind: 'local', type }
     this.letScope().symbols.set(varName, sym)
     const at = namedPartAt(element)
+    this.letAt.set(sym, at)
     this.types.set(typeKey(at, 'Binding'), type)
     this.recordDefinition(varName, at, sym)
     this.noteVariable(at, varName, type)

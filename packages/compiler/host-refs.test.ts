@@ -262,6 +262,43 @@ export func lengths(i: u32#2) -> u32 => (&["ab", "cde"])[i].len
     expect([m.lengths(0), m.lengths(1)]).toEqual([2, 3])
   })
 
+  // A let is seen after the block it is in (3.3), but one that holds a
+  // plain reference only in its block: after a branch or a loop that did
+  // not run it would be null. Read where it is declared, it is the value it
+  // was given, and an optional one read after its block is none.
+  test('a plain one declared in a block is seen in that block alone', async () => {
+    for (const body of ['if b {\n    let c = given\n  }\n  return c', 'for i in n {\n    let c = (given, 1)\n  }\n  return c.0', 'match n {\n    0 => { let c = [given] }\n    _ => {}\n  }\n  return c[0]']) {
+      const source = `type Canvas = host\nexport func f(b: bool, n: u32, given: Canvas) -> Canvas {\n  ${body}\n}\n`
+      expect(() => watOfSource(source)).toThrow("'c' is seen only in the block it is declared in: that block may not have run here")
+    }
+    const source = `type Canvas = host
+import "env" "show" func show(c: Canvas) -> i32
+export func inside(b: bool, given: Canvas) -> i32 {
+  let total = 0
+  if b {
+    let c = given
+    for i in 2 {
+      if i > 0 { total += show(c) }
+    }
+  }
+  return total
+}
+export func optional(b: bool, given: Canvas) -> ?Canvas {
+  if b {
+    let o: ?Canvas = given
+  }
+  return o
+}
+`
+    const shown: unknown[] = []
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), { env: { show: (c: unknown) => shown.push(c) } })
+    const m = instance.exports as Record<string, CallableFunction>
+    const given = { name: 'given' }
+    expect([m.inside(1, given), m.inside(0, given)]).toEqual([1, 0])
+    expect(shown).toEqual([given])
+    expect([m.optional(1, given), m.optional(0, given)]).toEqual([given, null])
+  })
+
   // Wasm sets a local to null once per call: a let given no value is none
   // on each pass of a loop all the same, in a struct or an array too.
   test('an optional one given no value is none on every pass of a loop', async () => {
