@@ -1508,7 +1508,46 @@ Expected
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte. A generic type applied is a name of the same kind (8.5). One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)), which is a type of its own, and one name of it is the same type in every module of a program.
+`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module, and it is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
+
+A name is not a new type. It is the type it names, wherever it is used: `type Meters = u32` and `type Feet = u32` are both `u32`, so a `Meters` passes where a `Feet` is wanted, and either is a `u32` in arithmetic. Messages say the name that was written (`cannot assign int(8) to Small`). Any type can be named: a number, a ranged integer (`type Small = u32#8`), a pointer, a slice, an array, an optional, a tuple or struct, a function type (`type Scale = (u32) -> u32`), a generic type applied (`type Bytes = Vec(u8)`, [8.5](#85-generic-types)), or a name (`type Pt = Point`). A name in parentheses is the name, as any type is ([2.7](#27-tuple-types)).
+
+<!-- spec:begin compile -->
+
+```ents
+type Meters = u32
+type Feet = u32
+type Count = u32
+type Small = u32#8
+type Scale = (u32) -> u32
+
+func feet(m: Meters) -> Feet => m * 3                       // a Meters is a u32, and so is a Feet
+func clamp(x: u32) -> Small => if x < 8 { x } else { 7 }     // x is a u32#8 where x < 8
+func twice(comptime f: Scale, x: u32) -> u32 => f(f(x))      // feet is a (u32) -> u32
+func count(n: u64) -> Count => n as Count                    // a cast to the name
+
+test "a name is the type it names" {
+  assert feet(2) == 6
+  assert clamp(9) == 7
+  assert twice(feet, 1) == 9
+  assert count(4294967297) == 1
+}
+```
+
+<!-- spec:end -->
+
+What can be done with the type written out can be done with its name:
+
+- A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, and one for an optional is unwrapped by `if let` and `??`.
+- A literal is laid out for a name as for the type it names: `data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`.
+- A pointer to an array becomes a slice under any of their names, and the conversions of [Every Implicit Conversion](#every-implicit-conversion) apply to names as to what they name.
+- A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte.
+- A name for a struct is its constructor: `Pt(1, 2)` with `type Pt = Point` ([2.8](#struct-constructors)).
+- A name for a number is cast to with `as` (`n as Count`). `Count(n)` is no cast: only a primitive type's own name is called as one ([Explicit Casts](#explicit-casts)).
+
+One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)). Each name declared with `host` is a type of its own, and one name of it is the same type in every module of a program.
+
+Names for a pointer, a slice, an optional and an array, each used as what it names:
 
 <!-- spec:begin compile -->
 
@@ -1530,12 +1569,12 @@ func last(s: S) -> u16 => s[s.len - 1] ?? 0
 func read(o: O) -> u32 => if let q = o { q.* } else { 0 }
 
 test "names are the types they name" {
-  let p = cells as P
+  let p: P = &cells[0]
   assert bump(p) == 1
   let s: S = shorts
   assert last(s) == 3
   assert read(p) == 1
-  assert read(0 as O) == 0
+  assert read(0) == 0
   assert last(list) == 6
   let q: *A = [7, 8, 9]
   assert last(q) == 9
@@ -1545,6 +1584,22 @@ test "names are the types they name" {
 <!-- spec:end -->
 
 ### 2.12 Limits
+
+A program has these limits. Each is checked when it is compiled, and going over is one error where it goes over:
+
+| What | At most | Why |
+|------|---------|-----|
+| a type, written out in full | 65536 parts | the compiler writes types out to name and lay out values |
+| a function's parameters | 1000 registers | the WebAssembly JS API's limit for a function |
+| a function's results | 1000 registers | the same |
+| the value of an `if`, `if let`, `match` or `??` | 1000 registers | it is the results of a wasm block |
+| everything one function holds (parameters, variables, the values its code computes) | 50000 registers | the JS API's limit on a function's locals; it also keeps the body under the 7654321 bytes the API allows |
+| a program's globals | 1000000 registers | the JS API's limit for a module |
+| a program's imports, and the entry module's exports | 100000 each | the same |
+| brackets and prefixes nested in source | 256 deep | the compiler's parser |
+| an array's length, and its size | 4294967295 elements, 4294967295 bytes | a 32-bit memory ([2.4](#24-fixed-arrays-value-type)) |
+
+A register is a wasm value: a number, a bool, a pointer or a host reference is one, a slice two, a `u128` two `i64`s, and a struct or an array held by value one for each of its fields and elements. The sections below say how each is counted.
 
 A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round), with an array held by value counted once for each of its elements (below). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
 
@@ -1672,7 +1727,7 @@ A host reference is held where registers are, and nowhere else:
 - in a `let` variable or a global: a global of a plain one is imported from the host, and the module's own globals, exported ones too, hold an optional one (below);
 - as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
 
-It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. How a host reference is kept in memory is a design still to come.
+It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. *Not implemented:* a way to keep host references in memory (in a wasm table, say) is not designed; a program holds as many as its registers do ([2.12](#212-limits)).
 
 #### Never null, and optional
 
@@ -1704,7 +1759,7 @@ For a JavaScript host, null is `null`. `undefined` (what a function that returns
 
 Nothing else is computed with a host reference: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast to or from a number, an address or another host type (`0 as ?Canvas` is none, and `c as ?Canvas` widens), and no condition. It is passed, returned, stored in a variable or a global, and read back.
 
-The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` today. A later backend may hold a plain one as a `(ref extern)`, which the engine itself keeps from being null, and drop the boundary checks, with no change to the source.
+The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` ([9.3](#93-wasm-type-mapping)), and none is `ref.null extern`. A plain one is not a `(ref extern)`, the type the engine itself keeps from being null, since that needs typed function references, which the compiler does not write ([11](#11-webassembly-reference)); the boundary checks do that work instead. A backend that holds a plain one as a `(ref extern)` can drop them with no change to the source.
 
 <!-- spec:begin compile -->
 
