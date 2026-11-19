@@ -24,6 +24,7 @@
     "examples:check": "bun scripts/examples.ts check",
     "examples:all": "bun scripts/examples.ts all",
     "examples:clean": "bun scripts/examples.ts clean",
+    "size": "bun scripts/size.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p packages/compiler && tsc --noEmit -p packages/cli && tsc --noEmit -p packages/extension",
     "lint": "biome lint --diagnostic-level=error .",
