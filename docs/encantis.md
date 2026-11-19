@@ -1672,7 +1672,7 @@ A pointer can point at any type that lies in memory: `*[]T` points at a slice (i
 | `*[NxM]T` | N×M elements in one packed block | the address of row `i`, computed |
 | `*[N][M]T` | a table: N row pointers, each row laid out on its own | row pointer `i`, loaded |
 
-The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table. Rows that are framed or packed are laid out on their own too: an element of `*[N][!]T` is a `*[!]T`, and one of `*[N][AxB]T` a `*[AxB]T` (so `m[i][j][k]` is cell `k` of row `j` of block `i`); a `*[!][M]T` is a table whose row pointers end with a null one.
+The two spellings of a 2D array lie in memory differently. `*[NxM]T` is one packed block of N×M elements: `p[i]` is the address of row `i`, `i × M × sizeof(T)` bytes in, and nothing is loaded. The row index is checked against N as a table's is (below): a constant or ranged one at compile time, any other resolved where it is taken, with `if let r = p[i]` or `p[i] ?? other`. `*[N][M]T` is a **table**: its N elements are pointers to rows of M elements, and each row is laid out on its own. The same goes for any pointer or slice whose element is a fixed array — `*mut [N][M]T`, `[][M]T`, `[]mut [M]T`, `[*][M]T` — and for deeper ones: in `*[2][3][4]T` each element is a `*[3][4]T`, itself a table. Rows that are framed or packed are laid out on their own too: an element of `*[N][!]T` is a `*[!]T`, and one of `*[N][AxB]T` a `*[AxB]T` (so `m[i][j][k]` is cell `k` of row `j` of block `i`); a `*[!][M]T` is a table whose row pointers end with a null one. A table of framed or packed rows is used as one of fixed rows: `.len` is N, `.wid` is 4, `for row in t` binds each row pointer ([5.2](#52-loops)), and `t[i] = r` stores one.
 
 A fixed array that is a field of a struct is the exception: it lies in place, packed, wherever the struct is ([Fixed Arrays in Place](#fixed-arrays-in-place)). A generic type that puts a type parameter behind a pointer makes a table of it too when it is given a fixed array, so a row that should lie in place is wrapped in a one-field struct: `Vec((cells: [3]i32))` ([8.5](#85-generic-types)).
 
@@ -4519,7 +4519,7 @@ The two operands have one type, after [implicit widening](#implicit-widening), a
 - an integer `/` or `%` by zero;
 - an `i32` or `i64` `/` of its most negative value by -1, whose quotient does not fit (`%` of the same is 0).
 
-An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 128, wrapped back to -128. A divisor that is the constant 0 is not caught when the program is compiled: `x / 0` compiles to a division that traps when it runs.
+An `i8` or `i16` is divided in 32 bits, so `-128:i8 / -1` does not trap: it is 128, wrapped back to -128. A divisor that is the constant 0 is not caught in a function: `x / 0`, and `1 / 0` too, compile to a division that traps when it runs. Where the value has to be a constant (a `def`, a global's initializer, a length or a bound), a division by zero is an error: `def value must be a compile-time constant`, `array length divides by zero`.
 
 **Floats** follow IEEE 754, as wasm's `f64.div` does, and never trap: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN. `%` takes integers only (`'%' needs integer operands, not f64`).
 
@@ -5126,6 +5126,27 @@ test "a view reads memory as another primitive type" {
 
 <!-- spec:end -->
 
+A view is a many-pointer, so a range with an end makes a slice of it ([4.8](#48-slicerange-syntax)): `p.u8[0..4]` is the four bytes at `p` as a `[]u8`, or a `[]mut u8` when `p` is mutable.
+
+<!-- spec:begin compile -->
+
+```ents
+// The sum of the four bytes of x.
+func byte_sum(x: u32) -> (t: u32) {
+  let cell = &0:u32
+  cell.* = x
+  for b in cell.u8[0..4] {
+    t += b
+  }
+}
+
+test "a range of a view is a slice" {
+  assert byte_sum(0x04030201) == 10
+}
+```
+
+<!-- spec:end -->
+
 Write a view on a pointer. On a slice, write it on the slice's pointer, `s.ptr.u16[i]`, and keep the bytes read within `s.len`: a view written directly on a slice, on an array held in registers or on a number is accepted by the checker but compiles wrongly (a known bug), so it must not be used.
 
 > **Not implemented:** a view as the single value at `p`. `p.u32` is the pointer, not the `u32` it points at, so assigning to it is an error (`cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one`): read `p.u32[0]` and write `p.u32[0] = v`. Views of a compound type (a struct, a slice) are not implemented either and do not parse; cast the pointer instead (`p as *Point`, [Explicit Casts](#explicit-casts)).
@@ -5148,7 +5169,7 @@ no field 'u32-1' on type *u8: for a subtraction write `p.u32 - 1`
 
 ### 4.7 Bounds-Checked Indexing
 
-An index is an integer of at most 32 bits, signed or not (`an index must be an integer of at most 32 bits, not i64`); a constant bit pattern is the `u32` it stands for (`~4294967293` is 2, [4.2](#42-bitwise-operators)). It is an offset into 32-bit memory, read as an unsigned number, so a negative one is past any length: `xs[i] ?? 0` with `i: i32` equal to `-1` is `0`, and a negative constant index into a `*[N]T` is an error. A many-pointer checks nothing, and there `p[-1]` is the element before the one `p` points to.
+An index is an integer of at most 32 bits, signed or not (`an index must be an integer of at most 32 bits, not i64`); a constant bit pattern is the `u32` it stands for (`~4294967293` is 2, [4.2](#42-bitwise-operators)). It is an offset into 32-bit memory, read as an unsigned number, so a negative one is past any length: `xs[i] ?? 0` with `i: i32` equal to `-1` is `0`, and a negative constant index into a `*[N]T` is an error (`index -1 out of bounds for *[4]u32`). A many-pointer checks nothing, and there `p[-1]` is the element before the one `p` points to.
 
 Whether an index into an array pointer or a slice is checked depends on what is known about it when the program is compiled.
 
@@ -5181,6 +5202,8 @@ index type u32#5 may exceed *[4]i32 bounds
 ```
 
 <!-- spec:end -->
+
+A proven index can still be given to `??` or `if let`, which take any index into a slice or a `*[N]T`. It is then checked when the program runs like any other, so `table[2] ?? 0` compiles to a comparison that always holds, and its fallback is never used: where an index is proven, read the element directly.
 
 A slice's length is only known at run time, so a constant index into a slice is checked like any run-time one: `s[0] ?? 0`, or `if let`. A ranged index whose range may pass `N` proves nothing, and is checked like any run-time index: its element is an optional where it can be one, and `if let` or `??` resolves it; anywhere else it is an error.
 
@@ -5316,16 +5339,19 @@ test "?? gives a fallback" {
 data primes = [2:u32, 3, 5, 7]
 
 func pick(i: u32, j: u32) -> u32 => (primes[i] ?? primes[j]) ?? 1
+func missing(i: u32) -> bool => primes[i] ?? 0 == 0   // primes[i] ?? (0 == 0)
 ```
 
 ```errors
 runtime index on *[4]u32 requires 'if let' or '??' (no optional type for u32)
 ?? requires an optional expression or bounds-checked index
+cannot assign bool to u32
+cannot assign u32 to bool
 ```
 
 <!-- spec:end -->
 
-Where the whole is given for the const pointer or slice that the left side's value is the mutable one of, the fallback is given for that type: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`, and the literal there is constant ([1.5](#the-mut-keyword-on-literals)). With a mutable one wanted, or none (`let s = buf[i..] ?? mut ""`), the fallback is for the mutable type.
+When the left side is mutable (a `?*mut T`, a `?[]mut T`, or an index or range of a mutable array) and the whole `??` is given where the const type (`*T`, `[]T`) is wanted, the fallback is checked as that const type, so a plain literal works: `count(buf[i..] ?? "")`, with `buf` a `*mut [8]u8` and `count` taking a `[]u8`, is a `[]u8`. Where the mutable type is wanted, or nothing gives a type, the fallback must be mutable too: `let s = buf[i..] ?? ""` is ``a literal is constant: write `mut ""` for a []mut u8``, and `let s = buf[i..] ?? mut ""` is a `[]mut u8` ([1.5](#the-mut-keyword-on-literals)).
 
 #### `if let` Bindings
 
@@ -5358,7 +5384,7 @@ test "if let unwraps an optional pointer" {
 
 <!-- spec:begin compile -->
 
-The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written, so it never hides one and never changes one:
+The binding is a variable of its own, seen in the first branch only, and so is a `let` in that branch. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where it is written (a parameter, a named result, a `let`, or the variable of a loop, `if let` or match arm it is in), nor of a global, `def` or `data` block (`'total' is already declared: an if let binding cannot reuse the name of a global`, `... of a data block`, `... of a def`). So it never hides a variable and never changes one. A function of the module has no value: a binding of its name hides the function in the first branch, and after the branch the name calls the function again (`value` below).
 
 ```ents
 data cells = [7:u32, 8, 9]
@@ -5390,6 +5416,16 @@ After the branch the name is free again: another `if let` can bind it, to a valu
 data cells = [7:u32, 8, 9]
 data names = ["ab", "cde"]
 
+func fallback() -> u32 => 10
+
+// The cell at i, or fallback() past the end.
+func value(i: u32) -> u32 {
+  if let fallback = cells[i] {
+    return fallback                // the binding: the function is hidden here
+  }
+  return fallback()
+}
+
 func size(i: u32) -> u32 {
   let n: u32 = 0
   if let v = cells[i] {
@@ -5405,6 +5441,8 @@ func size(i: u32) -> u32 {
 test "an if let binding is a variable of its first branch" {
   assert size(1) == 111
   assert size(5) == 100
+  assert value(1) == 8
+  assert value(9) == 10
 }
 ```
 
@@ -5484,7 +5522,7 @@ func value(x: i32) -> i32 => get(&x)
 
 <!-- spec:end -->
 
-A value that is already a pointer is not given a cell: `&` before it gives the pointer itself. So `&p`, with `p` a pointer variable, is `p`, and `&"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy: write `mut "abc"` for that. Whether `&` of a pointer stays allowed is undecided, so do not write it. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
+Write `&` only before a literal, an element, or a value that lies in memory. Before a value that is already a pointer it is accepted and gives that pointer, not the address of a cell holding it (`&p`, with `p` a pointer variable, is `p`): a known bug, and the rule for it is undecided, so do not write it. A string is already its address: `&"abc"` is the string's own constant `*[3]u8` ([String Literals](#string-literals)), not a writable copy; write `mut "abc"` for that. A cast binds tighter than `&` ([Precedence](#precedence)): `&p[1] as [*]u8` takes the address of `p[1] as [*]u8`; write `(&p[1]) as [*]u8`.
 
 ### 4.8 Slice/Range Syntax
 
@@ -5497,11 +5535,13 @@ A range makes a slice over part of an array or slice, with no copying. It is wri
 | `xs[..b]` | the first `b` |
 | `xs[..]` | all of them, as a slice |
 
+A range is taken of a slice, a pointer to an array `*[N]T` (a table too, whose elements are its row pointers), and a many-pointer `[*]T`. A `*[!]T` and a packed `*[NxM]T` take none (`cannot take a range of *[!]u8: use a slice or a pointer to an array`): range the slice made from one instead, `let s: []u8 = (z.ptr, z.len)` and then `s[1..]`, or the `[]T` a packed array converts to, or one of its rows, `p[1][1..]`.
+
 Ranges follow the same bounds rules as indexing. A bound is an integer as an index is, of at most 32 bits, signed or not, and a negative one is out of range as a negative index is: `xs[a..b]` with `a = -1` is none, and on a `*[N]T` a negative constant bound is an error (`range -1..2 is out of bounds for *[4]i32`).
 
-- On a `*[N]T`, constant bounds are checked at compile time, and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
+- On a `*[N]T`, constant bounds are checked at compile time, `start <= end <= N` (`four[3..1]` is `range 3..1 is out of bounds for *[4]i32`), and so are ranged bounds whose types prove `start <= end <= N` (for example `arr[..i]` with `i: u32#8` on a `*[16]u8`). The result is a `[]T`.
 - Anything else is an optional `?[]T`, none unless `start <= end <= len`, checked at runtime: `s[i..] ?? ""` or `if let rest = s[i..] { ... }`. On a slice, only the whole slice (`s[..]`) is known to fit.
-- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]` (`a range on a many-pointer needs an end: it has no length`).
+- A many-pointer (`[*]T`) has no length, so its ranges are unchecked and need an end: `p[0..n]` or `p[..n]` (`a range on a many-pointer needs an end: it has no length`).
 
 A range of a `*mut [N]T` or `[]mut T` is a `[]mut T`.
 
@@ -5799,9 +5839,9 @@ condition must be bool, not u32
 
 <!-- spec:end -->
 
-**As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`). A function's block body is not such a value: with an unnamed result its last expression is not returned (write `return`, or an expression body), and with named results it fills them ([3.4](#34-functions)).
+**As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. Branches of which neither type holds the other are an error, `branches have different types: i8 and u8 (cast one explicitly)`, unless a type is given for the whole: with a `u8` and an `i8` branch, `let v: i16 = if c { a } else { b }` is fine, each branch widening to the `i16` on its own. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`). A function's block body is not such a value: with an unnamed result its last expression is not returned (write `return`, or an expression body), and with named results it fills them ([3.4](#34-functions)).
 
-A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. A branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Write the type where the value is given (`let ys: []i32 = ...`), or use `elif`.
+A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. Where nothing gives the whole a type (a `let` without one), a branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `let v = if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Where a type is given (a `let` with a type, a function's result, an argument), every literal is laid out for it, however deeply it is nested: a function `-> []i32` whose body is `if a { xs } else { if b { [1] } else { [] } }` is accepted. Otherwise use `elif`.
 
 <!-- spec:begin compile -->
 
@@ -5935,7 +5975,7 @@ test "counting" {
 
 - a slice, `[]T` or `[]mut T`;
 - a pointer to a fixed array, `*[N]T` or `*mut [N]T`: a `data` block, a string literal, or a fixed array that lies in memory, such as the field `p.cells` of the struct a pointer `p` points to;
-- a table, `*[N][M]T`, whose elements are its row pointers, each a `*[M]T` ([Nesting](#nesting)).
+- a table, `*[N][M]T`, whose elements are its row pointers, each a `*[M]T` ([Nesting](#nesting)), and so a table of framed or packed rows, `*[N][!]T` or `*[N][AxB]T`, whose row pointers are each a `*[!]T` or a `*[AxB]T`.
 
 The loop walks a pointer from the first element to the end of the array, loading each element into the variable as it gets there, so it needs no bounds checks. The slice or pointer is evaluated once, before the loop: assigning another slice to the variable it came from changes nothing about the loop. The elements are read one pass at a time, so a write to a later element in the body is what the loop reads when it gets there. An element can be of any type: a struct or a slice is loaded whole, each of its values into a register, and since the variable is a copy, assigning to it doesn't change the array.
 
@@ -5985,6 +6025,14 @@ func grid_sum() -> u32 {
   return t
 }
 
+data names: *[3][!]u8 = ["ada", "grace", "alan"]
+
+func name_len() -> (t: u32) {
+  for name in names {              // each row is a *[!]u8
+    t += name.len
+  }
+}
+
 test "element loops" {
   assert total([Spot(1, 2, 3), Spot(4, 5, 6)]) == 21
   assert find("hello", 'l') == 2
@@ -5992,6 +6040,7 @@ test "element loops" {
   assert rises([1, 3, 2, 5]) == 2
   assert rises([]) == 0
   assert grid_sum() == 21
+  assert name_len() == 12
 }
 ```
 
@@ -6088,12 +6137,28 @@ func grid() -> u32 {
   }
   return t
 }
+
+global total: u32 = 0
+data bytes = [1:u8, 2, 3]
+
+func sum3() {
+  for total in 3 {
+  }
+}
+
+func walk() -> (t: u32) {
+  for bytes in bytes {
+    t += bytes
+  }
+}
 ```
 
 ```errors
 'n' is already declared: a loop variable cannot reuse the name of a parameter
 'c' is already declared: a loop variable cannot reuse the name of a variable in scope
 'i' is already declared: a loop variable cannot reuse the name of a loop variable in scope
+'total' is already declared: a loop variable cannot reuse the name of a global
+'bytes' is already declared: a loop variable cannot reuse the name of a data block
 ```
 
 After the loop its names are free again. A later loop can use them, for elements of another type, and a `let` after the loop declares a variable of its own. A function of the module has no value: a loop variable of its name hides it in the body.
@@ -6383,7 +6448,36 @@ A trap ends the call into wasm at once: nothing after it runs, deferred expressi
 
 ### 5.4 Match Expressions
 
-`match subject { arms }` compares a value with patterns. Each arm is one or more patterns separated by commas, `=>`, and an expression or a block. Arms are separated by whitespace, and a comma may follow an arm, so `match k { 0 => 1, 1 => 2, _ => 3 }` fits on one line.
+`match subject { arms }` compares a value with patterns. Each arm is one or more patterns separated by commas, `=>`, and an expression or a block. Arms are separated by whitespace, and a comma may follow an arm, so `match k { 0 => 1, 1 => 2, _ => 3 }` fits on one line. An arm's value is an expression, and an expression goes on across a line break when the next line starts with an operator ([1.6](#16-statements-and-line-breaks)). So an arm whose first pattern is a negative number joins the value of the arm on the line before it: `1 => "up"` followed by a line `-1 => "down"` is read as `"up" - 1`, and the `=>` after it is a syntax error. End the arm before such a pattern with a comma:
+
+<!-- spec:begin compile -->
+
+```ents
+func direction(d: i32) -> []u8 => match d {
+  1 => "up",
+  -1 => "down",
+  _ => "flat",
+}
+
+test "a comma ends the arm before a negative pattern" {
+  assert direction(-1).len == 4
+  assert direction(0).len == 4
+}
+```
+
+```ents
+func direction(d: i32) -> []u8 => match d {
+  1 => "up"
+  -1 => "down"
+  _ => "flat"
+}
+```
+
+```errors
+Line 3, col 6
+```
+
+<!-- spec:end -->
 
 The subject is evaluated once, before the first test. Then the arms are tried in order: the first arm with a pattern that matches the subject runs, and no later arm is tried. When no arm matches, the program traps (wasm `unreachable`): the compiler does not check that the arms cover every value, and this holds for a `match` used as a statement too. `_` matches any value, so an arm `_ => ...` last makes the `match` cover everything; an arm after it is never tried. A statement `match` that may match nothing ends in `_ => {}`.
 
@@ -6397,7 +6491,7 @@ These are the patterns that are implemented:
 | `true`, `false` | that bool |
 | `_` | any value |
 
-A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A string is not a pattern. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a struct or a slice, takes no pattern but `_`. A constant subject (`1`, a `def`, a fixed array's `len`) is compared in its default type.
+A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A string is not a pattern. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a host reference, a struct or a slice, takes no pattern but `_`, and neither does one wider than 64 bits (`cannot match u128 against int(0)`). A constant subject with no type of its own (`7`, an untyped `def`, a fixed array's `.len`) is compared in the default type of its value, an `i32` for 7, so `match 7 { 3000000000 => ... }` is `cannot match i32 against int(3000000000)`; a typed `def` is compared in its type. Patterns are not checked against one another: a value that two patterns match (`1, 1 =>`, or `1` in two arms) is no error, and the first arm with it runs.
 
 A `def`'s name is not a pattern: a name in a pattern would be a binding ([6.3](#63-patterns-in-match-arms)), and a binding cannot take a def's name. Write the def's value, or compare with `if` and `elif`. The other patterns of [6.1](#61-pattern-forms), names, tuples, constructors and guards, are not implemented.
 
