@@ -69,6 +69,8 @@ bun test                 # Run tests
 
 **Value types are register-flattened:** Structs, tuples, and `[N]T` fixed arrays compile to multiple wasm locals/params — no memory, no pointers. `point.x` → `(local.get $point_x)`. Nested access works: `rect.origin.x` → `(local.get $rect_origin_x)`.
 
+**Fixed arrays in memory are reached through their address:** a `[N]T` that lies in memory (a field of a struct a pointer points to, or a part of one) is, wherever it is indexed at run time, ranged, looped over or given to `&`, the `*[N]T` it is there (`*[NxM]T`, packed, for an array of arrays), as mutable as the place. The checker puts such a node in `TypeCheckResult.addressed` with that pointer as its type, sticky across re-inference (`placeAddress`, `reachInPlace`), and codegen emits its address (`memoryPlace`) instead of loading it. A constant index keeps picking the element where it is. A struct in registers has no address, and neither has any part of it.
+
 **`def` vs `data`:** `def` is pure compile-time substitution (scalars only). `data` embeds literals in the wasm data section and returns a pointer. `data buf = mut [0:u8; 1024]` → `*mut [1024]u8`.
 
 **Const-by-default pointers:** `*T` is read-only, `*mut T` is writable. Same for `[]T`/`[]mut T` and `[*]T`/`[*]mut T`. Writes through const pointers are checker errors. Mutable pointers coerce to const (widening).

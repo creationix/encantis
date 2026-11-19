@@ -79,6 +79,9 @@ export interface CodegenContext {
   // Indexes that aren't known to be in range, read as an optional (see
   // TypeCheckResult.unproven): checked, none when out of range.
   unproven: Set<AST.IndexExpr>
+  // Places in memory that stand for their address (see
+  // TypeCheckResult.addressed).
+  addressed: Set<AST.Expr>
   // Range assignments that fill (see TypeCheckResult.fills)
   fills: Set<AST.SliceExpr>
 }
@@ -101,6 +104,7 @@ function createContext(checkResult: TypeCheckResult, literalRefs: Map<number, { 
     fieldOrder: checkResult.fieldOrder,
     funcNames: checkResult.funcNames,
     unproven: checkResult.unproven,
+    addressed: checkResult.addressed,
     fills: checkResult.fills,
   }
 }
@@ -285,6 +289,13 @@ function wideningOf(expr: AST.Expr, ctx: CodegenContext): (wat: string) => strin
 }
 
 function exprValueToWat(expr: AST.Expr, ctx: CodegenContext): string {
+  // A place in memory reached through its address (p.items[i], &p.pos) is
+  // that address: nothing is loaded.
+  if (ctx.addressed.has(expr)) {
+    const address = lvalueAddressOf(expr, ctx)
+    if (address === null) throw new Error(`Cannot find the address of this place at offset ${expr.span.start}`)
+    return address
+  }
   switch (expr.kind) {
     case 'LiteralExpr':
       return literalToWat(expr, ctx)

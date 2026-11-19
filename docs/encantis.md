@@ -384,7 +384,7 @@ Mutating a value parameter does NOT affect the caller. Mutating through a refere
 
 **Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type, the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions (2.5) is read only between decimal numbers. A length is at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name (1.2), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
 
-Fixed arrays can only be indexed by **compile-time constant** expressions, since the elements live in registers, not addressable memory:
+A fixed array held in registers can only be indexed by **compile-time constant** expressions, since its elements live in registers, not addressable memory:
 
 ```ents
 let v: [4]u32 = [1, 2, 3, 4]
@@ -392,6 +392,8 @@ let x = v[0]        // OK: constant index
 let y = v[3]        // OK: constant index
 let z = v[i]        // ERROR: dynamic index requires memory — use a slice or pointer
 ```
+
+A fixed array that lies in memory, as a field of a struct a pointer points to (`p.items`), has an address, and there it is indexed by any index as the `*[N]T` it is: see [Fixed Arrays in Place](#fixed-arrays-in-place).
 
 Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
 
@@ -570,7 +572,7 @@ In a table:
 - `m[i]` loads row pointer `i` (a stride of 4 bytes) and is a `*[M]T`, or a `*mut [M]T` when the table is mutable. `m[i][j]` then indexes that row.
 - Each index is bounds-checked on its own, by the rules of [4.7](#47-bounds-checked-indexing): `m[i]` against N (a slice's rows against its `.len`), `m[i][j]` against M; a constant or ranged index is proven at compile time. A row has no optional type: like an element of a value type, a row index that isn't proven is resolved where it is taken, with `if let r = m[i]` or `m[i] ?? other`. `??` and `if let` resolve the index they are given, so in `m[i][j] ?? 0` the row index still has to be in range. A many-pointer (`[*][M]T`) has no length, so its row index is never checked.
 - `m.len` is N, the number of rows, and `m[i].len` is M. `m.wid` is 4, the size of a row pointer, so `m.len * m.wid` is the size of the table itself. That is what `memcpy` and `memset` check a length against, and `memzero(m)` is an error: it would point every row at address 0. A row is zeroed or copied as the array it is, `for row in m { memzero(row) }`, and in a deeper table each row of rows: `for row in m { for cells in row { memzero(cells) } }` for a `*mut [2][2][2]T`.
-- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers.
+- `sizeof(*[N][M]T)` is 4, as for any pointer. `sizeof([N][M]T)` is `N × M × sizeof(T)`: that is the value, which lies in place as a field of a struct ([9.6](#96-structs-and-slices-in-memory)) or in registers. Reached where it lies in memory, it is packed, the `*[NxM]T` its rows make ([Fixed Arrays in Place](#fixed-arrays-in-place)), not a table.
 - `for row in m` binds each row pointer, as `m[i]` gives it: a `*[M]T`, or a `*mut [M]T` in a mutable table.
 - `let r = m[i]` is the row pointer, not a copy of the row; `m[i].*` loads the row as a `[M]T` value. A row passes where a `*[M]T` is expected, and like any `*[M]T` where a `[]T` is.
 - `m[i][j] = v` writes through the row pointer, so it needs a mutable table. `m[i] = r` stores a row pointer: it points row `i` at `r` (a `*mut [M]T` in a `*mut [N][M]T`), and from then on the two share their cells. To copy values into a row instead, write `m[i].* = [1, 2, 3]`.
@@ -2202,7 +2204,7 @@ With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no
 
 <!-- spec:begin compile -->
 
-`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), or an element of an array, slice or many-pointer. A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
+`&` takes the address of something in memory: a literal (which gets a cell of its own in the data section, in parentheses or not: `&(8)` is `&8`), an element of an array, slice or many-pointer, or a value that lies in memory, a field of a struct a pointer points to or a part of one (`&p.pos` is a `*mut Vec2` when `p` is a `*mut Body`, [9.6](#fixed-arrays-in-place)). A part of the literal only known when the program runs is stored into the cell there, each time the `&` is computed, in the order the parts are written: `&(y: f(), x: n)` for a `*Point` calls `f` and then fills in both fields. An array written out where a pointer to an array is wanted is laid out as it is there without the `&`: `&[1, 2]` for a `*[2]i32` is `[1, 2]`. A variable is held in registers and has none, whatever type is expected of `&x`:
 
 ```ents
 func get(p: *i32) -> i32 => p.*
@@ -4080,6 +4082,105 @@ func demo(list:[*]mut Spot, k:u32, p:*mut Spot, all:[]Spot) -> i32 {
 ```
 
 The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opts[i].lane.cells.len`, `for x in opts[i].lane.cells { ... }`.
+
+#### Fixed Arrays in Place
+
+A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it is, as before: `p.items[2].x` is one load at a constant offset.
+
+An array of fixed arrays lies there packed, row after row (`sizeof([N][M]T)` is `N × M × sizeof(T)`), so in place it is the `*[NxM]T` its rows make, not a table ([Nesting](#nesting)): `m.tiles[r][c]` is the byte `r × M + c` from the start of the field, with the row index checked against N and the column against M.
+
+Only a value in memory has an address. A struct in a variable, a parameter or a call's result is held in registers ([9.2](#92-by-value-vs-by-reference-passing)), and so is each field of it: indexing its array at run time is an error, as for any fixed array in registers, and so is `&` of it.
+
+<!-- spec:begin compile -->
+
+```ents
+type Entity = (x: i32, y: i32, alive: bool)
+type Pool = (count: u32, items: [64]Entity)
+type Map = (cols: u32, tiles: [3][4]u8)
+
+data pool: Pool = mut (0, [(0, 0, false); 64])
+data map: Map = mut (4, [[0; 4]; 3])
+
+// The next free slot, or none when the pool is full.
+func spawn(x: i32, y: i32) -> ?*mut Entity {
+  if let e = &pool.items[pool.count] {
+    e.* = Entity(x, y, true)
+    pool.count += 1
+    return e
+  }
+  return 0 as ?*mut Entity
+}
+
+func x-of(i: u32) -> i32 => (pool.items[i] ?? Entity(-1, -1, false)).x
+func move(k: u32#64, dx: i32) { pool.items[k].x += dx }
+
+func alive() -> u32 {
+  let n: u32 = 0
+  for e in pool.items {
+    if e.alive { n += 1 }
+  }
+  return n
+}
+
+func all() -> *mut [64]Entity => &pool.items
+func count-cell() -> *mut u32 => &pool.count
+func set-tile(r: u32#3, c: u32#4, v: u8) { map.tiles[r][c] = v }
+
+test "an array field in memory is indexed there" {
+  assert spawn(3, 4) != 0 as ?*mut Entity
+  assert spawn(5, 6) != 0 as ?*mut Entity
+  move(1, 10)
+  assert x-of(1) == 15
+  assert x-of(99) == -1
+  assert alive() == 2
+  assert all()[0].y == 4
+  set-tile(2, 3, 9)
+  assert map.tiles[2][3] == 9
+  for i in 70 { spawn(1, 1) }
+  assert pool.count == 64
+  let n = count-cell()
+  n.* = 0
+  assert spawn(7, 7) != 0 as ?*mut Entity
+  assert x-of(0) == 7
+}
+```
+
+An index costs what it does on the `*[N]T` written out by hand:
+
+```ents
+type Cell = (x: i32, live: bool)
+type Pool = (n: u32, cells: [8]Cell)
+
+export func x-of(p: *Pool, k: u32#8) -> i32 => p.cells[k].x
+```
+
+```ents same-wasm
+type Cell = (x: i32, live: bool)
+type Pool = (n: u32, cells: [8]Cell)
+
+export func x-of(p: *Pool, k: u32#8) -> i32 => (((p as u32) + 4) as *[8]Cell)[k].x
+```
+
+The array's place decides, not its type:
+
+```ents
+type Cell = (x: i32, live: bool)
+type Pool = (n: u32, cells: [8]Cell)
+
+func a(p: *Pool, k: u32#8) { p.cells[k].x = 1 }
+func b(v: Pool, i: u32) -> i32 => v.cells[i].x
+func c(p: *mut Pool, i: u32) { p.cells[i].x = 3 }
+func d(v: Pool) -> *[8]Cell => &v.cells
+```
+
+```errors
+cannot write through const pointer
+dynamic index on value type [8]Cell
+writing to an element needs an index known to be in range
+'v.cells' has no address: it is part of 'v', a variable held in registers
+```
+
+<!-- spec:end -->
 
 ---
 

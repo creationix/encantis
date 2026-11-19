@@ -310,6 +310,12 @@ export interface TypeCheckResult {
   // a pointer to an array of pointers or slices: their value is an optional,
   // and codegen checks the index, giving none (0) when it is out of range.
   unproven: Set<AST.IndexExpr>
+  // Places in memory that stand for their address, not their value: a fixed
+  // array that lies in memory (a field of a struct a pointer points to, an
+  // element of an array there) indexed by a run-time index, ranged, looped
+  // over or given to &, and any other value there given to &. Its type in
+  // exprTypes is the pointer to it (see CheckContext.placeAddress).
+  addressed: Set<AST.Expr>
   // Ranges assigned one value that every element of them gets (a fill,
   // `p[a..b] = v`), as opposed to the elements of an array to copy in.
   fills: Set<AST.SliceExpr>
@@ -518,6 +524,7 @@ function finalize(ctx: CheckContext, module: AST.Module): TypeCheckResult {
     fieldOrder: ctx.fieldOrder,
     funcNames: ctx.funcNames,
     unproven: ctx.unproven,
+    addressed: ctx.addressed,
     fills: ctx.fills,
     externs: ctx.externs,
     calledFromInstances: ctx.calledFromInstances,
@@ -876,6 +883,10 @@ class CheckContext {
   // ends, as a declaration is (`lookUnproven`).
   unproven = new Set<AST.IndexExpr>()
   lookUnproven: AST.IndexExpr[] = []
+  // Places in memory reached through their address (see
+  // TypeCheckResult.addressed). Whether one is depends only on its own
+  // types, so a look that marks one leaves it as the check would.
+  addressed = new Set<AST.Expr>()
   // Range assignments that fill (see TypeCheckResult.fills)
   fills = new Set<AST.SliceExpr>()
   // The element an assignment writes to, while its target is inferred: an
@@ -3076,7 +3087,10 @@ class CheckContext {
         this.checkLoopBody(stmt.body)
         break
       case 'ForStmt': {
-        const iterableType = unwrap(this.resolvedFirst(stmt.iterable.span.start, this.inferExpr(stmt.iterable), 'iterate over'))
+        // A fixed array in memory is looped over where it is there, as a
+        // *[N]T: one in registers is no loop's.
+        const iterated = this.reachInPlace(stmt.iterable, this.inferExpr(stmt.iterable))
+        const iterableType = unwrap(this.resolvedFirst(stmt.iterable.span.start, iterated, 'iterate over'))
         // Determine element type from iterable
         let elemType: ResolvedType = primitive('u32') // default: unsigned index
         const pointee = iterableType.kind === 'pointer' ? unwrap(iterableType.pointee) : null
@@ -4420,11 +4434,73 @@ class CheckContext {
 
   // Infer the type of an expression (bottom-up)
   inferExpr(expr: AST.Expr): ResolvedType {
-    const type = this.inferExprInner(expr)
+    let type = this.inferExprInner(expr)
+    // A place reached through its address is that address wherever it is
+    // looked at again (the write it is the target of, if let, ??).
+    if (this.addressed.has(expr)) type = this.placeAddress(expr, type) ?? type
     // Record type for ALL expressions - codegen needs this
     // Note: comptime types are stored as-is; concretization happens in a later pass
     this.exprTypes.set(expr, type)
     return type
+  }
+
+  // The pointer or slice that holds a place in memory: a field of the struct
+  // a pointer points to (p.x), what a pointer points to (p.*), an element of
+  // a pointer or slice (xs[i]), or a part of one of those (p.items[2].x,
+  // xs[i].pos). Null for a value held in registers: a variable, a field of
+  // one, what a call returns. Reads the types its parts were given.
+  private memoryHolder(expr: AST.Expr): ResolvedType | null {
+    const e = ungrouped(expr)
+    if (e.kind !== 'MemberExpr' && e.kind !== 'IndexExpr') return null
+    if (e.kind === 'MemberExpr' && e.member.kind === 'deref') return this.exprTypes.get(e.object) ?? null
+    if (e.kind === 'MemberExpr' && e.member.kind !== 'field' && e.member.kind !== 'index') return null
+    const object = this.exprTypes.get(e.object)
+    if (!object) return null
+    const u = unwrap(object)
+    if (isOptional(u)) return null
+    if (e.kind === 'MemberExpr') {
+      if (u.kind === 'pointer') return unwrap(u.pointee).kind === 'tuple' ? object : null
+      return u.kind === 'tuple' ? this.memoryHolder(e.object) : null
+    }
+    // An element of a fixed array is part of whatever holds the array.
+    if (u.kind === 'array' && isValueArray(u)) return this.memoryHolder(e.object)
+    // A row of a table or a packed array is a pointer, not a place.
+    if (this.rowOf(object) || (u.kind === 'pointer' && unwrap(u.pointee).kind === 'array' && (pointeeArray(u)?.sizes?.length ?? 0) > 1)) return null
+    return u.kind === 'pointer' || u.kind === 'slice' ? object : null
+  }
+
+  // The address of a place in memory (see memoryHolder), as a pointer that is
+  // mutable where the place can be written. A fixed array there is a
+  // *[N]T, and an array of fixed arrays lies there packed, row after row, so
+  // it is a *[NxM]T (reference 9.6). Null for a value held in registers.
+  private placeAddress(expr: AST.Expr, type: ResolvedType): PointerRT | null {
+    if (unresolved(type)) return null
+    const holder = this.memoryHolder(expr)
+    if (!holder) return null
+    const h = unwrap(holder)
+    const mutable = (h.kind === 'pointer' || h.kind === 'slice') && !!h.mutable
+    const u = unwrap(type)
+    if (u.kind !== 'array') return u.kind === 'tuple' || u.kind === 'primitive' ? pointer(type, false, mutable) : null
+    const sizes: number[] = []
+    let element: ResolvedType = type
+    for (let a = unwrap(element); a.kind === 'array' && isValueArray(a); a = unwrap(element)) {
+      sizes.push(a.sizes?.[0] as number)
+      element = a.element
+    }
+    return sizes.length === 0 ? null : pointer(array(element, sizes), false, mutable)
+  }
+
+  // Reaches a fixed array that lies in memory through its address, from
+  // here on (see TypeCheckResult.addressed). Gives the type the expression
+  // now has: the pointer, or the type it had if it is held in registers.
+  private reachInPlace(expr: AST.Expr, type: ResolvedType): ResolvedType {
+    const u = unwrap(type)
+    if (u.kind !== 'array' || !isValueArray(u)) return type
+    const address = this.placeAddress(expr, type)
+    if (!address) return type
+    this.addressed.add(expr)
+    this.exprTypes.set(expr, address)
+    return address
   }
 
   // Check an expression against an expected type (top-down / bidirectional)
@@ -6709,6 +6785,15 @@ class CheckContext {
         if (operandType.kind === 'pointer' || operandType.kind === 'slice') {
           return operandType
         }
+        // A value that lies in memory (a field of a struct a pointer points
+        // to, and what is in it): where it is, as a pointer as mutable as
+        // the place.
+        const place = this.placeAddress(expr.operand, operandType)
+        if (place) {
+          this.addressed.add(expr.operand)
+          this.exprTypes.set(expr.operand, place)
+          return place
+        }
         // Address-of on a value: anonymous data section allocation
         const innerExpr = expr.operand
         const litExpr = addressedLiteral(innerExpr)
@@ -6726,11 +6811,16 @@ class CheckContext {
         }
         // A variable is held in registers (9.2), and so is a field of one.
         const held = ungrouped(innerExpr)
-        const variable = held.kind === 'IdentExpr' ? this.lookup(held.name) : undefined
+        let root = held
+        while (root.kind === 'MemberExpr' && (root.member.kind === 'field' || root.member.kind === 'index')) root = ungrouped(root.object)
+        const variable = root.kind === 'IdentExpr' ? this.lookup(root.name) : undefined
+        const name = root.kind === 'IdentExpr' ? root.name : ''
         if (variable && (variable.kind === 'local' || variable.kind === 'param' || variable.kind === 'return' || variable.kind === 'global')) {
-          this.error(expr.span.start, `'${held.kind === 'IdentExpr' ? held.name : ''}' has no address: a variable is held in registers`)
+          this.error(expr.span.start, root === held
+            ? `'${name}' has no address: a variable is held in registers`
+            : `'${exprText(held) ?? name}' has no address: it is part of '${name}', a variable held in registers`)
         } else {
-          this.error(expr.span.start, `& requires a literal, a pointer, or an element of an array, slice or many-pointer`)
+          this.error(expr.span.start, `& requires a literal, a pointer, a value in memory, or an element of an array, slice or many-pointer`)
         }
         return pointer(operandType, false, true)
       }
@@ -6966,7 +7056,9 @@ class CheckContext {
   // an end. Otherwise the result is ?[]T: none unless start <= end <= length,
   // checked at runtime.
   inferSlice(expr: AST.SliceExpr): ResolvedType {
-    const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'take a range of'))
+    // A fixed array in memory is ranged where it is there, as a *[N]T.
+    const ranged = this.reachInPlace(expr.object, this.inferExpr(expr.object))
+    const objType = unwrap(this.resolvedFirst(expr.span.start, ranged, 'take a range of'))
     // A bound is what an index is: an integer of at most 32 bits, signed or
     // not. A negative one is, as an unsigned number, past any length.
     const bound = (e: AST.Expr | null): { value: bigint | null; max: bigint | null } => {
@@ -7213,7 +7305,9 @@ class CheckContext {
   // be in range, otherwise ?*T (none when out of range, checked at runtime).
   // Returns null for other containers, which keep the usual rules.
   private addressOfIndex(expr: AST.IndexExpr): ResolvedType | null {
-    const objType = unwrap(this.resolvedFirst(expr.span.start, this.inferExpr(expr.object), 'index'))
+    // The element of a fixed array in memory is where it is there.
+    const indexed = this.inferExpr(expr.object)
+    const objType = unwrap(this.resolvedFirst(expr.span.start, this.reachInPlace(expr.object, indexed), 'index'))
     let elem: ResolvedType
     let mutable: boolean
     let size: number | null
@@ -7322,11 +7416,15 @@ class CheckContext {
     // from: in m[i][j] ?? 0 the row m[i] still has to be in range.
     const resolvable = this.insideIfLetCondition
     this.insideIfLetCondition = false
-    const indexed = this.inferExpr(expr.object)
+    let indexed = this.inferExpr(expr.object)
     this.insideIfLetCondition = resolvable
     const index = this.inferIndexValue(expr.index)
     // An index whose type has the error says nothing more.
     if (unresolved(indexed) || unresolved(index)) return RECOVERY
+    // A fixed array that lies in memory is indexed at run time through its
+    // address, as the *[N]T it is there. A constant index picks the element
+    // where it is, as in an array held in registers.
+    if (this.evalComptimeExpr(expr.index)?.kind !== 'int') indexed = this.reachInPlace(expr.object, indexed)
     // A name for a slice, an array or a pointer is the type it names
     const objType = unwrap(this.resolvedFirst(expr.span.start, indexed, 'index'))
 
