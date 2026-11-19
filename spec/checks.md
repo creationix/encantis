@@ -595,6 +595,10 @@ func a(p: ?*u8) -> ?*u8 {
   let ps = [0, p]
   return ps[1]
 }
+func d(s: ?[]u8) -> ?[]u8 {
+  let ss = [s, 0]
+  return ss[1]
+}
 func b(s: []u8) -> u32 {
   let ss = [0, s]
   return 1

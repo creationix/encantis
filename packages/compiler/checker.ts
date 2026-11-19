@@ -6829,7 +6829,13 @@ class CheckContext {
         const inner = ungrouped(element).kind
         if ((structs && inner === 'TupleExpr') || (rows && (inner === 'ArrayExpr' || inner === 'RepeatExpr'))) {
           this.checkExpr(element, elementType, prefix ? prefix.slice(0, -2) : undefined)
-        } else if (type) this.coerce(element, type, elementType, prefix)
+        } else if (type) {
+          // An element already converted to this type, a 0 met by an
+          // optional slice among the others of an untyped literal
+          // (settleMixed), is that already.
+          const done = this.coercions.get(element)
+          if (!done || !typeEquals(done, elementType)) this.coerce(element, type, elementType, prefix)
+        }
       }
     } else if (!sameRepresentation(from, to)) {
       // Any other struct or tuple value is several wasm values already on
