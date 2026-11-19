@@ -214,18 +214,49 @@ export func gen(c: Canvas) -> [2]?Canvas => pr(c)
   // constant index picks one, of host references or of numbers alike, and
   // nothing is read from memory.
   test('an array literal indexed where it is written picks an element', async () => {
+    // A constant index is any the checker works out: (1), 0 + 1, 1 - 1.
     const source = `type Canvas = host
+data t = [100, 200, 300, 400]
 export func second(c: Canvas, d: Canvas) -> Canvas => [c, d][1]
 export func first(c: ?Canvas) -> ?Canvas => [0, c][0]
 export func number(x: u32, y: u32) -> u32 => [x, y][1]
+export func summed(c: Canvas, d: Canvas) -> Canvas => [c, d][0 + 1]
+export func grouped(c: Canvas, d: Canvas) -> Canvas => [c, d][(0)]
+export func numbers(x: u32, y: u32) -> u32 => [x, y][(1)] * 100 + [x, y][1 - 1] * 10 + [x][0 + 0]
+export func len() -> u32 => ["ab", "cde"][0 + 1].len
+export func used() -> i32 => t[0]
 `
-    expect(watOfSource(source)).not.toContain('.load')
+    expect(watOfSource(source)).not.toContain('.load (i32.add (local')
     const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
     const m = instance.exports as Record<string, CallableFunction>
     const [c, d] = [{ name: 'c' }, { name: 'd' }]
     expect(m.second(c, d)).toBe(d)
     expect(m.first(c)).toBe(null)
     expect(m.number(4, 9)).toBe(9)
+    expect(m.summed(c, d)).toBe(d)
+    expect(m.grouped(c, d)).toBe(c)
+    expect(m.numbers(4, 9)).toBe(944)
+    expect(m.len()).toBe(3)
+  })
+
+  // An array literal with no type written, laid out with &, is the type a
+  // let of it holds: what is known only at run time is stored into it.
+  test('an untyped literal laid out with & holds its values', async () => {
+    const source = `export func pair(a: i32, b: i32, i: u32#2) -> i32 {
+  let p = &[a, b]
+  return p[i]
+}
+export func three(i: u32#3) -> i32 {
+  let p = &[10, 20, 30]
+  return p[i]
+}
+export func lengths(i: u32#2) -> u32 => (&["ab", "cde"])[i].len
+`
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
+    const m = instance.exports as Record<string, CallableFunction>
+    expect([m.pair(7, 9, 0), m.pair(7, 9, 1)]).toEqual([7, 9])
+    expect([m.three(0), m.three(2)]).toEqual([10, 30])
+    expect([m.lengths(0), m.lengths(1)]).toEqual([2, 3])
   })
 
   // Wasm sets a local to null once per call: a let given no value is none

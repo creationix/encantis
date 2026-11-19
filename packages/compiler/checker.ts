@@ -7000,6 +7000,7 @@ class CheckContext {
       const addr = this.addressOfIndex(expr.operand)
       if (addr) return addr
     }
+    const said = this.errorsReported
     const operandType = this.inferExpr(expr.operand)
     const operand = unwrap(operandType)
 
@@ -7047,6 +7048,26 @@ class CheckContext {
           const dataId = litExpr.span.start
           if (litExpr.kind === 'LiteralExpr' || litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') {
             (litExpr as AST.LiteralExpr | AST.ArrayExpr | AST.RepeatExpr).dataId = dataId
+          }
+          // An array literal with no type written is laid out as the type a
+          // let of it holds ([a, b] of i32s is a [2]i32, ["ab", "cde"] two
+          // slices), as it is where a pointer to that type is wanted: its
+          // elements meet that type, and the ones known only when the
+          // program runs are stored into its cell.
+          // (One that is wrong already, or holds a host reference, is
+          // refused as it is.)
+          const settled = this.errorsReported === said && !hostIn(operandType)
+          if (settled && (litExpr.kind === 'ArrayExpr' || litExpr.kind === 'RepeatExpr') && operandType.kind === 'comptime_array') {
+            const cell = this.concretize(operandType)
+            if (unwrap(cell).kind === 'array') {
+              const wanted = pointer(cell, false, true)
+              this.mutLiterals++
+              try {
+                return this.checkExpr(expr, wanted)
+              } finally {
+                this.mutLiterals--
+              }
+            }
           }
           const arrType: ArrayRT = { kind: 'array', element: operandType, sizes: [1] }
           // &literal is a writable cell of its own: never share its bytes.
@@ -7725,6 +7746,9 @@ class CheckContext {
     // elements, held in registers as a value array's are: one is picked by
     // a constant index, and nothing is read from memory.
     if (objType.kind === 'comptime_array') {
+      // Its elements are written out as the type they settle on, as for a
+      // let: ["ab", "cde"] holds two slices, not the pointers it is made of.
+      this.settleLiteral(expr.object, this.concretize(objType))
       const idx = this.evalComptimeExpr(expr.index)
       if (idx === null || idx.kind !== 'int') {
         this.error(expr.index.span.start, hostIn(objType.element)
@@ -7732,6 +7756,10 @@ class CheckContext {
           : `dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time`)
       } else if (idx.value < 0n || idx.value >= BigInt(objType.count)) {
         this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${objType.count}]${typeToString(objType.element)}`)
+      } else if (expr.index.kind !== 'LiteralExpr') {
+        // Codegen picks the element by the index's value, which only a
+        // literal shows: [x, y][0 + 1] and [x, y][(1)] have theirs recorded.
+        this.constants.set(expr.index, idx)
       }
       return objType.element
     }

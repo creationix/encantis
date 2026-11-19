@@ -975,6 +975,46 @@ dynamic index on an array literal of Canvas — an element of an array held in r
 index 2 out of bounds for [2]u32
 ```
 
+A constant index is any the compiler works out, not only a literal: `(1)`, `0 + 1`, `1 - 1` or a `def`. The elements are the type the literal settles on, as they are in a `let`: strings of different lengths are slices. Laid out in memory with `&`, a literal with no type written is that type too, and is indexed at run time:
+
+<!-- spec:begin compile -->
+
+```ents
+type Canvas = host
+
+def one = 1
+
+func a(x: i32, y: i32) -> i32 => [x, y][(1)]
+func b(x: i32, y: i32) -> i32 => [x, y][0 + 1]
+func c(x: i32, y: i32) -> i32 => [x, y][1 - 1]
+func d(x: i32, y: i32) -> i32 => [x, y][one]
+func e() -> u32 => ["ab", "cde"][0 + 1].len
+func f(c: Canvas, d: Canvas) -> Canvas => [c, d][0 + 1]
+func g(x: i32, y: i32, i: u32#2) -> i32 {
+  let p = &[x, y]
+  return p[i]
+}
+func h(i: u32#3) -> i32 {
+  let p = &[10, 20, 30]
+  return p[i]
+}
+func k(i: u32#2) -> u32 => (&["ab", "cde"])[i].len
+
+test "a constant index picks an element, and a literal laid out with & is indexed at run time" {
+  assert a(7, 9) == 9
+  assert b(7, 9) == 9
+  assert c(7, 9) == 7
+  assert d(7, 9) == 9
+  assert e() == 3
+  assert g(7, 9, 0) == 7
+  assert g(7, 9, 1) == 9
+  assert h(2) == 30
+  assert k(1) == 3
+}
+```
+
+<!-- spec:end -->
+
 ## Structs in array literals
 
 An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.
