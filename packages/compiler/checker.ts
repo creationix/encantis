@@ -1731,8 +1731,10 @@ class CheckContext {
     this.declaringType = true
     let resolved: ResolvedType
     try {
-      // `type Canvas = host` is a type of its own, named by its declaration.
-      resolved = decl.type.kind === 'HostType' ? hostRef(name) : this.resolveType(decl.type)
+      // `type Canvas = host` is a type of its own, named by its declaration,
+      // and so is `type Canvas = (host)`: parentheses around a type only
+      // group it (2.7).
+      resolved = ungroupedType(decl.type).kind === 'HostType' ? hostRef(name) : this.resolveType(decl.type)
     } finally {
       this.declaringType = false
     }

@@ -1366,12 +1366,14 @@ test "nothing is drawn before there is a context" {
 }
 ```
 
-`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type:
+`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type. `host` in parentheses is `host`, as any type is (2.7):
 
 ```ents
 type Holder = (c: ?Canvas, n: i32)
 type Canvas = host
 type Screen = Canvas
+type Window = (host)
+export func window(w: Window) -> ?Window => w
 
 func keep(comptime T: type, x: ?T) -> ?T => x
 export func held(h: Holder) -> ?Canvas => h.c
@@ -1504,6 +1506,7 @@ func b(s: []Canvas) {}
 func c(c: Canvas) -> u32 => sizeof(Canvas)
 func d(x: host) {}
 func e(p: *?Canvas) {}
+type Field = (c: host)
 func f(c: Canvas) -> u32 {
   let p = &[c, c]
   return p.len
@@ -1523,6 +1526,7 @@ func i(c: Canvas) {
 ```
 
 ```errors
+'host' declares a host reference type
 cannot point to Holder: it holds Canvas, and a host reference has no bytes, so it is never in memory
 cannot point to Canvas: a host reference has no bytes
 cannot make a slice of Canvas: a host reference has no bytes
