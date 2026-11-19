@@ -1511,6 +1511,16 @@ func f(cs: [3]?Canvas, i: u32) -> ?Canvas => cs[i]
 func g(cs: [3]?Canvas) {
   for c in cs {}
 }
+func h(c: Canvas) -> Canvas {
+  for x in [c, c] {
+    return x
+  }
+  return c
+}
+func k(c: ?Canvas) {
+  let cs: [3]?Canvas = [0, 0, 0]
+  cs[0..2] = c
+}
 ```
 
 ```errors
@@ -1521,6 +1531,8 @@ condition must be bool, not ?Canvas: ?Canvas is a host reference that may be non
 operand of '!' must be bool, not Canvas: a Canvas is never null
 dynamic index on value type [3]?Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
 cannot iterate over [3]?Canvas: an array held in registers is not looped over, and a host reference is never in memory
+cannot iterate over [2]Canvas: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index
+cannot take a range of [3]?Canvas: an array held in registers has no range, and a host reference is never in memory: reach each element by a constant index
 ```
 
 A plain host reference has no default, in a variable, a global or a named result, and in a struct or an array either:

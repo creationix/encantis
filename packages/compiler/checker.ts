@@ -3187,10 +3187,14 @@ class CheckContext {
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
           elemType = this.rowOf(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
-          const element = iterableType.kind === 'array' ? iterableType.element : null
+          // An array held in registers, in a variable or written out where it
+          // is looped over; its variable is of its element type all the same,
+          // so the body says nothing more of it.
+          const element = iterableType.kind === 'array' || iterableType.kind === 'comptime_array' ? iterableType.element : null
           this.error(stmt.iterable.span.start, element && hostIn(element)
             ? `cannot iterate over ${typeToString(iterableType)}: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index`
             : `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+          elemType = element && hostIn(element) ? element : RECOVERY
         } else if (!isInteger(iterableType) || (byteSize(iterableType) ?? 8) > 4) {
           // The loop variable is a u32 compared with the count.
           this.error(stmt.iterable.span.start, `a loop count must be an integer of at most 32 bits, not ${typeToString(iterableType)}`)
@@ -7438,8 +7442,13 @@ class CheckContext {
         proven = true // already reported; don't add a second error
       }
     } else {
-      this.error(expr.span.start, `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
-      return slice(primitive('u8'))
+      // An array of host references has no range: it is held in registers,
+      // and none is ever in memory for a slice to reach.
+      const element = objType.kind === 'array' || objType.kind === 'comptime_array' ? objType.element : null
+      this.error(expr.span.start, element && hostIn(element)
+        ? `cannot take a range of ${typeToString(objType)}: an array held in registers has no range, and a host reference is never in memory: reach each element by a constant index`
+        : `cannot take a range of ${typeToString(objType)}: use a slice or a pointer to an array`)
+      return RECOVERY
     }
     return slice(elem, mutable, !proven)
   }
