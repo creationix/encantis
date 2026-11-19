@@ -3282,32 +3282,71 @@ let (x:, y:) = get_point()  // equivalent with punning
 
 ## 7. Modules
 
+A program is one or more source files, and each file is a *module*. The file given to the compiler is the *entry module*; the program is the entry module and every module it imports, directly or through others, and it compiles to one WebAssembly module. A module takes what it needs from outside through imports, from the host or from another source file, and offers what it has through exports.
+
+Each function, global and `data` declaration of each module of the program is in the output, whether anything uses it or not. A generic is the exception: only its instances are, one for each set of compile-time arguments the program uses ([8.4](#84-instances)). An optimized build (`encantis wasm -O` or `--release`) can remove what nothing uses; an unoptimized one keeps it all. So a library that should cost a program nothing it does not use keeps its ordinary functions apart from its generics, in files of their own: `lib/fixedvec.ents` and `lib/ring.ents` hold generics only and import nothing, and the helpers that allocate them on the stack of `lib/stack.ents` are in `lib/fixedalloc.ents`, so a program that does not import that file has none of the stack.
+
 ### 7.1 Imports
 
-```ents
-// Import function from host environment
-import "env" "log" func log(msg:[]u8)
+An import names a module, then the name of each thing it takes from it and that thing's declaration:
 
-```
+```text
+import "module" "name" Item
 
-Multiple imports from the same module can be grouped:
-
-```ents
-import "math" (
-  "sin" func sin(angle:f64) -> f64
-  "cos" func cos(angle:f64) -> f64
-  "atan2" func atan2(y:f64, x:f64) -> f64
+import "module" (
+  "name" Item
+  "name" Item
+  ...
 )
+
+Item = func local(parameters) -> results      a function
+     | global local: Type                     a global
+     | func Name(comptime parameters) -> type a generic type (from a source module only)
 ```
 
-Whitespace is flexible - the import and function signature can span multiple lines:
+- The first string is the module. A string that starts with `./`, `../` or `/` names a source file (below); any other string is a module of the host, `"env"` or `"wasi_snapshot_preview1"` for instance, and is passed to the host as it is written.
+- The second string is the name the other side exports. `local` is the name the thing has in this module. The two may differ, so an import renames. Without a local name (`"now" func() -> f64`) the local name is the import's; one that is not an identifier, such as `"console.log"`, then cannot be called, so give it a local name.
+- The declaration is written as one in the module would be, without a body: a function's parameters and results as in [3.4](#34-functions) (a host function's parameters may be types without names, `func(i32, i32)`), a global's type after a colon, with no value.
+- The grouped form takes any number of items, one after another, with no commas between them. An import, like a declaration, can span lines.
+- An import stands at module level, anywhere in the file, and its names are module-level names like those the module declares: they can be used above the import, and a `let` cannot take one (`'log' is already declared in this scope`). An import inside a `test` block is part of the program only when the tests are built, and only for the files whose tests are run ([Tests](#tests)).
+
+Functions that share a name ([3.4](#functions-that-share-a-name)) can be imported under one local name, each with its own parameter types; a local name taken twice with the same parameter types is an error (`'log' is already declared with parameters (i32)`). The same import can be taken twice under two local names.
+
+#### Host imports
+
+A function or global imported from the host is a wasm import, of the module and name written. Its declaration is the whole contract: the host must provide a function or global of that wasm type, as [7.2](#72-exports) says each Encantis type is held. A function is called like any other. A host that reads or writes what a pointer or slice points to, a string given to `log` here, needs the memory exported ([7.3](#73-memory-declarations)):
+
+<!-- spec:begin compile -->
 
 ```ents
-import "sys" "print"
-func print(msg:[]u8)
+// The host's "console_log" is called log here
+import "env" "console_log" func log(msg: []u8)
+
+// Several items from one module, one after another
+import "env" (
+  "now" func() -> f64              // called now(): no local name, so the import's
+  "columns" global columns: u32
+)
+
+// The host reads the strings given to log
+export memory
+
+// Logs whether the frame that began at `start` took too long
+export func end_frame(start: f64) {
+  log(if now() - start > 16.0 { "slow frame" } else { "frame" })
+}
+
+// The row of cell i on a screen `columns` cells wide
+export func row(i: u32) -> u32 => i / columns
 ```
 
-A global can be imported from the host too. Its value is the host's, given once when the module starts, so it is read-only: assigning it, a field or an element of it, with `=`, a compound assignment or `set`, is an error. (A global imported from a source module is that module's own global, and is assigned as any global is.)
+<!-- spec:end -->
+
+A generic cannot be imported from the host: `a host import cannot have comptime parameters`.
+
+A value that comes in from the host, as an imported function's result or an imported global's value, is taken as its wasm value: nothing checks that a `u8` is below 256 or a `bool` is 0 or 1. The host has to give values of the declared types. A plain host type is the exception: it is checked for null where it comes in ([2.13](#213-host-references)).
+
+A global imported from the host is the host's, given once when the module starts, so it is read-only: assigning it, a field or an element of it, with `=`, a compound assignment or `set`, is an error. What it points to is not the global: a `*mut` global imported from the host can be written through. A global of several wasm values is imported as one wasm global per value, named as [7.2](#72-exports) says: `size` below is the host's `size_w` and `size_h`.
 
 <!-- spec:begin compile -->
 
@@ -3337,65 +3376,260 @@ cannot set 'width': a global imported from the host is read-only
 
 #### Source modules
 
-A module string that starts with `./`, `../` or `/` names another source file (`.ents` is added): the two are compiled into one wasm module, and what is imported is what that file exports. Imports inside a `test` block are followed only when tests are built.
+A module string that starts with `./`, `../` or `/` names another source file: a path from the directory of the importing file (`/`: from the root of the file system), to which `.ents` is added unless it ends in `.ents`. What is imported is what that file exports ([7.2](#72-exports)), and the two are compiled into one wasm module: a call of an imported function is a direct `call`, and an imported global is the other module's global itself, read and written as any global is.
+
+Each file is one module, however many modules import it and however they write its path: its globals and its data exist once in the program. Two files, the second importing the first under names of its own:
+
+<!-- spec:begin compile -->
+
+```ents
+// stats.ents
+export global calls: u32 = 0
+
+// How many times c occurs in s
+export func count(s: []u8, c: u8) -> (n: u32) {
+  calls += 1
+  for b in s {
+    if b == c { n += 1 }
+  }
+}
+
+test "count" {
+  assert count("banana", 'a') == 3
+  assert calls == 1
+}
+```
+
+```ents
+// main.ents
+import "./stats" (
+  "count" func count_of(s: []u8, c: u8) -> u32
+  "calls" global calls: u32
+)
+
+export func lines(text: []u8) -> u32 => count_of(text, '\n') + 1
+export func reset() { calls = 0 }
+
+test "lines" {
+  assert lines("a\nb\nc") == 3
+  assert calls == 1
+  reset()
+  assert calls == 0
+}
+```
+
+<!-- spec:end -->
+
+The declaration an import writes is checked against nothing: what the other module exports under the name is what is imported, with its own signature, and the importing module is checked against that. Write it as the export is anyway: it is what a reader of the importing file sees, and what an editor knows of the function when it checks that file without the other (below). The kind must match, and the name must be exported:
+
+| Mistake | Error |
+|---|---|
+| A name the module does not export | `'add' is not exported from './util'` |
+| `func` for a global or a generic type | `'counter' in './util' is not a function` |
+| `global` for a function or a generic | `'add' in './util' is not a global` |
+| `func Name(...) -> type` for anything but a generic type | `'add' in './util' is not a generic type` |
+| A path that names no file | `Module not found: /home/me/app/util.ents` |
+| Modules that import each other, directly or through others | `Import cycle detected: a.ents → b.ents → a.ents` |
+
+The source modules of a program form a graph without cycles: when two modules need each other, what both need goes into a third that each imports.
+
+Types are structural, so a struct type that two modules share is declared again (or written out) in each; a `type` is not imported. A host type is the exception that keeps the rule: it is its name, program-wide, so a module that shares `Canvas` with another declares `type Canvas = host` too, and is then given the same type ([2.13](#213-host-references)).
+
+Several imports can take one local name, when their parameter types differ: they then share it as functions declared in the module do ([3.4](#functions-that-share-a-name)). `lib/map.ents` imports the `hash` and `eq` functions of `lib/set.ents`, exported under names of their own, as one `hash` and one `eq`:
+
+<!-- spec:begin compile -->
+
+```ents
+import "../lib/set" (
+  "hash_u32" func hash(k: u32) -> u32
+  "hash_u64" func hash(k: u64) -> u32
+  "hash_bytes" func hash(k: []u8) -> u32
+)
+
+export func mix(id: u32, at: u64, name: []u8) -> u32 => hash(id) ^ hash(at) ^ hash(name)
+```
+
+<!-- spec:end -->
+
+A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them ([8.8](#88-generics-across-modules)). A generic is renamed on import as a function is, which is how two libraries' generics of one name are used in one module: `lib/vec.ents` and `lib/fixedvec.ents` both have a `push`, so a module that uses both imports one of them as, say, `fixed_push`:
 
 ```text
-import "./util" "add" func add(a: i32, b: i32) -> i32
-import "../lib/text" (
-  "next_line" func next_line(s: []u8) -> (line: []u8, rest: []u8)
+import "../lib/fixedvec" (
+  "FixedVec" func FixedVec(comptime n: u32, comptime T: type) -> type
+  "push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool
 )
 ```
 
-The signature an import writes is documentation: what the other module exports under the name is what is called, and the module that imports it is checked against that. A name that is not exported is `'add' is not exported from './util'`. Types are structural, so a struct type used across modules is declared again (or written out) where it is needed; a `type` is not imported. A host type is the exception that keeps the rule: it is its name, program-wide, so a module that shares `Canvas` with another declares `type Canvas = host` too, and is then given the same type ([2.13](#213-host-references)).
+and calls it as `v.fixed_push(x)`.
 
-A generic function is imported with its signature, comptime parameters included, and a generic type as the function it is, with no body: `func`, its upper-case name, its parameters and `-> type`. Both are the generics of the module that declares them: see [8.7 Generics Across Modules](#88-generics-across-modules).
-
-```text
-import "./containers" (
-  "Vec" func Vec(comptime T: type) -> type
-  "push" func push(comptime T: type, v: *mut Vec(T), x: T)
-)
-```
-
-When a file is checked without the files it imports (the editor's web worker, a spec block), a generic function it imports is the signature its import writes, and its calls are checked against that signature. A generic type is unknown there, and so is anything made of it: such a file lists no errors, and has one warning, `imported generic types are resolved only when the program is checked`. The command line and the desktop editor check the program.
+When a file is checked without the files it imports (the editor's web worker, a reference example), what an import writes is all there is of it: an imported function is the signature its import writes, and its calls are checked against that. A generic type is unknown there, and so is anything made of it: such a file lists no errors, and has one warning, `imported generic types are resolved only when the program is checked`. The command line and the desktop editor check the program, every module with the modules it imports.
 
 ### 7.2 Exports
 
+`export` before a declaration gives it a name outside the module. What can be exported is a function (`func`, also `inline func`), a global, the memory ([7.3](#73-memory-declarations)), and a generic function or generic type, which other source modules can then import. `data`, `def`, `type` and an import cannot be exported (a syntax error): a module shares data through a function or a global that holds its address.
+
+The export name is the declaration's own name, and `"memory"` for the memory. `export "name"` before the declaration gives another name, any string; the declaration keeps its own name in the module. Each export name is used once in a module, so functions that share a name are exported under names of their own:
+
+<!-- spec:begin compile -->
+
 ```ents
-// Export function - name defaults to function identifier
-export func add(a:i32, b:i32) -> i32 => a + b
+// Exported as "add", its own name
+export func add(a: i32, b: i32) -> i32 => a + b
 
-// Export with explicit name (when export name differs from internal name)
-export "_start" func main() { ... }
+// Exported as "area"; in the module it is still rect_area
+export "area" func rect_area(w: u32, h: u32) -> u32 => w * h
 
-// Export anonymous function (explicit name required)
-export "hash" func (data:[]u8, seed:u32) -> u32 {
-  // only accessible via export, no internal calls
+// Functions that share a name are exported under names of their own
+export "hash_u32" func hash(k: u32) -> u32 => k * 0x9e3779b1
+export "hash_u64" func hash(k: u64) -> u32 => hash((k ^ (k >> 32)) as u32)
+
+// A global the host can read and write, as "frames"
+export global frames: u32 = 0
+
+// A struct is one wasm global per field: "size_w" and "size_h"
+export global size: (w: u32, h: u32) = (640, 480)
+
+// The memory, as "memory"
+export memory
+
+test "exported functions are ordinary functions here" {
+  assert add(2, 3) == 5
+  assert rect_area(3, 4) == 12
+  assert hash(1:u64) == hash(1:u32)
+  assert size.w * size.h == 307200
 }
-
-// Export memory (name defaults to "memory")
-export memory              // implicit min, unbounded max
-export memory 8            // 8 pages min
-export "mem" memory 8 256  // explicit name, 8 min, 256 max
-
-// Export global - name defaults to global identifier
-export global counter:i32 = 0
 ```
 
-A global of several wasm values is exported (and imported from the host) as one wasm global per value, each named for its part the way a local's registers are: `export global order:[]i32` exports `order_ptr` and `order_len`, and a struct global `size:(w:i32, h:i32)` exports `size_w` and `size_h`.
+```ents
+export func hash(k: u32) -> u32 => k * 0x9e3779b1
+export func hash(k: u64) -> u32 => hash(k as u32)
+```
 
-Only the entry module's exports reach the host. In a module that another imports, `export` makes a name importable. A generic function or generic type is never exported to the host, since there is no one function of it (and nothing of a generic type exists at run time): its `export` makes it importable by other source modules, and in an entry module it emits nothing, so a library of generics compiles on its own to a module with none of them. To export an instance, write a wrapper: `export func push_u32(v: *mut Vec(u32), x: u32) { push(v, x) }`.
+```errors
+export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)
+```
+
+<!-- spec:end -->
+
+Only the entry module's exports reach the host. In a module that another imports, `export` makes a name importable and nothing more; the memory is the exception, since a program has one ([7.3](#73-memory-declarations)). An exported function is still an ordinary function of its module, called from it like any other.
+
+A generic function or generic type is never exported to the host, since there is no one function of it (and nothing of a generic type exists at run time): its `export` makes it importable by other source modules, and in an entry module it emits nothing, so a library of generics compiles on its own to a module with none of them. To export an instance, write a wrapper: `export func push_u32(v: *mut Vec(u32), x: u32) { push(v, x) }`.
+
+> **Not implemented:** exporting a function without a name, `export "inc" func(x: i32) -> i32 => x + 1`. The compiler accepts it and writes a module that does not assemble; without the export name it stops with an internal error. Give the function a name.
+
+#### What the host sees
+
+An exported or imported function is a wasm function whose parameters and results are the registers of its Encantis parameters and results, in order ([9.3](#93-wasm-type-mapping)):
+
+- a number, `bool` or pointer is one value: `i32` for everything of 32 bits or fewer (`bool`, `u8`, `i16`, `u32`, `*T`, `[*]T`, `*[N]T`), `i64`, `f32` or `f64`; a `u128` is two `i64`s, the low half first, and wider integers one more `i64` for each 64 bits;
+- a slice is two `i32`s, its address and its length;
+- a struct or tuple is its fields, and a fixed array `[N]T` its N elements, each flattened in turn;
+- a host type is an `externref` ([2.13](#213-host-references));
+- several results are a wasm multi-value result.
+
+A wasm parameter of several is named after its part, `points_ptr` and `points_len` for a slice, `to_x` for a field, `k_0` for an element; in the `.wasm` file only the order counts. So `nearest` here is `(param i32 i32 f32 f32) (result i32 f32)` to the host, which passes the address and length of an array of points it wrote in the module's memory:
+
+<!-- spec:begin compile -->
+
+```ents
+type Point = (x: f32, y: f32)
+
+export memory
+
+// The point of `points` nearest to `to`, and its squared distance
+export func nearest(points: []Point, to: Point) -> (index: u32, dist: f32) {
+  dist = 3.4e38
+  for i, p in points {
+    let dx = p.x - to.x
+    let dy = p.y - to.y
+    let d = dx * dx + dy * dy
+    if d < dist {
+      index = i
+      dist = d
+    }
+  }
+}
+
+test "nearest" {
+  let (index:, dist:) = nearest([(x: 0.0, y: 0.0), (x: 3.0, y: 4.0), (x: 1.0, y: 1.0)], (x: 3.0, y: 3.0))
+  assert index == 1
+  assert dist == 1.0
+}
+```
+
+<!-- spec:end -->
+
+The host is trusted to pass values of the declared types. Nothing is checked or masked where a value comes in: a `u8` parameter given 300 is 300 in the function, and a `u32#6` parameter given 7 is 7, though the checker took it to be below 6 ([Ranged Integers](#ranged-integers)). A plain host type is the exception, checked for null ([2.13](#213-host-references)). An exported function that takes a many-pointer (`[*]T`) is warned of, `exported function parameter 'p' uses [*] many-pointer — consider []u8 slice for a safe API`: the host can pass any address and no length, where a slice carries its length.
+
+An exported global is a mutable wasm global, which the host can read and write; one of several values is one wasm global per value, named `name_part` as a parameter is (`size_w`, `order_ptr` and `order_len` for a slice, `pos_0` and `pos_1` for a tuple exported as `"pos"`). A global imported from the host is an immutable wasm global.
+
+#### Starting and running
+
+A module has no code that runs when it starts: a global starts with its constant value, and the data is in the memory as the module is instantiated. The one exception is the null check of the plain host-type globals the module imports, which runs as the wasm start function ([2.13](#213-host-references)). Nothing else is ever called but what the host calls.
+
+A command-line program that a WASI host runs, as `encantis run file.ents` does, exports its entry point as `_start` and its memory as `memory`, and imports only from `wasi_snapshot_preview1` (as `lib/io.ents` does):
+
+<!-- spec:begin compile -->
+
+```ents
+import "wasi_snapshot_preview1" "fd_write" func fd_write(fd: i32, iovs: [][]u8, written: *mut u32) -> i32
+
+export memory
+
+export "_start" func main() {
+  fd_write(1, ["Hello, world!\n"], &0:u32)
+}
+```
+
+<!-- spec:end -->
+
+`encantis run` gives the module no import but WASI's: one from any other module stops it before it starts. It runs `_start` and needs the memory exported under the name `memory`.
 
 ### 7.3 Memory Declarations
 
-```ents
-// Declare memory (pages of 64KB)
-memory                     // compiler computes min from static data, no max
-memory 8                   // min 8 pages
-memory 8 256               // min 8 pages, max 256 pages
+A program has at most one linear memory, measured in pages of 64 KiB (65536 bytes). It has one when it uses memory: when it has data (a `data` declaration, or a literal laid out in memory), when a pointer or slice is anywhere in it (a parameter, a load or a store), or when a module declares the memory. A program that uses none has no memory.
+
+A memory declaration chooses the memory's size and whether the host sees it:
+
+```text
+memory                     // the size the data needs, no maximum
+memory 8                   // at least 8 pages
+memory 8 256               // at least 8 pages, at most 256
+export memory              // the same three forms, exported as "memory"
+export "mem" memory 8 256  // exported under another name
 ```
 
-When no min is specified, the compiler computes it as `max(1, ceil(static_data_bytes / 65536))`. When no max is specified, no upper bound is emitted (the runtime caps at its own limit).
+- The minimum is the number of pages the module has when it starts. Without one written, it is what the data needs: `max(1, ceil(sizeof data / 65536))`, where `sizeof data` is the address just past the last byte of data, which starts at address 8 ([9.0](#90-data-layout)).
+- The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
+- A program that uses memory and declares none gets that memory with the minimum the data needs, no maximum, and no export. The declaration is needed only to choose the sizes or to export the memory.
+- The numbers are decimal integer literals with `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these yet: a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
+- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports.
+
+The host sees the memory only when it is exported. Exporting it is what lets a host read a string a function returns or write an array it passes in, and WASI needs it under the name `memory` ([Starting and running](#starting-and-running)).
+
+<!-- spec:begin compile -->
+
+```ents
+// No size written: the minimum is what the data needs, 100008 bytes in 2 pages
+export memory
+
+data buf = mut [0:u8; 100000]
+
+// Fills the buffer, and returns its last byte
+export func fill(v: u8) -> u8 {
+  buf[..] = v
+  return buf[99999]
+}
+
+test "the data ends at sizeof data" {
+  assert fill(7) == 7
+  assert sizeof data == 100008
+}
+```
+
+<!-- spec:end -->
+
+The memory does not grow while the program runs, unless the host grows an exported one: `memory-size` and `memory-grow` are not implemented ([10.3](#103-memory-builtins)). Nothing in it is allocated but the data: the rest, from `sizeof data` up, is the program's to use as it likes ([`lib/stack.ents`](../lib/stack.ents) is one way).
 
 ---
 
