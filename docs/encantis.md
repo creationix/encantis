@@ -4416,7 +4416,7 @@ Where a value lives follows from how it is declared:
 | `global g: i32 = 0` | registers | one wasm global, or one per register for a value of several |
 | `data buffer = mut [0:u8; 64]` | memory | 64 bytes laid out at compile time; `buffer` is their address, a constant `*mut [64]u8` |
 | a literal where a pointer or slice is wanted: `sum([1, 2, 3])`, `log("hi")` | memory | laid out as data is ([9.0](#90-data-layout)) |
-| `&5`, `&Point(1.0, 2.0)` | memory | a cell of its own, which can be written ([4.7](#element-addresses-and-writes)) |
+| `&5`, or `&(1.0, 2.0)` where a `*Point` is wanted | memory | a cell of its own, which can be written ([4.7](#element-addresses-and-writes)) |
 
 A variable is never in memory, so it has no address: `&x` of a variable is an error, and a fixed array held in a variable is indexed only by a constant ([2.4](#24-fixed-arrays-value-type)). A `def` is no storage at all: its value is put where its name is written ([3.1](#31-definitions-def)), and an array or a string is laid out with `data` instead (`def cannot contain array/string literals — use 'data table = ...' instead`).
 
@@ -4581,7 +4581,7 @@ Each type is held in registers as these wasm values:
 | `i512`, `u512` | eight `i64`, least significant first |
 | `f32` | `f32` |
 | `f64` | `f64` |
-| a ranged integer `u32#N` | its base type: the range is checked at compile time and nothing of it is left |
+| a ranged integer, `u32#N` | its base type: the range is checked at compile time and nothing of it is left |
 | `*T`, `*[N]T`, `*[!]T`, `*[NxM]T`, `*[N][M]T`, `[*]T` | `i32`: the address |
 | `[]T` | `i32 i32`: the address, then the length |
 | `?*T` and every other optional pointer | `i32`, 0 for none |
@@ -4915,8 +4915,8 @@ These never trap:
 
 - Integer `+`, `-`, `*`, `<<`, negation and `abs` wrap around in their type: a `u8` 255 plus 1 is 0, and `abs` of the most negative value is that value. A shift count is taken modulo the width ([4.2](#42-bitwise-operators)).
 - Float arithmetic follows IEEE 754: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN.
-- A checked index or range that is out of range gives none, which `if let` or `??` resolves ([4.7](#47-bounds-checked-indexing)); a write needs an index proven in range at compile time, so no write is out of range at run time.
-- A load or a store at any address inside memory, address 0 included. A null pointer is no trap: it reads and writes the unused bytes 0 to 7. That is why an optional pointer is resolved before it is used ([Optional Types](#optional-types)), and why a plain pointer is never 0 unless a cast made it so.
+- A checked index or range that is out of range gives none, which `if let` or `??` resolves ([4.7](#47-bounds-checked-indexing)). A write into an array or a slice needs an index proven in range at compile time, or goes through `&s[i]`, which is checked the same way, so no such write is out of range at run time.
+- A load or a store at any address inside memory, address 0 included. A null pointer is no trap: it reads and writes the unused bytes 0 to 7, which is why an optional pointer is resolved before it is used ([Optional Types](#optional-types)).
 - An index into a many-pointer, which is checked against nothing: inside memory it reads or writes whatever is there.
 
 <!-- spec:begin compile -->
@@ -5079,7 +5079,8 @@ sqrt requires a float type, got i32
 
 The destination is a pointer to an array of a size known at compile time, of any element type, and it is written, so it is a `*mut`:
 
-- a slice is not one (`memcpy dest: expected *[N]T, got []mut u8`), nor a pointer to one value (`memzero dest: expected *[N]T, got *mut Point`: write `p.* = Point(0, 0)`), nor a `*[!]T`, whose size is only known by scanning (`memzero dest: *mut [!]u8 has no size known at compile time`);
+- a slice is not one (`memcpy dest: expected *[N]T, got []mut u8`), nor a pointer to one value (`memzero dest: expected *[N]T, got *mut Point`: write `p.* = Point(0, 0)`);
+- a `*[!]T` has no size known at compile time: `memcpy` and `memset` take one and check no length against it, and `memzero`, which has no length of its own, refuses it (`memzero dest: *mut [!]u8 has no size known at compile time`);
 - a many-pointer has no size to check (`memset dest: many-pointer has no bounds — use a sized pointer for safe memory operations`); to write through one, cast it to the `*mut [N]T` it is known to point to;
 - a const pointer is not written through (`memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`).
 
