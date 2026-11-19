@@ -5556,94 +5556,373 @@ A type written on a literal binds more loosely than a member does, so a literal 
 
 ## 5. Statements & Control Flow
 
+A block, `{ ... }`, is a sequence of statements, run in order. Statements need no separator ([1.6](#16-statements-and-line-breaks)). The statements are:
+
+| Statement | What it does | Section |
+|---|---|---|
+| `let`, `set` | declares variables; assigns several at once | [3.3](#33-variables), [4.5](#45-assignment-and-compound-assignment) |
+| `x = v`, `x += v`, … | assigns | [4.5](#45-assignment-and-compound-assignment) |
+| an expression | is evaluated and its value dropped: a call, an `if`, a `match` | [5.1](#51-conditionals), [5.4](#54-match-expressions) |
+| `while`, `for`, `loop` | repeats a body | [5.2](#52-loops) |
+| `return`, `break`, `continue` | leaves the function, the loop, or the pass of the loop | [5.3](#53-control-statements) |
+| `defer` | runs an expression when its block exits | [Defer](#defer) |
+| `assert` | traps when a condition is false | [Assertions](#assertions) |
+
+`if` and `match` are expressions. Written as a statement, one runs for what its branches do; written where a value is wanted, it gives one.
+
+**Bodies.** Everything that has a body takes either a block or `=>` and one expression: a function ([3.4](#34-functions)), each branch of an `if`, and `while`, `for` and `loop`. A match arm is its patterns, `=>`, and an expression or a block ([5.4](#54-match-expressions)). An arrow body is one expression, never a statement: `for i in n => add(i)` calls `add` on each pass, but `for i in n => t += i` is a syntax error, since an assignment is a statement. Where nothing takes an arrow body's value, as in a loop, the value is dropped.
+
+<!-- spec:begin compile -->
+
+```ents
+global ticks: u32 = 0
+
+func tick() { ticks += 1 }
+
+func sign(x: i32) -> i32 => if x < 0 => -1 elif x > 0 => 1 else => 0
+
+func run(n: u32) {
+  for i in n => tick()
+  while ticks < 10 => tick()
+}
+
+test "a body is a block or one expression" {
+  assert sign(-4) == -1
+  assert sign(0) == 0
+  run(3)
+  assert ticks == 10
+}
+```
+
+```ents
+func sum(n: u32) -> u32 {
+  let t: u32 = 0
+  for i in n => t += i
+  return t
+}
+```
+
+```errors
+Line 3, col 20
+```
+
+<!-- spec:end -->
+
 ### 5.1 Conditionals
 
+`if condition body` is followed by any number of `elif condition body` and at most one `else body`. The conditions are evaluated in order, and the body of the first one that holds runs; the conditions after it are not evaluated. When none holds, the `else` body runs, if there is one. The keyword is `elif`: `else if` is a syntax error, since `else` takes a body (a block, or `=>` and an expression). An `if` compiles to a wasm `if`, and each `elif` to an `if` in the `else` of the one before.
+
+<!-- spec:begin compile -->
+
 ```ents
-if condition {
-  // body
+global warnings: u32 = 0
+global failures: u32 = 0
+
+func report(level: u32) {
+  if level >= 2 {
+    failures += 1
+  } elif level == 1 {
+    warnings += 1
+  }
 }
 
-if condition {
-  // body
-} else {
-  // alternative
-}
-
-if cond1 {
-  // first case
-} elif cond2 {
-  // second case
-} elif cond3 {
-  // third case
-} else {
-  // default
+test "the first condition that holds picks the branch" {
+  report(1)
+  report(3)
+  report(0)
+  assert warnings == 1
+  assert failures == 1
 }
 ```
 
-Conditions must be boolean - no implicit truthiness:
-
 ```ents
-if x { ... }      // ERROR: x must be bool
-if x != 0 { ... } // OK: explicit comparison
-if flag { ... }   // OK: flag is bool
+func pick(a: bool, b: bool) -> i32 => if a { 1 } else if b { 2 } else { 3 }
 ```
 
-The same goes for `while`, `when`, `assert`, and the operands of `&&`, `||` and `!`.
+```errors
+Line 1, col 55
+```
 
-An `if` with an `else` is also an expression. Its value is the last expression of the branch taken, so every branch needs one, unless it always exits (`return`, `break`, `continue`). The branches widen to one type, like operands ([2.10](#implicit-widening)). A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. A branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Write the type where the value is given (`let ys: []i32 = ...`), or use `elif`.
+<!-- spec:end -->
+
+A condition is a `bool`. A number, a pointer or an optional is not true or false by itself: compare a number (`if n != 0`), and resolve an optional with `if let` ([6.4](#64-if-let-bindings)) or `??`. The same goes for the conditions of `while`, `when` and `assert`, and for the operands of `&&`, `||` and `!`.
+
+<!-- spec:begin compile -->
 
 ```ents
-func sign(x: i32) -> i32 => if x < 0 { -1 } elif x > 0 { 1 } else { 0 }
+func f(n: u32) -> u32 {
+  if n {
+    return 1
+  }
+  return 0
+}
+```
 
-func gap(found: bool, p: i32, l: i32) -> i32 {
-  let v = if found { p - l } else { -1 }
+```errors
+condition must be bool, not u32
+```
+
+<!-- spec:end -->
+
+**As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`).
+
+A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. A branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Write the type where the value is given (`let ys: []i32 = ...`), or use `elif`.
+
+<!-- spec:begin compile -->
+
+```ents
+func clamp(x: i32, lo: i32, hi: i32) -> i32 => if x < lo { lo } elif x > hi { hi } else { x }
+
+func widest(small: bool, n: u8, big: u64) -> u64 {
+  let v = if small { n } else { big }    // a u64: n widens to it
   return v
 }
+
+func values(c: bool, xs: []i32) -> []i32 => if c { xs } else { [7, 8] }
+
+func first_positive(xs: []i32) -> i32 {
+  for x in xs {
+    let v = if x > 0 { x } else { continue }
+    return v
+  }
+  return 0
+}
+
+test "an if with an else is a value" {
+  assert clamp(15, 0, 10) == 10
+  assert clamp(-3, 0, 10) == 0
+  assert widest(true, 200, 9) == 200
+  assert values(false, [1]).len == 2
+  assert first_positive([-1, 0, 4]) == 4
+}
 ```
 
-Used as a statement, an `if` has no value to agree on: its branches can end in anything.
+```ents
+func f(c: bool) -> i32 {
+  let x = if c { 1 }
+  return x
+}
+
+func g(c: bool, t: i32) -> i32 => if c { t } else { t = 0 }
+```
+
+```errors
+cannot assign () to i32
+this branch has no value: expected i32
+```
+
+<!-- spec:end -->
+
+Used as a statement, an `if` has no value to agree on: its branches can end in anything, and a value one of them leaves is dropped. A `let` in a branch declares a variable of the function, seen after the `if` as well, but for the exceptions [3.3](#33-variables) lists; the binding of an `if let`, and a `let` in its first branch, are seen in that branch alone.
 
 ### 5.2 Loops
 
+| Loop | Runs its body |
+|---|---|
+| `while condition body` | as long as the condition holds, tested before each pass |
+| `for x in iterable body` | once for each number of a count, or for each element of an array or slice |
+| `loop body` | until a `break` or a `return` leaves it |
+
+`break` leaves the innermost loop, and `continue` ends the pass: a `while` tests its condition again, a `for` goes on to its next number or element, and a `loop` runs its body again ([5.3](#53-control-statements)). A loop is a statement and has no value. Each compiles to a wasm `loop` inside a `block`: the end of a pass branches back to the `loop`, and `break` branches out of the `block`. A `loop` that no `break` leaves ends only by `return` (or a trap), so a function body that ends in one returns on every path ([3.4](#34-functions)).
+
+<!-- spec:begin compile -->
+
 ```ents
-while condition {        // condition checked before each iteration
-  // body
+func gcd(a: u32, b: u32) -> u32 {
+  while b != 0 {
+    set a, b = (b, a % b)
+  }
+  return a
 }
 
-for i in num {           // iterate 0 to n-1
-  process(i)
+// The number of decimal digits of n.
+func digits(n: u32) -> u32 {
+  let count: u32 = 0
+  loop {
+    count += 1
+    n /= 10
+    return count when n == 0
+  }
 }
 
-for elem in items {      // iterate over the elements of a slice or *[N]T
-  process(elem)
-}
-
-for i, elem in items {   // with the index (u32) first
-  process(i, elem)
-}
-
-loop {                   // infinite loop
-  // body
+test "while and loop" {
+  assert gcd(48, 18) == 6
+  assert digits(0) == 1
+  assert digits(4096) == 4
 }
 ```
 
-A counted loop's count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` (a `u32#N` for a constant `N`) that counts up from 0 while it is below the count, so a negative count runs the loop zero times. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error.
+<!-- spec:end -->
 
-An element loop walks a pointer from the first element to the end and loads each element into the binding, so it needs no bounds checks. It works on slices (`[]T`) and pointers to fixed-size arrays (`*[N]T`); a many-pointer (`[*]T`) has no length to stop at.
+A `for` binds one variable, `for x in xs`, or two, `for i, x in xs`: the index first, then the element. Each is a plain name. A pattern is not a binding (`for (a, b) in pairs` is a syntax error): take an element apart with a `let` in the body ([3.3](#33-variables)). A loop that doesn't use its variable still names one: `_` is not a name.
 
-The element can be of any type: a struct or a slice is loaded whole, each of its values into a register. The binding is a copy, so assigning to it doesn't change the array.
+#### Counting
+
+`for i in n` runs its body `n` times, with `i` counting from 0 up to `n - 1`. The count is an integer of at most 32 bits (`a loop count must be an integer of at most 32 bits, not i64`), evaluated once, before the loop: changing what it was computed from inside the loop doesn't change how often it runs. `i` is a `u32` that counts up from 0 while it is below the count, so a negative count runs the loop zero times. With a constant count `N`, `i` is a `u32#N` ([Ranged Integers](#ranged-integers)), which proves an index into a `*[N]T` with no run-time check. A constant count that isn't negative is a `u32` too: `for i in 3000000000` counts to it as a `u32` (not as the `i64` the constant is on its own), and a count no `u32` holds, such as `5000000000`, is an error (`cannot assign int(5000000000) to u32`).
+
+There is no range form: `for i in 2..10` is a syntax error. Count from 0 and add the start, or loop over the elements of a range of an array or slice ([4.8](#48-slicerange-syntax)). A count loop has one variable; with two, `for i, j in n`, the first is never set (a known bug).
+
+<!-- spec:begin compile -->
 
 ```ents
-type Spot = (c:i32, di:i32, room:i32)
+data weights = [1:u32, 10, 100]
+data counts = [4:u32, 2, 7]
 
-func total(list:[]Spot) -> i32 {
+func total() -> u32 {
+  let t: u32 = 0
+  for i in weights.len {
+    t += weights[i] * counts[i]    // i is a u32#3: neither index needs a check
+  }
+  return t
+}
+
+// The sum of the numbers from lo up to hi, hi left out.
+func span(lo: i32, hi: i32) -> i32 {
+  let t = 0
+  for k in hi - lo {               // a negative count runs no pass
+    t += lo + k as i32
+  }
+  return t
+}
+
+test "counting" {
+  assert total() == 724
+  assert span(2, 5) == 9
+  assert span(5, 2) == 0
+}
+```
+
+<!-- spec:end -->
+
+#### Elements
+
+`for x in xs` runs its body once for each element of `xs`, first to last, with `x` a copy of the element; `for i, x in xs` also gives the element's index `i`, a `u32` from 0. These have elements a loop walks:
+
+- a slice, `[]T` or `[]mut T`;
+- a pointer to a fixed array, `*[N]T` or `*mut [N]T`: a `data` block, a string literal, or a fixed array that lies in memory, such as the field `p.cells` of the struct a pointer `p` points to;
+- a table, `*[N][M]T`, whose elements are its row pointers, each a `*[M]T` ([Nesting](#nesting)).
+
+The loop walks a pointer from the first element to the end of the array, loading each element into the variable as it gets there, so it needs no bounds checks. The slice or pointer is evaluated once, before the loop: assigning another slice to the variable it came from changes nothing about the loop. The elements are read one pass at a time, so a write to a later element in the body is what the loop reads when it gets there. An element can be of any type: a struct or a slice is loaded whole, each of its values into a register, and since the variable is a copy, assigning to it doesn't change the array.
+
+<!-- spec:begin compile -->
+
+```ents
+type Spot = (c: i32, di: i32, room: i32)
+
+data grid: *[2][3]u8 = [[1, 2, 3], [4, 5, 6]]
+
+func total(list: []Spot) -> i32 {
   let t = 0
   for s in list {
     t += s.c + s.di + s.room
   }
   return t
 }
+
+// The index of the first c in s, or s.len.
+func find(s: []u8, c: u8) -> u32 {
+  for i, x in s {
+    return i when x == c
+  }
+  return s.len
+}
+
+// How many times the values rise from one element to the next.
+func rises(xs: []i32) -> u32 {
+  let count: u32 = 0
+  let prev = xs[0] ?? 0
+  for x in xs[1..] ?? xs {
+    if x > prev {
+      count += 1
+    }
+    prev = x
+  }
+  return count
+}
+
+func grid_sum() -> u32 {
+  let t: u32 = 0
+  for row in grid {                // each row is a *[3]u8
+    for x in row {
+      t += x
+    }
+  }
+  return t
+}
+
+test "element loops" {
+  assert total([Spot(1, 2, 3), Spot(4, 5, 6)]) == 21
+  assert find("hello", 'l') == 2
+  assert find("hello", 'z') == 5
+  assert rises([1, 3, 2, 5]) == 2
+  assert rises([]) == 0
+  assert grid_sum() == 21
+}
 ```
+
+<!-- spec:end -->
+
+Nothing else is looped over, and each has its way:
+
+- a many-pointer, `[*]T`, has no length: make a slice of it and a length, `let s: []T = (p, n)`;
+- a `*[!]T` has its length only when it is scanned for: make the slice once, `(z.ptr, z.len)`, and loop over that;
+- a packed `*[NxM]T`: loop over the row index, `for i in p.len`, and then over the row `p[i]`;
+- an array held in registers, a `[N]T` variable or an array literal written in place, is indexed by constants only ([2.4](#24-fixed-arrays-value-type)): a loop needs it in memory;
+- an optional slice, `?[]T`, may be none: resolve it with `if let` or `??` first;
+- a pointer to one value, `*T`, and a number that isn't an integer of at most 32 bits.
+
+<!-- spec:begin compile -->
+
+```ents
+func a(p: [*]u32) { for x in p { } }
+func b(z: *[!]u8) { for c in z { } }
+func c(m: *[2x3]i32) { for r in m { } }
+func d(v: [3]u32) { for x in v { } }
+func e(o: ?[]u32) { for x in o { } }
+func f(n: i64) { for i in n { } }
+```
+
+```errors
+cannot iterate over [*]u32: use a count, a slice, or a pointer to a fixed-size array
+cannot iterate over *[!]u8: use a count, a slice, or a pointer to a fixed-size array
+cannot iterate over *[2x3]i32: use a count, a slice, or a pointer to a fixed-size array
+cannot iterate over [3]u32: use a count, a slice, or a pointer to a fixed-size array
+cannot iterate over ?[]u32: it may be none — resolve it with 'if let' or '??' first
+a loop count must be an integer of at most 32 bits, not i64
+```
+
+```ents
+data name = "abc":*[!]u8
+data packed: *[2x3]i32 = [[1, 2, 3], [4, 5, 6]]
+
+func bytes(z: *[!]u8) -> u32 {
+  let t: u32 = 0
+  let s: []u8 = (z.ptr, z.len)     // scans for the length once
+  for c in s {
+    t += c
+  }
+  return t
+}
+
+func cells() -> i32 {
+  let t = 0
+  for i in packed.len {
+    for x in packed[i] {
+      t += x
+    }
+  }
+  return t
+}
+
+test "a slice for a *[!]T, a row index for a *[NxM]T" {
+  assert bytes(name) == 294
+  assert cells() == 21
+}
+```
+
+<!-- spec:end -->
+
+#### Loop Variables
 
 <!-- spec:begin compile -->
 
@@ -5712,227 +5991,422 @@ test "a loop's variables are its body's" {
 
 <!-- spec:end -->
 
+The body can assign its loop's variables. The element is a copy, so assigning to it changes nothing else. A count's variable is the one the loop steps: after each pass it goes up by one from the value it holds and is compared with the count, so assigning to it changes the passes that follow (`i = n - 1` makes the pass the last). An element loop's index counts on from a value assigned to it, while the elements are walked as before. A `u32#N` variable takes only values below `N` (`cannot assign int(20) to u32#10`).
+
 ### 5.3 Control Statements
 
-All control statements support a `when` suffix for conditional execution:
+#### `return`
+
+`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
+
+#### `break` and `continue`
+
+`break` leaves the innermost loop around it, and `continue` ends that loop's pass ([5.2](#52-loops)). Written in the branch of an `if` or a match arm inside a loop, they act on that loop. Neither takes a value, and neither names a loop: to leave several loops at once, `return` from a function that holds them, or set a variable that the outer loop tests (`break when found`). Both are written inside a loop: one outside every loop is accepted and gives a module that does not assemble (a known bug). Each runs the deferred expressions of the blocks it leaves, up to and including the loop's body.
+
+<!-- spec:begin compile -->
 
 ```ents
-break                    // exit innermost loop
-break when cond          // exit if condition is true
+data grid: *[3][2]u8 = [[1, 2], [3, 4], [5, 6]]
 
-continue                 // skip to next iteration
-continue when cond       // skip if condition is true
+// The index of the first row of grid that holds x, or grid.len.
+func row_of(x: u8) -> u32 {
+  let row: u32 = 0
+  let found = false
+  for cells in grid {
+    for c in cells {
+      if c == x {
+        found = true
+        break                      // leaves the loop over the cells
+      }
+    }
+    break when found               // leaves the loop over the rows
+    row += 1
+  }
+  return row
+}
 
-return                   // return from function (void)
-return value             // return with value
-return value when cond   // return if condition is true
+test "break leaves the innermost loop" {
+  assert row_of(4) == 1
+  assert row_of(9) == 3
+}
 ```
 
-The `when` form is equivalent to wrapping in `if cond { ... }`.
+<!-- spec:end -->
 
-A bare `return` is for a function with no result, or with named results, which it returns as they are set. In a function with an unnamed result, `return` needs a value.
+#### `when`
+
+`return`, `break` and `continue` take a `when condition` suffix: the statement happens only if the condition holds, and is `if condition { statement }` written shorter. The condition is evaluated first, and the value of a `return` only when the condition holds. A `break when` or `continue when` with no deferred expressions to run compiles to one wasm `br_if`. Only these three take `when`: `defer f() when c` and `x = 1 when c` are syntax errors; write an `if`.
+
+<!-- spec:begin compile -->
+
+```ents
+global calls: u32 = 0
+
+func cost() -> u32 {
+  calls += 1
+  return 7
+}
+
+func price(paid: bool) -> u32 {
+  return cost() when paid        // cost() runs only when paid holds
+  return 0
+}
+
+// The sum of the even numbers of xs, up to the first negative one.
+func even_sum(xs: []i32) -> i32 {
+  let t = 0
+  for x in xs {
+    break when x < 0
+    continue when x % 2 != 0
+    t += x
+  }
+  return t
+}
+
+global seen: u32 = 0
+
+func note(x: u32) {
+  return when x == 0
+  seen += x
+}
+
+test "when" {
+  assert price(false) == 0
+  assert calls == 0
+  assert price(true) == 7
+  assert calls == 1
+  assert even_sum([2, 3, 4, -1, 6]) == 6
+  note(0)
+  note(5)
+  assert seen == 5
+}
+```
+
+<!-- spec:end -->
 
 #### Defer
 
 `defer expr` runs `expr` when the enclosing block exits, by any path: falling off
 its end, `break` or `continue` (which run the blocks they leave, up to the loop
 body), or `return` (which runs every open block). Deferred expressions run
-newest first, and only those reached before the exit run.
+newest first, and only those reached before the exit run. The enclosing block is
+the innermost `{ ... }`: a function body, a branch, a loop body (so a `defer`
+there runs at the end of each pass) or a match arm. A body written with `=>` holds
+no statement, so no `defer`.
+
+<!-- spec:begin compile -->
 
 ```ents
-data space = mut [0:u8; 65536]
-global top: u32 = 0
+global log: u32 = 0
 
-func mark() -> u32 => top
-func reset(m: u32) { top = m }
+func note(d: u32) { log = log * 10 + d }
 
-export func work(n: u32) -> u32 {
-  let m = mark()
-  defer reset(m)            // every allocation below is freed on return
-  return 0 when n == 0      // runs reset(m) first
-  for i in n {
-    let inner = mark()
-    defer reset(inner)      // freed at the end of each iteration
-    // ...
+func order() {
+  defer note(1)
+  defer note(2)
+  note(3)
+}
+
+func late() {
+  let d: u32 = 1
+  defer note(d)
+  d = 7
+}
+
+func early(stop: bool) -> u32 {
+  defer note(1)
+  return 5 when stop
+  defer note(2)
+  return 6
+}
+
+func passes() {
+  for i in 3 {
+    defer note(i)
+    continue when i == 1
+    note(5)
   }
-  return n
+}
+
+test "deferred expressions run at exit, newest first" {
+  order()
+  assert log == 321
+  log = 0
+  late()
+  assert log == 7              // d as it is at exit
+  log = 0
+  assert early(true) == 5
+  assert log == 1              // the second defer was not reached
+  log = 0
+  passes()
+  assert log == 50152          // the end of each pass, continue included
 }
 ```
 
+<!-- spec:end -->
+
 - The deferred expression is evaluated when the block exits, not when `defer`
-  runs: `defer log(i)` logs `i` as it is at exit.
+  runs: `defer note(d)` notes `d` as it is at exit.
 - A `return` computes its value first; deferred expressions run after, and the
   value is returned unchanged. With named results, a trailing expression's
   value is stored in them before deferred expressions run.
+- `defer` takes an expression, most often a call, and drops its value. An `if`
+  defers a choice made at exit, `defer if dirty { flush() }`, and its blocks may
+  hold statements. An assignment is a statement, so `defer x = 0` is a syntax
+  error.
 - A deferred expression can't `return`, or `break` or `continue` a loop outside
-  it. A loop inside it can use `break` and `continue` as usual.
+  it (`cannot return from inside a deferred expression`, `cannot break out of a
+  deferred expression`). A loop inside it can use `break` and `continue` as usual.
+- A trap is not an exit of a block: it ends the whole call into wasm, and no
+  deferred expression runs.
 - Deferred code is emitted inline at each exit. There is no runtime cost and no
   extra wasm features.
 
+Its main use is freeing what a block allocates, on every way out of it. With a bump allocator that is a mark taken on the way in and reset on the way out, as the library's `stack` module (`lib/stack.ents`) is used:
+
+<!-- spec:begin compile -->
+
+```ents
+data space = mut [0:u8; 4096]
+global top: u32 = 0
+
+func alloc(n: u32) -> [*]mut u8 {
+  assert n <= space.len - top      // not top + n <= space.len, which can wrap
+  top += n
+  return (space as [*]mut u8) + (top - n)
+}
+
+func reset(mark: u32) { top = mark }
+
+// The sum of the squares below n, built in scratch memory.
+func sum_squares(n: u32) -> u32 {
+  let mark = top
+  defer reset(mark)                // frees the scratch memory on every way out
+  return 0 when n == 0             // runs reset(mark) first
+  let squares = alloc(n * 4) as [*]mut u32
+  for i in n {
+    squares[i] = i * i
+  }
+  let t: u32 = 0
+  for i in n {
+    t += squares[i]
+  }
+  return t
+}
+
+test "defer frees on every way out" {
+  assert sum_squares(4) == 14
+  assert top == 0
+  assert sum_squares(0) == 0
+  assert top == 0
+}
+```
+
+<!-- spec:end -->
+
+#### Assertions
+
+`assert condition` is a statement, in any function and in a test. The condition is a `bool` (`condition must be bool, not u32`). When it is false the program traps: `assert c` compiles to `(if (i32.eqz c) (then (unreachable)))`, one test and branch. Optimized builds keep it, as they keep every trap. It takes no message (`assert n > 0, "empty"` is a syntax error): a comment beside it says what it guards. In a test, a false `assert` also makes `encantis test` report its line.
+
+<!-- spec:begin compile -->
+
+```ents
+// The mean of xs, rounded down; xs must not be empty.
+func mean(xs: []u32) -> u32 {
+  assert xs.len > 0
+  let t: u64 = 0
+  for x in xs {
+    t += x
+  }
+  return (t / xs.len as u64) as u32
+}
+
+test "mean" {
+  assert mean([2, 4, 9]) == 5
+}
+```
+
+<!-- spec:end -->
+
+A trap ends the call into wasm at once: nothing after it runs, deferred expressions included, and the host sees an error. These trap: a false `assert`, a `match` that no arm matches ([5.4](#54-match-expressions)), an integer division by zero ([4.1](#41-arithmetic-operators)), a load or store outside memory, and a plain host reference that comes in as null ([2.13](#213-host-references)).
+
 ### 5.4 Match Expressions
 
-Match expressions provide multi-way branching on values:
+`match subject { arms }` compares a value with patterns. Each arm is one or more patterns separated by commas, `=>`, and an expression or a block. Arms are separated by whitespace, and a comma may follow an arm, so `match k { 0 => 1, 1 => 2, _ => 3 }` fits on one line.
+
+The subject is evaluated once, before the first test. Then the arms are tried in order: the first arm with a pattern that matches the subject runs, and no later arm is tried. When no arm matches, the program traps (wasm `unreachable`): the compiler does not check that the arms cover every value, and this holds for a `match` used as a statement too. `_` matches any value, so an arm `_ => ...` last makes the `match` cover everything; an arm after it is never tried. A statement `match` that may match nothing ends in `_ => {}`.
+
+These are the patterns that are implemented:
+
+| Pattern | Matches |
+|---|---|
+| an integer literal: `42`, `-1`, `0x2A`, `0b101` | the subject equal to it |
+| a float literal: `1.5` | the subject equal to it |
+| one codepoint: `'a'` | the subject equal to its number, 97 ([Codepoint Literals](#codepoint-literals)) |
+| `true`, `false` | that bool |
+| `_` | any value |
+
+A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A string is not a pattern. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a struct or a slice, takes no pattern but `_`. A constant subject (`1`, a `def`, a fixed array's `len`) is compared in its default type.
+
+A `def`'s name is not a pattern: a name in a pattern would be a binding ([6.3](#63-patterns-in-match-arms)), and a binding cannot take a def's name. Write the def's value, or compare with `if` and `elif`. The other patterns of [6.1](#61-pattern-forms), names, tuples, constructors and guards, are not implemented.
+
+<!-- spec:begin compile -->
 
 ```ents
-match value {
-  0 => handle_zero()
-  1 => handle_one()
-  _ => handle_other()
-}
-```
+global unknown: u32 = 0
 
-Match arms are tested in order. The subject is evaluated once, before the first test. A literal pattern is compared in the subject's type, so it has to be a value of that type (`300` doesn't match a `u8`). A constant subject (`1`, a `def`, a fixed array's `len`) is compared in its default type. The `_` pattern matches any value and serves as the default case. Each arm can use either expression body (`=>`) or block body:
-
-```ents
-let result = match code {
+func status(code: u32) -> []u8 => match code {
   200 => "OK"
+  301, 302 => "Redirect"
   404 => "Not Found"
-  500 => {
-    log_error(code)
-    "Server Error"
+  _ => {
+    unknown += 1
+    "Unknown"
   }
-  _ => "Unknown"
+}
+
+// How many more brackets s opens than it closes.
+func depth(s: []u8) -> i32 {
+  let d = 0
+  for c in s {
+    match c {
+      '(', '[', '{' => { d += 1 }
+      ')', ']', '}' => { d -= 1 }
+      _ => {}
+    }
+  }
+  return d
+}
+
+test "match" {
+  assert status(302).len == 8
+  assert status(500).len == 7
+  assert unknown == 1
+  assert depth("f(a[1], {b})") == 0
+  assert depth("((") == 2
 }
 ```
-
-Match is an expression and returns a value. All arms must have compatible types: they widen to one type, like the branches of an `if`.
 
 ```ents
-let msg:[]u8 = match status & 3 {
-  0 => "idle"
-  1 => "running"
-  2 => "done"
-  _ => "error"
+def size = 4
+
+func a(x: u8) -> u32 => match x {
+  300 => 1
+  _ => 0
+}
+
+func b(s: []u8) -> u32 => match s {
+  "ok" => 1
+  _ => 0
+}
+
+func c(k: u32) -> u32 => match k {
+  size => 1
+  _ => 0
 }
 ```
 
-Multiple values can share an arm by using multiple patterns (comma-separated). A pattern is a number, a codepoint (`'a'`, [1.5](#codepoint-literals)) or a bool. A string is not one, and no tuple pattern is compared yet, `'ok'` (the tuple `(111, 107)`) included: match one field at a time.
-
-```ents
-match c {
-  'a', 'e', 'i', 'o', 'u' => true   // 97, 101, 105, 111, 117
-  _ => false
-}
+```errors
+cannot match u8 against int(300)
+cannot match []u8 against a string
+'size' is already declared: a match binding cannot reuse the name of a def
 ```
+
+<!-- spec:end -->
+
+Match is an expression. Used as a value, each arm needs one, unless it always exits, and the arms widen to one type, as the branches of an `if` do ([5.1](#51-conditionals)). Used as a statement, its arms can end in anything. A `match` with a `_` arm whose every arm returns counts as returning ([3.4](#34-functions)).
+
+A `match` compiles to nested wasm `if`s, one for each arm but a `_` one, each testing the subject's equality with the arm's patterns (several patterns are or-ed); the innermost `else` is the `_` arm's body, or `unreachable` where there is none. A subject that is more than a variable's read is computed into a local first.
 
 ---
 
 ## 6. Pattern Matching
 
-Encantis has a unified pattern syntax that works consistently across match expressions, if-let bindings, and let destructuring. This enables a single grammar rule to express type matching, value matching, and variable binding in all contexts.
+A pattern is written where a value is taken apart or tested. There are two kinds. A binding pattern names the parts of a value, in a `let` or a `set`; it never fails. A match pattern tests a value, in a match arm, and the arm runs only if it matches. `if let` takes one name ([6.4](#64-if-let-bindings)). Patterns in function signatures, constructor patterns and enum patterns are designed and not implemented; each is labelled where it appears below.
 
 ### 6.1 Pattern Forms
 
-| Syntax | Description | Bindings |
-|--------|-------------|----------|
-| `T` | Bare type | none |
-| `(T)` | Grouped type (same as bare, but affects calling convention) | none |
-| `(name: T)` | Single named binding | `name` |
-| `(a: T1, b: T2, ...)` | Tuple with named bindings | `a`, `b`, ... |
-| `T(a, b, ...)` | Constructor pattern (destructures T) | `a`, `b`, ... |
-| `literal` | Literal value match | none |
+**Binding patterns**, after `let` and `set` ([3.3](#33-variables), [4.5](#45-assignment-and-compound-assignment)):
+
+| Pattern | Binds |
+|---|---|
+| `name` | the whole value |
+| `(p, q, ...)` | the elements by position, each to a pattern of its own: `(a, (b, c))` nests |
+| `(f:)` | the field named `f`, to a variable named `f` |
+| `(f: name)` | the field named `f`, to `name` |
+| `a, b, ...` | right after `let` or `set`, without parentheses, plain names only: the same as `(a, b, ...)` |
+
+By-position and by-name parts can be mixed: in `let (x, y:) = p`, `x` is the first field and `y` the field named `y`. After `f:` comes a name, not a pattern: `let (pos: (x:, y:)) = b` is a syntax error (bind `pos`, then take it apart with another `let`). `_` is not a pattern either: name a part that is not used, or leave out parts at the end, since a pattern by position may have fewer parts than the value has fields (more is `tuple has 2 fields, but pattern has 3`). A constructor pattern, `let Point(x, y) = p`, is not implemented: it is a syntax error ([6.5](#65-let-destructuring)).
+
+**Match patterns**, in a match arm ([5.4](#54-match-expressions)):
+
+| Pattern | Matches | Status |
+|---|---|---|
+| `42`, `-1`, `0x2A`, `1.5` | a number equal to the subject | implemented |
+| `'a'` | the codepoint's number, 97 | implemented |
+| `true`, `false` | that bool | implemented |
+| `_` | anything | implemented |
+| `p, q` | (an arm's patterns) any one of them | implemented |
+| `name` | anything, bound to `name` in the arm | **Not implemented**: accepted, and never matches |
+| `(p, q)`, `'ok'` | a tuple, part by part | **Not implemented**: refused |
+| `Point(p, q)`, `Point(x: p, y:)` | a struct, field by field | **Not implemented**: accepted, and never matches |
+| `Red`, `Rgb(r, g, b)` | a variant of an enum ([2.9](#29-enum-types-algebraic-data-types)) | **Not implemented**: accepted, and never matches |
+| `p if condition` | `p`, where the condition holds | **Not implemented**: a syntax error |
+
+The forms that are accepted and never match must not be written: an arm with one never runs. [6.3](#63-patterns-in-match-arms) has the details.
 
 ### 6.2 Patterns in Function Signatures
 
-Functions have multiple inputs and multiple outputs (0 or more each), mapping directly to WASM's multi-value semantics. All function calls require parentheses.
+> **Not implemented.** A parameter is `name: Type`, or a type alone for a parameter with no name ([3.4](#34-functions)). The parser reads a type followed by parentheses as a generic type applied to arguments, so a signature written with a pattern is refused.
 
-The signature syntax determines what bindings exist inside the function body:
+The design gives a function's input and output as patterns, so that a signature can take a struct apart into its fields:
 
 ```ents
-// Named parameter binding
-func to_polar(point: CartesianPoint) -> (out: PolarPoint)
-// Bindings: point, out
-
-// Constructor pattern — destructures into field bindings
+// Not implemented: the bindings would be x, y, d and a.
 func to_polar CartesianPoint(x, y) -> PolarPoint(d, a)
-// Bindings: x, y, d, a
-
-// Anonymous parameter — no binding, use positional access
-func double i32 -> i32
-// Bindings: none (use return statement)
 ```
 
-### 6.3 Patterns in Match Arms
-
-The same pattern syntax works in match arms:
-
-```ents
-// Match with constructor patterns
-match point {
-  CartesianPoint(0, 0) => "origin"
-  CartesianPoint(x, 0) => format("x-axis at {}", x)
-  CartesianPoint(0, y) => format("y-axis at {}", y)
-  CartesianPoint(x, y) => format("({}, {})", x, y)
-}
-
-// Named field patterns
-match point {
-  Point(x: 0, y:) => use_y(y)      // match x=0, bind y
-  Point(x:, y: 0) => use_x(x)      // bind x, match y=0
-  _ => default()
-}
-```
-
-#### Pattern Matching on Enums
-
-> **Status: Not yet implemented** — depends on enum type support.
-
-Use `match` to destructure enum variants:
-
-```ents
-func describe(c:Color) -> []u8 {
-  match c {
-    Red => "red"
-    Blue => "blue"
-    Green => "green"
-    RGB(r, g, b) => format("rgb({}, {}, {})", r, g, b)
-    HSL(h, s, l) => format("hsl({}, {}, {})", h, s, l)
-    Grey(b) => format("grey({})", b)
-    Darker(inner) => format("darker({})", describe(inner.*))
-  }
-}
-```
-
-The compiler enforces exhaustive matching when matching an enum — all variants must be handled, or a wildcard `_` pattern must be present.
-
-#### Struct and Tuple Patterns
-
-> **Status: Not yet implemented** — `match` compares numbers, codepoints and bools; a tuple pattern is refused (`match cannot compare a tuple pattern yet: compare one field at a time`).
-
-Pattern matching works on structs and tuples too, not just enums:
-
-```ents
-type Point = (x:i32, y:i32)
-
-func describe_point(p:Point) -> []u8 {
-  match p {
-    Point(0, 0) => "origin"
-    Point(0, y) => format("y-axis at {}", y)
-    Point(x, 0) => format("x-axis at {}", x)
-    Point(x, y) => format("({}, {})", x, y)
-  }
-}
-
-// Anonymous tuple patterns too (not yet: the compiler refuses a tuple pattern)
-func check_pair(pair:(i32, i32)) -> bool {
-  match pair {
-    (0, 0) => true
-    (x, y) if x == y => true  // guard clause
-    _ => false
-  }
-}
-```
-
-The convention distinguishes patterns by case:
-
-- **Uppercase** (`Point`, `RGB`) — type constructor or variant
-- **lowercase** (`x`, `y`) — binding (introduces a variable)
-- **literals** (`0`, `'a'`, `true`) — exact match
-- **`_`** — wildcard (match anything, don't bind)
+A function takes the struct whole and takes it apart in its body:
 
 <!-- spec:begin compile -->
 
-A binding is a variable of its arm, seen in the arm's body only. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is:
+```ents
+type CartesianPoint = (x: f64, y: f64)
+
+func distance(p: CartesianPoint) -> f64 {
+  let (x:, y:) = p
+  return sqrt(x * x + y * y)
+}
+
+test "a parameter is a name and a type" {
+  assert distance(CartesianPoint(3.0, 4.0)) == 5.0
+}
+```
+
+```ents
+type CartesianPoint = (x: f64, y: f64)
+
+func first CartesianPoint(x, y) -> f64 => x
+```
+
+```errors
+'CartesianPoint' is not a generic type
+unknown identifier 'x'
+```
+
+<!-- spec:end -->
+
+### 6.3 Patterns in Match Arms
+
+The patterns a `match` compares are literals and `_`, several to an arm ([5.4](#54-match-expressions)). The other forms of the table in [6.1](#61-pattern-forms) are designed and not implemented.
+
+#### Binding Patterns
+
+> **Not implemented.** A lower-case name as a pattern is meant to match any value and bind it in its arm. The compiler accepts the name, but binds nothing (a use of it is `unknown identifier`), and the arm never matches (a known bug). Write `_` for an arm that takes any value, and use the subject's own variable in its body.
+
+<!-- spec:begin compile -->
+
+The name is checked as a binding would be. Like the variables of a loop ([5.2](#52-loops)), it cannot have the name of a variable seen where the `match` is, nor a `def`'s:
 
 ```ents
 func next(n: u32, k: u32) -> u32 => match k {
@@ -5947,50 +6421,158 @@ func next(n: u32, k: u32) -> u32 => match k {
 
 <!-- spec:end -->
 
+#### Struct and Tuple Patterns
+
+> **Not implemented.** A tuple pattern is refused: `match cannot compare a tuple pattern yet: compare one field at a time`. A literal of several codepoints is the tuple of their numbers ([Codepoint Literals](#codepoint-literals)), so `'ok'` as a pattern is a tuple pattern too, and is refused the same way. A constructor pattern, `Point(0, y)`, is accepted and never matches (a known bug): do not write one. Match one field at a time, or compare with `if` and `elif`.
+
+<!-- spec:begin compile -->
+
+```ents
+func vowel(c: u8) -> bool => match c {
+  'a', 'e', 'i', 'o', 'u' => true
+  _ => false
+}
+
+func origin(p: (i32, i32)) -> bool => p.0 == 0 && p.1 == 0
+
+test "one codepoint is a number; a tuple is compared field by field" {
+  assert vowel('e')
+  assert !vowel('z')
+  assert origin((0, 0))
+  assert !origin((0, 3))
+}
+```
+
+```ents
+func f(c: u8) -> u32 => match c {
+  'ok' => 1
+  _ => 0
+}
+
+func g(p: (i32, i32)) -> u32 => match p {
+  (0, 0) => 1
+  _ => 0
+}
+```
+
+```errors
+'ok' is a tuple of codepoints, and match cannot compare a tuple pattern yet: compare one field at a time
+match cannot compare a tuple pattern yet: compare one field at a time
+```
+
+<!-- spec:end -->
+
+The design compares a struct or a tuple part by part, binds the parts written as names, and takes a guard, `if` and a condition after the pattern. None of this is implemented, and the guard is not parsed:
+
+```ents
+// Not implemented.
+type Point = (x: i32, y: i32)
+
+func describe(p: Point) -> []u8 => match p {
+  Point(0, 0) => "origin"
+  Point(0, y) => "on the y axis"
+  Point(x:, y: 0) => "on the x axis"
+  (x, y) if x == y => "on the diagonal"
+  _ => "elsewhere"
+}
+```
+
+In the design, the case of a name says what it is:
+
+- **Upper case** (`Point`, `Rgb`): a type constructor or an enum variant
+- **lower case** (`x`, `y`): a binding, which introduces a variable
+- **literals** (`0`, `'a'`, `true`): an exact match
+- **`_`**: a wildcard, which matches anything and binds nothing
+
+#### Pattern Matching on Enums
+
+> **Not implemented.** Enum types are not implemented ([2.9](#29-enum-types-algebraic-data-types)), and a variant pattern is accepted and never matches (a known bug).
+
+In the design, `match` takes an enum value apart by its variant:
+
+```ents
+// Not implemented.
+func describe(c: Color) -> []u8 => match c {
+  Red => "red"
+  Green => "green"
+  Blue => "blue"
+  Rgb(r, g, b) => "a mix"
+  Grey(level) => "grey"
+  Darker(inner) => describe(inner.*)
+}
+```
+
+In the design, a `match` on an enum is exhaustive: every variant is handled, or there is a `_` arm. As implemented, no `match` is checked for coverage: one that no arm matches traps ([5.4](#54-match-expressions)).
+
 ### 6.4 If-Let Bindings
 
-`if let` has two primary uses: bounds-checked indexing and optional unwrapping.
+`if let name = value { ... }` runs its first branch when `value` has a value, with `name` bound to it: an optional pointer, slice or host reference that is not none, or an index, range or element address that is in range. What it checks, the type of the binding, where the binding is seen, and how it works as a value are in [`if let` Bindings](#if-let-bindings).
 
-#### Bounds-Checked Indexing
+The pattern of an `if let` is one name. Any other is refused, `_`, a literal, a tuple and a constructor alike (`if let only supports simple bindings`), and so is a value with nothing to check (`if let requires an optional expression or bounds-checked index`). An `elif let` branch is accepted but binds nothing (a known bug): write a second `if let` after the first, or inside its `else`.
 
-`if let` with an index expression performs a runtime bounds check. If the index is in range, the element is loaded and bound to the variable. If out of bounds, the else branch executes:
+<!-- spec:begin compile -->
 
 ```ents
-data names = ["Alice", "Bob", "Charlie"]
+data names = ["ab", "cde"]
 
-if let name = names[i] {
-  // name is []u8 — index was in bounds
-  print(name)
-} else {
-  print("index out of range")
+// The length of the name at i, else of the one at j, else 0.
+func either(i: u32, j: u32) -> u32 {
+  if let a = names[i] {
+    return a.len
+  }
+  if let b = names[j] {
+    return b.len
+  }
+  return 0
+}
+
+test "if let binds one name" {
+  assert either(1, 0) == 3
+  assert either(7, 0) == 2
+  assert either(7, 9) == 0
 }
 ```
 
-For arrays with compile-time known lengths (e.g., `*[N]T`), the bounds check compares the runtime index against the constant length. For slices (`[]T`), it compares against the runtime `.len` field.
-
-#### Optional Unwrapping
-
-`if let` with an optional expression (`?*T` or `?[]T`) performs a null check. If the pointer is non-zero, the value is bound; otherwise the else branch executes:
-
 ```ents
-type Entry = (name: []u8, next: ?*Entry)
+data cells = [7:u32, 8, 9]
 
-if let next = entry.next {
-  // next is *Entry — guaranteed non-null
-  process(next)
+func a(p: ?*u32) -> u32 {
+  if let _ = p {
+    return 1
+  }
+  return 0
+}
+
+func b(i: u32) -> u32 {
+  if let (x, y) = cells[i] {
+    return x
+  }
+  return 0
+}
+
+func c(n: u32) -> u32 {
+  if let m = n {
+    return m
+  }
+  return 0
 }
 ```
 
-#### Pattern Matching
+```errors
+if let only supports simple bindings
+if let only supports simple bindings
+if let requires an optional expression or bounds-checked index
+```
 
-> **Status: Not yet implemented** — pattern matching with constructors depends on enum type support.
+<!-- spec:end -->
 
-`if let` will also support constructor patterns for enum destructuring:
+> **Not implemented:** constructor patterns in `if let`, to test for an enum variant and take it apart. In the design:
 
 ```ents
-if let RGB(r, g, b) = color {
+// Not implemented.
+if let Rgb(r, g, b) = color {
   draw_rgb(r, g, b)
-} elif let HSL(h, s, l) = color {
+} elif let Hsl(h, s, l) = color {
   draw_hsl(h, s, l)
 } else {
   draw_default()
@@ -5999,18 +6581,35 @@ if let RGB(r, g, b) = color {
 
 ### 6.5 Let Destructuring
 
-> **Status: Not yet fully implemented in codegen.**
+`let` and `set` take a value apart with a binding pattern ([6.1](#61-pattern-forms)): by position, by field name, nested by position, or as names after `let` without parentheses. A `let` declares the variables ([3.3](#33-variables)); a `set` assigns variables that exist ([4.5](#45-assignment-and-compound-assignment)). Both take apart tuples, structs and the several results of a call, not a slice (`cannot destructure non-tuple type: []u8`: read its `.ptr` and `.len`). The whole value is computed before any variable is given its part.
+
+<!-- spec:begin compile -->
 
 ```ents
-// If-let with pattern
-if let CartesianPoint(x, y) = maybe_point {
-  process(x, y)
+type Point = (x: f64, y: f64)
+type Segment = (from: Point, to: Point)
+
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
+
+func length2(s: Segment) -> f64 {
+  let (from:, to: end) = s           // by name: from, and to bound as end
+  let (x0, y0) = from                // by position
+  let (x:, y:) = end
+  return (x - x0) * (x - x0) + (y - y0) * (y - y0)
 }
 
-// Let destructuring
-let CartesianPoint(x, y) = get_point()
-let (x:, y:) = get_point()  // equivalent with punning
+test "let takes a value apart" {
+  let q, r = divmod(17, 5)           // without parentheses, by position
+  let (a, (b, c)) = (1, (2, 3))      // nested
+  assert q == 3 && r == 2
+  assert a + b + c == 6
+  assert length2(Segment(Point(1.0, 1.0), Point(4.0, 5.0))) == 25.0
+}
 ```
+
+<!-- spec:end -->
+
+> **Not implemented:** a constructor pattern, `let Point(x, y) = p`, is a syntax error. Write `let (x, y) = p`, or `let (x:, y:) = p` to take the fields by name.
 
 ---
 
