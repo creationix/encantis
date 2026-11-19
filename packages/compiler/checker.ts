@@ -97,7 +97,9 @@ export type Symbol =
   // for the function of that name. `host`: imported from the host, whose
   // results come in from outside the module.
   | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true }
-  | { kind: 'global'; type: ResolvedType }
+  // `fromHost`: imported from the host, which gives its value once: an
+  // immutable wasm global, read-only here
+  | { kind: 'global'; type: ResolvedType; fromHost?: true }
   // `valueParam`: a comptime value parameter's name inside an instance (see
   // bindComptimeValues)
   | { kind: 'def'; type: ResolvedType; value: ComptimeValue; valueParam?: true }
@@ -1440,7 +1442,7 @@ class CheckContext {
             this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type: exported.type })
           } else {
             const type = this.resolveHeld(item.item.type)
-            this.moduleScope.symbols.set(item.item.ident, { kind: 'global', type })
+            this.moduleScope.symbols.set(item.item.ident, isSource ? { kind: 'global', type } : { kind: 'global', type, fromHost: true })
           }
           break
         }
@@ -3113,6 +3115,15 @@ class CheckContext {
           while (written.kind === 'MemberExpr' && written.member.kind === 'field') written = written.object
           this.writingTo = written.kind === 'IndexExpr' ? written : null
           targetType = this.inferExpr(stmt.target)
+          // A global the host gives is read-only, and so is each part of it
+          // held in registers (a field, an element).
+          const imported = this.hostGlobalWritten(stmt.target)
+          if (imported) {
+            this.error(stmt.target.span.start, `cannot assign to '${imported}': ${READ_ONLY_IMPORT}`)
+            this.writingTo = null
+            this.inferExpr(stmt.value)
+            break
+          }
         }
         // p.u32 is p itself, seen as a pointer to u32 values: it loads nothing,
         // so there is no place behind it to store to. The place is p.u32[0].
@@ -3344,6 +3355,25 @@ class CheckContext {
     this.bindPattern(stmt.pattern, type)
   }
 
+  // The global imported from the host that an assignment's target is, or a
+  // part of held in registers (a field, an element of a fixed array), by
+  // name; null for any other target. What a pointer in it points to is
+  // memory, which is written as any memory is.
+  private hostGlobalWritten(target: AST.Expr): string | null {
+    let at = ungrouped(target)
+    while ((at.kind === 'MemberExpr' && at.member.kind === 'field') || at.kind === 'IndexExpr') {
+      const object = at.object
+      const held = this.exprTypes.get(object)
+      if (!held) return null
+      const u = unwrap(held)
+      if (u.kind === 'pointer' || u.kind === 'slice' || (u.kind === 'array' && !isValueArray(u))) return null
+      at = ungrouped(object)
+    }
+    if (at.kind !== 'IdentExpr') return null
+    const sym = this.lookup(at.name)
+    return sym?.kind === 'global' && sym.fromHost ? at.name : null
+  }
+
   checkSetStmt(stmt: AST.SetStmt): void {
     // set x = v assigns like x = v: the value is checked against x's type.
     // set (a, b) = (1, x) checks a tuple literal, or the branches of an if
@@ -3415,6 +3445,8 @@ class CheckContext {
           this.error(pattern.span.start, `cannot set '${pattern.name}': not defined (use 'let' to create a new binding)`)
         } else if (!isVariable(sym)) {
           this.error(pattern.span.start, `cannot set '${declaredName(pattern.name)}': ${notAVariable(sym)}`)
+        } else if (sym.kind === 'global' && sym.fromHost) {
+          this.error(pattern.span.start, `cannot set '${pattern.name}': ${READ_ONLY_IMPORT}`)
         }
         // The variable set is used here, as an assignment's target is
         this.recordReference(pattern.name, pattern.span.start)
@@ -3443,6 +3475,8 @@ class CheckContext {
               this.error(pattern.span.start, `cannot set '${varName}': not defined`)
             } else if (!isVariable(sym)) {
               this.error(pattern.span.start, `cannot set '${declaredName(varName)}': ${notAVariable(sym)}`)
+            } else if (sym.kind === 'global' && sym.fromHost) {
+              this.error(pattern.span.start, `cannot set '${varName}': ${READ_ONLY_IMPORT}`)
             }
             this.recordReference(varName, namedPartAt(element))
             // As in a let: a part names a field the value has, or nothing
@@ -11554,6 +11588,9 @@ function patternNames(pattern: AST.MatchPattern): string[] {
       return []
   }
 }
+
+// Why a global imported from the host is not assigned to
+const READ_ONLY_IMPORT = 'a global imported from the host is read-only (its value is the host\'s, given once)'
 
 // Why a name cannot be assigned to: what it is, where that is not plain
 function notAVariable(sym: Symbol): string {

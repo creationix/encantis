@@ -3194,6 +3194,34 @@ import "sys" "print"
 func print(msg:[]u8)
 ```
 
+A global can be imported from the host too. Its value is the host's, given once when the module starts, so it is read-only: assigning it, a field or an element of it, with `=`, a compound assignment or `set`, is an error. (A global imported from a source module is that module's own global, and is assigned as any global is.)
+
+<!-- spec:begin compile -->
+
+```ents
+type Size = (w: i32, h: i32)
+import "env" (
+  "width" global width: i32
+  "size" global size: Size
+  "cells" global cells: *mut [4]i32
+)
+
+func a() { width = 1 }
+func b() { width += 1 }
+func c() { size.h = 2 }
+func d() { set width = 3 }
+func e() { cells[0] = width + size.w }
+```
+
+```errors
+cannot assign to 'width': a global imported from the host is read-only
+cannot assign to 'width': a global imported from the host is read-only
+cannot assign to 'size': a global imported from the host is read-only
+cannot set 'width': a global imported from the host is read-only
+```
+
+<!-- spec:end -->
+
 #### Source modules
 
 A module string that starts with `./`, `../` or `/` names another source file (`.ents` is added): the two are compiled into one wasm module, and what is imported is what that file exports. Imports inside a `test` block are followed only when tests are built.
