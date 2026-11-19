@@ -1836,7 +1836,7 @@ cannot assign int(300) to u8
 
 <!-- spec:end -->
 
-Two values the rules allow are refused by the compiler, which is a known bug: a value written whole in parentheses, `def k = (1 + 2)`, gets the tuple's error (write `def k = 1 + 2`), and a cast, `def big = 122 as u32`, gets `def value must be a compile-time constant` (write the type with `:`, `def big = 122:u32`). A typed `def` whose value does not fit its type, `def small: u8 = 300`, is reported where it is used, not where it is declared.
+The compiler refuses two values these rules allow (known bugs): a value written whole in parentheses, `def k = (1 + 2)`, gets the tuple's error (write `def k = 1 + 2`), and a cast, `def big = 122 as u32`, gets `def value must be a compile-time constant` (write the type with `:`, `def big = 122:u32`). A typed `def` whose value does not fit its type, `def small: u8 = 300`, is reported where it is used, not where it is declared.
 
 A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
 
