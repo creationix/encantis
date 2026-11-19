@@ -51,8 +51,9 @@ export async function runTestsOfSource(source: string): Promise<{ ran: string[];
     const check = typecheckProgram(load.modules, path, { includeTests: true })
     if (check.errors.length > 0) throw new Error(`Type errors:\n${check.errors.map(e => e.message).join('\n')}`)
     const { wat, testNames, testTitles } = programToWatWithTests(load.modules, check.results, path)
-    const module = await WebAssembly.compile(await wasmOfWat(wat))
-    const host = createTestHost(module, () => {})
+    const bytes = await wasmOfWat(wat)
+    const module = await WebAssembly.compile(bytes)
+    const host = createTestHost(module, () => {}, undefined, bytes)
     const instance = await WebAssembly.instantiate(module, host.imports)
     host.attach(instance)
     const failed: string[] = []

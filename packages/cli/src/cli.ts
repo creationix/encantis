@@ -594,8 +594,18 @@ switch (command) {
       const mod = await WebAssembly.compile(buffer)
       const source = entryMod?.source ?? ''
       let failedOffset = -1
-      const host = createTestHost(mod, (offset) => { failedOffset = offset })
-      const instance = await WebAssembly.instantiate(mod, host.imports)
+      const host = createTestHost(mod, (offset) => { failedOffset = offset }, undefined, buffer)
+      // A module that does not start (its start function traps, as for a
+      // host global that breaks its type's promise) runs none of its tests.
+      let instance: WebAssembly.Instance
+      try {
+        instance = await WebAssembly.instantiate(mod, host.imports)
+      } catch (e: any) {
+        console.error(`${testFile}: the module did not start: ${e.message}`)
+        totalFailed += testNames.length
+        for (const title of testTitles) allResults.push({ file: testFile, name: title, pass: false, error: `the module did not start: ${e.message}` })
+        continue
+      }
       host.attach(instance)
 
       for (const [t, name] of testNames.entries()) {

@@ -7,7 +7,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { compileToWasm, wasmOfSource, watOfSource } from './test-utils'
+import { importedGlobals } from './test-host'
+import { compileToWasm, runTestsOfSource, wasmOfSource, watOfSource } from './test-utils'
 
 const SOURCE = `type Canvas = host
 type Context = host
@@ -316,6 +317,27 @@ export func outer(c: Canvas) -> Canvas {
     } finally {
       await rm(dir, { recursive: true })
     }
+  })
+
+  // The test host gives each imported global the zero of its type: none
+  // for an optional host reference. A plain one would break its promise, so
+  // a module that imports one does not start in a test.
+  test('the tests of a module that imports globals run with their zeros', async () => {
+    const source = `type Canvas = host
+import "env" (
+  "screen" global screen: ?Canvas
+  "n" global n: i32
+  "big" global big: i64
+  "x" global x: f64
+)
+test "imported globals are zero" {
+  assert screen == 0
+  assert n == 0 && big == 0 && x == 0.0
+}
+`
+    expect(await runTestsOfSource(source)).toEqual({ ran: ['imported globals are zero'], failed: [] })
+    const types = importedGlobals(await wasmOfSource(source)).map((g) => `${g.module}.${g.name}: ${g.type}`)
+    expect(types).toEqual(['env.screen: externref', 'env.n: i32', 'env.big: i64', 'env.x: f64'])
   })
 
   test('two source modules share a host type by its name', async () => {
