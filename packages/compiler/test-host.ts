@@ -6,7 +6,9 @@
 // imported function is a stub that throws if a test calls it, so a module that
 // imports from its host can still have its other code tested. An imported
 // global is given the zero of its wasm type (0, 0n, null), read from the
-// module's import section when its bytes are given.
+// module's import section when its bytes are given, except one of a plain host
+// type, which is never null: it gets a stand-in, an empty frozen object, as a
+// host keeps that type's promise (programToWatWithTests lists them).
 
 const ENOSYS = 52
 const EBADF = 8
@@ -25,6 +27,8 @@ export function createTestHost(
   },
   // The module's bytes, for the types of the globals it imports
   bytes?: Uint8Array,
+  // The imported globals that hold a plain host reference
+  standIns: readonly { module: string; name: string }[] = [],
 ): TestHost {
   let memory: WebAssembly.Memory | null = null
   const view = () => {
@@ -59,8 +63,9 @@ export function createTestHost(
   const imports: TestHost['imports'] = {
     test: { __assert_fail: (offset: number) => onAssertFail(offset) },
   }
+  const plain = new Set(standIns.map((g) => `${g.module}\0${g.name}`))
   for (const g of bytes ? importedGlobals(bytes) : []) {
-    const zero = ZEROS[g.type]
+    const zero = plain.has(`${g.module}\0${g.name}`) ? Object.freeze({}) : ZEROS[g.type]
     if (zero === undefined) continue
     imports[g.module] ??= {}
     imports[g.module][g.name] = new WebAssembly.Global({ value: g.type as keyof WebAssembly.ValueTypeMap, mutable: g.mutable }, zero)

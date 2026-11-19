@@ -3155,9 +3155,13 @@ function hostExports(module: AST.Module): Set<AST.FuncDecl> {
 
 // The globals imported from the host that hold a plain host reference are
 // checked once, when the module starts: a start function that traps if the
-// host gave null for one. Nothing for a module without such a global.
-function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests: boolean): string[] {
-  const checks: string[] = []
+// host gave null for one. Nothing for a module without such a global. Each
+// wasm global checked comes with the names it is imported by, for a test
+// host to give it a value that keeps the promise.
+type HostGlobalCheck = { module: string; name: string; check: string }
+
+function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests: boolean): HostGlobalCheck[] {
+  const checks: HostGlobalCheck[] = []
   const imports = (decls: readonly AST.Declaration[] | readonly AST.TestItem[]): void => {
     for (const decl of decls) {
       if (decl.kind === 'TestDecl') {
@@ -3171,7 +3175,10 @@ function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests:
         if (sym?.kind !== 'global') continue
         const checked = nonNullSlots(sym.type)
         const names = globalNames(item.item.ident, sym.type, ctx)
-        for (const [i, n] of names.entries()) if (checked[i]) checks.push(nullTrap(`(global.get $${n})`))
+        const suffixes = flatSuffixes(sym.type)
+        for (const [i, n] of names.entries()) {
+          if (checked[i]) checks.push({ module: decl.module, name: `${item.name}${suffixes[i]}`, check: nullTrap(`(global.get $${n})`) })
+        }
       }
     }
   }
@@ -3179,9 +3186,9 @@ function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests:
   return checks
 }
 
-function hostGlobalsStart(checks: string[]): string[] {
+function hostGlobalsStart(checks: HostGlobalCheck[]): string[] {
   if (checks.length === 0) return []
-  return [`  (func $__host_globals\n    ${checks.join('\n    ')}\n  )`, '  (start $__host_globals)']
+  return [`  (func $__host_globals\n    ${checks.map((c) => c.check).join('\n    ')}\n  )`, '  (start $__host_globals)']
 }
 
 // The wasm locals (or params) a variable is held in. A variable of one wasm
@@ -4090,8 +4097,13 @@ export function programToWat(
   modules: Map<string, LoadedModule>,
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
-  options?: { includeTests?: boolean; testFiles?: string[] },
+  // standIns: filled in, in a test build, with the imported globals that
+  // hold a plain host reference (see hostGlobalChecks)
+  options?: { includeTests?: boolean; testFiles?: string[]; standIns?: { module: string; name: string }[] },
 ): string {
+  // The modules whose tests are built: only their test blocks' imports are
+  // part of the program.
+  const tested = new Set(options?.includeTests ? options.testFiles ?? [entryPath] : [])
   // Build name map: for each module, collect function/global names and mangle them
   const nameMap = new Map<string, string>()
   const allCalls: TypeCheckResult['calls'] = new Map()
@@ -4219,7 +4231,8 @@ export function programToWat(
 
   const parts: string[] = ['(module']
 
-  // Emit host imports — top-level always, test-scoped only when includeTests
+  // Emit host imports — top-level always, test-scoped only for the modules
+  // whose tests are built
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -4232,7 +4245,7 @@ export function programToWat(
         }
       }
     }
-    if (options?.includeTests) {
+    if (tested.has(path)) {
       for (const decl of loaded.module.decls) {
         if (decl.kind === 'TestDecl') {
           for (const imp of collectAllImports(decl.children)) {
@@ -4283,7 +4296,7 @@ export function programToWat(
   // Emit functions from all modules. The entry module's exports are the
   // host's to call.
   const entryExports = modules.get(entryPath) ? hostExports((modules.get(entryPath) as LoadedModule).module) : new Set<AST.FuncDecl>()
-  const globalChecks: string[] = []
+  const globalChecks: HostGlobalCheck[] = []
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -4294,9 +4307,10 @@ export function programToWat(
       const watName = modNameMap.get(known) ?? known
       parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
     }
-    globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), !!options?.includeTests))
+    globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path)))
   }
   parts.push(...hostGlobalsStart(globalChecks))
+  options?.standIns?.push(...globalChecks.map(({ module, name }) => ({ module, name })))
 
   // Emit globals from all modules
   for (const [path, loaded] of modules) {
@@ -4368,7 +4382,7 @@ export function programToWatWithTests(
   checkResults: Map<string, TypeCheckResult>,
   entryPath: string,
   testFiles?: string[],
-): { wat: string; testNames: string[]; testTitles: string[] } {
+): { wat: string; testNames: string[]; testTitles: string[]; standIns: { module: string; name: string }[] } {
   // testNames are the exported function suffixes (test_<name>); testTitles are
   // the names as written, nested ones joined with ' > ', for display.
   const testNames: string[] = []
@@ -4398,6 +4412,9 @@ export function programToWatWithTests(
       if (decl.kind === 'TestDecl') collectTestNames(decl, '', '')
     }
   }
-  const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest })
-  return { wat, testNames, testTitles }
+  // The imported globals of a plain host type: a test host gives each one a
+  // value that is not null (createTestHost), as the host promises to.
+  const standIns: { module: string; name: string }[] = []
+  const wat = programToWat(modules, checkResults, entryPath, { includeTests: true, testFiles: filesToTest, standIns })
+  return { wat, testNames, testTitles, standIns }
 }

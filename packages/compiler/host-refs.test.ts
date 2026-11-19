@@ -7,6 +7,9 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { typecheckProgram } from './checker'
+import { programToWatWithTests } from './codegen'
+import { loadModule } from './loader'
 import { importedGlobals } from './test-host'
 import { compileToWasm, runTestsOfSource, wasmOfSource, watOfSource } from './test-utils'
 
@@ -369,8 +372,7 @@ export func outer(c: Canvas) -> Canvas {
   })
 
   // The test host gives each imported global the zero of its type: none
-  // for an optional host reference. A plain one would break its promise, so
-  // a module that imports one does not start in a test.
+  // for an optional host reference.
   test('the tests of a module that imports globals run with their zeros', async () => {
     const source = `type Canvas = host
 import "env" (
@@ -387,6 +389,55 @@ test "imported globals are zero" {
     expect(await runTestsOfSource(source)).toEqual({ ran: ['imported globals are zero'], failed: [] })
     const types = importedGlobals(await wasmOfSource(source)).map((g) => `${g.module}.${g.name}: ${g.type}`)
     expect(types).toEqual(['env.screen: externref', 'env.n: i32', 'env.big: i64', 'env.x: f64'])
+  })
+
+  // A plain host global is never null, in a test too: the test host gives
+  // it a stand-in, so the module starts and its tests run, also those that
+  // never read it. One a test section imports is checked as well.
+  test('the tests of a module that imports a plain one run with a stand-in', async () => {
+    const source = `type Canvas = host
+type Pair = (c: Canvas, n: i32)
+import "env" (
+  "screen" global screen: Canvas
+  "pair" global pair: Pair
+)
+export func add(a: i32, b: i32) -> i32 => a + b
+test "adds" {
+  assert add(1, 2) == 3
+}
+test "the screen is there" {
+  import "env" "spare" global spare: Canvas
+  let o: ?Canvas = screen
+  let p: ?Canvas = pair.c
+  let q: ?Canvas = spare
+  assert o != 0 && p != 0 && q != 0
+}
+`
+    expect(await runTestsOfSource(source)).toEqual({ ran: ['adds', 'the screen is there'], failed: [] })
+  })
+
+  // Only the modules whose tests are built have their test sections'
+  // imports: a library's test-only import is not part of its importer's
+  // test build, and is not checked there.
+  test('a library test section import is not in its importer test build', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'type Canvas = host\nexport func one() -> i32 => 1\ntest "lib test" {\n  import "env" "scr" global scr: Canvas\n  let o: ?Canvas = scr\n  assert o != 0\n}\n')
+      await writeFile(join(dir, 'main.ents'), 'import "./lib" "one" func one() -> i32\nexport func two() -> i32 => one() + 1\ntest "main test" {\n  assert two() == 2\n}\n')
+      const path = join(dir, 'main.ents')
+      const load = await loadModule(path, { includeTests: true })
+      const check = typecheckProgram(load.modules, path, { includeTests: true })
+      expect(check.errors).toEqual([])
+      const built = programToWatWithTests(load.modules, check.results, path)
+      expect(built.wat).not.toContain('"scr"')
+      expect(built.wat).not.toContain('$__host_globals')
+      expect(built.standIns).toEqual([])
+      const lib = programToWatWithTests(load.modules, check.results, path, [join(dir, 'lib.ents')])
+      expect(lib.standIns).toEqual([{ module: 'env', name: 'scr' }])
+      expect(lib.wat).toContain('(start $__host_globals)')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 
   test('two source modules share a host type by its name', async () => {
