@@ -3692,7 +3692,7 @@ Rules:
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'max' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
-5. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before; so is its signature, beyond what the rules here ask of it. A generic function that is never called is only parsed, and nothing is emitted for it: a mistake in it, an unknown type in its signature too, is reported once something calls it, in that instance ([8.3](#83-requirements)).
+5. A generic function is checked when it is instantiated, with its comptime arguments filled in, and not before: its body, and its signature beyond the rules above. One that is never called is only parsed, and nothing is emitted for it; a mistake in it, such as an unknown type in its signature, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
 
