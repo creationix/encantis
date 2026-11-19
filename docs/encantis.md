@@ -1409,6 +1409,8 @@ type Window = (host)
 export func window(w: Window) -> ?Window => w
 
 func keep(comptime T: type, x: ?T) -> ?T => x
+func pick(comptime T: type, x: ?T, d: T) -> T => x ?? d
+export func picked(o: ?Canvas, c: Canvas) -> Canvas => pick(o, c)
 export func held(h: Holder) -> ?Canvas => h.c
 export func screen(s: ?Screen) -> ?Canvas => keep(s)
 export func plain(c: Canvas) -> ?Screen => keep(c)
@@ -1498,7 +1500,7 @@ cannot make Point optional: only a pointer, a slice or a host reference has a no
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
 '==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be none, which is only compared with 0
-cannot cast int(1) to Canvas
+cannot cast int(1) to Canvas: Canvas is a host reference, which is no number and no address
 cannot assign int(0) to Canvas: a Canvas is never null (a host reference that may be null is a ?Canvas)
 '==' cannot be applied to Canvas and int(0): a Canvas is never null
 cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
@@ -1569,6 +1571,7 @@ func vars() {
   let c: Canvas
   let t: Tagged
   let cs: [2]Canvas
+  let (p, q): (Canvas, i32)
   let ok: ?Canvas
 }
 func result() -> (r: Canvas) {}
@@ -1606,6 +1609,7 @@ global initializer must be a compile-time constant, and no constant is a Canvas
 'c' needs a value where it is declared: a Canvas has no default
 't' needs a value where it is declared: Tagged holds Canvas, which has no default
 'cs' needs a value where it is declared: [2]Canvas holds Canvas, which has no default
+this let needs a value where it is declared: (Canvas, i32) holds Canvas, which has no default
 result 'r' cannot start with a default: a Canvas has no default (a ?Canvas starts as none); return the value instead
 'c' is seen only in the block it is declared in: that block may not have run here, and a Canvas has no default (a ?Canvas starts as none); declare it before the block, with its value
 't' is seen only in the block it is declared in: that block may not have run here, and Tagged holds Canvas, which has no default
@@ -1671,12 +1675,15 @@ func d(c: ?Canvas) {
 func e(on: bool, c: ?Canvas) {
   let x = if on { [c; 1001] } else { [c; 1001] }
 }
+type One = (c: ?Canvas)
+func f(ones: [1001]One) {}
 ```
 
 ```errors
 the parameters are 1001 registers, more than the 1000 a wasm function takes — a host reference is held only in registers, never in memory: hold fewer at once
 the results are 1001 registers, more than the 1000 a wasm function gives back — a host reference is held only in registers, never in memory: hold fewer at once
 the parameters are 1201 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+the parameters are 1001 registers, more than the 1000 a wasm function takes — a host reference is held only in registers, never in memory: hold fewer at once
 function 'd' needs more than 50000 registers, the most a wasm function has (here many: [60000]?Canvas is 60000) — a host reference is held only in registers
 an if that gives [1001]?Canvas gives 1001 registers, more than the 1000 a wasm block gives back — a host reference is held only in registers
 ```

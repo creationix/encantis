@@ -431,6 +431,9 @@ export func many(c: Canvas, n: u32) -> i32 {
       await writeFile(join(dir, 'lib.ents'), 'type Canvas = host\nexport func keep(c: Canvas) -> Canvas => c\n')
       await writeFile(join(dir, 'main.ents'), 'type Canvas = i32\nimport "./lib" "keep" func keep(c: Canvas) -> Canvas\nexport func run(c: Canvas) -> Canvas => keep(c)\n')
       await expect(compileToWasm(join(dir, 'main.ents'))).rejects.toThrow('cannot assign Canvas (i32) to Canvas (a host type)')
+      // A name for another host type is told apart by the type it names.
+      await writeFile(join(dir, 'main.ents'), 'type Surface = host\ntype Canvas = Surface\nimport "./lib" "keep" func keep(c: Canvas) -> Canvas\nexport func run(c: Canvas) -> Canvas => keep(c)\n')
+      await expect(compileToWasm(join(dir, 'main.ents'))).rejects.toThrow('argument 1: cannot assign Canvas (host type Surface) to Canvas (a host type)')
     } finally {
       await rm(dir, { recursive: true })
     }
@@ -479,6 +482,31 @@ test "the screen is there" {
 }
 `
     expect(await runTestsOfSource(source)).toEqual({ ran: ['adds', 'the screen is there'], failed: [] })
+  })
+
+  // A source module's imported globals are checked when the program
+  // starts, not only the entry module's.
+  test("a library's imported plain global is checked where the program starts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'type Canvas = host\nimport "env" "scr" global scr: Canvas\nexport func screen() -> Canvas => scr\n')
+      await writeFile(join(dir, 'main.ents'), 'type Canvas = host\nimport "./lib" "screen" func screen() -> Canvas\nexport func run() -> Canvas => screen()\n')
+      const path = join(dir, 'main.ents')
+      const load = await loadModule(path)
+      const check = typecheckProgram(load.modules, path)
+      expect(check.errors).toEqual([])
+      const built = programToWatWithTests(load.modules, check.results, path)
+      expect(built.wat).toMatch(/\(if \(ref\.is_null \(global\.get \$[\w$.-]*scr\)\) \(then \(unreachable\)\)\)/)
+      expect(built.wat).toContain('(start $__host_globals)')
+      expect(built.standIns).toEqual([{ module: 'env', name: 'scr' }])
+      const bytes = await compileToWasm(path)
+      const scr = { name: 'screen' }
+      const { instance } = await WebAssembly.instantiate(bytes, { env: { scr: new WebAssembly.Global({ value: 'externref' }, scr) } })
+      expect((instance.exports.run as CallableFunction)()).toBe(scr)
+      await expect(WebAssembly.instantiate(bytes, { env: { scr: new WebAssembly.Global({ value: 'externref' }, null) } })).rejects.toThrow(/nreachable/)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 
   // Only the modules whose tests are built have their test sections'
