@@ -8,41 +8,150 @@ Encantis is a systems programming language that compiles to WebAssembly. It prov
 
 ## 1. Lexical Structure
 
-### 1.1 Comments
+A source file is UTF-8 text: comments, whitespace and the tokens between them, which are names, keywords, literals and punctuation.
+
+### 1.1 Comments and Whitespace
+
+Whitespace is the space, the tab, the line feed and the carriage return, so a line may end in `\n` or `\r\n`. No other character is whitespace: a form feed or a non-breaking space outside a comment, a string or a template is a syntax error. Whitespace separates tokens and means nothing else, line breaks included ([1.6](#16-statements-and-line-breaks)). It is needed only where two tokens would otherwise run together: `let x`, not `letx`; `a+b` and `a + b` are the same, but `a-b` is one name ([1.2](#12-identifiers)).
+
+There are two comments:
+
+- `//` starts a comment that runs to the end of the line.
+- `/*` starts a comment that runs to the first `*/`, across lines if it has to. Block comments do not nest: in `/* a /* b */ c */` the comment ends after `b`, and `c */` is read as code.
+
+A comment counts as whitespace, so it may stand wherever whitespace may: between any two tokens, inside a parameter list, at the end of a line. Inside a string or a template, `//` and `/*` are text.
+
+<!-- spec:begin compile -->
 
 ```ents
-// Single line comment
-/* Block comment */
+// The next line is a comment of its own.
+/* So are these two,
+   and the one inside the parameter list. */
+func area(w: u32, /* height: */ h: u32) -> u32 {
+  return w * h // the line ends the comment
+}
+
+test "comments are whitespace" {
+  assert area(3, /* inline */ 4) == 12
+  assert "// not a comment".len == 16
+}
 ```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  return 1 /* outer /* inner */ still outer? */
+}
+```
+
+```errors
+Line 2, col 44
+```
+
+<!-- spec:end -->
+
+A file whose first two characters are `#!` starts with a shebang line, which is skipped as a comment, so a program can run as a script: with `#!/usr/bin/env encantis run` as its first line and its execute bit set, `./tee.ents` runs it. `#!` anywhere else, even after a space at the start of the file, is a syntax error.
+
+<!-- spec:begin compile -->
+
+```ents
+#!/usr/bin/env encantis run
+export "_start" func main() {}
+
+test "a shebang line is a comment" {
+  main()
+}
+```
+
+<!-- spec:end -->
 
 ### 1.2 Identifiers
 
-Identifiers can contain letters, digits, underscores, and hyphens. They must start with a lowercase letter:
+An identifier (a name) starts with a lowercase ASCII letter `a`–`z` and goes on with ASCII letters, digits, `_` and `-`. It names a variable, a parameter, a function, a field, a `def`, a `data` block or a global:
 
-```ents
-count           // simple
-prime32-1       // hyphenated
-merge-round64   // hyphenated
-my_var_2        // underscores and digits
+```text
+count   prime32-1   merge-round64   my_var_2   x2
 ```
 
-Hyphens in identifiers are idiomatic for constants and helper functions. A name holds its hyphens wherever it stands, after a dot too (`x.u32-count` is the member `u32-count`), so a subtraction is written with spaces: `n - 1`. The formatter prints every binary `-` that way.
+- A name never starts with `_`, a digit or an uppercase letter: `_count`, `2x` and `Count` are not names (`Count` is a type name, [1.3](#13-type-identifiers)). `_` alone is not a name either: it is the wildcard of a match arm ([6.3](#63-patterns-in-match-arms)) and the length left to the compiler in `[_]T`.
+- A hyphen after the first letter is part of the name, wherever the name stands: `n-1` is one name, not `n` minus 1, and after a dot `x.u32-count` is the member `u32-count`. So subtraction is written with spaces, `n - 1`, and the formatter prints every binary `-` that way.
+- Names are ASCII: write no other letter in a name.
+- A keyword is reserved only as a whole word: `if-x`, `memory-size`, `true-ish` and `format` are names ([1.4](#14-reserved-keywords)). The names of the primitive types (`u8`, `i32`, `f64`, `bool`, …) and of the builtins (`max`, `memcpy`, …) are not reserved, though naming a variable `u8` only confuses its reader.
+
+Both `snake_case` and hyphens are written; hyphens are common in constants and in names that end in a number (`prime32-1`, `max-wisps`).
+
+<!-- spec:begin compile -->
+
+```ents
+def max-size = 1024:u32
+
+func room(used-bytes: u32) -> u32 => max-size - used-bytes   // two names, one subtraction
+
+test "a hyphen joins a name" {
+  let n = 10:u32
+  let n-1 = 3:u32
+  assert room(24) == 1000
+  assert n - 1 == 9
+  assert n-1 == 3
+}
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  let _count: u32 = 1
+  return 1
+}
+```
+
+```errors
+Line 2, col 7
+```
+
+<!-- spec:end -->
 
 ### 1.3 Type Identifiers
 
-User-defined type names must start with a capital letter. This distinguishes them from primitive types (`i32`, `f64`, etc.) and regular identifiers:
+A type name starts with an uppercase ASCII letter `A`–`Z` and goes on as a name does: `Point`, `Vec3`, `My-Type`, `Pair_2`. Every type a program declares is named this way, which keeps it apart from the primitive types (`i32`, `f64`, …) and from names:
+
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:f32, y:f32)      // OK: Point starts with capital
-type point = (x:f32, y:f32)      // ERROR: type names must be capitalized
+type point = (x: f32, y: f32)
 ```
 
-This convention allows the parser to distinguish type references from variable references without forward declarations:
+```errors
+Line 1, col 6
+```
+
+<!-- spec:end -->
+
+The case alone tells the parser whether a word is a type or a name, without looking for a declaration: in `let point = Point(1.0, 2.0)`, `point` is a variable and `Point(…)` builds a `Point`.
+
+<!-- spec:begin compile -->
 
 ```ents
-func distance(a:Point, b:Point) -> f32   // Point is a type
-let point = Point(1.0, 2.0)              // point is a variable, Point is a constructor
+type Point = (x: f32, y: f32)
+
+func distance2(a: Point, b: Point) -> f32 {
+  let dx = a.x - b.x
+  let dy = a.y - b.y
+  return dx * dx + dy * dy
+}
+
+test "Point is a type, point a variable" {
+  let point = Point(1.0, 2.0)
+  assert distance2(point, Point(4.0, 6.0)) == 25.0
+}
 ```
+
+<!-- spec:end -->
 
 A type can be named anywhere in its module, above its declaration as well as below it: in another type, a signature, a global's or a `data`'s type and initializer. The types of a module are resolved before anything else in it, so names that lead to one another resolve in whatever order they are declared.
 
@@ -64,55 +173,304 @@ The type parameters of a generic function are type identifiers too: in `func max
 
 ### 1.4 Reserved Keywords
 
-The following identifiers are reserved keywords in Encantis (aligns with `encantis.ohm`):
+These words are reserved: none of them is a name, so none can name a variable, a parameter, a function or a field.
 
-**Control Flow:** `if`, `elif`, `else`, `match`, `while`, `for`, `in`, `loop`, `break`, `continue`, `return`, `when`, `defer`
+| Kind | Keywords |
+|------|----------|
+| Control flow | `if` `elif` `else` `match` `while` `for` `in` `loop` `break` `continue` `return` `when` `defer` |
+| Declarations | `func` `let` `set` `global` `def` `data` `type` `enum` `import` `export` `memory` `inline` `comptime` |
+| Values and operators | `true` `false` `mut` `as` `sizeof` |
+| Types of constants | `int` `float` |
 
-**Declarations:** `func`, `let`, `set`, `global`, `def`, `data`, `type`, `import`, `export`, `memory`, `inline`, `comptime`
+A keyword is a whole word: followed by a letter, a digit, `_` or `-` it is part of a longer name (`if-x`, `format`, `memory-size`). `int` and `float` are the types of constants that have no type yet, as messages show them: `cannot assign int(300) to u8` ([2.10](#comptime-literal-promotion)). `enum` is reserved for enum types, which are not implemented ([2.9](#29-enum-types-algebraic-data-types)).
 
-**Types / Builtins:** `int`, `float`
+Three words have a meaning only where they stand, and are names everywhere else: `assert` at the start of a statement, `test` at the start of a declaration (a test block), and `host` as the whole right side of a type declaration, `type Canvas = host` ([2.13](#213-host-references)).
 
-**Operator:** `as`
+<!-- spec:begin compile -->
+
+```ents
+func pick(test: u32, host: u32) -> u32 => if test > host { test } else { host }
+
+test "test and host are names here" {
+  let assert-count = pick(2, 5)
+  assert assert-count == 5
+}
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  let sizeof = 4
+  return 1
+}
+```
+
+```errors
+Line 2, col 7
+```
+
+<!-- spec:end -->
 
 ### 1.5 Literals
 
+A literal writes a value into the program. Most literals have no type of their own: a number takes the type of the place it is used ([Comptime Literal Promotion](#comptime-literal-promotion)), an array the element type wanted there, and only where nothing gives one does a literal take its default:
+
+| Literal | Examples | With nothing to give it a type |
+|---------|----------|--------------------------------|
+| Integer | `42`, `0xFF`, `0b1010`, `-7` | `i32`, or `i64` when it does not fit an `i32` |
+| Float | `3.14`, `1.0e-9`, `-0.5` | `f64` |
+| Boolean | `true`, `false` | `bool` |
+| String | `"hi"`, `x"ff00"`, `b"aGk="` | `*[N]u8`, a pointer to its N bytes |
+| Codepoint | `'a'`, `'\n'`, `'ok'` | an integer constant (`'a'` is 97); several are a tuple |
+| Template | `` `hi ${name}` `` | the array literal of its fragments |
+| Array | `[1, 2, 3]`, `[0:u8; 64]` | `[N]T`, a value in registers ([2.4](#24-fixed-arrays-value-type)) |
+| Tuple, struct | `(1, 2.0)`, `(x: 1, y: 2)`, `Point(1.0, 2.0)` | a tuple ([2.7](#27-tuple-types)), a struct ([2.8](#28-struct-types)) |
+
+`:T` after a literal gives it a type: `42:i64`, `255:u8`, `2.5:f32`, `[0:u8; 64]`. The value has to be one of that type, which is never a conversion: `300:u8` is `cannot assign int(300) to u8`, and `1.5:i32` is `cannot assign float(1.5) to i32`. An integer is a value of a float type when the float holds it exactly, so `1:f64` is the float `1.0`. The same `:T` after any operand is a type annotation: `x:i64` widens an `i32` variable, and nothing narrows ([2.10](#210-type-conversions)). It binds as tightly as `as`, so `-5:u8` is `(-5):u8`, an error.
+
 #### Integer Literals
 
-```ents
-42              // decimal, inferred as i32
-0xFF            // hexadecimal
-0b1010          // binary
-0o755           // octal
-0d1a            // dozenal (base 12): 1*12 + 10 = 22
+An integer literal is decimal, or has a prefix that names its radix:
 
-42:i64          // explicit type annotation
-255:u8          // explicit type annotation
+| Form | Radix | Digits | Example |
+|------|-------|--------|---------|
+| `123` | 10 | `0`–`9` | `42` |
+| `0x` | 16 | `0`–`9`, `a`–`f`, `A`–`F` | `0xFF` is 255 |
+| `0b` | 2 | `0`, `1` | `0b1010` is 10 |
+| `0o` | 8 | `0`–`7` | `0o755` is 493 |
+| `0d` | 12 (dozenal) | `0`–`9`, `a` or `A` (ten), `b` or `B` (eleven) | `0d1a` is 1 × 12 + 10 = 22 |
+
+- The prefixes are lowercase: `0X1F` is a syntax error.
+- Leading zeros change nothing: `007` is the decimal 7, not octal.
+- There are no digit separators: `1_000` is a syntax error.
+- Each digit is one of its radix: `0b2` and `0o8` are no literals.
+- A `-` before a literal is part of it, with or without a space: `-0x10` is the constant -16, and `-2147483648` is an `i32` constant, not the negation of a number too large for one.
+- A literal is a number, not a bit pattern: `0xFFFFFFFF` is 4294967295, which a `u32` holds and an `i32` does not (for the `i32` with those bits, write `-1`, or `0xFFFFFFFF as i32`).
+
+An integer constant takes the type of where it is used, and has to fit it. Where nothing gives it a type, it is an `i32` when it fits one, and an `i64` when it fits that: `2147483647` is an `i32`, `2147483648` an `i64`. Give a larger one its type: `18446744073709551615:u64`, or `let x: u128 = 18446744073709551616`. An integer becomes an `i32.const` or `i64.const` in WebAssembly (and several `i64` values for the wide types of [2.2](#22-primitive-types)).
+
+<!-- spec:begin compile -->
+
+```ents
+def mask = 0xFF:u32
+
+func width(x: i32) -> u32 => 32
+func width(x: i64) -> u32 => 64
+
+test "integer literals" {
+  assert 42 == 0x2A
+  assert 0b1010 == 10
+  assert 0o755 == 493
+  assert 0d1a == 22
+  assert 0dB == 11
+  assert 007 == 7
+  assert -0x10 == -16
+  assert 0x1234 & mask == 0x34
+}
+
+test "an untyped integer constant is an i32 when it fits, else an i64" {
+  let small = 2147483647
+  let big = 2147483648
+  let bits = 0xFFFFFFFF
+  assert width(small) == 32
+  assert width(big) == 64
+  assert width(bits) == 64
+}
 ```
 
-Unsuffixed literals are "natural" values that adapt to their context. When no context is available, they default to either `i32` or `i64` based on size.
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  let a: u8 = 300
+  let b = 1.5:i32
+  let c: i32 = 0xFFFFFFFF
+  return 0
+}
+```
+
+```errors
+cannot assign int(300) to u8
+cannot assign float(1.5) to i32
+cannot assign int(4294967295) to i32
+```
+
+```ents
+def million = 1_000_000
+```
+
+```errors
+Line 1, col 16
+```
+
+<!-- spec:end -->
 
 #### Float Literals
 
+A float literal is digits, a point, digits, and an optional exponent: `e` or `E`, an optional sign, and digits. Both sides of the point need a digit: `3.14`, `0.5`, `1.0`, `1.5e3`, `6.022E23`, `2.5e-10`.
+
+- `1.`, `.5` and `1e10` are not floats: write `1.0`, `0.5` and `1.0e10`.
+- There are no hexadecimal floats, and no literal for infinity or NaN: `1.0 / 0.0` is infinity.
+- A `-` before the literal is part of it, as for integers, so `-0.0` is negative zero.
+
+A float constant takes the float type of where it is used, and is an `f64` where nothing gives it one: `let z = 1.3` is an `f64`, so passing `z` for an `f32` is an error, while `1.3` itself is a value of either. A decimal fraction has no exact binary value, so a float literal is rounded to its type, and `0.1:f32` is the `f32` nearest 0.1. An integer constant is a value of a float type when that type holds it exactly ([Comptime Literal Promotion](#comptime-literal-promotion)). A float becomes an `f64.const` or `f32.const`.
+
+<!-- spec:begin compile -->
+
 ```ents
-3.14            // inferred as f64
-1.0e-10         // scientific notation
-2.5:f32         // explicit type annotation
+func half(x: f64) -> f64 => x * 0.5
+func third(x: f32) -> f32 => x / 3.0
+
+test "float literals" {
+  assert half(3.0) == 1.5
+  assert 1.5e3 == 1500.0
+  assert 2.5E-1 == 0.25
+  assert third(1.5:f32) == 0.5
+  let one: f64 = 1
+  assert one == 1.0
+  assert 1.0 / -0.0 < 0.0
+}
 ```
 
-Float literals default to `f64`. Decimal-to-binary conversion is inherently lossy, so float literals accept the closest representable approximation.
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> f32 {
+  let z = 1.3
+  return z
+}
+```
+
+```errors
+cannot assign f64 to f32
+```
+
+```ents
+func one() -> f64 => 1.
+```
+
+```errors
+Line 1, col 24
+```
+
+<!-- spec:end -->
+
+#### Boolean Literals
+
+`true` and `false` are the two values of `bool`, and its only literals. A bool is not a number: an integer is no condition (`if n` is `condition must be bool, not i32`; compare, `if n != 0`), a bool takes no arithmetic (`'+' cannot be applied to bool: cast it to an integer first`), and nothing becomes a bool by a cast (`cannot cast i32 to bool: compare it instead (x != 0)`). `b as u32` is 1 for `true` and 0 for `false`. In WebAssembly a bool is an `i32` holding 0 or 1, and in memory it is one byte.
+
+<!-- spec:begin compile -->
+
+```ents
+data flags = [true, false, true]
+
+func count(bits: []bool) -> u32 {
+  let n: u32 = 0
+  for b in bits {
+    n += b as u32
+  }
+  return n
+}
+
+test "bools" {
+  assert count(flags) == 2
+  assert sizeof(bool) == 1
+  assert true != false
+}
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func f(n: i32) -> bool {
+  if n {
+    return true
+  }
+  let b: bool = 1
+  return n as bool
+}
+```
+
+```errors
+condition must be bool, not i32
+cannot assign int(1) to bool
+cannot cast i32 to bool: compare it instead (x != 0)
+```
+
+<!-- spec:end -->
 
 #### String Literals
 
+A string is written in double quotes and holds UTF-8 text: `"hello"`, `"héllo"` (six bytes: `é` is two). A line break inside the quotes is part of the string. A backslash starts an escape, and these are all of them:
+
+| Escape | Bytes |
+|--------|-------|
+| `\n` `\t` `\r` | line feed (10), tab (9), carriage return (13) |
+| `\\` `\"` `\'` | a backslash, a double quote, a single quote (`"don't"` needs no escape) |
+| `\xHH` | the one byte `HH`, two hex digits in either case: `"\xE9"` is one byte, which need not be valid UTF-8 |
+| `\u{H…}` | the UTF-8 bytes of the codepoint `H…`, in hex: `"\u{e9}"` is the two bytes of `é` |
+
+Any other character after a backslash is a syntax error, `\0` among them: a zero byte is `\x00`. A `\u{…}` that names no character is an error, a surrogate (`\u{D800}` to `\u{DFFF}`) or past `\u{10FFFF}`.
+
+Two prefixes write bytes rather than text, both with double quotes only:
+
+- `x"…"` holds hex digits, two to a byte, either case, with whitespace allowed between bytes: `x"9d61 b19d"` is the four bytes 0x9D, 0x61, 0xB1, 0x9D. An odd number of digits is a mistake.
+- `b"…"` holds base64 (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`), its `=` padding optional, whitespace allowed: `b"SGVsbG8="` and `b"SGVsbG8"` are both the five bytes of `Hello`.
+
+A string is bytes in memory: the compiler lays them out in the data section ([9.0](#90-data-layout)) when it builds the module, and the string's value is their address. A string is constant: nothing writes it, and equal strings may share their bytes. With nothing to give it a type (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its N bytes, whose `.len` is N. It converts to the pointer and slice types of bytes: a `[]u8` (its address and length), a `[*]u8`, and a `*[!]u8` or `[!]u8`, for which it is laid out with a zero byte after it ([2.5](#25-pointer-types)). `mut "abc"` is a `*mut [3]u8`, a writable copy of its own ([The `mut` Keyword on Literals](#the-mut-keyword-on-literals)).
+
+<!-- spec:begin compile -->
+
 ```ents
-"hello"           // UTF-8 string literal
-"line1\nline2"    // escape sequences: \n \t \r \\ \' \"
-"\xE9"            // \xHH is the byte HH: one byte
-"\u{e9}"          // \u{H..} is a character by its codepoint: its UTF-8 bytes, two here
-x"aabbccdd"       // hex bytes: bytes 0xAA, 0xBB, 0xCC, 0xDD
-b"SGVsbG8="       // base64 bytes
+data hello = "Hello"
+data key = x"9d61 b19d"
+data greeting = b"SGVsbG8="
+
+func count(s: []u8, c: u8) -> u32 {
+  let n: u32 = 0
+  for b in s {
+    if b == c {
+      n += 1
+    }
+  }
+  return n
+}
+
+test "strings" {
+  assert hello.len == 5
+  assert key.len == 4 && key[0] == 0x9D
+  assert greeting.len == 5 && greeting[4] == 'o'
+  assert "é".len == 2
+  assert "\xE9".len == 1
+  assert "\u{e9}"[1] == 0xA9
+  assert count("a\tb\tc", '\t') == 2
+  assert count("two
+lines", '\n') == 1
+}
 ```
 
-A string is written in double quotes; single quotes hold codepoints ([Codepoint Literals](#codepoint-literals)). The `x` and `b` prefixes take double quotes only. String literals live in the data section. They are comptime byte arrays that can coerce to any compatible slice type: `[]u8`, `[!]u8` (null-terminated), `[?]u8` (LEB128-prefixed), `[*]u8` (many-pointer), etc. With no type to meet (`let s = "abc"`, the source of `buf[0..3] = "abc"`, a branch of an untyped `if`), a string is a `*[N]u8`, a pointer to its bytes; `mut "abc"` is a `*mut [3]u8` to a copy of its own.
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+data nul = "a\0b"
+```
+
+```errors
+Line 1, col 15
+```
+
+<!-- spec:end -->
 
 A slice counts elements, so a string is only a slice of one-byte elements: `"abc"` for a `[]u32` is a compile error, as three bytes are not three `u32`s. Write the elements as an array literal (`[1, 2, 3]`).
 
@@ -120,19 +478,11 @@ A string is never a character: next to a number, given for one or matched agains
 
 #### Codepoint Literals
 
-Single quotes hold codepoints, not a string. Each character between them is one codepoint (a Unicode scalar value, never a byte of its UTF-8 encoding), and each codepoint is exactly the integer literal of its value, as if the number were written in its place:
+Single quotes hold codepoints, not a string. Each character between them is one codepoint (a Unicode scalar value, never a byte of its UTF-8 encoding), and each codepoint is exactly the integer literal of its value, as if the number were written in its place. The escapes are a string's, with `\xHH` the codepoint `HH`, and a double quote needs no escape (`'"'` is 34).
 
-```ents
-'a'               // 97
-'é'               // 233: a u8 holds it, as it holds 233
-'ā'               // 257: too big for a u8, as 257 is
-'\n'              // 10; also \t \r \\ \' \" (and ' needs no escape in "don't")
-'\x7F'            // 127: \xHH is the codepoint HH
-'\u{1F600}'       // 128512: \u{H..} is the codepoint H..
-'ok'              // the tuple (111, 107)
-```
+One codepoint is the value itself, as a parenthesised value is (`'a'` is `(97)`, which is `97`), so it compares, computes, assigns, passes and matches as its number does. It has the type of where it is used, and has to fit it as that number would: `'é'` is 233, which a `u8` holds, and `'ā'` is 257, which a `u8` does not (`cannot assign int(257) to u8`). So `'é'` is not the bytes `é` has in UTF-8 text: to find it there, look for the string `"é"`, two bytes.
 
-One codepoint is the value itself, as a parenthesised value is (`'a'` is `(97)`, which is `97`), so it compares, computes, assigns, passes and matches as its number does. With `c: u8`:
+<!-- spec:begin compile -->
 
 ```ents
 def newline = '\n'
@@ -143,116 +493,423 @@ func vowel(c: u8) -> bool => match c {
   'a', 'e', 'i', 'o', 'u' => true
   _ => false
 }
+
+test "a codepoint is its number" {
+  assert 'a' == 97
+  assert 'é' == 233
+  assert '\x7F' == 127
+  assert '\u{1F600}' == 128512
+  assert newline == 10
+  assert is_lower('q') && !is_lower('Q')
+  assert digit('7') == 7
+  assert vowel('e')
+}
 ```
+
+<!-- spec:end -->
 
 Several codepoints are the tuple of them, values in registers like any tuple: `let (x, y) = 'ok'` binds 111 and 107, and `'RIFF'` passes for a `(u8, u8, u8, u8)` as `(82, 73, 70, 70)` does. A tuple is not an array, so `'abc'` is no `[3]u8`, and neither it nor `(97, 98, 99)` is a row of a table, an element of a `[][3]u8` or what a `*[3]u8` points at: for those, write the string `"abc"` or the array `[97, 98, 99]`.
 
-A single-quoted literal is never a string, nor an address: where a pointer or a slice is wanted it is an error that shows the string (`cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")`). `''` holds no codepoint and is an error, as is an escape that names no character (`\u{D800}` to `\u{DFFF}`, past `\u{10FFFF}`).
+<!-- spec:begin compile -->
+
+```ents
+type Tag = (u8, u8, u8, u8)
+
+func is_riff(t: Tag) -> bool => t.0 == 'R' && t.1 == 'I' && t.2 == 'F' && t.3 == 'F'
+
+test "several codepoints are a tuple" {
+  let (x, y) = 'ok'
+  assert x == 111 && y == 107
+  assert is_riff('RIFF')
+  assert !is_riff('WAVE')
+}
+```
+
+<!-- spec:end -->
+
+A single-quoted literal is never a string, nor an address: where a pointer or a slice is wanted it is an error that shows the string. `''` holds no codepoint and is an error, as is an escape that names no character (`\u{D800}` to `\u{DFFF}`, past `\u{10FFFF}`).
+
+<!-- spec:begin compile -->
+
+```ents
+func is_a(c: u8) -> bool => c == "a"
+func name() -> []u8 => 'hi'
+func big() -> u8 => 'ā'
+```
+
+```errors
+'==' cannot be applied to u8 and a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')
+cannot assign 'hi' to []u8 — a single-quoted literal is codepoints, not a string: a string is written with double quotes ("hi")
+cannot assign int(257) to u8
+```
+
+```ents
+func none() -> u8 => ''
+```
+
+```errors
+'' holds no character
+```
+
+<!-- spec:end -->
 
 #### Template Literals
 
-Template literals use backticks and `${expr}` interpolation to combine static text with runtime values:
+A template literal is written in backticks. Its text is static, and each `${expr}` in it stands for the value of `expr`; it may span lines. The text takes the escapes of a string, and two of its own: `` \` `` is a backtick and `\${` is the two characters `${`. A `}` cannot stand in the text (a syntax error); write it as `\x7D`.
+
+A template is the array literal of its fragments: `` `Hi ${name}!` `` is `["Hi ", name, "!"]`, the static text as constant strings and each `${e}` the value of `e`, in the order written. A fragment with no text is left out, so `` `${a}${b}` `` has two elements and ``` `` ``` none. Everything an array literal does, a template does ([Array Literals](#array-literals)), and its type comes from where it is used, as an array literal's does:
+
+- Given for a `[][]u8` (a slice of byte slices, what WASI's `fd_write` takes as its iovecs), it is laid out in memory: one cell for its place in the source, in the data section, whose constant fragments are laid out once and may share their bytes with equal strings, and into which each `${e}` is stored every time the template is evaluated ([Literals in Memory](#literals-in-memory)). For a `[]mut []u8` it is written `` mut `…` ``. It meets any other array or slice type the same way: a `[3][]u8` value, a `*[3][]u8`, a `[][!]u8`.
+- With nothing to give it a type it is an array value in registers, as `let a = [1, 2, 3]` is a `[3]i32`: `` let t = `Hi ${name}!` `` is a `[3][]u8`, and a `[3][]u8` is not a `[][]u8` (`cannot assign [3][]u8 to [][]u8`). Pass the template where it is used, or give the variable its type: `` let t: [][]u8 = `Hi ${name}!` ``.
+
+Each `${e}` is an element, so it has to be a value of the element type: for a `[][]u8`, a `[]u8` or a string. Nothing turns a number into text: `${n}` with a `u32` is `cannot assign u32 to []u8`; write the digits into a buffer first and interpolate that.
+
+<!-- spec:begin compile -->
 
 ```ents
-`hello ${name}\n`
-`Error ${msg}: ${errnos[code] ?? "unknown"}\n`
-`${x} + ${y} = ${x + y}`
+func total(parts: [][]u8) -> u32 {
+  let n: u32 = 0
+  for p in parts {
+    n += p.len
+  }
+  return n
+}
+
+func count(parts: [][]u8) -> u32 => parts.len
+
+test "a template is the array literal of its fragments" {
+  let name = "bob"
+  assert total(`Hi ${name}!`) == 7
+  assert total(["Hi ", name, "!"]) == 7
+  assert count(`Hi ${name}!`) == 3
+  assert count(`${name}${name}`) == 2
+  assert count(``) == 0
+  assert total(`a \` and a \${`) == 12
+}
 ```
 
-Template literals produce a **slice of slices** (`[][]u8`) — an array of fragments where static parts are const strings and interpolated parts are runtime `[]u8` values. This maps directly to scatter-gather I/O (WASI's `writev`/iovec pattern):
+<!-- spec:end -->
+
+The usual use is output, where the fragments go to the host as they are, without being copied into one buffer:
+
+<!-- spec:begin compile -->
 
 ```ents
-// Template literal:
-wasi_fd_write(stderr, `Error ${msg}: ${errnos[code] ?? "unknown"}\n`, nwritten)
+import "wasi_snapshot_preview1" (
+  "fd_write" func fd_write(fd: i32, iovs: [][]u8, nwritten: *mut u32) -> i32
+)
 
-// Equivalent manual construction:
-data err_iovecs:*mut [5][]u8 = mut ["Error ", "", ": ", "", "\n"]
-err_iovecs[1] = msg
-err_iovecs[3] = errnos[code] ?? "unknown"
-wasi_fd_write(stderr, err_iovecs, nwritten)
+export func greet(name: []u8) -> i32 => fd_write(1, `Hello, ${name}!\n`, &0)
 ```
 
-**Implementation:** Each template literal gets a unique mutable iovec array in the data section. Static fragments (e.g., `"Error "`, `": "`, `"\n"`) are const and may be deduplicated across the program. The iovec array itself is `mut` (unique per source location) since its dynamic slots are filled at runtime.
+<!-- spec:end -->
 
-**Type coercion:** The default type is `[][]u8`, suitable for any function accepting a slice of slices. Other coercions may be supported in the future (e.g., concatenating into a single `[]u8` with a buffer).
-
-Each `${expr}` must produce a `[]u8` value. Non-string types would require an explicit conversion (no implicit `toString`).
-
-#### Boolean Literals
+<!-- spec:begin compile -->
 
 ```ents
-true
-false
+func count(parts: [][]u8) -> u32 => parts.len
+
+func f(name: []u8, n: u32) -> u32 {
+  let t = `Hi ${name}!`
+  return count(t) + count(`n = ${n}`)
+}
 ```
 
-Booleans are distinct from integers. No implicit truthiness - use explicit comparisons.  Under the hood they are represented as `u1` (0 and 1)
+```errors
+argument 1: cannot assign [3][]u8 to [][]u8
+cannot assign u32 to []u8
+```
+
+<!-- spec:end -->
 
 #### Array Literals
 
+An array literal lists its elements, `[a, b, c]` (a trailing comma is allowed), or repeats one, `[v; n]`:
+
+- The elements take the element type wanted where the literal is used. Where none is wanted they widen to the widest of them ([Implicit Widening](#implicit-widening)): `[1, 2.5]` is a `[2]f64`, and `[1:u8, 2:i8]` is `elements have different types: i8 and u8 (cast one explicitly)`.
+- In `[v; n]` the count `n` is a compile-time integer: a literal, a `def`, a comptime value parameter, or arithmetic on these. A count known only at run time is `repeat count must be a compile-time integer`, and a negative one `repeat count cannot be negative`. `v` is evaluated once for each element: `[f(); 3]` calls `f` three times.
+- `[]` has no element to take a type from, so it needs one given: `let none: []u8 = []` is an empty slice, and `let x = []` is `cannot infer element type of empty array literal`.
+- A string is an array literal of bytes, which is always in memory: `"hi"` is `[0x68, 0x69]` laid out as a `*[2]u8`.
+
+With nothing to give it a type, an array literal is a value: `[N]T` in N registers, copied when it is assigned or passed ([2.4](#24-fixed-arrays-value-type)). Where a pointer or a slice is wanted it is laid out in memory instead, as the next section tells, and its count has to be the one wanted: an array literal given for a `*[N]T` has N elements, and each row of a `*[N][M]T`, a `[][M]T` or a `*[NxM]T` has M, as does each literal an element of a `*[N]*[M]T` points at: `cannot assign 2 elements to *[3]i32`. Behind a pointer, a string is the bytes of all the elements: `"abcd"` is a `*[4]u8` or a `*[2]u16`, but not a `*[8]u8` (`cannot assign a string of 4 bytes to *[8]u8`) or the rows of a table.
+
+<!-- spec:begin compile -->
+
 ```ents
-[1, 2, 3]           // [3]i32 — value type
-[0:u8; 1024]        // [1024]u8 — repeat syntax (value; count)
+def n = 4
+
+func sum(xs: []i32) -> i32 {
+  let s = 0
+  for x in xs {
+    s += x
+  }
+  return s
+}
+
+test "array literals" {
+  let v = [1, 2, 3]
+  assert v[2] == 3 && v.len == 3
+  assert sum([1, 2, 3]) == 6
+  let zeros = [0:u8; n * 2]
+  assert zeros.len == 8
+  let mixed = [1, 2.5]
+  assert mixed[0] == 1.0
+  let none: []i32 = []
+  assert sum(none) == 0
+}
 ```
 
-String literals are array literals of `u8`:
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
 
 ```ents
-"hello"             // equivalent to [0x68, 0x65, 0x6c, 0x6c, 0x6f]
+func sum(xs: []i32) -> i32 => 0
+
+func f(k: u32) -> i32 {
+  let v = [1, 2, 3]
+  let e = []
+  let r = [0:u8; k]
+  return sum(v)
+}
 ```
 
-An array literal given for a `*[N]T` has N elements, and each row of a `*[N][M]T`, a `[][M]T` or a `*[NxM]T` has M, as does each literal an element of a `*[N]*[M]T` points at: `cannot assign 2 elements to *[3]i32`. Behind a pointer, a string is the bytes of all the elements: `"abcd"` is a `*[4]u8` or a `*[2]u16`, but not a `*[8]u8` (`cannot assign a string of 4 bytes to *[8]u8`) or the rows of a table.
+```errors
+cannot infer element type of empty array literal
+repeat count must be a compile-time integer
+argument 1: cannot assign [3]i32 to []i32
+```
 
-An array literal given where a pointer or slice is wanted is laid out in memory. In a function, its values that are only known when the program runs (`[x, 2]`) are stored into it each time it is evaluated: the literal is a cell of its own for that place in the source, never shared with another literal, so a pointer kept from an earlier evaluation sees the values of the later one. Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the same way. A literal laid out apart from the one it is in, an element of a slice of slices (`[][]i32`), of a pointer to framed arrays (`*[2][!]u8`), what an element of an array of pointers points at (`*[2]*[3]i32 = [[1, 2, 3], [4, 5, 6]]`, `*[2][*]u8 = ["ab", "cd"]`: each element is the address of its literal) or a row of a table ([2.5](#nesting)), is laid out when the program is compiled, so its values must be constants: `let t: [][]i32 = [[a, 2], [3]]` is an error (`an element of [][]i32 is laid out at compile time: its values must be constants`).
+<!-- spec:end -->
+
+#### Literals in Memory
+
+A literal is laid out in memory in four cases: a string (always), any literal where a pointer or a slice is wanted (an argument, a typed `let`, a returned value, a field), a literal after `&` ([4.7](#element-addresses-and-writes)), and the value of a `data` declaration ([3.2](#32-data-declarations-data)).
+
+A literal laid out in a function is one cell for its place in the source, in the data section. The compiler writes its constant parts there once, when it builds the module, and never again; the parts known only at run time (`[x, 2]`) are stored into the cell each time the literal is evaluated, in the order written. Nothing is allocated when the function runs, and so:
+
+- A cell outlives the call: a pointer to it can be returned and kept.
+- What is written through a pointer to a cell stays there: the next evaluation, the next call and a recursive call all see the same cell, like a `static` in C. A cell that must start from its literal's value on each call is set there (`n.* = 0`), or is a variable instead, when it needs no address.
+- A pointer kept from an earlier evaluation sees the values of the later one.
+
+A literal with run-time parts, and every `mut` literal, is a cell of its own, never shared with another literal; equal constant literals may share theirs.
+
+<!-- spec:begin compile -->
+
+```ents
+func next-id() -> u32 {
+  let n = &0:u32
+  n.* += 1
+  return n.*
+}
+
+func pair(x: u32) -> *[2]u32 => [x, x * 2]
+
+test "a literal in memory is one cell for its place in the source" {
+  assert next-id() == 1
+  assert next-id() == 2
+  let a = pair(1)
+  let b = pair(5)
+  assert b[1] == 10
+  assert a[1] == 10
+}
+```
+
+<!-- spec:end -->
+
+Rows written in place (`let p: *[2x2]i32 = [[x, 1], [2, 3]]`) are filled the same way. A literal laid out apart from the one it is in, an element of a slice of slices (`[][]i32`), of a pointer to framed arrays (`*[2][!]u8`), what an element of an array of pointers points at (`*[2]*[3]i32 = [[1, 2, 3], [4, 5, 6]]`, `*[2][*]u8 = ["ab", "cd"]`: each element is the address of its literal) or a row of a table ([2.5](#nesting)), is laid out when the program is compiled, so its values must be constants: `let t: [][]i32 = [[a, 2], [3]]` is an error (`an element of [][]i32 is laid out at compile time: its values must be constants`).
 
 #### The `mut` Keyword on Literals
 
-`mut` does two things: it forces the value into memory and marks it writable.
-
-```ents
-5                   // value, lives in a register
-mut 5               // heap-allocated, type becomes *mut i32
-(1.0, 2.0)          // value, two registers
-mut (1.0, 2.0)      // heap-allocated, type becomes *mut (f64, f64)
-"hello"             // already in memory (strings always are), const, deduplicable
-mut "hello"          // in memory, mutable, unique copy
-[1, 2, 3]           // value, three registers
-mut [0:u8; 1024]    // heap-allocated, type becomes *mut [1024]u8
-```
-
-Without `mut`, literals that need memory (strings, large arrays) are embedded as **const** — the compiler may deduplicate identical content. With `mut`, each use gets a unique allocation that can be written to.
-
 A literal is constant unless it is written with `mut`, wherever it is: where a mutable pointer or slice is wanted, a literal without `mut` is an error that shows it written with the keyword. `let buf: []mut u8 = [0:u8; 20]` is ``a literal is constant: write `mut [0:u8; 20]` for a []mut u8``; the same goes for `data s: []mut i32 = [20, 8]`, an argument `"abc"` for a `[]mut u8` parameter (`mut "abc"`), a slice field of a struct (`Buf(mut [0:u8; 4], 0)`), an element of a slice of mutable slices (`data q: *[2][]mut u8 = [mut "ab", mut "cd"]`), the table literal of a `*mut [N][M]T` and a template literal for a `[]mut []u8` (``mut `a${x}b` ``). The receiver of a method call is shown in parentheses, ``receiver: a literal is constant: write `(mut "abc")` for a []mut u8``, as `mut` goes on the literal itself: `mut "abc".fill()` would be `mut` of the call, and is a syntax error that says so. Only where a mutable pointer or slice is wanted: the fallback of `??` is given for what the whole is given for ([4.7](#the--operator)), so in `println(digits[i..] ?? "")`, with `digits` a `*mut [24]u8` and `println` taking a `[]u8`, `""` needs no `mut`.
 
-`mut` makes the whole literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `&` before a literal makes a writable cell of its own as well (`let n = &0:u32` is a `*mut u32`), and so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`.
+`mut` makes the literal writable and its own, shared with no other literal: what it lays out apart too, the rows of a table (`data t: *mut [2][3]i32 = mut [[0; 3]; 2]` is two rows of zeros), the elements of a slice of slices (`mut [[1, 2], [1, 2]]` for a `[][]mut u8`) and the slice fields of its structs. `mut` goes before a literal: an array, a string, a template, a tuple or a number; before anything else it is a syntax error (`mut goes before a literal (an array, a string or a tuple), not before …`).
+
+`mut` does not choose where a literal lives; the type it meets does, as for any literal. A string is always in memory, so `mut "hello"` is a `*mut [5]u8`. An array literal given for a `*mut [N]T` or a `[]mut T` is laid out in a writable cell. With nothing to give it a type, a number, a tuple or an array stays a value in registers, where it is a variable's own and writable anyway, and `mut` changes nothing: `let q = mut [1, 2, 3]` is the `[3]i32` that `[1, 2, 3]` is. For a writable cell, write `&` before the literal: `&0:u32` is a `*mut u32`, `&[1, 2, 3]` a `*mut [3]i32`, `&(1.0, 2.0)` a `*mut (f64, f64)`, each a cell of its own, so `&[1, 2]` given for a `*mut [2]i32` needs no `mut`. `&` before a string is not needed: a string is already its address.
+
+| Written | With nothing to give it a type |
+|---------|--------------------------------|
+| `5`, `mut 5` | `i32`: a value in a register |
+| `&5` | `*mut i32`: a cell of its own in the data section |
+| `(1.0, 2.0)`, `mut (1.0, 2.0)` | `(f64, f64)`: two registers |
+| `&(1.0, 2.0)` | `*mut (f64, f64)` |
+| `[1, 2, 3]`, `mut [1, 2, 3]` | `[3]i32`: three registers |
+| `&[1, 2, 3]` | `*mut [3]i32` |
+| `"hello"` | `*[5]u8`: constant bytes in the data section, maybe shared with an equal string |
+| `mut "hello"` | `*mut [5]u8`: a writable copy of its own |
+| `data buf = mut [0:u8; 1024]` | `buf` is a `*mut [1024]u8` |
+
+<!-- spec:begin compile -->
+
+```ents
+func fill(buf: []mut u8, v: u8) -> u32 {
+  buf[..] = v
+  return buf.len
+}
+
+func bump(p: *mut [2]i32) -> i32 {
+  p[0] += 1
+  return p[0]
+}
+
+test "mut and & on literals" {
+  assert fill(mut [0:u8; 4], 7) == 4
+  let s = mut "abc"
+  s[0] = 'A'
+  assert s[0] == 'A'
+  assert bump(&[1, 2]) == 2
+  let cell = &0:u32
+  cell.* = 5
+  assert cell.* == 5
+}
+```
+
+<!-- spec:end -->
+
+<!-- spec:begin compile -->
+
+```ents
+func fill(buf: []mut u8) -> u32 => buf.len
+
+func f() -> u32 {
+  let buf: []mut u8 = [0:u8; 20]
+  return fill("abc") + "ab".fill()
+}
+```
+
+```errors
+a literal is constant: write `mut [0:u8; 20]` for a []mut u8
+argument 1: a literal is constant: write `mut "abc"` for a []mut u8
+receiver: a literal is constant: write `(mut "ab")` for a []mut u8
+```
+
+<!-- spec:end -->
 
 #### `def` — Compile-Time Constants
 
-`def` binds a name to a compile-time value. It's pure substitution — the value is inlined wherever the name appears. No memory, no pointer.
+`def` names a compile-time constant: an integer, a float, a bool or a codepoint, or a constant expression of them (`def page = 64 * 1024`). Each use of the name is the value itself, as if it were written there, so a `def` takes no memory and has no address, and an untyped one takes the type of each place it is used. A tuple, an array or a string is not a `def`'s value (`def cannot contain array/string literals — use 'data origin = ...' instead`): lay it out with `data`, or write a `def` for each part. More in [3.1](#31-definitions-def).
+
+<!-- spec:begin compile -->
 
 ```ents
 def mask51 = 0x7FFFFFFFFFFFF:u64
 def pi = 3.14159265
-def fe-zero = (0, 0, 0, 0, 0)
+def page = 64 * 1024
+def tab = '\t'
+def debug = false
+
+data buf = mut [0:u8; page]
+
+test "defs are constants" {
+  assert buf.len == 65536
+  assert mask51 == (1:u64 << 51) - 1
+  assert pi > 3.14 && pi < 3.15
+  assert tab == 9
+  assert !debug
+}
 ```
+
+<!-- spec:end -->
 
 #### `data` — Data Section Embedding
 
-`data` serializes a literal into the wasm data section and binds the name to a pointer. The RHS is a normal literal — no special rules.
+`data` lays a literal out in the data section and names its address. The value is an ordinary literal, and the name is a pointer to it, typed as tightly as the literal allows: `*[N]T` for an array or a string, `*T` for anything else, `*mut …` when the literal is `mut`. A pointer to an array converts to `[]T` or `[*]T` wherever one is wanted ([9.5](#95-array-type-conversions)).
+
+<!-- spec:begin compile -->
 
 ```ents
-data table = [1:u64, 2, 3, 4]      // table: *[4]u64 (const)
-data key = x"9d61b19deffd5a60"      // key: *[8]u8 (const)
-data buf = mut [0:u8; 1024]         // buf: *mut [1024]u8 (mutable)
-data count = 5:i32                  // count: *i32 (const, embedded as 4 bytes)
-data tally = mut 5:i32              // tally: *mut i32 (mutable)
-data origin = (0.0, 0.0)           // origin: *(f64, f64) (const)
+data table = [1:u64, 2, 3, 4]      // *[4]u64
+data key = x"9d61b19deffd5a60"     // *[8]u8
+data buf = mut [0:u8; 1024]        // *mut [1024]u8
+data count = 5:i32                 // *i32: four bytes
+data tally = mut 5:i32             // *mut i32
+data origin = (0.0, 0.0)           // *(f64, f64)
+
+func sum(xs: []u64) -> u64 {
+  let s: u64 = 0
+  for x in xs {
+    s += x
+  }
+  return s
+}
+
+test "data is a pointer" {
+  assert sum(table) == 10
+  assert key.len == 8 && buf.len == 1024
+  tally.* += count.*
+  assert tally.* == 10
+  assert origin.*.1 == 0.0
+}
 ```
 
-`data` always produces a pointer. The inferred type is the tightest: `*[N]T` (or `*mut [N]T` with `mut`). This auto-coerces to `[]T` or `[*]T` wherever one is expected (9.5).
+<!-- spec:end -->
 
-The difference between `data` and an inline literal: `data` gives the allocation a name. An inline `"hello"` is anonymous and may be deduplicated with other identical const literals. A `data msg = "hello"` is a named allocation at a known address.
+The difference between `data` and a literal written in place is the name: `data msg = "hello"` gives the bytes a name and an address known when the module is built, while an inline `"hello"` has no name and may share its bytes with equal constant literals. A type written for `data`, and data that refers to other data, are in [3.2](#32-data-declarations-data).
 
-**Zeros are free** — wasm memory starts as zeros, so a data segment stops at the last byte that isn't zero, and `data buf = mut [0:u8; 1024]` emits no data segment at all. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`). All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
+**Zeros are free:** wasm memory starts as zeros, so a data segment stops at the last byte that isn't zero, and `data buf = mut [0:u8; 1024]` emits no data segment at all. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`). All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
+
+### 1.6 Statements and Line Breaks
+
+Encantis has no statement separator. A block is a sequence of statements and a module a sequence of declarations, each ending where its grammar ends; line breaks are whitespace like any other. `;` is a syntax error between statements (it appears only in a repeat literal, `[v; n]`). Two statements may share a line, `let a = 1 let b = 2`, but one statement per line is how Encantis is written.
+
+An expression goes on as far as the next token can continue it, across line breaks. So a line that starts with a token that can continue an expression continues the expression of the line before: `(` makes a call, `[` an index, `.` a member, and a binary operator (`+`, `-`, `*`, `&&`, `??`, …) an operation, as do `as` and `:`. Breaking a long expression before an operator is fine for that reason, and a statement that starts with `(` or `[` after one that ends in an expression joins it.
+
+<!-- spec:begin compile -->
+
+```ents
+func g(x: u32) -> u32 => x * 10
+
+test "an expression continues on the next line" {
+  let a: u32 = 2
+  let b = a
+    + 3
+  let c = g
+  (a)
+  assert b == 5
+  assert c == 20
+}
+```
+
+<!-- spec:end -->
+
+The same goes for the statements that take an optional value. `return` takes the expression that follows it, on its line or the next: a bare `return` is written last in its block (where the code after it would never run anyway), or with its `when` on the same line, `return when done`. `break` and `continue` take no value, so `break` followed by an expression is two statements.
+
+<!-- spec:begin compile -->
+
+```ents
+func f() -> u32 {
+  let x: u32 = 1; let y: u32 = 2
+  return x + y
+}
+```
+
+```errors
+Line 2, col 17
+```
+
+```ents
+global count: u32 = 0
+
+func g() -> u32 => 3
+
+func f(done: bool) {
+  if done {
+    return
+  }
+  count += 1
+}
+
+func h() {
+  return
+  g()
+}
+```
+
+```errors
+cannot assign u32 to ()
+```
+
+<!-- spec:end -->
 
 ---
 
