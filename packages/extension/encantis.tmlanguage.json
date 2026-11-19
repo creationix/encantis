@@ -141,13 +141,13 @@
           "match": "\\bassert(?![a-zA-Z0-9_-])"
         },
         {
-          "comment": "A host reference type: host is a type only as the whole of a type declaration, and no reserved word",
+          "comment": "A host type's declaration: host is a type there only, and not reserved. Here, before the type keyword, so that it is tried first",
           "match": "\\b(type)\\s+([A-Z][0-9A-Za-z_-]*)\\s*(=)\\s*(host)(?![a-zA-Z0-9_-])",
           "captures": {
             "1": { "name": "storage.type.encantis" },
-            "2": { "name": "support.type.encantis" },
+            "2": { "name": "entity.name.type.encantis" },
             "3": { "name": "keyword.operator.assignment.encantis" },
-            "4": { "name": "storage.type.host.encantis" }
+            "4": { "name": "support.type.host.encantis" }
           }
         },
         {
@@ -280,16 +280,6 @@
         {
           "name": "support.type.comptime.encantis",
           "match": "\\b(int|float)(?=\\s*\\()"
-        },
-        {
-          "comment": "A host type's declaration: host is a type there only, and not reserved",
-          "match": "\\b(type)\\s+([A-Z][0-9A-Za-z_-]*)\\s*(=)\\s*(host)(?![a-zA-Z0-9_-])",
-          "captures": {
-            "1": { "name": "storage.type.encantis" },
-            "2": { "name": "entity.name.type.encantis" },
-            "3": { "name": "keyword.operator.assignment.encantis" },
-            "4": { "name": "support.type.host.encantis" }
-          }
         },
         {
           "name": "support.type.nominal.encantis",
