@@ -3,9 +3,11 @@
 // What the checker reports is tested in the compiler package.
 
 import { describe, expect, test } from 'bun:test'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const CLI = join(import.meta.dir, 'cli.ts')
 
@@ -263,4 +265,91 @@ export func f() -> u32 => index_of(us, 2) + index_of(fs, 2.0)
     const call = await query('definition', '6:19')
     expect(call.stdout).toBe(`${call.file}:1:1 eq\n`)
   })
+})
+
+// `wasm -O` optimizes with binaryen in this process, the version
+// package.json pins (wasm.ts). The program returns a struct of three u64 as
+// three values, and fills memory with memory.fill (bulk memory).
+describe('optimized builds', () => {
+  const PROGRAM = `type P = (x: u64, y: u64, z: u64)
+export func add(a: P, b: P) -> P => (a.x + b.x, a.y + b.y, a.z + b.z)
+export func dbl(a: P) -> P => add(add(a, a), add(a, a))
+
+data buf = mut [0:u8; 64]
+export func clear() {
+  buf[..] = 0
+}
+`
+  const root = join(import.meta.dir, '../../..')
+  const binaryenPath = Bun.resolveSync('binaryen', root)
+  const binaryenVersion = JSON.parse(readFileSync(join(binaryenPath, '../package.json'), 'utf8')).version
+
+  // `encantis wasm <file> -o <dir>/out.wasm [flags]` on PROGRAM; `preload`
+  // is a script bun runs before the command.
+  async function wasm(flags: string[], { preload = '' } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = join(dir, 'program.ents')
+      await writeFile(file, PROGRAM)
+      const pre: string[] = []
+      if (preload) {
+        await writeFile(join(dir, 'preload.ts'), preload)
+        pre.push('--preload', join(dir, 'preload.ts'))
+      }
+      const out = join(dir, 'out.wasm')
+      const run = Bun.spawnSync([process.execPath, ...pre, CLI, 'wasm', file, '-o', out, ...flags])
+      const written = existsSync(out) ? new Uint8Array(readFileSync(out)) : null
+      return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString(), written }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  // --version names the binaryen it optimizes with: two builds are of the
+  // same tools when their versions say the same.
+  test('--version names binaryen', () => {
+    const run = Bun.spawnSync([process.execPath, CLI, '--version'])
+    expect(run.stdout.toString()).toBe(`encantis dev (binaryen ${binaryenVersion})\n`)
+  })
+
+  // binaryen as a preloaded script gives it to the command: not there,
+  // refusing the module (it does not validate without multi-value and bulk
+  // memory), or throwing (binaryen aborts on memory.fill when asked for bulk
+  // memory without bulk-memory-opt).
+  const fakeBinaryen = (how: 'missing' | 'invalid' | 'throws') => {
+    const real = how === 'missing' ? 'null' : `(await import(${JSON.stringify(pathToFileURL(binaryenPath).href)})).default`
+    const features = how === 'invalid' ? 'BulkMemory: 0, BulkMemoryOpt: 0, Multivalue: 0' : 'BulkMemoryOpt: 0'
+    return `const real = ${real}
+Bun.plugin({
+  name: 'binaryen ${how}',
+  setup(build) {
+    build.module('binaryen', () => {
+      if (!real) throw new Error('Cannot find package "binaryen"')
+      const Features = { ...real.Features, ${features} }
+      return { exports: { default: Object.create(real, { Features: { value: Features } }) }, loader: 'object' }
+    })
+  },
+})
+`
+  }
+
+  // When binaryen can't optimize, -O says so and writes the module
+  // unoptimized.
+  test('without binaryen, -O writes the module unoptimized', async () => {
+    const optimize = await wasm(['-O'], { preload: fakeBinaryen('missing') })
+    expect(optimize.exitCode).toBe(0)
+    expect(optimize.written?.length).toBeGreaterThan(0)
+    expect(optimize.stderr).toContain(
+      `Warning: binaryen ${binaryenVersion} could not be loaded: Cannot find package "binaryen"; writing the unoptimized module\n`,
+    )
+  }, 60_000)
+
+  test('-O falls back when binaryen refuses the module or throws', async () => {
+    const invalid = await wasm(['-O'], { preload: fakeBinaryen('invalid') })
+    expect(invalid.exitCode).toBe(0)
+    expect(invalid.stderr).toContain('Warning: the module does not validate in binaryen (its report is above); writing the unoptimized module\n')
+    const throws = await wasm(['-O'], { preload: fakeBinaryen('throws') })
+    expect(throws.exitCode).toBe(0)
+    expect(throws.stderr).toContain('Warning: binaryen failed: Aborted(')
+  }, 60_000)
 })

@@ -58,8 +58,11 @@ for (const [platform, target] of Object.entries(PLATFORMS)) {
   const exe = join(stage, windows ? 'encantis.exe' : 'encantis')
   await mkdir(stage, { recursive: true })
   console.log(`building ${name}`)
+  // --splitting puts binaryen (imported only by a build that optimizes) in a
+  // chunk of its own inside the binary, loaded when imported. Without it, its
+  // 24 MB script is parsed when any command starts, which takes 60 ms.
   await run([
-    'bun', 'build', '--compile', '--minify', `--target=${target}`,
+    'bun', 'build', '--compile', '--splitting', '--minify', `--target=${target}`,
     `--define`, `ENCANTIS_VERSION=${JSON.stringify(version)}`,
     'packages/cli/src/cli.ts', '--outfile', exe,
   ])

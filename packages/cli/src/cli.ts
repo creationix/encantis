@@ -14,6 +14,7 @@ import { createTestHost } from '@encantis/compiler/test-host'
 import { realpathSync } from 'node:fs'
 import { basename, relative, resolve } from 'node:path'
 import wabt from 'wabt'
+import { BINARYEN_VERSION, OptimizeError, optimizeWasm, watToWasm } from './wasm'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
 
@@ -47,15 +48,16 @@ Commands:
 
 Options:
   -o <file>       Output file (default: stdout)
+  -O, --optimize  Optimize with binaryen (-Oz); if it can't, warn and write unoptimized
   --json          Output as JSON (for query commands)
   -s, --start <rule>  Start rule for parsing (default: Module)
   --help          Show this help
-  --version       Show the compiler version
+  --version       Show the compiler version and the binaryen it optimizes with
 `)
 }
 
 if (args[0] === '--version' || args[0] === 'version') {
-  console.log(`encantis ${version}`)
+  console.log(`encantis ${version} (binaryen ${BINARYEN_VERSION})`)
   process.exit(0)
 }
 
@@ -259,33 +261,23 @@ switch (command) {
     const wat = programToWat(load.modules, check.results, entryPath)
 
     if (command === 'wasm') {
-      const w = await wabt()
-      let wasmModule: WabtModule | undefined
+      let unoptimized: Uint8Array
       try {
-        wasmModule = w.parseWat(inputFile, wat, { simd: true, multi_value: true, bulk_memory: true })
-        wasmModule.validate()
+        unoptimized = await watToWasm(inputFile, wat)
       } catch (e: any) {
         console.error(`WAT error: ${e.message}`)
         process.exit(1)
       }
-      let { buffer } = wasmModule.toBinary({})
-      wasmModule.destroy()
 
+      let buffer = unoptimized
       if (optimize) {
-        const { execSync } = await import('child_process')
-        const tmpIn = `/tmp/encantis-opt-in-${process.pid}.wasm`
-        const tmpOut = `/tmp/encantis-opt-out-${process.pid}.wasm`
-        await Bun.write(tmpIn, buffer)
         try {
-          execSync(`npx wasm-opt -Oz --enable-bulk-memory --enable-simd --enable-multivalue ${tmpIn} -o ${tmpOut}`, { stdio: 'pipe' })
-          const optimized = await Bun.file(tmpOut).arrayBuffer()
-          const saved = buffer.length - optimized.byteLength
-          buffer = new Uint8Array(optimized)
-          console.error(`Optimized: ${buffer.length + saved} → ${buffer.length} bytes (-${Math.round(saved * 100 / (buffer.length + saved))}%)`)
-        } catch (e: any) {
-          console.error(`Warning: wasm-opt failed, using unoptimized output`)
+          buffer = await optimizeWasm(unoptimized)
+          console.error(`Optimized: ${unoptimized.length} → ${buffer.length} bytes (${change(unoptimized.length, buffer.length)})`)
+        } catch (e) {
+          if (!(e instanceof OptimizeError)) throw e
+          console.error(`Warning: ${e.message}; writing the unoptimized module`)
         }
-        try { const { unlinkSync } = await import('fs'); unlinkSync(tmpIn); unlinkSync(tmpOut) } catch {}
       }
 
       const outPath = outputFile ?? inputFile.replace(/\.ents$/, '.wasm')
@@ -710,6 +702,12 @@ async function checkedInProgram(
     if (result) return { module: load.entry.module, check: result, sources: new Map([...load.modules].map(([path, loaded]) => [path, loaded.source])) }
   }
   return { module: parsed, check: typecheck(parsed) }
+}
+
+// How much a size changed, as a signed percentage: -45.8%, +0.8%.
+function change(before: number, after: number): string {
+  const percent = ((after - before) * 100) / before
+  return `${percent > 0 ? '+' : ''}${percent.toFixed(1)}%`
 }
 
 // Convert byte offset to line:column
