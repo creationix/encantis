@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.2
+## 0.3.0
 
 The first release on the Marketplace since 0.0.4, which had syntax highlighting only. The extension now runs the Encantis compiler in a language server:
 
