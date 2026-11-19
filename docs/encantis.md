@@ -1498,6 +1498,14 @@ func b(s: []Canvas) {}
 func c(c: Canvas) -> u32 => sizeof(Canvas)
 func d(x: host) {}
 func e(p: *?Canvas) {}
+func f(c: Canvas) -> u32 {
+  let p = &[c, c]
+  return p.len
+}
+func g() -> u32 {
+  let p = &[0 as ?Canvas; 4]
+  return p.len
+}
 ```
 
 ```errors
@@ -1507,6 +1515,8 @@ cannot make a slice of Canvas: a host reference has no bytes
 'host' declares a host reference type
 cannot point to ?Canvas: a host reference has no bytes
 cannot take the size of Canvas: a host reference has no bytes
+cannot lay out in memory [2]Canvas: it holds Canvas
+cannot lay out in memory [4]?Canvas: it holds ?Canvas
 ```
 
 <!-- spec:end -->

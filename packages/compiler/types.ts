@@ -429,7 +429,14 @@ export function heldIn<T extends ResolvedType>(t: ResolvedType, picks: (t: Resol
       }
       return null
     case 'array':
+    case 'comptime_array':
       return heldIn(t.element, picks, seen)
+    case 'comptime_list':
+      for (const e of t.elements) {
+        const found = heldIn(e, picks, seen)
+        if (found) return found
+      }
+      return null
     default:
       return null
   }
