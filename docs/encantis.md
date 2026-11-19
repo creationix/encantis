@@ -8182,218 +8182,441 @@ Nothing else runs at compile time: the compiler executes no function body. What 
 
 ## 9. Memory Model
 
+A program keeps its values in two places. **Registers** are the wasm values of a function, its parameters, results and locals, and the globals of the module: every variable, parameter, result and global is held there, a value of several parts in several registers ([9.3](#93-wasm-type-mapping)). **Memory** is the module's one linear memory: bytes at 32-bit addresses from 0, in pages of 64 KiB ([7.3](#73-memory-declarations)). A value is in memory only where the program puts it: `data` declarations, literals given where a pointer or a slice is wanted, and `&` of a literal are laid out there when the program is compiled, and a store through a pointer writes there when it runs.
+
+The language allocates nothing at run time. There is no heap, no garbage collector and no stack in memory: a function's variables are wasm locals, and calls use the engine's own call stack. The memory from the end of the data up ([`sizeof data`](#104-sizes)) is the program's to use as it likes; [`lib/stack.ents`](../lib/stack.ents) is a bump allocator over a `data` buffer, and the containers of `lib/` allocate from it.
+
 ### 9.0 Data Layout
 
-Program data (`data` declarations and literals that need memory) is placed from address 8 up. Address 0 means "none" for optional pointers and slices, so nothing real may live there; the first 8 bytes stay unused, which also keeps data 8-byte aligned. `sizeof data` is the address just past the last byte of data, where free memory begins.
+Data is laid out from address 8 up. Address 0 is the none of an optional pointer or slice ([Optional Types](#optional-types)), so nothing real may live there, and the bytes 0 to 7 are never used. The data of each module is laid out in turn, a module that another imports before the one that imports it; within a module come its `data` declarations in the order they are written, then the literals its code lays out. A program does not depend on that order: it takes an address from the name of the data (`buf as u32`), never writes one as a number.
+
+Entries follow one another with no padding and no alignment, so a `u32` or a `u64` may start at an odd address. A wasm load or store takes any address, so this is never an error, though some engines are slower at an unaligned one. Where alignment matters for speed, the program arranges it: it declares its widest data first, or allocates with an allocator that rounds addresses up (`alloc` of `lib/stack.ents` rounds to 8).
+
+A literal laid out in memory takes one place in the data for each place it is written in the source:
+
+- Equal constant literals may share their bytes: `"abc"` written in two functions can be one address. A `mut` literal and mutable `data` are always their own ([3.2](#32-data-declarations-data)).
+- A literal with a part known only at run time, `sum([x, 5, 6])`, is laid out once, with its constant parts. Each time the expression runs, the run-time parts are stored into that place, so a pointer kept from an earlier run sees the values of the latest.
+- Bytes that are zero cost nothing in the module: memory starts zeroed, and the data section holds only the others. `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file.
+
+Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
+
+`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)). (Known compiler bug: in a program with no data at all it reads 0.)
+
+<!-- spec:begin compile -->
+
+```ents
+data greeting = "Hello"
+data pair = [7:u32, 8]
+
+func free-start() -> u32 => sizeof data
+
+test "data is laid out from address 8, one entry after another" {
+  assert greeting as u32 == 8
+  assert pair as u32 == 13          // right after the 5 bytes of greeting: no alignment
+  assert pair[1] == 8
+  assert free-start() == 21
+}
+```
+
+<!-- spec:end -->
 
 ### 9.1 Stack vs Memory Allocation
 
-Encantis distinguishes between register storage (WASM locals/globals) and linear memory:
+Where a value lives follows from how it is declared:
 
-| Declaration | Storage | Notes |
-|-------------|---------|-------|
-| `let x:i32` | WASM local | Function-scoped register |
-| `let p:Point` | Multiple WASM locals | Fields are separate registers |
-| `let ptr:*[64]u8` | Single WASM local (i32) | Holds a pointer, doesn't allocate |
-| `global g:i32` | WASM global | Module-scoped register |
-| `global s:[]u8` | Two WASM globals (ptr, len) | One per value, like a local |
-| `def buffer = [0:u8; 64]` | Linear memory | Allocates 64 bytes in data section |
+| Declaration | Lives in | As |
+|-------------|----------|----|
+| `let n: i32` | registers | one wasm local |
+| `let p: Point`, with `type Point = (x: f32, y: f32)` | registers | one local per field: `p.x` is `(local.get $p_x)` |
+| `let v: [4]u32` | registers | one local per element |
+| `let w: u128` | registers | two `i64` locals |
+| `let s: []u8` | registers | two `i32` locals, the address and the length |
+| `let q: ?*u8`, `let o: ?[]u8` | registers | as the plain pointer and slice, 0 for none |
+| `let c: Canvas`, with `type Canvas = host` | registers | one `externref` local |
+| `let ptr: *[64]u8 = buffer` | registers | one `i32` local holding an address: nothing is allocated |
+| `global g: i32 = 0` | registers | one wasm global, or one per register for a value of several |
+| `data buffer = mut [0:u8; 64]` | memory | 64 bytes laid out at compile time; `buffer` is their address, a constant `*mut [64]u8` |
+| a literal where a pointer or slice is wanted: `sum([1, 2, 3])`, `log("hi")` | memory | laid out as data is ([9.0](#90-data-layout)) |
+| `&5`, or `&(1.0, 2.0)` where a `*Point` is wanted | memory | a cell of its own, which can be written ([4.7](#element-addresses-and-writes)) |
 
-Primitives and structs are stored in WASM locals/globals—fast registers with no memory address. Pointer variables are single i32 values that reference memory allocated via `def`.
+A variable is never in memory, so it has no address: `&x` of a variable is an error, and a fixed array held in a variable is indexed only by a constant ([2.4](#24-fixed-arrays-value-type)). A `def` is no storage at all: its value is put where its name is written ([3.1](#31-definitions-def)), and an array or a string is laid out with `data` instead (`def cannot contain array/string literals — use 'data table = ...' instead`).
+
+<!-- spec:begin compile -->
 
 ```ents
-let p:Point = Point(1.0, 2.0)   // two f32 WASM locals
-def buffer = [0:u8; 64]         // allocates 64 bytes in data section
-let ptr:*[64]u8 = buffer        // one i32 local holding pointer to buffer
+type Point = (x: f32, y: f32)
 
-// Locals: fields are separate registers
-let a = p.x                      // reads from WASM local
+data buffer = mut [0:u8; 64]            // 64 bytes of memory: buffer is a *mut [64]u8
 
-// Memory: data is serialized bytes
-let b = ptr[0]                   // reads from linear memory
+func demo() -> f32 {
+  let p = Point(1.0, 2.0)               // two f32 locals
+  let ptr: *mut [64]u8 = buffer         // one i32 local, the address of buffer
+  ptr[0] = 9                            // a store into memory
+  return p.x + ptr[0]                   // a local read, and a load
+}
+
+test "registers and memory" {
+  assert demo() == 10.0
+  assert buffer[0] == 9
+}
 ```
 
-Array and string literals in `def` declarations are serialized to the data section of the WASM module.
+```ents
+func address(x: i32) -> *i32 => &x
+```
+
+```errors
+'x' has no address: a variable is held in registers
+```
+
+<!-- spec:end -->
 
 ### 9.2 By-Value vs By-Reference Passing
 
-Struct parameters are passed by value—each field becomes a separate WASM argument:
+Every argument and result is passed by value. A struct, a tuple or a fixed array goes as its parts, one wasm parameter or result each, in order ([9.3](#93-wasm-type-mapping)); the function gets a copy, and assigning to its parameter changes nothing for the caller. A pointer or a slice is passed the same way, as its address (and length): what is copied is the address, and the memory it points to is shared, so a write through it is seen by the caller.
+
+A function that changes a struct of its caller's takes a pointer to it, and the struct then has to be in memory: `data`, an element of an array in memory, or a field of a struct a pointer points to. A pointer is no struct, and `ptr.*` loads the copy where a value is wanted:
+
+<!-- spec:begin compile -->
 
 ```ents
-type Point = (x:f32, y:f32)
+type Point = (x: f32, y: f32)
 
-// This function receives two f32 WASM parameters
-func length(p:Point) -> f32 {
-  return sqrt(p.x * p.x + p.y * p.y)
+data spot: Point = mut (3.0, 4.0)       // a *mut Point
+
+func length(p: Point) -> f32 => sqrt(p.x * p.x + p.y * p.y)   // two f32 parameters
+
+func moved(p: Point) -> Point {
+  p.x += 1.0                            // the caller's value does not change
+  return p
 }
 
-let p = Point(3.0, 4.0)
-length(p)                      // passes p.x, p.y as separate values
-length(Point(1.0, 2.0))        // also valid
-```
-
-You cannot pass a pointer where a by-value struct is expected:
-
-```ents
-let ptr:*Point = ...
-length(ptr)                // ERROR: expected Point, got *Point
-length(ptr.*)              // OK: dereference to get by-value Point
-```
-
-For by-reference semantics, explicitly accept a pointer. The caller must ensure the data is serialized in linear memory:
-
-```ents
-func modify(p:*mut Point) {
-  p.x = 0.0
+func reset(p: *mut Point) {             // one i32 parameter
+  p.x = 0.0                             // writes the caller's memory
   p.y = 0.0
 }
 
-let p = Point(3.0, 4.0)
-modify(&p)                 // ERROR: p has no address (stack-allocated)
-
-let mem_p:*mut Point = allocate_point()
-modify(mem_p)              // OK: mem_p points to linear memory
+test "values are copied, memory is shared" {
+  let p = Point(3.0, 4.0)
+  assert moved(p).x == 4.0
+  assert p.x == 3.0
+  assert length(spot.*) == 5.0
+  reset(spot)
+  assert spot.x == 0.0
+}
 ```
+
+A struct passed by value is its fields: to the host and in the `.wasm` file, `length` is the same function as one written with two `f32` parameters.
+
+```ents
+type Point = (x: f32, y: f32)
+
+export func length(p: Point) -> f32 => sqrt(p.x * p.x + p.y * p.y)
+```
+
+```ents same-wasm
+export func length(x: f32, y: f32) -> f32 => sqrt(x * x + y * y)
+```
+
+```ents
+type Point = (x: f32, y: f32)
+
+func length(p: Point) -> f32 => sqrt(p.x * p.x + p.y * p.y)
+func reset(p: *mut Point) { p.* = Point(0.0, 0.0) }
+
+func of(ptr: *Point) -> f32 => length(ptr)
+func clear() {
+  let p = Point(3.0, 4.0)
+  reset(&p)
+}
+```
+
+```errors
+argument 1: cannot assign *Point to Point
+'p' has no address: a variable is held in registers
+```
+
+<!-- spec:end -->
 
 #### Structural Coercion
 
-Structural struct types match any value with coercible fields at each position, and with the same names. A tuple literal is matched by name where it has names, so `(y: 20, x: 10)` is a `BigPoint` with an `x` of 10, and by position where it has none ([2.8](#struct-constructors)):
+A struct or tuple value that already exists converts to another struct type only where nothing has to be computed for it: the two have the same fields, with the same names in the same order, and each field converts to the other's type ([2.10](#implicit-widening)) and is held in the same wasm value ([9.3](#93-wasm-type-mapping)). A `(x: i8, y: i8)` is a `(x: i32, y: i32)`: each field is an `i32` in wasm either way, an `i8` kept sign-extended in it. A `(x: i32, y: i32)` is no `(x: i64, y: i64)`, since each field would have to be converted (`cannot convert BigPoint to Wide implicitly: convert its fields`): the program builds the new struct from the fields, `Wide(p.x, p.y)`, and each field converts there. A field that does not convert at all is the plain error (`cannot assign (x: u32, y: u32) to BigPoint`). A tuple without names is not a struct with names, and a struct with the same names in another order is none either: only a literal gives its fields by name ([2.8](#struct-constructors)).
+
+A literal is different: its elements convert one by one, as any value meets a declared type, by name where it names them. So `(x: n, y: n)` with `n: i32` is a `Wide`, and `(y: 2, x: 1)` is a `BigPoint` with an `x` of 1.
+
+Through a pointer nothing converts: memory is read as the type the pointer gives it, so a pointer converts only to a pointer to the same type (names, field types and order; or the const form of a `*mut`), and a `*(x: i8, y: i8)`, 2 bytes, is no `*BigPoint`, 8 bytes.
+
+<!-- spec:begin compile -->
 
 ```ents
-type BigPoint = (x:i32, y:i32)
+type BigPoint = (x: i32, y: i32)
+type Wide = (x: i64, y: i64)
 
-func scale(p:BigPoint, factor:i32) -> BigPoint {
-  return BigPoint(p.x * factor, p.y * factor)
+func scale(p: BigPoint, k: i32) -> BigPoint => BigPoint(p.x * k, p.y * k)
+func sum(w: Wide) -> i64 => w.x + w.y
+
+test "a struct converts when its fields are held the same way" {
+  let small = (x: -10:i8, y: 20:i8)
+  assert scale(small, 2).x == -20       // i8 fields are i32s already
+  let p = BigPoint(1, 2)
+  assert sum(Wide(p.x, p.y)) == 3       // i32 to i64: convert the fields
+  let n: i32 = 4
+  assert sum((x: n, y: n)) == 8         // a literal converts element by element
+  assert scale((y: 2, x: 1), 1).x == 1  // and by name
 }
-
-// OK: fields coerce i8 → i32 (by-value, compiler inserts conversions)
-let small = (x: 10:i8, y: 20:i8)
-scale(small, 2)
 ```
-
-> **Status:** only fields that are held the same way coerce (`i8` → `i32`, both a wasm `i32`). A field that needs a conversion (`i32` → `i64`, integer → float) is a checker error for a value that already exists; a literal's elements are converted one by one ([2.10](#implicit-widening)).
-
-This coercion only applies to by-value passing. For pointers, exact memory layout is required:
 
 ```ents
-func process(p:*BigPoint) {
-  // reads/writes memory directly, expects 8 bytes (2 x i32)
-}
+type BigPoint = (x: i32, y: i32)
+type Wide = (x: i64, y: i64)
 
-let small:(x:i8, y:i8) = (x: 10, y: 20)
-process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
+func sum(w: Wide) -> i64 => w.x + w.y
+func first(p: *BigPoint) -> i32 => p.x
+
+func a(p: BigPoint) -> i64 => sum(p)
+func b(q: (x: u32, y: u32)) -> BigPoint => q
+func c(q: (i32, i32)) -> BigPoint => q
+func d(q: *(x: i8, y: i8)) -> i32 => first(q)
 ```
+
+```errors
+argument 1: cannot convert BigPoint to Wide implicitly: convert its fields
+cannot assign (x: u32, y: u32) to BigPoint
+cannot assign (i32, i32) to BigPoint
+argument 1: cannot assign *(x: i8, y: i8) to *BigPoint
+```
+
+<!-- spec:end -->
 
 ### 9.3 WASM Type Mapping
 
+Each type is held in registers as these wasm values:
+
 | Encantis | WASM |
 |----------|------|
-| i8, i16, i32, u8, u16, u32, bool | i32 |
-| i64, u64 | i64 |
-| f32 | f32 |
-| f64 | f64 |
-| `*T` | i32 |
-| `[]T` | i32, i32 (ptr, len) |
-| `*[N]T`, `*[!]T` | i32 (ptr only) |
-| `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
-| a host type (`type Canvas = host`) | externref, null for `0` ([2.13](#213-host-references)) |
+| `i8`, `i16`, `i32`, `u8`, `u16`, `u32` | `i32` |
+| `bool` | `i32`: 0 or 1 |
+| `i64`, `u64` | `i64` |
+| `i128`, `u128` | two `i64`, least significant first |
+| `i256`, `u256` | four `i64`, least significant first |
+| `i512`, `u512` | eight `i64`, least significant first |
+| `f32` | `f32` |
+| `f64` | `f64` |
+| a ranged integer, `u32#N` | its base type: the range is checked at compile time and nothing of it is left |
+| `*T`, `*[N]T`, `*[!]T`, `*[NxM]T`, `*[N][M]T`, `[*]T` | `i32`: the address |
+| `[]T` | `i32 i32`: the address, then the length |
+| `?*T` and every other optional pointer | `i32`, 0 for none |
+| `?[]T` | `i32 i32`, the address 0 and the length 0 for none |
+| a host type, `type Canvas = host` | `externref`, never null ([2.13](#213-host-references)) |
+| `?Canvas` | `externref`, null for none |
+| a struct or tuple, `(a: T1, b: T2, ...)` | the values of each field, in order |
+| a fixed array `[N]T` held by value | the values of each element, in order |
+| `()` | nothing |
+
+A value of several wasm values is that many parameters, results, locals or globals, in that order: a parameter `p: Point` is two `f32` parameters, a `[]u8` result is two `i32` results. Their names in the WAT text are the compiler's; to the host only the order counts ([7.2](#72-exports)).
+
+An integer narrower than 32 bits is held in its `i32` as the number it is: a `u8` or a `u16` zero-extended, an `i8` or an `i16` sign-extended, and a `bool` is 0 or 1. Each operation keeps it so, by masking or sign-extending its result in its own type: `a + b` on two `u8` values is `(i32.and (i32.add a b) (i32.const 255))`, and on two `i8` values a shift left by 24 and back. So widening one of these to a wider one up to 32 bits costs nothing ([11.1](#111-widening-instructions-implicit)). A value an exported function receives is taken as the host gives it, unchecked: the host passes a value its parameter's type holds.
 
 ### 9.4 Slice Construction
 
-Slices are multi-value pairs (pointer + length). When you have separate components, construct a slice by assigning a tuple to a slice-typed binding:
+A slice is an address and a length. Most slices are made without writing either:
+
+- a pointer to an array is a slice of its whole length wherever a slice is wanted ([9.5](#95-array-type-conversions));
+- a range takes part of an array, a slice or a many-pointer: `buf[2..6]`, `s[i..] ?? ""`, `p[0..n]` ([4.8](#48-slicerange-syntax)). A many-pointer has no length, so its range is how a length is given to it.
+
+A pair `(ptr, len)` where a slice is wanted is that slice, for an address and a length that come from elsewhere: a header in memory, the host, arithmetic. The first part is a many-pointer to the slice's elements, as writable as the slice (`slice pointer: cannot assign [*]i32 to [*]mut i32`); a pointer to one value is not one (`slice pointer: cannot assign *i32 to [*]i32`: cast it, `q as [*]i32`). The length is a `u32` (`slice length: cannot assign u64 to u32`). Nothing else is a slice: no other tuple, a single value in parentheses (which is that value), and a many-pointer alone, which has no length.
+
+<!-- spec:begin compile -->
 
 ```ents
-data buffer = mut [0:u8; 1024]
-let ptr = buffer as [*]u8
-let slice:[]u8 = (ptr, 512:u32)     // tuple coerces to slice
-```
+data buffer = mut [0:u8; 16]
 
-Fixed-size pointer types coerce to slices implicitly (the compiler knows the length):
+func whole() -> []u8 => buffer                          // *mut [16]u8 to []u8
+func middle() -> []mut u8 => buffer[4..12]              // a range, proven at compile time
+func first(p: [*]u8, n: u32) -> []u8 => p[0..n]         // a many-pointer is given a length
+func at(addr: u32, n: u32) -> []u8 => (addr as [*]u8, n)  // an address and a length from elsewhere
+
+test "slices" {
+  assert whole().len == 16
+  assert middle().len == 8
+  assert first(buffer, 3).len == 3
+  let s = at(buffer as u32 + 2, 5)
+  assert s.ptr as u32 == buffer as u32 + 2
+  assert s.len == 5
+}
+```
 
 ```ents
-data buffer = mut [0:u8; 1024]
-let slice:[]u8 = buffer              // *[1024]u8 → []u8 implicit
+func f(p: [*]i32, q: *i32, n: u64) {
+  let a: []mut i32 = (p, 2)
+  let b: []u8 = (p, 2)
+  let c: []i32 = (p, n)
+  let d: []i32 = (q, 2)
+  let e: []i32 = p
+  let g: []i32 = (1, 2, 3)
+}
 ```
+
+```errors
+slice pointer: cannot assign [*]i32 to [*]mut i32
+slice pointer: cannot assign [*]i32 to [*]u8
+slice length: cannot assign u64 to u32
+slice pointer: cannot assign *i32 to [*]i32
+cannot assign [*]i32 to []i32
+cannot assign (int(1), int(2), int(3)) to []i32
+```
+
+<!-- spec:end -->
 
 ### 9.5 Array Type Conversions
 
 | From | To | How |
 |------|----|-----|
-| `[]T` | `[*]T` | `slice.ptr` |
-| `[]T` | `u32` | `slice.len` |
-| `[]T` | `([*]T, u32)` | `(slice.ptr, slice.len)` or destructure |
-| `*[N]T` | `[]T` | implicit |
-| `*[N]T` | `[*]T` | `arr.ptr` |
-| `*[!]T` | `[*]T` | `s.ptr` |
-| `*[!]T` | `[]T` | `(s.ptr, s.len)` (len computed by scan) |
-| `([*]T, u32)` | `[]T` | implicit |
-| `[*]T` | `[]T` | ERROR - needs length |
-
-```ents
-let arr:*[16]u8 = ...
-let slice:[]u8 = arr           // OK: implicit
-
-let ptr:*u8 = ...
-let slice:[]u8 = ptr           // ERROR: need length
-let slice:[]u8 = (ptr, 64)     // OK: provide length
-
-// Extract components from slice
-let (ptr, len) = slice           // by position
-let (ptr:, len:) = slice         // by name
-```
+| `*[N]T` | `[]T` | implicit: a slice of length N |
+| `*[N]T` | `[*]T` | implicit, or `p.ptr` |
+| `*mut [N]T`, `[]mut T`, `[*]mut T` | the same without `mut` | implicit |
+| `[]T` | `[*]T` | `s.ptr` |
+| `[]T` | `u32` | `s.len` |
+| `*[!]T` | `[*]T` | `z.ptr` |
+| `*[!]T` | `[]T` | `(z.ptr, z.len)`: the length is scanned for |
+| `[*]T` and a length | `[]T` | `p[0..n]`, or the pair `(p, n)` ([9.4](#94-slice-construction)) |
+| `[*]T` | `[]T` | error: it has no length (`cannot assign [*]u8 to []u8`) |
+| `*T` | `[*]T` | a cast, `q as [*]T` |
+| a pointer or slice of `T` | one of another element `U` | error, also where `T` widens to `U`: the elements would have to be laid out alike ([9.2](#structural-coercion)) |
+| a pointer | another pointer type, `u32` or `i32` | a cast ([2.10](#explicit-casts)) |
 
 `*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
+<!-- spec:begin compile -->
+
+```ents
+type Holder = (s: []u8, n: u32)
+
+data three = [1, 2, 3]
+data four = [4, 5, 6, 7]
+data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]
+
+func total(xs: []i32) -> i32 {
+  let t = 0
+  for x in xs { t += x }
+  return t
+}
+
+func lengths() -> u32 {
+  let both = [three, four]              // a [2][]i32
+  return both[0].len + both[1].len
+}
+
+func hold(t: (s: *[3]u8, n: u32)) -> Holder => Holder(t.s, t.n)
+
+test "a pointer to an array is a slice of its length" {
+  assert total(three) == 6
+  assert lengths() == 7
+  assert rows[1].len == 3
+  assert hold(("abc", 3)).s.len == 3
+}
+```
+
+```ents
+type Holder = (s: []u8, n: u32)
+
+func hold(t: (s: *[3]u8, n: u32)) -> Holder => t
+func widen(s: []u8) -> []u16 => s
+func row() -> u32 {
+  let rows = [[1, 2], [3, 4, 5]]
+  return 0
+}
+```
+
+```errors
+cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
+cannot assign []u8 to []u16
+rows of different lengths
+```
+
+<!-- spec:end -->
+
 ### 9.6 Structs and Slices in Memory
 
-Any value type but a host reference ([2.13](#213-host-references)) can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+Any value type but a host reference ([2.13](#213-host-references)) can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented. A number is stored little-endian, as wasm memory is: the `u32` `0x01020304` is the bytes 4, 3, 2, 1 from its address up.
 
 | Type | Bytes in memory |
 |------|-----------------|
-| `i8`, `u8`, `bool` | 1 |
+| `i8`, `u8` | 1 |
+| `bool` | 1: 0 or 1 |
 | `i16`, `u16` | 2 |
 | `i32`, `u32`, `f32` | 4 |
 | `i64`, `u64`, `f64` | 8 |
 | `i128` ... `u512` | 16 ... 64, as 64-bit limbs, least significant first |
-| `*T`, `[*]T`, `*[N]T` | 4 |
-| `[]T` | 8: the pointer, then the length |
+| `*T`, `[*]T`, `*[N]T`, `*[!]T`, and an optional pointer | 4: the address, 0 for none |
+| `[]T`, `?[]T` | 8: the address, then the length |
 | `[N]T` | N × `sizeof(T)` |
-| `(a:T1, b:T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+| `(a: T1, b: T2, ...)` | the sum of its fields; field `b` starts where `a` ends |
+| `()` | 0 |
 
-`sizeof(T)` is this size, and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset. The one exception is a fixed array that is the element of a pointer or slice (`*[N][M]T`, `[][M]T`, `[*][M]T`): there each element is a 4-byte pointer to its row, which lies apart ([Nesting](#nesting)).
+`sizeof(T)` is this size ([10.4](#104-sizes)), and it is the stride of `[*]T`, `*[N]T` and `[]T`: element `i` is at `i * sizeof(T)` bytes from the start. A struct inside a struct, or a slice or fixed array inside one, lies in place at its field's offset. The one exception is a fixed array that is the element of a pointer or slice (`*[N][M]T`, `[][M]T`, `[*][M]T`): there each element is a 4-byte pointer to its row, which lies apart ([Nesting](#nesting)).
+
+<!-- spec:begin compile -->
 
 ```ents
-type Lane = (cells:[]i32, free:i32)       // 12 bytes: cells.ptr 0, cells.len 4, free 8
-type Option = (d:i32, lane:Lane)          // 16 bytes: d 0, lane 4
-type Mixed = (a:u8, b:i16, c:u64)         // 11 bytes: a 0, b 1, c 3
+type Lane = (cells: []i32, free: i32)     // 12 bytes: cells.ptr at 0, cells.len at 4, free at 8
+type Slot = (d: i32, lane: Lane)          // 16 bytes: d at 0, lane at 4
+type Mixed = (a: u8, b: i16, c: u64)      // 11 bytes: a at 0, b at 1, c at 3
+
+data mixed: Mixed = (1, 0x0203, 4)
+
+test "a struct in memory is its fields, packed" {
+  assert sizeof(Lane) == 12
+  assert sizeof(Slot) == 16
+  assert sizeof(Mixed) == 11
+  let bytes = mixed as [*]u8
+  assert bytes[1] == 3                    // b starts right after a, its low byte first
+  assert bytes[2] == 2
+  assert bytes[3] == 4                    // and c right after b
+}
 ```
+
+<!-- spec:end -->
 
 A value in memory is read and written whole or part by part. Each wasm value of it is one load or store at its offset, so there is nothing to pay for the struct: `list[k] = Spot(a, b, c)` is three stores, and `list[k].di` is one load.
 
+<!-- spec:begin compile -->
+
 ```ents
-type Spot = (c:i32, di:i32, room:i32)
+type Spot = (c: i32, di: i32, room: i32)
 
-func sum(s:Spot) -> i32 => s.c + s.di + s.room
+data spots: *mut [4]Spot = mut [(0, 0, 0); 4]
+data one: Spot = mut (0, 0, 0)
 
-func demo(list:[*]mut Spot, k:u32, p:*mut Spot, all:[]Spot) -> i32 {
-  list[k] = Spot(20, 1, 2)       // store a whole struct
-  let s = list[k]                // load one: s is a copy, in registers
-  p.* = s                        // through a pointer to one struct
-  p.di += 1                      // one field through the pointer (p.* is implied)
-  list[k + 1] = list[k]          // copy from one place to another
-  let t = sum(p.*) + sum(list[k])   // pass by value
-  for spot in all {              // each element in turn
+func sum(s: Spot) -> i32 => s.c + s.di + s.room
+
+func demo(list: [*]mut Spot, k: u32, p: *mut Spot, all: []Spot) -> i32 {
+  list[k] = Spot(20, 1, 2)          // three stores
+  let s = list[k]                   // three loads: s is a copy, in registers
+  p.* = s                           // three stores through a pointer to one struct
+  p.di += 1                         // one field through the pointer (p.* is implied)
+  list[k + 1] = list[k]             // copied from one place to another
+  let t = sum(p.*) + sum(list[k])   // loaded, and passed by value
+  for spot in all {                 // each element in turn
     t += spot.room
   }
   return t
 }
+
+test "structs in memory are loaded and stored field by field" {
+  assert demo(spots, 1, one, spots) == 24 + 23 + 4
+  assert spots[2].c == 20
+  assert one.di == 2
+}
 ```
+
+<!-- spec:end -->
 
 The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opts[i].lane.cells.len`, `for x in opts[i].lane.cells { ... }`.
 
 #### Fixed Arrays in Place
 
-A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it is, as before: `p.items[2].x` is one load at a constant offset.
+A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it lies: `p.items[2].x` is one load at a constant offset.
 
 An array of fixed arrays lies there packed, row after row (`sizeof([N][M]T)` is `N × M × sizeof(T)`), so in place it is the `*[NxM]T` its rows make, not a table ([Nesting](#nesting)): `m.tiles[r][c]` is the byte `r × M + c` from the start of the field, with the row index checked against N and the column against M.
 
@@ -8490,145 +8713,407 @@ writing to an element needs an index known to be in range
 
 <!-- spec:end -->
 
+### 9.7 Traps
+
+A trap stops the program where it is. The call that the host made into the module ends at once with an error (a `WebAssembly.RuntimeError` in JavaScript); nothing more of the module runs for it, not even a deferred expression ([5.3](#53-control-statements)), and nothing in the language catches it. What the call wrote to memory and to globals before the trap stays written, so a host that calls the module again after a trap finds it as the trap left it.
+
+These trap:
+
+| What | When |
+|------|------|
+| integer `/` and `%` by zero | `a / b` or `a % b` with `b` zero: signed or unsigned, any width |
+| signed `/` that overflows | the most negative value divided by -1, `-2147483648 / -1` (its `%` is 0, no trap) |
+| a float cast to an integer that cannot hold it | `x as i32` with `x` NaN, infinite or out of the range of the 32- or 64-bit integer it is truncated to: `1.0e30 as i32`, `-1.0 as u8` (a narrower type is truncated to 32 bits first, then masked: `300.0 as u8` is 44) |
+| a load or a store past the end of memory | a many-pointer indexed far past its data, a pointer cast from a number, a `*[!]T` length scan that finds no terminator before the end |
+| `memcpy`, `memset`, `memzero`, a range fill or a range copy past the end of memory | a length known only at run time that is too large ([10.3](#103-memory-builtins)) |
+| a `match` whose subject matches no arm, with no `_` arm | [5.4](#54-match-expressions) |
+| an `assert` whose condition is false | outside `encantis test` as well |
+| a call deeper than the engine's call stack | unbounded recursion |
+| a host value of a plain host type that is null, where it enters the module | an argument of an exported function, the result of an imported one, an imported global ([2.13](#213-host-references)) |
+
+An imported function can also throw: the host's exception passes through the module's calls in the same way, and nothing of the module runs after it either.
+
+These never trap:
+
+- Integer `+`, `-`, `*`, `<<`, negation and `abs` wrap around in their type: a `u8` 255 plus 1 is 0, and `abs` of the most negative value is that value. A shift count is taken modulo the width ([4.2](#42-bitwise-operators)).
+- Float arithmetic follows IEEE 754: `1.0 / 0.0` is infinity and `0.0 / 0.0` is NaN.
+- A checked index or range that is out of range gives none, which `if let` or `??` resolves ([4.7](#47-bounds-checked-indexing)). A write into an array or a slice needs an index proven in range at compile time, or goes through `&s[i]`, which is checked the same way, so no such write is out of range at run time.
+- A load or a store at any address inside memory, address 0 included. A null pointer is no trap: it reads and writes the unused bytes 0 to 7, which is why an optional pointer is resolved before it is used ([Optional Types](#optional-types)).
+- An index into a many-pointer, which is checked against nothing: inside memory it reads or writes whatever is there.
+
+<!-- spec:begin compile -->
+
+```ents
+func rem(a: i32, b: i32) -> i32 => a % b
+func ratio(a: f64, b: f64) -> f64 => a / b
+
+test "what does not trap" {
+  let byte: u8 = 255
+  assert byte + 1 == 0                  // wraps in its type
+  assert abs(-128:i8) == -128
+  assert rem(-2147483648, -1) == 0
+  assert ratio(1.0, 0.0) > 1.0e308      // infinity
+  let nan = ratio(0.0, 0.0)
+  assert nan != nan
+  let big = 300.0
+  assert big as u8 == 44
+}
+```
+
+<!-- spec:end -->
+
 ---
 
 ## 10. Builtin Functions
 
-Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order. Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)), and so does an imported one. The compiler warns where such a function is declared, once for each declaration (each of the functions that share the name, and one a `test` declares, too): `'max' replaces the builtin max in this module`. A parameter that holds a value, or a local variable, with a builtin's name is no function and replaces nothing: `max(a, b)` beside `let max = 3` is still the builtin, and nothing is said. A comptime function parameter ([8.6](#86-comptime-function-parameters)) is a function: in the body of its generic a call of its name calls the function given for it, so `comptime max: (u32, u32) -> u32` is warned of where it is declared, once: `'max' replaces the builtin max in the body of 'app'`.
+Encantis provides built-in functions that map directly to WASM instructions. These are called like regular functions: each operand is evaluated once, in order, and they take positional arguments only (`'min' takes positional arguments`). Like any function, a builtin can be called with its first operand as the receiver, `x.sqrt()`, `a.min(b)` ([4.9](#49-method-call-syntax)). Their names are not reserved: a function the program declares with the name of a builtin takes its place. A generic function does too: `func max(comptime T: type, a: T, b: T) -> T` is what `max(a, b)` calls in its module (see [8. Generics](#8-generics)), and so does an imported one. The compiler warns where such a function is declared, once for each declaration (each of the functions that share the name, and one a `test` declares, too): `'max' replaces the builtin max in this module`. A parameter that holds a value, or a local variable, with a builtin's name is no function and replaces nothing: `max(a, b)` beside `let max = 3` is still the builtin, and nothing is said. A comptime function parameter ([8.6](#86-comptime-function-parameters)) is a function: in the body of its generic a call of its name calls the function given for it, so `comptime max: (u32, u32) -> u32` is warned of where it is declared, once: `'max' replaces the builtin max in the body of 'app'`.
+
+| Builtin | Operands | Result | Section |
+|---------|----------|--------|---------|
+| `sqrt`, `ceil`, `floor`, `trunc`, `nearest` | one float | the same float type | [10.1](#101-numeric-builtins) |
+| `copysign` | two floats | the float type | [10.1](#101-numeric-builtins) |
+| `abs` | one integer or float | the same type | [10.1](#101-numeric-builtins) |
+| `min`, `max` | two integers or two floats | their type | [10.1](#101-numeric-builtins) |
+| `clz`, `ctz`, `popcnt` | one `i32`, `u32`, `i64` or `u64` | `u8` | [10.2](#102-integer-builtins) |
+| `mul_hi` | two `u64` | `u64` | [10.2](#102-integer-builtins) |
+| `memcpy` | `*mut [N]T`, `*[M]U` or `[*]U`, `u32` | nothing | [10.3](#103-memory-builtins) |
+| `memset` | `*mut [N]T`, `u8`, `u32` | nothing | [10.3](#103-memory-builtins) |
+| `memzero` | `*mut [N]T` | nothing | [10.3](#103-memory-builtins) |
+| `sizeof(T)` | a type | `u32` | [10.4](#104-sizes) |
+| `sizeof data` | none | `u32` | [10.4](#104-sizes) |
+
+A call with another number of operands is an error that says how many it takes (`abs expects 1 argument, got 2`, `memset expects 3 arguments (dest, value, len), got 2`).
 
 ### 10.1 Numeric Builtins
 
-| Function | Input | Returns | Description |
-|----------|-------|---------|-------------|
-| `sqrt(x)` | f32/f64 | same | Square root |
-| `ceil(x)` | f32/f64 | same | Ceiling (round up) |
-| `floor(x)` | f32/f64 | same | Floor (round down) |
-| `trunc(x)` | f32/f64 | same | Truncate toward zero |
-| `nearest(x)` | f32/f64 | same | Round to nearest even (banker's rounding) |
-| `copysign(x, y)` | f32/f64 | same | Copy sign of y to x |
-| `abs(x)` | any numeric | same | Absolute value |
-| `min(a, b)` | any numeric | same | Minimum of two values |
-| `max(a, b)` | any numeric | same | Maximum of two values |
+| Function | Input | Returns | Description | WASM |
+|----------|-------|---------|-------------|------|
+| `sqrt(x)` | `f32`/`f64` | same | Square root; NaN for a negative `x` | `f32.sqrt`/`f64.sqrt` |
+| `ceil(x)` | `f32`/`f64` | same | Round up | `f32.ceil`/`f64.ceil` |
+| `floor(x)` | `f32`/`f64` | same | Round down | `f32.floor`/`f64.floor` |
+| `trunc(x)` | `f32`/`f64` | same | Round toward zero | `f32.trunc`/`f64.trunc` |
+| `nearest(x)` | `f32`/`f64` | same | Round to the nearest integer, a half to the even one | `f32.nearest`/`f64.nearest` |
+| `copysign(x, y)` | `f32`/`f64` | same | `x` with the sign of `y` | `f32.copysign`/`f64.copysign` |
+| `abs(x)` | any integer or float | same | Absolute value | float: `f32.abs`/`f64.abs`; signed integer: a `select` of `x` and `0 - x`; unsigned: `x` itself |
+| `min(a, b)` | two integers or two floats | their type | The smaller | float: `f32.min`/`f64.min`; integer: a `select` on `lt_s` or `lt_u` |
+| `max(a, b)` | two integers or two floats | their type | The larger | float: `f32.max`/`f64.max`; integer: a `select` on `gt_s` or `gt_u` |
+
+The float builtins take a float, and the others a number: anything else is an error (`sqrt requires a float type, got i32`, `max requires a numeric type, got bool`). Their operands are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type ([2.10](#implicit-widening)). With only literals, the operands take their default type, `i32` or `f64`, and an integer literal given to a float builtin is an `f64`: `sqrt(2)` is `sqrt(2.0)`, an `f64` also where an `f32` is wanted (`cannot assign f64 to f32`), so a typed literal says which, `sqrt(2.0:f32)`.
+
+On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min`, `max` and `abs` also take the wide integers, `i128` to `u512`, through functions the compiler adds ([11.5](#115-functions-the-compiler-adds)). `min` and `max` return one of their operands, so when every operand is in a range ([2.2](#ranged-integers)), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`, and indexes a `*[4]T` with no check. On floats they are the wasm instructions: NaN if either operand is NaN, and `-0.0` below `0.0`.
+
+<!-- spec:begin compile -->
 
 ```ents
-let x:f64 = -3.7
-sqrt(abs(x))           // 1.9235...
-floor(x)               // -4.0
-ceil(x)                // -3.0
-trunc(x)               // -3.0
-nearest(2.5)           // 2.0
-min(3.0, 5.0)          // 3.0
-copysign(5.0, -1.0)    // -5.0
+data table = [10:u8, 20, 30, 40]
+
+func clamped(i: u32#4) -> u8 => table[min(i, 2)]   // still a u32#4: no check
+func side(area: f64) -> f64 => area.sqrt()
+
+test "numeric builtins" {
+  let x: f64 = -3.7
+  assert floor(x) == -4.0
+  assert ceil(x) == -3.0
+  assert trunc(x) == -3.0
+  assert nearest(2.5) == 2.0                 // a half goes to the even neighbour
+  assert nearest(3.5) == 4.0
+  assert copysign(5.0, -1.0) == -5.0
+  assert x.abs() == 3.7
+  assert side(9.0) == 3.0
+  assert clamped(3) == 30
+}
+
+test "operands are typed together" {
+  let f: f32 = 0.25
+  let m: f32 = max(1.0, f)                   // f32, the same as max(f, 1.0)
+  assert m == 1.0
+  let n: i32 = -7
+  let big: i64 = 5000000000
+  assert max(n, big) == big                  // i64: n widens
+  assert abs(n - 10) == 17
+  assert n.min(5) == -7
+  assert abs(-128:i8) == -128                // wraps, as -(-128) does
+}
 ```
 
-The operands of a builtin are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type (§2.10). With only literals, the operands take their default type (`i32`, `f64`).
-
-```ents
-let x:f32 = 0.25
-let n:i32 = -7
-let big:i64 = 5000000000
-max(1.0, x)            // f32, the same as max(x, 1.0)
-max(n, big)            // i64: n widens
-abs(n - 10)            // 17
-```
-
-On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min` and `max` return one of their operands, so when every operand is in a range (§2.2), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`.
+<!-- spec:end -->
 
 ### 10.2 Integer Builtins
 
-| Function | Input | Returns | Description |
-|----------|-------|---------|-------------|
-| `clz(x)` | i32/i64/u32/u64 | u8 | Count leading zeros (0 to bit width) |
-| `ctz(x)` | i32/i64/u32/u64 | u8 | Count trailing zeros (0 to bit width) |
-| `popcnt(x)` | i32/i64/u32/u64 | u8 | Population count (0 to bit width) |
-| `mul_hi(a, b)` | u64, u64 | u64 | High 64 bits of the 128-bit product |
+| Function | Input | Returns | Description | WASM |
+|----------|-------|---------|-------------|------|
+| `clz(x)` | `i32`/`u32`/`i64`/`u64` | `u8` | Count of leading zero bits (0 to the width) | `i32.clz`/`i64.clz` |
+| `ctz(x)` | `i32`/`u32`/`i64`/`u64` | `u8` | Count of trailing zero bits (0 to the width) | `i32.ctz`/`i64.ctz` |
+| `popcnt(x)` | `i32`/`u32`/`i64`/`u64` | `u8` | Count of one bits | `i32.popcnt`/`i64.popcnt` |
+| `mul_hi(a, b)` | `u64`, `u64` | `u64` | High 64 bits of the 128-bit product | a call of `$__mul_hi` ([11.5](#115-functions-the-compiler-adds)) |
 
-The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), enabling implicit widening to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error: convert it first (`clz(b as u32) - 24` for a `u8`).
+The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), so it widens implicitly to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error (`clz requires i32, u32, i64 or u64, got u8`): convert it first (`clz(b as u32) - 24` for a `u8`). Arithmetic on the count alone is `u8` arithmetic, which wraps at 256: widen the count first where the result can pass 255 (`(ctz(x) as u32) * 8`).
+
+`mul_hi` multiplies as unsigned: its operands widen to `u64`, so a `u32` or a `u8` is fine, and a signed one is an error (`mul_hi: cannot assign i64 to u64`).
+
+<!-- spec:begin compile -->
 
 ```ents
-let n:u32 = 0b00001000
-clz(n)                 // 28:u8 (leading zeros)
-ctz(n)                 // 3:u8 (trailing zeros)
-popcnt(n)              // 1:u8 (number of 1 bits)
+func bits(x: u64) -> u32 => (ctz(x) as u32) * 8
 
-// Result implicitly widens to target type
-let count:u32 = popcnt(n)    // u8 → u32 implicit
-let big:u64 = 0x500000000
-let odd = big >> ctz(big)    // the count widens to the u64 it shifts: 5
+test "integer builtins" {
+  let n: u32 = 0b00001000
+  assert clz(n) == 28
+  assert ctz(n) == 3
+  assert popcnt(n) == 1
+  assert clz(0:u32) == 32
+  let count: u32 = popcnt(n)                 // u8 widens to u32
+  let big: u64 = 0x500000000
+  assert big >> ctz(big) == 5                // the count widens to the u64 it shifts
+  assert bits(0) == 512                      // ctz(0) * 8 as a u8 would be 0
+  assert n.popcnt() == count
+}
 
-// Arithmetic on the count alone is u8 arithmetic: widen it first if the
-// result can pass 255
-let offset = u64(clz(n)) * 8
+test "mul_hi" {
+  assert mul_hi(0xFFFFFFFFFFFFFFFF, 2) == 1
+  assert mul_hi(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFE
+  let a: u32 = 0x80000000
+  assert mul_hi(a, 0x400000000) == 2         // a widens to u64
+}
 ```
+
+```ents
+func a(x: u8) -> u8 => clz(x)
+func b(x: i64, y: i64) -> u64 => mul_hi(x, y)
+func c(x: i32) -> f64 => sqrt(x)
+```
+
+```errors
+clz requires i32, u32, i64 or u64, got u8
+mul_hi: cannot assign i64 to u64
+sqrt requires a float type, got i32
+```
+
+<!-- spec:end -->
 
 ### 10.3 Memory Builtins
 
-| Function | Input | Returns | Description |
-|----------|-------|---------|-------------|
-| `memcpy(dest, src, len)` | *mut [N]u8, *[M]u8, u32 | — | Copy `len` bytes (`memory.copy`); regions may overlap |
-| `memset(dest, value, len)` | *mut [N]u8, u8, u32 | — | Set `len` bytes to `value` (`memory.fill`) |
-| `memzero(dest)` | *mut [N]T | — | Set all of `dest` to zero (`memory.fill`); its size comes from its type |
-| `memory-size()` | — | i32 | Current memory size in pages (64KB each) |
-| `memory-grow(n)` | i32 | i32 | Grow by n pages, returns previous size or -1 on failure |
+| Function | Input | Returns | Description | WASM |
+|----------|-------|---------|-------------|------|
+| `memcpy(dest, src, len)` | `*mut [N]T`, `*[M]U` or `[*]U`, `u32` | — | Copy `len` bytes from `src` to `dest`; the two may overlap | `memory.copy` |
+| `memset(dest, value, len)` | `*mut [N]T`, `u8`, `u32` | — | Set `len` bytes to `value` | `memory.fill` |
+| `memzero(dest)` | `*mut [N]T` | — | Set all `N × sizeof(T)` bytes of `dest` to zero | `memory.fill` |
 
-`memcpy` and `memset` take pointers to sized arrays. The destination is written, so it is a `*mut` pointer, as for a write through an index: `memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`. With a constant `len`, the compiler checks it against both sizes; with a runtime `len` it warns that it can't. The source of a `memcpy` can also be a many-pointer (`[*]u8`), which has no size to check; a slice is passed as its `.ptr`. Range assignment (§4.8) is the checked form for compile-time sizes.
+The destination is a pointer to an array of a size known at compile time, of any element type, and it is written, so it is a `*mut`:
+
+- a slice is not one (`memcpy dest: expected *[N]T, got []mut u8`), nor a pointer to one value (`memzero dest: expected *[N]T, got *mut Point`: write `p.* = Point(0, 0)`);
+- a `*[!]T` has no size known at compile time: `memcpy` and `memset` take one and check no length against it, and `memzero`, which has no length of its own, refuses it (`memzero dest: *mut [!]u8 has no size known at compile time`);
+- a many-pointer has no size to check (`memset dest: many-pointer has no bounds — use a sized pointer for safe memory operations`); to write through one, cast it to the `*mut [N]T` it is known to point to;
+- a const pointer is not written through (`memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access`).
+
+The source of a `memcpy` is a pointer to an array, or a many-pointer, which has no size to check; a slice is passed as its `.ptr`. `len` counts bytes, whatever the element types (`memset(words, 0, 16)` clears four `u32`), and `value` is the byte each is set to (`memset value: cannot assign int(256) to u8`). With a constant `len`, the compiler checks it against the size of the destination and of a sized source (`memcpy length 20 exceeds buffer size 16 bytes`). A `len` known only at run time is not checked: it warns that it can't be, and a length past the array but inside memory writes over what follows it, silently; past the end of memory it traps ([9.7](#97-traps)).
 
 The size of a table (`*[N][M]T`) is its N row pointers, 4 bytes each, and `memzero` of a table is an error ([Nesting](#nesting)). A length past a table's bytes is an error, and a runtime length for a table warns, each with a note that the rows lie apart: `n * sizeof(T)` for a `T` that is a fixed array counts the rows' cells, not the table.
 
-> **Status: not yet implemented** — `memory-size` and `memory-grow` are not in the compiler yet.
+The range forms of [4.8](#48-slicerange-syntax) do the same, checked: `p[..] = 0` is `memzero(p)`, a fill of a range of bytes is a `memset` and a copy between ranges of lengths known at compile time a `memcpy`. `memcpy` and `memset` are the forms for a length known only at run time. There is no bulk copy into a slice whose length is known only at run time: neither form takes a slice destination, so such a copy is a loop over the elements ([5.2](#52-loops)).
+
+<!-- spec:begin compile -->
 
 ```ents
-let pages = memory-size()    // current page count
-let old = memory-grow(1)     // grow by 1 page, returns old size
-if old == -1 {
-  // allocation failed
+data bytes = mut [0:u8; 8]
+data words = mut [1:u32, 2, 3, 4]
+
+func stamp(upper: bool) { memcpy(bytes, if upper { "ABCD" } else { "abcd" }, 4) }
+func copy-from(s: []u8, n: u32) { memcpy(bytes, s.ptr, n) }   // a length known at run time
+
+test "memcpy, memset and memzero" {
+  stamp(true)
+  assert bytes[3] == 68
+  memset(bytes, 7, 2)                   // two bytes
+  assert bytes[1] == 7
+  assert bytes[2] == 67
+  copy-from("hello", 5)
+  assert bytes[4] == 111
+  memcpy(bytes, bytes[2..8].ptr, 6)     // overlapping: the bytes move down by two
+  assert bytes[0] == 108
+  memset(words, 0, 8)                   // eight bytes: the first two words
+  assert words[1] == 0
+  assert words[2] == 3
+  memzero(words)
+  assert words[3] == 0
 }
 ```
+
+```ents
+type Point = (x: i32, y: i32)
+
+data small = [1:u8, 2, 3, 4]
+data buf = mut [0:u8; 16]
+
+func a(d: []mut u8, s: []u8) { memcpy(d, s, 4) }
+func b(p: *mut Point) { memzero(p) }
+func c(d: [*]mut u8) { memset(d, 0, 4) }
+func e() { memcpy(small, buf, 4) }
+func f() { memcpy(buf, small, 20) }
+```
+
+```errors
+memcpy dest: expected *[N]T, got []mut u8
+memcpy src: expected *[N]T, got []u8
+memzero dest: expected *[N]T, got *mut Point
+memset dest: many-pointer has no bounds — use a sized pointer for safe memory operations
+memcpy dest: cannot write through const pointer *[4]u8 — use *mut for mutable access
+memcpy length 20 exceeds buffer size 16 bytes
+memcpy length 20 exceeds buffer size 4 bytes
+```
+
+<!-- spec:end -->
+
+**Not implemented:** `memory-size()`, the size of the memory in pages of 64 KiB, and `memory-grow(n)`, which would grow it by `n` pages and give the size it had before, or -1 when it cannot grow (`memory.size` and `memory.grow`). A call of either is an error (`unknown identifier 'memory-size'`), and the memory keeps the size it starts with unless the host grows an exported one ([7.3](#73-memory-declarations)).
+
+### 10.4 Sizes
+
+`sizeof(T)` is the number of bytes a value of type `T` takes in memory ([9.6](#96-structs-and-slices-in-memory)): 1 for a `u8` or a `bool`, 4 for any pointer, 8 for any slice, the sum of the fields for a struct, N times the element for `[N]T`, 0 for `()`. Its operand is a type, never a value: `sizeof(x)` of a variable is a syntax error, so the size of what a variable holds is the size of its type. It is a `u32` constant, which widens as a `u32` does (to a `u64`, not to an `i32` or a `u8`: `cannot assign u32 to u8`), and the compiler knows it wherever a constant is wanted: a length (`[sizeof(Pt) * 4]u8`), a range (`u32#(sizeof(Pt))`), a `def`, a global's initializer, a value in `data`. A type with no size is an error: a host reference, which is never in memory (`cannot take the size of Canvas: a host reference has no bytes, so it is never in memory ...`), and a type whose length is only known at run time, `[!]u8` (`sizeof: cannot compute size of dynamically sized type`).
+
+`sizeof data`, written without parentheses (`sizeof(data)` is a syntax error), is the address just past the last byte of the program's data: where memory that nothing is laid out in begins ([9.0](#90-data-layout)). It is a `u32`, the same in every module of a program, and known only once the whole program is laid out: it is read in a function, but it is no constant of the source, so it starts no global, `def` or `data` and is no length (`global initializer must be a compile-time constant`).
+
+<!-- spec:begin compile -->
+
+```ents
+type Pt = (x: i32, y: i32)
+
+def pt-size = sizeof(Pt)
+data buf = mut [0:u8; sizeof(Pt) * 4]       // room for four
+global top: u32 = 0
+
+// n bytes of the memory past the data, nothing freed.
+func bump(n: u32) -> u32 {
+  let at = sizeof data + top
+  top += n
+  return at
+}
+
+test "sizes" {
+  assert sizeof(u8) == 1
+  assert sizeof(bool) == 1
+  assert sizeof(u128) == 16
+  assert sizeof(*u64) == 4
+  assert sizeof([]u8) == 8
+  assert sizeof((a: u8, b: u32)) == 5
+  assert sizeof([3]u16) == 6
+  assert pt-size == 8
+  assert buf.len == 32
+  let wide: u64 = sizeof(Pt)                // a u32 widens
+  assert wide == 8
+}
+
+test "sizeof data is where free memory starts" {
+  let a = bump(16)
+  assert a == buf as u32 + 32
+  assert bump(4) == a + 16
+}
+```
+
+```ents
+type Canvas = host
+data buf = mut [0:u8; 8]
+global end: u32 = sizeof data
+
+func a() -> u32 => sizeof(Canvas)
+func b() -> u8 => sizeof(u64)
+```
+
+```errors
+global initializer must be a compile-time constant
+cannot take the size of Canvas: a host reference has no bytes, so it is never in memory
+cannot assign u32 to u8
+```
+
+<!-- spec:end -->
 
 ---
 
 ## 11. WebAssembly Reference
 
-The compiler targets engines with WebAssembly 2.0, the one engine every program targets, and writes only what a program needs of it: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with no range fill or copy no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
+A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds) and the null check of a plain host reference where it enters the module ([2.13](#213-host-references)).
+
+The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
 
 ### 11.1 Widening Instructions (implicit)
 
 | Conversion | Instruction |
 |------------|-------------|
-| i32 → i64 | i64.extend_i32_s / _u |
-| i8, u8, i16, u16 → f32 | f32.convert_i32_s / _u |
-| i32 → f64 | f64.convert_i32_s / _u |
-| f32 → f64 | f64.promote_f32 |
+| an integer of up to 32 bits to a wider one of up to 32 bits | none |
+| an integer of up to 32 bits to `i64` or `u64` | `i64.extend_i32_s` / `_u` |
+| `i8`, `u8`, `i16`, `u16` → `f32` | `f32.convert_i32_s` / `_u` |
+| an integer of up to 32 bits → `f64` | `f64.convert_i32_s` / `_u` |
+| `f32` → `f64` | `f64.promote_f32` |
+| an integer → a wide integer (`u128` ...) | the value in the lowest limb; the others 0 for an unsigned value, its sign for a signed one |
 
-Here `i32` stands for every integer type up to 32 bits: they all live in a wasm `i32`, so widening among them emits nothing. `_s` or `_u` follows the signedness of the type widened.
+Every integer of up to 32 bits lives in a wasm `i32`, already zero- or sign-extended ([9.3](#93-wasm-type-mapping)), so widening among them emits nothing. `_s` or `_u` follows the signedness of the type widened: a `u32` becomes the `i64` of the same number.
 
 ### 11.2 Narrowing Instructions (explicit cast)
 
 | Conversion | Instruction |
 |------------|-------------|
-| i64 → i32 | i32.wrap_i64 |
-| i32, u32 → f32 | f32.convert_i32_s / _u |
-| i64 → f32 | f32.convert_i64_s / _u |
-| i64 → f64 | f64.convert_i64_s / _u |
-| f64 → f32 | f32.demote_f64 |
-| f32 → i32 | i32.trunc_f32_s / _u |
-| f64 → i32 | i32.trunc_f64_s / _u |
-| f32 → i64 | i64.trunc_f32_s / _u |
-| f64 → i64 | i64.trunc_f64_s / _u |
+| `i64`, `u64` → an integer of up to 32 bits | `i32.wrap_i64`, then as below for a narrower one |
+| to `u8`, `u16` | `i32.and` with 255 or 65535 |
+| to `i8`, `i16` | `i32.shl` by 24 or 16, then `i32.shr_s` back |
+| between signed and unsigned of one width, `i32` ↔ `u32` | none: the same bits |
+| `i32`, `u32` → `f32` | `f32.convert_i32_s` / `_u` |
+| `i64`, `u64` → `f32` | `f32.convert_i64_s` / `_u` |
+| `i64`, `u64` → `f64` | `f64.convert_i64_s` / `_u` |
+| `f64` → `f32` | `f32.demote_f64` |
+| `f32`, `f64` → `i32`, `u32` | `i32.trunc_f32_s` / `_u`, `i32.trunc_f64_s` / `_u` |
+| `f32`, `f64` → `i64`, `u64` | `i64.trunc_f32_s` / `_u`, `i64.trunc_f64_s` / `_u` |
+| `f32`, `f64` → a narrower integer | the 32-bit truncation, then the mask or the shifts |
+| a wide integer → a narrower integer | its lowest limb, then as above |
+| `bool` → an integer | none: it is 0 or 1 |
+| a pointer → another pointer, `u32` or `i32` | none |
+
+A float truncates toward zero, and the `trunc` instructions trap on NaN, an infinity or a value the 32- or 64-bit integer cannot hold ([9.7](#97-traps)). **Not implemented:** a cast between a float and a wide integer (`cannot cast i128 to f64: not supported yet`).
 
 ### 11.3 Control Flow Instructions
 
 | Encantis | WASM |
 |----------|------|
-| `if`/`elif`/`else` | `if`/`else`/`end` (nested) |
-| `match { }` | `br_table` or nested `if`/`else` |
-| `while { }` | `block`/`loop` + `br_if` |
-| `loop { }` | `loop`/`end` |
-| `break` | `br` (to enclosing block) |
-| `break when` | `br_if` |
-| `continue` | `br` (to loop head) |
-| `continue when` | `br_if` (to loop head) |
-| `return` | `return` |
+| `if`/`elif`/`else` | `if`/`else`, an `elif` as an `if` in the `else`; `(if (result T) ...)` where it gives a value |
+| `match` | one comparison per arm in the order written, as nested `if`/`else`; with no `_` arm the last `else` is `unreachable` |
+| `while c { ... }` | `(block $break (loop $continue (br_if $break (i32.eqz c)) ... (br $continue)))` |
+| `loop { ... }` | `(block $break (loop $continue ... (br $continue)))` |
+| `for` | a `block` and a `loop` that step a counter, or an address by the element's size; the body is a `block` of its own, which `continue` leaves to reach the step |
+| `break`, `break when c` | `br $break`, `br_if $break c` |
+| `continue`, `continue when c` | `br` and `br_if` to the loop's head, or in a `for` to its step |
+| `return`, `return x when c` | `return`, `(if c (then x (return)))` |
+| `a && b`, `a \|\| b` | `(if (result i32) a (then b) (else (i32.const 0)))`, `(if (result i32) a (then (i32.const 1)) (else b))` |
+| `if let`, `??` | an `if` on the check: the index against the length, the pointer against 0 |
+| `defer e` | `e` written out again at each way out of its block, after a `return`'s value is computed |
+| `assert c` | `(if (i32.eqz c) (then (unreachable)))` |
+
+A `match` is never a `br_table`: its arms are compared one after another. A function's code may end in an `unreachable` that never runs: every path through a function with results returns a value, as the checker requires.
+
+### 11.4 Memory Access
+
+A value in memory is read and written one wasm value at a time, at its offset ([9.6](#96-structs-and-slices-in-memory)):
+
+| Type | Load | Store |
+|------|------|-------|
+| `i8` | `i32.load8_s` | `i32.store8` |
+| `u8`, `bool` | `i32.load8_u` | `i32.store8` |
+| `i16` | `i32.load16_s` | `i32.store16` |
+| `u16` | `i32.load16_u` | `i32.store16` |
+| `i32`, `u32`, a pointer | `i32.load` | `i32.store` |
+| `i64`, `u64` | `i64.load` | `i64.store` |
+| `f32`, `f64` | `f32.load`, `f64.load` | `f32.store`, `f64.store` |
+| a wide integer | one `i64.load` per limb, from the lowest | one `i64.store` per limb |
+| a slice, a struct, a fixed array | one access per part, each at its offset | the same |
+
+A constant offset is the instruction's `offset=` immediate: `p.y` of a `*Point` with `type Point = (x: f32, y: f32)` is `(f32.load offset=4 p)`. An index computes the address as the start plus the index times the element's size. The alignment the instructions declare is the natural one, which is only a hint: data is not aligned ([9.0](#90-data-layout)), and an unaligned access gives the same result.
+
+### 11.5 Functions the Compiler Adds
+
+A few operations are calls of a function that the compiler adds to the module, once, where the program uses them:
+
+- `$__mul_hi`, for `mul_hi` ([10.2](#102-integer-builtins));
+- `$__w…`, one for each operation on a wide integer (`i128` to `u512`) that the program uses: arithmetic, bitwise operations, shifts and rotations, comparisons, negation, `min`, `max`, `abs`, sign extension, and the store of one into an array literal;
+- `$__host_globals`, the module's start function, where it imports a global of a plain host type: it traps when the host gave null ([2.13](#213-host-references)).
+
+`encantis test` compiles each `test` block as a function of its own, and imports `__assert_fail` from the module `test`: there a false `assert` calls it with the source position before it traps, so the runner can say where. A program built otherwise has neither.
 
 ---
 
