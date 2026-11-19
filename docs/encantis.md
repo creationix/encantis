@@ -1448,6 +1448,7 @@ func n(c: Canvas) -> i32 {
 func k() -> ?Canvas => 0 + 0
 func l(x: ?Canvas) -> bool => x == 1 - 1
 func m() -> ?Canvas => "".len as ?Canvas
+func o(c: Canvas) -> Context => c as Context
 ```
 
 ```errors
@@ -1465,6 +1466,33 @@ elements have different types: int(0) and Canvas
 cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
 '==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal
 cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
+cannot cast Canvas to Context: they are two host types, and neither is the other
+```
+
+A reference is asked nothing but, for an optional one, whether it is none; and an array of them held in registers is reached by a constant index alone:
+
+```ents
+type Canvas = host
+
+func a(c: Canvas, d: Canvas) -> Canvas => c ?? d
+func b(c: Canvas) -> i32 => if let x = c { 1 } else { 0 }
+func c(c: ?Canvas) -> i32 => match c { 0 => 1, _ => 2 }
+func d(c: ?Canvas) -> i32 => if c { 1 } else { 0 }
+func e(c: Canvas) -> bool => !c
+func f(cs: [3]?Canvas, i: u32) -> ?Canvas => cs[i]
+func g(cs: [3]?Canvas) {
+  for c in cs {}
+}
+```
+
+```errors
+?? requires an optional expression or bounds-checked index: a Canvas is never null
+if let requires an optional expression or bounds-checked index: a Canvas is never null
+cannot match ?Canvas against int(0): ?Canvas is a host reference that may be null: ask with == 0 or != 0, or resolve it with if let or ??
+condition must be bool, not ?Canvas: ?Canvas is a host reference that may be null
+operand of '!' must be bool, not Canvas: a Canvas is never null
+dynamic index on value type [3]?Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
+cannot iterate over [3]?Canvas: an array held in registers is not looped over, and a host reference is never in memory
 ```
 
 A plain host reference has no default, in a variable, a global or a named result, and in a struct or an array either:
@@ -1533,8 +1561,8 @@ cannot make a slice of Canvas: a host reference has no bytes
 'host' declares a host reference type
 cannot point to ?Canvas: a host reference has no bytes
 cannot take the size of Canvas: a host reference has no bytes
-cannot lay out in memory [2]Canvas: it holds Canvas
-cannot lay out in memory [4]?Canvas: it holds ?Canvas
+cannot lay out [2]Canvas: it holds Canvas, and a host reference has no bytes, so it is never in memory
+cannot lay out [4]?Canvas: it holds ?Canvas
 cannot take the width of Canvas: a host reference has no bytes
 cannot take .ptr of [2]Canvas: a fixed array held by value has no address
 ```

@@ -40,6 +40,7 @@ import {
   MAX_TYPE_PARTS,
   typeRegisters,
   hostRegisters,
+  shownApart,
   MAX_PARAM_REGISTERS,
   MAX_RESULT_REGISTERS,
   MAX_FUNCTION_REGISTERS,
@@ -1129,7 +1130,7 @@ class CheckContext {
   }
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
-    this.neverInMemory(serializationType.element, expr.span.start, 'lay out in memory')
+    this.neverInMemory(serializationType.element, expr.span.start, 'lay out')
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
     this.pendingLiterals.push({ id, expr })
   }
@@ -3171,8 +3172,10 @@ class CheckContext {
         } else if (pointee?.kind === 'array' && pointee.sizes?.length === 1 && typeof pointee.sizes[0] === 'number') {
           elemType = this.rowOf(iterableType) ?? pointee.element
         } else if (iterableType.kind !== 'primitive') {
-          this.error(stmt.iterable.span.start,
-            `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
+          const element = iterableType.kind === 'array' ? iterableType.element : null
+          this.error(stmt.iterable.span.start, element && hostIn(element)
+            ? `cannot iterate over ${typeToString(iterableType)}: an array held in registers is not looped over, and a host reference is never in memory: reach each element by a constant index`
+            : `cannot iterate over ${typeToString(iterableType)}: use a count, a slice, or a pointer to a fixed-size array`)
         } else if (!isInteger(iterableType) || (byteSize(iterableType) ?? 8) > 4) {
           // The loop variable is a u32 compared with the count.
           this.error(stmt.iterable.span.start, `a loop count must be an integer of at most 32 bits, not ${typeToString(iterableType)}`)
@@ -6667,8 +6670,9 @@ class CheckContext {
     // A host reference is no number and no address: nothing converts to or
     // from one, and one host type is not another. 0 is an optional one's
     // none, and a plain one widens to its optional.
-    const host = hostIn(from) ?? hostIn(to)
+    const fromHost = unwrap(from)
     const toHost = unwrap(to)
+    const host = fromHost.kind === 'host' ? fromHost : toHost.kind === 'host' ? toHost : null
     const fits = toHost.kind === 'host' && typeAssignable(to, from)
     if (host && toHost.kind === 'host' && toHost.optional && unwrap(from).kind === 'comptime_int' && !this.writtenZero(operand)) {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${noneIsWritten(toHost)}`
@@ -6676,7 +6680,9 @@ class CheckContext {
     if (host && !typeEquals(from, to) && !fits) {
       const zero = unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
       if (zero && toHost.kind === 'host') return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${neverNull(toHost)}`
-      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${host.name} is a host reference, which is no number and no address`
+      const [shownFrom, shownTo] = shownApart(from, to)
+      if (fromHost.kind === 'host' && toHost.kind === 'host') return `cannot cast ${shownFrom} to ${shownTo}: they are two host types, and neither is the other`
+      return `cannot cast ${shownFrom} to ${shownTo}: ${host.name} is a host reference, which is no number and no address`
     }
     const named = this.functionNamed(operand)
     if (named && unwrap(to).kind !== 'func') {
@@ -6705,7 +6711,7 @@ class CheckContext {
   // implicit truthiness.
   private requireBool(expr: AST.Expr, type: ResolvedType, what: string): void {
     if (type !== RECOVERY && !isBool(type)) {
-      this.error(expr.span.start, `${what} must be bool, not ${typeToString(type)}`)
+      this.error(expr.span.start, `${what} must be bool, not ${typeToString(type)}${nullQuestion(type)}`)
     }
   }
 
@@ -6736,7 +6742,8 @@ class CheckContext {
       const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
         : to.kind === 'host' && !to.optional && from.kind === 'host' && from.optional && from.name === to.name ? `: it may be null — resolve it with 'if let' or '??' first`
         : reordered(from, to, typeToString(expected))
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${why}`,
+      const [shownActual, shownExpected] = shownApart(actual, expected)
+      this.error(expr.span.start, `${prefix}cannot assign ${shownActual} to ${shownExpected}${why}`,
         this.rowNote(expr.span.start, actual, expected))
       return
     }
@@ -7697,7 +7704,11 @@ class CheckContext {
         const n = objType.sizes[0]
         const idx = this.evalComptimeExpr(expr.index)
         if (idx === null || idx.kind !== 'int') {
-          this.error(expr.index.span.start, `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
+          // A host reference is never in memory: no pointer or slice reaches
+          // one, so the only way to an element is a constant index.
+          this.error(expr.index.span.start, hostIn(objType.element)
+            ? `dynamic index on value type [${n}]${typeToString(objType.element)} — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory`
+            : `dynamic index on value type [${n}]${typeToString(objType.element)} — use a pointer or slice for dynamic access`)
         } else if (idx.value < 0n || idx.value >= BigInt(n)) {
           this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${n}]${typeToString(objType.element)}`)
         } else if (expr.index.kind !== 'LiteralExpr') {
@@ -7798,7 +7809,7 @@ class CheckContext {
       // Primitive element: leftType is already the unwrapped element type
       elemType = leftType
     } else {
-      this.error(expr.span.start, '?? requires an optional expression or bounds-checked index')
+      this.error(expr.span.start, `?? requires an optional expression or bounds-checked index${nullQuestion(leftType)}`)
       elemType = leftType
     }
 
@@ -8080,7 +8091,7 @@ class CheckContext {
       // Primitive element: condType is already the unwrapped element type
       elemType = condType
     } else {
-      this.error(expr.span.start, 'if let requires an optional expression or bounds-checked index')
+      this.error(expr.span.start, `if let requires an optional expression or bounds-checked index${nullQuestion(condType)}`)
       elemType = condType
     }
     const unwrapped = elemType
@@ -8187,7 +8198,7 @@ class CheckContext {
         if (!type || !comparable || !typeAssignable(subject, type)) {
           const shown = type ? typeToString(type) : 'a string'
           const hint = value.kind === 'string' && isInteger(subject) ? ` — ${notACharacter(value.bytes)}` : ''
-          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}`)
+          this.error(arm.span.start, `cannot match ${typeToString(subjectType)} against ${shown}${hint}${nullQuestion(subjectType)}`)
         }
       }
     }
@@ -11212,6 +11223,19 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
 // reference
 function noneIsWritten(host: HostRT): string {
   return `none of a ${typeToString(host)} is written 0, the literal, and nothing computed is one`
+}
+
+// What to say where a host reference is asked a question it has no answer
+// to (a condition, ??, if let, match): whether it is null, and how that is
+// asked. Empty for any other type.
+function nullQuestion(type: ResolvedType): string {
+  const host = hostIn(type)
+  if (!host) return ''
+  const u = unwrap(type)
+  if (u.kind !== 'host') return `: ${typeToString(type)} holds ${typeToString(host)}, a host reference`
+  return u.optional
+    ? `: ${typeToString(u)} is a host reference that may be null: ask with == 0 or != 0, or resolve it with if let or ??`
+    : `: ${neverNull(u)}`
 }
 
 // Why 0, or a question of null, does not fit a plain host reference

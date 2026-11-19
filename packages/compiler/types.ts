@@ -1668,6 +1668,25 @@ export function typeRegisters(t: ResolvedType, memo: Map<ResolvedType, number> =
   return n
 }
 
+// Two types for one message, each as it is shown, and where the two would read
+// alike but are not the same type (two modules' Canvas, one a host type and
+// the other an i32 or another name for a host type), each with what it
+// stands for: Canvas (i32) and Canvas (a host type).
+export function shownApart(a: ResolvedType, b: ResolvedType): [string, string] {
+  const [sa, sb] = [typeToString(a), typeToString(b)]
+  if (sa !== sb || typeEquals(a, b)) return [sa, sb]
+  const standsFor = (t: ResolvedType, shown: string): string => {
+    const u = unwrap(t)
+    if (u.kind === 'host') {
+      const own = typeToString(u)
+      return own === shown ? `${shown} (a host type)` : `${shown} (host type ${own})`
+    }
+    const plain = typeToString(u)
+    return plain === shown ? shown : `${shown} (${plain})`
+  }
+  return [standsFor(a, sa), standsFor(b, sb)]
+}
+
 // How many of the registers typeRegisters counts hold a host reference. A
 // value too large for its registers is moved into memory, behind a pointer,
 // but these cannot be: what is over the limit because of them is advised to

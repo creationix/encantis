@@ -305,6 +305,19 @@ export func outer(c: Canvas) -> Canvas {
     expect(wat).not.toContain('start')
   })
 
+  // Two modules' types of one name that are not one type are told apart in
+  // a message by what each stands for.
+  test('a message tells two types of one name apart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
+    try {
+      await writeFile(join(dir, 'lib.ents'), 'type Canvas = host\nexport func keep(c: Canvas) -> Canvas => c\n')
+      await writeFile(join(dir, 'main.ents'), 'type Canvas = i32\nimport "./lib" "keep" func keep(c: Canvas) -> Canvas\nexport func run(c: Canvas) -> Canvas => keep(c)\n')
+      await expect(compileToWasm(join(dir, 'main.ents'))).rejects.toThrow('cannot assign Canvas (i32) to Canvas (a host type)')
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
   test('two source modules share a host type by its name', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
     try {
