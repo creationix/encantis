@@ -6094,7 +6094,7 @@ test "counting" {
 
 #### Elements
 
-`for x in xs` runs its body once for each element of `xs`, first to last, with `x` a copy of the element; `for i, x in xs` also gives the element's index `i`, a `u32` from 0. These have elements a loop walks:
+`for x in xs` runs its body once for each element of `xs`, first to last, with `x` a copy of the element; `for i, x in xs` also gives the element's index `i`, a plain `u32` from 0, even over a `*[N]T`: it has no range, so it proves no index into another array (`runtime index on *[3]u32 requires 'if let' or '??'`). To walk two arrays of one length together, count instead: `for i in xs.len` makes `i` a `u32#N` ([Counting](#counting)). These have elements a loop walks:
 
 - a slice, `[]T` or `[]mut T`;
 - a pointer to a fixed array, `*[N]T` or `*mut [N]T`: a `data` block, a string literal, or a fixed array that lies in memory, such as the field `p.cells` of the struct a pointer `p` points to;
@@ -6174,7 +6174,7 @@ Nothing else is looped over, and each has its way:
 - a many-pointer, `[*]T`, has no length: make a slice of it and a length, `let s: []T = (p, n)`;
 - a `*[!]T` has its length only when it is scanned for: make the slice once, `(z.ptr, z.len)`, and loop over that;
 - a packed `*[NxM]T`: loop over the row index, `for i in p.len`, and then over the row `p[i]`;
-- an array held in registers, a `[N]T` variable or an array literal written in place, is indexed by constants only ([2.4](#24-fixed-arrays-value-type)): a loop needs it in memory;
+- an array held in registers, a `[N]T` variable or an array literal written in place, is indexed by constants only ([2.4](#24-fixed-arrays-value-type)): a loop needs it in memory, so write `for x in &[1, 2, 3]` (a cell of its own, [Literals in Memory](#literals-in-memory)), give the variable a slice type, `let xs: []i32 = [1, 2, 3]`, or lay the array out with `data`;
 - an optional slice, `?[]T`, may be none: resolve it with `if let` or `??` first;
 - a pointer to one value, `*T`, and a number that isn't an integer of at most 32 bits.
 
@@ -6187,6 +6187,9 @@ func c(m: *[2x3]i32) { for r in m { } }
 func d(v: [3]u32) { for x in v { } }
 func e(o: ?[]u32) { for x in o { } }
 func f(n: i64) { for i in n { } }
+func g(xs: *[3]u32, ys: *[3]u32) -> (t: u32) {
+  for i, x in xs { t += x * ys[i] }
+}
 ```
 
 ```errors
@@ -6196,6 +6199,7 @@ cannot iterate over *[2x3]i32: use a count, a slice, or a pointer to a fixed-siz
 cannot iterate over [3]u32: use a count, a slice, or a pointer to a fixed-size array
 cannot iterate over ?[]u32: it may be none — resolve it with 'if let' or '??' first
 a loop count must be an integer of at most 32 bits, not i64
+runtime index on *[3]u32 requires 'if let' or '??' (no optional type for u32)
 ```
 
 ```ents
@@ -6221,9 +6225,26 @@ func cells() -> i32 {
   return t
 }
 
-test "a slice for a *[!]T, a row index for a *[NxM]T" {
+data samples = [1:u32, 2, 3]
+data weights = [3:u32, 2, 1]
+
+func dot() -> (t: u32) {
+  for i in samples.len {           // i is a u32#3: it indexes both
+    t += samples[i] * weights[i]
+  }
+}
+
+func literal() -> (t: i32) {
+  for x in &[1, 2, 3] {            // & lays the literal out
+    t += x
+  }
+}
+
+test "a slice for a *[!]T, a row index for a *[NxM]T, a count for two arrays" {
   assert bytes(name) == 294
   assert cells() == 21
+  assert dot() == 10
+  assert literal() == 6
 }
 ```
 
@@ -6614,7 +6635,7 @@ These are the patterns that are implemented:
 | `true`, `false` | that bool |
 | `_` | any value |
 
-A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A string is not a pattern. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a host reference, a struct or a slice, takes no pattern but `_`, and neither does one wider than 64 bits (`cannot match u128 against int(0)`). A constant subject with no type of its own (`7`, an untyped `def`, a fixed array's `.len`) is compared in the default type of its value, an `i32` for 7, so `match 7 { 3000000000 => ... }` is `cannot match i32 against int(3000000000)`; a typed `def` is compared in its type. Patterns are not checked against one another: a value that two patterns match (`1, 1 =>`, or `1` in two arms) is no error, and the first arm with it runs.
+A pattern is compared in the subject's type, so it has to be a value of that type, or it is an error: `300` for a `u8` is `cannot match u8 against int(300)`, and so are `-1` for a `u32` and `1.5` for an `i32`. A ranged subject is compared as its plain type: `5` for a `u32#4` is accepted, and its arm never runs. A string is not a pattern: on a `[]u8` it is `cannot match []u8 against a string`, and on an integer `cannot match u8 against a string — a string is bytes in memory, not a character: a character is written in single quotes ('a')`. The subject is an integer, a float or a `bool`, of at most 64 bits; a subject of any other type, a pointer, an optional, a host reference, a struct or a slice, takes no pattern but `_` (`cannot match *u32 against int(0)`), and neither does one wider than 64 bits (`cannot match u128 against int(0)`). A constant subject with no type of its own (`7`, an untyped `def`, a fixed array's `.len`) is compared in the default type of its value, an `i32` for 7, so `match 7 { 3000000000 => ... }` is `cannot match i32 against int(3000000000)`; a typed `def` is compared in its type. Patterns are not checked against one another: a value that two patterns match (`1, 1 =>`, or `1` in two arms) is no error, and the first arm with it runs.
 
 A `def`'s name is not a pattern: a name in a pattern would be a binding ([6.3](#63-patterns-in-match-arms)), and a binding cannot take a def's name. Write the def's value, or compare with `if` and `elif`. The other patterns of [6.1](#61-pattern-forms), names, tuples, constructors and guards, are not implemented.
 
@@ -6672,12 +6693,18 @@ func c(k: u32) -> u32 => match k {
   size => 1
   _ => 0
 }
+
+func d(p: *u32) -> u32 => match p {
+  0 => 1
+  _ => 0
+}
 ```
 
 ```errors
 cannot match u8 against int(300)
 cannot match []u8 against a string
 'size' is already declared: a match binding cannot reuse the name of a def
+cannot match *u32 against int(0)
 ```
 
 <!-- spec:end -->
@@ -6704,7 +6731,7 @@ A pattern is written where a value is taken apart or tested. There are two kinds
 | `(f: name)` | the field named `f`, to `name` |
 | `a, b, ...` | right after `let` or `set`, without parentheses, plain names only: the same as `(a, b, ...)` |
 
-By-position and by-name parts can be mixed: in `let (x, y:) = p`, `x` is the first field and `y` the field named `y`. After `f:` comes a name, not a pattern: `let (pos: (x:, y:)) = b` is a syntax error (bind `pos`, then take it apart with another `let`). `_` is not a pattern either: name a part that is not used, or leave out parts at the end, since a pattern by position may have fewer parts than the value has fields (more is `tuple has 2 fields, but pattern has 3`). A constructor pattern, `let Point(x, y) = p`, is not implemented: it is a syntax error ([6.5](#65-let-destructuring)).
+By-position and by-name parts can be mixed: in `let (x, y:) = p`, `x` is the first field and `y` the field named `y`. In a pattern, parentheses always make a pattern by position, also around one name: `let (x) = pair()` binds the first element, `set (q) = pair()` sets `q` from it, and `let (x) = 5:u32` is `cannot destructure non-tuple type: u32` (in an expression, `(x)` is grouping, [2.7](#27-tuple-types)). After `f:` comes a name, not a pattern: `let (pos: (x:, y:)) = b` is a syntax error (bind `pos`, then take it apart with another `let`). `_` is not a pattern either: name a part that is not used, or leave out parts at the end, since a pattern by position may have fewer parts than the value has fields (more is `tuple has 2 fields, but pattern has 3`). A constructor pattern, `let Point(x, y) = p`, is not implemented: it is a syntax error ([6.5](#65-let-destructuring)).
 
 **Match patterns**, in a match arm ([5.4](#54-match-expressions)):
 
@@ -6949,7 +6976,7 @@ if let Rgb(r, g, b) = color {
 
 ### 6.5 Let Destructuring
 
-`let` and `set` take a value apart with a binding pattern ([6.1](#61-pattern-forms)): by position, by field name, nested by position, or as names after `let` without parentheses. A `let` declares the variables ([3.3](#33-variables)); a `set` assigns variables that exist ([4.5](#45-assignment-and-compound-assignment)). Both take apart tuples, structs and the several results of a call, not a slice (`cannot destructure non-tuple type: []u8`: read its `.ptr` and `.len`). The whole value is computed before any variable is given its part.
+`let` and `set` take a value apart with a binding pattern ([6.1](#61-pattern-forms)): by position, by field name, nested by position, or as names after `let` without parentheses. A `let` declares the variables ([3.3](#33-variables)); a `set` assigns variables that exist ([4.5](#45-assignment-and-compound-assignment)). Both take apart tuples, structs and the several results of a call. They do not take apart a slice (`cannot destructure non-tuple type: []u8`: read its `.ptr` and `.len`) or a pointer (`cannot destructure non-tuple type: *Point`): take apart what the pointer points at, `let (x, y) = p.*`. The whole value is computed before any variable is given its part.
 
 <!-- spec:begin compile -->
 
@@ -7121,7 +7148,7 @@ test "lines" {
 
 <!-- spec:end -->
 
-The declaration an import writes is checked against nothing: what the other module exports under the name is what is imported, with its own signature, and the importing module is checked against that. Write it as the export is anyway: it is what a reader of the importing file sees, and what an editor knows of the function when it checks that file without the other (below). The kind must match, and the name must be exported:
+The declaration an import writes is checked against nothing: of it, only the kind (`func`, `global`, `func Name(...) -> type`), the export name and the local name count. What the other module exports under the name is what is imported, with its own signature (parameters, results and comptime parameters), and the importing module is checked against that: an import that writes `"tally" func tally(x: u32) -> u64` for an export `tally() -> u32` is called `tally()` and gives a `u32`. Write it as the export is anyway: it is what a reader of the importing file sees, and what an editor knows of the function when it checks that file without the other (below). The kind must match, and the name must be exported:
 
 | Mistake | Error |
 |---|---|
@@ -7136,7 +7163,7 @@ The source modules of a program form a graph without cycles: when two modules ne
 
 Types are structural, so a struct type that two modules share is declared again (or written out) in each; a `type` is not imported. A host type is the exception that keeps the rule: it is its name, program-wide, so a module that shares `Canvas` with another declares `type Canvas = host` too, and is then given the same type ([2.13](#213-host-references)).
 
-Several imports can take one local name, when their parameter types differ: they then share it as functions declared in the module do ([3.4](#functions-that-share-a-name)). `lib/map.ents` imports the `hash` and `eq` functions of `lib/set.ents`, exported under names of their own, as one `hash` and one `eq`:
+Several imports can take one local name, when the parameter types of the functions they import differ (the types the other module exports, not those the imports write): they then share it as functions declared in the module do ([3.4](#functions-that-share-a-name)). `lib/map.ents` imports the `hash` and `eq` functions of `lib/set.ents`, exported under names of their own, as one `hash` and one `eq`:
 
 <!-- spec:begin compile -->
 
@@ -7393,7 +7420,7 @@ Rules:
 2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
 3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'max' must be called`). It can only be called. Its name is unique in its module.
 4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
-5. A generic function is checked when it is instantiated, with its comptime arguments filled in, and not before: its body, and its signature beyond the rules above. One that is never called is only parsed, and nothing is emitted for it; a mistake in it, such as an unknown type in its signature, is reported once something calls it, in that instance ([8.3](#83-requirements)).
+5. A generic function's parameter list is checked where it is declared, whether or not anything calls it: the rules above, what a comptime parameter may be (a type, an integer type or a function type, [8.9](#89-not-in-this-version)), the case of each comptime parameter's name ([8.6](#86-comptime-function-parameters), [8.7](#87-comptime-value-parameters)), and that a comptime parameter does not have a def's name. Everything else is checked when the function is instantiated, with its comptime arguments filled in, and not before: its body, and the types its signature names. One that is never called is checked for its parameter list only, and nothing is emitted for it; any other mistake in it, such as an unknown type in its signature (`x: Nope`) or an unknown name in its body, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
 
@@ -7408,6 +7435,7 @@ func c(comptime N: u32, p: *[N]u8) -> u8 => p[0]
 func d(comptime Pt: type, x: Pt) -> Pt => x
 func e(comptime T: type, comptime T: type, x: T) -> T => x
 func f(comptime T: type, u32) -> u32 => 0
+func g(comptime on: bool, x: Nope) -> u32 => 0     // never called: Nope is not looked at
 ```
 
 ```errors
@@ -7417,6 +7445,7 @@ a value parameter's name starts with a lower-case letter: write 'comptime n: u32
 type parameter 'Pt' has the name of a type declared in this module
 type parameter 'T' is declared twice
 a generic function's parameters need names
+comptime parameter 'on' is bool: a comptime parameter is a type (comptime T: type), an integer (comptime n: u32) or a function (comptime f: (T) -> T)
 ```
 
 ### 8.2 Calling a Generic Function
@@ -7481,9 +7510,10 @@ test "inferred calls" {
    |---|---|---|
    | `*T` | `*mut X` | `T = X` |
    | `[]T` | `[]mut X` | `T = X` |
-   | `[]T`, `[*]T` | `*[N]X` (a `data` array, a string) | `T = X` |
+   | `[]T`, `[*]T`, `?[]T` | `*[N]X` or `*mut [N]X` (a `data` array, `mut` or not; a string) | `T = X` |
    | `[]mut T`, `[*]mut T` | `*mut [N]X` (a `mut` data array) | `T = X` |
-   | `?*T` | `*X` | `T = X` |
+   | `?*T` | `*X` or `*mut X` | `T = X` |
+   | `?[]T` | `[]X` or `[]mut X` | `T = X` |
    | `*T` | `[*]X` | no match: what a many-pointer points to is not a type by itself. `[*]T` matches it |
    | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped, also from the values a tuple argument is made of) |
    | `T` | `u8`, where a later argument is `u32` | `T = u8`: numbers are not widened to make arguments agree |
@@ -7522,6 +7552,8 @@ cannot infer T for 'max' from untyped literals: write max(i32, ...) or give a li
 cannot infer T for 'zero': write the type argument, as in zero(u32)
 ```
 
+For a function with other parameters, the hint shows them: `cannot infer T for 'tag': write the type argument, as in tag(u32, ...)`.
+
 ### 8.3 Requirements
 
 A generic states no requirements. It uses its type parameter, and each use is checked for the concrete type when the generic is instantiated. There are no traits or interfaces: what a type must provide is whatever the generic's body does with it.
@@ -7558,7 +7590,23 @@ export func f(a: Pt, b: Pt) -> Pt => add(neg(a), b)
 '+=' cannot be applied to Pt and Pt, in add(T = Pt)
 ```
 
-The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first. Then come those of its instances, in the order of the calls that first require each one, as they stand in the file (a call in a test included).
+The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first. Then come those of its instances, in the order the instances are made: first those the module's own calls require, in the order of those calls in the file (a call in a test included), then those that the bodies of these instances require, and so on, level by level. So an error in `inner(T = Pt)`, which only `outer`'s body calls, is listed after one in `other(T = Pt)`, which a later function of the module calls:
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func inner(comptime T: type, a: T) -> T => a + a
+func outer(comptime T: type, a: T) -> T => inner(a)
+func other(comptime T: type, a: T, b: T) -> bool => a > b
+
+export func f(p: Pt) -> Pt => outer(p)
+export func g(p: Pt) -> bool => other(p, p)
+```
+
+```errors
+'>' cannot be applied to Pt and Pt, in other(T = Pt)
+'+' cannot be applied to Pt and Pt, in inner(T = Pt)
+```
 
 The command line also prints the call that first asked for the instance and, where that call is itself in an instance, the call that asked for that one, four of them at most. The editor shows them as the error's related locations.
 
@@ -8257,7 +8305,7 @@ A generic that is meant to work for 0 is written so that no index needs a proof:
 
 #### Generic types with value parameters
 
-A generic type ([8.5](#85-generic-types)) takes value parameters as a generic function does, and is applied to numbers as to types: `Ring(8, u32)`.
+A generic type ([8.5](#85-generic-types)) takes value parameters as a generic function does, and is applied to numbers as to types: `Ring(8, u32)`. All its arguments are written, numbers and types alike, and a wrong count names them all as arguments: `Ring(8)` is `Ring expects 2 arguments, got 1`.
 
 ```ents
 func Ring(comptime n: u32, comptime T: type) -> type => (head: u32#n, count: u32, items: *mut [n]T)
@@ -8558,13 +8606,13 @@ The language allocates nothing at run time. There is no heap, no garbage collect
 
 ### 9.0 Data Layout
 
-Data is laid out from address 8 up. Address 0 is the none of an optional pointer or slice ([Optional Types](#optional-types)), so nothing real may live there, and the bytes 0 to 7 are never used. The data of each module is laid out in turn, a module that another imports before the one that imports it; within a module come its `data` declarations in the order they are written, then the literals its code lays out. A program does not depend on that order: it takes an address from the name of the data (`buf as u32`), never writes one as a number.
+Data is laid out from address 8 up. Address 0 is the none of an optional pointer or slice ([Optional Types](#optional-types)), so nothing real may live there, and the bytes 0 to 7 are never used. The compiler chooses the order so that bytes can be shared. First come the null-terminated and length-prefixed arrays (`*[!]T`, `*[?]T`) of every module. Then comes the rest: the data of a module that another imports before the one that imports it, and within a module its `data` declarations in the order they are written, then the literals its code lays out. A program does not depend on that order: it takes an address from the name of the data (`buf as u32`) and never writes one as a number.
 
 Entries follow one another with no padding and no alignment, so a `u32` or a `u64` may start at an odd address. A wasm load or store takes any address, so this is never an error, though some engines are slower at an unaligned one. Where alignment matters for speed, the program arranges it: it declares its widest data first, or allocates with an allocator that rounds addresses up (`alloc` of `lib/stack.ents` rounds to 8).
 
 A literal laid out in memory takes one place in the data for each place it is written in the source:
 
-- Equal constant literals may share their bytes: `"abc"` written in two functions can be one address. A `mut` literal and mutable `data` are always their own ([3.2](#32-data-declarations-data)).
+- Constant bytes may be shared. Equal constant literals can be one address (`"abc"` written in two functions), and a constant literal whose bytes already lie inside an earlier constant entry can be given the address of that part: `data b = "bc"` after `data a = "abc"` is `a`'s address plus 1. A `mut` literal and mutable `data` always have bytes of their own ([3.2](#32-data-declarations-data)).
 - A literal with a part known only at run time, `sum([x, 5, 6])`, is laid out once, with its constant parts. Each time the expression runs, the run-time parts are stored into that place, so a pointer kept from an earlier run sees the values of the latest.
 - Bytes that are zero cost nothing in the module: memory starts zeroed, so a data segment stops at the last byte that is not zero, and `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`).
 - All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
@@ -8578,18 +8626,24 @@ Memory has no read-only part. Const data is const in the type system: nothing wr
 ```ents
 data greeting = "Hello"
 data pair = [7:u32, 8]
+data tag: *[!]u8 = "ok"
+data lo = "llo"
 
 func free-start() -> u32 => sizeof data
 
 test "data is laid out from address 8, one entry after another" {
-  assert greeting as u32 == 8
-  assert pair as u32 == 13          // right after the 5 bytes of greeting: no alignment
+  assert tag == 8                   // a *[!]T first: "ok" and its zero byte
+  assert greeting == 11
+  assert pair == 16                 // right after the 5 bytes of greeting: no alignment
   assert pair[1] == 8
-  assert free-start() == 21
+  assert lo == 13                   // the last three bytes of "Hello"
+  assert free-start() == 24
 }
 ```
 
 <!-- spec:end -->
+
+A pointer compares with a number as its address ([4.3](#43-comparison-operators)), so the test needs no cast.
 
 ### 9.1 Stack vs Memory Allocation
 
@@ -8856,7 +8910,9 @@ cannot assign (int(1), int(2), int(3)) to []i32
 | a pointer or slice of `T` | one of another element `U` | error, also where `T` widens to `U`: the elements would have to be laid out alike ([9.2](#structural-coercion)) |
 | a pointer | another pointer type, `u32` or `i32` | a cast ([2.10](#explicit-casts)) |
 
-Every implicit conversion, of these and of other types, is listed in [Every Implicit Conversion](#every-implicit-conversion). `*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
+Every implicit conversion, of these and of other types, is listed in [Every Implicit Conversion](#every-implicit-conversion). `*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths written as the elements of one array or tuple literal that has no type written are slices of their own lengths, also where such a literal is each branch of an `if` or `match` (`if c { [three, four] } else { [four, three] }` is a `[2][]i32`): with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
+
+An `if` or `match` whose branches are themselves pointers of different lengths is no such literal, and with no type given its branches have no one type: `let s = if c { "ab" } else { "abc" }` is `branches have different types: *[3]u8 and *[2]u8`, and so is `[if c { three } else { four }]`. A cast does not help (`"ab" as []u8` is `cannot cast *[2]u8 to []u8`): give the type where the value is used, `let s: []u8 = if c { "ab" } else { "abc" }`, or a function's result, as `label` below.
 
 <!-- spec:begin compile -->
 
@@ -8880,9 +8936,12 @@ func lengths() -> u32 {
 
 func hold(t: (s: *[3]u8, n: u32)) -> Holder => Holder(t.s, t.n)
 
+func label(big: bool) -> []u8 => if big { "large" } else { "small!" }
+
 test "a pointer to an array is a slice of its length" {
   assert total(three) == 6
   assert lengths() == 7
+  assert label(false).len == 6
   assert rows[1].len == 3
   assert hold(("abc", 3)).s.len == 3
 }
@@ -8897,12 +8956,17 @@ func row() -> u32 {
   let rows = [[1, 2], [3, 4, 5]]
   return 0
 }
+func pick(c: bool) -> u32 {
+  let s = if c { "ab" } else { "abc" }
+  return s.len
+}
 ```
 
 ```errors
 cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields
 cannot assign []u8 to []u16
 rows of different lengths
+branches have different types: *[3]u8 and *[2]u8
 ```
 
 <!-- spec:end -->
@@ -8987,9 +9051,9 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 #### Fixed Arrays in Place
 
-A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it lies: `p.items[2].x` is one load at a constant offset.
+A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it lies: `p.items[2].x` is one load at a constant offset. Read whole, with no index, range, loop or `&`, the field is the array's value: `let c = p.items` loads its N elements into registers (`p.items` and `p.*.items` are the same), and a later write to `p.items[0]` does not change `c`. That value is no slice: with `bag.items` a `[3]u32` (below), `sum(bag.items)` for a `[]u32` is `argument 1: cannot assign [3]u32 to []u32`, so pass the place, `sum(&bag.items)`.
 
-An array of fixed arrays lies there packed, row after row (`sizeof([N][M]T)` is `N × M × sizeof(T)`), so in place it is the `*[NxM]T` its rows make, not a table ([Nesting](#nesting)): `m.tiles[r][c]` is the byte `r × M + c` from the start of the field, with the row index checked against N and the column against M.
+An array of fixed arrays lies there packed, row after row (`sizeof([N][M]T)` is `N × M × sizeof(T)`), so in place it is the `*[NxM]T` its rows make, not a table ([Nesting](#nesting)): `m.tiles[r][c]` is the byte `r × M + c` from the start of the field, with the row index checked against N and the column against M. A row, `m.tiles[r]`, is a `*[M]T`, so `m.tiles[r][..] = src` with `src` a `*[M]T` copies the M elements with one `memory.copy`.
 
 Only a value in memory has an address. A struct in a variable, a parameter or a call's result is held in registers ([9.2](#92-by-value-vs-by-reference-passing)), and so is each field of it: indexing its array at run time is an error, as for any fixed array in registers, and so is `&` of it.
 
@@ -9010,7 +9074,7 @@ func spawn(x: i32, y: i32) -> ?*mut Entity {
     pool.count += 1
     return e
   }
-  return 0 as ?*mut Entity
+  return 0
 }
 
 func x-of(i: u32) -> i32 => (pool.items[i] ?? Entity(-1, -1, false)).x
@@ -9029,8 +9093,8 @@ func count-cell() -> *mut u32 => &pool.count
 func set-tile(r: u32#3, c: u32#4, v: u8) { map.tiles[r][c] = v }
 
 test "an array field in memory is indexed there" {
-  assert spawn(3, 4) != 0 as ?*mut Entity
-  assert spawn(5, 6) != 0 as ?*mut Entity
+  assert spawn(3, 4) != 0
+  assert spawn(5, 6) != 0
   move(1, 10)
   assert x-of(1) == 15
   assert x-of(99) == -1
@@ -9042,8 +9106,30 @@ test "an array field in memory is indexed there" {
   assert pool.count == 64
   let n = count-cell()
   n.* = 0
-  assert spawn(7, 7) != 0 as ?*mut Entity
+  assert spawn(7, 7) != 0
   assert x-of(0) == 7
+}
+```
+
+Read whole, the field is a copy in registers; `&` gives its place:
+
+```ents
+type Bag = (count: u32, items: [3]u32)
+
+data bag: Bag = mut (0, [1, 2, 3])
+data src = [7:u32, 8, 9]
+
+func sum(xs: []u32) -> (t: u32) {
+  for x in xs { t += x }
+}
+
+test "a whole array field is its value; & is its place" {
+  let c = bag.items                // a [3]u32: three loads into registers
+  bag.items[0] = 10
+  assert c[0] == 1
+  assert sum(&bag.items) == 15     // the *mut [3]u32 where it lies
+  bag.items[..] = src              // one memory.copy
+  assert bag.items[2] == 9
 }
 ```
 
@@ -9218,14 +9304,14 @@ test "operands are typed together" {
 | `popcnt(x)` | `i32`/`u32`/`i64`/`u64` | `u8` | Count of one bits | `i32.popcnt`/`i64.popcnt` |
 | `mul_hi(a, b)` | `u64`, `u64` | `u64` | High 64 bits of the 128-bit product | a call of `$__mul_hi` ([11.5](#115-functions-the-compiler-adds)) |
 
-The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), so it widens implicitly to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error (`clz requires i32, u32, i64 or u64, got u8`): convert it first (`clz(b as u32) - 24` for a `u8`). Arithmetic on the count alone is `u8` arithmetic, which wraps at 256: widen the count first where the result can pass 255 (`(ctz(x) as u32) * 8`).
+The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), so it widens implicitly to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error (`clz requires i32, u32, i64 or u64, got u8`): convert it first (`clz(b as u32) - 24` for a `u8`). Arithmetic on the count alone is `u8` arithmetic, which wraps at 256: widen the count first where the result can pass 255 (`ctz(x):u32 * 8`).
 
 `mul_hi` multiplies as unsigned: its operands widen to `u64`, so a `u32` or a `u8` is fine, a literal is a `u64` (`mul_hi(0xFFFFFFFFFFFFFFFF, 2)`), and a signed one is an error (`mul_hi: cannot assign i64 to u64`). The bit counts take a literal in its default type, as [10.1](#101-numeric-builtins)'s builtins do: `clz(1)` counts the zeros of an `i32`, 31.
 
 <!-- spec:begin compile -->
 
 ```ents
-func bits(x: u64) -> u32 => (ctz(x) as u32) * 8
+func bits(x: u64) -> u32 => ctz(x):u32 * 8
 
 test "integer builtins" {
   let n: u32 = 0b00001000
@@ -9484,7 +9570,7 @@ A few operations are calls of a function that the compiler adds to the module, o
 - `$__w…`, one for each operation on a wide integer (`i128` to `u512`) that the program uses: arithmetic, bitwise operations, shifts and rotations, comparisons, negation, `min`, `max`, `abs`, sign extension, and the store of one into an array literal;
 - `$__host_globals`, the module's start function, where it imports a global of a plain host type: it traps when the host gave null ([2.13](#213-host-references)).
 
-`encantis test` compiles each `test` block as a function of its own, and imports `__assert_fail` from the module `test`: there a false `assert` calls it with the source position before it traps, so the runner can say where. A program built otherwise has neither.
+`encantis test` compiles each `test` block as a function of its own, and imports `__assert_fail` from the module `test`: there a false `assert` calls it with the source position before it traps, so the runner can say where. The position is the offset of the `assert` in its file, passed as a constant: nothing is laid out for it. A program built otherwise has neither.
 
 ---
 
@@ -9510,7 +9596,7 @@ test "the area of a square" {
 
 <!-- spec:end -->
 
-A test is declared at module level or inside another test. Its statements are the body of a function with no parameters and no result: a `let` in it is a variable of that test, and `return` ends the test, which then passes. A test calls any function of the module, exported or not, and reads and writes the module's globals and memory.
+A test is declared at module level or inside another test. Its statements are the body of a function with no parameters and no result: a `let` in it is a variable of that test, and a bare `return` ends the test, which then passes: write it last in its block, or with `when` (`return when done`). `return` takes the expression on the next line ([5.3](#53-control-statements)), so a `return` on its own line followed by `assert c` is `unknown identifier 'assert'`. A `return` with a value is an error, as in any function with no result; the compiler accepts one in a test and drops the value (a known bug), so a `return` followed by a line `bump()` calls `bump`. A test calls any function of the module, exported or not, and reads and writes the module's globals and memory.
 
 `test` and `assert` are not reserved words: they can name a variable or a function.
 
@@ -9538,7 +9624,7 @@ test "half of an even number" {
 
 ### 12.3 Groups
 
-A test that holds other tests is a group. Its nested tests are run, each reported by its name after the group's: `rectangles > one row`. What a group declares is seen by every test inside it, so a group gathers what its tests share. The tests of a file run in the order they are written, on one instance of the module, so what one test leaves in a global or in memory is there for the next:
+A test that holds other tests is a group. Its nested tests are run, each reported by its name after the group's: `rectangles > one row`. What a group declares is seen by the tests nested after the declaration, so a group declares what its tests share before them. The tests of a file run in the order they are written, on one instance of the module, so what one test leaves in a global or in memory is there for the next:
 
 <!-- spec:begin compile -->
 
@@ -9577,11 +9663,27 @@ A group holds declarations and tests. Statements written in a group, beside its 
 
 ### 12.4 Declarations in a Test
 
-A test can declare `def`, `data`, functions and imports, and these are the test's own: they are seen inside the test and the tests nested in it, and module code cannot use them.
+A test can declare `def`, `data`, functions and imports, and these are the test's own. They are seen in the test from the declaration to its end, and in the tests nested after it. Above the declaration the name is the module's, or unknown (`unknown identifier 'f'`) where the module has none. Module code cannot use them.
 
-- A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in two ways (known bugs). It gives the test's function to the tests that come after it in the file. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble; if their names differ, the compiler stops with an internal error. Give a test's function a name the module does not use.
-- An import declared in a test is part of the test build only: a host function or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. As for functions, the compiler gives it to the later tests too.
+- A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only, below its declaration. The rest of the module reads the name as if the test were not there.
+- A function declared in a test is called by its name in the test, below its declaration, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in three ways (known bugs). In the test build a `data` block or a function declared in a test is what its name means in the whole test, above its declaration too, where the checker took the name for the module's. It gives the test's function to the tests that come after it in the file: a call written in one of them calls the test's function, while module code they call still calls the module's. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble, and if their names differ, the compiler stops with an internal error. Give a test's functions and data names the module does not use, and declare them at the top of the test.
+- An import declared in a test is part of the test build only: a host function, a host global or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. A host global imported there gets the stand-in of [12.6](#126-the-test-host), so a test can take a plain host reference to pass to the code it tests. As for functions, the compiler gives an import to the later tests too.
+
+<!-- spec:begin compile -->
+
+```ents
+def wide = 3
+
+test "a test's def is seen from its declaration on" {
+  let before: u32 = wide         // the module's wide: 3
+  def wide = 10
+  assert before == 3
+  assert wide == 10
+}
+```
+
+<!-- spec:end -->
+
 
 A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
 
