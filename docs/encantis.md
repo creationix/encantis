@@ -1,6 +1,6 @@
 # Encantis Language Reference
 
-Encantis is a systems programming language that compiles to WebAssembly. A program is one or more source files (`.ents`), and they compile to one WebAssembly module. The language gives direct control of linear memory and has explicit types, and it has no hidden runtime: no garbage collector, no allocator, and no code that the source does not ask for. How a construct maps to WebAssembly is part of the language and is stated where the construct is described: a struct is held in registers, one wasm value per field; a slice is two `i32`s, an address and a length; a loop over a range is a wasm `loop`, and an index the compiler can prove in range is a plain load.
+Encantis is a systems programming language that compiles to WebAssembly. A program is one or more source files (`.ents`), and they compile to one WebAssembly module. The language gives direct control of linear memory and has explicit types, and it has no hidden runtime: no garbage collector, no built-in allocator, and no code that the source does not ask for. How a construct maps to WebAssembly is part of the language and is stated where the construct is described: a struct is held in registers, one wasm value per field; a slice is two `i32`s, an address and a length; a loop over a range is a wasm `loop`, and an index the compiler can prove in range is a plain load.
 
 This reference describes the whole language: its syntax as it is written, what each construct means, what is an error, what traps at run time, and how values are laid out in WebAssembly. [`docs/grammar.md`](grammar.md) has the grammar in EBNF, for depth; nothing here depends on it.
 
@@ -75,9 +75,9 @@ The compiler implements everything this reference describes except what this tab
 | Function values: a function held in a variable, parameter or field, called indirectly | Calling one is refused (`calling a function value is not supported yet: ...`). A program that stores or passes one passes the checker and does not assemble. A function given at compile time, a comptime function parameter, works | [3.4](#function-types-and-pointers), [8.6](#86-comptime-function-parameters) |
 | `inline func` | Parses `inline` and ignores it: the function is compiled and called as any other | [3.5](#35-inline-functions) |
 | Saturating arithmetic, `+\|`, `-\|`, `*\|` (and `+\|=`, `-\|=`, `*\|=`) | Accepts them and compiles them as the wrapping `+`, `-`, `*`: do not use them | [4.1](#41-arithmetic-operators) |
-| A load or store through a type pun, `ptr.u32 = v` | Refused: `ptr.u32` is the pointer as a `[*]u32`, so write `ptr.u32[0] = v` | [4.6](#46-pointer-operations) |
+| A type pun that loads or stores, `ptr.u32` as the `u32` at `ptr`, `ptr.u32 = v` | `ptr.u32` is the pointer as a `[*]u32`, so its value is that pointer, and assigning to it is refused: write `ptr.u32[0]` and `ptr.u32[0] = v` | [4.6](#46-pointer-operations) |
 | Reading a `*[?]T` (elements after a LEB128 length) | Lays one out, and refuses indexing it and its `.len` (`... is not supported yet: its length prefix is not read`) | [2.5](#25-pointer-types) |
-| Template literals as anything but a `[][]u8` | Refused where another type is wanted (`cannot assign []u8 to u8` for a `[]u8`) | [1.5](#template-literals) |
+| Template literals as anything but a `[][]u8` | A template literal is always a `[][]u8`, and given where a `[]u8` is wanted it is a type error | [1.5](#template-literals) |
 | `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
 | A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
 | SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [13](#13-future-additions) |
@@ -5236,11 +5236,21 @@ The functions of the first two take `comptime n: u32, comptime T: type` before t
 
 A set or a map calls `hash(k) -> u32` and `eq(a, b) -> bool` for its key type. `set.ents` has them for `u32`, `u64`, `i32`, `i64`, `[]u8` and `[]u32`. A key is copied into the set by value: a slice key is the slice, not its bytes, which must stay where they are while the set is used. For a key type of its own, a program writes `hash` and `eq` in the module that makes the set, and the set's generic code calls them ([8.8](#88-generics-across-modules)):
 
-```text
+<!-- spec:begin compile -->
+
+```ents
 type Cell = (x: i32, y: i32)
+
 func hash(c: Cell) -> u32 => ((c.x * 73856093) ^ (c.y * 19349663)) as u32
 func eq(a: Cell, b: Cell) -> bool => a.x == b.x && a.y == b.y
+
+test "equal cells hash alike" {
+  assert eq(Cell(2, 3), Cell(2, 3))
+  assert hash(Cell(2, 3)) == hash(Cell(2, 3))
+}
 ```
+
+<!-- spec:end -->
 
 A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' own functions, which makes the call ambiguous, and the library's functions come before a program's: keep such keys widened, in a `Set(u32)` or a `Set(i32)`.
 
