@@ -32,7 +32,7 @@ Source code is shown in `ents` code blocks. The examples that the compiler can p
 
 - An example is a whole module, which the test suite checks as it stands. Only the example of a design that is not implemented can be a fragment: a few statements, or a declaration that uses names declared elsewhere.
 - A `test "name" { ... }` block shows results with `assert` ([Tests](#12-tests)).
-- A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more.
+- A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more. The checker reports in three passes, each in source order: `type` declarations; then the other declarations (`def`s, globals, `data`, and functions' parameter and result types); then the bodies of functions and tests. So an error in a later function's parameter type is listed before one in an earlier function's body.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
 - A `text` block holds output, a grammar summary or code for another language, and a `wat` block the WebAssembly text a program compiles to.
 - A feature that is designed but not implemented is labelled **Not implemented** where it is described, and its examples are not working code. [Implementation Status](#implementation-status) lists every such feature.
@@ -2324,7 +2324,9 @@ This is the whole list. Each conversion applies wherever a value meets a declare
 | a tuple literal | a struct or tuple type | by name where it has names, by position where not ([2.8](#struct-constructors)), each element converted |
 | a struct, tuple or fixed array value | one with the same names whose fields convert with no change in wasm value | `(x: i8, y: i8)` → `(x: i32, y: i32)`, `[3]u8` → `[3]u32` ([9.2](#structural-coercion)) |
 
-A slice converts to a const slice of other elements when each element is read the same in memory: `[]mut []mut u8` → `[][]u8`, `[]u32#4` → `[]u32`. A mutable slice or many-pointer keeps its element type, also when it is made from a `*mut [N]T`, since what is written through it must be a value of that type: a `[]mut u32#4` (or a `*mut [4]u32#4`) is no `[]mut u32`, and a `[]mut []mut u8` no `[]mut []u8`. Otherwise a pointer's target type does not change, but for the outer `mut`: `*[8]u8` is no `*[4]u8`, `*[4]u8` no `*u8`, and `*u8` no `*u16`. Function types convert only to the same function type.
+A slice converts to a const slice of other elements when each element is read the same in memory: `[]mut []mut u8` → `[][]u8`, `[]u32#4` → `[]u32`. A mutable slice or many-pointer keeps its element type, also when it is made from a `*mut [N]T`, since what is written through it must be a value of that type: a `[]mut u32#4` (or a `*mut [4]u32#4`) is no `[]mut u32`, and a `[]mut []mut u8` no `[]mut []u8`. The compiler accepts these conversions (a known bug), and a write through the result can break the range or the const promise, so do not write one. Otherwise a pointer's target type does not change, but for the outer `mut`: `*[8]u8` is no `*[4]u8`, `*[4]u8` no `*u8`, and `*u8` no `*u16`. Function types convert only to the same function type.
+
+Each conversion is applied once, not one after another. A `*[1]u32` is no `*u32` (that would be `*[1]u32` → `[*]u32` → `*u32`; write `&p[0]`), and a `*[4]u32` is no `?*u32`. An optional converts to the optional of what its plain type converts to, and none stays none: `?[]mut u8` → `?[]u8`, `?*mut T` → `?*T`, and `?*[4]u32` → `?[]u32` or `?[*]u32`.
 
 <!-- spec:begin compile -->
 
@@ -2332,10 +2334,8 @@ A slice converts to a const slice of other elements when each element is read th
 data bytes = mut [1:u8, 2, 3, 4]
 data word: *[!]u8 = "hey"
 
-func sum(s: []u8) -> u32 {
-  let n: u32 = 0
+func sum(s: []u8) -> (n: u32) {
   for b in s { n += b }
-  return n
 }
 func first(p: [*]u8) -> u8 => p[0]
 func peek(p: *u8) -> u8 => p.*
@@ -2819,7 +2819,7 @@ A program has these limits. Each is checked when it is compiled, and going over 
 
 A register is a wasm value: a number, a bool, a pointer or a host reference is one, a slice two, a `u128` two `i64`s, and a struct or an array held by value one for each of its fields and elements. The sections below say how each is counted.
 
-A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round), with an array held by value counted once for each of its elements (below). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
+A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round), with an array held by value counted once for each of its elements (below). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type as it is declared counts each array in it once, as one behind a pointer does, so `type Page = [65536]u8` and `type Big = (a: [40000]u8, b: [40000]u8)` are no error; a value of one held in registers is (below). A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
 
 <!-- spec:begin compile -->
 
@@ -2900,10 +2900,12 @@ func copy(p: *mut [65536]u8, q: *[65536]u8) { p.* = q.* }
 func fill(p: *mut [60000]u8) { p.* = [0; 60000] }
 func pick(c: bool, p: *[1001]u8, q: *[1001]u8) -> u8 => (if c { p.* } else { q.* })[0]
 func pass(x: [1000]u8, n: u32) -> u8 => x[0]
+func back() -> (a: [500]u128, b: bool) {}          // a u128 is two registers
 ```
 
 ```errors
 the parameters are 1001 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+the results are 1001 registers, more than the 1000 a wasm function gives back — give a large value back through a pointer
 function 'copy' needs more than 50000 registers, the most a wasm function has (here [65536]u8 is 65536)
 function 'fill' needs more than 50000 registers, the most a wasm function has (here u8, written out 60000 times, is 60000)
 an if that gives [1001]u8 gives 1001 registers, more than the 1000 a wasm block gives back
@@ -2969,7 +2971,7 @@ A reference that may be null is a `?Canvas`, the optional form, written as `?*T`
 - `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
 - a `Canvas` widens to a `?Canvas` implicitly (`c as ?Canvas` too), and a `?Canvas` is used as a `Canvas` only once resolved (`cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first`).
 
-`match` does not take a host reference, optional or not, as it does not take a pointer.
+A `match` on a host reference, optional or not, takes no pattern but `_`, as one on a pointer does ([5.4](#54-match-expressions)): `0 => ...` on a `?Canvas` is `cannot match ?Canvas against int(0): ... ask with == 0 or != 0, or resolve it with if let or ??`.
 
 #### At the boundary
 
@@ -3397,19 +3399,18 @@ test "a body sees the whole module" {
 ```
 
 ```ents
-global limit: u32 = step * 4
+global limit: i32 = step * 4
 def step = 2
 ```
 
 ```errors
 unknown identifier 'step'
-cannot assign i32 to u32
 global initializer must be a compile-time constant
 ```
 
 <!-- spec:end -->
 
-**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter can ([3.4](#34-functions)).
+**Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter and a named result can ([3.4](#34-functions)).
 
 **Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build, and the command line does not print it ([Tools](#tools)).
 
@@ -3729,7 +3730,40 @@ test "a let without a value starts at zero and is never reset" {
 
 <!-- spec:end -->
 
-A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
+A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A `let` in an `elif` or `else` branch of an `if let`, and one in a branch whose value is used (`let r = if c { let y = ... }`), is a variable of the function like any other, seen after the `if`. So two branches can't each declare a variable of one name: the second `let t` is `'t' is already declared in this scope`. Declare it once before the branches, or give it the `if` as its value, `let t: u32 = if c { 1 } else { 2 }`. A `let` in a branch that did not run has set nothing, and is read after the branch as zero. A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block, function or import of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are different: they are seen in their body only, and they may take a function's name, which they hide there ([5.2](#52-loops)).
+
+<!-- spec:begin compile -->
+
+```ents
+func maybe(c: bool) -> u32 {
+  if c {
+    let t: u32 = 1
+  }
+  return t                         // 0 when the branch did not run
+}
+
+test "a let is a variable of its function" {
+  assert maybe(true) == 1
+  assert maybe(false) == 0
+}
+```
+
+```ents
+func pick(c: bool) -> u32 {
+  if c {
+    let t: u32 = 1
+  } else {
+    let t: u32 = 2
+  }
+  return t
+}
+```
+
+```errors
+'t' is already declared in this scope
+```
+
+<!-- spec:end -->
 
 **Globals.** A `global` is a variable of the module. It keeps its value from one call into the module to the next, and every function of the module reads and assigns it. Each is a mutable wasm global; one of a type that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one for each value, so it works as a local of the same type does. A global can be of any value type but one that holds a plain host reference: its value is a constant, and no constant is one, so such a global is imported from the host ([2.13](#213-host-references)). A global imported from the host is read-only ([7.1](#71-imports)); one is exported with `export global` ([7.2](#72-exports)). A value that never changes is better a `def`, which costs nothing.
 
@@ -3891,7 +3925,7 @@ test "a value is copied, a pointer is shared" {
 
 <!-- spec:end -->
 
-A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body. It must not have a def's name: such a parameter is accepted, and reading it gives the def's value (a known bug).
+A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body, for `f(x)` and `x.f()` alike ([4.9](#49-method-call-syntax)). So can a named result, and a named result can also have a def's name: `-> (total: u32)` beside a global `total` is the result in the body, and the global can't be reached there. A parameter must not have a def's name: such a parameter is accepted, and reading it gives the def's value (a known bug).
 
 **Returning.** An expression body is the function's result, so a function with no result has a block body: `func f() => id(3)` is `cannot assign u32 to ()`, and `func f() => bump()`, where `bump` has no result either, is refused too (`cannot assign () to ()`, a known bug). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
@@ -3957,7 +3991,7 @@ return needs a value: the function returns u32
 
 <!-- spec:end -->
 
-**Named results.** Named results are variables of the function, declared in the signature, `-> (name: Type)`. Each starts at zero, as every variable of a function does ([3.3](#33-variables)). The function returns them as they are when it ends: when control reaches the end of the body, at a bare `return`, or at `return value`, which gives values for them. If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
+**Named results.** Named results are variables of the function, declared in the signature, `-> (name: Type)`. Each starts at zero, as every variable of a function does ([3.3](#33-variables)). The function returns them as they are when it ends: when control reaches the end of the body, or at a bare `return`. `return value` returns its value instead and does not assign them, so a deferred expression that reads them sees them as they were; whether a deferred expression that assigns one changes the result depends on the exit (a known bug, [Defer](#defer)). If the body ends in an expression with a value, that value becomes the result, and widens to its type like a `return` value. With several results a value fills them in order, whatever its own fields are called, and a tuple literal with names fills the results of those names ([2.8](#struct-constructors)), also as the value of a branch of an `if` or a `match` (each branch is a value of its own, as in `picked` below). An expression body gives the results the same way.
 
 <!-- spec:begin compile -->
 
@@ -4064,14 +4098,16 @@ func hash(k: u64) -> u32 => 1
 
 func f(x: f64) -> u32 => hash(x)
 func g() -> u32 => hash(5)
+func h(b: u8) -> u32 => hash(b)
 ```
 
 ```errors
 no function 'hash' accepts (f64)
 'hash' is ambiguous for (int(5))
+'hash' is ambiguous for (u8)
 ```
 
-`hash(5:u64)` says which. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
+`hash(5:u64)` says which. A typed argument that is no parameter's exact type is ambiguous in the same way when more than one function could take it: a `u8` widens to the `u32` and to the `u64`. A cast says which: `hash(b as u32)`. A literal has no type of its own and never decides by itself. Beside arguments that have a type it decides nothing either: a function whose typed arguments are exactly its parameter types, and whose literals fit their parameters, is the one called, before any function that would convert an argument. `gt(x, 10)` with `x: u32` is `gt(a: u32, b: u32)`: `x` is a `u32` and `10` fits one, while `gt(a: f64, b: f64)` would convert `x`.
 
 ```ents
 func gt(a: u32, b: u32) -> bool => a > b
@@ -4119,6 +4155,41 @@ func f(x: u8) -> u32 => put(x, 3)
 
 `put(x, 3:u32)` says which, and `put(x, 300)` needs no help: 300 fits only a `u32`.
 
+A value known to lie in a range ([Ranged Integers](#ranged-integers)), such as a loop counter or `k & 7`, is exact for a parameter of that very range, and otherwise for its type without the range: beside `pick(x: u32)` and `pick(x: u64)`, `pick(k & 7)` is `pick(x: u32)`, and beside `pick(x: u32#8)` and `pick(x: u32)`, `pick(k & 7)` is the first while a `u32#4` is the second. A string is typed: `"abcd"` is a `*[4]u8` ([String Literals](#string-literals)), so beside `at4(p: *[4]u8)` and `at4(s: []u8)`, `at4("abcd")` is the first and `at4("abc")` the second. A `*mut` pointer is exact only for a `*mut` parameter: a `*mut [4]u8` converts to both of those functions, and the call is ambiguous. A message shows an array literal with its elements' default type, `[4]i32`, or with the type one of its elements is given.
+
+```ents
+func pick(x: u32) -> u32 => 32
+func pick(x: u64) -> u32 => 64
+
+func at4(p: *[4]u8) -> u32 => 4
+func at4(s: []u8) -> u32 => 0
+
+test "a range and a string have their types" {
+  let t: u32 = 0
+  for i in 4 {
+    t += pick(i)                   // i is a u32#4: exact for pick(x: u32)
+  }
+  assert t == 128
+  assert at4("abcd") == 4          // a *[4]u8
+  assert at4("abc") == 0           // only the slice takes a *[3]u8
+}
+```
+
+```ents
+func at4(p: *[4]u8) -> u32 => 4
+func at4(s: []u8) -> u32 => 0
+
+data bytes = mut [0:u8; 4]
+
+func f() -> u32 => at4(bytes)
+func g() -> u32 => at4([1, 2, 3, 4])
+```
+
+```errors
+'at4' is ambiguous for (*mut [4]u8)
+'at4' is ambiguous for ([4]i32)
+```
+
 What a call's value is used for takes no part in the choice, and neither do results: two functions with the same name and the same parameter types are an error, whatever their parameters are called and whatever they return.
 
 ```ents
@@ -4165,7 +4236,7 @@ A function or a global of another source module imported twice under one name is
 
 #### Calling Conventions
 
-A call names the function and gives its arguments in parentheses, by position: the first argument goes to the first parameter, and so on. Each argument is evaluated once, left to right, before the call. A call of a function with several results is one value, a tuple of them: bind its parts (`let q, r = divmod(17, 5)`, or by name `let (q:, r:) = ...`), keep it whole (`let d = divmod(9, 4)`, then `d.q`), or take one part (`divmod(7, 2).r`). It is not spread over the parameters of another call.
+A call names the function and gives its arguments in parentheses, by position: the first argument goes to the first parameter, and so on. Each argument is evaluated once, left to right, before the call. A call of a function with several results is one value: a tuple of them, or, with named results, a struct of them. For `divmod` that is `(q: u32, r: u32)`, which is not the tuple `(u32, u32)` ([2.1](#21-unified-value-model)). With one result, named or not, the call is that one value: `func count(s: []u8, c: u8) -> (n: u32)` makes `count(s, c)` a `u32`, which has no field `n`. The names inside `-> ((q: u32, r: u32))`, one result that is a struct, are its fields and not variables of the function. A call is used in one of these ways: bind its parts (`let q, r = divmod(17, 5)`, or by name `let (q:, r:) = ...`), keep it whole (`let d = divmod(9, 4)`, then `d.q`), or take one part (`divmod(7, 2).r`). It is not spread over the parameters of another call. Passed whole, it is one argument: a function returning `(lo: Pt, hi: Pt)` passes its call where a `Box = (lo: Pt, hi: Pt)` is wanted, `area(bounds(pts))`.
 
 <!-- spec:begin compile -->
 
@@ -4215,6 +4286,29 @@ func three(a: u32, b: u32) -> u32 => a + b
 'sqrt' takes positional arguments
 'three' expected 2 arguments, got 1
 argument 1: cannot assign (q: u32, r: u32) to u32
+```
+
+```ents
+func divmod(a: u32, b: u32) -> (q: u32, r: u32) => (a / b, a % b)
+func count(s: []u8, c: u8) -> (n: u32) {
+  for b in s {
+    if b == c { n += 1 }
+  }
+}
+func sum2(t: (u32, u32)) -> u32 => t.0 + t.1
+func one() -> ((q: u32, r: u32)) {
+  q = 1
+  return (1, 2)
+}
+
+func f() -> u32 => sum2(divmod(7, 2))
+func g(s: []u8) -> bool => count(s, 'a').n > 0
+```
+
+```errors
+unknown identifier 'q'
+argument 1: cannot assign (q: u32, r: u32) to (u32, u32)
+no field 'n' on type u32
 ```
 
 <!-- spec:end -->
@@ -4267,7 +4361,7 @@ cannot cast func(x: i32) -> i32 to u32: 'inc' is a function, which has no run-ti
 
 > **Not implemented:** `inline` is accepted and has no effect. An `inline func` is an ordinary function, and each call of it is a wasm `call`.
 
-`inline` stands before `func` (and after `export`: `export inline func`). An inline function is meant to have its body put in at each call site, with each argument evaluated once into a local of the caller. A program behaves the same either way: inlining changes only its speed and size.
+`inline` stands right before `func`, after `export` and the export's name when it has one: `export inline func`, `export "tri" inline func`; `inline export func` and `export inline "tri" func` are syntax errors. Any named function can be inline: one with named results, a generic, and functions that share a name. An inline function is meant to have its body put in at each call site, with each argument evaluated once into a local of the caller. A program behaves the same either way: inlining changes only its speed and size.
 
 <!-- spec:begin compile -->
 
@@ -5516,11 +5610,11 @@ test "method calls" {
 }
 ```
 
-1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense. A many-pointer has no `.len`, so `s.len()` for `s: [*]u8` calls a function `len`.
+1. **Members win.** If the type of `x` has a field `f`, directly or through one pointer, `x.f` is that field, whether or not it is called. What a slice, an array and a pointer have built in (`.ptr`, `.len`, `.wid`, `.*`, `.0`, the type views such as `.u32`) are members in this sense. A many-pointer has no `.len`, so `s.len()` for `s: [*]u8` calls a function `len`. Through two pointers there is no field: with `pp: **Point`, `pp.x` is `no field 'x' on type **Point`; write `pp.*.x`.
 2. **The receiver is the first argument.** `x.f(a, b)` is `f(x, a, b)`. For a generic `f` ([8. Generics](#8-generics)) the receiver is the first argument that is not a comptime one, and the call is the inferred form, so the receiver usually decides the type parameters. `v.push(u32, 7)`, with the type parameters written after the receiver, is the explicit form and means `push(u32, v, 7)`.
 3. **The receiver is passed as written.** It gets the conversions any argument gets (`*mut` to `*`, an array pointer to a slice, a narrower number widened) and nothing more: no address is taken of it, and no pointer is followed for it.
 4. **Calls chain left to right.** `v.last().double()` is `double(last(v))`.
-5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`.
+5. **It is only syntax.** `x.f(a)` and `f(x, a)` are the same call and compile to the same code. Which function `f` is, among functions that share the name, is decided as for any call ([3.4](#functions-that-share-a-name)). A builtin is called the same way: `x.sqrt()`, `a.min(b)`. A parameter or loop variable that has a function's name hides the function in this form too: with a parameter `double: u32`, `double.double()` is `double(double)`, a call of a `u32`, and is refused; its message, `no field 'double' on type u32, and no function 'double' accepts (u32)`, should name the parameter (a known bug). A variable with a builtin's name hides nothing ([10](#10-builtin-functions)), so with a parameter `max: u32`, `max.max(4)` should be `max(max, 4)`, the builtin; it is refused with the same message (a known bug): write `max(max, 4)`.
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -6038,7 +6132,7 @@ The body can assign its loop's variables. The element is a copy, so assigning to
 
 #### `return`
 
-`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). `return` takes the expression after it, on its line or the next ([1.6](#16-statements-and-line-breaks)), so a bare `return` is written last in its block or with its `when`. Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
+`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). `return` takes the expression after it, on its line or the next ([1.6](#16-statements-and-line-breaks)), so a bare `return` is written last in its block or with its `when`: a bare `return` on its own line followed by `assert c` takes `assert` as its value, a name (`unknown identifier 'assert'`), as it takes any line that starts with a name. Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
 
 #### `break` and `continue`
 
@@ -6169,6 +6263,11 @@ func passes() {
   }
 }
 
+func named(k: u32) -> (n: u32) {
+  defer note(n)
+  return k                     // does not assign n
+}
+
 test "deferred expressions run at exit, newest first" {
   order()
   assert log == 321
@@ -6181,6 +6280,9 @@ test "deferred expressions run at exit, newest first" {
   log = 0
   passes()
   assert log == 50152          // the end of each pass, continue included
+  log = 9
+  assert named(5) == 5
+  assert log == 90             // the defer noted n as 0
 }
 ```
 
@@ -6189,8 +6291,16 @@ test "deferred expressions run at exit, newest first" {
 - The deferred expression is evaluated when the block exits, not when `defer`
   runs: `defer note(d)` notes `d` as it is at exit.
 - A `return` computes its value first; deferred expressions run after, and the
-  value is returned unchanged. With named results, a trailing expression's
-  value is stored in them before deferred expressions run.
+  value is returned unchanged. With named results, `return value` does not
+  assign them, so a deferred expression reads them as they were. A trailing
+  expression's value is stored in them before deferred expressions run.
+- A deferred expression that assigns a named result changes what the caller
+  gets at some exits and not at others (a known bug, until one rule is chosen).
+  At a bare `return` (`return when c` too) the named results are read before
+  the deferred expressions run; at the end of the body, after a trailing value
+  too, they are read after. So with `defer if n > 3 { n = 3 }`, a body that ends
+  with `n = k` returns 3 for a `k` of 5, and the same body with a last `return`
+  returns 5. Do not assign a named result in a deferred expression.
 - `defer` takes an expression, most often a call, and drops its value. An `if`
   defers a choice made at exit, `defer if dirty { flush() }`, and its blocks may
   hold statements. An assignment is a statement, so `defer x = 0` is a syntax
@@ -9124,7 +9234,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `return`, `return x when c` | `return`, `(if c (then x (return)))` |
 | `a && b`, `a \|\| b` | `(if (result i32) a (then b) (else (i32.const 0)))`, `(if (result i32) a (then (i32.const 1)) (else b))` |
 | `if let`, `??` | an `if` on the check: the index against the length, the pointer against 0 |
-| `defer e` | `e` written out again at each way out of its block, after a `return`'s value is computed |
+| `defer e` | `e` written out again at each way out of its block: after a `return`'s value is computed, or a bare `return`'s named results are read; at the end of a function body, before its named results are read |
 | `assert c` | `(if (i32.eqz c) (then (unreachable)))` |
 
 A `match` is never a `br_table`: its arms are compared one after another. A function's code may end in an `unreachable` that never runs: every path through a function with results returns a value, as the checker requires.
