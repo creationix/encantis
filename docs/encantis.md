@@ -1289,11 +1289,33 @@ A host reference is held where registers are, and nowhere else:
 
 It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one. How a host reference is kept in memory is a design still to come.
 
-Any host reference may be null: the host can give one (JavaScript's `null`), and so can the module. Null is written `0`, as none is for an optional pointer: `global ctx: Context = 0`, `return 0`, `context(0)`, `0 as Canvas`. A global or a `let` given no value is null too. `c == 0` and `c != 0` ask whether one is null. Every host type is nullable, so there is no `?Canvas`, and nothing is resolved before a reference is passed on: the module cannot look inside one, so null is only ever the host's to deal with.
+#### Never null, and optional
 
-Nothing else is computed with one: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast but `0 as Canvas` to or from a number or an address or another host type, and no condition. It is passed, returned, stored in a variable or a global, and read back.
+A plain host type is never null: a `Canvas` is always a value the host gave. So it has no default, as a plain function value has none (3.4):
 
-The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly a host reference is an `externref`.
+- a `let` or a global of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
+- a named result cannot hold one, since a named result starts with a default: return the value instead;
+- `0` is no `Canvas`, and neither is any other number: `c == 0` on a plain `Canvas` is an error that says to use `?Canvas`.
+
+A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer (2.5); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
+
+- none is written `0`, the literal: also in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` is not none);
+- it starts as none: a `let` or a global of one given no value is none;
+- `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
+- `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
+- a `Canvas` widens to a `?Canvas` implicitly (`c as ?Canvas` too), and a `?Canvas` is used as a `Canvas` only once resolved (`cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first`).
+
+`match` does not take a host reference, optional or not, as it does not take a pointer.
+
+#### At the boundary
+
+The module never makes a null `Canvas`. The host promises one too: where a value of a plain host type comes in from the host, as an exported function's parameter, an imported function's result or an imported global's value, it is checked once, as it comes in, and a null there traps (`unreachable`). So a host that breaks the promise stops the program at the boundary, not somewhere later. Nothing is checked anywhere else, nothing for a `?Canvas`, and a program that uses no host type compiles to the same bytes as it would without this rule. An imported global is checked when the module starts (a wasm start function).
+
+For a JavaScript host, null is `null`. `undefined` (what a function that returns nothing gives, or a `Map.get` that finds nothing) is a value, not null: it passes for a `Canvas`, and `opt == 0` is false for it.
+
+Nothing else is computed with a host reference: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast to or from a number, an address or another host type (`0 as ?Canvas` is none, and `c as ?Canvas` widens), and no condition. It is passed, returned, stored in a variable or a global, and read back.
+
+The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` today. A later backend may hold a plain one as a `(ref extern)`, which the engine itself keeps from being null, and drop the boundary checks, with no change to the source.
 
 <!-- spec:begin compile -->
 
@@ -1306,29 +1328,64 @@ import "canvas" (
   "fill" func fill(ctx: Context, x: f32, y: f32, w: f32, h: f32)
 )
 
-global ctx: Context = 0
+// None until the host hands in a canvas.
+global ctx: ?Context = 0
 
 // The host hands the canvas in once; the module keeps what it needs.
 export func start(c: Canvas) {
-  if c != 0 { ctx = context(c) }
+  ctx = context(c)
 }
 
 // Nothing is drawn before there is something to draw on.
-export func draw(n: u32) {
-  return when ctx == 0
-  for i in n {
-    fill(ctx, i as f32 * 12.0, 0.0, 10.0, 10.0)
+export func draw(n: u32) -> u32 {
+  if let x = ctx {
+    for i in n {
+      fill(x, i as f32 * 12.0, 0.0, 10.0, 10.0)
+    }
+    return n
   }
+  return 0
 }
 
+export func started() -> bool => ctx != 0
 export func stop() { ctx = 0 }
 
 // A struct of a reference and a number is two values in registers.
 type Tagged = (c: Canvas, n: i32)
 export func tag(c: Canvas, n: i32) -> Tagged => Tagged(c, n + 1)
+
+// A plain one comes out of an optional one with ?? as well.
+export func or-else(maybe: ?Canvas, other: Canvas) -> Canvas => maybe ?? other
+
+test "nothing is drawn before there is a context" {
+  assert !started()
+  assert draw(3) == 0
+  stop()
+  assert ctx == 0
+  assert draw(3) == 0
+}
 ```
 
-Two host types are two types, neither is a number, and the one thing asked of a reference is whether it is null:
+`?` makes a host type optional by any name for it, also one declared further down, and a type parameter given a host type:
+
+```ents
+type Holder = (c: ?Canvas, n: i32)
+type Canvas = host
+type Screen = Canvas
+
+func keep(comptime T: type, x: ?T) -> ?T => x
+export func held(h: Holder) -> ?Canvas => h.c
+export func screen(s: ?Screen) -> ?Canvas => keep(s)
+export func plain(c: Canvas) -> ?Screen => keep(c)
+
+test "an optional one starts as none" {
+  let none: ?Screen
+  assert none == 0
+  assert keep(none) == 0
+}
+```
+
+Two host types are two types, neither is a number, a plain one is never null, and the one thing asked of an optional one is whether it is none:
 
 ```ents
 type Canvas = host
@@ -1336,15 +1393,55 @@ type Context = host
 
 func a(c: Canvas) -> Context => c
 func b(c: Canvas) -> u32 => c as u32
-func c(x: Canvas, y: Canvas) -> bool => x == y
+func c(x: ?Canvas, y: ?Canvas) -> bool => x == y
 func d(x: Canvas) -> Canvas => 1 as Canvas
+func e() -> Canvas => 0
+func f(c: Canvas) -> bool => c == 0
+func g(x: ?Canvas) -> Canvas => x
+func h() -> ?Canvas => 0 as Canvas
+func i(x: Canvas, y: Canvas) -> bool => x != y
+type Point = (x: i32, y: i32)
+func j(p: ?Point) {}
 ```
 
 ```errors
+cannot make Point optional: a name is made optional only for a host type
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
-'==' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is only compared with 0, to ask whether it is null
+'==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be null, which is only compared with 0
 cannot cast int(1) to Canvas
+cannot assign int(0) to Canvas: a Canvas is never null (a host reference that may be null is a ?Canvas)
+'==' cannot be applied to Canvas and int(0): a Canvas is never null
+cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first
+cannot cast int(0) to Canvas: a Canvas is never null
+'!=' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is not compared
+```
+
+A plain host reference has no default, in a variable, a global or a named result, and in a struct or an array either:
+
+```ents
+type Canvas = host
+type Tagged = (c: Canvas, n: i32)
+
+global g: Canvas
+global none: ?Canvas
+
+func vars() {
+  let c: Canvas
+  let t: Tagged
+  let cs: [2]Canvas
+  let ok: ?Canvas
+}
+func result() -> (r: Canvas) {}
+func optional-result() -> (r: ?Canvas) {}
+```
+
+```errors
+global 'g' needs a value: a Canvas has no default (a ?Canvas starts as none)
+'c' needs a value where it is declared: a Canvas has no default
+'t' needs a value where it is declared: Tagged holds Canvas, which has no default
+'cs' needs a value where it is declared: [2]Canvas holds Canvas, which has no default
+result 'r' cannot start with a default: a Canvas has no default (a ?Canvas starts as none); return the value instead
 ```
 
 None is in memory, also inside a struct, and also when the type is declared after it is named:
@@ -1358,6 +1455,7 @@ func a(p: *Canvas) {}
 func b(s: []Canvas) {}
 func c(c: Canvas) -> u32 => sizeof(Canvas)
 func d(x: host) {}
+func e(p: *?Canvas) {}
 ```
 
 ```errors
@@ -1365,6 +1463,7 @@ cannot point to Holder: it holds Canvas, and a host reference has no bytes, so i
 cannot point to Canvas: a host reference has no bytes
 cannot make a slice of Canvas: a host reference has no bytes
 'host' declares a host reference type
+cannot point to ?Canvas: a host reference has no bytes
 cannot take the size of Canvas: a host reference has no bytes
 ```
 

@@ -296,7 +296,7 @@ type Buffer = [1024]u8
 type Canvas = host
 ```
 
-`host` is a type only as the whole right side of a type declaration (reference [2.13](encantis.md#213-host-references)). It is not a reserved word: `host` is still a name for a variable or a function.
+`host` is a type only as the whole right side of a type declaration (reference [2.13](encantis.md#213-host-references)). It is not a reserved word: `host` is still a name for a variable or a function. `?Canvas` is the optional form of a host type, which may be null (none, written 0); a plain `Canvas` never is. `?` before a name is for a host type only: a pointer or a slice is made optional where it is written (`?*T`, `?[]T`).
 
 ### Definitions (Constants)
 
@@ -356,6 +356,7 @@ base_type       = primitive_type
                 | array_type
                 | composite_type
                 | "host"                         -- only as all of a type declaration: type Canvas = host
+                | "?" type_ident                 -- an optional host type: ?Canvas, which may be null
                 | type_ident "(" type_arg ("," type_arg)* ")"   -- a generic type applied: Vec(u32), Ring(8, u32)
                 | type_ident
 

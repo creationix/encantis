@@ -806,6 +806,15 @@ export const semanticsActions: Record<string, SemanticAction> = {
     } as AST.PointerType
   },
 
+  // ?Canvas: a host type that may be null, its none written 0
+  BaseType_optNamed(_q, typeIdent) {
+    return {
+      kind: 'OptionalType',
+      type: typeIdent.toAST(),
+      span: span(this),
+    } as AST.OptionalType
+  },
+
   BaseType_optPointer(_q, _star, type) {
     return {
       kind: 'PointerType',

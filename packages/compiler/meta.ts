@@ -1508,6 +1508,9 @@ class MetaBuilder {
       for (const arg of type.args) if (arg.kind !== 'ValueArg') this.generateHintsForTypeExpr(arg)
     }
     // Recurse into compound types
+    if (type.kind === 'OptionalType') {
+      this.generateHintsForTypeExpr(type.type)
+    }
     if (type.kind === 'PointerType') {
       this.generateHintsForTypeExpr(type.pointee)
     }

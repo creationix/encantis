@@ -14,6 +14,7 @@ import {
   type PointerRT,
   type TupleRT,
   type FuncRT,
+  type HostRT,
   primitive,
   pointer,
   slice,
@@ -60,6 +61,7 @@ import {
   isBool,
   byteSize,
   hostIn,
+  plainHostIn,
   hostRef,
   isFixedSizes,
   isValueArray,
@@ -90,8 +92,9 @@ export type ComptimeValue =
 export type Symbol =
   | { kind: 'type'; type: ResolvedType; unique: boolean }
   // `alias`: a comptime function parameter inside an instance, which stands
-  // for the function of that name
-  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string }
+  // for the function of that name. `host`: imported from the host, whose
+  // results come in from outside the module.
+  | { kind: 'func'; type: ResolvedType & { kind: 'func' }; inline: boolean; alias?: string; host?: true }
   | { kind: 'global'; type: ResolvedType }
   // `valueParam`: a comptime value parameter's name inside an instance (see
   // bindComptimeValues)
@@ -1095,7 +1098,7 @@ class CheckContext {
     const host = hostIn(type)
     if (!host) return
     const shown = typeToString(type)
-    const holds = shown === host.name ? '' : `it holds ${host.name}, and `
+    const holds = shown === typeToString(host) ? '' : `it holds ${typeToString(host)}, and `
     this.error(at, `cannot ${doing} ${shown}: ${holds}a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global)`)
   }
 
@@ -1386,7 +1389,8 @@ class CheckContext {
             this.declareFunc(item.item, name, { kind: 'func', type: exported.type, inline: exported.inline }, inTest, `${decl.module}:${item.name}`)
           } else {
             const sig = this.resolveSignature(item.item.signature)
-            this.declareFunc(item.item, name, { kind: 'func', type: sig, inline: false }, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
+            const sym: Symbol = isSource ? { kind: 'func', type: sig, inline: false } : { kind: 'func', type: sig, inline: false, host: true }
+            this.declareFunc(item.item, name, sym, inTest, isSource ? `${decl.module}:${item.name}` : undefined)
           }
           break
         }
@@ -2628,6 +2632,8 @@ class CheckContext {
       type = primitive('i32')
     }
 
+    const missing = decl.type && !decl.value ? noDefault(type) : null
+    if (missing) this.error(decl.span.start, `global '${name}' needs a value: ${missing}`)
     if (decl.value && !this.isConstantInitializer(decl.value)) {
       this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
     }
@@ -2971,6 +2977,10 @@ class CheckContext {
         if (param?.kind === 'param' && !typeEquals(unwrap(param.type), unwrap(resolvedType))) {
           this.error(field.span.start, `result '${field.ident}' is the parameter '${field.ident}', so it has its type: ${typeToString(param.type)}, not ${typeToString(resolvedType)}`)
         }
+        // A named result starts with a default, which a plain host
+        // reference has none of.
+        const missing = kind === 'return' && param?.kind !== 'param' ? noDefault(resolvedType) : null
+        if (missing) this.error(field.span.start, `result '${field.ident}' cannot start with a default: ${missing}; return the value instead`)
         scope.symbols.set(field.ident, sym)
         this.types.set(typeKey(field.span.start, field.kind), resolvedType)
         this.recordDefinition(field.ident, field.span.start, sym)
@@ -3290,6 +3300,12 @@ class CheckContext {
     } else {
       this.error(stmt.span.start, 'let needs type annotation or initializer')
       type = primitive('i32')
+    }
+    // A variable of a plain host type gets its value where it is declared.
+    const missing = stmt.type && !stmt.value ? noDefault(type) : null
+    if (missing) {
+      const named = stmt.pattern.kind === 'IdentPattern' ? `'${stmt.pattern.name}'` : 'this let'
+      this.error(stmt.span.start, `${named} needs a value where it is declared: ${missing}`)
     }
     // The variable is held by value: said where its type is written, or else
     // at the variable
@@ -3929,7 +3945,31 @@ class CheckContext {
       case 'HostType':
         this.error(type.span.start, `'host' declares a host reference type: write 'type Canvas = host' and use Canvas`)
         return RECOVERY
+
+      case 'OptionalType': {
+        // ?Canvas is the host type the name stands for, as one that may be
+        // null. A name declared further down is known by its declaration.
+        const inner = this.resolveType(type.type)
+        if (inner === RECOVERY) return RECOVERY
+        const u = unwrap(inner)
+        const host = u.kind === 'host' ? u : this.hostDeclared(type.type)
+        if (host) return hostRef(host.name, true)
+        this.error(type.span.start, `cannot make ${typeText(type.type)} optional: a name is made optional only for a host type (a pointer or a slice is optional where it is written, as ?*T or ?[]T)`)
+        return RECOVERY
+      }
     }
+  }
+
+  // The host type a type as written names, through the module's type
+  // declarations as written, or null: what a name declared further down
+  // stands for, before it is resolved.
+  private hostDeclared(type: AST.Type, seen = new Set<string>()): HostRT | null {
+    const t = ungroupedType(type)
+    if (t.kind !== 'TypeRef' || seen.has(t.name)) return null
+    seen.add(t.name)
+    const body = this.typeBodies.get(t.name)
+    if (!body) return null
+    return ungroupedType(body).kind === 'HostType' ? hostRef(t.name) : this.hostDeclared(body, seen)
   }
 
   // The number a length or a bound is written as: any compile-time constant,
@@ -6485,14 +6525,19 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
-    // A host reference may be null, written 0: it is compared with 0, and
-    // only for equality, as an optional is, and with nothing else.
+    // An optional host reference may be none, written 0: it is compared
+    // with 0, and only for equality, as an optional pointer is, and with
+    // nothing else. A plain one is never null.
     const host = (type: ResolvedType) => unwrap(type).kind === 'host'
     const isZero = (type: ResolvedType) => {
       const t = unwrap(type)
       return t.kind === 'comptime_int' && t.value === 0n
     }
-    if (((host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))) && (expr.op === '==' || expr.op === '!=')) return
+    if (((host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))) && (expr.op === '==' || expr.op === '!=')) {
+      const ref = unwrap(host(leftType) ? leftType : rightType) as HostRT
+      if (!ref.optional) this.error(expr.span.start, `'${expr.op}' cannot be applied to ${typeToString(leftType)} and ${typeToString(rightType)}: ${neverNull(ref)}`)
+      return
+    }
     // An optional slice is none where its pointer is 0: it is compared with
     // 0, and only for equality, as an optional pointer is.
     const optionalSlice = (type: ResolvedType) => {
@@ -6545,10 +6590,14 @@ class CheckContext {
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
     // A host reference is no number and no address: nothing converts to or
-    // from one, and one host type is not another.
+    // from one, and one host type is not another. 0 is an optional one's
+    // none, and a plain one widens to its optional.
     const host = hostIn(from) ?? hostIn(to)
-    const nullRef = unwrap(to).kind === 'host' && unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
-    if (host && !typeEquals(from, to) && !nullRef) {
+    const toHost = unwrap(to)
+    const fits = toHost.kind === 'host' && typeAssignable(to, from)
+    if (host && !typeEquals(from, to) && !fits) {
+      const zero = unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
+      if (zero && toHost.kind === 'host') return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${neverNull(toHost)}`
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${host.name} is a host reference, which is no number and no address`
     }
     const named = this.functionNamed(operand)
@@ -6599,7 +6648,11 @@ class CheckContext {
     const elementwise = literal && from.kind === 'comptime_array' && to.kind === 'array'
       && to.sizes?.length === 1 && to.sizes[0] === from.count
     if (!elementwise && !typeAssignable(expected, actual)) {
-      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${reordered(from, to, typeToString(expected))}`,
+      // 0 is none of a plain host reference, which is never null.
+      const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
+        : to.kind === 'host' && !to.optional && from.kind === 'host' && from.optional && from.name === to.name ? `: it may be null — resolve it with 'if let' or '??' first`
+        : reordered(from, to, typeToString(expected))
+      this.error(expr.span.start, `${prefix}cannot assign ${typeToString(actual)} to ${typeToString(expected)}${why}`,
         this.rowNote(expr.span.start, actual, expected))
       return
     }
@@ -10053,6 +10106,8 @@ function typeText(type: AST.Type): string {
       return 'type'
     case 'HostType':
       return 'host'
+    case 'OptionalType':
+      return `?${typeText(type.type)}`
   }
 }
 
@@ -10325,6 +10380,8 @@ function mentionsUnbound(
   switch (type.kind) {
     case 'TypeRef':
       return typeParams.includes(type.name) && !bound.has(type.name)
+    case 'OptionalType':
+      return inner(type.type)
     case 'PointerType':
       return inner(type.pointee)
     case 'IndexedType':
@@ -10397,6 +10454,10 @@ function matchType(
       // `value`: nothing but tuples lies between the argument and this part
       // of it, so it is a value the argument holds, not memory it points to.
       bound.set(pattern.name, value ? withoutRanges(actual) : actual)
+      return
+    case 'OptionalType':
+      // ?T laid over a host reference, optional or not, gives T the plain one.
+      if (u.kind === 'host') matchType(pattern.type, hostRef(u.name), typeParams, bound, value, expand, expanding)
       return
     case 'PointerType':
       // A many-pointer is not a pointer to something T could be: what it
@@ -10843,7 +10904,7 @@ const NO_SUBST: Subst = () => undefined
 
 const TYPE_KINDS: ReadonlySet<string> = new Set([
   'PrimitiveType', 'PointerType', 'IndexedType', 'CompositeType', 'ComptimeIntType', 'ComptimeFloatType',
-  'TypeRef', 'TypeApply', 'TypeType', 'BoundType', 'FuncType',
+  'TypeRef', 'TypeApply', 'TypeType', 'BoundType', 'FuncType', 'HostType', 'OptionalType',
 ])
 function isTypeNode(node: AST.Type | AST.Expr | AST.ValueArg): node is AST.Type {
   return TYPE_KINDS.has(node.kind)
@@ -11020,9 +11081,26 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
   // A host reference is opaque: not even two of them are compared.
   const host = hostIn(left) ?? hostIn(right)
   if (!host) return said
-  return op === '==' || op === '!='
-    ? `${said}: ${host.name} is a host reference, which is only compared with 0, to ask whether it is null`
-    : `${said}: ${host.name} is a host reference, which has no value the module can compute with`
+  if (op !== '==' && op !== '!=') return `${said}: ${host.name} is a host reference, which has no value the module can compute with`
+  return host.optional
+    ? `${said}: ${typeToString(host)} is a host reference that may be null, which is only compared with 0, to ask whether it is`
+    : `${said}: ${host.name} is a host reference, which is not compared (one that may be null, a ?${host.name}, is compared with 0)`
+}
+
+// Why 0, or a question of null, does not fit a plain host reference
+function neverNull(host: HostRT): string {
+  return `a ${host.name} is never null (a host reference that may be null is a ?${host.name})`
+}
+
+// Why a variable of a type has no default, where it holds a plain host
+// reference, or null
+function noDefault(type: ResolvedType): string | null {
+  const host = plainHostIn(type)
+  if (!host) return null
+  const shown = typeToString(type)
+  return shown === host.name
+    ? `a ${host.name} has no default (a ?${host.name} starts as none)`
+    : `${shown} holds ${host.name}, which has no default`
 }
 
 // Why an operator can't take an operand of this type, or null when it can.
@@ -11053,8 +11131,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
   // 0 is none for an optional slice, as it is for an optional pointer.
   if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
-  // And 0 is the null host reference.
-  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'host') return null
+  // And 0 is none for an optional host reference.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'host' && t.optional) return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot

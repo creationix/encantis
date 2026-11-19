@@ -206,6 +206,27 @@ export function zeroOf(wasmType: string): string {
   return wasmType === 'externref' ? '(ref.null extern)' : `(${wasmType}.const 0)`
 }
 
+// Which of the wasm values of a type (in typeToWasm's order) hold a plain
+// host reference. The module never makes a null one, so only a value the host
+// gives (an exported function's parameter, an imported function's result, an
+// imported global) can be null against its type; each is checked where it
+// comes in. A later backend can hold a plain one as a (ref extern), which the
+// engine checks instead.
+export function nonNullSlots(t: ResolvedType): boolean[] {
+  const u = unwrap(t)
+  if (u.kind === 'host') return [!u.optional]
+  if (u.kind === 'tuple') return u.fields.flatMap((f) => nonNullSlots(f.type))
+  if (u.kind === 'array' && u.sizes?.length === 1 && typeof u.sizes[0] === 'number') {
+    return Array(u.sizes[0]).fill(nonNullSlots(u.element)).flat()
+  }
+  return typeToWasm(t).map(() => false)
+}
+
+// A trap where the host broke its promise: a null for a plain host reference
+function nullTrap(value: string): string {
+  return `(if (ref.is_null ${value}) (then (unreachable)))`
+}
+
 function typeToWasmSingle(t: ResolvedType): string {
   const types = typeToWasm(t)
   if (types.length === 0) {
@@ -1152,7 +1173,18 @@ function callToWat(expr: AST.CallExpr, ctx: CodegenContext): string {
   }).filter(Boolean).join(' ')
 
   const watName = ctx.nameMap.get(funcName) ?? funcName
-  return `(call $${watName}${args ? ' ' + args : ''})`
+  const call = `(call $${watName}${args ? ' ' + args : ''})`
+  // A plain host reference the host gives back is checked as it comes in.
+  const sym = ctx.symbols.get(funcName)
+  if (sym?.kind !== 'func' || !sym.host) return call
+  const checked = sym.type.returns.flatMap((r) => nonNullSlots(r.type))
+  if (!checked.includes(true)) return call
+  const types = sym.type.returns.flatMap((r) => typeToWasm(r.type))
+  const held = types.map((t) => scratchLocal(ctx, t))
+  const sets = [...held].reverse().map((l) => `(local.set ${l})`).join(' ')
+  const traps = held.filter((_, i) => checked[i]).map((l) => nullTrap(`(local.get ${l})`)).join(' ')
+  const gets = held.map((l) => `(local.get ${l})`).join(' ')
+  return `(block (result ${types.join(' ')}) ${call} ${sets} ${traps} ${gets})`
 }
 
 // === Places ===
@@ -1887,6 +1919,12 @@ function coalesceToWat(expr: AST.CoalesceExpr, ctx: CodegenContext): string {
     return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then (local.get $${ptrLocal}) (local.get $${lenLocal})) (else ${fallbackVal}))`
   }
 
+  // Optional host reference: an externref, none where it is null
+  if (unwrap(elemType).kind === 'host') {
+    const refLocal = `__coal_ref_${uid}`
+    return `(local.set $${refLocal} ${leftWat})\n(if ${resultStr} (ref.is_null (local.get $${refLocal})) (then ${fallbackVal}) (else (local.get $${refLocal})))`
+  }
+
   // Pointer optional: single i32 — check nonzero
   parts.push(`(local.set $${ptrLocal} ${leftWat})`)
   return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then (local.get $${ptrLocal})) (else ${fallbackVal}))`
@@ -2026,6 +2064,15 @@ function ifLetToWat(expr: AST.IfExpr, ctx: CodegenContext): string {
       return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}) (else ${elseBody}))`
     }
     return `${parts.join('\n')}\n(if ${resultStr} (local.get $${ptrLocal}) (then ${bindWat}\n${thenBody}))`
+  }
+
+  // Optional host reference: an externref, none where it is null
+  if (unwrap(elemType).kind === 'host') {
+    const refLocal = `__iflet_ref_${uid}`
+    const test = `(i32.eqz (ref.is_null (local.get $${refLocal})))`
+    const bindRef = `(local.set $${bindingNames[0]} (local.get $${refLocal}))`
+    const otherwise = elseBody ? ` (else ${elseBody})` : ''
+    return `(local.set $${refLocal} ${condWat})\n(if ${resultStr} ${test} (then ${bindRef}\n${thenBody})${otherwise})`
   }
 
   // Pointer optional: single i32
@@ -2984,6 +3031,9 @@ export function funcToWat(
   watName?: string,
   extraSymbols?: Map<string, CheckSymbol>,
   dataSectionSize?: number,
+  // Exported to the host: a plain host reference among its parameters is
+  // checked as it comes in.
+  exported = false,
 ): string {
   const ctx = createContext(checkResult, literalRefs, nameMap, dataSectionSize)
   if (extraSymbols) {
@@ -3071,11 +3121,57 @@ export function funcToWat(
   const localStr = declareUsedLocals([...dedupedLocals, ...(ctx.scratch ?? [])], `${body}\n${epilogue}`, '\n  ')
   const paramsStr = params.join(' ')
   const emitName = watName ?? name
+  const entry = exported ? paramTypes.flatMap((param) => {
+    const names = param.name ? ctx.params.get(param.name) ?? [] : []
+    const checked = nonNullSlots(param.type)
+    return names.filter((_, i) => checked[i]).map((n) => nullTrap(`(local.get $${n})`))
+  }) : []
   return `(func $${emitName} ${paramsStr} ${resultStr}
   ${localStr}
-  ${body}
+  ${entry.map((check) => `${check}\n  `).join('')}${body}
   ${epilogue}
 )`
+}
+
+// The functions a module exports to the host, whose parameters come in from
+// outside
+function hostExports(module: AST.Module): Set<AST.FuncDecl> {
+  const exported = new Set<AST.FuncDecl>()
+  for (const decl of module.decls) {
+    if (decl.kind === 'ExportDecl' && decl.item.kind === 'FuncDecl' && !isGenericExport(decl)) exported.add(decl.item)
+  }
+  return exported
+}
+
+// The globals imported from the host that hold a plain host reference are
+// checked once, when the module starts: a start function that traps if the
+// host gave null for one. Nothing for a module without such a global.
+function hostGlobalChecks(module: AST.Module, ctx: CodegenContext, includeTests: boolean): string[] {
+  const checks: string[] = []
+  const imports = (decls: readonly AST.Declaration[] | readonly AST.TestItem[]): void => {
+    for (const decl of decls) {
+      if (decl.kind === 'TestDecl') {
+        if (includeTests) imports(decl.children)
+        continue
+      }
+      if (decl.kind !== 'ImportDecl' || isSourceImport(decl.module)) continue
+      for (const item of decl.items) {
+        if (item.item.kind !== 'ImportGlobal') continue
+        const sym = ctx.symbols.get(item.item.ident)
+        if (sym?.kind !== 'global') continue
+        const checked = nonNullSlots(sym.type)
+        const names = globalNames(item.item.ident, sym.type, ctx)
+        for (const [i, n] of names.entries()) if (checked[i]) checks.push(nullTrap(`(global.get $${n})`))
+      }
+    }
+  }
+  imports(module.decls)
+  return checks
+}
+
+function hostGlobalsStart(checks: string[]): string[] {
+  if (checks.length === 0) return []
+  return [`  (func $__host_globals\n    ${checks.join('\n    ')}\n  )`, '  (start $__host_globals)']
 }
 
 // The wasm locals (or params) a variable is held in. A variable of one wasm
@@ -3316,6 +3412,8 @@ function collectLocals(
             locals.push({ name: `__iflet_idx_${uid}`, type: 'i32' })
             ctx.locals.set(`__iflet_idx_${uid}`, [`__iflet_idx_${uid}`])
           }
+          // An optional host reference is held while it is tested for null.
+          if (unwrap(elemType).kind === 'host') locals.push({ name: `__iflet_ref_${uid}`, type: 'externref' })
           // Temporary locals for null check
           locals.push({ name: `__iflet_ptr_${uid}`, type: 'i32' })
           locals.push({ name: `__iflet_len_${uid}`, type: 'i32' })
@@ -3357,6 +3455,9 @@ function collectLocals(
       if (expr.expr.kind === 'IndexExpr') {
         locals.push({ name: `__coal_idx_${uid}`, type: 'i32' })
       }
+      // An optional host reference is held while it is tested for null.
+      const held = checkResult.types.get(typeKey(expr.span.start, 'CoalesceBinding'))
+      if (held && unwrap(held).kind === 'host') locals.push({ name: `__coal_ref_${uid}`, type: 'externref' })
       locals.push({ name: `__coal_ptr_${uid}`, type: 'i32' })
       locals.push({ name: `__coal_len_${uid}`, type: 'i32' })
       if (expr.expr.kind === 'IndexExpr') {
@@ -3538,9 +3639,11 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
   }
 
   // Collect function declarations
+  const exported = hostExports(module)
   for (const fn of funcsInOrder(module.decls, checkResult)) {
-    parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
+    parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize, exported.has(fn)))
   }
+  parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx, false)))
 
   // Collect globals
   for (const decl of module.decls) {
@@ -4167,7 +4270,10 @@ export function programToWat(
     }
   }
 
-  // Emit functions from all modules
+  // Emit functions from all modules. The entry module's exports are the
+  // host's to call.
+  const entryExports = modules.get(entryPath) ? hostExports((modules.get(entryPath) as LoadedModule).module) : new Set<AST.FuncDecl>()
+  const globalChecks: string[] = []
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -4176,9 +4282,11 @@ export function programToWat(
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
-      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
+      parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
     }
+    globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), !!options?.includeTests))
   }
+  parts.push(...hostGlobalsStart(globalChecks))
 
   // Emit globals from all modules
   for (const [path, loaded] of modules) {

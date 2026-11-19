@@ -653,6 +653,7 @@ export type Type =
   | BoundType
   | FuncType
   | HostType
+  | OptionalType
 
 export interface PrimitiveType extends BaseNode {
   kind: 'PrimitiveType'
@@ -755,6 +756,14 @@ export interface TypeType extends BaseNode {
 // type of its own.
 export interface HostType extends BaseNode {
   kind: 'HostType'
+}
+
+// `?Canvas`: the host type a name stands for, as one that may be null (none,
+// written 0). A plain host type is never null. Its own node, so that a type
+// parameter put in for the name (?T) is still made optional.
+export interface OptionalType extends BaseNode {
+  kind: 'OptionalType'
+  type: Type
 }
 
 // A type the compiler has already evaluated. Never parsed: instantiating a

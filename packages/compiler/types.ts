@@ -170,9 +170,13 @@ export interface NamedRT {
 // host types are the same type when their names are. It has no bytes, so it
 // is never in memory. Kept as its own kind all the way to codegen, so that a
 // backend chooses its representation: wasm's is an externref.
+//
+// A plain one (Canvas) is never null: it has no default, and 0 is none of
+// it. The optional one (?Canvas) may be: 0 is none, and it starts as none.
 export interface HostRT {
   kind: 'host'
   name: string
+  optional?: boolean // true for ?Canvas
 }
 
 // Forward reference - a type named before it is resolved: one declared further
@@ -236,17 +240,19 @@ export function slice(element: ResolvedType, mutable?: boolean, optional?: boole
   return result
 }
 
-// A name for a pointer or a slice is the type it names: these see through it.
+// A name for a pointer, a slice or a host type is the type it names: these
+// see through it.
 export function optionalOf(type: ResolvedType): ResolvedType {
   const u = unwrap(type)
   if (u.kind === 'pointer') return { ...u, optional: true }
   if (u.kind === 'slice') return { ...u, optional: true }
+  if (u.kind === 'host') return { ...u, optional: true }
   return type
 }
 
 export function isOptional(type: ResolvedType): boolean {
   const u = unwrap(type)
-  return (u.kind === 'pointer' || u.kind === 'slice') && !!u.optional
+  return (u.kind === 'pointer' || u.kind === 'slice' || u.kind === 'host') && !!u.optional
 }
 
 export function unwrapOptional(written: ResolvedType): ResolvedType {
@@ -261,6 +267,7 @@ export function unwrapOptional(written: ResolvedType): ResolvedType {
     delete result.optional
     return result
   }
+  if (type.kind === 'host' && type.optional) return hostRef(type.name)
   return type
 }
 
@@ -392,34 +399,57 @@ export function named(name: string, type: ResolvedType): NamedRT {
   return { kind: 'named', name, type }
 }
 
-export function hostRef(name: string): HostRT {
-  return { kind: 'host', name }
+export function hostRef(name: string, optional?: boolean): HostRT {
+  const result: HostRT = { kind: 'host', name }
+  if (optional) result.optional = true
+  return result
 }
 
-// The first host reference a type holds by value (in a field of a struct, an
-// element of an array held in registers, under a name), or null. A pointer or
-// slice holds none by value: what it points at is checked where it is made.
-export function hostIn(t: ResolvedType, seen: Set<ResolvedType> = new Set()): HostRT | null {
+// The first part of a type that `picks`, among what the type holds by value:
+// the type itself, under any name, a field of a struct or tuple, an element of
+// a fixed array or of an array literal. A pointer or a slice holds nothing by
+// value: what it points at is asked about where it is made. This is the one
+// question asked of a type wherever it may reach memory (a value with no
+// bytes is never there) and wherever it would start with a default (a value
+// that may not be none has none): host references ask it now, and function
+// values are meant to ask it the same way.
+export function heldIn<T extends ResolvedType>(t: ResolvedType, picks: (t: ResolvedType) => t is T, seen: Set<ResolvedType> = new Set()): T | null {
   if (seen.has(t)) return null
   seen.add(t)
+  if (picks(t)) return t
   switch (t.kind) {
-    case 'host':
-      return t
     case 'named':
-      return hostIn(t.type, seen)
+      return heldIn(t.type, picks, seen)
     case 'forward_ref':
-      return t.target ? hostIn(t.target, seen) : null
+      return t.target ? heldIn(t.target, picks, seen) : null
     case 'tuple':
       for (const f of t.fields) {
-        const found = hostIn(f.type, seen)
+        const found = heldIn(f.type, picks, seen)
         if (found) return found
       }
       return null
     case 'array':
-      return hostIn(t.element, seen)
+      return heldIn(t.element, picks, seen)
     default:
       return null
   }
+}
+
+const isHost = (t: ResolvedType): t is HostRT => t.kind === 'host'
+const isPlainHost = (t: ResolvedType): t is HostRT => t.kind === 'host' && !t.optional
+
+// The first host reference a type holds by value, or null: such a type is
+// never in memory.
+export function hostIn(t: ResolvedType): HostRT | null {
+  return heldIn(t, isHost)
+}
+
+// The first plain host reference (one that is never null) a type holds by
+// value, or null: such a type has no default, so it gets its value where it
+// is declared, and a value of it that the host gives is checked where it
+// comes in.
+export function plainHostIn(t: ResolvedType): HostRT | null {
+  return heldIn(t, isPlainHost)
 }
 
 export function forwardRef(name: string): ForwardRefRT {
@@ -616,7 +646,7 @@ export function typeEquals(a: ResolvedType, b: ResolvedType, assumed?: Assumed):
       return b.kind === 'forward_ref' && a.name === b.name
 
     case 'host':
-      return a.name === (b as HostRT).name
+      return a.name === (b as HostRT).name && !!a.optional === !!(b as HostRT).optional
   }
 }
 
@@ -703,13 +733,13 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     return lossless(false)
   }
 
-  // 0 is the null host reference: any host reference may be null, as the
-  // host may give one, and it is written as none is for an optional.
-  if (s.kind === 'comptime_int' && s.value === 0n && t.kind === 'host') {
+  // 0 is none for an optional host reference, as for an optional pointer.
+  // A plain one is never null, and no number is one.
+  if (s.kind === 'comptime_int' && s.value === 0n && t.kind === 'host' && t.optional) {
     return lossless(false)
   }
 
-  // Non-optional widens to optional: *T → ?*T, []T → ?[]T
+  // Non-optional widens to optional: *T → ?*T, []T → ?[]T, Canvas → ?Canvas
   if (isOptional(t) && !isOptional(s)) {
     return typeAssignResult(unwrapOptional(t), s)
   }
@@ -1136,7 +1166,7 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
       return t.name
 
     case 'host':
-      return t.name
+      return `${t.optional ? '?' : ''}${t.name}`
   }
 }
 
@@ -1679,7 +1709,7 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
       return '()'
     case 'host':
       // Nominal: its name is the type (id<Canvas>).
-      return t.name
+      return `${t.optional ? '?' : ''}${t.name}`
     case 'func':
       // The names of parameters and results are not part of a function's
       // type: (x: i32) -> i32 and (y: i32) -> i32 take the same functions.
