@@ -267,9 +267,11 @@ export func f() -> u32 => index_of(us, 2) + index_of(fs, 2.0)
   })
 })
 
-// `wasm -O` optimizes with binaryen in this process, the version
-// package.json pins (wasm.ts). The program returns a struct of three u64 as
-// three values, and fills memory with memory.fill (bulk memory).
+// `wasm -O` and `wasm --release` optimize with binaryen in this process, the
+// version package.json pins (wasm.ts). The program returns a struct of three
+// u64 as three values, which binaryen's -Oz grows (today 146 bytes
+// unoptimized, 158 with -O, 136 with --release), and fills memory with
+// memory.fill (bulk memory).
 describe('optimized builds', () => {
   const PROGRAM = `type P = (x: u64, y: u64, z: u64)
 export func add(a: P, b: P) -> P => (a.x + b.x, a.y + b.y, a.z + b.z)
@@ -284,13 +286,13 @@ export func clear() {
   const binaryenPath = Bun.resolveSync('binaryen', root)
   const binaryenVersion = JSON.parse(readFileSync(join(binaryenPath, '../package.json'), 'utf8')).version
 
-  // `encantis wasm <file> -o <dir>/out.wasm [flags]` on PROGRAM; `preload`
-  // is a script bun runs before the command.
-  async function wasm(flags: string[], { preload = '' } = {}) {
+  // `encantis wasm <file> -o <dir>/out.wasm [flags]` on PROGRAM, or on an
+  // example; `preload` is a script bun runs before the command.
+  async function wasm(flags: string[], { example = '', preload = '' } = {}) {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
     try {
-      const file = join(dir, 'program.ents')
-      await writeFile(file, PROGRAM)
+      const file = example ? join(root, example) : join(dir, 'program.ents')
+      if (!example) await writeFile(file, PROGRAM)
       const pre: string[] = []
       if (preload) {
         await writeFile(join(dir, 'preload.ts'), preload)
@@ -312,14 +314,30 @@ export func clear() {
     expect(run.stdout.toString()).toBe(`encantis dev (binaryen ${binaryenVersion})\n`)
   })
 
-  // -O --size --json says each size, and the optimized one is the file's.
-  test('--size --json says how big the module is', async () => {
+  // The same source and the same encantis give the same bytes: nothing in a
+  // release build depends on the run (an example with imports and generics).
+  test('--release twice gives the same bytes', async () => {
+    const example = 'examples/containers/main.ents'
+    const first = await wasm(['--release'], { example })
+    const second = await wasm(['--release'], { example })
+    expect(first.exitCode).toBe(0)
+    expect(first.written?.length).toBeGreaterThan(0)
+    expect(second.written).toEqual(first.written)
+  }, 60_000)
+
+  // --release is never larger than the module unoptimized, nor than -O's.
+  // --size --json says each size, and the optimized one is the file's.
+  test('--release keeps the smallest module, and --size --json says how big it is', async () => {
     const optimize = await wasm(['-O', '--size', '--json'])
+    const release = await wasm(['--release', '--size', '--json'])
     const o = JSON.parse(optimize.stdout)
+    const r = JSON.parse(release.stdout)
     expect(o.optimized).toBe(optimize.written?.length)
-    expect(o.unoptimized).toBeGreaterThan(0)
-    expect(o.gzip).toBeGreaterThan(0)
-    expect(o.brotli).toBeGreaterThan(0)
+    expect(r.optimized).toBe(release.written?.length)
+    expect(r.unoptimized).toBe(o.unoptimized)
+    expect(r.optimized).toBeLessThanOrEqual(Math.min(o.unoptimized, o.optimized))
+    expect(r.gzip).toBeGreaterThan(0)
+    expect(r.brotli).toBeGreaterThan(0)
   }, 60_000)
 
   // As text, a name and a number a line, the optimized size with its change;
@@ -353,22 +371,33 @@ Bun.plugin({
   }
 
   // When binaryen can't optimize, -O says so and writes the module
-  // unoptimized, which --size says is not optimized.
-  test('without binaryen, -O writes the module unoptimized', async () => {
-    const optimize = await wasm(['-O', '--size', '--json'], { preload: fakeBinaryen('missing') })
+  // unoptimized; with --strict-opt, and always with --release, the command
+  // exits 1 and writes nothing.
+  test('without binaryen, -O falls back, --strict-opt and --release fail', async () => {
+    const preload = fakeBinaryen('missing')
+    const missing = `binaryen ${binaryenVersion} could not be loaded: Cannot find package "binaryen"`
+    const optimize = await wasm(['-O', '--size', '--json'], { preload })
     expect(optimize.exitCode).toBe(0)
-    expect(optimize.stderr).toContain(
-      `Warning: binaryen ${binaryenVersion} could not be loaded: Cannot find package "binaryen"; writing the unoptimized module\n`,
-    )
+    expect(optimize.stderr).toContain(`Warning: ${missing}; writing the unoptimized module (--strict-opt makes this an error)\n`)
     expect(JSON.parse(optimize.stdout)).toMatchObject({ unoptimized: optimize.written?.length, optimized: null })
+
+    for (const flags of [['-O', '--strict-opt'], ['--release']]) {
+      const strict = await wasm(flags, { preload })
+      expect(strict.exitCode).toBe(1)
+      expect(strict.written).toBeNull()
+      const flag = flags.at(-1)
+      expect(strict.stderr).toBe(`Error: ${missing}\nNothing written: ${flag} does not fall back to the unoptimized module\n`)
+    }
   }, 60_000)
 
-  test('-O falls back when binaryen refuses the module or throws', async () => {
-    const invalid = await wasm(['-O'], { preload: fakeBinaryen('invalid') })
-    expect(invalid.exitCode).toBe(0)
-    expect(invalid.stderr).toContain('Warning: the module does not validate in binaryen (its report is above); writing the unoptimized module\n')
-    const throws = await wasm(['-O'], { preload: fakeBinaryen('throws') })
-    expect(throws.exitCode).toBe(0)
-    expect(throws.stderr).toContain('Warning: binaryen failed: Aborted(')
+  test('--release fails when binaryen refuses the module or throws', async () => {
+    const invalid = await wasm(['--release'], { preload: fakeBinaryen('invalid') })
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.written).toBeNull()
+    expect(invalid.stderr).toContain('Error: the module does not validate in binaryen (its report is above)\n')
+    const throws = await wasm(['--release'], { preload: fakeBinaryen('throws') })
+    expect(throws.exitCode).toBe(1)
+    expect(throws.written).toBeNull()
+    expect(throws.stderr).toContain('Error: binaryen failed: Aborted(')
   }, 60_000)
 })

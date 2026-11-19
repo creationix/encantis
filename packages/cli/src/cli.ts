@@ -14,7 +14,7 @@ import { createTestHost } from '@encantis/compiler/test-host'
 import { realpathSync } from 'node:fs'
 import { basename, relative, resolve } from 'node:path'
 import wabt from 'wabt'
-import { BINARYEN_VERSION, brotliSize, gzipSize, OptimizeError, optimizeWasm, watToWasm } from './wasm'
+import { BINARYEN_VERSION, brotliSize, gzipSize, OptimizeError, type OptimizeMode, optimizeWasm, watToWasm } from './wasm'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
 
@@ -35,6 +35,7 @@ Commands:
   meta <file> [-o out]            Generate meta.json (types, symbols, hints)
   compile <file> [-o out]         Compile file to WAT
   wasm <file> [-o out] [-O]        Compile file to WASM binary (-O optimizes)
+  wasm <file> --release [--size]  Compile to the smallest WASM binary, or fail
   definition <file>:<line>:<col|name>  Go to definition of symbol
   hover <file>:<line>:<col|name>       Show type info for symbol
   references <file>:<line>:<col|name>  Find all references to symbol
@@ -49,6 +50,8 @@ Commands:
 Options:
   -o <file>       Output file (default: stdout)
   -O, --optimize  Optimize with binaryen (-Oz); if it can't, warn and write unoptimized
+  --release       Optimize for size, harder than -O; if it can't, exit 1, write nothing
+  --strict-opt    With -O: if it can't optimize, exit 1 and write nothing
   --size          With wasm: print unoptimized, optimized, gzip and brotli sizes
   --json          Output as JSON (for query commands and --size)
   -s, --start <rule>  Start rule for parsing (default: Module)
@@ -74,7 +77,8 @@ let inputFile: string | undefined
 let outputFile: string | undefined
 let startRule: string | undefined
 let jsonOutput = false
-let optimize = false
+let optimizeMode: OptimizeMode | undefined
+let strictOpt = false
 let sizeReport = false
 
 for (let i = 1; i < args.length; i++) {
@@ -93,13 +97,21 @@ for (let i = 1; i < args.length; i++) {
   } else if (args[i] === '--json') {
     jsonOutput = true
   } else if (args[i] === '-O' || args[i] === '--optimize') {
-    optimize = true
+    optimizeMode ??= 'optimize'
+  } else if (args[i] === '--release') {
+    optimizeMode = 'release'
+  } else if (args[i] === '--strict-opt') {
+    strictOpt = true
   } else if (args[i] === '--size') {
     sizeReport = true
   } else if (!inputFile) {
     inputFile = args[i]
   }
 }
+
+// --strict-opt is a request to optimize; a release build is always strict.
+if (strictOpt) optimizeMode ??= 'optimize'
+if (optimizeMode === 'release') strictOpt = true
 
 // Parse file:line:col or file:line:name for query commands
 // file:line:col — exact position (1-indexed)
@@ -275,14 +287,19 @@ switch (command) {
 
       let buffer = unoptimized
       let optimized = false
-      if (optimize) {
+      if (optimizeMode) {
         try {
-          buffer = await optimizeWasm(unoptimized)
+          buffer = await optimizeWasm(unoptimized, optimizeMode)
           optimized = true
-          console.error(`Optimized: ${unoptimized.length} → ${buffer.length} bytes (${change(unoptimized.length, buffer.length)})`)
+          console.error(`Optimized${optimizeMode === 'release' ? ' for release' : ''}: ${unoptimized.length} → ${buffer.length} bytes (${change(unoptimized.length, buffer.length)})`)
         } catch (e) {
           if (!(e instanceof OptimizeError)) throw e
-          console.error(`Warning: ${e.message}; writing the unoptimized module`)
+          if (strictOpt) {
+            console.error(`Error: ${e.message}`)
+            console.error(`Nothing written: ${optimizeMode === 'release' ? '--release' : '--strict-opt'} does not fall back to the unoptimized module`)
+            process.exit(1)
+          }
+          console.error(`Warning: ${e.message}; writing the unoptimized module (--strict-opt makes this an error)`)
         }
       }
 
