@@ -3922,6 +3922,16 @@ test "one sort, two orders" {
 2. Its name starts with a lower-case letter (`a comptime function parameter's name starts with a lower-case letter: write 'comptime before: (T, T) -> bool'`) and is not the name of another parameter (`parameter 'before' is declared twice`).
 3. In the body the name is the function given, and hides a function of the module of the same name. A parameter with a builtin's name, `comptime max: (u32, u32) -> u32`, replaces the builtin in the body, and the compiler warns once, where the parameter is declared: `'max' replaces the builtin max in the body of 'app'` ([10](#10-builtin-functions)).
 
+```ents
+func sort(comptime T: type, xs: []mut T, comptime Before: (T, T) -> bool) { }
+func keep(comptime T: type, x: T, comptime f: (T) -> T, f: u32) -> T => x
+```
+
+```errors
+a comptime function parameter's name starts with a lower-case letter: write 'comptime before: (T, T) -> bool'
+parameter 'f' is declared twice
+```
+
 **Giving one.** The argument of a comptime function parameter is written in both forms of a call ([8.2](#82-calling-a-generic-function)): `sort(xs, ascending)` is the inferred form of `sort(i32, xs, ascending)`, and `xs.sort(ascending)` is the method form of either ([4.9](#49-method-call-syntax)). Leaving it out is a wrong count of arguments: `'sort' expects 2 arguments, or 3 with its type argument written; got 1`. A generic whose only comptime parameters are functions has the one form. The argument is one of:
 
 - the name of a function declared at module level in this module, before or after the call;
@@ -4112,15 +4122,15 @@ Rules:
 2. Its name starts with a lower-case letter, as every value's does (`a value parameter's name starts with a lower-case letter: write 'comptime n: u32'`). A type parameter's starts with an upper-case one.
 3. A function with a value parameter is a generic function: it can only be called, it is checked for each instance, and nothing of it is emitted until it is called.
 4. Comptime parameters may stand anywhere in the list, and a parameter's type may use any of them. By convention they come first, in the order a type writes them: `n` before `T`, as in `[n]T`.
-5. A value parameter's name is not the name of another parameter (`parameter 'n' is declared twice`) or of a result of the function (`result 'n' has the name of the comptime value parameter 'n'`), nor of a `def` of the module (`comptime parameter 'n' has the name of a def declared in this module`), and the body does not bind it again (`let n`, `for n in`, an `if let n`, a match arm `n =>`), as for any parameter. It may have the name of a global or a function of the module, which it hides in the body, as any parameter does.
+5. A value parameter's name is not the name of another parameter (`parameter 'n' is declared twice`) or of a result of the function (`result 'n' has the name of the comptime value parameter 'n'`), nor of a `def` of the module (`comptime parameter 'n' has the name of a def declared in this module`; a `def` a `test` declares is not one), and the body does not bind it again (`let n`, `for n in`, an `if let n`, a match arm `n =>`), as for any parameter. It may have the name of a global or a function of the module, which it hides in the body, as any parameter does.
 6. A parameter that is not `comptime` cannot size a type: `func f(len: u32, p: *[len]u8)` is `array length must be a compile-time constant: 'len' is a parameter; to give it at compile time, write comptime len: u32`.
 
 #### Inside the function
 
 In an instance, `n` is the number the call gave, written in place of the name, exactly as `def n = 8` would put it there.
 
-- **In an expression** it is that number, and has no type of its own, as a literal has none: it takes the type its place gives it. `x < n`, `let y: u8 = n`, `return n` and `f(n)` are what they are with `8` written there, and `-n` is the number `-8`, as it is where `def n = 8` puts 8. `let k = n` gives `k` the type `let k = 8` gives (`i32`, or `i64` for a number that an `i32` does not hold): write `let k: u32 = n` for a variable that has one type in every instance.
-- **Arithmetic on it is arithmetic on constants**: computed exactly, then held to the type its place gives, as with the number written there. In an instance where `n` is 3000000000, `x + n * 2` for a `u32` is `cannot assign int(6000000000) to u32, in dbl(n = 3000000000)`, the error `x + 3000000000 * 2` gives; nothing wraps.
+- **In an expression** it is that number, and has no type of its own, as a literal has none: it takes the type its place gives it. `x < n`, `let y: u8 = n`, `return n` and `f(n)` are what they are with `8` written there (and the shorthand `P(n:, x:)` is `P(n: 8, x: x)`), and `-n` is the number `-8`, as it is where `def n = 8` puts 8. `let k = n` gives `k` the type `let k = 8` gives (`i32`, or `i64` for a number that an `i32` does not hold): write `let k: u32 = n` for a variable that has one type in every instance.
+- **Arithmetic on it is arithmetic on constants**: computed exactly, then held to the type its place gives, as with the number written there. `func dbl(comptime n: u32, x: u32) -> u32 => x + n * 2` called with `n = 3000000000` is `cannot assign int(6000000000) to u32, in dbl(n = 3000000000)`, the error `x + 3000000000 * 2` gives; nothing wraps.
 - **It is not a variable.** `n = 3`, `n += 1` and `set (n, x) = ...` are errors (`cannot assign to 'n': it is a comptime value parameter`, `cannot set 'n': it is a comptime value parameter`), and so is a binding that reuses its name; each is reported in every instance, as any mistake in a body is ([8.3](#83-requirements)).
 - **In a type** it is a length or a bound: `[n]T`, `*[n]T`, `*mut [n]T`, `[n][m]T`, `*[n][m]T` (a table, [Nesting](#nesting)), `u32#n`, and an argument of a generic type, `Ring(n, T)`. Any constant expression may stand there: `[n * 2]T`, `[(n + 31) / 32]u32`, `[n * sizeof(T)]u8`, `u32#(n + 1)`. A length is written between the brackets; a bound follows `#` directly when it is a name or a number, and in parentheses otherwise.
 - **Every rule about a number holds for it**, because in the instance it is one: `for i in n` counts with `i: u32#n` ([Ranged Integers](#ranged-integers)); for an unsigned `x`, `x % n` is a `u32#n` and `x & (n - 1)` is a `u32#n`; `v[n - 1]` is a constant index; `[0:u8; n]` is `n` zeros; `sizeof([n]T)` is `n * sizeof(T)`; `.len` of a `*[n]T` is `n`. So does every rule about the number `0`, where a body is instantiated with it ([Bounds](#bounds)).
