@@ -1219,7 +1219,10 @@ function memberOf(expr: AST.Expr, ctx: CodegenContext): { object: AST.Expr; valu
   const width = (t: ResolvedType) => typeToWasm(t).length
   if (expr.kind === 'IndexExpr') {
     const index = evalComptimeIndex(expr.index, ctx)
-    if (u.kind !== 'array' || !RT.isValueArray(u) || index === null) return null
+    // An array literal indexed where it is written ([a, b][1]) is its
+    // elements on the stack, as a value array is: no memory is read.
+    const held = (u.kind === 'array' && RT.isValueArray(u)) || u.kind === 'comptime_array'
+    if (!held || index === null) return null
     return { object, values: () => ({ start: index * width(u.element), count: width(u.element) }) }
   }
   const member = expr.member

@@ -7723,7 +7723,18 @@ class CheckContext {
         : unproven(elem, `runtime index on ${shown}`)
     }
 
+    // An array literal indexed where it is written ([a, b][1]) is its
+    // elements, held in registers as a value array's are: one is picked by
+    // a constant index, and nothing is read from memory.
     if (objType.kind === 'comptime_array') {
+      const idx = this.evalComptimeExpr(expr.index)
+      if (idx === null || idx.kind !== 'int') {
+        this.error(expr.index.span.start, hostIn(objType.element)
+          ? `dynamic index on an array literal of ${typeToString(objType.element)} — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory`
+          : `dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time`)
+      } else if (idx.value < 0n || idx.value >= BigInt(objType.count)) {
+        this.error(expr.index.span.start, `index ${idx.value} out of bounds for [${objType.count}]${typeToString(objType.element)}`)
+      }
       return objType.element
     }
 

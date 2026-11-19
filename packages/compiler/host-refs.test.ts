@@ -210,6 +210,24 @@ export func gen(c: Canvas) -> [2]?Canvas => pr(c)
     expect(m.gen(o)).toEqual([o, null])
   })
 
+  // An array literal indexed where it is written is its elements: a
+  // constant index picks one, of host references or of numbers alike, and
+  // nothing is read from memory.
+  test('an array literal indexed where it is written picks an element', async () => {
+    const source = `type Canvas = host
+export func second(c: Canvas, d: Canvas) -> Canvas => [c, d][1]
+export func first(c: ?Canvas) -> ?Canvas => [0, c][0]
+export func number(x: u32, y: u32) -> u32 => [x, y][1]
+`
+    expect(watOfSource(source)).not.toContain('.load')
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
+    const m = instance.exports as Record<string, CallableFunction>
+    const [c, d] = [{ name: 'c' }, { name: 'd' }]
+    expect(m.second(c, d)).toBe(d)
+    expect(m.first(c)).toBe(null)
+    expect(m.number(4, 9)).toBe(9)
+  })
+
   // Wasm sets a local to null once per call: a let given no value is none
   // on each pass of a loop all the same, in a struct or an array too.
   test('an optional one given no value is none on every pass of a loop', async () => {

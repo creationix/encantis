@@ -956,6 +956,25 @@ cannot take .ptr of [2]i32: a fixed array held by value has no address
 cannot take .ptr of [2]i32: a fixed array held by value has no address (where it lies in memory, (&p.cells).ptr is its address)
 ```
 
+An array literal indexed where it is written is its elements, held in registers: a constant index picks one, and any other is an error, as for a fixed array in a variable:
+
+```ents
+type Canvas = host
+
+func a(x: u32, y: u32) -> u32 => [x, y][1]
+func b(x: u32, y: u32, i: u32) -> u32 => [x, y][i]
+func c(i: u32) -> i32 => [10, 20, 30][i] ?? 7
+func d(c: Canvas, i: u32) -> Canvas => [c, c][i]
+func e(x: u32) -> u32 => [x, x][2]
+```
+
+```errors
+dynamic index on an array literal — its elements are held in registers and picked by a constant index: lay it out in memory with & to index it at run time
+dynamic index on an array literal — its elements are held in registers
+dynamic index on an array literal of Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
+index 2 out of bounds for [2]u32
+```
+
 ## Structs in array literals
 
 An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.
