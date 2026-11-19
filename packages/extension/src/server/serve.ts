@@ -43,6 +43,7 @@ const BUILTIN_SIGNATURES: Record<string, string> = {
   // Memory operations
   memset: 'builtin memset(dest: [*]u8, value: u8, len: u32)',
   memcpy: 'builtin memcpy(dest: [*]u8, src: [*]u8, len: u32)',
+  memzero: 'builtin memzero(dest: *mut [N]T)',
   // Float math (f32/f64)
   sqrt: 'builtin sqrt(x: f64) -> f64',
   abs: 'builtin abs(x: f64) -> f64',
@@ -58,6 +59,7 @@ const BUILTIN_SIGNATURES: Record<string, string> = {
   clz: 'builtin clz(x: i32) -> u8',
   ctz: 'builtin ctz(x: i32) -> u8',
   popcnt: 'builtin popcnt(x: i32) -> u8',
+  mul_hi: 'builtin mul_hi(a: u64, b: u64) -> u64',
 };
 
 // Convert symbol kind to display prefix
@@ -587,6 +589,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       sizeof: 'Returns the byte size of a type at compile time.',
       memset: 'Fill memory with a byte value.',
       memcpy: 'Copy bytes from source to destination.',
+      memzero: 'Set all of a destination to zero; its size comes from its type.',
       sqrt: 'Square root (f32/f64).',
       abs: 'Absolute value (floats and signed integers).',
       ceil: 'Round up to nearest integer (f32/f64).',
@@ -599,6 +602,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       clz: 'Count leading zeros (i32/i64/u32/u64).',
       ctz: 'Count trailing zeros (i32/i64/u32/u64).',
       popcnt: 'Population count - number of 1 bits (i32/i64/u32/u64).',
+      mul_hi: 'High 64 bits of the 128-bit product of two u64.',
     };
 
     // Type docs

@@ -1,2 +1,46 @@
-# encantis-ext
-VSCode extension for Encantis Programming Language
+# Encantis for VS Code
+
+Language support for [Encantis](https://github.com/creationix/encantis), a systems programming language that compiles to small WebAssembly modules with no runtime.
+
+```ents
+// Greatest common divisor, exported for the host to call.
+export func gcd(a: u32, b: u32) -> u32 {
+  while b != 0 {
+    let t = b
+    b = a % b
+    a = t
+  }
+  return a
+}
+
+test "gcd" {
+  assert gcd(12, 18) == 6
+}
+```
+
+## Features
+
+The extension runs the Encantis compiler itself, so what it reports is what `encantis check` and `encantis compile` would say. Nothing else needs to be installed.
+
+- **Diagnostics** as you type: parse errors, type errors and warnings, with unused names faded. A file that imports other `.ents` files is checked with them, and an error inside an instance of a generic points back to the calls that asked for it.
+- **Hover** shows the type of any name or expression, the value of a `def` or a literal, a function's signature, and for a call of a generic, the instance it calls.
+- **Go to Definition** and **Find All References**.
+- **Semantic highlighting** of parameters, locals, globals, constants, functions and types, on top of the TextMate grammar. Encantis code blocks in Markdown are highlighted too.
+- **Format Document**, the same formatter as `encantis fmt`.
+- **WAT preview**: the WebAssembly text a file compiles to, beside it, updated as you type. Open it with the preview button in the editor title bar, **Encantis: Open WAT Preview to the Side** (`Ctrl+K V` / `Cmd+K V`), or **Encantis: Open WAT Preview** (`Ctrl+Shift+V` / `Cmd+Shift+V`). The status bar then shows:
+  - the display mode: `raw` (the compiler's output), `flat`, or `folded`,
+  - the optimization: off, `-O` or `release`, the same as `encantis wasm -O` and `encantis wasm --release`,
+  - whether the file's `test` blocks are compiled in,
+  - the size of the `.wasm` binary the CLI would write.
+
+  Click an item to change it.
+
+The extension also works in VS Code for the Web (vscode.dev, github.dev). There each file is checked on its own, against the signatures its imports declare, and the WAT preview is not optimized.
+
+## The compiler
+
+To build, test and run Encantis programs from the command line, get the `encantis` binary for your platform from the [latest release](https://github.com/creationix/encantis/releases/latest). The [language reference](https://github.com/creationix/encantis/blob/main/docs/encantis.md) documents the language.
+
+## Issues
+
+Please report problems at [github.com/creationix/encantis/issues](https://github.com/creationix/encantis/issues).

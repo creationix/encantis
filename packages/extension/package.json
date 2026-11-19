@@ -1,33 +1,54 @@
 {
   "name": "encantis-vscode-ext",
   "displayName": "Encantis Language",
-  "description": "Language support for Encantis (.ents files) - syntax highlighting, diagnostics, and hover",
+  "description": "Encantis language support (.ents): syntax highlighting, diagnostics, hover, go to definition, references, formatting, and a live WAT preview",
   "version": "0.3.0",
   "license": "MIT OR Apache-2.0",
-  "repository": "https://github.com/creationix/encantis-ext",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/creationix/encantis.git",
+    "directory": "packages/extension"
+  },
+  "homepage": "https://github.com/creationix/encantis/tree/main/packages/extension#readme",
+  "bugs": {
+    "url": "https://github.com/creationix/encantis/issues"
+  },
   "publisher": "creationix",
   "icon": "icon-128.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Formatters"
+  ],
+  "keywords": [
+    "encantis",
+    "ents",
+    "webassembly",
+    "wasm",
+    "wat"
   ],
   "activationEvents": [],
   "main": "./dist/node/extension.js",
   "browser": "./dist/web/extension.js",
   "scripts": {
     "vscode:prepublish": "bun run bundle",
-    "bundle": "bun run bundle:node && bun run bundle:web",
-    "bundle:node": "bun build src/extension.ts src/server/lsp.ts --outdir dist/node --target node --format cjs --external vscode",
-    "bundle:web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --minify --external vscode",
+    "bundle": "bun scripts/bundle.ts",
+    "bundle:node": "bun scripts/bundle.ts node",
+    "bundle:web": "bun scripts/bundle.ts web",
     "watch": "tsc -watch -p ./",
-    "watch:node": "bun build src/extension.ts src/server/lsp.ts --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --watch",
-    "watch:web": "bun build src/web/extension.ts src/web/server.ts --outdir dist/web --format esm --sourcemap=inline --external vscode --watch",
+    "watch:node": "bun scripts/bundle.ts node && bun build src/extension.ts src/server/lsp.ts --root src --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --external binaryen --watch",
+    "watch:web": "bun scripts/bundle.ts web && bun build src/web/extension.ts --outdir dist/web --target browser --format cjs --sourcemap=inline --external vscode --watch",
     "typecheck": "tsc -p ./ --noEmit",
     "package": "bun vsce package --no-dependencies"
   },
   "dependencies": {
+    "@encantis/cli": "workspace:*",
     "@encantis/compiler": "workspace:*",
     "binaryen": "129.0.0",
     "vscode-languageclient": "^9.0.1",
@@ -37,7 +58,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.75.0",
+    "@types/vscode": "^1.82.0",
     "@types/bun": "^1.3.6",
     "@vscode/vsce": "^3.0.0",
     "typescript": "^5.0.0"

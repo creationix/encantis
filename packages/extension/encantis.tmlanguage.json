@@ -47,6 +47,14 @@
           "match": "\\->|=>"
         },
         {
+          "name": "keyword.operator.range.encantis",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.coalesce.encantis",
+          "match": "\\?\\?"
+        },
+        {
           "name": "keyword.operator.logical.encantis",
           "match": "&&|\\|\\||!(?!=)"
         },
@@ -56,7 +64,7 @@
         },
         {
           "name": "keyword.operator.bitwise.encantis",
-          "match": "<<<|>>>|<<|>>|&|\\^|\\|"
+          "match": "<<<|>>>|<<|>>|&|\\^|\\||~"
         },
         {
           "name": "keyword.operator.comparison.encantis",
@@ -104,6 +112,11 @@
           "match": "(?<=\\[\\*?)_(?=[!?]*\\])"
         },
         {
+          "comment": "An optional type: ?T, ?[]u8, ?*Node",
+          "name": "storage.modifier.optional.encantis",
+          "match": "\\?(?=[\\[*(A-Za-z])"
+        },
+        {
           "name": "keyword.operator.arithmetic.encantis",
           "match": "\\+\\||-\\||\\*\\||/|%|\\*|\\+|-"
         }
@@ -121,15 +134,32 @@
         },
         {
           "name": "keyword.control.flow.encantis",
-          "match": "\\b(return|break|continue)(?![a-zA-Z0-9_-])"
+          "match": "\\b(return|break|continue|defer)(?![a-zA-Z0-9_-])"
         },
         {
           "name": "keyword.control.flow.encantis",
           "match": "\\bassert(?![a-zA-Z0-9_-])"
         },
         {
+          "comment": "A host reference type: host is a type only as the whole of a type declaration, and no reserved word",
+          "match": "\\b(type)\\s+([A-Z][0-9A-Za-z_-]*)\\s*(=)\\s*(host)(?![a-zA-Z0-9_-])",
+          "captures": {
+            "1": { "name": "storage.type.encantis" },
+            "2": { "name": "support.type.encantis" },
+            "3": { "name": "keyword.operator.assignment.encantis" },
+            "4": { "name": "storage.type.host.encantis" }
+          }
+        },
+        {
           "name": "storage.type.encantis",
-          "match": "\\b(func|builtin|inline|memory|import|export|data|def|type|enum|global|let|set|as|input|output|mut|test|comptime)(?![a-zA-Z0-9_-])"
+          "match": "\\b(func|inline|memory|import|export|data|def|type|enum|global|let|set|as|mut|test|comptime)(?![a-zA-Z0-9_-])"
+        },
+        {
+          "comment": "How the editor's hovers name a parameter, a result or a builtin (input x: T, builtin memset(...)); in code these are ordinary names",
+          "match": "^\\s*(input|output|builtin)(?=\\s+[a-z])",
+          "captures": {
+            "1": { "name": "storage.type.encantis" }
+          }
         }
       ]
     },
@@ -245,11 +275,7 @@
         },
         {
           "name": "entity.name.type.encantis",
-          "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(#[0-9]+)?(?![a-zA-Z0-9_-])"
-        },
-        {
-          "name": "support.type.builtin.encantis",
-          "match": "\\b(str|bytes)(?![a-zA-Z0-9_-])"
+          "match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|u512|i512|f32|f64|bool)(#[0-9]+)?(?![a-zA-Z0-9_-])"
         },
         {
           "name": "support.type.comptime.encantis",
@@ -275,7 +301,7 @@
         },
         {
           "name": "support.function.encantis",
-          "match": "\\b(sizeof|memset|memcpy|sqrt|abs|ceil|floor|trunc|nearest|min|max|copysign|clz|ctz|popcnt|memory-size|memory-grow)(?![a-zA-Z0-9_-])"
+          "match": "\\b(sizeof|memzero|memset|memcpy|sqrt|abs|ceil|floor|trunc|nearest|min|max|copysign|clz|ctz|popcnt|mul_hi|memory-size|memory-grow)(?![a-zA-Z0-9_-])"
         },
         {
           "name": "punctuation.accessor.tuple.encantis",
@@ -283,7 +309,7 @@
         },
         {
           "name": "punctuation.accessor.typepun.encantis",
-          "match": "(?<=[a-zA-Z0-9_*\\]])\\.(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|f32|f64|bool)(?![a-zA-Z0-9_-])",
+          "match": "(?<=[a-zA-Z0-9_*\\]])\\.(u8|i8|u16|i16|u32|i32|u64|i64|u128|i128|u256|i256|u512|i512|f32|f64|bool)(?![a-zA-Z0-9_-])",
           "captures": {
             "1": { "name": "entity.name.type.encantis" }
           }

@@ -42,7 +42,7 @@ The macOS binaries aren't notarized yet. If macOS refuses to open the binary, cl
 
 ### VS Code extension
 
-Each release also has `encantis-vscode-<version>.vsix`, which adds syntax highlighting, diagnostics, hover, formatting, and a live WAT preview. Install it with `code --install-extension encantis-vscode-<version>.vsix`, or with **Extensions: Install from VSIX…** in the command palette.
+Install [Encantis Language](https://marketplace.visualstudio.com/items?itemName=creationix.encantis-vscode-ext) from the Marketplace (`code --install-extension creationix.encantis-vscode-ext`). It adds syntax highlighting, diagnostics, hover, go to definition, formatting, and a live WAT preview. Each release also has the extension as `encantis-vscode-<version>.vsix`, to install with **Extensions: Install from VSIX…** in the command palette.
 
 ## Usage
 
