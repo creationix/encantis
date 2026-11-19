@@ -1088,11 +1088,11 @@ class CheckContext {
   // not in a struct or an array that is. A type written before the types of
   // its module are all declared may name one still to come (*Holder, with
   // Holder below), so it is looked at once they are.
-  private hostChecks: { type: ResolvedType; at: number; doing: string }[] | null = []
+  private hostChecks: { type: ResolvedType; at: number; doing: string; applying: CheckContext['applyStack'][number] | undefined }[] | null = []
 
   private neverInMemory(type: ResolvedType, at: number, doing: string): void {
     if (this.hostChecks) {
-      this.hostChecks.push({ type, at, doing })
+      this.hostChecks.push({ type, at, doing, applying: this.applyStack.at(-1) })
       return
     }
     const host = hostIn(type)
@@ -1106,7 +1106,17 @@ class CheckContext {
   private typesDeclared(): void {
     const waiting = this.hostChecks ?? []
     this.hostChecks = null
-    for (const check of waiting) this.neverInMemory(check.type, check.at, check.doing)
+    for (const check of waiting) {
+      const stack = this.applyStack
+      const error = this.applyError
+      this.applyStack = check.applying ? [check.applying] : []
+      try {
+        this.neverInMemory(check.type, check.at, check.doing)
+      } finally {
+        this.applyStack = stack
+        this.applyError = error
+      }
+    }
   }
 
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {

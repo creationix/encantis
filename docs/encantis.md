@@ -1535,6 +1535,21 @@ cannot take the width of Canvas: a host reference has no bytes
 cannot take .ptr of [2]Canvas: a fixed array held by value has no address
 ```
 
+A generic type that would put one in memory is refused in the application that does, once for each application however often it is named (8.3), also when the type is named before the host type is declared:
+
+```ents
+func Ptr(comptime T: type) -> type => *T
+type P = Ptr(Canvas)
+type Canvas = host
+
+func a(p: Ptr(Canvas)) {}
+func b(p: P) {}
+```
+
+```errors
+cannot point to Canvas: a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global), in Ptr(Canvas)
+```
+
 <!-- spec:end -->
 
 ---
