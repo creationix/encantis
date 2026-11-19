@@ -6763,6 +6763,8 @@ class CheckContext {
     if (host && !typeEquals(from, to) && !fits) {
       const zero = unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
       if (zero && toHost.kind === 'host') return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${neverNull(toHost)}`
+      const none = unresolvedOptional(from, to)
+      if (none) return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${none}`
       const [shownFrom, shownTo] = shownApart(from, to)
       if (fromHost.kind === 'host' && toHost.kind === 'host') return `cannot cast ${shownFrom} to ${shownTo}: they are two host types, and neither is the other`
       return `cannot cast ${shownFrom} to ${shownTo}: ${host.name} is a host reference, which is no number and no address`
@@ -6771,7 +6773,9 @@ class CheckContext {
     if (named && unwrap(to).kind !== 'func') {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
     }
-    return castProblem(from, to)
+    const problem = castProblem(from, to)
+    const none = problem && !problem.includes(': ') ? unresolvedOptional(from, to) : null
+    return none ? `${problem}: ${none}` : problem
   }
 
   private checkCondition(expr: AST.Expr): void {
@@ -6823,7 +6827,7 @@ class CheckContext {
     if (!elementwise && !typeAssignable(expected, actual)) {
       // 0 is none of a plain host reference, which is never null.
       const why = to.kind === 'host' && !to.optional && from.kind === 'comptime_int' && from.value === 0n ? `: ${neverNull(to)}`
-        : to.kind === 'host' && !to.optional && from.kind === 'host' && from.optional && from.name === to.name ? `: it may be null — resolve it with 'if let' or '??' first`
+        : unresolvedOptional(actual, expected) ? `: ${unresolvedOptional(actual, expected)}`
         : reordered(from, to, typeToString(expected))
       const [shownActual, shownExpected] = shownApart(actual, expected)
       this.error(expr.span.start, `${prefix}cannot assign ${shownActual} to ${shownExpected}${why}`,
@@ -11341,8 +11345,20 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
   if (!host) return said
   if (op !== '==' && op !== '!=') return `${said}: ${typeToString(host)} is a host reference, which has no value the module can compute with`
   return host.optional
-    ? `${said}: ${typeToString(host)} is a host reference that may be null, which is only compared with 0, to ask whether it is`
-    : `${said}: ${host.name} is a host reference, which is not compared (one that may be null, a ?${host.name}, is compared with 0)`
+    ? `${said}: ${typeToString(host)} is a host reference that may be none, which is only compared with 0, to ask whether it is`
+    : `${said}: ${host.name} is a host reference, which is not compared (one that may be none, a ?${host.name}, is compared with 0)`
+}
+
+// Why an optional pointer, slice or host reference is not its plain form:
+// it may be none, until it is resolved. Null for any other two types.
+function unresolvedOptional(from: ResolvedType, to: ResolvedType): string | null {
+  if (!isOptional(from) || isOptional(to) || !typeAssignable(to, unwrapOptional(from))) return null
+  return `it may be none — resolve it with 'if let' or '??' first`
+}
+
+// "a" or "an", as a type's name is said: an Element, a Canvas
+function article(name: string): string {
+  return /^[aeiou]/i.test(name) ? 'an' : 'a'
 }
 
 // Why a constant that is not the literal 0 is no none of an optional host
@@ -11360,13 +11376,13 @@ function nullQuestion(type: ResolvedType): string {
   const u = unwrap(type)
   if (u.kind !== 'host') return `: ${typeToString(type)} holds ${typeToString(host)}, a host reference`
   return u.optional
-    ? `: ${typeToString(u)} is a host reference that may be null: ask with == 0 or != 0, or resolve it with if let or ??`
+    ? `: ${typeToString(u)} is a host reference that may be none: ask with == 0 or != 0, or resolve it with if let or ??`
     : `: ${neverNull(u)}`
 }
 
 // Why 0, or a question of null, does not fit a plain host reference
 function neverNull(host: HostRT): string {
-  return `a ${host.name} is never null (a host reference that may be null is a ?${host.name})`
+  return `${article(host.name)} ${host.name} is never null (a host reference that may be null is a ?${host.name})`
 }
 
 // Why a variable of a type has no default, where it holds a plain host
@@ -11376,7 +11392,7 @@ function noDefault(type: ResolvedType): string | null {
   if (!host) return null
   const shown = typeToString(type)
   return shown === host.name
-    ? `a ${host.name} has no default (a ?${host.name} starts as none)`
+    ? `${article(host.name)} ${host.name} has no default (a ?${host.name} starts as none)`
     : `${shown} holds ${host.name}, which has no default`
 }
 

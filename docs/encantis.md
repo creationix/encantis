@@ -441,7 +441,7 @@ mp.wid               // 1 (sizeof(u8))
 
 #### Optional Types
 
-Pointers and slices can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
+Pointers, slices and host references ([2.13](#213-host-references)) can be **optional** using the `?` prefix. An optional pointer/slice uses `0` as a sentinel meaning "none":
 
 ```ents
 ?*T              // optional pointer — either valid *T or none (ptr=0)
@@ -450,7 +450,7 @@ Pointers and slices can be **optional** using the `?` prefix. An optional pointe
 ?[*]T            // optional many-pointer
 ```
 
-Only pointer and slice types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
+Only pointer, slice and host reference types can be optional — primitives like `u8` have no sentinel value (every bit pattern is valid).
 
 None is written `0` for both, wherever an optional is wanted: a `let`, a result, an argument, a field, a global, an element of a literal or of `data`, and cast, `0 as ?[]u8` as `0 as ?*u8`. For an optional slice it is the pointer 0 with a length of 0. Both compare with `0`, which for a slice compares its pointer, with `==` and `!=` only:
 
@@ -484,7 +484,7 @@ test "none is 0 for an optional pointer and an optional slice" {
 }
 ```
 
-Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none:
+Any other number is no slice, a slice that isn't optional has no none, and an optional slice is only ever equal or not to none. An optional is used as its plain form only once resolved:
 
 ```ents
 func f(s: ?[]u8) -> bool {
@@ -492,12 +492,20 @@ func f(s: ?[]u8) -> bool {
   let b: []u8 = 0
   return s < 0
 }
+func g(p: ?*u8, s: ?[]u8) {
+  let q: *u8 = p
+  let t: []u8 = s
+  let u = s as []u8
+}
 ```
 
 ```errors
 cannot assign int(5) to ?[]u8
 cannot assign int(0) to []u8
 '<' cannot be applied to ?[]u8 and int(0)
+cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first
+cannot assign ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first
+cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first
 ```
 
 <!-- spec:end -->
@@ -522,8 +530,10 @@ Nothing is read through an optional before it is resolved: indexing it (`q[0]`),
 **One rule for none.** What has a none is an optional, whatever it holds: `?*T`, `?[]T`, an optional host reference `?Canvas` ([2.13](#213-host-references)), and the optional function values still to come. For each of them alike:
 
 - none is written `0`, and `x == 0` / `x != 0` are the question whether it is none (an optional slice compares its pointer);
-- a global of one given no value starts as none, and so does a `let` of an optional host reference, on every pass of a loop; a `let` of an optional pointer or slice given no value is uninitialized, as a `let` of a number is ([3.3](#33-variables));
-- `if let` and `??` give the plain value inside.
+- a global of one given no value starts as none;
+- `if let` and `??` give the plain value inside, and an optional is used as its plain form only once resolved (`cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first`).
+
+One thing differs, a `let` given no value. A `let` of an optional pointer or slice is then uninitialized, as a `let` of a number is ([3.3](#33-variables)): in a loop it holds what the last pass left in it. A `let` of an optional host reference is the exception: it is none, on every pass of a loop, so the module never holds on to a host object it did not mean to keep. An optional function value, held as a number as a pointer is, will be uninitialized as a pointer is.
 
 A plain type has no none, so `== 0` is no question of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer is the one that still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference (and a plain function value) has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one.
 
@@ -1313,7 +1323,7 @@ A reference that may be null is a `?Canvas`, the optional form, written as `?*T`
 - it starts as none: a `let` or a global of one given no value is none;
 - `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
 - `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
-- a `Canvas` widens to a `?Canvas` implicitly (`c as ?Canvas` too), and a `?Canvas` is used as a `Canvas` only once resolved (`cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first`).
+- a `Canvas` widens to a `?Canvas` implicitly (`c as ?Canvas` too), and a `?Canvas` is used as a `Canvas` only once resolved (`cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first`).
 
 `match` does not take a host reference, optional or not, as it does not take a pointer.
 
@@ -1461,17 +1471,20 @@ func k() -> ?Canvas => 0 + 0
 func l(x: ?Canvas) -> bool => x == 1 - 1
 func m() -> ?Canvas => "".len as ?Canvas
 func o(c: Canvas) -> Context => c as Context
+func p(x: ?Canvas) -> Canvas => x as Canvas
+type Element = host
+func q() -> Element => 0
 ```
 
 ```errors
 cannot make Point optional: a name is made optional only for a host type
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
-'==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be null, which is only compared with 0
+'==' cannot be applied to ?Canvas and ?Canvas: ?Canvas is a host reference that may be none, which is only compared with 0
 cannot cast int(1) to Canvas
 cannot assign int(0) to Canvas: a Canvas is never null (a host reference that may be null is a ?Canvas)
 '==' cannot be applied to Canvas and int(0): a Canvas is never null
-cannot assign ?Canvas to Canvas: it may be null — resolve it with 'if let' or '??' first
+cannot assign ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
 cannot cast int(0) to Canvas: a Canvas is never null
 '!=' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is not compared
 elements have different types: int(0) and Canvas
@@ -1479,6 +1492,8 @@ cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, an
 '==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal
 cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
 cannot cast Canvas to Context: they are two host types, and neither is the other
+cannot cast ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
+cannot assign int(0) to Element: an Element is never null (a host reference that may be null is a ?Element)
 ```
 
 A reference is asked nothing but, for an optional one, whether it is none; and an array of them held in registers is reached by a constant index alone:
@@ -1500,8 +1515,8 @@ func g(cs: [3]?Canvas) {
 ```errors
 ?? requires an optional expression or bounds-checked index: a Canvas is never null
 if let requires an optional expression or bounds-checked index: a Canvas is never null
-cannot match ?Canvas against int(0): ?Canvas is a host reference that may be null: ask with == 0 or != 0, or resolve it with if let or ??
-condition must be bool, not ?Canvas: ?Canvas is a host reference that may be null
+cannot match ?Canvas against int(0): ?Canvas is a host reference that may be none: ask with == 0 or != 0, or resolve it with if let or ??
+condition must be bool, not ?Canvas: ?Canvas is a host reference that may be none
 operand of '!' must be bool, not Canvas: a Canvas is never null
 dynamic index on value type [3]?Canvas — an element of an array held in registers is reached by a constant index only, and a host reference is never in memory
 cannot iterate over [3]?Canvas: an array held in registers is not looped over, and a host reference is never in memory
