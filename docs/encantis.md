@@ -3637,7 +3637,7 @@ The memory does not grow while the program runs, unless the host grows an export
 
 A generic function is written once and compiled once for each type it is used with. Types are passed as compile-time parameters; nothing of them exists at run time. A generic type ([8.5](#85-generic-types)) is a type with type parameters, a comptime function parameter ([8.6](#86-comptime-function-parameters)) is how a generic is given a function to call, and a comptime value parameter ([8.7](#87-comptime-value-parameters)) is how it is given a number, such as the length of an array, `[n]T`. Two things of the rest of the language are what make generic code read well: method-call syntax, `v.push(7)` ([4.9](#49-method-call-syntax)), and functions that share a name ([3.4](#functions-that-share-a-name)), through which each type brings its own `hash` and `eq` ([8.3](#83-requirements)).
 
-The examples of this chapter are run as tests: each one is checked, compiled and validated, the `test` blocks in them are run, and each `errors` block is what the compiler reports for the example before it (see [`spec/README.md`](../spec/README.md)). The programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
+Every example of this chapter is compiled and its tests run, as the reference's examples are; the programs under [`examples/generics/`](../examples/generics) carry more tests of the same functions.
 
 <!-- spec:begin compile -->
 
@@ -3662,16 +3662,39 @@ export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
 export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
 ```
 
-A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)).
+A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)). `type` is written in two places only: as the type of a comptime parameter, and as the result of a generic type ([8.5](#85-generic-types)). A type is not a value: `let t: type = u32` is a syntax error.
 
 Rules:
 
 1. Comptime parameters may appear anywhere in the parameter list; by convention they come first, in the order a type writes them: a value parameter `n` before a type parameter `T`, as in `[n]T`. A parameter's type may mention any comptime parameter of the same function.
-2. `comptime` is only written in the parameter list of a named function declared with `func` at module level. Every parameter of such a function has a name.
-3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host. It can only be called. Its name is unique in its module.
-4. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before. A generic function that is never called is only parsed, and nothing is emitted for it.
+2. `comptime` is only written in the parameter list of a named function declared with `func` at module level, and in the signature a source import writes for such a function ([7.1](#71-imports)). Every parameter of such a function has a name.
+3. A function with a comptime parameter is a *generic function*. It is not a value: it cannot be stored, passed as an argument, or exported to the host (`generic function 'max' must be called`). It can only be called. Its name is unique in its module.
+4. A type parameter's name is its own: it is not the name of a type the module declares, before or after the function, and no two parameters of the function share a name.
+5. The body of a generic function is checked when the function is instantiated, with the types filled in, and not before; so is its signature, beyond what the rules here ask of it. A generic function that is never called is only parsed, and nothing is emitted for it: a mistake in it, an unknown type in its signature too, is reported once something calls it, in that instance ([8.3](#83-requirements)).
 
 `comptime` is a reserved word.
+
+Three ways of writing a parameter that are near misses are refused with the fix, and so are the other breaches of these rules:
+
+```ents
+type Pt = (q: i32, r: i32)
+
+func a(comptime t: type, x: u32) -> u32 => x
+func b(T: type, x: u32) -> u32 => x
+func c(comptime N: u32, p: *[N]u8) -> u8 => p[0]
+func d(comptime Pt: type, x: Pt) -> Pt => x
+func e(comptime T: type, comptime T: type, x: T) -> T => x
+func f(comptime T: type, u32) -> u32 => 0
+```
+
+```errors
+a type parameter's name starts with an upper-case letter: write 'comptime T: type'
+a parameter of type 'type' must be comptime: write 'comptime T: type'
+a value parameter's name starts with a lower-case letter: write 'comptime n: u32'
+type parameter 'Pt' has the name of a type declared in this module
+type parameter 'T' is declared twice
+a generic function's parameters need names
+```
 
 ### 8.2 Calling a Generic Function
 
@@ -3898,7 +3921,8 @@ An *instance* is one generic function with all its comptime arguments fixed.
 - **On demand.** An instance is created by the first call that needs it. A generic nobody calls has no instances; a generic used only from `test` blocks has instances only in test builds.
 - **Zero cost.** An instance is the function you would get by writing the generic out by hand for those arguments, and it compiles to the same bytes. A call compiles to one `call` of the instance with only the non-comptime arguments. Nothing exists at run time for a type parameter, for a generic type, or for a generic that is not used. No function tables and no indirect calls are involved.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
-- **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations, or sooner when one call has led to 1000 instances or to type arguments many times the size of its own. A type argument written in ordinary code may be of any size.
+- **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations (`too many nested instantiations (64) while instantiating 'f'`), or sooner when one call has led to 1000 instances (`too many instantiations (1000) from one call while instantiating 'f'`) or to type arguments many times the size of its own (`type arguments grow without end while instantiating 'f'`). A type argument written in ordinary code may be of any size.
+- **Limits.** A module has fewer than 2^24 (16777216) instances of its generics, and a generic is declared within the first 2^28 bytes (256 MiB) of its file. A call past either is `cannot instantiate 'f': the source is too large or has too many instances`.
 - **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
@@ -3912,6 +3936,18 @@ test "each instance has its own sizeof, and recursion ends" {
   assert a() == 36
   assert b() == 2432902008176640000
 }
+```
+
+A recursion whose type argument grows with each level is stopped where it asks for the next level:
+
+```ents
+func nest(comptime T: type, x: T) -> u32 => nest((x, x))
+
+export func f() -> u32 => nest(1:u8)
+```
+
+```errors
+type arguments grow without end while instantiating 'nest'
 ```
 
 **In the editor.** What a name in a generic's body is depends on the instance, and the editor (hover in the language server, and the `hover`, `definition` and `references` commands) shows what each instance makes of it:
@@ -3936,7 +3972,7 @@ export func max_u32(a: u32, b: u32) -> u32 => max(a, b)
 
 ### 8.5 Generic Types
 
-A generic type is a function from types to a type. It is declared with `func`, an upper-case name, the result `type`, and a type after `=>`:
+A generic type is a function from types to a type. It is declared with `func`, an upper-case name, its comptime parameters, the result `type`, and after `=>` one type, any type: a struct as here, or `*T`, `[n]T`, another generic type applied:
 
 ```ents
 func Vec(comptime T: type) -> type => (ptr: [*]mut T, len: u32, cap: u32)
@@ -3958,7 +3994,7 @@ test "a pair is swapped, and sizes follow the arguments" {
 }
 ```
 
-Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a parameter, a result, a field, a cast, `sizeof(Vec(T))`, a `let` annotation, another generic type's body, a type argument. There is no space between the name and the parenthesis. A generic type's parameters are type parameters, and numbers (`func Ring(comptime n: u32, comptime T: type) -> type`, [8.7](#87-comptime-value-parameters)); all are always written: `Vec` alone is not a type.
+Applying it, `Vec(u32)`, is a type and can be written wherever a type can: a parameter, a result, a field, a cast, `sizeof(Vec(T))`, a `let` annotation, another generic type's body, a type argument. There is no space between the name and the parenthesis (`Vec (u32)` is a syntax error). A generic type's parameters are type parameters, and numbers (`func Ring(comptime n: u32, comptime T: type) -> type`, [8.7](#87-comptime-value-parameters)); a generic type has at least one, and anything else is `generic type 'Vec' takes comptime type and integer parameters only, as (comptime n: u32, comptime T: type)`. All its arguments are always written: `Vec` alone is not a type (`'Vec' is a generic type: write Vec(T)`), and a wrong count is `Vec expects 1 type argument, got 2`.
 
 A generic type is declared at module level, before or after its uses, and its name is unique among the types of its module. Nothing of it exists at run time: one that is never applied is only parsed, and `export func Vec(comptime T: type) -> type => ...` is accepted and gives the host nothing.
 
