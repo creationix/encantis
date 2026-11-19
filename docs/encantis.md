@@ -519,6 +519,14 @@ Nothing is read through an optional before it is resolved: indexing it (`q[0]`),
 
 **Assignability:** Non-optional values widen to optional implicitly (`*T` → `?*T`), but the reverse requires explicit unwrapping.
 
+**One rule for none.** What has a none is an optional, whatever it holds: `?*T`, `?[]T`, an optional host reference `?Canvas` ([2.13](#213-host-references)), and the optional function values still to come. For each of them alike:
+
+- none is written `0`, and `x == 0` / `x != 0` are the question whether it is none (an optional slice compares its pointer);
+- a global of one given no value starts as none, and so does a `let` of an optional host reference, on every pass of a loop; a `let` of an optional pointer or slice given no value is uninitialized, as a `let` of a number is ([3.3](#33-variables));
+- `if let` and `??` give the plain value inside.
+
+A plain type has no none, so `== 0` is no question of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer is the one that still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference (and a plain function value) has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one.
+
 #### Mutability
 
 By default, pointers are **read-only** (`const`). Add `mut` to allow writes:
@@ -4620,6 +4628,8 @@ if old == -1 {
 ---
 
 ## 11. WebAssembly Reference
+
+The compiler writes WebAssembly 2.0: multi-value, bulk memory (`memory.copy`, `memory.fill`), sign extension, saturating float-to-integer conversion, mutable globals, SIMD, and reference types. This is the one engine every program targets, and a program uses only what it needs of it: one with no host type uses no reference types (no `externref`), and one with no range fill or copy no bulk memory. A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
 
 ### 11.1 Widening Instructions (implicit)
 
