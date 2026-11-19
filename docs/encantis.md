@@ -4379,6 +4379,8 @@ A literal laid out in memory takes one place in the data for each place it is wr
 - A literal with a part known only at run time, `sum([x, 5, 6])`, is laid out once, with its constant parts. Each time the expression runs, the run-time parts are stored into that place, so a pointer kept from an earlier run sees the values of the latest.
 - Bytes that are zero cost nothing in the module: memory starts zeroed, and the data section holds only the others. `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file.
 
+Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
+
 `sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)). (Known compiler bug: in a program with no data at all it reads 0.)
 
 <!-- spec:begin compile -->
@@ -4521,7 +4523,7 @@ argument 1: cannot assign *Point to Point
 
 A struct or tuple value that already exists converts to another struct type only where nothing has to be computed for it: the two have the same fields, with the same names in the same order, and each field converts to the other's type ([2.10](#implicit-widening)) and is held in the same wasm value ([9.3](#93-wasm-type-mapping)). A `(x: i8, y: i8)` is a `(x: i32, y: i32)`: each field is an `i32` in wasm either way, an `i8` kept sign-extended in it. A `(x: i32, y: i32)` is no `(x: i64, y: i64)`, since each field would have to be converted (`cannot convert BigPoint to Wide implicitly: convert its fields`): the program builds the new struct from the fields, `Wide(p.x, p.y)`, and each field converts there. A field that does not convert at all is the plain error (`cannot assign (x: u32, y: u32) to BigPoint`). A tuple without names is not a struct with names, and a struct with the same names in another order is none either: only a literal gives its fields by name ([2.8](#struct-constructors)).
 
-A literal is not a value yet: its elements convert one by one, as any value meets a declared type, by name where it names them. So `(x: n, y: n)` with `n: i32` is a `Wide`, and `(y: 2, x: 1)` is a `BigPoint` with an `x` of 1.
+A literal is different: its elements convert one by one, as any value meets a declared type, by name where it names them. So `(x: n, y: n)` with `n: i32` is a `Wide`, and `(y: 2, x: 1)` is a `BigPoint` with an `x` of 1.
 
 Through a pointer nothing converts: memory is read as the type the pointer gives it, so a pointer converts only to a pointer to the same type (names, field types and order; or the const form of a `*mut`), and a `*(x: i8, y: i8)`, 2 bytes, is no `*BigPoint`, 8 bytes.
 
@@ -4717,7 +4719,7 @@ rows of different lengths
 
 ### 9.6 Structs and Slices in Memory
 
-Any value type but a host reference ([2.13](#213-host-references)) can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented.
+Any value type but a host reference ([2.13](#213-host-references)) can be an element of an array or the target of a pointer. In memory a value is its parts one after another, in declaration order, with no padding and no alignment: the language is byte-oriented. A number is stored little-endian, as wasm memory is: the `u32` `0x01020304` is the bytes 4, 3, 2, 1 from its address up.
 
 | Type | Bytes in memory |
 |------|-----------------|
@@ -4742,15 +4744,16 @@ type Lane = (cells: []i32, free: i32)     // 12 bytes: cells.ptr at 0, cells.len
 type Slot = (d: i32, lane: Lane)          // 16 bytes: d at 0, lane at 4
 type Mixed = (a: u8, b: i16, c: u64)      // 11 bytes: a at 0, b at 1, c at 3
 
-data mixed: Mixed = (1, 2, 3)
+data mixed: Mixed = (1, 0x0203, 4)
 
 test "a struct in memory is its fields, packed" {
   assert sizeof(Lane) == 12
   assert sizeof(Slot) == 16
   assert sizeof(Mixed) == 11
   let bytes = mixed as [*]u8
-  assert bytes[1] == 2                    // b starts right after a
-  assert bytes[3] == 3                    // and c right after b
+  assert bytes[1] == 3                    // b starts right after a, its low byte first
+  assert bytes[2] == 2
+  assert bytes[3] == 4                    // and c right after b
 }
 ```
 
@@ -4794,7 +4797,7 @@ The same goes for slices held in memory, at any depth: `lists[k] = make()`, `opt
 
 #### Fixed Arrays in Place
 
-A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it is, as before: `p.items[2].x` is one load at a constant offset.
+A fixed array that is a field of a struct in memory lies there in place, its elements one after another at the field's offset. There it has an address, and wherever an index is not a constant it is reached through that address, as the `*[N]T` it is: `p.items[i]` with `p` a `*mut Pool` is `p.items` seen as a `*mut [64]Entity`, indexed. Nothing is loaded but the element, and the rules are a `*[N]T`'s ([4.7](#47-bounds-checked-indexing)): a constant or ranged index is proven and needs no check, any other is resolved with `if let` or `??`, and a write with one goes through the element's address, `&p.items[i]`, a `?*mut Entity`. The pointer is as mutable as the place: through a `*Pool` it is a `*[64]Entity`, and a write is refused as any write through a const pointer is. A loop, a range and `&` reach the array the same way: `for e in p.items`, `p.items[a..b]`, and `&p.items`, which is the `*mut [64]Entity` itself, to pass where a pointer or a slice is wanted. Any other value in memory has its address too: `&p.count` is a `*mut u32`. A constant index picks the element where it lies: `p.items[2].x` is one load at a constant offset.
 
 An array of fixed arrays lies there packed, row after row (`sizeof([N][M]T)` is `N × M × sizeof(T)`), so in place it is the `*[NxM]T` its rows make, not a table ([Nesting](#nesting)): `m.tiles[r][c]` is the byte `r × M + c` from the start of the field, with the row index checked against N and the column against M.
 
@@ -5142,7 +5145,7 @@ memcpy length 20 exceeds buffer size 4 bytes
 
 <!-- spec:end -->
 
-**Not implemented:** `memory-size()`, the size of the memory in pages of 64 KiB, and `memory-grow(n)`, which would grow it by `n` pages and give the size it had before, or -1 when it cannot grow (`memory.size` and `memory.grow`). Today a call of either is an error (`unknown identifier 'memory-size'`), and the memory keeps the size it starts with unless the host grows an exported one ([7.3](#73-memory-declarations)).
+**Not implemented:** `memory-size()`, the size of the memory in pages of 64 KiB, and `memory-grow(n)`, which would grow it by `n` pages and give the size it had before, or -1 when it cannot grow (`memory.size` and `memory.grow`). A call of either is an error (`unknown identifier 'memory-size'`), and the memory keeps the size it starts with unless the host grows an exported one ([7.3](#73-memory-declarations)).
 
 ### 10.4 Sizes
 
@@ -5208,7 +5211,7 @@ cannot assign u32 to u8
 
 ## 11. WebAssembly Reference
 
-A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds).
+A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds) and the null check of a plain host reference where it enters the module ([2.13](#213-host-references)).
 
 The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
 
@@ -5258,7 +5261,7 @@ A float truncates toward zero, and the `trunc` instructions trap on NaN, an infi
 | `break`, `break when c` | `br $break`, `br_if $break c` |
 | `continue`, `continue when c` | `br` and `br_if` to the loop's head, or in a `for` to its step |
 | `return`, `return x when c` | `return`, `(if c (then x (return)))` |
-| `a && b`, `a \|\| b` | `(if (result i32) a (then b) (else 0))`, `(if (result i32) a (then 1) (else b))` |
+| `a && b`, `a \|\| b` | `(if (result i32) a (then b) (else (i32.const 0)))`, `(if (result i32) a (then (i32.const 1)) (else b))` |
 | `if let`, `??` | an `if` on the check: the index against the length, the pointer against 0 |
 | `defer e` | `e` written out again at each way out of its block, after a `return`'s value is computed |
 | `assert c` | `(if (i32.eqz c) (then (unreachable)))` |
