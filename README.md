@@ -64,6 +64,7 @@ encantis --version
 - [Spec tests](spec/): how the language parses and checks, as markdown examples that run as tests.
 - [lib](lib/): helpers for reading input, parsing text and printing, and generic containers (a growable array, a hash set, a hash map, a stable sort) on a bump stack, written in Encantis.
 - [Examples](examples/): allocators, data structures, generic functions and types, crypto (BLAKE2b, SHA-2, Ed25519, Gimli), SIMD and WASI programs, each with inline tests.
+- [Browser games](examples/browser/): Lantern, a small complete game (about 5 KB compressed with its host, page and levels), a starter template, and the host contract they share.
 
 ## Development
 

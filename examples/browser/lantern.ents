@@ -1,0 +1,656 @@
+// Lantern: a small arena game for the browser.
+//
+// You carry a lantern through dark rooms. Collect the sparks; wisps drift
+// out of the dark and hunt you. Dash through a wisp to scatter it, but touch
+// one any other way and the dark takes you.
+//
+// The module imports nothing. Each frame the host calls frame() with the
+// time step, the size of the canvas and the input, and the game answers with
+// drawing and sound commands in its own memory (see Cmd), which host.js
+// plays. So the same module runs in a page, in a test, or in any host that
+// can read 32-byte records. Levels are an asset: the host copies a text file
+// into the inbox and calls load().
+//
+// Everything lives in fixed pools in memory, sized here, and nothing is
+// allocated after the module starts. Where a pool is full, the comment next
+// to it says what happens.
+
+export memory
+
+// ---- Input: the bits of the host's button word -----------------------------
+
+def btn-left = 1
+def btn-right = 2
+def btn-up = 4
+def btn-down = 8
+def btn-dash = 16
+def btn-start = 32
+
+// ---- Commands: what a frame asks the host to draw and play -------------------
+
+def op-clear = 1   // the whole canvas in `color`
+def op-rect = 2    // a b c d = x y w h
+def op-circle = 3  // a b c = x y radius
+def op-ring = 4    // a b c d = x y radius width
+def op-text = 5    // a b c d = x y size align (0 left, 1 centre); p n = bytes
+def op-sound = 6   // a b c d = start Hz, end Hz, seconds, volume; p = wave
+
+// 32 bytes, read by the host at a fixed stride. Colours are 0xRRGGBBAA.
+type Cmd = (op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32)
+
+// A frame that asks for more than 1024 commands loses the ones past the
+// last: they are dropped, and the frame still ends.
+type Commands = (count: u32, list: [1024]Cmd)
+data cmds: Commands = mut (0, [(0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0); 1024])
+
+// Text made during a frame (a score, a level number) is written here and
+// lives until the next frame starts. Text that doesn't fit is left out.
+type Arena = (used: u32, bytes: [256]u8)
+data scratch: Arena = mut (0, [0; 256])
+
+func emit(op: u32, a: f32, b: f32, c: f32, d: f32, color: u32, p: u32, n: u32) {
+  if let k = &cmds.list[cmds.count] {
+    k.* = Cmd(op, a, b, c, d, color, p, n)
+    cmds.count += 1
+  }
+}
+
+func clear(color: u32) { emit(op-clear, 0.0, 0.0, 0.0, 0.0, color, 0, 0) }
+func rect(x: f32, y: f32, w: f32, h: f32, color: u32) { emit(op-rect, x, y, w, h, color, 0, 0) }
+func circle(x: f32, y: f32, r: f32, color: u32) { emit(op-circle, x, y, r, 0.0, color, 0, 0) }
+func ring(x: f32, y: f32, r: f32, width: f32, color: u32) { emit(op-ring, x, y, r, width, color, 0, 0) }
+
+func text(x: f32, y: f32, size: f32, centre: bool, color: u32, s: []u8) {
+  emit(op-text, x, y, size, if centre { 1.0 } else { 0.0 }, color, s.ptr as u32, s.len)
+}
+
+// Waves: 0 sine, 1 square, 2 triangle, 3 sawtooth.
+func sound(from: f32, to: f32, secs: f32, volume: f32, wave: u32) {
+  emit(op-sound, from, to, secs, volume, 0, wave, 0)
+}
+
+// The decimal digits of n, in the frame's text arena.
+func digits(n: u32) -> []u8 {
+  let at = scratch.used
+  let len: u32 = 1
+  let rest = n / 10
+  while rest > 0 {
+    len += 1
+    rest /= 10
+  }
+  if let room = scratch.bytes[at..at + len] {
+    let i = len
+    let v = n
+    while i > 0 {
+      i -= 1
+      if let d = &room[i] { d.* = (v % 10) as u8 + '0' }
+      v /= 10
+    }
+    scratch.used = at + len
+    return room
+  }
+  return ""
+}
+
+// ---- Levels ------------------------------------------------------------------
+
+def map-w = 24
+def map-h = 14
+def max-levels = 6
+
+// Rows of tiles, 0 floor and 1 wall, and where the lantern starts.
+type Level = (w: u32, h: u32, sx: f32, sy: f32, tiles: [map-h][map-w]u8)
+type Shelf = (count: u32, levels: [max-levels]Level)
+data shelf: Shelf = mut (0, [(0, 0, 0.0, 0.0, [[0; map-w]; map-h]); max-levels])
+
+// The host copies a level file here, then calls load() with its length.
+data inbox = mut [0:u8; 4096]
+
+export "inbox" func inbox-address() -> u32 => inbox as u32
+export "inbox_size" func inbox-size() -> u32 => inbox.len
+
+// Used when the host loads no levels, so the game runs anywhere.
+data fallback = "########################\n#......................#\n#.@....................#\n#......#........#......#\n#......#........#......#\n#......................#\n#.........####.........#\n#.........####.........#\n#......................#\n#......#........#......#\n#......#........#......#\n#......................#\n#......................#\n########################\n"
+
+// Reads levels from text: rows of `#` (wall), `.` (floor) and `@` (where the
+// lantern starts), a blank line between levels. Anything else is floor.
+// Columns past 24 and rows past 14 are left out, and so are levels past 6.
+// Gives the number of levels read; with none, the shelf is as it was.
+func parse(src: []u8) -> u32 {
+  let k: u32 = 0
+  let row: u32 = 0
+  let col: u32 = 0
+  shelf.count = 0
+  for c in src {
+    if c == '\r' { continue }
+    if let lv = &shelf.levels[k] {
+      if c == '\n' {
+        if col == 0 && lv.h > 0 {
+          k += 1            // a blank line after a level ends it
+          row = 0
+        } elif col > 0 {
+          row += 1
+        }
+        col = 0
+        continue
+      }
+      if row < map-h && col < map-w {
+        if col == 0 {
+          lv.h = row + 1
+          if row == 0 { lv.w = 0 }
+        }
+        lv.w = max(lv.w, col + 1)
+        lv.tiles[row][col] = if c == '#' { 1 } else { 0 }
+        if c == '@' {
+          lv.sx = col as f32 + 0.5
+          lv.sy = row as f32 + 0.5
+        }
+      }
+      col += 1
+    }
+  }
+  if let lv = &shelf.levels[k] { if lv.h > 0 { k += 1 } }
+  shelf.count = min(k, max-levels)
+  return shelf.count
+}
+
+export func load(len: u32) -> u32 => parse(inbox[0..len] ?? inbox[..])
+
+// ---- The world -----------------------------------------------------------------
+
+def max-wisps = 32
+def max-sparks = 3
+def max-motes = 96
+
+def mode-title = 0
+def mode-play = 1
+def mode-dead = 2
+def mode-clear = 3
+
+type Player = (x: f32, y: f32, vx: f32, vy: f32, fx: f32, fy: f32, dash: f32, cool: f32)
+// A wisp that is forming (age below 0.8 s) is harmless and drawn as a ring.
+type Wisp = (x: f32, y: f32, vx: f32, vy: f32, age: f32, alive: bool)
+type Spark = (x: f32, y: f32, age: f32, alive: bool)
+type Mote = (x: f32, y: f32, vx: f32, vy: f32, life: f32, color: u32)
+
+type World = (
+  mode: u32, level: u32#max-levels, round: u32, score: u32, best: u32, goal: u32,
+  clock: f32, spawn: f32, seed: u32, held: u32, shake: f32,
+  map: *Level, player: Player,
+  wisps: [max-wisps]Wisp,     // full: no more wisps come out of the dark
+  sparks: [max-sparks]Spark,
+  next-mote: u32#max-motes,
+  motes: [max-motes]Mote      // full: a new mote replaces the oldest
+)
+
+// Every field starts at zero; init() sets what needs more.
+data world-bytes = mut [0:u8; sizeof(World)]
+global world = world-bytes as *mut World
+
+// xorshift32: the same seed plays the same game.
+func rand() -> u32 {
+  let x = world.seed
+  x ^= x << 13
+  x ^= x >> 17
+  x ^= x << 5
+  world.seed = x
+  return x
+}
+
+// A number in [0, 1).
+func rand01() -> f32 => (rand() >> 8) as f32 * (1.0 / 16777216.0)
+
+// Whether a point stops the lantern and the wisps: a wall, or off the map.
+func solid(x: f32, y: f32) -> bool {
+  // Also true for NaN: no comparison with it holds.
+  return true when !(x >= 0.0 && y >= 0.0 && x < 24.0 && y < 14.0)
+  let tx = x as u32
+  let ty = y as u32
+  let m = world.map
+  return true when tx >= m.w || ty >= m.h
+  if tx < map-w && ty < map-h { return m.tiles[ty][tx] == 1 }
+  return true
+}
+
+// Whether a circle of radius r at (x, y) overlaps a wall.
+func blocked(x: f32, y: f32, r: f32) -> bool {
+  return solid(x - r, y - r) || solid(x + r, y - r) || solid(x - r, y + r) || solid(x + r, y + r)
+}
+
+// Moves a circle by (dx, dy), one axis at a time, stopping at walls.
+func slide(x: f32, y: f32, dx: f32, dy: f32, r: f32) -> (nx: f32, ny: f32, hit-x: bool, hit-y: bool) {
+  nx = x + dx
+  ny = y
+  hit-x = blocked(nx, ny, r)
+  if hit-x { nx = x }
+  ny = y + dy
+  hit-y = blocked(nx, ny, r)
+  if hit-y { ny = y }
+}
+
+// A random floor tile at least `away` tiles from the lantern, as the centre
+// of the tile. After 64 tries it settles for the lantern's own tile.
+func open-tile(away: f32) -> (x: f32, y: f32) {
+  let m = world.map
+  let p = world.player
+  for i in 64 {
+    x = (rand() % max(m.w, 1)) as f32 + 0.5
+    y = (rand() % max(m.h, 1)) as f32 + 0.5
+    let dx = x - p.x
+    let dy = y - p.y
+    return when !solid(x, y) && dx * dx + dy * dy >= away * away
+  }
+  x = p.x
+  y = p.y
+}
+
+func burst(x: f32, y: f32, n: u32, speed: f32, color: u32) {
+  for i in n {
+    let k = world.next-mote
+    let m = &world.motes[k]
+    let angle = rand01() * 6.2831853
+    let v = speed * (0.3 + rand01())
+    m.* = Mote(x, y, cos(angle) * v, sin(angle) * v, 0.4 + rand01() * 0.5, color)
+    world.next-mote = (k + 1) % max-motes
+  }
+}
+
+// cos and sin by a short polynomial: plenty for motes, and no imports.
+func sin(a: f32) -> f32 {
+  let x = a - floor(a * 0.15915494 + 0.5) * 6.2831853   // into [-pi, pi]
+  let y = x * (1.2732395 - 0.40528473 * abs(x))
+  return y * (0.775 + 0.225 * abs(y))
+}
+func cos(a: f32) -> f32 => sin(a + 1.5707963)
+
+// ---- Rules -----------------------------------------------------------------------
+
+func start-level() {
+  let lv = &shelf.levels[world.level]
+  world.map = lv
+  world.player = Player(lv.sx, lv.sy, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+  world.wisps[0..max-wisps] = Wisp(0.0, 0.0, 0.0, 0.0, 0.0, false)
+  world.sparks[0..max-sparks] = Spark(0.0, 0.0, 0.0, false)
+  world.goal = 6 + world.round * 2
+  world.spawn = 2.0
+  world.clock = 0.0
+  world.mode = mode-play
+  sound(330.0, 660.0, 0.25, 0.2, 2)
+}
+
+func new-game() {
+  world.level = 0
+  world.round = 0
+  world.score = 0
+  start-level()
+}
+
+// Starts over from nothing but the levels and the best score: the same seed
+// then plays the same game as a module just loaded.
+export func init(seed: u32) {
+  let best = world.best
+  world-bytes[..] = 0
+  world.best = best
+  world.seed = if seed == 0 { 0x9e3779b9 } else { seed }
+  if shelf.count == 0 { parse(fallback[..]) }
+  world.map = &shelf.levels[0]
+  let lv = world.map
+  world.player = Player(lv.sx, lv.sy, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+}
+
+func pressed(buttons: u32, bit: u32) -> bool => (buttons & bit) != 0 && (world.held & bit) == 0
+
+func update-player(dt: f32, buttons: u32, ax: f32, ay: f32) {
+  let p = &world.player
+  let ix = ax
+  let iy = ay
+  if (buttons & btn-left) != 0 { ix -= 1.0 }
+  if (buttons & btn-right) != 0 { ix += 1.0 }
+  if (buttons & btn-up) != 0 { iy -= 1.0 }
+  if (buttons & btn-down) != 0 { iy += 1.0 }
+  let len = sqrt(ix * ix + iy * iy)
+  if len > 1.0 {
+    ix /= len
+    iy /= len
+  }
+  if len > 0.2 {
+    p.fx = ix / max(len, 1.0)
+    p.fy = iy / max(len, 1.0)
+  }
+  p.cool = max(p.cool - dt, 0.0)
+  p.dash = max(p.dash - dt, 0.0)
+  if pressed(buttons, btn-dash) && p.cool == 0.0 {
+    let f = sqrt(p.fx * p.fx + p.fy * p.fy)
+    p.fx /= max(f, 0.001)
+    p.fy /= max(f, 0.001)
+    p.dash = 0.18
+    p.cool = 0.9
+    sound(520.0, 140.0, 0.16, 0.12, 1)
+  }
+  let speed: f32 = 5.0
+  if p.dash > 0.0 {
+    p.vx = p.fx * 15.0
+    p.vy = p.fy * 15.0
+  } else {
+    let pull = min(dt * 14.0, 1.0)
+    p.vx += (ix * speed - p.vx) * pull
+    p.vy += (iy * speed - p.vy) * pull
+  }
+  let (nx, ny, hx, hy) = slide(p.x, p.y, p.vx * dt, p.vy * dt, 0.3)
+  p.x = nx
+  p.y = ny
+  if hx { p.vx = 0.0 }
+  if hy { p.vy = 0.0 }
+}
+
+func update-wisps(dt: f32) {
+  let p = &world.player
+  let pace = 1.4 + world.round as f32 * 0.3 + world.level as f32 * 0.12
+  let alive: u32 = 0
+  for i in max-wisps {
+    let w = &world.wisps[i]
+    if !w.alive { continue }
+    w.age += dt
+    let dx = p.x - w.x
+    let dy = p.y - w.y
+    let d = sqrt(dx * dx + dy * dy)
+    if w.age >= 0.8 {
+      let pull = min(dt * 1.8, 1.0)
+      w.vx += (dx / max(d, 0.01) * pace - w.vx) * pull
+      w.vy += (dy / max(d, 0.01) * pace - w.vy) * pull
+    }
+    let (nx, ny, hx, hy) = slide(w.x, w.y, w.vx * dt, w.vy * dt, 0.28)
+    w.x = nx
+    w.y = ny
+    if hx { w.vx = -w.vx }
+    if hy { w.vy = -w.vy }
+    if w.age >= 0.8 && d < 0.55 {
+      if p.dash > 0.0 {
+        w.alive = false
+        world.score += 2
+        world.shake = 0.15
+        burst(w.x, w.y, 14, 4.0, 0xb9a6ffff)
+        sound(900.0, 200.0, 0.2, 0.18, 2)
+        continue
+      }
+      world.mode = mode-dead
+      world.clock = 0.0
+      world.shake = 0.4
+      world.best = max(world.best, world.score)
+      burst(p.x, p.y, 40, 5.0, 0xffcf6bff)
+      sound(220.0, 40.0, 0.7, 0.25, 3)
+      return
+    }
+    alive += 1
+  }
+  world.spawn -= dt
+  let cap = min(3 + world.level + world.round * 2, max-wisps)
+  if world.spawn <= 0.0 && alive < cap {
+    for i in max-wisps {
+      let slot = &world.wisps[i]
+      if !slot.alive {
+        let (x, y) = open-tile(6.0)
+        slot.* = Wisp(x, y, 0.0, 0.0, 0.0, true)
+        break
+      }
+    }
+    world.spawn = max(3.2 - world.level as f32 * 0.25 - world.round as f32 * 0.4, 1.0)
+  }
+}
+
+func update-sparks(dt: f32) {
+  let p = world.player
+  let shown: u32 = 0
+  for i in max-sparks {
+    let s = &world.sparks[i]
+    if !s.alive {
+      if shown < world.goal {
+        let (x, y) = open-tile(3.0)
+        s.* = Spark(x, y, 0.0, true)
+      } else {
+        continue
+      }
+    }
+    s.age += dt
+    shown += 1
+    let dx = p.x - s.x
+    let dy = p.y - s.y
+    if dx * dx + dy * dy < 0.36 {
+      s.alive = false
+      world.score += 1
+      world.goal -= 1
+      burst(s.x, s.y, 10, 2.5, 0xfff1a8ff)
+      sound(660.0 + world.goal as f32 * 40.0, 1320.0, 0.12, 0.15, 0)
+      if world.goal == 0 {
+        world.mode = mode-clear
+        world.clock = 0.0
+        world.best = max(world.best, world.score)
+        sound(523.0, 1046.0, 0.5, 0.18, 0)
+        return
+      }
+    }
+  }
+}
+
+func update-motes(dt: f32) {
+  for i in max-motes {
+    let m = &world.motes[i]
+    if m.life <= 0.0 { continue }
+    m.life -= dt
+    m.x += m.vx * dt
+    m.y += m.vy * dt
+    m.vx *= 0.92
+    m.vy *= 0.92
+  }
+}
+
+// Plays one frame: dt-ms since the last one (at most 50 ms counts), the
+// canvas in CSS pixels, the buttons held and an analog stick in [-1, 1].
+// Gives the number of commands written; commands() is where they are.
+export func frame(dt-ms: f32, width: f32, height: f32, buttons: u32, ax: f32, ay: f32) -> u32 {
+  cmds.count = 0
+  scratch.used = 0
+  let dt = if dt-ms >= 0.0 { min(dt-ms, 50.0) * 0.001 } else { 0.0 }
+  let sx = if ax >= -1.0 && ax <= 1.0 { ax } else { 0.0 }
+  let sy = if ay >= -1.0 && ay <= 1.0 { ay } else { 0.0 }
+  world.clock += dt
+  world.shake = max(world.shake - dt, 0.0)
+  if world.mode == mode-title {
+    if pressed(buttons, btn-start) || pressed(buttons, btn-dash) { new-game() }
+  } elif world.mode == mode-play {
+    update-player(dt, buttons, sx, sy)
+    update-wisps(dt)
+    if world.mode == mode-play { update-sparks(dt) }
+  } elif world.mode == mode-dead {
+    if world.clock > 0.6 && pressed(buttons, btn-start) { new-game() }
+  } elif world.mode == mode-clear {
+    if world.clock > 1.6 {
+      let next = world.level + 1
+      if next < shelf.count && next < max-levels {
+        world.level = next
+      } else {
+        world.level = 0
+        world.round += 1
+      }
+      start-level()
+    }
+  }
+  update-motes(dt)
+  draw(width, height)
+  world.held = buttons
+  return cmds.count
+}
+
+export func commands() -> u32 => (&cmds.list) as u32
+export func score() -> u32 => world.score
+export func mode() -> u32 => world.mode
+
+// ---- Drawing -------------------------------------------------------------------
+
+def ink = 0x07080fff
+def wall-lit = 0x3a3f66ff
+def amber = 0xffcf6bff
+def pale = 0xfff4d6ff
+
+// An RGBA colour with its alpha scaled by a in [0, 1].
+func fade(color: u32, a: f32) -> u32 {
+  let alpha = (color & 0xff) as f32 * max(min(a, 1.0), 0.0)
+  return (color & 0xffffff00) | alpha as u32
+}
+
+func draw(width: f32, height: f32) {
+  clear(ink)
+  let m = world.map
+  let hud: f32 = 40.0
+  let w = max(width, 64.0)
+  let h = max(height - hud, 64.0)
+  let ts = max(min(w / max(m.w, 1) as f32, h / max(m.h, 1) as f32), 4.0)
+  let shake = world.shake * ts * 0.3
+  let ox = (w - ts * m.w as f32) * 0.5 + (rand01() - 0.5) * shake
+  let oy = hud + (h - ts * m.h as f32) * 0.5 + (rand01() - 0.5) * shake
+  let p = world.player
+  let light: f32 = if world.mode == mode-dead { max(4.5 - world.clock * 6.0, 0.0) } else { 4.5 }
+
+  // The floor, and the walls as far as the lantern lights them.
+  rect(ox, oy, ts * m.w as f32, ts * m.h as f32, 0x0f1120ff)
+  for y in map-h {
+    for x in map-w {
+      if x < m.w && y < m.h && m.tiles[y][x] == 1 {
+        let dx = x as f32 + 0.5 - p.x
+        let dy = y as f32 + 0.5 - p.y
+        let lit = max(1.0 - sqrt(dx * dx + dy * dy) / (light * 2.2), 0.0)
+        rect(ox + x as f32 * ts, oy + y as f32 * ts, ts + 0.5, ts + 0.5, fade(wall-lit, 0.3 + 0.7 * lit))
+      }
+    }
+  }
+
+  // The lantern's glow, under everything that moves.
+  let lx = ox + p.x * ts
+  let ly = oy + p.y * ts
+  if world.mode != mode-title {
+    circle(lx, ly, light * ts, 0xffcf6b0c)
+    circle(lx, ly, light * ts * 0.6, 0xffcf6b12)
+    circle(lx, ly, light * ts * 0.3, 0xffcf6b1a)
+  }
+
+  for i in max-sparks {
+    let s = world.sparks[i]
+    if s.alive {
+      let pulse = 0.18 + 0.05 * sin(s.age * 7.0)
+      circle(ox + s.x * ts, oy + s.y * ts, ts * (pulse + 0.18), 0xfff1a840)
+      circle(ox + s.x * ts, oy + s.y * ts, ts * pulse, 0xfff1a8ff)
+    }
+  }
+
+  for i in max-wisps {
+    let wsp = world.wisps[i]
+    if wsp.alive {
+      let wx = ox + wsp.x * ts
+      let wy = oy + wsp.y * ts
+      if wsp.age < 0.8 {
+        ring(wx, wy, ts * (0.6 - wsp.age * 0.5), 2.0, fade(0xb9a6ffff, wsp.age))
+      } else {
+        let flicker = 0.85 + 0.15 * sin(wsp.age * 13.0 + wsp.x)
+        circle(wx, wy, ts * 0.42, fade(0x6f5bd6ff, 0.35 * flicker))
+        circle(wx, wy, ts * 0.27, fade(0xd8ceffff, flicker))
+      }
+    }
+  }
+
+  for i in max-motes {
+    let mt = world.motes[i]
+    if mt.life > 0.0 {
+      let size = ts * 0.12
+      rect(ox + mt.x * ts - size * 0.5, oy + mt.y * ts - size * 0.5, size, size, fade(mt.color, mt.life * 2.0))
+    }
+  }
+
+  if world.mode == mode-play || world.mode == mode-clear {
+    if p.dash > 0.0 { circle(lx, ly, ts * 0.45, 0xfff4d660) }
+    circle(lx, ly, ts * 0.3, amber)
+    circle(lx, ly, ts * 0.16, pale)
+  }
+
+  // What the player needs to know, along the top.
+  text(16.0, 26.0, 18.0, false, pale, "score ")
+  text(76.0, 26.0, 18.0, false, amber, digits(world.score))
+  text(130.0, 26.0, 18.0, false, pale, "best ")
+  text(180.0, 26.0, 18.0, false, amber, digits(world.best))
+  if world.mode != mode-title {
+    text(width - 160.0, 26.0, 18.0, false, pale, "sparks ")
+    text(width - 90.0, 26.0, 18.0, false, amber, digits(world.goal))
+    let ready = 1.0 - world.player.cool / 0.9
+    rect(width - 160.0, 32.0, 120.0 * ready, 3.0, if ready >= 1.0 { amber } else { 0x6f5bd6ff })
+  }
+
+  let cx = width * 0.5
+  let cy = height * 0.5
+  if world.mode == mode-title {
+    text(cx, cy - 30.0, 56.0, true, amber, "LANTERN")
+    text(cx, cy + 10.0, 18.0, true, pale, "collect the sparks, dash through the wisps")
+    text(cx, cy + 40.0, 16.0, true, 0x9aa0d0ff, "arrows, WASD or a gamepad to move; space or A to dash")
+    text(cx, cy + 80.0, 20.0, true, fade(pale, 0.6 + 0.4 * sin(world.clock * 4.0)), "press enter or start")
+  } elif world.mode == mode-dead && world.clock > 0.6 {
+    text(cx, cy - 10.0, 36.0, true, pale, "the dark took you")
+    text(cx, cy + 30.0, 18.0, true, amber, "press enter to try again")
+  } elif world.mode == mode-clear {
+    text(cx, cy, 36.0, true, amber, "the room is lit")
+  }
+}
+
+// ---- Tests -------------------------------------------------------------------------
+
+// Runs n frames of 16 ms with the buttons held.
+func play(n: u32, buttons: u32) -> u32 {
+  let most: u32 = 0
+  for i in n { most = max(most, frame(16.0, 800.0, 600.0, buttons, 0.0, 0.0)) }
+  return most
+}
+
+test "levels are read from text" {
+  data two-rooms = "#####\n#@..#\n#####\n\n\n####\n#.@#\n####\n"
+  assert parse(two-rooms[..]) == 2
+  let a = &shelf.levels[0]
+  assert a.w == 5 && a.h == 3
+  assert a.sx == 1.5 && a.sy == 1.5
+  assert a.tiles[0][0] == 1 && a.tiles[1][2] == 0
+  let b = &shelf.levels[1]
+  assert b.w == 4 && b.h == 3 && b.sx == 2.5
+  assert parse(fallback[..]) == 1
+}
+
+test "a game starts from the title and plays" {
+  shelf.count = 0
+  init(7)
+  assert mode() == mode-title
+  play(1, 0)
+  play(1, btn-start)
+  assert mode() == mode-play
+  let most = play(600, btn-right)
+  assert most <= 1024
+  assert world.wisps[0].alive || mode() == mode-dead
+}
+
+test "a frame's text lives in the arena until the next frame" {
+  scratch.used = 0
+  let a = digits(407)
+  let b = digits(0)
+  assert a.len == 3 && (a[0] ?? 0) == '4' && (a[2] ?? 0) == '7'
+  assert b.len == 1 && (b[0] ?? 0) == '0'
+  assert scratch.used == 4
+  scratch.used = 254
+  assert digits(12345).len == 0
+}
+
+test "a full mote pool replaces its oldest" {
+  init(3)
+  burst(1.0, 1.0, 200, 1.0, 0xffffffff)
+  assert world.next-mote == 200 % max-motes
+}
+
+test "nothing goes wrong on a hostile frame" {
+  init(1)
+  frame(-1.0, 0.0, 0.0, 0xffffffff, 1.0 / 0.0, 0.0 / 0.0)
+  frame(1000000.0, 100000.0, 1.0, 0, -5.0, 5.0)
+  assert cmds.count <= 1024
+}

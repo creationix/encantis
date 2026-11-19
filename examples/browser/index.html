@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lantern</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07080f; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script type="module">
+  import { start } from './host.js'
+  // ?game=starter runs the template instead of Lantern.
+  const name = new URLSearchParams(location.search).get('game') === 'starter' ? 'starter' : 'lantern'
+  start({
+    canvas: document.getElementById('game'),
+    wasm: `${name}.wasm`,
+    asset: name === 'lantern' ? 'levels.txt' : undefined,
+  })
+</script>
+</body>
+</html>
