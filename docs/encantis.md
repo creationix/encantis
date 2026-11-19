@@ -1778,13 +1778,13 @@ global initializer must be a compile-time constant
 
 **Names.** A name declared at the level of the module belongs to one declaration: a second one of the same name is an error (`'size' is already declared`). Functions are the exception: several can share a name when their parameters differ ([Functions That Share a Name](#functions-that-share-a-name)). A local variable cannot take the name of anything the module declares ([3.3](#33-variables)); a parameter can ([3.4](#34-functions)).
 
-**Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build. The editor and `encantis meta` show warnings; `encantis check`, `compile` and `test` do not print them.
+**Unused declarations.** The compiler warns `'x' is never used` for a function, `def`, `data` block, `global` or import of the module that nothing uses and that is not exported. An unused type, parameter or local variable gets no warning. A warning never stops a build. The editor and `encantis meta` show warnings; `encantis check`, `compile` and `test` do not print them (a known bug).
 
 ### 3.1 Definitions (`def`)
 
-`def name = value` names a compile-time constant. Each use of the name is the value, as if it were written there in parentheses: a `def` takes no memory, has no address and is no wasm global, and where it is used the output has a constant (`i32.const`, `f64.const`, ...).
+`def name = value` names a compile-time constant. Each use of the name is the value, as if it were written there in parentheses: a `def` takes no memory, has no address and is no wasm global, and each use compiles as the value written there would. `def mask: u32 = 0xff` is `(i32.const 255)` wherever it is used, and `def page = 64 * 1024` used as a `u64` is `(i64.mul (i64.const 64) (i64.const 1024))`, which an optimizer such as `wasm-opt` folds.
 
-The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with the arithmetic operators (`+ - * / %`), the bitwise and shift operators, unary `-` and `~`, and `sizeof(T)`. A comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), a global and a variable are not constants (`def value must be a compile-time constant`). A `def` always has a value: `def buf: [4096]u8` is a syntax error.
+The value is one scalar: an integer, a float, `true` or `false`, a codepoint (`'a'`), or an expression of these and of other defs with `+ - * / %`, `& | ^`, the shifts `<<` and `>>`, unary `-` and `~`, `sizeof(T)`, and the `.len` or `.wid` of a `data` array. A rotate, a comparison, `&&`, `||`, `!`, an `if`, a call (of a builtin too), a division by zero, a global and a variable are not constants (`def value must be a compile-time constant`). A `def` always has a value: `def buf: [4096]u8` is a syntax error.
 
 With no type written, a `def` is an untyped constant: each use takes the type that use wants, as the literal itself would, and where nothing says, the literal's default type ([Integer Literals](#integer-literals)). Each use is checked on its own, so a `def page = 64 * 1024` is a `u64` in one place and an `f64` in another, and used as a `u16` it is `cannot assign int(65536) to u16`. With a type, `def mask: u32 = 0xff` (or `def mask = 0xff:u32`), it is of that type at every use, and widens from there as any `u32` does.
 
@@ -1840,7 +1840,7 @@ Two values the rules allow are refused by the compiler, which is a known bug: a 
 
 A `def` can stand wherever a constant can: in an expression, as the length in a type (`[n]u8`), the bound of a ranged integer (`u32#n`), the count of a repeat literal (`[0; n]`) or of a loop (`for i in n`), a comptime value argument ([8.7](#87-comptime-value-parameters)), a global's initializer and the values of `data`.
 
-A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`). A parameter must not take one either: the compiler accepts such a parameter, and every read of it gives the def's value instead of the argument (a known bug).
+A `def` is no variable: assigning it is an error (`cannot assign to 'k': it is not a variable`, [4.5](#45-assignment-and-compound-assignment)). A `let`, a loop variable and a match binding cannot take a def's name (`'k' is already declared in this scope`, `'k' is already declared: a loop variable cannot reuse the name of a def`). A parameter must not take one either: the compiler accepts such a parameter, and every read of it gives the def's value instead of the argument (a known bug).
 
 A `def` declared in a `test` block is that test's: it replaces the name inside that test only, and the rest of the module reads the name as if the test were not there.
 
@@ -1973,7 +1973,7 @@ Data is const unless its literal is `mut`, and a mutable type needs a `mut` lite
 
 ```ents
 data table = [1:u8, 2, 3]           // *[3]u8: may share its bytes
-data again = [1:u8, 2, 3]           // equal: here the same bytes
+data again = [1:u8, 2, 3]           // equal: may be the same bytes
 data buffer = mut [0:u8; 16]        // *mut [16]u8: its own bytes
 data counts: []mut u32 = mut [0, 0] // []mut u32: its own
 
@@ -1983,7 +1983,7 @@ func bump(i: u32#16) -> u8 {
 }
 
 test "mutable data is written through its name" {
-  assert table as u32 == again as u32
+  assert table[2] == again[2]
   assert bump(3) == 1
   assert bump(3) == 2
   if let c = &counts[1] {
@@ -2019,7 +2019,7 @@ A `let` declares a variable of a function; a `global` declares a variable of the
 | `set a, b = v`, `set (x:, y:) = v` | assigns variables that exist, with the same patterns ([4.5](#45-assignment-and-compound-assignment)) |
 | `global x: T = v`, `global x = v`, `global x: T` | a variable of the module |
 
-A `let` needs a type or a value (`let needs type annotation or initializer`), and so does a `global` (`global needs type annotation or initializer`). A pattern may bind fewer elements than the value has: `let (a, b) = (1, 2, 3)` binds the first two. A named part binds a plain name, not a pattern. The list without parentheses takes no type (`let a, b: u32 = ...` is a syntax error): write `let (a, b): (u32, u32) = ...`. A global binds one name: `global (lo, hi) = ...` is `global destructuring is not supported yet`.
+A `let` needs a type or a value (`let needs type annotation or initializer`), and so does a `global` (`global needs type annotation or initializer`). A pattern by position may bind fewer elements than the value has, `let (a, b) = (1, 2, 3)` binds the first two, but not more (`tuple has 2 fields, but pattern has 3`). A named part binds a plain name, not a pattern. The list without parentheses takes no type (`let a, b: u32 = ...` is a syntax error): write `let (a, b): (u32, u32) = ...`. A global binds one name: `global (lo, hi) = ...` is `global destructuring is not supported yet`.
 
 <!-- spec:begin compile -->
 
@@ -2174,7 +2174,7 @@ A cast of an address is a constant when it keeps the address whole: to another p
 
 A function declaration is `func`, the function's name, its parameters in parentheses, `->` and its results, and its body:
 
-- **Parameters** are separated by commas: `name: Type` each. A parameter can leave its name out, `func skip(u32, n: u32)`, and then it cannot be read: it is there to match a signature. With a single unnamed parameter the parentheses can go too, `func double i32 -> i32 => 0`, which is rarely clearer. A `comptime` parameter makes the function generic ([8. Generics](#8-generics)).
+- **Parameters** are separated by commas: `name: Type` each. A parameter can leave its name out, `func skip(u32, n: u32)`, and then it cannot be read: it is there to match a signature. With a single unnamed parameter the parentheses can go too: `func ignore i32 -> i32 => 0`. A `comptime` parameter makes the function generic ([8. Generics](#8-generics)).
 - **Results** follow `->`: none (leave out `->`, or write `-> ()`), one type (`-> u32`), several in parentheses (`-> (u32, u32)`), or several with names (`-> (q: u32, r: u32)`). One type in parentheses without a name is that type, so `-> (u32)` is one result, and `-> ((q: u32, r: u32))` is one result that is a struct. Name every result or none: with a mix such as `-> (a: u32, u32)` a block body that ends without `return` gives a module that does not assemble (a known bug).
 - **The body** is `=> expression` or a block of statements in braces.
 - `inline` may stand before `func` ([3.5](#35-inline-functions)), and `export` before both ([7.2](#72-exports)).
@@ -2213,7 +2213,7 @@ test "the four shapes of a function" {
 
 <!-- spec:end -->
 
-Each function is one wasm function. A parameter is one wasm parameter for each wasm value of its type (a struct one for each field, a slice its pointer and its length), the results are the function's wasm results (several where there are several), and a named result is a local of the function. A call by name is a wasm `call`. Every function of the module is in the output, whether anything calls it or not. `divmod` above is:
+Each function is one wasm function. A parameter is one wasm parameter for each wasm value of its type (a struct one for each field, a slice its pointer and its length), the results are the function's wasm results (several where there are several), and a named result is a local of the function. A call by name is a wasm `call`. Every function of the module is in the output, whether anything calls it or not; a generic function is there as its instances ([8.4](#84-instances)). `divmod` above is:
 
 ```wat
 (func $divmod (param $a i32) (param $b i32) (result i32 i32)
@@ -2260,7 +2260,7 @@ test "a value is copied, a pointer is shared" {
 
 A parameter's name, and a named result's, is written once in a signature (two parameters of one name are accepted and give a module that does not assemble, and two results of one name are one variable: known bugs). A parameter can have the name of a global, a function, an import or a `data` block of the module, which it hides in the body. It must not have a def's name: such a parameter is accepted, and reading it gives the def's value (a known bug).
 
-**Returning.** An expression body is the function's result. A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
+**Returning.** An expression body is the function's result, so a function with no result has a block body: `func f() => id(3)` is `cannot assign u32 to ()`, and `func f() => bump()`, where `bump` has no result either, is refused too (`cannot assign () to ()`, a known bug). A block body gives an unnamed result with `return value`, and every way out of the block must be one. The compiler decides this by the block's last statement, which must be:
 
 - a `return` (not `return ... when ...`),
 - a `loop` with no `break` out of it,
@@ -2284,11 +2284,12 @@ func sign(x: i32) -> i32 {
   }
 }
 
-func first_set(bits: u32) -> u32 {
-  let i: u32 = 0
+func steps(n: u64) -> u32 {
+  let count: u32 = 0
   loop {
-    return i when bits & (1 << i) != 0 || i == 31
-    i += 1
+    return count when n == 1
+    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }
+    count += 1
   }
 }
 
@@ -2297,7 +2298,8 @@ func pick(c: bool) -> u32 => if c { 1 } else { 2 }
 test "every path returns" {
   assert sign(-5) == -1
   assert sign(0) == 0
-  assert first_set(0b1000) == 3
+  assert steps(6) == 8
+  assert steps(1) == 0
   assert pick(false) == 2
 }
 ```
@@ -2584,7 +2586,7 @@ argument 1: cannot assign (q: u32, r: u32) to u32
 
 <!-- spec:end -->
 
-A function whose first parameter is the value it works on can also be called as a method of its first argument, `xs.total()` for `total(xs)` ([4.9](#49-method-call-syntax)).
+Any function can also be called as a method of its first argument: `xs.total()` is `total(xs)` ([4.9](#49-method-call-syntax)).
 
 #### Function Types and Pointers
 
@@ -2655,7 +2657,7 @@ test "an inline function is called as any function is" {
 
 <!-- spec:end -->
 
-A `def` and an `inline func` both cost no call, the one now and the other once inlining is implemented; they differ in what they are:
+A `def` and an `inline func` differ in what they are:
 
 | | `def` | `inline func` |
 |---|---|---|
@@ -2663,7 +2665,7 @@ A `def` and an `inline func` both cost no call, the one now and the other once i
 | Checked | at each use, in the type the use wants | once, as any function |
 | Arguments | none | each evaluated once |
 | Locals and control flow | no | yes |
-| In the output | a constant at each use | a function, called with `call` |
+| In the output | its value, at each use | a function, called with `call` |
 
 A value known when the program is compiled is a `def`; anything that computes from arguments is a function.
 
