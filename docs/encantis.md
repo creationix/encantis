@@ -1320,7 +1320,7 @@ A plain host type is never null: a `Canvas` is always a value the host gave. So 
 
 A reference that may be null is a `?Canvas`, the optional form, written as `?*T` is for a pointer (2.5); `?Screen` is the same type through another name for it. It follows the rules of `?*T`:
 
-- none is written `0`, the literal: also in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` is not none);
+- none is written `0`, the literal: also `-0` (the literal with its sign), in parentheses, as the value of a branch, or as a `def` of 0, but nothing computed (`0 + 0` and `-(0)` are not none). A comptime value parameter is the number its call gave, written in its place ([8.7](#87-comptime-value-parameters)): in an instance given 0 it is the literal 0, however the call wrote the 0;
 - it starts as none: a `let` or a global of one given no value is none;
 - `opt == 0` and `opt != 0` ask whether it is none, and are its only comparisons;
 - `if let c = opt { ... }` gives a plain `Canvas` where it is not none, and `opt ?? other` is `opt` unless it is none, and `other` (a `Canvas`) then;
@@ -1435,6 +1435,8 @@ export func untyped(c: ?Canvas) -> ?Canvas {
 }
 func with-none(comptime T: type, x: T) -> [2]?T => [x, 0]
 export func generic(c: Canvas) -> [2]?Canvas => with-none(c)
+func given(comptime n: i32) -> ?Canvas => n
+export func signed() -> [2]?Canvas => [-0, given(1 - 1)]
 
 func none(a: [2]?Canvas) -> bool => a[0] == 0 && a[1] == 0
 test "none is 0 in each place" {
@@ -1444,6 +1446,7 @@ test "none is 0 in each place" {
   assert pick(0, 0) == 0
   assert pick(2, 0) == 0
   assert three()[2] == 0
+  assert none(signed())
 }
 ```
 
@@ -1475,6 +1478,9 @@ func o(c: Canvas) -> Context => c as Context
 func p(x: ?Canvas) -> Canvas => x as Canvas
 type Element = host
 func q() -> Element => 0
+func r() -> ?Canvas => -(0)
+func s(b: bool, x: ?Canvas) -> bool => x == if b { 0 + 0 } else { 0 }
+func t(n: i32, x: ?Canvas) -> bool => x == match n { 0 => 0, _ => 1 - 1 }
 ```
 
 ```errors
@@ -1495,6 +1501,9 @@ cannot cast int(0) to ?Canvas: none of a ?Canvas is written 0, the literal
 cannot cast Canvas to Context: they are two host types, and neither is the other
 cannot cast ?Canvas to Canvas: it may be none — resolve it with 'if let' or '??' first
 cannot assign int(0) to Element: an Element is never null (a host reference that may be null is a ?Element)
+cannot assign int(0) to ?Canvas: none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(0): none of a ?Canvas is written 0, the literal, and nothing computed is one
+'==' cannot be applied to ?Canvas and int(1): none of a ?Canvas is written 0, the literal, and nothing computed is one
 ```
 
 A reference is asked nothing but, for an optional one, whether it is none; and an array of them held in registers is reached by a constant index alone:

@@ -6719,38 +6719,32 @@ class CheckContext {
     return sym?.kind === 'func' && !sym.alias ? declaredName(named.name) : null
   }
 
-  // Whether a constant is none as it is written: the literal 0, also in
-  // parentheses, as each value of an if or a match, or as the name of a def
-  // of one (or of a value parameter given 0). Nothing computed is (0 + 0,
-  // "".len), whatever its value.
-  private writtenZero(expr: AST.Expr, seen = new Set<string>()): boolean {
+  // Whether a constant is none as it is written: the literal 0 (-0 is one,
+  // written with its sign), also in parentheses, or as each value of an if or
+  // a match. Nothing computed is (0 + 0, -(0), "".len), whatever its value.
+  // A def's name is its value written there, and a value parameter's is the
+  // number its call gave (8.7), before this is asked: `def z = 0` and a
+  // parameter given 0 are the literal 0 here, `def z = 0 + 0` is 0 + 0.
+  private writtenZero(expr: AST.Expr): boolean {
     const e = ungrouped(expr)
     switch (e.kind) {
       case 'LiteralExpr':
         return e.value.kind === 'int' && e.value.value === 0n
-      case 'IdentExpr': {
-        const sym = this.lookup(e.name)
-        if (sym?.kind !== 'def' || seen.has(e.name)) return false
-        if (sym.valueParam) return sym.value.kind === 'int' && sym.value.value === 0n
-        seen.add(e.name)
-        const decl = this.defDecls.get(e.name)
-        return decl !== undefined && this.writtenZero(decl.value, seen)
-      }
       case 'IfExpr': {
         if (e.pattern || !e.else_) return false
         const bodies = [e.thenBranch, ...e.elifs.map((elif) => elif.thenBranch), e.else_]
-        return bodies.every((body) => bodyExits(body) || this.branchZero(body, seen))
+        return bodies.every((body) => bodyExits(body) || this.branchZero(body))
       }
       case 'MatchExpr':
-        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body, seen))
+        return e.arms.every((arm) => bodyExits(arm.body) || this.branchZero(arm.body))
       default:
         return false
     }
   }
 
-  private branchZero(body: AST.FuncBody | AST.Expr, seen: Set<string>): boolean {
+  private branchZero(body: AST.FuncBody | AST.Expr): boolean {
     const value = bodyValue(body)
-    return value !== null && this.writtenZero(value, seen)
+    return value !== null && this.writtenZero(value)
   }
 
   // What is wrong with a cast, if anything. A function's name cast to a
