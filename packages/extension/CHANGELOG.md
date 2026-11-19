@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The WAT preview compiles again once typing stops for a moment, not on every keystroke: with a large program and `--release`, each key held VS Code up for up to a second.
+- The preview's status bar is shown while a preview is visible, with the size of the one in front, and no longer stays after the preview is closed.
+- A preview of a file with `#` or `?` in its name opens.
+- Go to Definition on an import of another `.ents` file opens that file at its `export`, and the import's path is a link to the file.
+
 ## 0.3.0
 
 The first release on the Marketplace since 0.0.4, which had syntax highlighting only. The extension now runs the Encantis compiler in a language server:

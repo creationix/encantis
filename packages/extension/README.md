@@ -24,7 +24,7 @@ The extension runs the Encantis compiler itself, so what it reports is what `enc
 
 - **Diagnostics** as you type: parse errors, type errors and warnings, with unused names faded. A file that imports other `.ents` files is checked with them, and an error inside an instance of a generic points back to the calls that asked for it.
 - **Hover** shows the type of any name or expression, the value of a `def` or a literal, a function's signature, and for a call of a generic, the instance it calls.
-- **Go to Definition** and **Find All References**.
+- **Go to Definition** and **Find All References**. A name another `.ents` file exports is defined at its import, and from the import, Go to Definition opens the file at its `export`. An import's path is a link to its file.
 - **Semantic highlighting** of parameters, locals, globals, constants, functions and types, on top of the TextMate grammar. Encantis code blocks in Markdown are highlighted too.
 - **Format Document**, the same formatter as `encantis fmt`.
 - **WAT preview**: the WebAssembly text a file compiles to, beside it, updated as you type. Open it with the preview button in the editor title bar, **Encantis: Open WAT Preview to the Side** (`Ctrl+K V` / `Cmd+K V`), or **Encantis: Open WAT Preview** (`Ctrl+Shift+V` / `Cmd+Shift+V`). The status bar then shows:

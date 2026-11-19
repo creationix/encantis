@@ -17,6 +17,8 @@ import {
   type Hover,
   type Location,
   type ReferenceParams,
+  type DocumentLink,
+  type DocumentLinkParams,
   MarkupKind,
   SemanticTokensBuilder,
   SemanticTokensLegend,
@@ -26,9 +28,9 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { parse } from '@encantis/compiler/parser';
-import type { Module, Span } from '@encantis/compiler/ast';
+import type { ExportDecl, ImportDecl, ImportItem, Module, Span } from '@encantis/compiler/ast';
 import { BUILTIN_NAMES, fieldNamedAt, genericDeclaring, typecheckProgram } from '@encantis/compiler/checker';
-import { getSourceImports, loadModule } from '@encantis/compiler/loader';
+import { getSourceImports, loadModule, resolveModulePath } from '@encantis/compiler/loader';
 import { buildMeta, type MetaError, type MetaHint, type MetaOptions, type MetaOutput, type MetaSymbol } from '@encantis/compiler/meta';
 import { formatEncantis, formatLine } from '@encantis/compiler/formatter';
 import * as nodePath from 'path';
@@ -157,6 +159,42 @@ interface Analysis {
   // untrusted). No place in either is answered for, and the uses of a name
   // written in either are not all known.
   recovered?: { leftOut: Span[]; untrusted: Span[]; unseenNames: Set<string> };
+  // The text of each file of the document's program, by its path, where the
+  // document imports other source files
+  sources?: Map<string, string>;
+}
+
+// The source import an offset of a module's text is in, and the item of it
+function importItemAt(module: Module, offset: number): { decl: ImportDecl; item: ImportItem } | null {
+  for (const decl of getSourceImports(module, true)) {
+    const item = decl.items.find((i) => offset >= i.span.start && offset < i.span.end);
+    if (item) return { decl, item };
+  }
+  return null;
+}
+
+// Where a name is first written as a whole name in a text, from an offset on
+function nameAfter(text: string, name: string, from: number): number {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'g');
+  pattern.lastIndex = from;
+  return pattern.exec(text)?.index ?? -1;
+}
+
+// Where a module's export of a name declares its name: the offset and the
+// name, or the export's start for one with no name of its own (a memory).
+function exportedAt(module: Module, text: string, name: string): { offset: number; length: number } | null {
+  const decl = module.decls.find((d): d is ExportDecl => d.kind === 'ExportDecl' && d.name === name);
+  if (!decl) return null;
+  const item = decl.item;
+  const ident =
+    item.kind === 'FuncDecl' || item.kind === 'TypeFuncDecl'
+      ? item.ident
+      : item.kind === 'GlobalDecl' && item.pattern.kind === 'IdentPattern'
+        ? item.pattern.name
+        : null;
+  const offset = ident ? nameAfter(text, ident, item.span.start) : -1;
+  return offset >= 0 && ident ? { offset, length: ident.length } : { offset: decl.span.start, length: 'export'.length };
 }
 
 // -----------------------------------------------------------------------------
@@ -374,6 +412,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
         textDocumentSync: TextDocumentSyncKind.Incremental,
         hoverProvider: true,
         definitionProvider: true,
+        documentLinkProvider: { resolveProvider: false },
         referencesProvider: true,
         documentFormattingProvider: true,
         semanticTokensProvider: {
@@ -454,6 +493,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
           text,
           meta,
           module,
+          sources: program?.sources,
           recovered: { leftOut: recovered.leftOut, untrusted: distrusted, unseenNames: namesIn(text, [...recovered.leftOut, ...distrusted]) },
         });
       } catch {
@@ -465,6 +505,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     // Build meta info (includes type checking)
     let meta: MetaOutput;
     let module = parseResult.module;
+    let sources: Map<string, string> | undefined;
     try {
       // A document with no source import is checked at once, as it always was.
       const program = getSourceImports(parseResult.module, true).length > 0 ? await programOf(textDocument.uri, text) : null;
@@ -473,6 +514,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       if (latest && latest.version !== textDocument.version) return;
       programFiles.set(textDocument.uri, new Set(program?.sources?.keys()));
       if (program) module = program.module;
+      sources = program?.sources;
       meta = buildMeta(module, text, { srcPath: textDocument.uri, ...program });
     } catch (e) {
       // Never crash on partially written code — show the error as a diagnostic
@@ -486,7 +528,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
       return;
     }
 
-    analysisCache.set(textDocument.uri, { text, meta, module });
+    analysisCache.set(textDocument.uri, { text, meta, module, sources });
 
     // Convert meta errors and warnings to diagnostics
     const tokenLen = (line: number, col: number): number => {
@@ -791,9 +833,63 @@ export function startServer(connection: Connection, options: ServerOptions = {})
     return { uri, range: { start: { line, character }, end: { line, character: character + symbol.name.length } } };
   }
 
+  // On an import of another source file, at the name it is exported by or
+  // the name it is given here: where the other file declares what it
+  // exports. (A use of the name is defined at its import, the first step.)
+  function exportAt(params: TextDocumentPositionParams): Location | null {
+    const document = documents.get(params.textDocument.uri);
+    const path = pathOf(params.textDocument.uri);
+    if (!document || !path) return null;
+    const text = document.getText();
+    const analysis = analysisOf(params.textDocument.uri, text);
+    const word = getWordAtOffset(text, document.offsetAt(params.position));
+    if (!analysis || !word || !answersAt(analysis, word.start)) return null;
+    const found = importItemAt(analysis.module, word.start);
+    if (!found) return null;
+    const { decl, item } = found;
+    const local = item.item.ident;
+    const onName = word.start === item.span.start;
+    const onLocal = local !== null && word.start === nameAfter(text, local, item.item.span.start);
+    if (!onName && !onLocal) return null;
+    const target = resolveModulePath(decl.module, path);
+    const open = documentAt(target);
+    const source = open?.getText() ?? analysis.sources?.get(target);
+    if (source === undefined) return null;
+    const module = parse(source, { filePath: target }).module;
+    const at = module && exportedAt(module, source, item.name);
+    if (!at) return null;
+    const start = offsetToPosition(source, at.offset);
+    return { uri: open?.uri ?? uriOf(target), range: { start, end: { line: start.line, character: start.character + at.length } } };
+  }
+
   connection.onDefinition((params: TextDocumentPositionParams): Location | null => {
+    const exported = exportAt(params);
+    if (exported) return exported;
     const found = symbolAt(params);
     return found ? locationOf(found.uri, found.symbol, found.symbol.def) : null;
+  });
+
+  // The path of each import of another source file opens that file.
+  connection.onDocumentLinks((params: DocumentLinkParams): DocumentLink[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    const text = document.getText();
+    const module = analysisOf(params.textDocument.uri, text)?.module ?? parse(text).module;
+    if (!module) return [];
+    const links: DocumentLink[] = [];
+    for (const decl of getSourceImports(module, true)) {
+      const open = text.indexOf('"', decl.span.start);
+      const close = open < 0 ? -1 : text.indexOf('"', open + 1);
+      if (close < 0 || text.slice(open + 1, close) !== decl.module) continue;
+      let target: string;
+      try {
+        target = new URL(decl.module.endsWith('.ents') ? decl.module : `${decl.module}.ents`, params.textDocument.uri).href;
+      } catch {
+        continue;
+      }
+      links.push({ range: { start: document.positionAt(open + 1), end: document.positionAt(close) }, target });
+    }
+    return links;
   });
 
   connection.onReferences((params: ReferenceParams): Location[] | null => {

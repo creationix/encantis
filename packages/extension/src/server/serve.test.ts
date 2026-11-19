@@ -338,6 +338,37 @@ describe('a document with source imports', () => {
     expect(references.map(line)).toEqual(['1:32', '2:32'])
   })
 
+  // From the import, the next step: what the other file exports, from the
+  // name it is exported by and from the name it is given here. A use still
+  // goes to the import (above), and so does a host's import, which has no
+  // file.
+  test('an import is defined where the file it imports from exports it', async () => {
+    const { at, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
+    const definition = (offset: number) => handlers.get('onDefinition')?.(at(offset)) as Location | null
+    const exported = { uri: libUri, range: { start: { line: 0, character: 12 }, end: { line: 0, character: 18 } } }
+    expect(definition(MAIN.indexOf('"bucket"'))).toEqual(exported)
+    expect(definition(MAIN.indexOf('"bucket"') + 3)).toEqual(exported)
+    expect(definition(MAIN.indexOf('func bucket') + 7)).toEqual(exported)
+    // A parameter of the signature the import writes is no step to the export.
+    expect(definition(MAIN.indexOf('k: K'))).toBeNull()
+  })
+
+  test('an export read from disk, and a global', async () => {
+    const lib = 'global unused: u32 = 0\nexport "limit" global max-items: u32 = 4\n'
+    const main = 'import "./lib" "limit" global limit: u32\nexport func f() -> u32 => limit\n'
+    const files = new Map([[pathOf(libUri), lib]])
+    const { at, handlers } = await open([[mainUri, main]], async (path) => files.get(path) ?? null)
+    const definition = handlers.get('onDefinition')?.(at(main.indexOf('limit:'))) as Location
+    expect(definition).toEqual({ uri: libUri, range: { start: { line: 1, character: 22 }, end: { line: 1, character: 31 } } })
+  })
+
+  test("an import's path is a link to its file", async () => {
+    const source = `import "./lib" "bucket" func bucket(comptime K: type, k: K, n: u32) -> u32\nimport "env" "log" func log(x: u32)\nexport func g(x: u32) -> u32 => bucket(x, 16)\n`
+    const { handlers } = await open([[libUri, LIB], [mainUri, source]])
+    const links = handlers.get('onDocumentLinks')?.({ textDocument: { uri: mainUri } })
+    expect(links).toEqual([{ range: { start: { line: 0, character: 8 }, end: { line: 0, character: 13 } }, target: libUri }])
+  })
+
   test('a document is checked again when a file of its program changes', async () => {
     const { diagnostics, sent, handlers } = await open([[libUri, LIB], [mainUri, MAIN]])
     expect(diagnostics.map((d) => d.message)).toEqual([failed])
