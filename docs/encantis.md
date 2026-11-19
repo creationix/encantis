@@ -4,17 +4,37 @@ Encantis is a systems programming language that compiles to WebAssembly. A progr
 
 This reference describes the whole language: its syntax as it is written, what each construct means, what is an error, what traps at run time, and how values are laid out in WebAssembly. [`docs/grammar.md`](grammar.md) has the grammar in EBNF, for depth; nothing here depends on it.
 
+## Contents
+
+- [About This Reference](#about-this-reference): [Examples](#examples) · [Tools](#tools) · [A First Program](#a-first-program)
+- [Implementation Status](#implementation-status)
+- [1. Lexical Structure](#1-lexical-structure): [1.1 Comments and Whitespace](#11-comments-and-whitespace) · [1.2 Identifiers](#12-identifiers) · [1.3 Type Identifiers](#13-type-identifiers) · [1.4 Reserved Keywords](#14-reserved-keywords) · [1.5 Literals](#15-literals) · [1.6 Statements and Line Breaks](#16-statements-and-line-breaks)
+- [2. Type System](#2-type-system): [2.1 Unified Value Model](#21-unified-value-model) · [2.2 Primitive Types](#22-primitive-types) · [2.3 Value vs Reference Types](#23-value-vs-reference-types) · [2.4 Fixed Arrays (Value Type)](#24-fixed-arrays-value-type) · [2.5 Pointer Types](#25-pointer-types) · [2.6 Slices](#26-slices) · [2.7 Tuple Types](#27-tuple-types) · [2.8 Struct Types](#28-struct-types) · [2.9 Enum Types (Algebraic Data Types)](#29-enum-types-algebraic-data-types) · [2.10 Type Conversions](#210-type-conversions) · [2.11 Type Names](#211-type-names) · [2.12 Limits](#212-limits) · [2.13 Host References](#213-host-references)
+- [3. Declarations](#3-declarations): [3.1 Definitions (`def`)](#31-definitions-def) · [3.2 Data Declarations (`data`)](#32-data-declarations-data) · [3.3 Variables](#33-variables) · [3.4 Functions](#34-functions) · [3.5 Inline Functions](#35-inline-functions)
+- [4. Expressions & Operators](#4-expressions--operators): [4.1 Arithmetic Operators](#41-arithmetic-operators) · [4.2 Bitwise Operators](#42-bitwise-operators) · [4.3 Comparison Operators](#43-comparison-operators) · [4.4 Unary Operators](#44-unary-operators) · [4.5 Assignment and Compound Assignment](#45-assignment-and-compound-assignment) · [4.6 Pointer Operations](#46-pointer-operations) · [4.7 Bounds-Checked Indexing](#47-bounds-checked-indexing) · [4.8 Slice/Range Syntax](#48-slicerange-syntax) · [4.9 Method-Call Syntax](#49-method-call-syntax)
+- [5. Statements & Control Flow](#5-statements--control-flow): [5.1 Conditionals](#51-conditionals) · [5.2 Loops](#52-loops) · [5.3 Control Statements](#53-control-statements) · [5.4 Match Expressions](#54-match-expressions)
+- [6. Pattern Matching](#6-pattern-matching): [6.1 Pattern Forms](#61-pattern-forms) · [6.2 Patterns in Function Signatures](#62-patterns-in-function-signatures) · [6.3 Patterns in Match Arms](#63-patterns-in-match-arms) · [6.4 If-Let Bindings](#64-if-let-bindings) · [6.5 Let Destructuring](#65-let-destructuring)
+- [7. Modules](#7-modules): [7.1 Imports](#71-imports) · [7.2 Exports](#72-exports) · [7.3 Memory Declarations](#73-memory-declarations)
+- [8. Generics](#8-generics): [8.1 Compile-Time Parameters](#81-compile-time-parameters) · [8.2 Calling a Generic Function](#82-calling-a-generic-function) · [8.3 Requirements](#83-requirements) · [8.4 Instances](#84-instances) · [8.5 Generic Types](#85-generic-types) · [8.6 Comptime Function Parameters](#86-comptime-function-parameters) · [8.7 Comptime Value Parameters](#87-comptime-value-parameters) · [8.8 Generics Across Modules](#88-generics-across-modules) · [8.9 Not in This Version](#89-not-in-this-version) · [8.10 How This Is Compile-Time Evaluation](#810-how-this-is-compile-time-evaluation)
+- [9. Memory Model](#9-memory-model): [9.0 Data Layout](#90-data-layout) · [9.1 Stack vs Memory Allocation](#91-stack-vs-memory-allocation) · [9.2 By-Value vs By-Reference Passing](#92-by-value-vs-by-reference-passing) · [9.3 WASM Type Mapping](#93-wasm-type-mapping) · [9.4 Slice Construction](#94-slice-construction) · [9.5 Array Type Conversions](#95-array-type-conversions) · [9.6 Structs and Slices in Memory](#96-structs-and-slices-in-memory) · [9.7 Traps](#97-traps)
+- [10. Builtin Functions](#10-builtin-functions): [10.1 Numeric Builtins](#101-numeric-builtins) · [10.2 Integer Builtins](#102-integer-builtins) · [10.3 Memory Builtins](#103-memory-builtins) · [10.4 Sizes](#104-sizes)
+- [11. WebAssembly Reference](#11-webassembly-reference): [11.1 Widening Instructions (implicit)](#111-widening-instructions-implicit) · [11.2 Narrowing Instructions (explicit cast)](#112-narrowing-instructions-explicit-cast) · [11.3 Control Flow Instructions](#113-control-flow-instructions) · [11.4 Memory Access](#114-memory-access) · [11.5 Functions the Compiler Adds](#115-functions-the-compiler-adds)
+- [12. Tests](#12-tests): [12.1 Writing a Test](#121-writing-a-test) · [12.2 `assert`](#122-assert) · [12.3 Groups](#123-groups) · [12.4 Declarations in a Test](#124-declarations-in-a-test) · [12.5 Running Tests](#125-running-tests) · [12.6 The Test Host](#126-the-test-host)
+- [13. The Library](#13-the-library): [13.1 Importing a Library Module](#131-importing-a-library-module) · [13.2 `io`: Input and Output over WASI](#132-io-input-and-output-over-wasi) · [13.3 `text`: Parsing Bytes](#133-text-parsing-bytes) · [13.4 `stack`: A Bump Allocator](#134-stack-a-bump-allocator) · [13.5 `vec`: A Growable Array](#135-vec-a-growable-array) · [13.6 `fixedvec`, `ring`, `bits` and `fixedalloc`: Fixed Capacity](#136-fixedvec-ring-bits-and-fixedalloc-fixed-capacity) · [13.7 `set` and `map`: Hashing](#137-set-and-map-hashing) · [13.8 `sort`: Sorting](#138-sort-sorting)
+- [14. Examples](#14-examples): [14.1 Hello, World](#141-hello-world) · [14.2 Fibonacci](#142-fibonacci) · [14.3 Sum of a Slice](#143-sum-of-a-slice) · [14.4 Hex Digits](#144-hex-digits) · [14.5 Looking Up a Record](#145-looking-up-a-record) · [14.6 Month Names](#146-month-names) · [14.7 A Generic Function](#147-a-generic-function) · [14.8 Complete Programs](#148-complete-programs)
+- [15. Future Additions](#15-future-additions): [15.1 SIMD Support](#151-simd-support) · [15.2 Comptime Evaluation](#152-comptime-evaluation) · [15.3 Module System](#153-module-system) · [15.4 Operator Overloading via Method Calls](#154-operator-overloading-via-method-calls) · [15.5 Closures](#155-closures)
+
 ## About This Reference
 
 ### Examples
 
 Source code is shown in `ents` code blocks. The examples that the compiler can process are run by the project's test suite (`bun test spec`): each is parsed and checked, a whole program is also compiled to WebAssembly and validated, and its `test` blocks are run. So an `assert` in an example states what the compiled program computes.
 
-- A short example can be a fragment: a few statements or an expression without the function around them, or a declaration that uses names declared elsewhere.
-- A `test "name" { ... }` block shows results with `assert` ([Tests](#tests)).
+- An example is a whole module, which the test suite checks as it stands. Only the example of a design that is not implemented can be a fragment: a few statements, or a declaration that uses names declared elsewhere.
+- A `test "name" { ... }` block shows results with `assert` ([Tests](#12-tests)).
 - A code block marked `errors` after an example says that the example is refused. Each of its lines is the gist of one error the compiler reports, in the order reported; the full message can say more.
 - A code block marked `ents same-wasm` after an example is a second program that compiles to exactly the same `.wasm` file. This is how the reference shows that a feature costs nothing.
-- A `text` block holds output, code for another language, or a program of several files.
+- A `text` block holds output, a grammar summary or code for another language, and a `wat` block the WebAssembly text a program compiles to.
 - A feature that is designed but not implemented is labelled **Not implemented** where it is described, and its examples are not working code. [Implementation Status](#implementation-status) lists every such feature.
 
 ### Tools
@@ -27,7 +47,7 @@ The compiler's command-line tool is `encantis`:
 | `encantis compile <file> [-o out.wat]` | Writes the program as WebAssembly text (WAT) |
 | `encantis wasm <file> [-o out.wasm]` | Writes the binary module; `-O` also optimizes it with binaryen, `--release` optimizes harder for size |
 | `encantis run <file> [args...]` | Compiles a WASI program and runs its `_start` export, with standard input and output |
-| `encantis test <file or directory>` | Runs the `test` blocks of each file ([Tests](#tests)) |
+| `encantis test <file or directory>` | Runs the `test` blocks of each file ([Tests](#12-tests)) |
 | `encantis fmt <file...>` | Formats source files in place; `fmt --check` only reports the files that need it |
 | `encantis ast <file>` | Prints the syntax tree as JSON |
 
@@ -84,7 +104,7 @@ The compiler implements everything this reference describes except what this tab
 | Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-in-this-version), [8.10](#810-how-this-is-compile-time-evaluation) |
 | `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
 | A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
-| SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [13](#13-future-additions) |
+| SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [15](#15-future-additions) |
 
 ---
 
@@ -2910,7 +2930,7 @@ A reference that may be null is a `?Canvas`, the optional form, written as `?*T`
 
 The module never makes a null `Canvas`. The host promises one too: where a value of a plain host type comes in from the host, as an exported function's parameter, an imported function's result or an imported global's value, it is checked once, as it comes in, and a null there traps (`unreachable`). So a host that breaks the promise stops the program at the boundary, not somewhere later. A call the module makes to one of its exported functions is not checked again: such a function is exported through an entry that checks what the host gives and then calls it. Nothing is checked anywhere else, nothing for a `?Canvas`, and a program that uses no host type compiles to the same bytes as it would without this rule. An imported global is checked when the module starts (a wasm start function).
 
-`encantis test` runs a module's tests with no host there: an imported function throws if a test calls it, and an imported global is given a value of its type that keeps its promise. For a plain host type that is a stand-in (an empty object), so the module starts and its tests run, those that never read the global too; an optional one is none, a number 0. Only the tests being run have their `test` blocks' imports: a library's test-only import is no part of a program that imports the library ([The Test Host](#the-test-host)).
+`encantis test` runs a module's tests with no host there: an imported function throws if a test calls it, and an imported global is given a value of its type that keeps its promise. For a plain host type that is a stand-in (an empty object), so the module starts and its tests run, those that never read the global too; an optional one is none, a number 0. Only the tests being run have their `test` blocks' imports: a library's test-only import is no part of a program that imports the library ([The Test Host](#126-the-test-host)).
 
 For a JavaScript host, null is `null`. `undefined` (what a function that returns nothing gives, or a `Map.get` that finds nothing) is a value, not null: it passes for a `Canvas`, and `opt == 0` is false for it.
 
@@ -3302,7 +3322,7 @@ cannot point to Canvas: a host reference has no bytes, so it is never in memory 
 
 ## 3. Declarations
 
-A module is a list of declarations. This chapter covers those that name a value or code: `def` (a constant), `data` (bytes laid out in memory), `let` and `global` (variables) and `func` (functions). A type is declared with `type` ([2.11](#211-type-names)) or `enum` ([2.9](#29-enum-types-algebraic-data-types)); `import`, `export` and `memory` are in [7. Modules](#7-modules); a `test` block holds code that checks the module, run by `encantis test` ([Tests](#tests)).
+A module is a list of declarations. This chapter covers those that name a value or code: `def` (a constant), `data` (bytes laid out in memory), `let` and `global` (variables) and `func` (functions). A type is declared with `type` ([2.11](#211-type-names)) or `enum` ([2.9](#29-enum-types-algebraic-data-types)); `import`, `export` and `memory` are in [7. Modules](#7-modules); a `test` block holds code that checks the module, run by `encantis test` ([Tests](#12-tests)).
 
 Where each declaration can stand:
 
@@ -4078,7 +4098,7 @@ export func hash(k: u64) -> u32 => 1
 export name 'hash' is used twice: give one an explicit name, as in export "hash_u64" func hash(...)
 ```
 
-Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function inside that test ([Declarations in a Test](#declarations-in-a-test)); a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
+Three things do not share. A generic function's name is unique in its module ([8.1](#81-compile-time-parameters)). A function declared in a `test` block takes over the name of the module's function inside that test ([Declarations in a Test](#124-declarations-in-a-test)); a name that several functions of the module share cannot be taken over (`'hash' is the name of several functions of the module: a function declared in a test cannot take it over`). And a function declared with the name of a builtin (`min`, `max`, `abs`, ...) takes the builtin's place in its module ([10. Builtin Functions](#10-builtin-functions)): it shares the name with other declared functions, never with the builtin.
 
 Nothing but functions shares a name. A global, `def`, `data` or import has its name to itself in its module, and a function cannot take the name of one, nor can a function or an import declared in a `test`:
 
@@ -6597,7 +6617,7 @@ Item = func local(parameters) -> results        a function; local and -> results
 - The second string is the name the other side exports. `local` is the name the thing has in this module. The two may differ, so an import renames. Without a local name (`"now" func() -> f64`) the local name is the import's; one that is not an identifier, such as `"console.log"`, then cannot be called, so give it a local name.
 - The declaration is written as one in the module would be, without a body: a function's parameters and results as in [3.4](#34-functions) (a host function's parameters may be types without names, `func(i32, i32)`), a global's type after a colon, with no value.
 - The grouped form takes one or more items, one after another, with no commas between them. An import, like a declaration, can span lines.
-- An import stands at module level, anywhere in the file, and its names are module-level names like those the module declares: they can be used above the import, and a `let` cannot take one (`'log' is already declared in this scope`). An import inside a `test` block is part of the program only when the tests are built, and only for the files whose tests are run ([Tests](#tests)).
+- An import stands at module level, anywhere in the file, and its names are module-level names like those the module declares: they can be used above the import, and a `let` cannot take one (`'log' is already declared in this scope`). An import inside a `test` block is part of the program only when the tests are built, and only for the files whose tests are run ([Tests](#12-tests)).
 
 Functions that share a name ([3.4](#functions-that-share-a-name)) can be imported under one local name, each with its own parameter types; a local name taken twice with the same parameter types is an error (`'log' is already declared with parameters (i32)`). The same import can be taken twice under two local names.
 
@@ -8075,7 +8095,7 @@ The containers of [`lib/`](../lib/README.md) are written this way: `lib/vec.ents
 | A comptime function parameter used as a value | `'before' is a comptime function parameter: it can only be called, or passed on for a comptime function parameter` |
 | Function values at run time, called indirectly ([Function Types and Pointers](#function-types-and-pointers)) | Calling one: `calling a function value is not supported yet: only a function named directly, or a comptime function parameter (comptime f: (u32) -> u32), can be called` |
 | Traits, interfaces or declared requirements | No syntax for them: what a generic needs of a type is what its body does with it ([8.3](#83-requirements)) |
-| Functions run at compile time, `comptime func`, and tables they compute ([13](#comptime-evaluation)) | A syntax error |
+| Functions run at compile time, `comptime func`, and tables they compute ([15.2](#152-comptime-evaluation)) | A syntax error |
 
 Five of them, in one module:
 
@@ -8128,7 +8148,7 @@ A name bound at compile time is declared at module level (`def n = 64` binds a n
 | a number | `def n = 64` | `comptime n: u32`, as in `[n]T` | |
 | a type computed from types and numbers | a generic type, `func Vec(comptime T: type) -> type => ...`, applied as `Vec(u32)` | | a body of several statements, conditions |
 | a bool | `def debug = false` | | `comptime ok: bool`, with a compile-time `if` |
-| a value computed from values | `def bytes = n * 8` | | `comptime func`, and tables computed by it ([13](#comptime-evaluation)) |
+| a value computed from values | `def bytes = n * 8` | | `comptime func`, and tables computed by it ([15.2](#152-comptime-evaluation)) |
 
 A call with comptime arguments is evaluated as far as its comptime parameters go: an application of a generic type completely (the result is a type, and nothing is left for run time), a call of a generic function partially (the result is a function specialised to those arguments, and what is left for run time is a call of it with the other arguments).
 
@@ -8989,7 +9009,7 @@ cannot assign u32 to u8
 
 A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds) and the null check of a plain host reference where it enters the module ([2.13](#213-host-references)).
 
-The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`.
+The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([15](#15-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`.
 
 ### 11.1 Widening Instructions (implicit)
 
@@ -9074,11 +9094,11 @@ A few operations are calls of a function that the compiler adds to the module, o
 
 ---
 
-## Tests
+## 12. Tests
 
 A `test` block is code that a module runs to check itself. It stands in the module beside the code it tests, and it is compiled only when tests are run: `encantis test` builds the module with its tests, while `encantis compile`, `wasm` and `run` leave the tests out, with everything declared inside them. `encantis check` checks them as part of the module.
 
-### Writing a Test
+### 12.1 Writing a Test
 
 `test` is followed by the test's name, a string, and a block. The block holds statements, as a function body does, and `assert` states what must hold:
 
@@ -9100,9 +9120,9 @@ A test is declared at module level or inside another test. Its statements are th
 
 `test` and `assert` are not reserved words: they can name a variable or a function.
 
-### `assert`
+### 12.2 `assert`
 
-`assert condition` is a statement that traps when its condition, a `bool`, is false; [Assertions](#assertions) gives its rules and the code it compiles to. It is not only for tests. In a function it is a run-time check that stays in the compiled program, and a false condition stops the program with a trap, as the library's allocator does when it runs out of room ([The Library](#the-library)):
+`assert condition` is a statement that traps when its condition, a `bool`, is false; [Assertions](#assertions) gives its rules and the code it compiles to. It is not only for tests. In a function it is a run-time check that stays in the compiled program, and a false condition stops the program with a trap, as the library's allocator does when it runs out of room ([The Library](#13-the-library)):
 
 <!-- spec:begin compile -->
 
@@ -9120,9 +9140,9 @@ test "half of an even number" {
 
 <!-- spec:end -->
 
-`half(3)` traps. A trap ends the whole call: deferred expressions ([Defer](#defer)) do not run. A false `assert` written in a test's own statements also tells `encantis test` its line, before it traps ([Running Tests](#running-tests)).
+`half(3)` traps. A trap ends the whole call: deferred expressions ([Defer](#defer)) do not run. A false `assert` written in a test's own statements also tells `encantis test` its line, before it traps ([Running Tests](#125-running-tests)).
 
-### Groups
+### 12.3 Groups
 
 A test that holds other tests is a group. Its nested tests are run, each reported by its name after the group's: `rectangles > one row`. What a group declares is seen by every test inside it, so a group gathers what its tests share. The tests of a file run in the order they are written, on one instance of the module, so what one test leaves in a global or in memory is there for the next:
 
@@ -9161,7 +9181,7 @@ test "the tests share one instance of the module" {
 
 A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (a known bug). Give every test a name, and put statements only in a test that holds no tests.
 
-### Declarations in a Test
+### 12.4 Declarations in a Test
 
 A test can declare `def`, `data`, functions and imports, and these are the test's own: they are seen inside the test and the tests nested in it, and module code cannot use them.
 
@@ -9196,7 +9216,7 @@ a generic type is declared at module level, not inside a test
 
 <!-- spec:end -->
 
-### Running Tests
+### 12.5 Running Tests
 
 `encantis test file.ents` checks the module with its tests, compiles it, starts one instance of it and runs its tests in the order they are written. Given a directory, it does this for every `.ents` file under it. Only the tests of the files named are run, not those of the modules they import.
 
@@ -9214,7 +9234,7 @@ A test passes when its statements run to their end (or to a `return`). It fails 
 
 The exit status is 1 when a test fails and 0 otherwise. A file that does not check prints its errors and counts as one failure. A module that does not start (its start function traps, or its data does not fit its memory) fails each of its tests with `the module did not start: ...`. `--json` adds a last line with the counts and, for each test, its file, its name, whether it passed and the error it failed with. A file with no tests is skipped, and when no file has any the command says `No tests found`.
 
-### The Test Host
+### 12.6 The Test Host
 
 Tests run without the program's host. `encantis test` gives each import of the module a stand-in:
 
@@ -9228,11 +9248,11 @@ A test that holds no statements, `test "todo" {}`, fails (`fn is not a function`
 
 ---
 
-## The Library
+## 13. The Library
 
 The directory `lib/` holds modules written in Encantis for what most programs need: text input and output over WASI, parsing bytes, a bump allocator, and containers. They are source files: a program imports from them by relative path, restating each signature it uses ([7.1](#71-imports)), or copies a file next to its own. [`lib/README.md`](../lib/README.md) and the comments of each file give more detail.
 
-### Importing a Library Module
+### 13.1 Importing a Library Module
 
 A program in a directory beside `lib/`, which reads numbers one to a line and gives their median:
 
@@ -9286,7 +9306,7 @@ Each import names the module by its path from the importing file, without `.ents
 
 What a program gets of a library module: a generic is in the program only for the types it is used with, so a container costs what the same code written for one type would. The ordinary functions and the data of an imported module are in the program whether it uses them or not, as for any module: `stack.ents` brings its 256 KiB stack (zeros, which take no bytes in the `.wasm` file, [9.0](#90-data-layout)) and five functions, which `vec.ents`, `set.ents`, `map.ents` and `sort.ents` all import; `set.ents` brings its twelve `hash` and `eq` functions, and `map.ents` those too. `fixedvec.ents`, `ring.ents` and `bits.ents` hold generics only and import nothing. A module's tests are never part of a program that imports it.
 
-### `io`: Input and Output over WASI
+### 13.2 `io`: Input and Output over WASI
 
 For programs that a WASI host runs, such as `encantis run`. The program exports its memory (`export memory`), which WASI reads and writes. Nothing allocates: input goes into a buffer the program gives, and output is written from the slices given.
 
@@ -9338,7 +9358,7 @@ test "a total of three lines" {
 
 `printf '1\n2\n39\n' | encantis run sum.ents` prints `42`.
 
-### `text`: Parsing Bytes
+### 13.3 `text`: Parsing Bytes
 
 Results are slices of the input; nothing is copied.
 
@@ -9353,7 +9373,7 @@ Results are slices of the input; nothing is copied.
 | `parse_u64(s: []u8) -> (value: u64, rest: []u8, ok: bool)` | The decimal number at the start of `s`, after any spaces; what follows it; whether there were digits (`value` is 0 when there were none) |
 | `parse_i64(s: []u8) -> (value: i64, rest: []u8, ok: bool)` | The same, with an optional `-` or `+` |
 
-### `stack`: A Bump Allocator
+### 13.4 `stack`: A Bump Allocator
 
 A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing is freed one allocation at a time. A scope takes a mark and resets to it, and `defer` ties the reset to every way out of the scope: `let scope = mark()`, then `defer reset(scope)`. Scopes nest. A result that must outlive a scope is allocated before the scope starts.
 
@@ -9367,7 +9387,7 @@ A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing 
 
 An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mut Pt`. A program that needs a larger stack copies the file and makes its `capacity` and `space` larger.
 
-### `vec`: A Growable Array
+### 13.5 `vec`: A Growable Array
 
 `Vec(T)` is `(ptr: [*]mut T, len: u32, cap: u32)`, on the stack of `stack.ents`. It is used through the `*mut Vec(T)` that `vec` returns, and its functions are called as methods ([4.9](#49-method-call-syntax)): `v.push(x)`, `v.len`.
 
@@ -9383,7 +9403,7 @@ An address is cast to the pointer it is used as: `alloc(sizeof(Pt) * 4) as [*]mu
 
 An element type that is a fixed array makes the Vec a table of row pointers ([Nesting](#nesting)): a `Vec([3]i32)` cannot push a `[3]i32`. A struct with an array field lies in place, so `Vec((cells: [3]i32))` holds packed rows.
 
-### `fixedvec`, `ring`, `bits` and `fixedalloc`: Fixed Capacity
+### 13.6 `fixedvec`, `ring`, `bits` and `fixedalloc`: Fixed Capacity
 
 Containers whose capacity is part of their type, a comptime value parameter ([8.7](#87-comptime-value-parameters)). Every index into them is proven by the capacity, so each load and store is a plain one, with no check. They are laid out where the program likes: in `data`, or on the stack with `fixedalloc.ents`.
 
@@ -9401,7 +9421,7 @@ Containers whose capacity is part of their type, a comptime value parameter ([8.
 
 The functions of the first two take `comptime n: u32, comptime T: type` before the container, and those of `bits.ents` take `comptime w: u32`. `FixedVec` and `Ring` can also be laid out in `data`: `data cells = mut [0:u32; 8]` and `data v: FixedVec(8, u32) = mut (0, cells)`. `fixedvec.ents` and `vec.ents` both name their functions `push`, `pop` and so on, and a generic function's name is unique in its module ([8.1](#81-compile-time-parameters)), so a program that uses both renames one on import: `"push" func fixed_push(comptime n: u32, comptime T: type, v: *mut FixedVec(n, T), x: T) -> bool`, called as `v.fixed_push(x)`.
 
-### `set` and `map`: Hashing
+### 13.7 `set` and `map`: Hashing
 
 `Set(K)` and `Map(K, V)` hash with open addressing and double their table when it is half full, on the stack of `stack.ents`.
 
@@ -9435,7 +9455,7 @@ test "equal cells hash alike" {
 
 A narrower integer key (`u8`, `u16`, `i8`, `i16`) fits several of `set.ents`' own functions, which makes the call ambiguous, and the library's functions come before a program's: keep such keys widened, in a `Set(u32)` or a `Set(i32)`.
 
-### `sort`: Sorting
+### 13.8 `sort`: Sorting
 
 | Function | What it does |
 |---|---|
@@ -9449,11 +9469,11 @@ Complete programs that use the library are [`examples/aoc/day1.ents`](../example
 
 ---
 
-## 12. Examples
+## 14. Examples
 
 Small programs that use the features of the earlier chapters together. Each one compiles, and its `test` blocks show what it computes.
 
-### Hello, World
+### 14.1 Hello, World
 
 A program for a WASI host, run with `encantis run hello.ents`:
 
@@ -9508,7 +9528,7 @@ const { instance } = await WebAssembly.instantiateStreaming(fetch("hello.wasm"),
 instance.exports.main()
 ```
 
-### Fibonacci
+### 14.2 Fibonacci
 
 <!-- spec:begin compile -->
 
@@ -9535,7 +9555,7 @@ test "the two agree" {
 
 `fib_fast` returns its named result `a`, which starts at zero. `set (a, b) = (b, a + b)` reads the whole tuple before it assigns either variable ([4.5](#45-assignment-and-compound-assignment)).
 
-### Sum of a Slice
+### 14.3 Sum of a Slice
 
 <!-- spec:begin compile -->
 
@@ -9556,7 +9576,7 @@ test "sum" {
 
 A loop over a slice reads each element once and needs no bounds check ([5.2](#52-loops)). An array literal given for a slice is laid out in memory ([Array Literals](#array-literals)).
 
-### Hex Digits
+### 14.4 Hex Digits
 
 <!-- spec:begin compile -->
 
@@ -9586,7 +9606,7 @@ test "to_hex" {
 
 Every index here is proven in range when the program is compiled, so each one is a plain load or store with no check ([Ranged Integers](#ranged-integers)): `i` counts to the constant `bytes.len` and is a `u32#4`, so `i * 2 + 1` is below 8, and a `u8` shifted right by 4, or masked with 15, is below 16.
 
-### Looking Up a Record
+### 14.5 Looking Up a Record
 
 <!-- spec:begin compile -->
 
@@ -9625,7 +9645,7 @@ test "a planet is found by name" {
 
 `planets` is laid out in the data section: four structs, each a slice and a number. `&planets[i]` is the address of one, a `*Planet`, and `p.name` reads its field from memory. `find` returns an optional pointer, none (`0`) when no planet has the name, and `if let` gives the plain pointer where there is one ([Optional Types](#optional-types)). In `same`, `b[i]` is checked against `b.len` at run time, and `?? 0` gives the value to use when it is out of range ([4.7](#47-bounds-checked-indexing)).
 
-### Month Names
+### 14.6 Month Names
 
 <!-- spec:begin compile -->
 
@@ -9646,7 +9666,7 @@ test "month" {
 
 `m - 1` wraps for `m == 0` to the largest `u32`, which is past the end of `months`, so `??` gives `"?"`.
 
-### A Generic Function
+### 14.7 A Generic Function
 
 <!-- spec:begin compile -->
 
@@ -9672,11 +9692,11 @@ test "one count for each element type and test" {
 
 `count` is compiled once for each element type and test function it is called with: `scores.count(passing)` is a `count` for `u32` that calls `passing` directly, with no function table ([8. Generics](#8-generics)). `T` is taken from the arguments, and the first argument can be written as the receiver of a method call ([4.9](#49-method-call-syntax)).
 
-### Complete Programs
+### 14.8 Complete Programs
 
 The directory `examples/` holds larger programs, each built and tested with the compiler:
 
-- [`examples/aoc/day1.ents`](../examples/aoc/day1.ents): a WASI program that reads its input and prints an answer, with the library's `io` and `text` ([The Library](#the-library)); `encantis run examples/aoc/day1.ents < input.txt`.
+- [`examples/aoc/day1.ents`](../examples/aoc/day1.ents): a WASI program that reads its input and prints an answer, with the library's `io` and `text` ([The Library](#13-the-library)); `encantis run examples/aoc/day1.ents < input.txt`.
 - [`examples/containers/main.ents`](../examples/containers/main.ents): the library's Vec, Set, Map and sort used with a struct type of the program's own.
 - [`examples/generics/`](../examples/generics): generic functions and types, method calls and comptime function and value parameters.
 - [`examples/browser/lantern.ents`](../examples/browser/lantern.ents): a browser game that imports nothing. Each frame the page calls its exported `frame()`, and it leaves drawing and sound commands in its memory for the page to play.
@@ -9685,11 +9705,11 @@ The directory `examples/` holds larger programs, each built and tested with the 
 
 ---
 
-## 13. Future Additions
+## 15. Future Additions
 
 Features under consideration for later versions of Encantis. None of them is implemented: the syntax of each is a syntax error, and its examples are not working code. The features designed in the earlier chapters but not implemented (enums, function values, struct patterns and others) are described where they belong and listed in [Implementation Status](#implementation-status).
 
-### SIMD Support
+### 15.1 SIMD Support
 
 **Not implemented:** there is no `v128` type, and the compiler writes no SIMD instruction ([11](#11-webassembly-reference)).
 
@@ -9706,7 +9726,7 @@ let mask:v128 = (0xff:u8, 0xff:u8, 0:u8, 0:u8, ...)
 
 **Why:** WebAssembly has SIMD over `v128` values. Crypto, hashing, image processing and numerical code can run several times faster with it: xxHash and Gimli both have vectorized variants that outperform their scalar forms.
 
-### Comptime Evaluation
+### 15.2 Comptime Evaluation
 
 **Not implemented:** `comptime func` is a syntax error.
 
@@ -9729,7 +9749,7 @@ Compile-time control flow (a comptime `if` that picks a type or a branch, a gene
 
 **Why:** Compile-time values remove the last reasons to duplicate a function. Compile-time execution computes lookup tables, buffer sizes and constants when the program is compiled, so they cost nothing when it runs, and complex initialization needs no start-up code.
 
-### Module System
+### 15.3 Module System
 
 **Not implemented:** `module` and `use` are syntax errors.
 
@@ -9750,7 +9770,7 @@ use math.vector as vec
 
 **Why:** Larger projects split their code across files, and restating every signature at each import is what that costs without one.
 
-### Operator Overloading via Method Calls
+### 15.4 Operator Overloading via Method Calls
 
 **Not implemented:** a function cannot be named by an operator.
 
@@ -9773,7 +9793,7 @@ Functions share a name when their parameter types differ ([Functions That Share 
 
 **Why:** It unifies operators with method-call syntax ([4.9](#49-method-call-syntax)): no special mechanism is needed. Operators become functions that share a name, resolved by the rules calls already follow. This keeps the language simple while allowing expressive numeric and container types.
 
-### Closures
+### 15.5 Closures
 
 **Not implemented:** there is no closure syntax, and function values, which closures would build on, are not implemented either ([Function Types and Pointers](#function-types-and-pointers)).
 
