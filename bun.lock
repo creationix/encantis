@@ -13,7 +13,7 @@
     },
     "packages/cli": {
       "name": "@encantis/cli",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "bin": {
         "encantis": "dist/cli.js",
       },
@@ -28,7 +28,7 @@
     },
     "packages/compiler": {
       "name": "@encantis/compiler",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@creationix/jot": "^0.1.1",
         "ohm-js": "^17.3.0",
@@ -40,7 +40,7 @@
     },
     "packages/extension": {
       "name": "encantis-vscode-ext",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@encantis/compiler": "workspace:*",
         "binaryen": "129.0.0",
