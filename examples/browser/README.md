@@ -31,16 +31,16 @@ Then open <http://localhost:8000>. Arrows or WASD move, space dashes, enter star
 | File | Bytes | gzip | brotli |
 | --- | ---: | ---: | ---: |
 | `lantern.wasm` | 7181 | 3490 | 3303 |
-| `starter.wasm` | 976 | 602 | 551 |
-| `host.js` (minified) | 3499 | 1727 | 1535 |
+| `starter.wasm` | 966 | 586 | 551 |
+| `host.js` (minified) | 3498 | 1726 | 1534 |
 | `index.html` | 724 | 462 | 312 |
 | `levels.txt` | 1754 | 188 | 166 |
-| **Lantern, all four files** | **13158** | **5867** | **5316** |
-| **starter, its three files** | **5199** | **2791** | **2398** |
+| **Lantern, all four files** | **13157** | **5866** | **5315** |
+| **starter, its three files** | **5188** | **2774** | **2397** |
 
 Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, the level shelf and its strings) reaches byte 42897 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
 
-The numbers come from `dist/sizes.json`, which the build writes; run it again after a change.
+The numbers come from `dist/sizes.json`, which the build writes; run it again after a change. Both games' release builds are also held to size budgets in `scripts/size-budgets.json`, so `bun test` (and CI) fails when one grows past its budget; `bun run size --update` sets new ones when the growth is meant.
 
 ## The contract
 

@@ -13,6 +13,8 @@
     "examples/generics/sort.ents": { "measured": 338, "budget": 345 },
     "examples/generics/vec.ents": { "measured": 354, "budget": 362 },
     "examples/wasi/tee/tee.ents": { "measured": 2344, "budget": 2391 },
-    "lib/text.ents": { "measured": 998, "budget": 1018 }
+    "lib/text.ents": { "measured": 998, "budget": 1018 },
+    "examples/browser/lantern.ents": { "measured": 7181, "budget": 7325 },
+    "examples/browser/starter.ents": { "measured": 966, "budget": 986 }
   }
 }
