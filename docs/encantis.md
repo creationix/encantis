@@ -2220,7 +2220,7 @@ From the loosest binding to the tightest:
 
 | Operators | Grouping | Note |
 |-----------|----------|------|
-| `??` | one per expression | the left side is a postfix expression ([The `??` Operator](#the--operator)) |
+| `??` | does not chain | the left side is a postfix expression ([The `??` Operator](#the--operator)) |
 | `\|\|` | left to right | |
 | `&&` | left to right | |
 | `!` (prefix) | | negates a whole comparison: `!x > 3` is `!(x > 3)` |
@@ -2275,7 +2275,7 @@ func between(a: u32, b: u32, c: u32) -> bool => a < b < c
 
 #### Evaluation Order
 
-An expression is evaluated left to right, and each of its parts exactly once: the left operand of an operator before the right one, a function before its arguments and the arguments in the order written (the receiver of a method call first, [4.9](#49-method-call-syntax); named arguments in the order written too, [2.8](#struct-constructors)). Every operand is computed before its operator applies. Only these evaluate a part when it is needed and not otherwise: `&&` and `||` their right side, `??` its fallback, and `if` and `match` the branch they take. An assignment computes the address of its target first, then the value, then stores it ([4.5](#45-assignment-and-compound-assignment)).
+An expression is evaluated left to right, and each of its parts exactly once: the left operand of an operator before the right one, whatever the precedence of the operators around them, and the arguments of a call in the order written (the receiver of a method call first, [4.9](#49-method-call-syntax), and named arguments in the order written too, [2.8](#struct-constructors)). Every operand is computed before its operator applies. Only these evaluate a part when it is needed and not otherwise: `&&` and `||` their right side, `??` its fallback, and `if` and `match` the branch they take. An assignment computes the address of its target first, then the value, then stores it ([4.5](#45-assignment-and-compound-assignment)).
 
 <!-- spec:begin compile -->
 
@@ -2292,10 +2292,9 @@ func pair(a: u32, b: u32) -> u32 => a * 10 + b
 func seen() -> u32 => trail[0] * 1000 + trail[1] * 100 + trail[2] * 10 + trail[3]
 
 test "operands and arguments are evaluated left to right, once" {
-  let r = note(1) - note(2) + pair(note(3), note(4))
-  assert seen() == 1234
-  assert count == 4
-  let f = note(0) == 1 && note(9) == 9           // the right side is not needed
+  assert note(1) + note(2) * pair(note(3), note(4)) == 69    // 1 + 2 * 34
+  assert seen() == 1234                                       // in the order written
+  assert !(note(0) == 1 && note(9) == 9)                      // note(9) is not called
   assert count == 5
 }
 ```
@@ -2442,7 +2441,7 @@ A comparison gives a `bool`. What it compares:
 
 Nothing else compares: a struct, a tuple, a slice or an array is no operand (`'==' cannot be applied to Point and Point`). Compare them part by part: the fields, or the lengths and then the elements.
 
-Comparisons group left to right but do not chain: `a < b < c` compares the bool `a < b` with `c`, which is an error. Write `a < b && b < c`.
+Comparisons group left to right but do not chain: `a < b < c` compares the bool `a < b` with `c`, which is an error, and `a == b == c` compares `a == b` with a bool `c`. Write `a < b && b < c`.
 
 `&&` and `||` take two bools and evaluate the right side only when it decides the result. `!` takes a bool (`operand of '!' must be bool, not u32`); it binds looser than a comparison, so `!x == y` is `!(x == y)`.
 
@@ -2473,8 +2472,8 @@ type Point = (x: i32, y: i32)
 
 func same(p: Point, q: Point) -> bool => p == q
 func equal(s: []u8, t: []u8) -> bool => s == t
-func older(a: bool, b: bool) -> bool => a < b
-func not(x: u32) -> bool => !x
+func less(a: bool, b: bool) -> bool => a < b
+func zero(x: u32) -> bool => !x
 ```
 
 ```errors
@@ -2731,7 +2730,7 @@ cannot set 'sum': not defined (use 'let' to create a new binding)
 
 <!-- spec:end -->
 
-A pattern with more parts than the value has fields is an error, as it is for `let` (`tuple has 2 fields, but pattern has 3`). A pattern with fewer parts sets the first fields and leaves the rest.
+A pattern with more parts than the value has fields is an error (for a `let`, `tuple has 2 fields, but pattern has 3`). A pattern with fewer parts sets the first fields and leaves the rest.
 
 #### Compound Assignment
 
@@ -2885,7 +2884,7 @@ cannot index *i32 past its one element: read it with .*, or index a [*]i32
 
 #### Type-Punned Memory Access
 
-A type view reads and writes memory as a primitive type other than the one it holds. `p.T`, where `T` is the name of a primitive type (an integer type, `f32`, `f64` or `bool`), is the address of `p` as a `[*]T`, or a `[*]mut T` when `p` is a mutable pointer. So `p.u32[i]` is the `i`-th 32-bit word from `p` (bytes `4 * i` to `4 * i + 3`, little-endian), and `p.u32[i] = v` writes one. `p` is any pointer: a `*T`, a `*[N]T`, a `[*]T`. Like every many-pointer index, a view's index is never checked: it is the explicit way to read memory without a bounds check, where `p[i]` on an array pointer is checked.
+A type view reads and writes memory as a primitive type other than the one it holds. `p.T`, where `T` is the name of a primitive type (an integer type, `f32`, `f64` or `bool`), is `p` seen as a `[*]T`, or as a `[*]mut T` when `p` is a mutable pointer. So `p.u32[i]` is the `i`-th 32-bit word from `p` (bytes `4 * i` to `4 * i + 3`, little-endian), and `p.u32[i] = v` writes one. `p` is any pointer: a `*T`, a `*[N]T`, a `[*]T`. Like every many-pointer index, a view's index is never checked: it is the explicit way to read memory without a bounds check, where `p[i]` on an array pointer is checked.
 
 <!-- spec:begin compile -->
 
@@ -2908,7 +2907,7 @@ test "a view reads memory as another primitive type" {
 
 <!-- spec:end -->
 
-Write a view on a pointer. On a slice, use its pointer (`s.ptr.u16[i]`, with `s.len` to bound `i`): a view written directly on a slice, on an array held in registers or on a number is accepted by the checker but compiles wrongly (a known bug), so it must not be used.
+Write a view on a pointer. On a slice, write it on the slice's pointer, `s.ptr.u16[i]`, and keep the bytes read within `s.len`: a view written directly on a slice, on an array held in registers or on a number is accepted by the checker but compiles wrongly (a known bug), so it must not be used.
 
 > **Not implemented:** a view as the single value at `p`. `p.u32` is the pointer, not the `u32` it points at, so assigning to it is an error (`cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one`): read `p.u32[0]` and write `p.u32[0] = v`. Views of a compound type (a struct, a slice) are not implemented either and do not parse; cast the pointer instead (`p as *Point`, [Explicit Casts](#explicit-casts)).
 
@@ -3068,9 +3067,9 @@ When the elements are optionals themselves (`[]?*T`), the element of an index th
 
 #### The `??` Operator
 
-`a ?? b` is the value of `a`, an optional or an index that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index out of range. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it.
+`a ?? b` is the value of `a`, an optional or an index or range that is checked at run time, when it has one, and `b` otherwise: a fallback for an optional pointer, slice or host reference that is none, or for an index or range out of bounds. `b` is evaluated only when it is needed. The result is the plain, non-optional type, and `b` has to be a value of it.
 
-`??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. It does not chain: `a ?? b ?? c` is a syntax error, and since the fallback is not optional, `(a ?? b) ?? c` has nothing left to resolve. To try one optional after another, use `if let`.
+`??` binds more loosely than every other operator, and its left side is a postfix expression: a name, a call, an index, a range, a member, or anything in parentheses. So `xs[i] ?? 0 + 1` is `xs[i] ?? (0 + 1)`, and an operator on the left needs parentheses: `(xs[i] ?? 0) == 0`. It does not chain: `a ?? b ?? c` is a syntax error. To try one value after another, group to the right: in `a ?? (b ?? c)`, `b ?? c` is the fallback of `a`. Grouped to the left, `(a ?? b) ?? c` has nothing left to resolve, as `a ?? b` is not an optional.
 
 <!-- spec:begin compile -->
 
@@ -3081,6 +3080,7 @@ data primes = [2:u32, 3, 5, 7]
 func name(i: u32) -> []u8 => names[i] ?? "?"
 func read(p: ?*u32) -> u32 => (p ?? &0).*
 func missing(i: u32) -> bool => (primes[i] ?? 0) == 0
+func either(i: u32, j: u32) -> u32 => primes[i] ?? (primes[j] ?? 1)
 
 test "?? gives a fallback" {
   assert name(1).len == 3
@@ -3088,6 +3088,8 @@ test "?? gives a fallback" {
   assert read(&primes[3]) == 7
   assert read(0) == 0
   assert missing(4) && !missing(0)
+  assert either(9, 2) == 5
+  assert either(9, 9) == 1
 }
 ```
 
@@ -3189,7 +3191,7 @@ test "an if let binding is a variable of its first branch" {
 
 <!-- spec:end -->
 
-It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type.
+It is an `if` in every other way: it can have `elif` and `else` branches, and with an `else` it's an expression whose branches widen to one type. An `elif let` branch is not implemented: it is accepted but binds nothing (a known bug), so write an `if let` inside the `else` branch instead.
 
 <!-- spec:begin compile -->
 
