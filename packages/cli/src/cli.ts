@@ -14,7 +14,7 @@ import { createTestHost } from '@encantis/compiler/test-host'
 import { realpathSync } from 'node:fs'
 import { basename, relative, resolve } from 'node:path'
 import wabt from 'wabt'
-import { BINARYEN_VERSION, OptimizeError, optimizeWasm, watToWasm } from './wasm'
+import { BINARYEN_VERSION, brotliSize, gzipSize, OptimizeError, optimizeWasm, watToWasm } from './wasm'
 
 type WabtModule = ReturnType<Awaited<ReturnType<typeof wabt>>['parseWat']>
 
@@ -49,7 +49,8 @@ Commands:
 Options:
   -o <file>       Output file (default: stdout)
   -O, --optimize  Optimize with binaryen (-Oz); if it can't, warn and write unoptimized
-  --json          Output as JSON (for query commands)
+  --size          With wasm: print unoptimized, optimized, gzip and brotli sizes
+  --json          Output as JSON (for query commands and --size)
   -s, --start <rule>  Start rule for parsing (default: Module)
   --help          Show this help
   --version       Show the compiler version and the binaryen it optimizes with
@@ -74,6 +75,7 @@ let outputFile: string | undefined
 let startRule: string | undefined
 let jsonOutput = false
 let optimize = false
+let sizeReport = false
 
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '-o') {
@@ -92,6 +94,8 @@ for (let i = 1; i < args.length; i++) {
     jsonOutput = true
   } else if (args[i] === '-O' || args[i] === '--optimize') {
     optimize = true
+  } else if (args[i] === '--size') {
+    sizeReport = true
   } else if (!inputFile) {
     inputFile = args[i]
   }
@@ -270,9 +274,11 @@ switch (command) {
       }
 
       let buffer = unoptimized
+      let optimized = false
       if (optimize) {
         try {
           buffer = await optimizeWasm(unoptimized)
+          optimized = true
           console.error(`Optimized: ${unoptimized.length} → ${buffer.length} bytes (${change(unoptimized.length, buffer.length)})`)
         } catch (e) {
           if (!(e instanceof OptimizeError)) throw e
@@ -283,6 +289,23 @@ switch (command) {
       const outPath = outputFile ?? inputFile.replace(/\.ents$/, '.wasm')
       await Bun.write(outPath, buffer)
       console.error(`Wrote ${buffer.length} bytes to ${outPath}`)
+
+      if (sizeReport) {
+        const sizes = {
+          unoptimized: unoptimized.length,
+          optimized: optimized ? buffer.length : null,
+          gzip: gzipSize(buffer),
+          brotli: brotliSize(buffer),
+        }
+        if (jsonOutput) {
+          console.log(JSON.stringify({ file: outPath, ...sizes }))
+        } else {
+          console.log(`unoptimized  ${sizes.unoptimized}`)
+          if (sizes.optimized !== null) console.log(`optimized    ${sizes.optimized}  ${change(sizes.unoptimized, sizes.optimized)}`)
+          console.log(`gzip         ${sizes.gzip}`)
+          console.log(`brotli       ${sizes.brotli}`)
+        }
+      }
     } else {
       await output(wat)
     }

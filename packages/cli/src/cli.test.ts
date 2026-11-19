@@ -312,6 +312,25 @@ export func clear() {
     expect(run.stdout.toString()).toBe(`encantis dev (binaryen ${binaryenVersion})\n`)
   })
 
+  // -O --size --json says each size, and the optimized one is the file's.
+  test('--size --json says how big the module is', async () => {
+    const optimize = await wasm(['-O', '--size', '--json'])
+    const o = JSON.parse(optimize.stdout)
+    expect(o.optimized).toBe(optimize.written?.length)
+    expect(o.unoptimized).toBeGreaterThan(0)
+    expect(o.gzip).toBeGreaterThan(0)
+    expect(o.brotli).toBeGreaterThan(0)
+  }, 60_000)
+
+  // As text, a name and a number a line, the optimized size with its change;
+  // a build that does not optimize has no optimized line.
+  test('--size as text', async () => {
+    const plain = await wasm(['--size'])
+    expect(plain.stdout).toMatch(new RegExp(`^unoptimized  ${plain.written?.length}\ngzip {9}\\d+\nbrotli {7}\\d+\n$`))
+    const optimized = await wasm(['-O', '--size'])
+    expect(optimized.stdout).toMatch(/^unoptimized {2}\d+\noptimized {4}\d+ {2}[-+]?\d+\.\d%\ngzip {9}\d+\nbrotli {7}\d+\n$/)
+  }, 60_000)
+
   // binaryen as a preloaded script gives it to the command: not there,
   // refusing the module (it does not validate without multi-value and bulk
   // memory), or throwing (binaryen aborts on memory.fill when asked for bulk
@@ -334,14 +353,14 @@ Bun.plugin({
   }
 
   // When binaryen can't optimize, -O says so and writes the module
-  // unoptimized.
+  // unoptimized, which --size says is not optimized.
   test('without binaryen, -O writes the module unoptimized', async () => {
-    const optimize = await wasm(['-O'], { preload: fakeBinaryen('missing') })
+    const optimize = await wasm(['-O', '--size', '--json'], { preload: fakeBinaryen('missing') })
     expect(optimize.exitCode).toBe(0)
-    expect(optimize.written?.length).toBeGreaterThan(0)
     expect(optimize.stderr).toContain(
       `Warning: binaryen ${binaryenVersion} could not be loaded: Cannot find package "binaryen"; writing the unoptimized module\n`,
     )
+    expect(JSON.parse(optimize.stdout)).toMatchObject({ unoptimized: optimize.written?.length, optimized: null })
   }, 60_000)
 
   test('-O falls back when binaryen refuses the module or throws', async () => {

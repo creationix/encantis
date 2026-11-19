@@ -1,5 +1,5 @@
 // The binary the `wasm` command writes: the compiler's WAT assembled by wabt,
-// and optimized in this process by binaryen.
+// optimized in this process by binaryen, and measured.
 //
 // binaryen is the npm package, pinned to one version in package.json and
 // bundled into the release binary, so the same source and the same encantis
@@ -7,6 +7,7 @@
 // a 14 MB script, imported only by a build that optimizes.
 
 import binaryenPackage from 'binaryen/package.json'
+import { brotliCompressSync, gzipSync } from 'node:zlib'
 import wabt from 'wabt'
 
 type Binaryen = typeof import('binaryen').default
@@ -44,6 +45,16 @@ export async function optimizeWasm(wasm: Uint8Array): Promise<Uint8Array> {
     if (e instanceof OptimizeError) throw e
     throw new OptimizeError(`binaryen failed: ${messageOf(e)}`)
   }
+}
+
+// Sizes of a module compressed as a server would store it, at the highest
+// levels: gzip -9 and brotli quality 11.
+export function gzipSize(wasm: Uint8Array): number {
+  return gzipSync(wasm, { level: 9 }).length
+}
+
+export function brotliSize(wasm: Uint8Array): number {
+  return brotliCompressSync(wasm).length
 }
 
 let binaryenModule: Promise<Binaryen> | undefined
