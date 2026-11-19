@@ -73,11 +73,13 @@ The compiler implements everything this reference describes except what this tab
 | Assigning a tuple of variables without `set`, `(q, r) = divmod(17, 5)` | A syntax error: write `set (q, r) = divmod(17, 5)` | [4.5](#45-assignment-and-compound-assignment) |
 | Destructuring a global, `global (a, b) = (1, 2)` | Refused: `global destructuring is not supported yet` | [3.3](#33-variables) |
 | Function values: a function held in a variable, parameter or field, called indirectly | Calling one is refused (`calling a function value is not supported yet: ...`). A program that stores or passes one passes the checker and does not assemble. A function given at compile time, a comptime function parameter, works | [3.4](#function-types-and-pointers), [8.6](#86-comptime-function-parameters) |
+| Functions without a name, `func(x: i32) -> i32 => x + 1` at module level, `export "inc" func(x: i32) -> i32 => x + 1` | Accepts one and leaves it out of the module; exported, the module does not assemble (it exports an undefined function), and without an export name it is `Internal parser error: Cannot export anonymous function without explicit name` | [3.4](#34-functions), [7.2](#72-exports) |
 | `inline func` | Parses `inline` and ignores it: the function is compiled and called as any other | [3.5](#35-inline-functions) |
 | Saturating arithmetic, `+\|`, `-\|`, `*\|` (and `+\|=`, `-\|=`, `*\|=`) | Accepts them and compiles them as the wrapping `+`, `-`, `*`: do not use them | [4.1](#41-arithmetic-operators) |
 | A type pun that loads or stores, `ptr.u32` as the `u32` at `ptr`, `ptr.u32 = v` | `ptr.u32` is the pointer as a `[*]u32`, so its value is that pointer, and assigning to it is refused: write `ptr.u32[0]` and `ptr.u32[0] = v` | [4.6](#46-pointer-operations) |
 | Reading a `*[?]T` (elements after a LEB128 length) | Lays one out, and refuses indexing it and its `.len` (`... is not supported yet: its length prefix is not read`) | [2.5](#25-pointer-types) |
-| Template literals as anything but a `[][]u8` | A template literal is always a `[][]u8`, and given where a `[]u8` is wanted it is a type error | [1.5](#template-literals) |
+| Joining a template literal into one `[]u8` (formatting text into a buffer) | A template is the array literal of its fragments, so where a `[]u8` is wanted each `${e}` is one byte, and a `[]u8` there is a type error (`cannot assign *[2]u8 to u8`) | [1.5](#template-literals) |
+| Compile-time `if`, `for` and `assert`; comptime parameters other than types, integers and functions (`comptime ok: bool`); generic functions that share a name; writing some comptime arguments and inferring the others; generic types whose body is several statements | Each is refused with an error | [8.9](#89-not-in-this-version), [8.10](#810-how-this-is-compile-time-evaluation) |
 | `memory-size()` and `memory-grow(n)` | Not built in: `unknown identifier 'memory-size'` | [10.3](#103-memory-builtins) |
 | A host reference in memory | Refused wherever one would be in memory (`cannot point to Canvas: a host reference has no bytes, ...`) | [2.13](#213-host-references) |
 | SIMD (`v128`), compile-time execution (`comptime func`), a module system (`module`, `use`), operator overloading, closures | Not parsed: a syntax error | [13](#13-future-additions) |
@@ -629,7 +631,7 @@ func none() -> u8 => ''
 
 #### Template Literals
 
-A template literal is written in backticks. Its text is static, and each `${expr}` in it stands for the value of `expr`; it may span lines. The text takes the escapes of a string, and two of its own: `` \` `` is a backtick and `\${` is the two characters `${`. A `}` cannot stand in the text (a syntax error); write it as `\x7D`.
+A template literal is written in backticks. Its text is static, and each `${expr}` in it stands for the value of `expr`; it may span lines. The text takes the escapes of a string, and two of its own: `` \` `` is a backtick and `\${` is the two characters `${`. A `}` in the text is a syntax error (a known bug); write it as `\x7D`.
 
 A template is the array literal of its fragments: `` `Hi ${name}!` `` is `["Hi ", name, "!"]`, the static text as constant strings and each `${e}` the value of `e`, in the order written. A fragment with no text is left out, so `` `${a}${b}` `` has two elements and ``` `` ``` none. Everything an array literal does, a template does ([Array Literals](#array-literals)), and its type comes from where it is used, as an array literal's does:
 
@@ -637,6 +639,8 @@ A template is the array literal of its fragments: `` `Hi ${name}!` `` is `["Hi "
 - With nothing to give it a type it is an array value in registers, as `let a = [1, 2, 3]` is a `[3]i32`: `` let t = `Hi ${name}!` `` is a `[3][]u8`, and a `[3][]u8` is not a `[][]u8` (`cannot assign [3][]u8 to [][]u8`). Pass the template where it is used, or give the variable its type: `` let t: [][]u8 = `Hi ${name}!` ``.
 
 Each `${e}` is an element, so it has to be a value of the element type: for a `[][]u8`, a `[]u8` or a string. Nothing turns a number into text: `${n}` with a `u32` is `cannot assign u32 to []u8`; write the digits into a buffer first and interpolate that.
+
+> **Not implemented:** joining a template into one `[]u8`, its fragments copied one after another into a buffer. Given where a `[]u8` is wanted, a template is still the array literal of its fragments, so each `${e}` there is one byte, and a `[]u8` is a type error.
 
 <!-- spec:begin compile -->
 
@@ -767,7 +771,7 @@ A literal is laid out in memory in four cases:
 
 A number or a tuple where a pointer is wanted is not laid out: write `&` before it, `&0:u32` for a `*mut u32` and `&(1, 2)` for a `*mut Point`.
 
-A literal laid out in a function is one cell for its place in the source, in the data section. The compiler writes its constant parts there once, when it builds the module, and never again; the parts known only at run time (`[x, 2]`) are stored into the cell each time the literal is evaluated, in the order written. Nothing is allocated when the function runs, and so:
+A literal laid out in a function is one cell for its place in the source, in the data section. The compiler writes its constant parts there once, when it builds the module, and never again; the parts known only at run time (`[x, 2]`) are stored into the cell each time the literal is evaluated, in the order written. (A tuple or struct literal with a part known only at run time, `&(x, 0:u32)`, stores its constant fields too each time it is evaluated: a known bug, so do not write to a constant field of such a cell and expect the next evaluation to keep it.) Nothing is allocated when the function runs, and so:
 
 - A cell outlives the call: a pointer to it can be returned and kept.
 - What is written through a pointer to a cell stays there: the next evaluation, the next call and a recursive call all see the same cell, like a `static` in C. A cell that must start from its literal's value on each call is set there (`n.* = 0`), or is a variable instead, when it needs no address.
@@ -1307,6 +1311,7 @@ runtime index on *[12]u8 requires 'if let' or '??' (no optional type for u8)
 <!-- spec:end -->
 
 **A cast is a promise.** `x as u32#N` gives `x` the range with no check: it is how a program states a fact the compiler cannot see, as `lib/fixedvec.ents` does after `assert v.len > 0` with `(v.len - 1) as u32#n`. A value outside the range is then used as if it were in it, and an index proven by it reads or writes past the array unchecked. Where the fact is not certain, compare instead, and let narrowing give the range.
+
 ### 2.3 Value vs Reference Types
 
 Encantis has a simple rule: **`*` means pointer, `[]` means slice — both are references. Everything else is a value**, with one kind that is neither: a host reference.
@@ -1352,7 +1357,7 @@ test "a value is copied, a reference shares" {
 
 `[N]T` is N elements of `T`, held by value: like a tuple, it is N times the wasm values of `T` (`[4]u8` is four `i32`s, `[2]u128` four `i64`s), in no memory. It is copied when it is passed, returned or assigned.
 
-**Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type, the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions ([Nesting](#nesting)) is read only between decimal numbers. A length is at least 0 (`[0]u8` holds nothing; `array length cannot be negative: it is -1`), an integer (`array length must be an integer: it is float(2)`) and at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name ([1.2](#12-identifiers)), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
+**Lengths.** A length is a compile-time constant: a number, a `def` (`def size = 64` makes `[size]u8` and `*mut [size]u8` types), a comptime value parameter ([8.7](#87-comptime-value-parameters)), `sizeof` of a type ([10.4](#104-sizes)), the `.len` of a `*[N]T`, or arithmetic on these, `[k * 2]u8`, `[sizeof(Pt) * 4]u8`. In a signature, a length reads the function's comptime parameters and none of its others: beside `p: *[4]u32`, a parameter `q: *[p.len]u32` is `array length must be a compile-time constant` (in the body, `*[p.len]u32` is a `*[4]u32`). A length is computed exactly, as no type, and the type has the number in it: `[2 + 2]u8` is `[4]u8`. A number with a radix prefix is a length too, `[0x10]u8` is sixteen bytes; the `x` of a packed array's dimensions ([Nesting](#nesting)) is read only between decimal numbers. A length is at least 0 (`[0]u8` holds nothing; `array length cannot be negative: it is -1`), an integer (`array length must be an integer: it is float(2)`) and at most 4294967295, and an array, wherever it is (in registers, in memory or behind a pointer), has at most 4294967295 bytes: `sizeof` of an array is a `u32`, and so is the byte offset of every element a proven index reaches. `*[1000000000]u64` is `array [1000000000]u64 is too large: 8000000000 bytes, more than the 4294967295 a 32-bit memory addresses`. Behind a pointer or a slice, an array of fixed arrays is a table ([Nesting](#nesting)), `n` row pointers, so its size is theirs: `*[65536][65537]u8` is 65536 pointers to rows of 65537 bytes, as `*[65536]*[65537]u8` is. A typed constant is what it is in any expression: `[300:u8]u8` is `cannot assign int(300) to u8`, and `[~0:u8]u8` is `[255]u8`. A length that divides by zero, `[64 / 0]u8`, is `array length divides by zero`. A hyphen joins a name ([1.2](#12-identifiers)), so `[n-1]u8` names `n-1`: write `[n - 1]u8`.
 
 **A length from the literal.** `[_]` in the type given to a literal with `:` takes its length from the literal: `[95, 87, 42]:*[_]i32` is a `*[3]i32`, and `data scores = [95, 87, 42]:*[_]i32` names one. Not implemented: `[_]` as the declared type of a variable, a global or a `data` (`data d: *[_]u8 = [1, 2, 3]`), and a `[_]T` held by value; write the type on the literal instead.
 
@@ -1498,6 +1503,7 @@ cannot assign int(0) to []u8
 **Length-prefixed arrays.** Not implemented: a `*[?]T` (a length in LEB128, then the elements) is laid out but not read: indexing one and `.len` are compile errors (`indexing *[?]u8 is not supported yet: its length prefix is not read`).
 
 **Framings with dimensions.** Not implemented: a framing combined with another dimension — `*[5x!]T`, `*[!x!]T`, `*[5x?]T` — is accepted by the grammar and the checker, but neither laid out nor read as the framings say. Write a table of framed rows instead, `*[5][!]T` ([Nesting](#nesting)).
+
 #### Optional Types
 
 A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **optional**: it then holds a value or none. `?` is written directly before `*`, `[]`, `[*]` or a type name: `?*T`, `?*mut T`, `?*[N]T`, `?*[!]T`, `?[*]T`, `?[]T`, `?[]mut T`, `?Name`. Anything else after `?` is a syntax error: `?u32`, `?[4]u8`, `?[!]u8`, `?(*u8)`, `??*u8`. A number has no none, since every bit pattern of a `u8` is a value, and neither has a tuple, a struct or a fixed array. A name is made optional when it names a pointer, a slice or a host type: with `type P = *u8`, `?P` is a `?*u8`, and with `type Count = u32`, `?Count` is `cannot make Count optional: only a pointer, a slice or a host reference has a none`. A type parameter is checked the same way in each instance: `?T` given `T = u32` is that error, `in keep(T = u32)`.
@@ -1506,7 +1512,7 @@ A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **
 
 - `x == 0` and `x != 0` ask whether it is none (an optional slice compares its pointer). An optional slice compares with nothing but `0`, and with `==` and `!=` only; an optional pointer compares as a pointer does.
 - A plain value widens to an optional implicitly: a `*T` passes for a `?*T`, a `[]T` for a `?[]T`, also as an argument or a result.
-- A global of an optional type given no value starts as none. A `let` of an optional pointer or slice given no value is uninitialized, as a `let` of a number is ([3.3](#33-variables)): in a loop it keeps what the last pass left in it. (A `let` of an optional host reference starts as none, [2.13](#never-null-and-optional).)
+- A global of an optional type given no value starts as none. A `let` of an optional pointer or slice given no value is none when the function starts, as every variable of a function is zero then, and it is not reset when control reaches the `let` again: in a loop it keeps what the last pass left in it ([3.3](#33-variables)). (A `let` of an optional host reference starts as none, [2.13](#never-null-and-optional).)
 - In WebAssembly an optional is held as its plain form is: an `i32` for a pointer, two for a slice, an `externref` for a host reference.
 
 <!-- spec:begin compile -->
@@ -1616,7 +1622,7 @@ cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' f
 
 <!-- spec:end -->
 
-**Plain types and 0.** A plain type has no none, so `== 0` asks nothing of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are uninitialized ([3.3](#33-variables)); a plain host reference has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one ([2.13](#never-null-and-optional)).
+**Plain types and 0.** A plain type has no none, so `== 0` asks nothing of it: a plain slice or a plain host reference compared with `0` is an error. A plain pointer still compares with 0, as an address compares with any address, not as a none. Given no value, a number, a plain pointer and a plain slice are zero (0, the address 0, the empty slice) when the function starts, and the `let` does not reset them ([3.3](#33-variables)); a plain host reference has no default at all, and gets its value where it is declared, as does a struct or a fixed array that holds one ([2.13](#never-null-and-optional)).
 
 #### Mutability
 
@@ -1739,6 +1745,7 @@ test "a table is row pointers" {
 ```
 
 <!-- spec:end -->
+
 ### 2.6 Slices
 
 `[]T` is a pointer and a length, `(ptr: [*]T, len: u32)`: two `i32`s in registers, and 8 bytes in memory, the pointer and then the length. It is the standard way to pass data whose length is known only when the program runs. `[]mut T` is the one that can be written through ([Mutability](#mutability)).
@@ -1989,6 +1996,7 @@ test "values in the order written, fields by name" {
 ```
 
 <!-- spec:end -->
+
 #### Struct Field Access
 
 A field is reached the same way wherever its struct is: in a variable, behind a pointer, in an array, or in the result of a call, and fields of fields chain. In a variable, each field is a register of its own, and assigning one changes that register. Through a pointer, `p.x` reads or writes memory ([9.6](#96-structs-and-slices-in-memory)), and a write needs a `*mut` pointer. A field of a call's result is read and the rest dropped.
@@ -2021,6 +2029,7 @@ test "fields wherever the struct is" {
 ```
 
 <!-- spec:end -->
+
 #### Types That Refer to Themselves
 
 A type can refer to itself through a pointer or a slice: what it holds there is an address, and the field is the type again at any depth. Two such types are one type when nothing on the way round tells them apart, as aliases always are.
@@ -2502,7 +2511,7 @@ test "constant branches take the default that holds them all" {
 
 <!-- spec:end -->
 
-An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`). Nor have branches of which one is negative and another past an `i64`: `if c { -1 } else { 18446744073709551615 }` needs a type that holds both.
+An integer constant with no type that fits no `i64` has no default: `let d = 99999999999999999999` is `cannot assign int(99999999999999999999) to i64`, and the fix is a type, `let x: u128 = 18446744073709551616`. One from 2^63 to 2^64 − 1 should be refused the same way, but is taken as an `i64` and becomes negative with no error (a known bug): give it its type, `18446744073709551615:u64`. Nor have branches of which one is negative and another past an `i64`: `if c { -1 } else { 18446744073709551615 }` needs a type that holds both.
 
 Once a value has a type, it converts only as values do. A `let` without a type gives its constant the default, and from then on it is a value of that type:
 
@@ -2934,7 +2943,7 @@ It has no bytes, so it is never in memory: no pointer points to one, no slice or
 
 #### Never null, and optional
 
-A plain host type is never null: a `Canvas` is always a value the host gave. So it has no default, as a plain function value has none (3.4):
+A plain host type is never null: a `Canvas` is always a value the host gave. So it has no default:
 
 - a `let` of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
 - a global's value is a constant, and no constant is a `Canvas`, so a global of one (or of a struct or array that holds one) is imported from the host, which gives its value; the module's own global holds a `?Canvas`, none until it is set (`global 'g' needs a value: ..., and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none`);
@@ -2956,7 +2965,7 @@ A reference that may be null is a `?Canvas`, the optional form, written as `?*T`
 
 The module never makes a null `Canvas`. The host promises one too: where a value of a plain host type comes in from the host, as an exported function's parameter, an imported function's result or an imported global's value, it is checked once, as it comes in, and a null there traps (`unreachable`). So a host that breaks the promise stops the program at the boundary, not somewhere later. A call the module makes to one of its exported functions is not checked again: such a function is exported through an entry that checks what the host gives and then calls it. Nothing is checked anywhere else, nothing for a `?Canvas`, and a program that uses no host type compiles to the same bytes as it would without this rule. An imported global is checked when the module starts (a wasm start function).
 
-`encantis test` runs a module's tests with no host there: an imported function throws if a test calls it, and an imported global is given a value of its type that keeps its promise. For a plain host type that is a stand-in (an empty object), so the module starts and its tests run, those that never read the global too; an optional one is none, a number 0. Only the tests being run have their `test` blocks' imports: a library's test-only import is no part of a program that imports the library.
+`encantis test` runs a module's tests with no host there: an imported function throws if a test calls it, and an imported global is given a value of its type that keeps its promise. For a plain host type that is a stand-in (an empty object), so the module starts and its tests run, those that never read the global too; an optional one is none, a number 0. Only the tests being run have their `test` blocks' imports: a library's test-only import is no part of a program that imports the library ([The Test Host](#the-test-host)).
 
 For a JavaScript host, null is `null`. `undefined` (what a function that returns nothing gives, or a `Map.get` that finds nothing) is a value, not null: it passes for a `Canvas`, and `opt == 0` is false for it.
 
