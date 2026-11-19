@@ -4412,7 +4412,7 @@ The two operands have one type, after [implicit widening](#implicit-widening), a
 
 **Integers wrap.** `+`, `-` and `*` on integers never trap: the result is reduced to the width of its type, in two's complement, as wasm's `i32.add` and `i64.mul` do. An `i8`, `u8`, `i16` or `u16` is computed in an `i32` and brought back to its width after each operation ([2.2](#22-primitive-types)): `200:u8 + 100` is 44, `100:i8 + 100` is -56. Negation is `0 - x`, so it is allowed on an unsigned type and wraps too: `-x` with a `u32` of 1 is 4294967295.
 
-**Division.** `/` and `%` are signed or unsigned as the operands' type is (`i32.div_s` or `i32.div_u`, `i32.rem_s` or `i32.rem_u`). Integer division truncates toward zero, and the remainder has the sign of the dividend: `-7 / 2` is -3, `-7 % 2` is -1, `7 % -2` is 1. These trap:
+**Division.** `/` and `%` are signed or unsigned as the operands' type is (`i32.div_s` or `i32.div_u`, `i32.rem_s` or `i32.rem_u`). Integer division truncates toward zero, and the remainder has the sign of the dividend: `-7 / 2` is -3, `-7 % 2` is -1, `7 % -2` is 1. These trap ([9.7](#97-traps)):
 
 - an integer `/` or `%` by zero;
 - an `i32` or `i64` `/` of its most negative value by -1, whose quotient does not fit (`%` of the same is 0).
@@ -4940,13 +4940,15 @@ cannot use '+' on ?*u8: it may be none — resolve it with 'if let' or '??' firs
 
 A slice takes no arithmetic: take a range of it instead (`s[1..]`, [4.8](#48-slicerange-syntax)). An optional pointer is resolved first. Write the pointer first: `n + p` is not a pointer.
 
-> **Status: pointer arithmetic is not yet checked to these rules.** The compiler also accepts `+` and `-` on a `*T` and a `*[N]T` (where `p + 4` on a `*[4]u32` still claims four elements, with nothing checked), any other operator on a pointer (`p * 2`, `p & 7`, `p + q`), and gives `p - q` the pointer's type instead of a number. Write only the forms above.
+> **Known bug: pointer arithmetic is not checked to these rules.** The compiler also accepts `+` and `-` on a `*T` and a `*[N]T` (where `p + 4` on a `*[4]u32` still claims four elements, with nothing checked), any other operator on a pointer (`p * 2`, `p & 7`, `p + q`), and gives `p - q` the pointer's type instead of a number. Write only the forms above.
 
 #### Indexing
 
 `p[i]` on a many-pointer `[*]T` is the element `i` places on: the byte offset is `i * sizeof(T)`, so `ptr + n` counts bytes where `ptr[n]` counts elements. A many-pointer has no length, so its index is never checked ([4.7](#47-bounds-checked-indexing)), and `p[-1]` is the element before the one `p` points to.
 
 A `*T` points to one `T`: `p[0]` is that `T`, as `p.*` is, and any other index is an error (`cannot index *u8 past its one element: read it with .*, or index a [*]u8`). A pointer to elements read one after another is a `[*]T`; on a `[*]T`, read the first element as `p[0]`.
+
+`.*` loads what a pointer of known size points at: the `T` of a `*T`, and all N elements of a `*[N]T` as a `[N]T` value. A slice, a many-pointer `[*]T` and a null-terminated `*[!]T` have no whole value to load: index them (`p[0]`). The compiler accepts `.*` on a `[*]T` or a `*[!]T` and compiles it wrongly, loading four bytes and using them as an address (a known bug), so do not write it.
 
 An array pointer, a slice and their elements are indexed with a bounds check where the index is not known to be in range: [4.7](#47-bounds-checked-indexing).
 
@@ -5006,7 +5008,7 @@ Write a view on a pointer. On a slice, write it on the slice's pointer, `s.ptr.u
 
 > **Not implemented:** a view as the single value at `p`. `p.u32` is the pointer, not the `u32` it points at, so assigning to it is an error (`cannot assign to .u32: it is the pointer as [*]mut u32, not the u32 it points at — write .u32[0] = value to store one`): read `p.u32[0]` and write `p.u32[0] = v`. Views of a compound type (a struct, a slice) are not implemented either and do not parse; cast the pointer instead (`p as *Point`, [Explicit Casts](#explicit-casts)).
 
-A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included (§1.2), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
+A member is a type view only when its whole name is a primitive type's. The name after the dot is a whole identifier, hyphens included ([1.2](#12-identifiers)), so a name that merely starts like one, `s.boolish`, `p.i8_le`, `v.u32s()`, `x.u32-count`, `p.u32-1`, is a field or a method ([4.9](#49-method-call-syntax)). The view minus one is written with spaces, `p.u32 - 1`, which is how the formatter prints a subtraction. Without a member of that name the error shows the subtraction:
 
 <!-- spec:begin compile -->
 
@@ -5416,7 +5418,7 @@ a range on a many-pointer needs an end: it has no length
 
 #### Filling and Copying
 
-Assigning to a range fills it or copies into it: `buffer[..] = 0` gives every element the value, and `cv[0..8] = hs[0..8]` copies 8 elements.
+Assigning to a range fills it or copies into it: `buffer[..] = 0` gives every element the value, and `cv[0..8] = hs[0..8]` copies 8 elements. A range takes `=` only: `buf[0..4] += 1` is `a range can only be assigned with =`.
 
 What is assigned says which. A value that can be assigned to one element is a fill, whatever the element is, and even where it is an array of elements as well (a `Node` of `type Node = *[2]Node`): a number, a struct (`points[0..n] = origin`), a slice (`names[0..3] = "?"` makes each of three `[]u8` the same one-byte string), a pointer, and in a table a row pointer, so every row of the range then points at the same cells. Anything else is the elements to copy: a slice or a pointer to an array of the element type, an array literal (`buf[0..2] = [1, 2]`, laid out as the range's elements are), or an array held in registers, which is stored element by element. A table's rows are copied as its row pointers, so rows of a const table do not go into a mutable one (`cannot copy *[2][3]i32 into a range of *mut [3]i32: its rows are *[3]i32`), as `m[i] = r` is refused for them; an array literal copied there is written `mut`. A value that is neither is refused as the one it was meant as: a value of the element type as written, a `[3]i32` in registers or a const row for a `*mut [2][3]i32`, as a fill (`fill value: cannot assign [3]i32 to *mut [3]i32`, as `m[i] = r` says), anything else as a copy (`cannot copy []u8 into a range of []i32`).
 
@@ -5675,7 +5677,7 @@ condition must be bool, not u32
 
 <!-- spec:end -->
 
-**As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`).
+**As a value.** An `if` with an `else` is also an expression. Its value is the value of the branch taken: the last expression of its block, or the expression after its `=>`. So every branch needs one, unless it always exits (`return`, `break`, `continue`): a branch that ends in a statement and goes on has no value (`this branch has no value: expected i32`). The branches widen to one type, like operands ([Implicit Widening](#implicit-widening)), and with a value the wasm `if` has that type's results. An `if` without an `else` has no value: it is of type `()`, the empty tuple, and using it as a number is an error (`cannot assign () to i32`). A function's block body is not such a value: with an unnamed result its last expression is not returned (write `return`, or an expression body), and with named results it fills them ([3.4](#34-functions)).
 
 A branch whose value has no type of its own takes the type of the others, as a literal does anywhere it meets a typed value: an array literal next to a slice or a pointer is laid out as one, so `if c { xs } else { [] }` with `xs: []i32` is a `[]i32`, and so is `if c { xs } else { [7, 8] }`, with or without a type written for the `let` it is given to. The same goes for the arms of a `match`, and for `elif`. A branch that is itself an `if` or a `match` whose values are array literals is not laid out so: it is checked as a value of its own first, so `if a { xs } else { if b { [1] } else { [] } }` is refused (`branches have different types: [] and [1]i32`), and with literals of one length it is a value such as `[2]i32`, which a slice does not take (`cannot convert [2]i32 to []i32 implicitly`). Write the type where the value is given (`let ys: []i32 = ...`), or use `elif`.
 
@@ -6008,7 +6010,7 @@ The body can assign its loop's variables. The element is a copy, so assigning to
 
 #### `return`
 
-`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
+`return value` ends the function with that value as its result, checked against the result type as a `let` of that type checks its value. A bare `return` is for a function with no result, or with named results, which it returns as they are set; in a function with an unnamed result, `return` needs a value (`return needs a value: the function returns i32`). `return` takes the expression after it, on its line or the next ([1.6](#16-statements-and-line-breaks)), so a bare `return` is written last in its block or with its `when`. Before the function ends, `return` runs the deferred expressions of every block it is in ([Defer](#defer)). A function whose body is a block and whose result is unnamed must end every path with a `return` (`function 'f' can reach its end without returning a value`). The compiler decides this by the body's last statement, which must be a `return` without `when`, a `loop` with no `break` out of it, an `if` with an `else` whose every branch ends so, or a `match` with a `_` arm whose every arm ends so; a trailing value does not count ([3.4](#34-functions)).
 
 #### `break` and `continue`
 
@@ -6169,7 +6171,7 @@ test "deferred expressions run at exit, newest first" {
   it (`cannot return from inside a deferred expression`, `cannot break out of a
   deferred expression`). A loop inside it can use `break` and `continue` as usual.
 - A trap is not an exit of a block: it ends the whole call into wasm, and no
-  deferred expression runs.
+  deferred expression runs ([9.7](#97-traps)).
 - Deferred code is emitted inline at each exit. There is no runtime cost and no
   extra wasm features.
 
@@ -6239,7 +6241,7 @@ test "mean" {
 
 <!-- spec:end -->
 
-A trap ends the call into wasm at once: nothing after it runs, deferred expressions included, and the host sees an error. These trap: a false `assert`, a `match` that no arm matches ([5.4](#54-match-expressions)), an integer division by zero ([4.1](#41-arithmetic-operators)), a load or store outside memory, and a plain host reference that comes in as null ([2.13](#213-host-references)).
+A trap ends the call into wasm at once: nothing after it runs, deferred expressions included, and the host sees an error. Among what traps are a false `assert`, a `match` that no arm matches ([5.4](#54-match-expressions)), an integer division by zero ([4.1](#41-arithmetic-operators)), a load or store outside memory, and a plain host reference that comes in as null ([2.13](#213-host-references)); [9.7](#97-traps) lists them all.
 
 ### 5.4 Match Expressions
 
