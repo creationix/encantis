@@ -2433,7 +2433,7 @@ cannot assign int(256) to u8
 
 <!-- spec:end -->
 
-A constant expression takes the type it's used as, all the way down to its literals, so integer literals alone take the float type they meet: `7 / 2` is 3.5 where an `f64` is wanted, and `7 % 2` there is `'%' needs integer operands, not f64`. There are two exceptions. A float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`, also where an `f32` is wanted: with `k: u8`, `k * 0.5` returned as an `f32` is `cannot assign f64 to f32`, so write `k * 0.5:f32` (beside an `f32` value, `x * 0.5`, the literal is an `f32`). And a constant shifted by a count that has a type takes the count's type ([4.2](#42-bitwise-operators)):
+A constant expression takes the type it's used as, all the way down to its literals, so integer literals alone take the float type they meet: `7 / 2` is 3.5 where an `f64` is wanted, and `7 % 2` there is `'%' needs integer operands, not f64`. There are two exceptions. A constant shifted by a count that has a type takes the count's type ([4.2](#42-bitwise-operators)). And a float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`, also where an `f32` is wanted: with `k: u8`, `k * 0.5` returned as an `f32` is `cannot assign f64 to f32`, so write `k * 0.5:f32` (beside an `f32` value, `x * 0.5`, the literal is an `f32`):
 
 <!-- spec:begin compile -->
 
@@ -7262,7 +7262,7 @@ export func widest(a: u32, b: u32) -> u32 => max_u32(a, b)
 export func longest(a: f64, b: f64) -> f64 => max_f64(a, b)
 ```
 
-A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)). `type` is written in two places only: as the type of a comptime parameter, and as the result of a generic type ([8.5](#85-generic-types)). A type is not a value: `let t: type = u32` is a syntax error.
+A **type parameter** is written `comptime T: type`. Its name starts with an upper-case letter, like every type name. Inside the function `T` is a type: it can be used wherever a type can be written (`x: T`, `[]T`, `*mut T`, `sizeof(T)`, `p as [*]mut T`) and passed on as a type argument (`fact(T, n - 1)`). A comptime parameter may also be a function ([8.6](#86-comptime-function-parameters)) or a number, `comptime n: u32` ([8.7](#87-comptime-value-parameters)). `type` is written in two places only: as the type of a comptime parameter, and as the result of a generic type ([8.5](#85-generic-types)). A type is not a value: `let t: type = u32` is a syntax error. A type parameter need not be used: `func tick(comptime T: type) -> u32` is called `tick(u32)`, each type given is an instance of its own ([8.4](#84-instances)), and with nothing to infer it from such a function has only the explicit form (`cannot infer T for 'tick'`).
 
 Rules:
 
@@ -7347,7 +7347,7 @@ test "inferred calls" {
 }
 ```
 
-**Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type or value parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. Anything else is an error that says both counts. There is no form that writes some comptime arguments and infers others. Arguments are positional. A value parameter is inferred from the length of an array in an argument's type ([8.7](#87-comptime-value-parameters)).
+**Which form a call is** depends only on how many arguments it has. If a function has `P` parameters of which `K` are type or value parameters, a call with `P` arguments is explicit and a call with `P - K` arguments is inferred. A comptime function parameter is not one of the `K`: its argument is written in both forms ([8.6](#86-comptime-function-parameters)). `apply(comptime T: type, x: T, comptime f: (T) -> T)` is called `apply(7:u32, inc)` or `apply(u32, 7, inc)`. Anything else is an error that says both counts: `apply(7:u32)` is `'apply' expects 2 arguments, or 3 with its type argument written; got 1`. There is no form that writes some comptime arguments and infers others. Arguments are positional. A value parameter is inferred from the length of an array in an argument's type ([8.7](#87-comptime-value-parameters)).
 
 #### How type parameters are inferred
 
@@ -7359,6 +7359,7 @@ test "inferred calls" {
    | `*T` | `*mut X` | `T = X` |
    | `[]T` | `[]mut X` | `T = X` |
    | `[]T`, `[*]T` | `*[N]X` (a `data` array, a string) | `T = X` |
+   | `[]mut T`, `[*]mut T` | `*mut [N]X` (a `mut` data array) | `T = X` |
    | `?*T` | `*X` | `T = X` |
    | `*T` | `[*]X` | no match: what a many-pointer points to is not a type by itself. `[*]T` matches it |
    | `T` | a value known to lie in a range, `u32#12` | `T = u32` (the range is dropped, also from the values a tuple argument is made of) |
@@ -7434,7 +7435,7 @@ export func f(a: Pt, b: Pt) -> Pt => add(neg(a), b)
 '+=' cannot be applied to Pt and Pt, in add(T = Pt)
 ```
 
-The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first, then those of its instances.
+The error is reported at the line of the generic's body where it occurs, with types printed as they are in that instance (never as `T`), followed by the instance. An instance shared by calls that wrote `Meters`, `Feet` and `f64` reads the same for all of them: an alias that only renames a type is printed as the type, a struct by its name. Each instance is checked once, so its errors appear once however many calls use it. Every other error of the language can occur in an instance and reads as usual plus the `, in ...` suffix. A module's own errors are listed first. Then come those of its instances, in the order of the calls that first require each one, as they stand in the file (a call in a test included).
 
 The command line also prints the call that first asked for the instance and, where that call is itself in an instance, the call that asked for that one, four of them at most. The editor shows them as the error's related locations.
 
@@ -7523,7 +7524,7 @@ An *instance* is one generic function with all its comptime arguments fixed.
 - **Statics.** A data literal in a generic body belongs to each instance separately, as it would in hand-written copies; a `mut` literal is one buffer per instance.
 - **Recursion.** A generic may call itself or another generic. A generic that instantiates itself with a larger type each time never finishes; the compiler stops with one error after 64 nested instantiations (`too many nested instantiations (64) while instantiating 'f'`), or sooner when one call has led to 1000 instances (`too many instantiations (1000) from one call while instantiating 'f'`) or to type arguments many times the size of its own (`type arguments grow without end while instantiating 'f'`). A type argument written in ordinary code may be of any size.
 - **Limits.** A module has fewer than 2^24 (16777216) instances of its generics, and a generic is declared within the first 2^28 bytes (256 MiB) of its file. A call past either is `cannot instantiate 'f': the source is too large or has too many instances`.
-- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); the exact spelling is not part of the language and names do not reach the `.wasm` file.
+- **Place and names.** In the output a generic's place is taken by its instances, in the order of their names. In WAT an instance is named after the generic and its arguments, `$max<u32>`, `$head<''u8>`, `$sort<i32|ascending>`, `$push<8|u32>` (a number in decimal); a type is spelled by its structure, as types are structural, so `insertion_sort` given `Rec = (key: u32, name: []u8)` and `by_key` is `$insertion_sort<<key:u32|name:''u8>|by_key>`; the exact spelling is not part of the language and names do not reach the `.wasm` file.
 
 ```ents
 func bytes(comptime T: type, n: u32) -> u32 => n * sizeof(T)
@@ -7999,7 +8000,7 @@ Rules:
 
 In an instance, `n` is the number the call gave, written in place of the name, exactly as `def n = 8` would put it there.
 
-- **In an expression** it is that number, and has no type of its own, as a literal has none: it takes the type its place gives it. `x < n`, `let y: u8 = n`, `return n` and `f(n)` are what they are with `8` written there (and the shorthand `P(n:, x:)` is `P(n: 8, x: x)`), and `-n` is the number `-8`, as it is where `def n = 8` puts 8. `let k = n` gives `k` the type `let k = 8` gives (`i32`, or `i64` for a number that an `i32` does not hold): write `let k: u32 = n` for a variable that has one type in every instance.
+- **In an expression** it is that number, and has no type of its own, as a literal has none: it takes the type its place gives it. `x < n`, `let y: u8 = n`, `return n` and `f(n)` are what they are with `8` written there (and the shorthand `P(n:, x:)` is `P(n: 8, x: x)`), and `-n` is the number `-8`, as it is where `def n = 8` puts 8; with `n = -3`, `-n` is `3`. `let k = n` gives `k` the type `let k = 8` gives (`i32`, or `i64` for a number that an `i32` does not hold): write `let k: u32 = n` for a variable that has one type in every instance.
 - **Arithmetic on it is arithmetic on constants**: computed exactly, then held to the type its place gives, as with the number written there. `func dbl(comptime n: u32, x: u32) -> u32 => x + n * 2` called with `n = 3000000000` is `cannot assign int(6000000000) to u32, in dbl(n = 3000000000)`, the error `x + 3000000000 * 2` gives; nothing wraps.
 - **It is not a variable.** `n = 3`, `n += 1` and `set (n, x) = ...` are errors (`cannot assign to 'n': it is a comptime value parameter`, `cannot set 'n': it is a comptime value parameter`), and so is a binding that reuses its name; each is reported in every instance, as any mistake in a body is ([8.3](#83-requirements)).
 - **In a type** it is a length or a bound: `[n]T`, `*[n]T`, `*mut [n]T`, `[n][m]T`, `*[n][m]T` (a table, [Nesting](#nesting)), `u32#n`, and an argument of a generic type, `Ring(n, T)`. Any constant expression may stand there: `[n * 2]T`, `[(n + 31) / 32]u32`, `[n * sizeof(T)]u8`, `u32#(n + 1)`. A length is written between the brackets; a bound follows `#` directly when it is a name or a number, and in parentheses otherwise.
@@ -8324,6 +8325,7 @@ export func visited(n: u32) -> u32 {
 
 - **The library comes first.** A function of the generic's module that accepts the arguments is the one called, and nothing outside replaces it: a `hash(k: u32)` written in `cells.ents` is not called by a `Set(u32)`, which uses the library's own.
 - **Only calls are looked up at the site, and only plain functions.** The types, globals and helpers of a generic's body are always its own module's. A generic function of the site's with the name is not looked up, and the error for want of the function says so in a note: `the site's 'hash' is generic, and only plain functions are looked up at the site`.
+- **A function declared in a test is no function of the site.** It belongs to the test ([12.4](#124-declarations-in-a-test)), so a generic called in a test does not find it (`no function 'hash' accepts (...), in bucket(K = ...)`). A requirement for a type that only tests use is declared in the module.
 - **A comptime function argument is not looked up**: it is written where the generic is called, in the module that calls it ([8.6](#86-comptime-function-parameters)). `sort(xs, by_cost)` with `by_cost` declared in, or imported from, another module is an instance that calls that function directly, and two modules that give the same function, under whatever names they import it, share the instance.
 - **An instance that needed the site belongs to that site**, and so does an instance that calls one. Another module that uses the same generic with the same arguments shares it where its own functions of the names looked up are the same functions (both import `hash` and `eq` for `Cell` from one module), and otherwise gets its own copy, which calls its own functions: two functions in the output, the second named with its site after the arguments in WAT, `add<<x:i32|y:i32>>@other`. An instance that did not need the site exists once in the program.
 
@@ -8446,7 +8448,7 @@ A literal laid out in memory takes one place in the data for each place it is wr
 
 Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
 
-`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug.
+`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug. The test build ([12. Tests](#12-tests)) lays out more than the program: after all of the program's data come the `data` blocks declared in tests and the literals that tests lay out. The program's data keeps its addresses, but `sizeof data` is larger in the test build than in the compiled program, so a test that asserts its value checks the test build only.
 
 <!-- spec:begin compile -->
 
@@ -9095,7 +9097,7 @@ test "operands are typed together" {
 
 The bit counts return `u8` because the result can never exceed the bit width of the input (max 64), so it widens implicitly to any integer type. The count is of the operand's own bits, so a narrower or wider integer is an error (`clz requires i32, u32, i64 or u64, got u8`): convert it first (`clz(b as u32) - 24` for a `u8`). Arithmetic on the count alone is `u8` arithmetic, which wraps at 256: widen the count first where the result can pass 255 (`(ctz(x) as u32) * 8`).
 
-`mul_hi` multiplies as unsigned: its operands widen to `u64`, so a `u32` or a `u8` is fine, and a signed one is an error (`mul_hi: cannot assign i64 to u64`).
+`mul_hi` multiplies as unsigned: its operands widen to `u64`, so a `u32` or a `u8` is fine, a literal is a `u64` (`mul_hi(0xFFFFFFFFFFFFFFFF, 2)`), and a signed one is an error (`mul_hi: cannot assign i64 to u64`). The bit counts take a literal in its default type, as [10.1](#101-numeric-builtins)'s builtins do: `clz(1)` counts the zeros of an `i32`, 31.
 
 <!-- spec:begin compile -->
 
@@ -9216,7 +9218,7 @@ memcpy length 20 exceeds buffer size 4 bytes
 
 `sizeof(T)` is the number of bytes a value of type `T` takes in memory ([9.6](#96-structs-and-slices-in-memory)): 1 for a `u8` or a `bool`, 4 for any pointer, 8 for any slice, the sum of the fields for a struct, N times the element for `[N]T`, 0 for `()`. Its operand is a type, never a value: `sizeof(x)` of a variable is a syntax error, so the size of what a variable holds is the size of its type. It is a `u32` constant, which widens as a `u32` does (to a `u64`, not to an `i32` or a `u8`: `cannot assign u32 to u8`), and the compiler knows it wherever a constant is wanted: a length (`[sizeof(Pt) * 4]u8`), a range (`u32#(sizeof(Pt))`), a `def`, a global's initializer, a value in `data`. A type with no size is an error: a host reference, which is never in memory (`cannot take the size of Canvas: a host reference has no bytes, so it is never in memory ...`). `[!]T` is the pointer `*[!]T`, whose size is 4, but `sizeof([!]u8)` is refused (`sizeof: cannot compute size of dynamically sized type`) and a struct field written `[!]T` is given no size (a known bug): write `*[!]T` there.
 
-`sizeof data`, written without parentheses (`sizeof(data)` is a syntax error), is the address just past the last byte of the program's data: where memory that nothing is laid out in begins ([9.0](#90-data-layout)). It is a `u32`, the same in every module of a program, and known only once the whole program is laid out: it is read in a function, but it is no constant of the source, so it starts no global, `def` or `data` and is no length (`global initializer must be a compile-time constant`).
+`sizeof data`, written without parentheses (`sizeof(data)` is a syntax error), is the address just past the last byte of the program's data: where memory that nothing is laid out in begins ([9.0](#90-data-layout)). It is a `u32`, the same in every module of a program (larger in the test build than in the compiled program, [9.0](#90-data-layout)), and known only once the whole program is laid out: it is read in a function, but it is no constant of the source, so it starts no global, `def` or `data` and is no length (`global initializer must be a compile-time constant`).
 
 <!-- spec:begin compile -->
 
@@ -9455,7 +9457,7 @@ A group holds declarations and tests. Statements written in a group, beside its 
 A test can declare `def`, `data`, functions and imports, and these are the test's own: they are seen inside the test and the tests nested in it, and module code cannot use them.
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. The compiler also gives it to the tests that come after it in the file (a known bug), so give a test's function a name the module does not use.
+- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. Module code, a generic's instances included, calls the module's function. The compiler gets this wrong in two ways (known bugs). It gives the test's function to the tests that come after it in the file. And in the test build it gives the module's function of that name the test function's parameters: if their types differ, the test build does not assemble; if their names differ, the compiler stops with an internal error. Give a test's function a name the module does not use.
 - An import declared in a test is part of the test build only: a host function or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. As for functions, the compiler gives it to the later tests too.
 
 A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
@@ -9507,13 +9509,13 @@ The exit status is 1 when a test fails and 0 otherwise. A file that does not che
 
 Tests run without the program's host. `encantis test` gives each import of the module a stand-in:
 
-- WASI (`wasi_snapshot_preview1`): `fd_write` to file descriptor 1 or 2 writes to the standard output or error of `encantis test`, and `fd_read` from 0 reads nothing (the end of input). `proc_exit` fails the test, and every other WASI function returns 52 (`ENOSYS`). As under any WASI host, the module has to export its memory (`export memory`, [7.2](#72-exports)), or a WASI call fails the test.
+- WASI (`wasi_snapshot_preview1`): `fd_write` to file descriptor 1 or 2 writes each buffer to the standard output or error of `encantis test`, stores the number of bytes written in the cell its last argument points to, and returns 0; to any other descriptor it writes nothing and returns 8 (`EBADF`). `fd_read` from 0 stores 0 in its count cell and returns 0 (the end of input); from any other descriptor it returns 8. `proc_exit` fails the test, and every other WASI function returns 52 (`ENOSYS`). As under any WASI host, the module has to export its memory (`export memory`, [7.2](#72-exports)), or a WASI call fails the test.
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
 In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a known bug): give each test a name of its own.
 
-A test that holds no statements, `test "todo" {}`, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
+A test that holds neither statements nor tests, `test "todo" {}` or one that only declares, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
 
 ---
 
