@@ -579,7 +579,7 @@ int(42)                // the type of the untyped integer constant 42
 float(3.14)            // the type of the untyped float constant 3.14
 ```
 
-These are the types of constants that have no type yet, as the compiler's messages name them (`cannot assign int(300) to u8`).
+These are the types of constants that have no type of their own, as the compiler's messages name them (`cannot assign int(300) to u8`).
 
 ---
 
@@ -606,7 +606,7 @@ MultiPattern = ident "," NonemptyListOf<ident, ",">
 ```encantis
 let x = 42                    // the type from the value
 let y: i32 = 100
-let ptr: *u8                  // no value yet
+let ptr: *u8                  // no value until one is assigned
 let (a, b) = (10, 20)         // by position
 let q, r = divmod(17, 5)      // by position, without parentheses
 let (x:, y:) = point          // fields by name
