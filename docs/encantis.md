@@ -2064,11 +2064,30 @@ A struct type can take type parameters: `func Vec(comptime T: type) -> type => (
 
 ### 2.9 Enum Types (Algebraic Data Types)
 
-> **Status: Design only** — enums are parsed but not yet type-checked or compiled.
+> **Not implemented.** Enums are a design. No program can use one: everything below the first example describes the design, not what the compiler does.
 
-Enums are tagged unions representing values that can be one of several variants. Each variant can optionally carry payload data:
+What the compiler does with an `enum` declaration: it parses it and then ignores it. The declaration is `enum Name { Variant, Variant(fields), ... }` at module level, where the name and each variant start with a capital letter ([1.3](#13-type-identifiers)), the commas between variants are optional, and a payload is a field list as a struct's is, with or without names (`RGB(r: u8, g: u8, b: u8)` or `RGB(u8, u8, u8)`). Nothing in it is checked (an unknown type in a payload, two variants of one name, two enums of one name, an enum and a `type` of one name all pass), nothing of it is compiled, its name is no type, and its variants are no values: a capitalised name in an expression is a constructor call, so `let c = Red` is a syntax error (`Expected "("`). Nor can it be exported.
+
+<!-- spec:begin compile -->
 
 ```ents
+enum Color { Red, Green, Blue }
+
+func f(c: Color) -> u32 => 1
+```
+
+```errors
+unknown type 'Color'
+```
+
+<!-- spec:end -->
+
+#### The Design
+
+*Not implemented (design).* An enum is a tagged union: a value is one of several variants, and each variant can carry a payload:
+
+```ents
+// Not implemented (design)
 enum Color {
   Red,
   Blue,
@@ -2091,9 +2110,10 @@ enum Json {
 
 Variants without payloads (like `Red`, `Blue`, `Null`) are unit variants. Variants with payloads can have positional or named fields.
 
-**Recursive types:** Enums cannot directly contain themselves — recursion must go through an indirection. Use `*T` (pointer) or `[]T` (slice) for recursive references:
+**Recursive types:** An enum cannot contain itself directly: recursion goes through a pointer (`*T`) or a slice (`[]T`), as it does for a struct ([Types That Refer to Themselves](#types-that-refer-to-themselves)):
 
 ```ents
+// Not implemented (design)
 enum Tree {
   Leaf(value:i32),
   Node(left:*Tree, right:*Tree)   // pointer indirection
@@ -2105,23 +2125,25 @@ enum List {
 }
 ```
 
-Slices (`[]T`) are already indirect (fat pointers to heap data), so `Array([]Json)` is valid without explicit `*`.
+A slice is already a pointer and a length, so `Array([]Json)` needs no `*`.
+
+A `match` takes an enum apart by its variants ([Pattern Matching on Enums](#pattern-matching-on-enums), also not implemented).
 
 #### Enum Representations
 
-Enums have two representations: **stack** (for passing/returning values) and **memory** (for serialization to linear memory).
+*Not implemented (design).* An enum has two representations: **stack** (for passing and returning values) and **memory** (for storing it in linear memory).
 
 ##### Stack Representation
 
-On the stack, enums are flattened to multiple WebAssembly values using per-enum sizing. The compiler computes the minimal slot types needed to hold all variants:
+*Not implemented (design).* On the stack, an enum is flattened to several WebAssembly values, sized for each enum. The compiler computes the slots needed to hold every variant:
 
-1. **Tag**: Always `i32`
-2. **Payload slots**: For each "position" across all variants, use the smallest wasm type that can hold all types at that position
+1. **Tag**: always `i32`
+2. **Payload slots**: for each position across all variants, the smallest wasm type that holds every type at that position
 
-When a slot must hold both integer and float types (e.g., `i32` and `f64`), use `i64` and reinterpret:
-- `f64` ↔ `i64`: use `i64.reinterpret_f64` / `f64.reinterpret_i64`
-- `i32` → `i64`: use `i64.extend_i32_u`
-- `i64` → `i32`: use `i32.wrap_i64`
+When a slot must hold both an integer and a float (e.g., `i32` and `f64`), it is an `i64`, and the values are moved in and out of it:
+- `f64` ↔ `i64`: `i64.reinterpret_f64` / `f64.reinterpret_i64`
+- `i32` → `i64`: `i64.extend_i32_u`
+- `i64` → `i32`: `i32.wrap_i64`
 
 **Example — Json:**
 
@@ -2154,14 +2176,14 @@ When a slot must hold both integer and float types (e.g., `i32` and `f64`), use 
 
 ##### Memory Representation
 
-In linear memory, enums are byte-packed for compact storage:
+*Not implemented (design).* In linear memory, an enum is byte-packed:
 
-1. **Tag**: Smallest integer type for the variant count
-   - ≤256 variants: `u8`
-   - ≤65536 variants: `u16`
-   - ≤2³² variants: `u32`
+1. **Tag**: the smallest unsigned integer that counts the variants
+   - up to 256 variants: `u8`
+   - up to 65536 variants: `u16`
+   - more: `u32`
 
-2. **Payload**: Fields packed at natural byte widths, end-padded to max variant size
+2. **Payload**: the fields packed at their byte widths, the payload left-aligned and padded at the end to the largest variant's size
 
 **Example — Color (5 bytes):**
 
@@ -2186,36 +2208,50 @@ Array:   [4][ptr ptr ptr ptr][len len len len]
 Object:  [5][ptr ptr ptr ptr][len len len len]
 ```
 
-Memory layout uses end-padding (payload left-aligned) with no alignment requirements — the language is byte-oriented.
+As everything in memory is ([9.6](#96-structs-and-slices-in-memory)), an enum is laid out with no alignment and no padding but the end padding.
 
 ### 2.10 Type Conversions
 
+A value changes type in three ways:
+
+- **Implicitly**, where nothing is lost: a narrower number widens to a type that holds all its values, a mutable pointer is used as a const one, a pointer to an array is used as a slice, and the others listed in [Every Implicit Conversion](#every-implicit-conversion).
+- **By taking the type it is used as**: a constant with no type of its own (`42`, `0.5`, a `def` of one, arithmetic on these) becomes a value of whatever type it meets, if that type holds it exactly ([Comptime Literal Promotion](#comptime-literal-promotion)).
+- **By a cast**, `x as T` or `T(x)`, for everything that may lose or reinterpret a value: narrowing, a change of signedness, float to integer, a bool to a number, a number to a pointer ([Explicit Casts](#explicit-casts)).
+
+Nothing else converts. Every other mismatch is a compile error, and the error names both types.
+
 #### Implicit Widening
 
-Encantis allows implicit widening when no precision is lost:
+A number widens implicitly to a type that holds every value of its own:
 
 ```
-i8 → i16 → i32 → i64
-u8 → u16 → u32 → u64
+i8 → i16 → i32 → i64 → i128 → i256 → i512
+u8 → u16 → u32 → u64 → u128 → u256 → u512
 f32 → f64
 ```
 
-An unsigned integer also widens to a wider signed one, which holds all its values: `u8` → `i16`, `u32` → `i64`.
+An unsigned integer also widens to a wider signed one, which holds all its values: `u8` → `i16`, `u32` → `i64`. A signed integer never widens to an unsigned one (an `i8` is no `u64`), and two types of one width but other signedness, `i32` and `u32`, are neither of them the other.
 
-Integer to float is implicit only when the float's mantissa can hold all values:
+Integer to float is implicit only when the float's mantissa holds every value of the integer type:
 
-| Float | Safe integer types | Mantissa bits |
-|-------|-------------------|---------------|
+| Float | Integer types that widen to it | Mantissa bits |
+|-------|-------------------------------|---------------|
 | f32 | i8, u8, i16, u16 | 24 |
 | f64 | i8, u8, i16, u16, i32, u32 | 53 |
 
+So an `i32` or `u32` widens to `f64` but not to `f32`, and an `i64` or `u64` to neither.
+
+A ranged integer ([Ranged Integers](#ranged-integers)) widens as the type it ranges over does, and to a wider range of its own type: a `u32#8` is a `u32#16`, a `u32`, an `i64` or an `f64`, but not a `u8`, nor an `i32` (a `u32` is neither).
+
 A value widens wherever two operand types meet or a value meets a declared type:
 
-- **Operators.** The narrower operand of an arithmetic, bitwise or comparison operator widens to the other's type. That is the type of the result (`bool` for a comparison).
-- **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`.
+- **Operators.** The narrower operand of an arithmetic, bitwise or comparison operator widens to the other's type. That is the type of the result (`bool` for a comparison). When neither operand's type holds the other (`i32` and `u32`, `f32` and `i32`), it is an error: cast one side. The count of a shift is the exception, any integer type ([4.2](#42-bitwise-operators)).
+- **Declarations and assignments.** A `let` with a type, `=`, `set`, and compound assignment: in `x += n`, `n` widens to the type of `x`, never the other way.
 - **Calls and results.** Arguments, struct constructor fields, tuple and array literal elements, `return` values and expression bodies.
 - **Branches.** The branches of an `if` or `match` used as a value widen to its declared type, or, without one, to the widest branch.
 - **Array literals.** The elements widen to the declared element type, or, without one, to the widest element: `[n, big]` with an `i32` and an `i64` is a `[2]i64`. The value of a repeat literal is an element too: `[n; 3]` for a `*[3]i64` widens `n`, and `[true; 3]` is not three `u32`s. Tuples among the elements agree field by field, as branches do: `[(1, 2), (3, 5000000000)]` is a `[2](i32, i64)`. Tuples that agree on no type (another count of fields, other names, the same names in another order) are of the first one's type, and each of the others meets it as it would any struct: `[(y: 1, x: 2), (x: 3, y: 4)]` has a second element with an `x` of 3 ([2.8](#struct-constructors)), and `(3, 4, 5)` after a `(1, 2)` is an error. A field that is a string of other lengths in each tuple is a slice, as strings of other lengths are by themselves (`["a", "bc"]` is a `[2][]u8`): `[("a", 1), ("bc", 2)]` is a `[2]([]u8, i32)`.
+
+<!-- spec:begin compile -->
 
 ```ents
 type Sample = (count: i64, mean: f64)
@@ -2228,31 +2264,190 @@ func total(a: u8, b: i32, c: i64) -> i64 {
   return sum + c
 }
 
-func sample(n: i32, sum: f32) -> Sample => Sample(n, sum)
+func sample(n: i32, mean: f32) -> Sample => Sample(n, mean)
 
 func pick(c: bool, n: i32, x: f64) -> f64 {
   let v = if c { n } else { x }                    // an f64: n widens
   return v
 }
+
+test "a narrower value widens where it meets a wider type" {
+  assert scale(1.5, 4) == 6.0
+  assert total(200, -300, 5000000000) == 4999999900
+  assert sample(3, 0.5).mean == 0.5
+  assert pick(true, -2, 0.5) == -2.0
+}
 ```
 
-The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)). Integers up to 32 bits share an `i32`, so `u8` → `i32` is free.
+<!-- spec:end -->
 
-A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (see [9.2](#structural-coercion)). The elements of a literal are, one by one: `let t: (i64, f64) = (n, n)`.
+The conversion is an instruction only when the WebAssembly type changes ([11.1](#111-widening-instructions-implicit)): `u8` → `i64` is `i64.extend_i32_u`, `i32` → `f64` is `f64.convert_i32_s`, and `u8` → `u32` is nothing, since every integer of 32 bits or fewer is a wasm `i32`. Arithmetic is done in the type of the result, so a value is widened before the operation, never after: with `a: u8`, `a + 1` is a `u8` sum that wraps at 256, and `a + n` with `n: u32` adds in 32 bits.
 
-Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`. The elements have to be laid out the same ([9.2](#structural-coercion)).
+A struct or tuple value that already exists isn't widened field by field: a `(i32, i32)` is not a `(i64, i64)` (`cannot convert (i32, i32) to (i64, i64) implicitly: convert its fields`). Fields that are held the same way convert with the struct, `(x: i8, y: i8)` to `(x: i32, y: i32)` ([9.2](#structural-coercion)), and so do the elements of a fixed array (`[3]u8` to `[3]u32`, not to `[3]u64`). The elements of a literal are converted one by one, so where a `(i64, i64)` is wanted `(t.0, t.1)` is one, and `let t: (i64, f64) = (n, n)` widens `n` twice.
+
+Widening converts values, not memory seen through a pointer or slice: a `u8` is a `u16`, but a `[]u8` is not a `[]u16`, nor a `*u8` a `*u16`. The elements have to be laid out the same ([9.2](#structural-coercion)).
+
+<!-- spec:begin compile -->
+
+```ents
+func pair(t: (i32, i32)) -> (i64, i64) => t
+func view(s: []u8) -> []u16 => s
+```
+
+```errors
+cannot convert (i32, i32) to (i64, i64) implicitly: convert its fields
+cannot assign []u8 to []u16
+```
+
+```ents
+func pair(t: (i32, i32)) -> (i64, i64) => (t.0, t.1)    // a literal: each element widens
+
+test "a tuple literal widens element by element" {
+  let a, b = pair((-1, 2))
+  assert a == -1
+  assert b == 2
+}
+```
+
+<!-- spec:end -->
+
+#### Every Implicit Conversion
+
+This is the whole list. Each conversion applies wherever a value meets a declared type (the places listed above), and a name for a type ([2.11](#211-type-names)) converts as the type it names.
+
+| From | To | Notes |
+|------|----|-------|
+| a narrower number | a wider number that holds all its values | [Implicit Widening](#implicit-widening) |
+| `u32#N` | `u32#M` with M ≥ N, and what `u32` widens to | the same for each unsigned type; a plain unsigned type is bounded by its width, so a `u8` is a `u32#256` |
+| an untyped constant | any number type that holds its value exactly | [Comptime Literal Promotion](#comptime-literal-promotion) |
+| `*mut T`, `[]mut T`, `[*]mut T` | `*T`, `[]T`, `[*]T` | mutable to const ([Mutability](#mutability)), at the outer level only: a `*mut *mut u8` is no `**u8` |
+| `*[N]T` | `[]T` | the slice of its N elements; `*mut [N]T` gives a `[]mut T` or a `[]T` ([9.5](#95-array-type-conversions)) |
+| `*[N]T` | `[*]T` | the same address |
+| `*[NxM]T` | `[]T` | the slice of its N×M elements ([Nesting](#nesting)) |
+| `*[N][M]T` | `[][M]T` | a table is a slice of its row pointers ([Nesting](#nesting)) |
+| `*[!]T` | `[*]T` | the same address; it becomes a `[]T` only explicitly, `(z.ptr, z.len)` |
+| `[*]T` | `*T` | a pointer to the element it points at |
+| `([*]T, u32)`, `(*[N]T, u32)` | `[]T` | a pointer and a length make a slice ([9.4](#94-slice-construction)) |
+| `*T`, `[]T`, a host type | `?*T`, `?[]T`, `?Canvas` | a plain value is never none; any of the conversions above can end in an optional: `*[4]u8` → `?[]u8` |
+| the literal `0` | any optional | none ([Optional Types](#optional-types), [2.13](#213-host-references)) |
+| an integer constant | a pointer, `*T` or `[*]T`, optional or not | a fixed address: `let p: *u32 = 64`; not a slice, which needs a length |
+| a string literal | `[]u8`, `*[N]u8` (N its length), `[*]u8`, `*[!]u8`, `*[?]u8`, and their optionals | laid out in memory ([String Literals](#string-literals)) |
+| an array literal | `[N]T`, `*[N]T`, `[]T`, `[*]T` and their optionals | in registers for `[N]T`, laid out in memory for the rest ([2.4](#24-fixed-arrays-value-type)) |
+| a tuple literal | a struct or tuple type | by name where it has names, by position where not ([2.8](#struct-constructors)), each element converted |
+| a struct, tuple or fixed array value | one with the same names whose fields convert with no change in wasm value | `(x: i8, y: i8)` → `(x: i32, y: i32)`, `[3]u8` → `[3]u32` ([9.2](#structural-coercion)) |
+
+A slice converts to a const slice of other elements when each element is read the same in memory: `[]mut []mut u8` → `[][]u8`, `[]u32#4` → `[]u32`. A mutable slice or many-pointer keeps its element type, also when it is made from a `*mut [N]T`, since what is written through it must be a value of that type: a `[]mut u32#4` (or a `*mut [4]u32#4`) is no `[]mut u32`, and a `[]mut []mut u8` no `[]mut []u8`. Otherwise a pointer's target type does not change, but for the outer `mut`: `*[8]u8` is no `*[4]u8`, `*[4]u8` no `*u8`, and `*u8` no `*u16`. Function types convert only to the same function type.
+
+<!-- spec:begin compile -->
+
+```ents
+data bytes = mut [1:u8, 2, 3, 4]
+data word: *[!]u8 = "hey"
+
+func sum(s: []u8) -> u32 {
+  let n: u32 = 0
+  for b in s { n += b }
+  return n
+}
+func first(p: [*]u8) -> u8 => p[0]
+func peek(p: *u8) -> u8 => p.*
+func size(s: ?[]u8) -> u32 => if let t = s { t.len } else { 0 }
+
+test "pointers and slices convert where nothing is lost" {
+  assert sum(bytes) == 10              // *mut [4]u8 to []u8: const, with a length of 4
+  assert first(bytes) == 1             // *mut [4]u8 to [*]u8
+  assert peek(bytes.ptr) == 1          // [*]mut u8 to *u8
+  assert size(bytes) == 4              // to an optional slice
+  assert size(0) == 0                  // 0 is none
+  assert sum((bytes.ptr, 2)) == 3      // a pointer and a length make a slice
+  assert first(word) == 104            // *[!]u8 to [*]u8
+}
+```
+
+<!-- spec:end -->
+
+Each refusal says what is missing, and the fix writes it:
+
+<!-- spec:begin compile -->
+
+```ents
+func many(s: []u8) -> [*]u8 => s
+func one(p: *[4]u8) -> *u8 => p
+func open(p: [*]u8) -> []u8 => p
+func scan(z: *[!]u8) -> []u8 => z
+func shrink(p: *[8]u8) -> *[4]u8 => p
+func flip(x: i32) -> u32 => x
+func lose(x: i64) -> f64 => x
+func known(p: ?*u8) -> *u8 => p
+```
+
+```errors
+cannot assign []u8 to [*]u8
+cannot assign *[4]u8 to *u8
+cannot assign [*]u8 to []u8
+cannot assign *[!]u8 to []u8
+cannot assign *[8]u8 to *[4]u8
+cannot assign i32 to u32
+cannot assign i64 to f64
+cannot assign ?*u8 to *u8: it may be none — resolve it with 'if let' or '??' first
+```
+
+```ents
+data bytes = [1:u8, 2, 3, 4, 5, 6, 7, 8]
+
+func many(s: []u8) -> [*]u8 => s.ptr                      // the pointer, without the length
+func one(p: *[4]u8) -> *u8 => &p[0]                       // the address of an element
+func open(p: [*]u8, n: u32) -> []u8 => (p, n)             // a length the caller vouches for
+func scan(z: *[!]u8) -> []u8 => (z.ptr, z.len)            // the length, scanned for
+func shrink(p: *[8]u8) -> *[4]u8 => p as *[4]u8           // a cast: the first four
+func flip(x: i32) -> u32 => x as u32
+func lose(x: i64) -> f64 => x as f64
+func known(p: ?*u8, other: *u8) -> *u8 => p ?? other
+
+test "each fix says what the conversion could not" {
+  assert many(bytes)[7] == 8
+  assert open(bytes.ptr, 3).len == 3
+  assert shrink(bytes)[3] == 4
+  assert one(shrink(bytes)).* == 1
+  assert flip(-1) == 4294967295
+  assert lose(-3) == -3.0
+  assert known(0, bytes.ptr).* == 1
+}
+```
+
+<!-- spec:end -->
 
 #### Comptime Literal Promotion
 
-Unsuffixed literals check actual value, not type:
+A constant with no type of its own — an integer or float literal written without `:T`, a `def` of one, or an operator applied to these — has no type until it meets one. Messages print it by its value, `int(300)` or `float(1.5)`: `cannot assign int(300) to u8`. It becomes a value of the type it meets when that type holds its value exactly:
+
+- an integer type holds it when it is in the type's range: `255` is a `u8`, `300` and `-1` are not;
+- a float type holds an integer constant within the range its mantissa counts exactly: from -2^24 to 2^24 (16777216) for `f32`, from -2^53 to 2^53 for `f64`. Past that the constant is refused, also one the float happens to hold (`16777218` is no `f32` constant: cast it, `16777218 as f32`);
+- a float constant (one with a decimal point or an exponent) is never an integer (`cannot assign float(1) to u32`) and takes the nearest value of `f32` or `f64`, as the literal `0.1` is no binary fraction exactly ([Float Literals](#float-literals)). One beyond the largest finite value of its type (about 3.4e38 for `f32`) is no value of it.
+
+Where nothing gives it a type, an integer constant is an `i32`, or an `i64` if it does not fit one, and a float constant an `f64` ([1.5](#15-literals)).
+
+The value is what is checked, not a type: `1.0 + 42` is an `f32` where an `f32` is wanted, since 42 is exactly one, while `1.0 + 16777217` is an error there:
+
+<!-- spec:begin compile -->
 
 ```ents
-let x:f32 = 1.0 + 42        // OK: 42 fits in f32 mantissa
-let y:f32 = 1.0 + 16777216  // OK: 2^24 is max exact integer
-let z:f32 = 1.0 + 16777217  // ERROR: exceeds f32 precision
+func a() -> f32 => 1.0 + 42          // OK: 42 is an f32 exactly
+func b() -> f32 => 1.0 + 16777216    // OK: 2^24 is too
+func c() -> f32 => 1.0 + 16777217    // ERROR: the nearest f32 is 16777216
+func d() -> u8 => 255 + 1            // ERROR: 256 is no u8
 ```
 
+```errors
+cannot assign int(16777217) to f32
+cannot assign int(256) to u8
+```
+
+<!-- spec:end -->
+
 A constant expression takes the type it's used as, all the way down to its literals. A float literal beside an integer value makes the operation an `f64` one, if the integer widens to `f64`:
+
+<!-- spec:begin compile -->
 
 ```ents
 func third() -> f32 {
@@ -2266,22 +2461,28 @@ func big() -> i64 {
 }
 
 func halves(n: i32) -> f64 => n * 0.5    // 0.5 is an f64, and n widens to it
+
+test "a constant is computed in the type it is used as" {
+  assert third() == 1.0:f32 / 3.0:f32
+  assert big() == 5000000001
+  assert halves(5) == 2.5
+}
 ```
+
+<!-- spec:end -->
 
 Each step of a constant expression is then computed in that type, as it would be for values, and what the compiler proves from a constant (an index in bounds, a range) it proves from that value. As a `u32`, `0 - 1` is 4294967295, so `(0 - 1) / 4` is 1073741823, not 0, and `~0 >> 28` is 15.
 
-The branches of an `if` or `match` that are all constants make a constant too. Where nothing else types it, it takes the default that holds every branch, and each branch has to be a value of the type it ends up with:
+The branches of an `if` or `match` that are all constants make a constant too. Where nothing else types it, it takes the default that holds every branch, and each branch has to be a value of the type it ends up with. Branches that are tuples agree field by field, each field as it would by itself:
+
+<!-- spec:begin compile -->
 
 ```ents
 func pick(c: bool) -> i64 {
   let v = if c { -2147483648 } else { 2147483648 }   // an i64: 2147483648 isn't an i32
   return v
 }
-```
 
-Branches that are tuples agree field by field, each field as it would by itself:
-
-```ents
 func step(d: i32) -> (i32, i32) {
   let (dx, dy) = match d {
     0 => (1, 0)
@@ -2290,68 +2491,262 @@ func step(d: i32) -> (i32, i32) {
   }
   return (dx, dy)
 }
+
+test "constant branches take the default that holds them all" {
+  assert pick(false) == 2147483648
+  let dx, dy = step(5)
+  assert dx == -1
+  assert dy == -1
+}
 ```
+
+<!-- spec:end -->
 
 An integer constant with no type that fits neither an `i64` nor a `u64` has no default: give it a type (`let x: u128 = 18446744073709551616`). Nor have branches of which one is negative and another past an `i64`: `if c { -1 } else { 18446744073709551615 }` needs a type that holds both.
 
-Once a value has a concrete type, normal promotion rules apply:
+Once a value has a type, it converts only as values do. A `let` without a type gives its constant the default, and from then on it is a value of that type:
+
+<!-- spec:begin compile -->
 
 ```ents
-let z = 1.3            // inferred as f64
-let a:f32 = z          // ERROR: f64 → f32 needs explicit cast
+func f() -> f32 {
+  let z = 1.3            // an f64
+  let a: f32 = z
+  return a
+}
 ```
+
+```errors
+cannot assign f64 to f32
+```
+
+<!-- spec:end -->
+
+`int(N)` and `float(X)` can also be written as types, `let x: int(5) = 5`. Such a type has the one value: `let x: int(5) = 7` is `cannot assign int(7) to int(5)`. At run time it is held as its constant's default type (an `i32` for `int(5)`), so a parameter of type `int(5)` in an exported function is an `i32` the host may give any value. They are names for the messages to use, not types to write.
 
 #### Type Errors
 
+Each of these is an error, with the fix it names:
+
+<!-- spec:begin compile -->
+
 ```ents
-i32 + f32   // ERROR: i32 exceeds f32's mantissa
-i32 + u32   // ERROR: mixed signedness, cast explicitly
-i32 < u32   // ERROR: the same goes for comparisons
-i64 → i32   // ERROR: narrowing needs explicit cast
-bool + i32  // ERROR: cast bool first
-f64 % 2.0   // ERROR: % and the bitwise operators need integers
+func a(x: i32, y: f32) -> f32 => x + y    // an i32 doesn't fit f32's mantissa
+func b(x: i32, y: u32) -> i32 => x + y    // mixed signedness
+func c(x: i32, y: u32) -> bool => x < y   // the same goes for comparisons
+func d(x: i64) -> i32 => x                // narrowing
+func e(f: bool, n: i32) -> i32 => f + n   // a bool is no number
+func g(x: f64) -> f64 => x % 2.0          // % and the bitwise operators need integers
 ```
+
+```errors
+mismatched operands for '+': i32 and f32 (cast one side explicitly)
+mismatched operands for '+': i32 and u32 (cast one side explicitly)
+mismatched operands for '<': i32 and u32 (cast one side explicitly)
+cannot assign i64 to i32
+'+' cannot be applied to bool: cast it to an integer first
+'%' needs integer operands, not f64
+```
+
+```ents
+func a(x: i32, y: f32) -> f32 => x as f32 + y
+func b(x: i32, y: u32) -> i32 => x + y as i32
+func c(x: i32, y: u32) -> bool => x < 0 || x as u32 < y    // a negative x is below every u32
+func d(x: i64) -> i32 => x as i32
+func e(f: bool, n: i32) -> i32 => f as i32 + n
+func g(x: f64) -> f64 => x - 2.0 * (x / 2.0).trunc()
+
+test "a cast says which conversion is meant" {
+  assert a(2, 0.5) == 2.5
+  assert b(-5, 3) == -2
+  assert c(-1, 0)
+  assert !c(5, 3)
+  assert d(4294967297) == 1
+  assert e(true, 1) == 2
+  assert g(7.5) == 1.5
+}
+```
+
+<!-- spec:end -->
 
 #### Explicit Casts
 
-Two syntaxes:
+A cast is written two ways:
+
+- `x as T`, for any target type `T`.
+- `T(x)`, for a primitive type's own name only: `u32(x)`, `f64(n)`, `i8(b)`. It takes exactly one argument (`type cast 'u32' expects 1 argument, got 2`). It is a call in form, so it binds as one: `u32(x).double()` calls `double` on the cast. A name for a primitive type (`type Count = u32`) has no such call (`Count(x)` is an error: write `x as Count`), nor has a ranged type or a type parameter (`T(x)` in a generic says to write `x as T`). A capitalised name with arguments is a struct constructor ([2.8](#struct-constructors)), which builds a value, not a cast.
+
+`as` applies to a postfix expression: a name, a literal, a call, a field, an index, a dereference, or anything in parentheses. Its result takes no postfix operator and no second `as` without parentheses: `x as u32.double()` and `1 as u8 as u16` are syntax errors, and `(x as u32).double()` and `(b as u16) as u32` are what is meant. A unary operator before it applies to the cast: `-x as i32` is `-(x as i32)`. Every binary operator binds looser, so `x as i32 + 1` is `(x as i32) + 1`, and `n as i32 < 0` is `(n as i32) < 0`.
+
+<!-- spec:begin compile -->
 
 ```ents
-// Function-style (binds tightly, primitive types only)
-i32(x)
-f64(value)
+func double(x: u32) -> u32 => x * 2
 
-// as-style (also binds tightly — at the postfix level)
-x as i32
-ptr as *u8
+func a(x: i32) -> u32 => (x as u32).double()
+func b(x: i32) -> u32 => u32(x).double()       // the same
+func c(x: u32) -> i32 => -x as i32             // -(x as i32)
+func d(x: u32) -> bool => x as i32 < 0          // (x as i32) < 0: the top bit
+func e(x: f64) -> u32 => x.floor() as u32      // a method call is a postfix expression
+
+test "as binds tighter than every binary operator" {
+  assert a(3) == 6
+  assert b(3) == 6
+  assert c(5) == -5
+  assert d(0x80000000)
+  assert e(2.7) == 2
+}
 ```
 
-Both forms bind tighter than arithmetic, so no parens are needed:
+<!-- spec:end -->
+
+A cast converts a single value: a number, a bool or a pointer. What it gives:
+
+| Cast | Value | Wasm |
+|------|-------|------|
+| integer → narrower integer | its low bits, read as the target type: `300 as u8` is 44, `200 as i8` is -56, `0x100000001 as u32` is 1 | `i32.wrap_i64` from 64 bits; to 8 or 16 bits `i32.and` with 255 or 65535 (unsigned) or `i32.shl` then `i32.shr_s` by 24 or 16 (signed) |
+| integer → integer of the same width | the same bits: `-1 as u32` is 4294967295, `4294967295 as i32` is -1 | nothing |
+| integer → wider integer | extended by the source's signedness: an `i8` of -1 as a `u64` is 18446744073709551615, a `u8` of 255 as an `i64` is 255 | `i64.extend_i32_s` / `_u` |
+| integer → float | the nearest float: `16777217 as f32` is 16777216 | `f32.convert_i32_s` / `_u`, and the `i64` ones |
+| float → integer | truncated toward zero: `-3.7 as i32` is -3; **traps** where that is not a value of the 32- or 64-bit integer the target is held in (below) | `i32.trunc_f64_s` / `_u`, and the others |
+| `f64` → `f32` | the nearest `f32`; past its range, infinity | `f32.demote_f64` |
+| `f32` → `f64` | the same value | `f64.promote_f32` |
+| `bool` → number | 0 or 1 | nothing, or a convert to a float |
+| pointer → number, number → pointer, pointer → pointer | the address as a `u32`, cast from or to the other type as a `u32` is | nothing between a pointer and a 32-bit integer |
+| a type → itself, or one it converts to implicitly | the implicit conversion: `p as ?*u8`, `c as ?Canvas` | as implicit |
+
+**Float to integer traps.** The truncated value has to fit the wasm integer the target is held in: an `i32` for a signed target of 32 bits or fewer, a `u32`'s range for an unsigned one, and 64 bits for `i64` and `u64`. NaN, an infinity, or a value outside that range traps (wasm's `trunc` instructions, [11.2](#112-narrowing-instructions-explicit-cast)). So `3000000000.0 as i32` traps and `3000000000.0 as u32` is 3000000000. A target of 8 or 16 bits is truncated to 32 bits first and then keeps its low bits as an integer cast does: `300.0 as u8` is 44, `200.0 as i8` is -56, and `-1.0 as u8` traps (it is no `u32`), while `-0.5 as u8` is 0. Compare before a cast that may be out of range: `if x >= 0.0 && x < 256.0 { x as u8 }`.
+
+A cast of a constant is computed when the program is compiled, with the value the run-time cast gives: `300 as u8` is the constant 44, `-1 as u32` is 4294967295. A float constant that would trap as an integer is no constant (`global g: i32 = 1.0e30 as i32` is `global initializer must be a compile-time constant`), and in a function it traps where it runs.
+
+<!-- spec:begin compile -->
 
 ```ents
-x as i32 + 1     // OK: parses as (x as i32) + 1
-i32(x) + 1       // OK: same result
+func byte(x: i32) -> u8 => x as u8
+func signed(x: i32) -> i8 => x as i8
+func low(x: i64) -> i32 => x as i32
+func wide(x: i8) -> u64 => x as u64
+func whole(x: f64) -> i32 => x as i32
+func cut(x: f64) -> u8 => x as u8
+func near(x: i64) -> f32 => x as f32
+func bit(b: bool) -> u32 => b as u32
+func address(p: *u8) -> u32 => p as u32
+
+data cell = [7:u8]
+
+test "a cast keeps low bits, extends by the source's sign, truncates floats" {
+  assert byte(300) == 44
+  assert byte(-1) == 255
+  assert signed(200) == -56
+  assert low(0x100000001) == 1
+  assert wide(-1) == 18446744073709551615
+  assert whole(-3.7) == -3
+  assert cut(300.0) == 44
+  assert near(16777217) == 16777216.0
+  assert bit(true) == 1
+  assert address(&cell[0]) == 8                // data starts at address 8 (9.0)
+  assert (address(&cell[0]) as *u8).* == 7
+}
 ```
 
-For type-punned memory access, use the member syntax instead of casts:
+<!-- spec:end -->
+
+A cast is required for:
+
+- narrowing, larger to smaller;
+- a change of signedness, also in an operation that mixes them (`x + y as i32`);
+- integer to float where the float may not hold every value (`i32` → `f32`, `i64` → `f64`), and float to integer;
+- `f64` to `f32`;
+- a bool to a number;
+- a number to a pointer (other than a constant) and a pointer to a number;
+- a pointer to a pointer of another target type (`p as *u32`, `p as [*]u16`, `buf as *[4]u8`): the same address, read as the new type. The type views `p.u32` and `p.u8` are another way to write this ([Type-Punned Memory Access](#type-punned-memory-access)).
+
+What a cast refuses:
+
+- **To `bool`.** A bool is 0 or 1, and cutting a number down to a bit doesn't make one: write the comparison (`x != 0`). A bool casts to a number, and to itself.
+- **Several values to or from one.** A slice, a struct, a tuple and a fixed array held by value are several values. They are cast only to a type they convert to implicitly and are held the same way as (`s as []u8` for a `[]mut u8`); otherwise use `.ptr`, `.len` or the fields (`cannot cast []u8 to [*]u8`, `cannot cast P to Q`).
+- **An optional slice or host reference to its plain form.** It may be none: `cannot cast ?[]u8 to []u8: it may be none — resolve it with 'if let' or '??' first`. An optional pointer is an address, and casts to any pointer as an address does: `p as *u8` with `p: ?*u8` checks nothing.
+- **A host reference** to or from anything but its optional form ([2.13](#213-host-references)).
+- **A function's name** to a number or an address: a function has no run-time value ([Function Types and Pointers](#function-types-and-pointers)).
+- **Between an integer of 128 bits or more and a float**: `cannot cast u128 to f64: not supported yet`. *Not implemented.* Cast through `u64` or `i64` where the value fits one.
+
+A cast to a ranged type (`x as u32#8`) is not checked: it says the value is in range, and the compiler takes the program's word for it, as it does for a many-pointer's index. An index it proves is not bounds-checked, so a wrong one reads or writes past the array. Write it only where the value is known to be in range (the library's `FixedVec` writes `(v.len - 1) as u32#n` after `assert v.len > 0`); otherwise compare, which narrows the range and is the check ([Ranged Integers](#ranged-integers)).
+
+<!-- spec:begin compile -->
 
 ```ents
-ptr.u8              // read memory as u8
-ptr.u32             // read memory as u32
+type P = (x: i32, y: i32)
+type Q = (a: i32, b: i32)
+
+func a(x: u32) -> bool => x as bool
+func b(s: []u8) -> [*]u8 => s as [*]u8
+func c(p: P) -> Q => p as Q
+func d(x: u128) -> f64 => x as f64
+func e(x: u64) -> u32 => u32(x, 0)
 ```
 
-Casts are required for:
+```errors
+cannot cast u32 to bool: compare it instead (x != 0)
+cannot cast []u8 to [*]u8
+cannot cast P to Q
+cannot cast u128 to f64: not supported yet
+type cast 'u32' expects 1 argument, got 2
+```
 
-- Narrowing (larger → smaller)
-- Lossy integer→float
-- Mixed signedness operations
-- Bool→integer
+A second `as`, or a postfix operator after the type, needs the cast in parentheses:
 
-A cast converts between numbers and pointers, and turns a bool into a number (0 or 1). Nothing casts to `bool`: write the comparison (`x != 0`). A slice or a struct is several values: it can't be cast to or from a single one (use `.ptr`, `.len` or its fields).
+```ents
+func f(x: u16) -> u32 => x as u8 as u32
+```
+
+```errors
+Expected
+```
+
+<!-- spec:end -->
 
 ### 2.11 Type Names
 
-A `type` declaration gives a type a name, and the name is that type wherever it is used: what can be done with the type written out can be done with the name. A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, one for an optional is unwrapped by `if let` and `??`, a literal is laid out for a name as for the type it names (`data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`), and a pointer to an array becomes a slice under any of their names. A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte. A generic type applied is a name of the same kind (8.5). One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)), which is a type of its own, and one name of it is the same type in every module of a program.
+`type Name = Type` gives a type a name. A `type` declaration stands at module level (in a function body it is a syntax error), and the name is a type identifier, which starts with a capital letter ([1.3](#13-type-identifiers)). The declarations of a module come in any order: a name can be used above the line that declares it, and names can refer to each other, also round to themselves through a pointer or a slice ([Types That Refer to Themselves](#types-that-refer-to-themselves)). A name is declared once in its module, and it is not exported or imported: a module that needs the type declares it again or writes it out ([7.1](#71-imports)).
+
+A name is not a new type. It is the type it names, wherever it is used: `type Meters = u32` and `type Feet = u32` are both `u32`, so a `Meters` passes where a `Feet` is wanted, and either is a `u32` in arithmetic. Messages say the name that was written (`cannot assign int(8) to Small`). Any type can be named: a number, a ranged integer (`type Small = u32#8`), a pointer, a slice, an array, an optional, a tuple or struct, a function type (`type Scale = (u32) -> u32`), a generic type applied (`type Bytes = Vec(u8)`, [8.5](#85-generic-types)), or a name (`type Pt = Point`). A name in parentheses is the name, as any type is ([2.7](#27-tuple-types)).
+
+<!-- spec:begin compile -->
+
+```ents
+type Meters = u32
+type Feet = u32
+type Count = u32
+type Small = u32#8
+type Scale = (u32) -> u32
+
+func feet(m: Meters) -> Feet => m * 3                       // a Meters is a u32, and so is a Feet
+func clamp(x: u32) -> Small => if x < 8 { x } else { 7 }     // x is a u32#8 where x < 8
+func twice(comptime f: Scale, x: u32) -> u32 => f(f(x))      // feet is a (u32) -> u32
+func count(n: u64) -> Count => n as Count                    // a cast to the name
+
+test "a name is the type it names" {
+  assert feet(2) == 6
+  assert clamp(9) == 7
+  assert twice(feet, 1) == 9
+  assert count(4294967297) == 1
+}
+```
+
+<!-- spec:end -->
+
+What can be done with the type written out can be done with its name:
+
+- A name for a pointer is dereferenced, one for a slice or an array has `.ptr`, `.len` and elements, and one for an optional is unwrapped by `if let` and `??`.
+- A literal is laid out for a name as for the type it names: `data list: S = [4, 5, 6]`, `let q: *A = [1, 2, 3]`.
+- A pointer to an array becomes a slice under any of their names, and the conversions of [Every Implicit Conversion](#every-implicit-conversion) apply to names as to what they name.
+- A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte.
+- A name for a struct is its constructor: `Pt(1, 2)` with `type Pt = Point` ([2.8](#struct-constructors)).
+- A name for a number is cast to with `as` (`n as Count`). `Count(n)` is no cast: only a primitive type's own name is called as one ([Explicit Casts](#explicit-casts)).
+
+One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)). Each name declared with `host` is a type of its own, and one name of it is the same type in every module of a program.
+
+Names for a pointer, a slice, an optional and an array, each used as what it names:
 
 <!-- spec:begin compile -->
 
@@ -2373,12 +2768,12 @@ func last(s: S) -> u16 => s[s.len - 1] ?? 0
 func read(o: O) -> u32 => if let q = o { q.* } else { 0 }
 
 test "names are the types they name" {
-  let p = cells as P
+  let p: P = &cells[0]
   assert bump(p) == 1
   let s: S = shorts
   assert last(s) == 3
   assert read(p) == 1
-  assert read(0 as O) == 0
+  assert read(0) == 0
   assert last(list) == 6
   let q: *A = [7, 8, 9]
   assert last(q) == 9
@@ -2388,6 +2783,22 @@ test "names are the types they name" {
 <!-- spec:end -->
 
 ### 2.12 Limits
+
+A program has these limits. Each is checked when it is compiled, and going over is one error where it goes over:
+
+| What | At most | Why |
+|------|---------|-----|
+| a type, written out in full | 65536 parts | the compiler writes types out to name and lay out values |
+| a function's parameters | 1000 registers | the WebAssembly JS API's limit for a function |
+| a function's results | 1000 registers | the same |
+| the value of an `if`, `if let`, `match` or `??` | 1000 registers | it is the results of a wasm block |
+| everything one function holds (parameters, variables, the values its code computes) | 50000 registers | the JS API's limit on a function's locals; it also keeps the body under the 7654321 bytes the API allows |
+| a program's globals | 1000000 registers | the JS API's limit for a module |
+| a program's imports, and the entry module's exports | 100000 each | the same |
+| brackets and prefixes nested in source | 256 deep | the compiler's parser |
+| an array's length, and its size | 4294967295 elements, 4294967295 bytes | a 32-bit memory ([2.4](#24-fixed-arrays-value-type)) |
+
+A register is a wasm value: a number, a bool, a pointer or a host reference is one, a slice two, a `u128` two `i64`s, and a struct or an array held by value one for each of its fields and elements. The sections below say how each is counted.
 
 A type has at most 65536 parts written out in full: every name replaced by what it names, and each field, element, pointer and number counted where it stands (a type that refers to itself is counted once round), with an array held by value counted once for each of its elements (below). Names let a type double at every level, `type D2 = (a: D1, b: D1)`, and the compiler writes types out to name instances and to lay out values. A type over the limit is one error where it is declared, or where the generic type that makes it is applied, or, written in place (in a signature, a cast, after a colon, as a type argument), where it is written; the types made of it say nothing more.
 
@@ -2502,10 +2913,14 @@ Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to,
 
 A host reference is a value of the host's (a JavaScript object, a DOM element, a file the host has open) that the module holds and hands back but cannot look into. Its type is declared with `host` as the whole of a type declaration:
 
+<!-- spec:begin compile -->
+
 ```ents
 type Canvas = host
 type Context = host
 ```
+
+<!-- spec:end -->
 
 Each name declared with `host` is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type program-wide, across source modules too: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares, and two modules that each declare `type Handle = host` have one type between them. So a library should choose a name that is its own (`FileHandle`, not `Handle`). Types are otherwise structural (2.11, 7.1, 8.4, 8.5); a host type is the one kind that is its name, and a message that meets two types of one name that are not one type says what each stands for (`cannot assign Canvas (i32) to Canvas (a host type)`). `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
 
@@ -2515,7 +2930,7 @@ A host reference is held where registers are, and nowhere else:
 - in a `let` variable or a global: a global of a plain one is imported from the host, and the module's own globals, exported ones too, hold an optional one (below);
 - as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
 
-It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. How a host reference is kept in memory is a design still to come.
+It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. *Not implemented:* a way to keep host references in memory (in a wasm table, say) is not designed; a program holds as many as its registers do ([2.12](#212-limits)).
 
 #### Never null, and optional
 
@@ -2547,7 +2962,7 @@ For a JavaScript host, null is `null`. `undefined` (what a function that returns
 
 Nothing else is computed with a host reference: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast to or from a number, an address or another host type (`0 as ?Canvas` is none, and `c as ?Canvas` widens), and no condition. It is passed, returned, stored in a variable or a global, and read back.
 
-The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` today. A later backend may hold a plain one as a `(ref extern)`, which the engine itself keeps from being null, and drop the boundary checks, with no change to the source.
+The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly both a `Canvas` and a `?Canvas` are an `externref` ([9.3](#93-wasm-type-mapping)), and none is `ref.null extern`. A plain one is not a `(ref extern)`, the type the engine itself keeps from being null, since that needs typed function references, which the compiler does not write ([11](#11-webassembly-reference)); the boundary checks do that work instead. A backend that holds a plain one as a `(ref extern)` can drop them with no change to the source.
 
 <!-- spec:begin compile -->
 
