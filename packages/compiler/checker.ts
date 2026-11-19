@@ -6958,8 +6958,6 @@ class CheckContext {
         // A constant with a fixed form (items.len, sizeof(T)) is emitted in its
         // default type and converted like any other value.
         if (isComptimeNumber(unwrap(type))) return
-        // A def of 0 where an optional host reference is wanted is none.
-        if (unwrap(type).kind === 'host') break
         const own = this.concretize(actual)
         this.exprTypes.set(expr, own)
         const from = unwrap(own)
@@ -11503,7 +11501,7 @@ function rowsAdvice(row: ResolvedType): string {
 // settled on (settleLiteral): it holds slices, or it writes out rows, each of
 // which has to be a row of that type.
 function settles(expr: AST.Expr, type: ResolvedType): boolean {
-  return holdsSlice(type) || hostIn(type) !== null || writesRows(expr)
+  return holdsSlice(type) || writesRows(expr)
 }
 
 // An array literal of array literals, itself or as an element of a tuple.
