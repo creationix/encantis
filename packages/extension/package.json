@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@encantis/compiler": "workspace:*",
-    "binaryen": "^129.0.0",
+    "binaryen": "129.0.0",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.11",

@@ -1,0 +1,18 @@
+{
+  "margin": 0.02,
+  "binaryen": "129.0.0",
+  "budgets": {
+    "examples/alloc/stack.ents": { "measured": 449, "budget": 458 },
+    "examples/alloc/heap.ents": { "measured": 359, "budget": 367 },
+    "examples/containers/main.ents": { "measured": 2242, "budget": 2287 },
+    "examples/crypto/ed25519/ed25519.ents": { "measured": 11617, "budget": 11850 },
+    "examples/crypto/gimli/gimli.ents": { "measured": 640, "budget": 653 },
+    "examples/crypto/sha256/sha256.ents": { "measured": 1195, "budget": 1219 },
+    "examples/crypto/sha512/sha512.ents": { "measured": 1753, "budget": 1789 },
+    "examples/data/crit-bit/crit-bit.ents": { "measured": 1144, "budget": 1167 },
+    "examples/generics/sort.ents": { "measured": 338, "budget": 345 },
+    "examples/generics/vec.ents": { "measured": 354, "budget": 362 },
+    "examples/wasi/tee/tee.ents": { "measured": 2344, "budget": 2391 },
+    "lib/text.ents": { "measured": 998, "budget": 1018 }
+  }
+}

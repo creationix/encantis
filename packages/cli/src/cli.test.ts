@@ -3,9 +3,11 @@
 // What the checker reports is tested in the compiler package.
 
 import { describe, expect, test } from 'bun:test'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const CLI = join(import.meta.dir, 'cli.ts')
 
@@ -263,4 +265,139 @@ export func f() -> u32 => index_of(us, 2) + index_of(fs, 2.0)
     const call = await query('definition', '6:19')
     expect(call.stdout).toBe(`${call.file}:1:1 eq\n`)
   })
+})
+
+// `wasm -O` and `wasm --release` optimize with binaryen in this process, the
+// version package.json pins (wasm.ts). The program returns a struct of three
+// u64 as three values, which binaryen's -Oz grows (today 146 bytes
+// unoptimized, 158 with -O, 136 with --release), and fills memory with
+// memory.fill (bulk memory).
+describe('optimized builds', () => {
+  const PROGRAM = `type P = (x: u64, y: u64, z: u64)
+export func add(a: P, b: P) -> P => (a.x + b.x, a.y + b.y, a.z + b.z)
+export func dbl(a: P) -> P => add(add(a, a), add(a, a))
+
+data buf = mut [0:u8; 64]
+export func clear() {
+  buf[..] = 0
+}
+`
+  const root = join(import.meta.dir, '../../..')
+  const binaryenPath = Bun.resolveSync('binaryen', root)
+  const binaryenVersion = JSON.parse(readFileSync(join(binaryenPath, '../package.json'), 'utf8')).version
+
+  // `encantis wasm <file> -o <dir>/out.wasm [flags]` on PROGRAM, or on an
+  // example; `preload` is a script bun runs before the command.
+  async function wasm(flags: string[], { example = '', preload = '' } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'encantis-cli-'))
+    try {
+      const file = example ? join(root, example) : join(dir, 'program.ents')
+      if (!example) await writeFile(file, PROGRAM)
+      const pre: string[] = []
+      if (preload) {
+        await writeFile(join(dir, 'preload.ts'), preload)
+        pre.push('--preload', join(dir, 'preload.ts'))
+      }
+      const out = join(dir, 'out.wasm')
+      const run = Bun.spawnSync([process.execPath, ...pre, CLI, 'wasm', file, '-o', out, ...flags])
+      const written = existsSync(out) ? new Uint8Array(readFileSync(out)) : null
+      return { exitCode: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString(), written }
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  }
+
+  // --version names the binaryen it optimizes with: two builds are of the
+  // same tools when their versions say the same.
+  test('--version names binaryen', () => {
+    const run = Bun.spawnSync([process.execPath, CLI, '--version'])
+    expect(run.stdout.toString()).toBe(`encantis dev (binaryen ${binaryenVersion})\n`)
+  })
+
+  // The same source and the same encantis give the same bytes: nothing in a
+  // release build depends on the run (an example with imports and generics).
+  test('--release twice gives the same bytes', async () => {
+    const example = 'examples/containers/main.ents'
+    const first = await wasm(['--release'], { example })
+    const second = await wasm(['--release'], { example })
+    expect(first.exitCode).toBe(0)
+    expect(first.written?.length).toBeGreaterThan(0)
+    expect(second.written).toEqual(first.written)
+  }, 60_000)
+
+  // --release is never larger than the module unoptimized, nor than -O's.
+  // --size --json says each size, and the optimized one is the file's.
+  test('--release keeps the smallest module, and --size --json says how big it is', async () => {
+    const optimize = await wasm(['-O', '--size', '--json'])
+    const release = await wasm(['--release', '--size', '--json'])
+    const o = JSON.parse(optimize.stdout)
+    const r = JSON.parse(release.stdout)
+    expect(o.optimized).toBe(optimize.written?.length)
+    expect(r.optimized).toBe(release.written?.length)
+    expect(r.unoptimized).toBe(o.unoptimized)
+    expect(r.optimized).toBeLessThanOrEqual(Math.min(o.unoptimized, o.optimized))
+    expect(r.gzip).toBeGreaterThan(0)
+    expect(r.brotli).toBeGreaterThan(0)
+  }, 60_000)
+
+  // As text, a name and a number a line, the optimized size with its change;
+  // a build that does not optimize has no optimized line.
+  test('--size as text', async () => {
+    const plain = await wasm(['--size'])
+    expect(plain.stdout).toMatch(new RegExp(`^unoptimized  ${plain.written?.length}\ngzip {9}\\d+\nbrotli {7}\\d+\n$`))
+    const optimized = await wasm(['-O', '--size'])
+    expect(optimized.stdout).toMatch(/^unoptimized {2}\d+\noptimized {4}\d+ {2}[-+]?\d+\.\d%\ngzip {9}\d+\nbrotli {7}\d+\n$/)
+  }, 60_000)
+
+  // binaryen as a preloaded script gives it to the command: not there,
+  // refusing the module (it does not validate without multi-value and bulk
+  // memory), or throwing (binaryen aborts on memory.fill when asked for bulk
+  // memory without bulk-memory-opt).
+  const fakeBinaryen = (how: 'missing' | 'invalid' | 'throws') => {
+    const real = how === 'missing' ? 'null' : `(await import(${JSON.stringify(pathToFileURL(binaryenPath).href)})).default`
+    const features = how === 'invalid' ? 'BulkMemory: 0, BulkMemoryOpt: 0, Multivalue: 0' : 'BulkMemoryOpt: 0'
+    return `const real = ${real}
+Bun.plugin({
+  name: 'binaryen ${how}',
+  setup(build) {
+    build.module('binaryen', () => {
+      if (!real) throw new Error('Cannot find package "binaryen"')
+      const Features = { ...real.Features, ${features} }
+      return { exports: { default: Object.create(real, { Features: { value: Features } }) }, loader: 'object' }
+    })
+  },
+})
+`
+  }
+
+  // When binaryen can't optimize, -O says so and writes the module
+  // unoptimized; with --strict-opt, and always with --release, the command
+  // exits 1 and writes nothing.
+  test('without binaryen, -O falls back, --strict-opt and --release fail', async () => {
+    const preload = fakeBinaryen('missing')
+    const missing = `binaryen ${binaryenVersion} could not be loaded: Cannot find package "binaryen"`
+    const optimize = await wasm(['-O', '--size', '--json'], { preload })
+    expect(optimize.exitCode).toBe(0)
+    expect(optimize.stderr).toContain(`Warning: ${missing}; writing the unoptimized module (--strict-opt makes this an error)\n`)
+    expect(JSON.parse(optimize.stdout)).toMatchObject({ unoptimized: optimize.written?.length, optimized: null })
+
+    for (const flags of [['-O', '--strict-opt'], ['--release']]) {
+      const strict = await wasm(flags, { preload })
+      expect(strict.exitCode).toBe(1)
+      expect(strict.written).toBeNull()
+      const flag = flags.at(-1)
+      expect(strict.stderr).toBe(`Error: ${missing}\nNothing written: ${flag} does not fall back to the unoptimized module\n`)
+    }
+  }, 60_000)
+
+  test('--release fails when binaryen refuses the module or throws', async () => {
+    const invalid = await wasm(['--release'], { preload: fakeBinaryen('invalid') })
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.written).toBeNull()
+    expect(invalid.stderr).toContain('Error: the module does not validate in binaryen (its report is above)\n')
+    const throws = await wasm(['--release'], { preload: fakeBinaryen('throws') })
+    expect(throws.exitCode).toBe(1)
+    expect(throws.written).toBeNull()
+    expect(throws.stderr).toContain('Error: binaryen failed: Aborted(')
+  }, 60_000)
 })

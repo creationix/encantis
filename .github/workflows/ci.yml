@@ -92,3 +92,9 @@ jobs:
           "$BIN" test examples/data/crit-bit/crit-bit.ents
           "$BIN" wasm -O examples/alloc/stack.ents -o stack.wasm
           test -s stack.wasm
+          # binaryen runs inside the binary: a release build twice gives the
+          # same bytes, no larger than -O's
+          "$BIN" wasm --release --size examples/alloc/stack.ents -o release.wasm
+          "$BIN" wasm --release examples/alloc/stack.ents -o again.wasm
+          cmp release.wasm again.wasm
+          test "$(wc -c < release.wasm)" -le "$(wc -c < stack.wasm)"
