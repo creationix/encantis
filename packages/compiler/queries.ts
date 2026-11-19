@@ -5,7 +5,7 @@ import type * as AST from './ast'
 import type { TypeCheckResult, Symbol as CheckSymbol } from './checker'
 import { typeKey, typecheck, declaredName, genericAround, genericDeclaring, fieldNamedAt, readAsModuleName } from './checker'
 import { parse } from './parser'
-import { typeToString, type ResolvedType, byteSize, unwrap } from './types'
+import { typeToString, type ResolvedType, byteSize, unwrap, isValueArray } from './types'
 import { typeToWasm } from './codegen'
 import { LineMap, type Position } from './position'
 import {
@@ -346,7 +346,7 @@ export function hover(
     }
     const result: HoverResult = {
       name,
-      type: symbolTypeString(sym, source),
+      type: symbolTypeString(sym, source, name),
       kind: sym.kind,
     }
     // A generic is shown with its instances, a generic type with its
@@ -652,6 +652,12 @@ function typeCostAnnotation(type: ResolvedType): string {
   if (u.kind === 'array' && u.sizes && !u.sizes.includes('_')) {
     const size = byteSize(u)
     if (size !== null) return ` (${size} bytes)`
+    // An array with no bytes (of host references) is its registers, as a
+    // tuple is.
+    if (isValueArray(u)) {
+      const slots = typeToWasm(u).length
+      if (slots > 1) return ` (${slots} slots)`
+    }
   }
   if (u.kind === 'tuple') {
     const hasArray = u.fields.some(f => unwrap(f.type).kind === 'array')
@@ -665,7 +671,7 @@ function typeCostAnnotation(type: ResolvedType): string {
   return ''
 }
 
-function symbolTypeString(sym: CheckSymbol, source?: string): string {
+function symbolTypeString(sym: CheckSymbol, source?: string, name?: string): string {
   // A generic has a signature per instance, not one of its own: what there is
   // to show is the one it was written with.
   if (sym.kind === 'generic') {
@@ -680,7 +686,11 @@ function symbolTypeString(sym: CheckSymbol, source?: string): string {
   }
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
-  // A host type is named for itself: what it is, is a host reference.
-  if (sym.kind === 'type') return sym.type.kind === 'host' ? 'host' : base
+  // A host type is named for itself: what it is, is a host reference. A
+  // name for it (type Screen = Canvas) is that type.
+  if (sym.kind === 'type') {
+    const u = unwrap(sym.type)
+    return u.kind === 'host' && !u.optional && (name === undefined || u.name === name) ? 'host' : base
+  }
   return base + typeCostAnnotation(sym.type)
 }
