@@ -3143,6 +3143,47 @@ export function funcToWat(
 )`
 }
 
+// An exported function whose parameters hold a plain host reference checks
+// them as they come in from the host (funcToWat's entry checks). A call the
+// module makes to it passes values that are never null already, so when the
+// module calls it too, it is emitted without the checks, and exported through
+// a wrapper that checks and then calls it: the checks run once, where a value
+// comes in from the host, and nowhere else. A function the module does not
+// call keeps them in its own entry, and has no wrapper.
+type HostEntry = { at: number; watName: string; unchecked: () => string; wrapper: string }
+
+function hostEntry(decl: AST.FuncDecl, checkResult: TypeCheckResult, watName: string, at: number, unchecked: () => string): HostEntry | null {
+  const name = checkResult.funcNames.get(decl) ?? decl.ident ?? 'anonymous'
+  const sym = checkResult.symbols.get(name)
+  if (sym?.kind !== 'func') return null
+  const params = sym.type.params.filter((p) => p.name).flatMap((p) => {
+    const checked = nonNullSlots(p.type)
+    return typeToWasm(p.type).map((type, i) => ({ type, checked: checked[i] }))
+  })
+  if (!params.some((p) => p.checked)) return null
+  const results = sym.type.returns.flatMap((r) => typeToWasm(r.type))
+  const signature = [...params.map((p) => `(param ${p.type})`), ...(results.length > 0 ? [`(result ${results.join(' ')})`] : [])].join(' ')
+  const checks = params.flatMap((p, i) => (p.checked ? [nullTrap(`(local.get ${i})`)] : []))
+  const call = `(call $${watName}${params.map((_, i) => ` (local.get ${i})`).join('')})`
+  const wrapper = `(func $__export_${watName} ${signature}\n  ${[...checks, call].join('\n  ')}\n)`
+  return { at, watName, unchecked, wrapper }
+}
+
+// Gives each exported function the module also calls its wrapper (see
+// hostEntry), once every function that could call it is in `parts`.
+function routeHostEntries(parts: string[], entries: HostEntry[]): void {
+  for (const entry of entries) {
+    const escaped = entry.watName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const called = new RegExp(`\\((?:return_)?call \\$${escaped}[\\s)]`)
+    if (!parts.some((part) => called.test(part))) continue
+    parts[entry.at] = `${entry.unchecked()}\n${entry.wrapper}`
+    const target = `(func $${entry.watName}))`
+    for (const [i, part] of parts.entries()) {
+      if (part.startsWith('  (export ') && part.endsWith(target)) parts[i] = `${part.slice(0, -target.length)}(func $__export_${entry.watName}))`
+    }
+  }
+}
+
 // The functions a module exports to the host, whose parameters come in from
 // outside
 function hostExports(module: AST.Module): Set<AST.FuncDecl> {
@@ -3657,7 +3698,13 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
 
   // Collect function declarations
   const exported = hostExports(module)
+  const hostEntries: HostEntry[] = []
   for (const fn of funcsInOrder(module.decls, checkResult)) {
+    if (exported.has(fn)) {
+      const watName = checkResult.funcNames.get(fn) ?? fn.ident ?? 'anonymous'
+      const entry = hostEntry(fn, checkResult, watName, parts.length, () => funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize))
+      if (entry) hostEntries.push(entry)
+    }
     parts.push(funcToWat(fn, checkResult, literalRefs, undefined, undefined, undefined, dataSection.totalSize, exported.has(fn)))
   }
   parts.push(...hostGlobalsStart(hostGlobalChecks(module, ctx, false)))
@@ -3678,6 +3725,7 @@ export function moduleToWat(module: AST.Module, checkResult: TypeCheckResult): s
       parts.push(exportToWat(decl, ctx))
     }
   }
+  routeHostEntries(parts, hostEntries)
 
   // Data section
   if (dataSection.totalSize > 0) {
@@ -4297,6 +4345,7 @@ export function programToWat(
   // host's to call.
   const entryExports = modules.get(entryPath) ? hostExports((modules.get(entryPath) as LoadedModule).module) : new Set<AST.FuncDecl>()
   const globalChecks: HostGlobalCheck[] = []
+  const hostEntries: HostEntry[] = []
   for (const [path, loaded] of modules) {
     const result = checkResults.get(path)
     if (!result) continue
@@ -4305,6 +4354,10 @@ export function programToWat(
       if (!fn.ident) continue
       const known = result.funcNames.get(fn) ?? fn.ident
       const watName = modNameMap.get(known) ?? known
+      if (entryExports.has(fn)) {
+        const entry = hostEntry(fn, result, watName, parts.length, () => funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize))
+        if (entry) hostEntries.push(entry)
+      }
       parts.push(funcToWat(fn, result, refsOf(path), modNameMap, watName, undefined, dataSection.totalSize, entryExports.has(fn)))
     }
     globalChecks.push(...hostGlobalChecks(loaded.module, createContext(result, refsOf(path), modNameMap, dataSection.totalSize), tested.has(path)))
@@ -4356,6 +4409,7 @@ export function programToWat(
       }
     }
   }
+  routeHostEntries(parts, hostEntries)
 
   // Data section
   if (dataSection.totalSize > 0) {

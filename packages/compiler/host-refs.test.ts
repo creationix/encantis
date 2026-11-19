@@ -395,6 +395,34 @@ export func outer(c: Canvas) -> Canvas {
     expect(wat).not.toContain('start')
   })
 
+  // An exported function the module calls too checks what the host gives
+  // it in a wrapper the host calls: the module's own calls, with values
+  // that are never null already, are not checked again.
+  test('a call the module makes to an exported function is not checked', async () => {
+    const source = `type Canvas = host
+export func draw(c: Canvas, n: i32) -> i32 => n + 1
+export func many(c: Canvas, n: u32) -> i32 {
+  let total = 0
+  for i in n {
+    total += draw(c, 0)
+  }
+  return total
+}
+`
+    const wat = watOfSource(source)
+    expect(wat).toContain('(func $draw (param $c externref) (param $n i32) (result i32)\n    (i32.add')
+    expect(wat).toContain('(func $__export_draw (param externref) (param i32) (result i32)\n    (if (ref.is_null (local.get 0)) (then (unreachable)))\n    (call $draw (local.get 0) (local.get 1))')
+    expect(wat).toContain('(export "draw" (func $__export_draw))')
+    expect(wat).toContain('(export "many" (func $many))')
+    expect(wat.match(/ref\.is_null/g)?.length).toBe(2)
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {})
+    const m = instance.exports as Record<string, CallableFunction>
+    const c = { name: 'c' }
+    expect([m.draw(c, 4), m.many(c, 3)]).toEqual([5, 3])
+    expect(() => m.draw(null, 4)).toThrow(/nreachable/)
+    expect(() => m.many(null, 3)).toThrow(/nreachable/)
+  })
+
   // Two modules' types of one name that are not one type are told apart in
   // a message by what each stands for.
   test('a message tells two types of one name apart', async () => {
