@@ -2659,10 +2659,12 @@ class CheckContext {
       type = primitive('i32')
     }
 
+    // A global's value is a constant, and no constant is a plain host
+    // reference: a global that holds one is imported from the host.
     const missing = decl.type && !decl.value ? noDefault(type) : null
-    if (missing) this.error(decl.span.start, `global '${name}' needs a value: ${missing}`)
+    if (missing) this.error(decl.span.start, `global '${name}' needs a value: ${missing}, ${noConstant(type)}`)
     if (decl.value && !this.isConstantInitializer(decl.value)) {
-      this.error(decl.value.span.start, 'global initializer must be a compile-time constant')
+      this.error(decl.value.span.start, `global initializer must be a compile-time constant${noDefault(type) ? `, ${noConstant(type)}` : ''}`)
     }
     const written = decl.type
     const held = type
@@ -11394,6 +11396,15 @@ function noDefault(type: ResolvedType): string | null {
   return shown === host.name
     ? `${article(host.name)} ${host.name} has no default (a ?${host.name} starts as none)`
     : `${shown} holds ${host.name}, which has no default`
+}
+
+// What a global of a type with no default can be: no constant is a plain
+// host reference, so one that holds it is imported, and the module's own
+// holds an optional one.
+function noConstant(type: ResolvedType): string {
+  const host = plainHostIn(type)
+  const name = host ? host.name : typeToString(type)
+  return `and no constant is ${article(name)} ${name}: import the global from the host, or make it hold a ?${name}, which starts as none`
 }
 
 // Why an operator can't take an operand of this type, or null when it can.

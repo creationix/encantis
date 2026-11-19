@@ -1303,7 +1303,7 @@ Each name declared with `host` is a type of its own: `Canvas` and `Context` are 
 A host reference is held where registers are, and nowhere else:
 
 - as a parameter or a result of any function, an imported or exported one too, so the host gives references in and takes them back;
-- in a `let` variable or a global, an imported or exported global too;
+- in a `let` variable or a global: a global of a plain one is imported from the host, and the module's own globals, exported ones too, hold an optional one (below);
 - as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
 
 It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. How a host reference is kept in memory is a design still to come.
@@ -1312,7 +1312,8 @@ It has no bytes, so it is never in memory: no pointer points to one, no slice or
 
 A plain host type is never null: a `Canvas` is always a value the host gave. So it has no default, as a plain function value has none (3.4):
 
-- a `let` or a global of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
+- a `let` of one gets its value where it is declared, and so does one of a struct or a fixed array that holds one (`'c' needs a value where it is declared: a Canvas has no default (a ?Canvas starts as none)`);
+- a global's value is a constant, and no constant is a `Canvas`, so a global of one (or of a struct or array that holds one) is imported from the host, which gives its value; the module's own global holds a `?Canvas`, none until it is set (`global 'g' needs a value: ..., and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none`);
 - a named result cannot hold one, since a named result starts with a default: return the value instead;
 - a `let` of one in a block that may not run (a branch, a loop's body, a match arm) is seen in that block alone, not after it as another variable is (3.3): after the block, it may never have been given its value (`'c' is seen only in the block it is declared in: that block may not have run here, ...`);
 - `0` is no `Canvas`, and neither is any other number: `c == 0` on a plain `Canvas` is an error that says to use `?Canvas`.
@@ -1530,6 +1531,8 @@ type Tagged = (c: Canvas, n: i32)
 
 global g: Canvas
 global none: ?Canvas
+import "env" "screen" global screen: Canvas
+global k: Canvas = screen
 
 func vars() {
   let c: Canvas
@@ -1567,7 +1570,8 @@ func optional(b: bool, given: Canvas) -> ?Canvas {
 ```
 
 ```errors
-global 'g' needs a value: a Canvas has no default (a ?Canvas starts as none)
+global 'g' needs a value: a Canvas has no default (a ?Canvas starts as none), and no constant is a Canvas: import the global from the host, or make it hold a ?Canvas, which starts as none
+global initializer must be a compile-time constant, and no constant is a Canvas
 'c' needs a value where it is declared: a Canvas has no default
 't' needs a value where it is declared: Tagged holds Canvas, which has no default
 'cs' needs a value where it is declared: [2]Canvas holds Canvas, which has no default
@@ -1781,7 +1785,7 @@ global total:i32 = 0
 
 A `let` declares a variable of its function, seen from there to the function's end, also after the block it is in has ended; only a `let` in the first branch of an `if let` is seen in that branch alone ([`if let` Bindings](#if-let-bindings)). A variable of a type that has no default, one that holds a plain host reference ([2.13](#213-host-references)), is seen in the block it is declared in alone: after a branch, a loop's body or a match arm, that block may not have run, and the variable would have no value. Its name is its own: it can't be the name of a parameter, a named result or another variable seen there, nor of a global, `def`, `data` block or function of the module (`'count' is already declared in this scope`). The variables of a loop, an `if let` and a match arm are seen in their body only ([5.2](#52-loops)).
 
-A global can be of any value type. One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
+A global can be of any value type but one that holds a plain host reference: its value is a constant, and no constant is one, so such a global is imported from the host ([2.13](#213-host-references)). One that takes several wasm values (a slice, a struct, a wide integer) is that many wasm globals, one per value, so it works like a local of the same type:
 
 ```ents
 type Size = (w:i32, h:i32)
@@ -4728,7 +4732,7 @@ if old == -1 {
 
 ## 11. WebAssembly Reference
 
-The compiler writes WebAssembly 2.0: multi-value, bulk memory (`memory.copy`, `memory.fill`), sign extension, saturating float-to-integer conversion, mutable globals, SIMD, and reference types. This is the one engine every program targets, and a program uses only what it needs of it: one with no host type uses no reference types (no `externref`), and one with no range fill or copy no bulk memory. A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
+The compiler targets engines with WebAssembly 2.0, the one engine every program targets, and writes only what a program needs of it: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with no range fill or copy no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
 
 ### 11.1 Widening Instructions (implicit)
 

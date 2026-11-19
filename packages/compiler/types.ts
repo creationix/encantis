@@ -171,8 +171,8 @@ export interface NamedRT {
 // is never in memory. Kept as its own kind all the way to codegen, so that a
 // backend chooses its representation: wasm's is an externref.
 //
-// A plain one (Canvas) is never null: it has no default, and 0 is none of
-// it. The optional one (?Canvas) may be: 0 is none, and it starts as none.
+// A plain one (Canvas) is never null: it has no default, and 0 is not one.
+// The optional one (?Canvas) may be: 0 is none, and it starts as none.
 export interface HostRT {
   kind: 'host'
   name: string
