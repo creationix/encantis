@@ -1215,13 +1215,13 @@ type '[65536]u8' is too large: written out in full it has more than 65536 parts
 
 <!-- spec:end -->
 
-A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool or a pointer is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
+A function is one wasm function, and every engine takes a wasm function of at most 1000 parameters, 1000 results and 50000 locals, its parameters among them, with a body of at most 7654321 bytes (the limits the WebAssembly JS API sets). What a function holds is counted in registers, the wasm values a value is laid out in: a number, a bool, a pointer or a host reference (2.13) is one, a slice two, a `u128` two `i64`s, and an array held by value or a struct one for each of its elements and fields, `[N]T` N times what `T` is. So:
 
 - The parameters of a function are at most 1000 registers, and so are its results; so are those of an imported function and of a function type wherever it is written. It is said at the parameter or the result that goes over.
 - The value an `if`, an `if let`, a `match` or a `??` gives is at most 1000 registers: it is the results of a wasm block.
 - A function needs at most 50000 registers in all: those of its parameters and of its variables (a named result, and what a `let`, a `for`, an `if let` or a match arm binds), and those of each value its code computes. Each expression counts its registers, one at least, as often as its code is written out: a fill `[x; N]` writes `x` out N times, a deferred expression is written at the end of its block and at each `return`, `break` and `continue` after it, and a `return` without a value gives the named results back, their registers read again each time. A literal is its elements, of which the constant ones are data where the literal is laid out in memory; and a place read only in part, or written, is not computed: `p.*` in `p.*[3]` and `p.* = v`, `rect` and `rect.origin` in `rect.origin.x`. Nor are the name of a function that is called, a type argument and the count of a fill. A value computes about as much code as it has registers, so this keeps the body within its limit as well. Going over is one error, at the value, the variable or the `return` that goes over, and none is said of a function with an error of its own. A test is a function of its own here, and so is each instance of a generic.
 
-A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)).
+A large value belongs in memory, behind a pointer, where a range copy `p[..] = q[..]` (`memory.copy`) and a range fill `p[..] = 0` (`memory.fill`) move it with one instruction whatever its length ([4.8](#48-slicerange-syntax)). Host references are the exception: they are never in memory, so where they alone take a count over its limit, the error says to hold fewer at once (`a host reference is held only in registers, never in memory: hold fewer at once`).
 
 <!-- spec:begin compile -->
 
@@ -1537,6 +1537,30 @@ cannot lay out in memory [2]Canvas: it holds Canvas
 cannot lay out in memory [4]?Canvas: it holds ?Canvas
 cannot take the width of Canvas: a host reference has no bytes
 cannot take .ptr of [2]Canvas: a fixed array held by value has no address
+```
+
+Too many to hold at once is an error of the register limits (2.12), whose advice for a host reference is to hold fewer, not to put them behind a pointer; a value that is over the limit with the host references taken out still gets that advice:
+
+```ents
+type Canvas = host
+
+func a(cs: [1001]?Canvas) {}
+func b(c: ?Canvas) -> [1001]?Canvas => [c; 1001]
+func c(c: ?Canvas, buf: [1200]u8) {}
+func d(c: ?Canvas) {
+  let many: [60000]?Canvas = [c; 60000]
+}
+func e(on: bool, c: ?Canvas) {
+  let x = if on { [c; 1001] } else { [c; 1001] }
+}
+```
+
+```errors
+the parameters are 1001 registers, more than the 1000 a wasm function takes — a host reference is held only in registers, never in memory: hold fewer at once
+the results are 1001 registers, more than the 1000 a wasm function gives back — a host reference is held only in registers, never in memory: hold fewer at once
+the parameters are 1201 registers, more than the 1000 a wasm function takes — pass a large value by pointer
+function 'd' needs more than 50000 registers, the most a wasm function has (here many: [60000]?Canvas is 60000) — a host reference is held only in registers
+an if that gives [1001]?Canvas gives 1001 registers, more than the 1000 a wasm block gives back — a host reference is held only in registers
 ```
 
 A generic type that would put one in memory is refused in the application that does, once for each application however often it is named (8.3), also when the type is named before the host type is declared:

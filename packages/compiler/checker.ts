@@ -39,6 +39,7 @@ import {
   typeParts,
   MAX_TYPE_PARTS,
   typeRegisters,
+  hostRegisters,
   MAX_PARAM_REGISTERS,
   MAX_RESULT_REGISTERS,
   MAX_FUNCTION_REGISTERS,
@@ -406,13 +407,17 @@ export function typecheck(module: AST.Module, options?: TypecheckOptions): TypeC
 
 // A place in a module that adds `n` to one of the counts its wasm module is
 // held to (moduleSizeUses), with what to say of it
-type ModuleSizeUse = { at: number; n: number; shown: string | null }
+type ModuleSizeUse = { at: number; n: number; shown: string | null; host?: number }
 
 // The wasm module of a program has at most 1000000 globals, 100000 imports
 // and 100000 exports (MAX_MODULE_GLOBALS ..., the limits of the WebAssembly
 // JS API). Going over is
 // one error for each, where the count goes over, in the order the modules
 // were checked.
+// The advice where host references take a count over its limit: they have no
+// memory to go to.
+const HOLD_FEWER = 'a host reference is held only in registers, never in memory: hold fewer at once'
+
 function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Module; entry: boolean }[]): void {
   const counted = modules.map(({ ctx, module, entry }) => ({ ctx, uses: ctx.moduleSizeUses(module, entry) }))
   const fix = 'share a large value through memory, behind a pointer'
@@ -423,10 +428,14 @@ function checkModuleSize(modules: readonly { ctx: CheckContext; module: AST.Modu
   ] as const
   for (const limit of limits) {
     let total = 0
+    let host = 0
     for (const { ctx, use } of counted.flatMap(({ ctx, uses }) => [...uses[limit.of]].sort((a, b) => a.at - b.at).map((use) => ({ ctx, use })))) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      host = Math.min(host + (use.host ?? 0), Number.MAX_SAFE_INTEGER)
       if (total <= limit.most) continue
-      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${limit.fix}`)
+      // What host references alone take over the limit cannot go to memory.
+      const fix = total - host <= limit.most ? HOLD_FEWER : limit.fix
+      ctx.error(use.at, `${limit.said}, the most a wasm module has${use.shown ? ` (here ${use.shown})` : ''} — ${fix}`)
       break
     }
   }
@@ -4109,19 +4118,21 @@ class CheckContext {
   // parameter or the result that goes over.
   private checkSignatureSize(input: AST.Type, params: ResolvedField[], output: AST.Type, returns: ResolvedField[]): void {
     const memo = new Map<ResolvedType, number>()
-    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number) => string) => {
+    const over = (written: AST.Type, fields: ResolvedField[], limit: number, message: (n: number, fix: string | null) => string) => {
       const counts = fields.map((f) => (f.type === RECOVERY ? 0 : typeRegisters(f.type, memo)))
       const total = counts.reduce((a, b) => Math.min(a + b, Number.MAX_SAFE_INTEGER), 0)
       if (total <= limit) return
+      const host = fields.reduce((a, f) => Math.min(a + (f.type === RECOVERY ? 0 : hostRegisters(f.type)), Number.MAX_SAFE_INTEGER), 0)
       const at = written.kind === 'CompositeType' && written.fields.length === fields.length ? written.fields : null
       let index = 0
       for (let sum = counts[0]; sum <= limit; sum += counts[index]) index++
-      this.error(at ? at[index].span.start : written.span.start, message(total))
+      // What host references alone take over the limit has no pointer to go behind.
+      this.error(at ? at[index].span.start : written.span.start, message(total, total - host <= limit ? HOLD_FEWER : null))
     }
-    over(input, params, MAX_PARAM_REGISTERS, (n) =>
-      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — pass a large value by pointer`)
-    over(output, returns, MAX_RESULT_REGISTERS, (n) =>
-      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — give a large value back through a pointer`)
+    over(input, params, MAX_PARAM_REGISTERS, (n, fix) =>
+      `the parameters are ${n} registers, more than the ${MAX_PARAM_REGISTERS} a wasm function takes — ${fix ?? 'pass a large value by pointer'}`)
+    over(output, returns, MAX_RESULT_REGISTERS, (n, fix) =>
+      `the results are ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm function gives back — ${fix ?? 'give a large value back through a pointer'}`)
   }
 
   // Convert a Type to a list of fields (for function params/returns)
@@ -4187,7 +4198,7 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const held = (at: number, name: string, type: ResolvedType | undefined): ModuleSizeUse => {
       const n = type ? typeRegisters(type, memo) : 1
-      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null }
+      return { at, n, shown: n > 1 && type ? `${name}: ${typeToString(type)} is ${n}` : null, host: type ? hostRegisters(type) : 0 }
     }
     for (const decl of module.decls) {
       const item = decl.kind === 'ExportDecl' ? decl.item : decl
@@ -4249,13 +4260,14 @@ class CheckContext {
     const memo = new Map<ResolvedType, number>()
     const registers = (type: ResolvedType | undefined) => (type ? typeRegisters(type, memo) : 1)
     // What adds to the count, where, and what to say of it if it goes over there
-    type Use = { at: number; n: number; shown: () => string | null }
+    // `host`: of those, the registers of host references, which no memory holds
+    type Use = { at: number; n: number; shown: () => string | null; host?: number }
     const uses: Use[] = []
     // A signature over its own limits has its error (checkSignatureSize).
     const signature = { param: 0, return: 0 }
     for (const [at, { name, type, of }] of this.variables ?? []) {
       const n = registers(type)
-      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null) })
+      uses.push({ at, n, shown: () => (n > 1 ? `${name}: ${typeToString(type)} is ${n}` : null), host: hostRegisters(type) })
       if (of) signature[of] = Math.min(signature[of] + n, Number.MAX_SAFE_INTEGER)
     }
     const times = (a: number, b: number) => Math.min(a * b, Number.MAX_SAFE_INTEGER)
@@ -4269,14 +4281,15 @@ class CheckContext {
       const type = this.exprTypes.get(expr)
       const own = times(n, copies)
       const shown = () => ((n > 1 || copies > 1) && type ? `${typeToString(type)}${copies > 1 ? `, written out ${copies} times,` : ''} is ${own}` : null)
-      uses.push({ at: site, n: own, shown })
+      uses.push({ at: site, n: own, shown, host: type ? times(hostRegisters(type), copies) : 0 })
     }
     // A block's value, which a wasm block gives back
     const blockValue = (expr: AST.Expr, what: string) => {
       const type = this.exprTypes.get(expr)
       const n = registers(type)
       if (type && n > MAX_RESULT_REGISTERS && clean) {
-        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — let it give a pointer to the value instead`)
+        const fix = n - hostRegisters(type) <= MAX_RESULT_REGISTERS ? HOLD_FEWER : 'let it give a pointer to the value instead'
+        this.error(expr.span.start, `${what} that gives ${typeToString(type)} gives ${n} registers, more than the ${MAX_RESULT_REGISTERS} a wasm block gives back — ${fix}`)
       }
     }
     // Where a value is stored or read in part, the place it names is not
@@ -4517,12 +4530,16 @@ class CheckContext {
     if (hasErrors() || signature.param > MAX_PARAM_REGISTERS || signature.return > MAX_RESULT_REGISTERS) return
     uses.sort((a, b) => a.at - b.at)
     let total = 0
+    let host = 0
     for (const use of uses) {
       total = Math.min(total + use.n, Number.MAX_SAFE_INTEGER)
+      host = Math.min(host + (use.host ?? 0), Number.MAX_SAFE_INTEGER)
       if (total <= MAX_FUNCTION_REGISTERS) continue
       const shown = use.shown()
       const here = shown ? ` (here ${shown})` : ''
-      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)`)
+      const fix = total - host <= MAX_FUNCTION_REGISTERS ? HOLD_FEWER
+        : 'keep large values in memory, behind a pointer: copy one with a range copy (p[..] = q[..]) and fill one with a range fill (p[..] = 0)'
+      this.error(use.at, `${owner} needs more than ${MAX_FUNCTION_REGISTERS} registers, the most a wasm function has${here} — ${fix}`)
       return
     }
   }

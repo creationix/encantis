@@ -1668,6 +1668,44 @@ export function typeRegisters(t: ResolvedType, memo: Map<ResolvedType, number> =
   return n
 }
 
+// How many of the registers typeRegisters counts hold a host reference. A
+// value too large for its registers is moved into memory, behind a pointer,
+// but these cannot be: what is over the limit because of them is advised to
+// hold fewer at once.
+export function hostRegisters(t: ResolvedType, open: Set<ResolvedType> = new Set()): number {
+  if (open.has(t)) return 0
+  open.add(t)
+  const of = (type: ResolvedType) => hostRegisters(type, open)
+  const times = (n: number, each: number) => Math.min(n * each, Number.MAX_SAFE_INTEGER)
+  const sum = (types: ResolvedType[]) => types.reduce((total, type) => Math.min(total + of(type), Number.MAX_SAFE_INTEGER), 0)
+  let n = 0
+  switch (t.kind) {
+    case 'host':
+      n = 1
+      break
+    case 'named':
+      n = of(t.type)
+      break
+    case 'forward_ref':
+      n = t.target ? of(t.target) : 0
+      break
+    case 'array':
+      n = t.sizes?.length === 1 && typeof t.sizes[0] === 'number' ? times(t.sizes[0], of(t.element)) : 0
+      break
+    case 'comptime_array':
+      n = times(t.count, of(t.element))
+      break
+    case 'tuple':
+      n = sum(t.fields.map((f) => f.type))
+      break
+    case 'comptime_list':
+      n = sum(t.elements)
+      break
+  }
+  open.delete(t)
+  return n
+}
+
 // === Instance keys ===
 
 // A string that is the same for two types exactly when they are the same type:
