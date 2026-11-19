@@ -59,6 +59,8 @@ import {
   intBitWidth,
   isBool,
   byteSize,
+  hostIn,
+  hostRef,
   isFixedSizes,
   isValueArray,
   tableRow,
@@ -1078,7 +1080,34 @@ class CheckContext {
   looking = 0
   attempting = 0
 
+  // A host reference has no bytes, so it is never in memory: not behind a
+  // pointer or in a slice, not in data or a literal laid out there, and so
+  // not in a struct or an array that is. A type written before the types of
+  // its module are all declared may name one still to come (*Holder, with
+  // Holder below), so it is looked at once they are.
+  private hostChecks: { type: ResolvedType; at: number; doing: string }[] | null = []
+
+  private neverInMemory(type: ResolvedType, at: number, doing: string): void {
+    if (this.hostChecks) {
+      this.hostChecks.push({ type, at, doing })
+      return
+    }
+    const host = hostIn(type)
+    if (!host) return
+    const shown = typeToString(type)
+    const holds = shown === host.name ? '' : `it holds ${host.name}, and `
+    this.error(at, `cannot ${doing} ${shown}: ${holds}a host reference has no bytes, so it is never in memory (hold it in a variable, a parameter or a global)`)
+  }
+
+  // The types of the module are declared: what waited for them is checked.
+  private typesDeclared(): void {
+    const waiting = this.hostChecks ?? []
+    this.hostChecks = null
+    for (const check of waiting) this.neverInMemory(check.type, check.at, check.doing)
+  }
+
   addLiteral(id: number, expr: AST.Expr, serializationType: ArrayRT): void {
+    this.neverInMemory(serializationType.element, expr.span.start, 'lay out in memory')
     this.types.set(typeKey(id, 'DataTarget'), serializationType)
     this.pendingLiterals.push({ id, expr })
   }
@@ -1174,6 +1203,7 @@ class CheckContext {
     }
     this.recountGrownTypes()
     this.reportTooLargeTypes()
+    this.typesDeclared()
     for (const decl of module.decls) {
       if (decl.kind !== 'TypeDecl') this.collectDeclaration(decl)
     }
@@ -1687,7 +1717,8 @@ class CheckContext {
     this.declaringType = true
     let resolved: ResolvedType
     try {
-      resolved = this.resolveType(decl.type)
+      // `type Canvas = host` is a type of its own, named by its declaration.
+      resolved = decl.type.kind === 'HostType' ? hostRef(name) : this.resolveType(decl.type)
     } finally {
       this.declaringType = false
     }
@@ -3753,7 +3784,9 @@ class CheckContext {
         const outer = this.pointee
         this.pointee = type.pointee
         try {
-          return pointer(this.resolveType(type.pointee), false, type.mutable, type.optional)
+          const pointee = this.resolveType(type.pointee)
+          this.neverInMemory(pointee, type.span.start, 'point to')
+          return pointer(pointee, false, type.mutable, type.optional)
         } finally {
           this.pointee = outer
         }
@@ -3764,6 +3797,7 @@ class CheckContext {
 
         // Many-pointer [*]T or [*]mut T
         if (type.manyPointer) {
+          this.neverInMemory(element, type.span.start, 'point to')
           const result = manyPointer(element, type.mutable)
           if (type.optional) result.optional = true
           return result
@@ -3771,6 +3805,7 @@ class CheckContext {
 
         // Slice []T or []mut T
         if (type.size === null && type.specifiers.length === 0) {
+          this.neverInMemory(element, type.span.start, 'make a slice of')
           return slice(element, type.mutable, type.optional)
         }
 
@@ -3808,6 +3843,9 @@ class CheckContext {
 
         // If only specifiers and no size, that's valid: [!]T, [?]T
         const result = array(element, sizes.length > 0 ? sizes : null)
+        // An array of one length is held in registers; any other is held
+        // as a pointer to its elements.
+        if (!isValueArray(result) && !sizes.includes('_')) this.neverInMemory(element, type.span.start, 'point to')
         // An array has at most 4294967295 bytes, wherever it is: its size is
         // a u32 (sizeof), and so is the byte offset of every element a proven
         // index reaches. Behind a pointer, an array of fixed arrays is a
@@ -3886,6 +3924,10 @@ class CheckContext {
 
       case 'TypeType':
         this.error(type.span.start, `a parameter of type 'type' must be comptime: write 'comptime T: type'`)
+        return RECOVERY
+
+      case 'HostType':
+        this.error(type.span.start, `'host' declares a host reference type: write 'type Canvas = host' and use Canvas`)
         return RECOVERY
     }
   }
@@ -6494,6 +6536,12 @@ class CheckContext {
   // What is wrong with a cast, if anything. A function's name cast to a
   // number or an address (f as u32) has no value to cast.
   private castProblemOf(operand: AST.Expr, from: ResolvedType, to: ResolvedType): string | null {
+    // A host reference is no number and no address: nothing converts to or
+    // from one, and one host type is not another.
+    const host = hostIn(from) ?? hostIn(to)
+    if (host && !typeEquals(from, to)) {
+      return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${host.name} is a host reference, which is no number and no address`
+    }
     const named = this.functionNamed(operand)
     if (named && unwrap(to).kind !== 'func') {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: '${named}' is a function, which has no run-time value yet`
@@ -7975,7 +8023,9 @@ class CheckContext {
     // not know what a type parameter was bound to.
     this.types.set(typeKey(expr.span.start, 'SizeofType'), resolvedType)
     const size = byteSize(resolvedType)
-    if (size === null) {
+    if (hostIn(resolvedType)) {
+      this.neverInMemory(resolvedType, expr.span.start, 'take the size of')
+    } else if (size === null) {
       this.error(expr.span.start, `sizeof: cannot compute size of dynamically sized type`)
     }
     // sizeof always returns u32 (natural size type for WebAssembly)
@@ -9992,6 +10042,8 @@ function typeText(type: AST.Type): string {
       return `float(${type.value})`
     case 'TypeType':
       return 'type'
+    case 'HostType':
+      return 'host'
   }
 }
 
@@ -10955,7 +11007,10 @@ function stripMax(t: ResolvedType): ResolvedType {
 // a pointer with something that is no address. The one place for the wording,
 // which a generic's users meet whenever a type argument lacks an operator.
 function noOperator(op: string, left: ResolvedType, right: ResolvedType): string {
-  return `'${op}' cannot be applied to ${typeToString(left)} and ${typeToString(right)}`
+  const said = `'${op}' cannot be applied to ${typeToString(left)} and ${typeToString(right)}`
+  // A host reference is opaque: not even two of them are compared.
+  const host = hostIn(left) ?? hostIn(right)
+  return host ? `${said}: ${host.name} is a host reference, which has no value the module can compute with or compare` : said
 }
 
 // Why an operator can't take an operand of this type, or null when it can.

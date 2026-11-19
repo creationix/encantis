@@ -179,6 +179,10 @@ export function typeToWasm(t: ResolvedType): string[] {
     case 'void':
       return []
 
+    case 'host':
+      // A host reference is wasm's opaque reference to a host value.
+      return ['externref']
+
     case 'comptime_int':
       throw new Error('comptime_int should be concretized before codegen')
 
@@ -197,6 +201,11 @@ export function typeToWasm(t: ResolvedType): string[] {
  * Get the single WASM type for a resolved type.
  * For multi-value types (tuples), returns the first type.
  */
+// The value a wasm type starts as: zero, or the null reference.
+export function zeroOf(wasmType: string): string {
+  return wasmType === 'externref' ? '(ref.null extern)' : `(${wasmType}.const 0)`
+}
+
 function typeToWasmSingle(t: ResolvedType): string {
   const types = typeToWasm(t)
   if (types.length === 0) {
@@ -1636,7 +1645,7 @@ function checkedIndexToWat(expr: AST.IndexExpr, type: ResolvedType, ctx: Codegen
   const index = keep(exprToWat(expr.index, ctx))
   const results = typeToWasm(type).join(' ')
   const { offset } = indexOffset(expr.object, base, index, ctx)
-  const none = typeToWasm(type).map((t) => `(${t}.const 0)`).join(' ')
+  const none = typeToWasm(type).map(zeroOf).join(' ')
   const value = `(if (result ${results}) (i32.lt_u ${index} ${len}) (then ${loadFromMemory(type, offset, ctx)}) (else ${none}))`
   return setup.length === 0 ? value : `(block (result ${results})\n${setup.join('\n')}\n${value})`
 }
@@ -3813,7 +3822,7 @@ function globalToWat(decl: AST.GlobalDecl, ctx: CodegenContext): string {
   // emits the checker's value for each constant in it.
   const init = decl.value
     ? exprToWat(decl.value, ctx)
-    : wasmTypes.map((wt) => `(${wt}.const 0)`).join(' ')
+    : wasmTypes.map(zeroOf).join(' ')
   const inits = trySplitMultiValue(init, wasmTypes.length)
   if (!inits) throw new Error(`global '${name}' needs a constant for each of its ${wasmTypes.length} values`)
 

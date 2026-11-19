@@ -1270,6 +1270,98 @@ the program exports more than 100000 wasm functions, globals and memories, the m
 
 Brackets, and prefixes such as `-`, `*`, `?` and `[]` before what they apply to, nest at most 256 deep: `((((x))))` is four levels, and so is `*[]?*u8`. Deeper source is one error, `nested more than 256 deep`, before it is parsed.
 
+### 2.13 Host References
+
+A host reference is a value of the host's (a JavaScript object, a DOM element, a file the host has open) that the module holds and hands back but cannot look into. Its type is declared with `host` as the whole of a type declaration:
+
+```ents
+type Canvas = host
+type Context = host
+```
+
+Each declaration is a type of its own: `Canvas` and `Context` are both host references, but neither is assignable to the other. Another name for one is that type (`type Screen = Canvas`). The name is the type, also across source modules: a module that shares `Canvas` with another declares `type Canvas = host` too, as it restates the signatures it shares. `host` is not reserved, and written anywhere else as a type it is an error (`'host' declares a host reference type: write 'type Canvas = host' and use Canvas`).
+
+A host reference is held where registers are, and nowhere else:
+
+- as a parameter or a result of any function, an imported or exported one too, so the host gives references in and takes them back;
+- in a `let` variable or a global, an imported or exported global too;
+- as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
+
+It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one. How a host reference is kept in memory is a design still to come.
+
+Nothing is computed with one: no arithmetic, no comparison (not `==` either: there is no equality for host references), no cast to or from a number or an address or another host type, and no condition. It is passed, returned, stored in a variable or a global, and read back. A host reference that was never given a value, a global or a `let` without one, is the host's null (JavaScript's `null`); nothing tests for it yet.
+
+The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly a host reference is an `externref`.
+
+<!-- spec:begin compile -->
+
+```ents
+type Canvas = host
+type Context = host
+
+import "canvas" (
+  "context" func context(c: Canvas) -> Context
+  "fill" func fill(ctx: Context, x: f32, y: f32, w: f32, h: f32)
+)
+
+global ctx: Context
+
+// The host hands the canvas in once; the module keeps what it needs.
+export func start(c: Canvas) {
+  ctx = context(c)
+}
+
+export func draw(n: u32) {
+  for i in n {
+    fill(ctx, i as f32 * 12.0, 0.0, 10.0, 10.0)
+  }
+}
+
+// A struct of a reference and a number is two values in registers.
+type Tagged = (c: Canvas, n: i32)
+export func tag(c: Canvas, n: i32) -> Tagged => Tagged(c, n + 1)
+```
+
+Two host types are two types, and neither is a number:
+
+```ents
+type Canvas = host
+type Context = host
+
+func a(c: Canvas) -> Context => c
+func b(c: Canvas) -> u32 => c as u32
+func c(x: Canvas, y: Canvas) -> bool => x == y
+```
+
+```errors
+cannot assign Canvas to Context
+cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
+'==' cannot be applied to Canvas and Canvas: Canvas is a host reference, which has no value the module can compute with or compare
+```
+
+None is in memory, also inside a struct, and also when the type is declared after it is named:
+
+```ents
+type Ref = *Holder
+type Canvas = host
+type Holder = (c: Canvas, n: i32)
+
+func a(p: *Canvas) {}
+func b(s: []Canvas) {}
+func c(c: Canvas) -> u32 => sizeof(Canvas)
+func d(x: host) {}
+```
+
+```errors
+cannot point to Holder: it holds Canvas, and a host reference has no bytes, so it is never in memory
+cannot point to Canvas: a host reference has no bytes
+cannot make a slice of Canvas: a host reference has no bytes
+'host' declares a host reference type
+cannot take the size of Canvas: a host reference has no bytes
+```
+
+<!-- spec:end -->
+
 ---
 
 ## 3. Declarations
@@ -3989,6 +4081,7 @@ process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
 | `[]T` | i32, i32 (ptr, len) |
 | `*[N]T`, `*[!]T` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
+| a host type (`type Canvas = host`) | externref ([2.13](#213-host-references)) |
 
 ### 9.4 Slice Construction
 

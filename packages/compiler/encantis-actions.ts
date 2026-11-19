@@ -1051,6 +1051,10 @@ export const semanticsActions: Record<string, SemanticAction> = {
     return prim.toAST()
   },
 
+  BaseType_host(_host) {
+    return { kind: 'HostType', span: span(this) } as AST.HostType
+  },
+
   BaseType_named(typeIdent) {
     return typeIdent.toAST()
   },

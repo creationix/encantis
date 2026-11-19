@@ -30,6 +30,9 @@ export function parseTypeAST(s: string): AST.Type {
 // Convert AST.Type to ResolvedType
 export function astToResolved(ast: AST.Type): ResolvedType {
   switch (ast.kind) {
+    case 'HostType':
+      throw new Error('a host type is declared (type Canvas = host), not written in place')
+
     case 'PrimitiveType':
       // A bound written as a name or an expression needs the checker.
       if (ast.bound) throw new Error(`a range bound written as an expression cannot be resolved without context`)

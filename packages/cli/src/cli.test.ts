@@ -307,6 +307,28 @@ export func clear() {
     }
   }
 
+  // A host reference is an externref, which binaryen takes (reference
+  // types are among its features) and keeps: the release build still hands
+  // the host's values back as they came.
+  test('--release keeps host references', async () => {
+    const { exitCode, written } = await wasm(['--release'], { example: 'examples/types/host.ents' })
+    expect(exitCode).toBe(0)
+    const shown: unknown[][] = []
+    const stopped: unknown[] = []
+    const timer = { name: 'timer' }
+    const { instance } = await WebAssembly.instantiate(written as Uint8Array, {
+      dom: { show: (e: unknown, n: number) => shown.push([e, n]), every: () => timer, stop: (t: unknown) => stopped.push(t) },
+    })
+    const label = { name: 'label' }
+    const exports = instance.exports as Record<string, CallableFunction>
+    exports.mount(label)
+    for (let i = 0; i < 10; i++) exports.tick()
+    expect(shown[0]).toEqual([label, 0])
+    expect(shown[10][0]).toBe(label)
+    expect(stopped).toEqual([timer])
+    expect(stopped[0]).toBe(timer)
+  })
+
   // --version names the binaryen it optimizes with: two builds are of the
   // same tools when their versions say the same.
   test('--version names binaryen', () => {

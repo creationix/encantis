@@ -62,6 +62,7 @@ export type ResolvedType =
   | ComptimeArrayRT
   | NamedRT
   | ForwardRefRT
+  | HostRT
 
 // Primitive types: i32, u8, f64, bool, etc.
 // For unsigned integers, max is an optional upper bound (exclusive): u8#16 means [0, 16)
@@ -161,6 +162,17 @@ export interface NamedRT {
   kind: 'named'
   name: string // The alias name (e.g., "Point", "Index")
   type: ResolvedType // The underlying resolved type
+}
+
+// A host reference: a value of the host's (a JavaScript object, say) that the
+// module holds and hands back but cannot look into, declared with
+// `type Canvas = host`. It is nominal: `name` is the declaration's, and two
+// host types are the same type when their names are. It has no bytes, so it
+// is never in memory. Kept as its own kind all the way to codegen, so that a
+// backend chooses its representation: wasm's is an externref.
+export interface HostRT {
+  kind: 'host'
+  name: string
 }
 
 // Forward reference - a type named before it is resolved: one declared further
@@ -380,6 +392,36 @@ export function named(name: string, type: ResolvedType): NamedRT {
   return { kind: 'named', name, type }
 }
 
+export function hostRef(name: string): HostRT {
+  return { kind: 'host', name }
+}
+
+// The first host reference a type holds by value (in a field of a struct, an
+// element of an array held in registers, under a name), or null. A pointer or
+// slice holds none by value: what it points at is checked where it is made.
+export function hostIn(t: ResolvedType, seen: Set<ResolvedType> = new Set()): HostRT | null {
+  if (seen.has(t)) return null
+  seen.add(t)
+  switch (t.kind) {
+    case 'host':
+      return t
+    case 'named':
+      return hostIn(t.type, seen)
+    case 'forward_ref':
+      return t.target ? hostIn(t.target, seen) : null
+    case 'tuple':
+      for (const f of t.fields) {
+        const found = hostIn(f.type, seen)
+        if (found) return found
+      }
+      return null
+    case 'array':
+      return hostIn(t.element, seen)
+    default:
+      return null
+  }
+}
+
 export function forwardRef(name: string): ForwardRefRT {
   return { kind: 'forward_ref', name }
 }
@@ -572,6 +614,9 @@ export function typeEquals(a: ResolvedType, b: ResolvedType, assumed?: Assumed):
     case 'forward_ref':
       // Forward refs are equal if they reference the same type name
       return b.kind === 'forward_ref' && a.name === b.name
+
+    case 'host':
+      return a.name === (b as HostRT).name
   }
 }
 
@@ -1082,6 +1127,9 @@ export function typeToString(t: ResolvedType, opts?: { compact?: boolean }): str
 
     case 'forward_ref':
       // Forward reference - just show the type name
+      return t.name
+
+    case 'host':
       return t.name
   }
 }
@@ -1623,6 +1671,9 @@ export function canonicalKey(t: ResolvedType, open: readonly { name: string; dep
       return `(${fields(t.fields, true)})`
     case 'void':
       return '()'
+    case 'host':
+      // Nominal: its name is the type (id<Canvas>).
+      return t.name
     case 'func':
       // The names of parameters and results are not part of a function's
       // type: (x: i32) -> i32 and (y: i32) -> i32 take the same functions.

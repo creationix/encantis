@@ -291,7 +291,12 @@ type BytePtr = *u8
 
 // Array type
 type Buffer = [1024]u8
+
+// Host reference type: a type of its own, opaque to the module
+type Canvas = host
 ```
+
+`host` is a type only as the whole right side of a type declaration (reference [2.13](encantis.md#213-host-references)). It is not a reserved word: `host` is still a name for a variable or a function.
 
 ### Definitions (Constants)
 
@@ -350,6 +355,7 @@ base_type       = primitive_type
                 | pointer_type
                 | array_type
                 | composite_type
+                | "host"                         -- only as all of a type declaration: type Canvas = host
                 | type_ident "(" type_arg ("," type_arg)* ")"   -- a generic type applied: Vec(u32), Ring(8, u32)
                 | type_ident
 

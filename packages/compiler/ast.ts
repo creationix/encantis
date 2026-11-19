@@ -652,6 +652,7 @@ export type Type =
   | TypeType
   | BoundType
   | FuncType
+  | HostType
 
 export interface PrimitiveType extends BaseNode {
   kind: 'PrimitiveType'
@@ -747,6 +748,13 @@ export interface ValueArg extends BaseNode {
 // The keyword `type`, as the type of a comptime parameter
 export interface TypeType extends BaseNode {
   kind: 'TypeType'
+}
+
+// `host`, the right side of `type Canvas = host`: a reference to a value of
+// the host's, opaque to the module (a wasm externref). Each declaration is a
+// type of its own.
+export interface HostType extends BaseNode {
+  kind: 'HostType'
 }
 
 // A type the compiler has already evaluated. Never parsed: instantiating a

@@ -680,6 +680,7 @@ function symbolTypeString(sym: CheckSymbol, source?: string): string {
   }
   const base = typeToString(sym.type)
   if (sym.kind === 'func') return base
-  if (sym.kind === 'type') return base
+  // A host type is named for itself: what it is, is a host reference.
+  if (sym.kind === 'type') return sym.type.kind === 'host' ? 'host' : base
   return base + typeCostAnnotation(sym.type)
 }

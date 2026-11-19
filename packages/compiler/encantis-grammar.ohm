@@ -178,6 +178,7 @@ Encantis {
            | rangedHead Expr ")"               -- rangedComputed
            | rangedUnsigned                    -- rangedPrimitive
            | PrimitiveType                     -- primitive
+           | host                              -- host
            | typeApplyHead NonemptyListOf<TypeArg, ","> ")"  -- apply
            | typeIdent                         -- named
 
@@ -640,6 +641,9 @@ Encantis {
   float = "float" ~identChar
   sizeof = "sizeof" ~identChar
   comptime = "comptime" ~identChar
+  // Not reserved: `host` is a type only where a type is written, and the
+  // checker takes it only as the whole of a type declaration (type X = host).
+  host = "host" ~identChar
 
   // Comments
   comment = lineComment | blockComment
