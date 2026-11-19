@@ -50,12 +50,37 @@ Each release also has `encantis-vscode-<version>.vsix`, which adds syntax highli
 encantis check <file>              Parse and type-check
 encantis compile <file> [-o out]   Compile to WAT text
 encantis wasm <file> [-o out] [-O] Compile to a wasm binary (-O optimizes with binaryen)
+encantis wasm <file> --release     Compile to the smallest wasm binary, or fail
 encantis test <file>               Run inline tests
 encantis run <file> [args...]      Compile and run with WASI
 encantis fmt <file...>             Format source files in place
 encantis --help                    All commands, including editor queries
 encantis --version
 ```
+
+## Size-focused builds
+
+`--release` builds the smallest module it can:
+
+```sh
+encantis wasm app.ents --release -o app.wasm
+encantis wasm app.ents --release --size -o app.wasm  # and print its sizes
+```
+
+The optimizer is [binaryen](https://github.com/WebAssembly/binaryen), built into `encantis` at a pinned version (`encantis --version` names it). The same source and the same `encantis` give the same bytes on every machine. A release build runs binaryen's `-Oz` until the module stops shrinking, tries `-O3` then `-Oz` the same way, and keeps the smallest result. It never writes a module larger than the unoptimized one.
+
+A release build is strict: if binaryen can't load, rejects the module, or fails, `encantis` exits with status 1 and writes nothing. `-O` runs `-Oz` once, and on failure it warns and writes the unoptimized module instead. Add `--strict-opt` to make that an error too.
+
+`--size` prints the module's size before and after optimizing, and compressed with gzip -9 and brotli. Add `--json` to get one JSON object.
+
+```
+unoptimized  3376
+optimized    2242  -33.6%
+gzip         1074
+brotli       986
+```
+
+A dozen examples have size budgets in [`scripts/size-budgets.json`](scripts/size-budgets.json): the most bytes each one's release build may take. `bun test` (and so CI) fails when one is over. `bun run size` prints each example's sizes next to its budget. When an example grows on purpose, `bun run size --update` sets every budget to the current size plus 2%.
 
 ## Documentation
 
