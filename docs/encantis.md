@@ -344,7 +344,7 @@ An integer literal is decimal, or has a prefix that names its radix:
 - The prefixes are lowercase: `0X1F` is a syntax error.
 - Leading zeros change nothing: `007` is the decimal 7, not octal.
 - There are no digit separators: `1_000` is a syntax error.
-- Each digit is one of its radix: `0b2` and `0o8` are not literals.
+- Each digit is one of its radix: `0b2` and `0o8` are not literals. A literal is meant to be an error there; the compiler ends it at the first character that cannot continue it instead, so `0b102` is read as `0b10` followed by `2`, and `0o8` as `0` followed by the name `o8` (a known bug).
 - A `-` before a literal is part of it, with or without a space: `-0x10` is the constant -16, and `-2147483648` is an `i32` constant, not the negation of a number too large for one.
 - A literal is a number, not a bit pattern: `0xFFFFFFFF` is 4294967295, which a `u32` holds and an `i32` does not (for the `i32` with those bits, write `-1`, or `0xFFFFFFFF as i32`).
 
@@ -1398,7 +1398,7 @@ A pointer is an address in the module's one 32-bit linear memory: one wasm `i32`
 | `[]T` | a slice: pointer and length ([2.6](#26-slices)) | at run time | `sizeof(T)` | `[*]T` | checked against `.len` |
 | `[N]T` | (a value, [2.4](#24-fixed-arrays-value-type)) | N | `sizeof(T)` | — | constant index only |
 
-`.len` is the number of elements (of rows, for `*[NxM]T` and a table), `.wid` the bytes of one element (a row pointer's 4 in a table), and both are `u32`s, constants where the type has the number: `p.len * p.wid` is the bytes a `*[N]T` points at, and `p.len * M * p.wid` those of a packed `*[NxM]T`. A `*T` has no `.len` or `.wid` (`no field 'wid' on type *u64`): `sizeof(T)` is its size. `.ptr` is the address as a many-pointer, `[*]T`, or `[*]mut T` for a mutable pointer or slice; a `[*]T` has no `.len`. Besides these, a pointer to a struct reaches its fields (`p.x`), a pointer to a tuple its parts (`p.0`), through the one pointer ([9.6](#96-structs-and-slices-in-memory)), and every pointer has the type views `p.u8` ... `p.f64` ([4.6](#type-punned-memory-access)).
+`.len` is the number of elements (of rows, for `*[NxM]T` and a table), `.wid` the bytes of one element (a row pointer's 4 in a table), and both are `u32`s, constants where the type has the number: `p.len * p.wid` is the bytes a `*[N]T` points at, and `p.len * M * p.wid` those of a packed `*[NxM]T`. A `*T` has no `.len` or `.wid` (`no field 'wid' on type *u64`): `sizeof(T)` is its size. `.ptr` is the address as a many-pointer, `[*]T`, or `[*]mut T` for a mutable pointer or slice (for a `*mut [N]T` the compiler gives a read-only `[*]T`, a known bug: cast it, `p as [*]mut T`); a `[*]T` has no `.len`. Besides these, a pointer to a struct reaches its fields (`p.x`), a pointer to a tuple its parts (`p.0`), through the one pointer ([9.6](#96-structs-and-slices-in-memory)), and every pointer has the type views `p.u8` ... `p.f64` ([4.6](#type-punned-memory-access)).
 
 <!-- spec:begin compile -->
 
@@ -1471,7 +1471,7 @@ cannot assign int(0) to []u8
 
 #### Optional Types
 
-A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **optional**: it then holds a value or none. `?` is written directly before `*`, `[]`, `[*]` or a type name: `?*T`, `?*mut T`, `?*[N]T`, `?*[!]T`, `?[*]T`, `?[]T`, `?[]mut T`, `?Name`. Anything else after `?` is a syntax error: `?u32`, `?[4]u8`, `?[!]u8`, `?(*u8)`, `??*u8`. A number has no none, since every bit pattern of a `u8` is a value, and neither has a tuple, a struct or a fixed array. A name is made optional when it names a pointer, a slice or a host type: with `type P = *u8`, `?P` is a `?*u8`, and with `type Count = u32`, `?Count` is `cannot make Count optional: only a pointer, a slice or a host reference has a none`. A type parameter is checked the same way in each instance: `?T` given `T = u32` is that error, `in keep(T = u32)`.
+A pointer, a slice and a host reference ([2.13](#213-host-references)) can be **optional**: it then holds a value or none. `?` is written directly before `*`, `[]`, `[*]` or a type name: `?*T`, `?*mut T`, `?*[N]T`, `?*[!]T`, `?[*]T`, `?[]T`, `?[]mut T`, `?Name`. Anything else after `?` is a syntax error: `?u32`, `?[4]u8`, `?[!]u8`, `?(*u8)`, `??*u8`. A number has no none, since every bit pattern of a `u8` is a value, and neither has a tuple, a struct or a fixed array. A name is made optional when it names a pointer, a slice or a host type: with `type P = *u8`, `?P` is a `?*u8`, and with `type Count = u32`, `?Count` is `cannot make Count optional: only a pointer, a slice or a host reference has a none`. An applied generic type is meant to be made optional the same way, but `?Box(u32)` is a syntax error (a known bug): name it first, `type B = Box(u32)`, and write `?B`. A type parameter is checked the same way in each instance: `?T` given `T = u32` is that error, `in keep(T = u32)`.
 
 **None** is written `0` wherever an optional is wanted — a `let`, a result, an argument, a field, a global, an element of a literal or of `data` — and in a cast, `0 as ?[]u8` as `0 as ?*u8`. An optional slice that is none is the pointer 0 with the length 0; any slice whose pointer is 0 is none once it is optional. Program data starts at address 8 ([9.0](#90-data-layout)), so no `data` and no literal has the address 0, and an empty slice of real memory (`""`, `p[0..0]`) is not none.
 
@@ -2717,6 +2717,7 @@ What can be done with the type written out can be done with its name:
 - A pointer to a name for an array is a pointer to that array in every use: with `type Row = [3]i32`, a `*Row` has `.len` 3, indexes, loops and converts as a `*[3]i32` does and is what `memcpy` takes, and with `type Grid = [2]Row` a `*Grid` is a `*[2][3]i32`, a table ([Nesting](#nesting)). That holds at every depth and through names of names: with `type Cube = [2][3][4]u8`, a `*Cube` is a table of tables as a `*[2][3][4]u8` is, and `c[1][2][3]` loads two row pointers before the byte.
 - A name for a struct is its constructor: `Pt(1, 2)` with `type Pt = Point` ([2.8](#struct-constructors)).
 - A name for a number is cast to with `as` (`n as Count`). `Count(n)` is no cast: only a primitive type's own name is called as one ([Explicit Casts](#explicit-casts)).
+- A name for a ranged integer is meant to prove an index as the range does, but proves nothing (a known bug): with `type Slot = u32#8`, `squares[i]` for an `i: Slot` is refused as a run-time index. Write the range out in the parameter, `i: u32#8`.
 
 One kind of type is its name, not what it is written as: a host type (`type Canvas = host`, [2.13](#213-host-references)). Each name declared with `host` is a type of its own, and one name of it is the same type in every module of a program.
 
@@ -5305,7 +5306,7 @@ writing to an element of a slice needs its index checked: use if let on its addr
 
 <!-- spec:end -->
 
-With a proven index, `&items[i]` is a plain `*T`. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. `if let` and `??` have nothing to check on its index, and are errors there (`if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly`), unless its elements are optionals themselves. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
+With a proven index, `&items[i]` is a plain `*T`. The slice indexed is a variable or a place: `&` of an element of a slice that a call or a `??` computes, `&pick(s)[0]`, passes the checker and stops the compiler with an internal error (a known bug), so put such a slice in a `let` first. A many-pointer (`[*]T`) has no length, so indexing it is never checked; casting to one is the explicit way to opt out. `if let` and `??` have nothing to check on its index, and are errors there (`if let has nothing to check here: [*]i32 has no length, so its index is never checked — index it directly`), unless its elements are optionals themselves. On a many-pointer `&p[i]` is a plain `*T` too, the address `i` elements on, also where a pointer is expected. A many-pointer to rows (`[*][M]T`) is a table, whose elements are its row pointers ([Nesting](#nesting)), so there `&p[i]` is a `**[M]T`.
 
 <!-- spec:begin compile -->
 
@@ -6917,7 +6918,7 @@ export "_start" func main() {
 
 ### 7.3 Memory Declarations
 
-A program has at most one linear memory, measured in pages of 64 KiB (65536 bytes). It has one when it uses memory: when it has data (a `data` declaration, or a literal laid out in memory), when a pointer or slice is anywhere in it (a parameter, a load or a store), or when a module declares the memory. A program that uses none has no memory.
+A program has at most one linear memory, measured in pages of 64 KiB (65536 bytes). It has one when it uses memory: when it has data (a `data` declaration, or a literal laid out in memory), when a pointer or slice is anywhere in it (a parameter, a load or a store), or when a module declares the memory. A program that uses none has no memory. A load or store through a pointer cast from an integer, `(p as *u32).*`, is not counted (a known bug): in a program with nothing else that uses memory it gives a module that does not assemble.
 
 A memory declaration, `memory`, then optionally a minimum and a maximum in pages, chooses the memory's size; `export` before it also gives it to the host:
 
@@ -6934,7 +6935,7 @@ A memory declaration, `memory`, then optionally a minimum and a maximum in pages
 - The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
 - A program that uses memory and declares none gets that memory with the minimum the data needs, no maximum, and no export. The declaration is needed only to choose the sizes or to export the memory.
 - The numbers are decimal integer literals with `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these (a known bug): a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
-- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports.
+- A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports. Two are meant to be an error; the checker accepts them and the compiler then stops with an internal error (a known bug).
 
 The host sees the memory only when it is exported. Exporting it is what lets a host read a string a function returns or write an array it passes in, and WASI needs it under the name `memory` ([Starting and running](#starting-and-running)).
 
@@ -9381,7 +9382,7 @@ A stack of 256 KiB in the module's memory. Allocating moves its top up; nothing 
 |---|---|
 | `mark() -> u32` | The top of the stack, as an address |
 | `reset(m: u32)` | Frees everything allocated since the mark `m` was taken |
-| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full |
+| `alloc(n: u32) -> u32` | The address of `n` bytes, aligned to 8. Traps when the stack is full, but an `n` near 2^32 wraps its check and is not caught (a known bug) |
 | `zeroed(n: u32) -> u32` | The same, the bytes set to zero |
 | `extend(n: u32) -> u32` | `n` more bytes right after the top, not aligned: grows the topmost allocation in place |
 
