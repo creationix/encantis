@@ -703,6 +703,12 @@ function assignResult(target: ResolvedType, source: ResolvedType): AssignResult 
     return lossless(false)
   }
 
+  // 0 is the null host reference: any host reference may be null, as the
+  // host may give one, and it is written as none is for an optional.
+  if (s.kind === 'comptime_int' && s.value === 0n && t.kind === 'host') {
+    return lossless(false)
+  }
+
   // Non-optional widens to optional: *T → ?*T, []T → ?[]T
   if (isOptional(t) && !isOptional(s)) {
     return typeAssignResult(unwrapOptional(t), s)

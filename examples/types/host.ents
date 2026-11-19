@@ -1,6 +1,7 @@
 // Host references (reference 2.13): the host's own values, which the module
 // keeps in globals and hands back to the host's functions. In wasm each is an
-// externref; the module never looks inside one.
+// externref; the module never looks inside one, and only asks whether one is
+// null (0).
 
 type Element = host
 type Timer = host
@@ -11,8 +12,8 @@ import "dom" (
   "stop" func stop(t: Timer)
 )
 
-global label: Element
-global ticker: Timer
+global label: Element = 0
+global ticker: Timer = 0
 global count: u32
 
 // The host calls this once, with the element to count into.
@@ -22,8 +23,10 @@ export func mount(e: Element) {
   show(label, count)
 }
 
-// And this each time the timer fires; at ten it stops the timer.
+// And this each time the timer fires; at ten it stops the timer. A tick
+// before mount has nothing to show.
 export func tick() -> u32 {
+  return 0 when label == 0
   count += 1
   show(label, count)
   if count == 10 { stop(ticker) }

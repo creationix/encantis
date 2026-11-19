@@ -1289,7 +1289,9 @@ A host reference is held where registers are, and nowhere else:
 
 It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one. How a host reference is kept in memory is a design still to come.
 
-Nothing is computed with one: no arithmetic, no comparison (not `==` either: there is no equality for host references), no cast to or from a number or an address or another host type, and no condition. It is passed, returned, stored in a variable or a global, and read back. A host reference that was never given a value, a global or a `let` without one, is the host's null (JavaScript's `null`); nothing tests for it yet.
+Any host reference may be null: the host can give one (JavaScript's `null`), and so can the module. Null is written `0`, as none is for an optional pointer: `global ctx: Context = 0`, `return 0`, `context(0)`, `0 as Canvas`. A global or a `let` given no value is null too. `c == 0` and `c != 0` ask whether one is null. Every host type is nullable, so there is no `?Canvas`, and nothing is resolved before a reference is passed on: the module cannot look inside one, so null is only ever the host's to deal with.
+
+Nothing else is computed with one: no arithmetic, no other comparison (two references are not compared: there is no equality for them), no cast but `0 as Canvas` to or from a number or an address or another host type, and no condition. It is passed, returned, stored in a variable or a global, and read back.
 
 The compiler keeps host types as types of their own all the way to the code it writes, so another backend can hold them its own way. In WebAssembly a host reference is an `externref`.
 
@@ -1304,25 +1306,29 @@ import "canvas" (
   "fill" func fill(ctx: Context, x: f32, y: f32, w: f32, h: f32)
 )
 
-global ctx: Context
+global ctx: Context = 0
 
 // The host hands the canvas in once; the module keeps what it needs.
 export func start(c: Canvas) {
-  ctx = context(c)
+  if c != 0 { ctx = context(c) }
 }
 
+// Nothing is drawn before there is something to draw on.
 export func draw(n: u32) {
+  return when ctx == 0
   for i in n {
     fill(ctx, i as f32 * 12.0, 0.0, 10.0, 10.0)
   }
 }
+
+export func stop() { ctx = 0 }
 
 // A struct of a reference and a number is two values in registers.
 type Tagged = (c: Canvas, n: i32)
 export func tag(c: Canvas, n: i32) -> Tagged => Tagged(c, n + 1)
 ```
 
-Two host types are two types, and neither is a number:
+Two host types are two types, neither is a number, and the one thing asked of a reference is whether it is null:
 
 ```ents
 type Canvas = host
@@ -1331,12 +1337,14 @@ type Context = host
 func a(c: Canvas) -> Context => c
 func b(c: Canvas) -> u32 => c as u32
 func c(x: Canvas, y: Canvas) -> bool => x == y
+func d(x: Canvas) -> Canvas => 1 as Canvas
 ```
 
 ```errors
 cannot assign Canvas to Context
 cannot cast Canvas to u32: Canvas is a host reference, which is no number and no address
-'==' cannot be applied to Canvas and Canvas: Canvas is a host reference, which has no value the module can compute with or compare
+'==' cannot be applied to Canvas and Canvas: Canvas is a host reference, which is only compared with 0, to ask whether it is null
+cannot cast int(1) to Canvas
 ```
 
 None is in memory, also inside a struct, and also when the type is declared after it is named:
@@ -4081,7 +4089,7 @@ process(&small)            // ERROR: layout mismatch (2 bytes vs 8 bytes)
 | `[]T` | i32, i32 (ptr, len) |
 | `*[N]T`, `*[!]T` | i32 (ptr only) |
 | `(x:T1, y:T2, ...)` | flattened fields (one WASM value per field) |
-| a host type (`type Canvas = host`) | externref ([2.13](#213-host-references)) |
+| a host type (`type Canvas = host`) | externref, null for `0` ([2.13](#213-host-references)) |
 
 ### 9.4 Slice Construction
 

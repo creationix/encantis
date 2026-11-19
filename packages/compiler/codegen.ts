@@ -367,6 +367,8 @@ function literalToWat(expr: AST.LiteralExpr, ctx: CodegenContext): string {
       if (!type) {
         throw new Error(`Missing type for integer literal at offset ${expr.span.start}`)
       }
+      // 0 where a host reference is wanted is the null one.
+      if (unwrap(type).kind === 'host') return '(ref.null extern)'
       const wt = typeToWasmSingle(type)
       const np = wideIntParts(type)
       if (np > 0) {
@@ -825,6 +827,13 @@ function binaryToWat(expr: AST.BinaryExpr, ctx: CodegenContext): string {
   // Logical (short-circuit)
   if (op === '&&') return `(if (result i32) ${left} (then ${right}) (else (i32.const 0)))`
   if (op === '||') return `(if (result i32) ${left} (then (i32.const 1)) (else ${right}))`
+
+  // A host reference compared with 0: whether it is null.
+  const leftHost = unwrap(valueType(expr.left, ctx) ?? RT.VOID).kind === 'host'
+  if ((op === '==' || op === '!=') && (leftHost || unwrap(valueType(expr.right, ctx) ?? RT.VOID).kind === 'host')) {
+    const isNull = `(ref.is_null ${leftHost ? left : right})`
+    return op === '==' ? isNull : `(i32.eqz ${isNull})`
+  }
 
   // An optional slice compared with 0 (none): its pointer is.
   const leftSlice = unwrap(valueType(expr.left, ctx) ?? RT.VOID).kind === 'slice'
@@ -2221,6 +2230,8 @@ function castToWat(expr: AST.CastExpr, ctx: CodegenContext): string {
   const fromType = lookupExprType(expr.expr, ctx)
   const toType = lookupExprType(expr, ctx)
   if (!fromType || !toType) return inner
+  // A cast to a host reference is of 0, the null one, or of one already.
+  if (unwrap(toType).kind === 'host') return unwrap(fromType).kind === 'host' ? inner : '(ref.null extern)'
   return emitConversion(inner, fromType, toType)
 }
 
@@ -3837,6 +3848,7 @@ function constantToWat(value: ComptimeValue, type: ResolvedType): string | null 
     return Array.from({ length: wide }, (_, i) => `(i64.const ${BigInt.asIntN(64, value.value >> BigInt(i * 64))})`).join(' ')
   }
   if (typeToWasm(type).length !== 1) return null
+  if (unwrap(type).kind === 'host') return '(ref.null extern)'
   const wt = typeToWasmSingle(type)
   if (value.kind === 'bool') return `(i32.const ${value.value ? 1 : 0})`
   if (value.kind === 'data_ptr' || value.kind === 'type' || value.kind === 'func') return null

@@ -6485,6 +6485,14 @@ class CheckContext {
       this.error(expr.span.start, `${noOperator(expr.op, leftType, rightType)}: '${named}' is a function, which has no run-time value yet`)
       return
     }
+    // A host reference may be null, written 0: it is compared with 0, and
+    // only for equality, as an optional is, and with nothing else.
+    const host = (type: ResolvedType) => unwrap(type).kind === 'host'
+    const isZero = (type: ResolvedType) => {
+      const t = unwrap(type)
+      return t.kind === 'comptime_int' && t.value === 0n
+    }
+    if (((host(leftType) && isZero(rightType)) || (isZero(leftType) && host(rightType))) && (expr.op === '==' || expr.op === '!=')) return
     // An optional slice is none where its pointer is 0: it is compared with
     // 0, and only for equality, as an optional pointer is.
     const optionalSlice = (type: ResolvedType) => {
@@ -6539,7 +6547,8 @@ class CheckContext {
     // A host reference is no number and no address: nothing converts to or
     // from one, and one host type is not another.
     const host = hostIn(from) ?? hostIn(to)
-    if (host && !typeEquals(from, to)) {
+    const nullRef = unwrap(to).kind === 'host' && unwrap(from).kind === 'comptime_int' && (unwrap(from) as { value: bigint }).value === 0n
+    if (host && !typeEquals(from, to) && !nullRef) {
       return `cannot cast ${typeToString(from)} to ${typeToString(to)}: ${host.name} is a host reference, which is no number and no address`
     }
     const named = this.functionNamed(operand)
@@ -11010,7 +11019,10 @@ function noOperator(op: string, left: ResolvedType, right: ResolvedType): string
   const said = `'${op}' cannot be applied to ${typeToString(left)} and ${typeToString(right)}`
   // A host reference is opaque: not even two of them are compared.
   const host = hostIn(left) ?? hostIn(right)
-  return host ? `${said}: ${host.name} is a host reference, which has no value the module can compute with or compare` : said
+  if (!host) return said
+  return op === '==' || op === '!='
+    ? `${said}: ${host.name} is a host reference, which is only compared with 0, to ask whether it is null`
+    : `${said}: ${host.name} is a host reference, which has no value the module can compute with`
 }
 
 // Why an operator can't take an operand of this type, or null when it can.
@@ -11041,6 +11053,8 @@ function castProblem(from: ResolvedType, to: ResolvedType): string | null {
   const cannot = `cannot cast ${typeToString(from)} to ${typeToString(to)}`
   // 0 is none for an optional slice, as it is for an optional pointer.
   if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'slice' && t.optional) return null
+  // And 0 is the null host reference.
+  if (f.kind === 'comptime_int' && f.value === 0n && t.kind === 'host') return null
   if (!single(f) || !single(t)) {
     const same = !single(f) && !single(t) && typeAssignable(to, from) && sameRepresentation(f, t)
     return same ? null : cannot

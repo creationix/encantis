@@ -95,6 +95,49 @@ describe('host references', () => {
     expect(m['the-screen']()).toBe(screen)
   })
 
+  test('null is 0 in the module and null in JavaScript', async () => {
+    const source = `type Canvas = host
+type Context = host
+import "canvas" "context" func context(c: Canvas) -> Context
+
+global ctx: Context = 0
+export func start(c: Canvas) {
+  if c != 0 { ctx = context(c) }
+}
+export func ready() -> bool => ctx != 0
+export func reset() { ctx = 0 }
+export func none() -> Canvas => 0
+export func cast-none() -> Canvas => 0 as Canvas
+export func is-null(c: Canvas) -> bool => c == 0
+export func given-none() -> Context => context(0)
+export func unset() -> Canvas {
+  let c: Canvas
+  return c
+}
+`
+    const given: unknown[] = []
+    const { instance } = await WebAssembly.instantiate(await wasmOfSource(source), {
+      canvas: { context: (c: unknown) => (given.push(c), { of: c }) },
+    })
+    const m = instance.exports as Record<string, CallableFunction>
+    expect(m.none()).toBe(null)
+    expect(m['cast-none']()).toBe(null)
+    expect(m.unset()).toBe(null)
+    expect(m['is-null'](null)).toBe(1)
+    expect(m['is-null']({})).toBe(0)
+    // undefined is a value of the host's, not null.
+    expect(m['is-null'](undefined)).toBe(0)
+    m.start(null)
+    expect(m.ready()).toBe(0)
+    expect(given).toEqual([])
+    m.start({ name: 'canvas' })
+    expect(m.ready()).toBe(1)
+    m.reset()
+    expect(m.ready()).toBe(0)
+    m['given-none']()
+    expect(given.at(-1)).toBe(null)
+  })
+
   test('two source modules share a host type by its name', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'encantis-host-'))
     try {
