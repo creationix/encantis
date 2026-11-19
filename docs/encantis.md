@@ -397,7 +397,7 @@ A fixed array that lies in memory, as a field of a struct a pointer points to (`
 
 Use fixed arrays for small data that benefits from register access: cryptographic limbs, color channels, coordinate vectors.
 
-A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
+A fixed array held in registers has no address, so it is not passed where a pointer or a slice is wanted: `sum(v)` with `v: [3]i32` and `sum(r: *[3]i32)` is an error (`cannot assign [3]i32 to *[3]i32`), as is `v.sum()` (`the receiver is a [3]i32, which is held in registers and has no address`). Nor has it a `.ptr`: a fixed array held by value is its elements, also where it is read out of memory, so `v.ptr` is `cannot take .ptr of [3]i32: a fixed array held by value has no address`. One that lies in memory has the address of its place, `(&p.items).ptr`. An array literal is laid out in memory where a pointer or slice is wanted, so `sum([1, 2, 3])` is fine; its elements are the pointer's elements, so `[[1, 2, 3], [4, 5, 6]]` is no `*[3]i32` (`cannot assign [3]i32 to i32`), and a string is one among them only where an element is a byte.
 
 ### 2.5 Pointer Types
 
@@ -1287,7 +1287,7 @@ A host reference is held where registers are, and nowhere else:
 - in a `let` variable or a global, an imported or exported global too;
 - as a field of a struct or tuple, or an element of a fixed array, held in registers (`(c: Canvas, n: i32)` as a value, or `[2]Canvas` in a variable).
 
-It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one. How a host reference is kept in memory is a design still to come.
+It has no bytes, so it is never in memory: no pointer points to one, no slice or many-pointer holds one, and neither does `data` or a literal laid out in memory, nor a struct or array that would be. Each of these is an error, as is `sizeof` of one and the `.wid` of an array of them. How a host reference is kept in memory is a design still to come.
 
 #### Never null, and optional
 
@@ -1506,6 +1506,14 @@ func g() -> u32 {
   let p = &[0 as ?Canvas; 4]
   return p.len
 }
+func h(c: Canvas) -> u32 {
+  let cs = [c, c]
+  return cs.wid
+}
+func i(c: Canvas) {
+  let cs = [c, c]
+  let p = cs.ptr
+}
 ```
 
 ```errors
@@ -1517,6 +1525,8 @@ cannot point to ?Canvas: a host reference has no bytes
 cannot take the size of Canvas: a host reference has no bytes
 cannot lay out in memory [2]Canvas: it holds Canvas
 cannot lay out in memory [4]?Canvas: it holds ?Canvas
+cannot take the width of Canvas: a host reference has no bytes
+cannot take .ptr of [2]Canvas: a fixed array held by value has no address
 ```
 
 <!-- spec:end -->

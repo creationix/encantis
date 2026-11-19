@@ -7078,6 +7078,16 @@ class CheckContext {
         // Array type built-in fields: .ptr, .len, .wid
         if (unwrappedType.kind === 'array') {
           if (expr.member.name === 'ptr') {
+            // A fixed array held by value is its elements, in registers or
+            // read out of memory: there is no address to give. One that lies
+            // in memory has the address of the place, given with &.
+            if (isValueArray(unwrappedType)) {
+              const text = exprText(expr.object)
+              const place = text && this.placeAddress(expr.object, objType) ? ` (where it lies in memory, (&${text}).ptr is its address)` : ''
+              this.error(expr.span.start, `cannot take .ptr of ${typeToString(objType)}: a fixed array held by value has no address${place}`)
+              return RECOVERY
+            }
+            this.neverInMemory(unwrappedType.element, expr.span.start, 'point to')
             return manyPointer(unwrappedType.element)
           }
           if (expr.member.name === 'len') {
@@ -7091,6 +7101,12 @@ class CheckContext {
             return typeof n === 'number' ? comptimeInt(BigInt(n)) : primitive('u32')
           }
           if (expr.member.name === 'wid') {
+            // The width of an element is its size in memory, which a host
+            // reference has none of (as sizeof).
+            if (hostIn(unwrappedType.element)) {
+              this.neverInMemory(unwrappedType.element, expr.span.start, 'take the width of')
+              return primitive('u32')
+            }
             const ws = byteSize(unwrappedType.element)
             if (ws !== null) return comptimeInt(BigInt(ws))
             return primitive('u32')

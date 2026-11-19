@@ -910,6 +910,24 @@ cannot assign to .f64: it is the pointer as [*]mut f64
 cannot assign to .u16: it is the pointer as [*]mut u16
 ```
 
+A fixed array held by value has no `.ptr`, in registers or read out of memory; one that lies in memory has the address of its place:
+
+```ents
+type Row = (cells: [2]i32, n: i32)
+
+func a(x: i32, y: i32) -> u32 {
+  let v = [x, y]
+  return v.ptr as u32
+}
+func b(p: *Row) -> u32 => p.cells.ptr as u32
+func c(p: *Row) -> u32 => (&p.cells).ptr as u32
+```
+
+```errors
+cannot take .ptr of [2]i32: a fixed array held by value has no address
+cannot take .ptr of [2]i32: a fixed array held by value has no address (where it lies in memory, (&p.cells).ptr is its address)
+```
+
 ## Structs in array literals
 
 An element of an array literal can be a struct, written as a tuple or with its constructor. It is checked field by field, so a literal field takes its field's type. A slice field can be a string.
