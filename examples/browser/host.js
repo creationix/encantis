@@ -6,7 +6,6 @@
 //   init(seed)                    start over
 //   frame(dt_ms, width, height, buttons, stick_x, stick_y) -> count
 //   commands() -> address         where frame() left its `count` commands
-//   inbox(), inbox_size(), load(len) -> levels    (optional: an asset)
 //
 // Each command is 32 bytes, little-endian: op u32, a b c d f32, color u32,
 // p u32, n u32. The ops are clear, rect, circle, ring, text and sound (see
@@ -142,20 +141,11 @@ function gamepad() {
   return { buttons: 0, x: 0, y: 0 }
 }
 
-// Loads the game, gives it its asset, and runs it on `canvas` until stop().
-export async function start({ canvas, wasm, asset, seed = (Math.random() * 2 ** 32) >>> 0 }) {
+// Loads the game and runs it on `canvas` until stop().
+export async function start({ canvas, wasm, seed = (Math.random() * 2 ** 32) >>> 0 }) {
   const bytes = await (await fetch(wasm)).arrayBuffer()
   const { instance } = await WebAssembly.instantiate(bytes, {})
   const game = instance.exports
-
-  if (asset && game.load) {
-    const data = new Uint8Array(await (await fetch(asset)).arrayBuffer())
-    const room = game.inbox_size()
-    if (data.length > room) console.warn(`${asset}: ${data.length} bytes, the inbox holds ${room}`)
-    const len = Math.min(data.length, room)
-    new Uint8Array(game.memory.buffer, game.inbox(), len).set(data.subarray(0, len))
-    if (game.load(len) === 0) console.warn(`${asset}: no levels in it`)
-  }
   game.init(seed)
 
   let keys = 0

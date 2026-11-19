@@ -4,11 +4,10 @@ A complete small game and a starter template, run by one small host.
 
 | File | What it is |
 | --- | --- |
-| [`lantern.ents`](lantern.ents) | **Lantern**, an arena game: collect the sparks, dash through the wisps. Animation, keyboard, gamepad and touch input, sound, any canvas size, and its levels loaded from a file. |
+| [`lantern.ents`](lantern.ents) | **Lantern**, an arena game: collect the sparks, dash through the wisps. Animation, keyboard, gamepad and touch input, sound, any canvas size, and five levels written as data. |
 | [`starter.ents`](starter.ents) | The smallest game on the same contract: a dot to steer to a target. Copy it to start your own. |
-| [`host.js`](host.js) | The host: loads a game, gives it its asset, feeds it input (keys, gamepads, touch) and plays the commands it leaves in memory on a canvas and through Web Audio. |
+| [`host.js`](host.js) | The host: loads a game, feeds it input (keys, gamepads, touch) and plays the commands it leaves in memory on a canvas and through Web Audio. |
 | [`index.html`](index.html) | The page. `?game=starter` runs the template. |
-| [`levels.txt`](levels.txt) | Lantern's five levels, as text. |
 | [`build.ts`](build.ts) | Builds both into `dist/` and reports what each part weighs. |
 | [`game.test.ts`](game.test.ts) | The games as a host sees them, over many frames. |
 
@@ -32,15 +31,14 @@ Or play it at <https://creationix.github.io/encantis/lantern/>: the [Pages workf
 
 | File | Bytes | gzip | brotli |
 | --- | ---: | ---: | ---: |
-| `lantern.wasm` | 7312 | 3555 | 3351 |
+| `lantern.wasm` | 7237 | 3496 | 3254 |
 | `starter.wasm` | 966 | 586 | 551 |
-| `host.js` (minified) | 4139 | 1954 | 1756 |
-| `index.html` | 744 | 475 | 321 |
-| `levels.txt` | 1754 | 188 | 166 |
-| **Lantern, all four files** | **13949** | **6172** | **5594** |
-| **starter, its three files** | **5849** | **3015** | **2628** |
+| `host.js` (minified) | 3819 | 1813 | 1623 |
+| `index.html` | 675 | 442 | 293 |
+| **Lantern, its three files** | **11731** | **5751** | **5170** |
+| **starter, its three files** | **5460** | **2841** | **2467** |
 
-Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, the level shelf and its strings) reaches byte 42921 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
+Memory: one 64 KiB page, fixed. Lantern's data (its pools, the command list, its levels and its strings) reaches byte 37173 of it, and after an hour of play (216,000 frames, starting over each time the game ends) the memory is still that one page: the module has no `memory.grow`. The busiest frame asks for 167 of its 1024 commands.
 
 The numbers come from `dist/sizes.json`, which the build writes; run it again after a change. Both games' release builds are also held to size budgets in `scripts/size-budgets.json`, so `bun test` (and CI) fails when one grows past its budget; `bun run size --update` sets new ones when the growth is meant.
 
@@ -51,10 +49,9 @@ A game is a wasm module that **imports nothing**. The host calls it; it never ca
 | Export | |
 | --- | --- |
 | `memory` | Its linear memory, one page, which never grows. |
-| `init(seed: u32)` | Starts over: everything but the loaded levels (and Lantern's best score) is as when the module was loaded. |
+| `init(seed: u32)` | Starts over: everything but Lantern's best score is as when the module was loaded. |
 | `frame(dt_ms: f32, width: f32, height: f32, buttons: u32, stick_x: f32, stick_y: f32) -> u32` | Plays one frame and gives the number of commands it wrote. `dt_ms` counts up to 50; the size is the canvas in CSS pixels; the stick is in [-1, 1]. A bad number (NaN, infinite, negative) counts as none. |
 | `commands() -> u32` | The address of the first command. |
-| `inbox() -> u32`, `inbox_size() -> u32`, `load(len: u32) -> u32` | Lantern only: the host copies a level file into the inbox, at most `inbox_size()` bytes, and `load` reads it, giving the number of levels. |
 
 Buttons are bits: left 1, right 2, up 4, down 8, dash 16, start 32.
 
@@ -76,7 +73,6 @@ Each command is 32 bytes, little-endian, one after another:
 What crosses the boundary, and for how long:
 
 - **The commands and their text belong to the game.** They are valid from the return of `frame()` until the next call into the module, so the host reads them right away (`readCommands` in `host.js`). Text a frame makes, like a score's digits, is in a per-frame arena that the next `frame()` starts over; constant text is in the data section and never moves.
-- **The inbox belongs to the host between calls.** It writes up to `inbox_size()` bytes, then calls `load(len)`, which reads them during the call. A `len` past the inbox reads the inbox and no further.
 - **Nothing is re-entered.** With no imports, no call into the module can call back out, so each call runs to its end before the next starts. Instances share nothing: several games on one page, or in one test, don't see each other.
 - **Layout is the language's**, byte-packed with no padding ([reference 9.6](../../docs/encantis.md#96-structs-and-slices-in-memory)), so `Cmd` is the 32 bytes above at a stride of 32, and a struct's fields are where its declaration says.
 - **Slices and several results** don't cross as such: the text of a command is a slice given as its two values, `p` and `n`, and `frame` returns one number while the rest stays in memory. A wasm export can return several values (JavaScript gets an array), but one call per frame and one read of memory is cheaper and works in every host.
@@ -92,9 +88,10 @@ Nothing in Lantern allocates after it starts: it has no heap. Each kind of thing
 | `world.motes` (particles) | 96 | A new one replaces the oldest (a ring). |
 | `cmds.list` | 1024 | Commands past the last are dropped; the frame still ends. |
 | `scratch` (per-frame text) | 256 bytes | Text that doesn't fit is left out. |
-| `inbox` | 4096 bytes | The host gives at most that much. |
 
-The pools are arrays inside structs, indexed where they lie: `world.wisps[i]` with `i` from `for i in max-wisps` is proven in range and is one address computation, and `&cmds.list[cmds.count]` is the next free command or none when the list is full ([reference: Fixed Arrays in Place](../../docs/encantis.md#fixed-arrays-in-place)). A level is a `[14][24]u8` tilemap inside a `Level` struct, read as `m.tiles[y][x]`.
+The pools are arrays inside structs, indexed where they lie: `world.wisps[i]` with `i` from `for i in max-wisps` is proven in range and is one address computation, and `&cmds.list[cmds.count]` is the next free command or none when the list is full ([reference: Fixed Arrays in Place](../../docs/encantis.md#fixed-arrays-in-place)).
+
+The levels are not loaded or parsed: they are `data`, laid out when the module is compiled. Each is a start position and a table of 14 rows written as strings, `rows: *[14][24]u8`, read as `m.rows[y][x] == '#'`. A row is a pointer to its bytes ([reference: Nesting](../../docs/encantis.md#nesting)), so a row written in several levels, like a wall, is stored once, and a row that isn't 24 bytes is a compile error.
 
 What makes storage that lasts, and nothing else does:
 
@@ -104,7 +101,7 @@ What makes storage that lasts, and nothing else does:
 
 Everything else, `let` variables and struct values included, is held in registers.
 
-Starting over is `init(seed)`: it zeroes the world in one `memory.fill` (`world-bytes[..] = 0`) and keeps the levels and the best score, and `game.test.ts` checks that a restarted game plays frame for frame as a new one does.
+Starting over is `init(seed)`: it zeroes the world in one `memory.fill` (`world-bytes[..] = 0`) and keeps the best score, and `game.test.ts` checks that a restarted game plays frame for frame as a new one does.
 
 ## Start your own
 

@@ -15,11 +15,7 @@
   import { start } from './host.js'
   // ?game=starter runs the template instead of Lantern.
   const name = new URLSearchParams(location.search).get('game') === 'starter' ? 'starter' : 'lantern'
-  start({
-    canvas: document.getElementById('game'),
-    wasm: `${name}.wasm`,
-    asset: name === 'lantern' ? 'levels.txt' : undefined,
-  })
+  start({ canvas: document.getElementById('game'), wasm: `${name}.wasm` })
 </script>
 </body>
 </html>

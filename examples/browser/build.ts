@@ -8,9 +8,9 @@
 // elsewhere, set ENCANTIS to the installed binary (ENCANTIS=encantis).
 //
 // Each game is compiled with the CLI's release build (`encantis wasm
-// --release`), host.js is minified, and index.html and the level file are
-// copied. The report gives the wasm, the host's JavaScript, the page and the
-// asset apart, raw and compressed, and the memory the game uses: its one
+// --release`), host.js is minified, and index.html is copied. The report
+// gives the wasm, the host's JavaScript and the page apart, raw and
+// compressed, and the memory the game uses: its one
 // page of linear memory, how far its data reaches into it, and whether an
 // hour of play grows it.
 
@@ -45,7 +45,6 @@ if (!host.success) {
 }
 await Bun.write(join(dist, 'host.js'), await host.outputs[0].text())
 await cp(join(here, 'index.html'), join(dist, 'index.html'))
-await cp(join(here, 'levels.txt'), join(dist, 'levels.txt'))
 
 type Size = { file: string; raw: number; gzip: number; brotli: number }
 async function size(file: string): Promise<Size> {
@@ -57,7 +56,7 @@ async function size(file: string): Promise<Size> {
     brotli: brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }).length,
   }
 }
-const files = await Promise.all(['lantern.wasm', 'starter.wasm', 'host.js', 'index.html', 'levels.txt'].map(size))
+const files = await Promise.all(['lantern.wasm', 'starter.wasm', 'host.js', 'index.html'].map(size))
 const of = (name: string) => files.find((f) => f.file === name) as Size
 const download = (names: string[]) => ({
   raw: names.reduce((n, f) => n + of(f).raw, 0),
@@ -105,9 +104,6 @@ function dataEnd(wasm: Uint8Array): number {
 const lanternBytes = new Uint8Array(await Bun.file(join(dist, 'lantern.wasm')).arrayBuffer())
 const { instance } = await WebAssembly.instantiate(lanternBytes, {})
 const game = instance.exports as Record<string, CallableFunction> & { memory: WebAssembly.Memory }
-const levels = new Uint8Array(await Bun.file(join(dist, 'levels.txt')).arrayBuffer())
-new Uint8Array(game.memory.buffer, game.inbox() as number, levels.length).set(levels)
-game.load(levels.length)
 game.init(1)
 const before = game.memory.buffer.byteLength
 let most = 0
@@ -125,7 +121,7 @@ const memory = {
 
 const report = {
   files,
-  lantern: download(['lantern.wasm', 'host.js', 'index.html', 'levels.txt']),
+  lantern: download(['lantern.wasm', 'host.js', 'index.html']),
   starter: download(['starter.wasm', 'host.js', 'index.html']),
   memory,
 }
@@ -139,7 +135,7 @@ if (asJson) {
   console.log(`| ${'file'.padEnd(28)} | ${'bytes'.padStart(6)} | ${'gzip'.padStart(6)} | ${'brotli'.padStart(6)} |`)
   console.log(`|${'-'.repeat(30)}|-------:|-------:|-------:|`)
   for (const f of files) console.log(row(f.file, f))
-  console.log(row('Lantern, all four files', report.lantern))
+  console.log(row('Lantern, its three files', report.lantern))
   console.log(row('starter, its three files', report.starter))
   console.log()
   console.log(`memory: ${memory.pages} page (${memory.bytes} bytes), fixed; data reaches byte ${memory.dataEnd}`)

@@ -11,16 +11,12 @@ import { BUTTON, readCommands } from './host.js'
 const dir = import.meta.dir
 const lanternWasm = await compileToWasm(join(dir, 'lantern.ents'))
 const starterWasm = await compileToWasm(join(dir, 'starter.ents'))
-const levels = new Uint8Array(await Bun.file(join(dir, 'levels.txt')).arrayBuffer())
 
 type Game = {
   memory: WebAssembly.Memory
   init(seed: number): void
   frame(dt: number, w: number, h: number, buttons: number, x: number, y: number): number
   commands(): number
-  inbox(): number
-  inbox_size(): number
-  load(len: number): number
   score(): number
   mode(): number
 }
@@ -30,8 +26,6 @@ const MODE = { title: 0, play: 1, dead: 2, clear: 3 }
 async function lantern(seed: number): Promise<Game> {
   const { instance } = await WebAssembly.instantiate(lanternWasm, {})
   const game = instance.exports as unknown as Game
-  new Uint8Array(game.memory.buffer, game.inbox(), levels.length).set(levels)
-  expect(game.load(levels.length)).toBe(5)
   game.init(seed)
   return game
 }
@@ -75,15 +69,6 @@ describe('the module a host gets', () => {
       const names = WebAssembly.Module.exports(mod).map((e) => e.name)
       for (const name of ['memory', 'init', 'frame', 'commands']) expect(names).toContain(name)
     }
-    const names = WebAssembly.Module.exports(new WebAssembly.Module(lanternWasm)).map((e) => e.name)
-    for (const name of ['inbox', 'inbox_size', 'load']) expect(names).toContain(name)
-  })
-
-  test('the level file is read, and a level past the inbox is cut, not overrun', async () => {
-    const game = await lantern(1)
-    expect(levels.length).toBeLessThanOrEqual(game.inbox_size())
-    // Asking for more than the inbox holds reads the inbox, no further.
-    expect(game.load(game.inbox_size() + 100)).toBeGreaterThan(0)
   })
 })
 
