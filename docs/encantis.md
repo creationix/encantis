@@ -339,7 +339,7 @@ argument 1: cannot assign (u32, u32) to u32
 | Floating point | `f32`, `f64` | `f32`, `f64` | 4, 8 |
 | Boolean | `bool` | `i32`, 0 or 1 | 1 |
 
-Integer arithmetic wraps: a result is reduced to its type's width, in two's complement, and never traps on overflow. A type narrower than 32 bits is held in an `i32` that always holds a value of that type, so the compiler masks (unsigned) or sign-extends (signed) what an operation leaves there: `250:u8 + 10` is 4, and `127:i8 + 1` is -128. Whether an integer is signed is its type's affair: `i32` and `u32` are the same wasm `i32`, and the operator picks the signed or the unsigned instruction (`/`, `%`, `>>`, the comparisons, widening). The operators themselves are in chapter 4.
+Integer `+`, `-`, `*`, `<<` and negation wrap: the result is reduced to its type's width, in two's complement, and never traps. Division and remainder trap on a zero divisor, and an `i32` or `i64` division of the most negative value by -1 traps too, as wasm's does ([4.1](#41-arithmetic-operators)). A type narrower than 32 bits is held in an `i32` that always holds a value of that type, so the compiler masks (unsigned) or sign-extends (signed) what an operation leaves there: `250:u8 + 10` is 4, and `127:i8 + 1` is -128. Whether an integer is signed is its type's affair: `i32` and `u32` are the same wasm `i32`, and the operator picks the signed or the unsigned instruction (`/`, `%`, `>>`, the comparisons, widening). The operators themselves are in chapter 4.
 
 <!-- spec:begin compile -->
 
@@ -428,7 +428,7 @@ A value has a range when the compiler can see one:
   - `x + K`, with `x` ranged (`#N`), is `#(N + K)`, and `x * K` (K above 0) is `#((N - 1) * K + 1)`: a `u32#4 * 2` is a `u32#7`. The constant may stand on either side;
   - for any unsigned `x`, ranged or not, `x & K` (either side) is `#(K + 1)`, `x % K` (K above 0, on the right) is `#K`, and `x >> K` keeps the bits that are left: a `u32 >> 29` is a `u32#8`, a `u32#256 >> 5` a `u32#8`. The count is the one the shift takes ([4.2](#42-bitwise-operators)): `x >> 32` on a `u32` is `x`, with no range. When `x` has a smaller range of its own, it keeps that one;
   - a `u8` or a `u16` is bounded by its width, so a `u8` indexes a `*[256]T` with no check;
-- `min` and `max` of ranged values, which have the larger of their ranges ([10.1](#101-numeric-builtins));
+- `min` and `max` when every operand is ranged, or a constant inside the widest of those ranges: the result has the widest range. With `i: u32#4`, `min(i, 2)` is a `u32#4`, but `min(i, 7)` a plain `u32` ([10.1](#101-numeric-builtins));
 - a comparison that narrows it (below);
 - a cast, `x as u32#N`, which is not checked (below).
 
@@ -690,7 +690,7 @@ A pointer is an address in the module's one 32-bit linear memory: one wasm `i32`
 | `[]T` | a slice: pointer and length ([2.6](#26-slices)) | at run time | `sizeof(T)` | `[*]T` | checked against `.len` |
 | `[N]T` | (a value, [2.4](#24-fixed-arrays-value-type)) | N | `sizeof(T)` | — | constant index only |
 
-`.len` is the number of elements (of rows, for `*[NxM]T` and a table), `.wid` the bytes of one element (a row pointer's 4 in a table), and both are `u32`s, constants where the type has the number: `p.len * p.wid` is the bytes a `*[N]T` points at, and `p.len * M * p.wid` those of a packed `*[NxM]T`. A `*T` has no `.len` or `.wid` (`no field 'wid' on type *u64`): `sizeof(T)` is its size. `.ptr` is the address as a many-pointer, `[*]T`; a `[*]T` has no `.len`. Besides these, a pointer to a struct reaches its fields (`p.x`), a pointer to a tuple its parts (`p.0`), through the one pointer ([9.6](#96-structs-and-slices-in-memory)), and every pointer has the type views `p.u8` ... `p.f64` ([4.6](#type-punned-memory-access)).
+`.len` is the number of elements (of rows, for `*[NxM]T` and a table), `.wid` the bytes of one element (a row pointer's 4 in a table), and both are `u32`s, constants where the type has the number: `p.len * p.wid` is the bytes a `*[N]T` points at, and `p.len * M * p.wid` those of a packed `*[NxM]T`. A `*T` has no `.len` or `.wid` (`no field 'wid' on type *u64`): `sizeof(T)` is its size. `.ptr` is the address as a many-pointer, `[*]T`, or `[*]mut T` for a mutable pointer or slice; a `[*]T` has no `.len`. Besides these, a pointer to a struct reaches its fields (`p.x`), a pointer to a tuple its parts (`p.0`), through the one pointer ([9.6](#96-structs-and-slices-in-memory)), and every pointer has the type views `p.u8` ... `p.f64` ([4.6](#type-punned-memory-access)).
 
 <!-- spec:begin compile -->
 
