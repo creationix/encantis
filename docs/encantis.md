@@ -872,68 +872,11 @@ receiver: a literal is constant: write `(mut "ab")` for a []mut u8
 
 <!-- spec:end -->
 
-#### `def` — Compile-Time Constants
+#### Naming a Literal: `def` and `data`
 
-`def` names a compile-time constant: an integer, a float, a bool or a codepoint, or a constant expression of them (`def page = 64 * 1024`). Each use of the name is the value itself, as if it were written there, so a `def` takes no memory and has no address, and an untyped one takes the type of each place it is used. A tuple, an array or a string is not a `def`'s value (`def cannot contain array/string literals — use 'data origin = ...' instead`): lay it out with `data`, or write a `def` for each part. More in [3.1](#31-definitions-def).
+Two declarations give a literal a name. `def` names a constant: an integer, a float, a bool or a codepoint, or a constant expression of them (`def page = 64 * 1024`). Each use of the name is the value itself, as if it were written there, so a `def` takes no memory and has no address, and an untyped one takes the type of each place it is used ([3.1](#31-definitions-def)). A tuple, an array or a string is not a `def`'s value: lay it out with `data`, or write a `def` for each part.
 
-<!-- spec:begin compile -->
-
-```ents
-def mask51 = 0x7FFFFFFFFFFFF:u64
-def pi = 3.14159265
-def page = 64 * 1024
-def tab = '\t'
-def debug = false
-
-data buf = mut [0:u8; page]
-
-test "defs are constants" {
-  assert buf.len == 65536
-  assert mask51 == (1:u64 << 51) - 1
-  assert pi > 3.14 && pi < 3.15
-  assert tab == 9
-  assert !debug
-}
-```
-
-<!-- spec:end -->
-
-#### `data` — Data Section Embedding
-
-`data` lays a literal out in the data section and names its address. The value is an ordinary literal, and the name is a pointer to it, typed as tightly as the literal allows: `*[N]T` for an array or a string, `*T` for anything else, `*mut …` when the literal is `mut`. A pointer to an array converts to `[]T` or `[*]T` wherever one is wanted ([9.5](#95-array-type-conversions)).
-
-<!-- spec:begin compile -->
-
-```ents
-data table = [1:u64, 2, 3, 4]      // *[4]u64
-data key = x"9d61b19deffd5a60"     // *[8]u8
-data buf = mut [0:u8; 1024]        // *mut [1024]u8
-data count = 5:i32                 // *i32: four bytes
-data tally = mut 5:i32             // *mut i32
-data origin = (0.0, 0.0)           // *(f64, f64)
-
-func sum(xs: []u64) -> u64 {
-  let s: u64 = 0
-  for x in xs {
-    s += x
-  }
-  return s
-}
-
-test "data is a pointer" {
-  assert sum(table) == 10
-  assert key.len == 8 && buf.len == 1024
-  tally.* += count.*
-  assert tally.* == 10
-  assert origin.*.1 == 0.0
-}
-```
-
-<!-- spec:end -->
-
-The difference between `data` and a literal written in place is the name: `data msg = "hello"` gives the bytes a name and an address known when the module is built, while an inline `"hello"` has no name and may share its bytes with equal constant literals. A type written for `data`, and data that refers to other data, are in [3.2](#32-data-declarations-data).
-
-**Zeros are free:** wasm memory starts as zeros, so a data segment stops at the last byte that isn't zero, and `data buf = mut [0:u8; 1024]` emits no data segment at all. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`). All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
+`data` lays a literal out in the data section and names its address, typed as tightly as the literal allows: `data table = [1:u64, 2, 3, 4]` is a `*[4]u64`, `data buf = mut [0:u8; 1024]` a `*mut [1024]u8`, and `data count = 5:i32` a `*i32` ([3.2](#32-data-declarations-data)). The difference between `data` and a literal written in place is the name: `data msg = "hello"` gives the bytes a name and an address known when the module is built, while an inline `"hello"` has no name and may share its bytes with equal constant literals.
 
 ### 1.6 Statements and Line Breaks
 
@@ -4461,7 +4404,7 @@ mismatched operands for '+': i32 and u32 (cast one side explicitly)
 
 <!-- spec:end -->
 
-> **Not implemented: saturating arithmetic.** `+|`, `-|` and `*|` (and `+|=`, `-|=`, `*|=`) are meant to clamp at the bounds of the type instead of wrapping: `250:u8 +| 10` is to be 255, and `3:u8 -| 5` 0. The parser accepts them, but the compiler computes them as the wrapping `+`, `-` and `*` (a known bug), so a program must not use them yet. On a wide integer they are an error (`'+|' on u128 is not supported yet`). They bind as `+` and `*` do.
+> **Not implemented: saturating arithmetic.** `+|`, `-|` and `*|` (and `+|=`, `-|=`, `*|=`) are meant to clamp at the bounds of the type instead of wrapping: `250:u8 +| 10` is to be 255, and `3:u8 -| 5` 0. The parser accepts them, but the compiler computes them as the wrapping `+`, `-` and `*` (a known bug), so a program must not use them. On a wide integer they are an error (`'+|' on u128 is not supported yet`). They bind as `+` and `*` do.
 
 ### 4.2 Bitwise Operators
 
@@ -6970,7 +6913,7 @@ A memory declaration, `memory`, then optionally a minimum and a maximum in pages
 - The minimum is the number of pages the module has when it starts. Without one written, it is what the data needs: `max(1, ceil(sizeof data / 65536))`, where `sizeof data` is the address just past the last byte of data, which starts at address 8 ([9.0](#90-data-layout)).
 - The maximum is how far the memory may grow. Without one, none is written in the module, and the engine's own limit applies.
 - A program that uses memory and declares none gets that memory with the minimum the data needs, no maximum, and no export. The declaration is needed only to choose the sizes or to export the memory.
-- The numbers are decimal integer literals with `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these yet: a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
+- The numbers are decimal integer literals with `min <= max <= 65536` (65536 pages are 4 GiB), and the minimum is at least what the data needs. The compiler does not check these (a known bug): a module that breaks one fails when it is assembled, or when it is instantiated (`segment is too big` for a minimum too small for its data). Leave the minimum out unless the program needs more than its data.
 - A program has one memory declaration at most, in any one of its modules. Where it is, its sizes and its export are the program's memory's, also in a module that another imports.
 
 The host sees the memory only when it is exported. Exporting it is what lets a host read a string a function returns or write an array it passes in, and WASI needs it under the name `memory` ([Starting and running](#starting-and-running)).
@@ -8209,11 +8152,12 @@ A literal laid out in memory takes one place in the data for each place it is wr
 
 - Equal constant literals may share their bytes: `"abc"` written in two functions can be one address. A `mut` literal and mutable `data` are always their own ([3.2](#32-data-declarations-data)).
 - A literal with a part known only at run time, `sum([x, 5, 6])`, is laid out once, with its constant parts. Each time the expression runs, the run-time parts are stored into that place, so a pointer kept from an earlier run sees the values of the latest.
-- Bytes that are zero cost nothing in the module: memory starts zeroed, and the data section holds only the others. `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file.
+- Bytes that are zero cost nothing in the module: memory starts zeroed, so a data segment stops at the last byte that is not zero, and `data buf = mut [0:u8; 65536]` adds no bytes to the `.wasm` file. The zeros still hold their place: the data after them lies where it would. Laying out zeros takes the compiler no time or memory, however many there are (`mut [0:u8; 2147483648]`).
+- All the data has to fit in the 4 GiB a wasm memory can hold: more is an error.
 
 Memory has no read-only part. Const data is const in the type system: nothing writes through a const pointer, but a cast to a `*mut` pointer does (`text as *mut [3]u8`), and every literal that shares those bytes then reads what was written.
 
-`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)). (Known compiler bug: in a program with no data at all it reads 0.)
+`sizeof data` is the address just past the last byte of the program's data: where the memory that nothing is laid out in begins. It is a `u32`, at least 8, the same in every module of the program ([10.4](#104-sizes)); in a program with no data at all it reads 0, which is a known bug.
 
 <!-- spec:begin compile -->
 
@@ -8490,7 +8434,7 @@ cannot assign (int(1), int(2), int(3)) to []i32
 | `*mut [N]T`, `[]mut T`, `[*]mut T` | the same without `mut` | implicit |
 | `[]T` | `[*]T` | `s.ptr` |
 | `[]T` | `u32` | `s.len` |
-| `*[!]T` | `[*]T` | `z.ptr` |
+| `*[!]T` | `[*]T` | implicit, or `z.ptr` |
 | `*[!]T` | `[]T` | `(z.ptr, z.len)`: the length is scanned for |
 | `[*]T` and a length | `[]T` | `p[0..n]`, or the pair `(p, n)` ([9.4](#94-slice-construction)) |
 | `[*]T` | `[]T` | error: it has no length (`cannot assign [*]u8 to []u8`) |
@@ -8498,7 +8442,7 @@ cannot assign (int(1), int(2), int(3)) to []i32
 | a pointer or slice of `T` | one of another element `U` | error, also where `T` widens to `U`: the elements would have to be laid out alike ([9.2](#structural-coercion)) |
 | a pointer | another pointer type, `u32` or `i32` | a cast ([2.10](#explicit-casts)) |
 
-`*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
+Every implicit conversion, of these and of other types, is listed in [Every Implicit Conversion](#every-implicit-conversion). `*[N]T` to `[]T` is implicit wherever a `[]T` is expected: an argument, an initializer or an assignment, a returned value or an expression body, a branch of an `if` or `match`, and a field of a struct or tuple literal. Pointers to arrays of different lengths in one literal that has no type written are slices of their own lengths, written out or as the branches of an `if` or `match`: with `three: *[3]i32` and `four: *[4]i32`, `let both = [three, four]` is a `[2][]i32` (and so is `global both` or `data both` of it), as `["ab", "cde"]` is a `[2][]u8`, `[[three, three], [four, four]]` is a `[2][2][]i32` and `[(three, 1), (four, 2)]` is a `[2]([]i32, i32)`. Rows written out with no type have to be of one length: `let rows = [[1, 2], [3, 4, 5]]` is an error (`rows of different lengths: ...`), and `data rows: *[2][]i32 = [[1, 2], [3, 4, 5]]` lays them out as slices of their own lengths. A struct or tuple that is already a value is not converted as a whole, as no struct is (`cannot convert (s: *[3]u8, n: u32) to Holder implicitly: convert its fields`): build the struct from its fields, `Holder(t.s, t.n)`, and each field converts.
 
 <!-- spec:begin compile -->
 
@@ -8813,7 +8757,7 @@ A call with another number of operands is an error that says how many it takes (
 
 The float builtins take a float, and the others a number: anything else is an error (`sqrt requires a float type, got i32`, `max requires a numeric type, got bool`). Their operands are typed together, like the operands of a binary operator. A literal takes the type of the other operand, whichever comes first, and two typed operands meet at the wider type ([2.10](#implicit-widening)). With only literals, the operands take their default type, `i32` or `f64`, and an integer literal given to a float builtin is an `f64`: `sqrt(2)` is `sqrt(2.0)`, an `f64` also where an `f32` is wanted (`cannot assign f64 to f32`), so a typed literal says which, `sqrt(2.0:f32)`.
 
-On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min`, `max` and `abs` also take the wide integers, `i128` to `u512`, through functions the compiler adds ([11.5](#115-functions-the-compiler-adds)). `min` and `max` return one of their operands, so when every operand is in a range ([2.2](#ranged-integers)), the result is too: `min(i, 2)` with `i: u32#4` is still a `u32#4`, and indexes a `*[4]T` with no check. On floats they are the wasm instructions: NaN if either operand is NaN, and `-0.0` below `0.0`.
+On integers, `min` and `max` compare signed or unsigned as the operands' type says, and `abs` of an unsigned value is the value itself. `abs` of the most negative value of a type wraps back to it, as negating it does: `abs(-128:i8)` is `-128`. `min`, `max` and `abs` also take the wide integers, `i128` to `u512`, through functions the compiler adds ([11.5](#115-functions-the-compiler-adds)). `min` and `max` return one of their operands, so when every operand is in a range ([Ranged Integers](#ranged-integers)), or is a constant inside the widest of those ranges, the result has the widest range: with `i: u32#4`, `min(i, 2)` is still a `u32#4`, and indexes a `*[4]T` with no check, but `min(i, 7)` is a plain `u32`. On floats they are the wasm instructions: NaN if either operand is NaN, and `-0.0` below `0.0`.
 
 <!-- spec:begin compile -->
 
@@ -9045,7 +8989,7 @@ cannot assign u32 to u8
 
 A program compiles to one wasm module, and the language promises how: what each type is held as ([9.3](#93-wasm-type-mapping)), how it lies in memory ([9.6](#96-structs-and-slices-in-memory)), and the instructions of this chapter. Nothing runs that the source does not show, but for the few functions of [11.5](#115-functions-the-compiler-adds) and the null check of a plain host reference where it enters the module ([2.13](#213-host-references)).
 
-The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`, until the baseline moves.
+The compiler targets WebAssembly 2.0 engines, and writes only what a program needs of them: multi-value results, mutable globals, bulk memory (`memory.copy`, `memory.fill`) where a range is filled or copied or `memcpy`, `memset` or `memzero` is called, and reference types (`externref`) where a program has a host type. So one with no host type uses no reference types, and one with neither a range fill or copy nor a memory builtin no bulk memory. It writes no sign-extension, saturating conversion or SIMD instruction: the conversions it writes are those of 11.1 and 11.2, and SIMD is a future addition ([13](#13-future-additions)). A host reference ([2.13](#213-host-references)) needs reference types, which every current browser, Node.js and Bun have. Nothing newer is written (typed function references, GC, tail calls): a plain host type is an `externref` checked at the boundary rather than a `(ref extern)`.
 
 ### 11.1 Widening Instructions (implicit)
 
@@ -9158,9 +9102,7 @@ A test is declared at module level or inside another test. Its statements are th
 
 ### `assert`
 
-`assert condition` is a statement. The condition is a `bool` (`condition must be bool, not u32`). When it is false the program traps: `assert c` compiles to `(if (i32.eqz c) (then (unreachable)))`.
-
-An `assert` is not only for tests. In a function it is a run-time check that stays in the compiled program, and a false condition stops the program with a trap, as the library's allocator does when it runs out of room ([The Library](#the-library)):
+`assert condition` is a statement that traps when its condition, a `bool`, is false; [Assertions](#assertions) gives its rules and the code it compiles to. It is not only for tests. In a function it is a run-time check that stays in the compiled program, and a false condition stops the program with a trap, as the library's allocator does when it runs out of room ([The Library](#the-library)):
 
 <!-- spec:begin compile -->
 
@@ -9217,14 +9159,14 @@ test "the tests share one instance of the module" {
 
 <!-- spec:end -->
 
-A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (an open compiler bug). Give every test a name, and put statements only in a test that holds no tests.
+A group holds declarations and tests. Statements written in a group, beside its tests, are checked but never run, and neither is a test without a name, `test { ... }`: both parse, and the compiler should run them or refuse them (a known bug). Give every test a name, and put statements only in a test that holds no tests.
 
 ### Declarations in a Test
 
 A test can declare `def`, `data`, functions and imports, and these are the test's own: they are seen inside the test and the tests nested in it, and module code cannot use them.
 
 - A `def` or a `data` block declared in a test replaces a module name of the same name inside that test only. The rest of the module reads the name as if the test were not there.
-- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. The compiler also gives it to the tests that come after it in the file (a compiler bug), so give a test's function a name the module does not use.
+- A function declared in a test is called by its name in the test, and there it replaces a module function of that name. The compiler also gives it to the tests that come after it in the file (a known bug), so give a test's function a name the module does not use.
 - An import declared in a test is part of the test build only: a host function or a source file ([7.1](#71-imports)) that only tests use is no part of the compiled program, nor of a program that imports the module. As for functions, the compiler gives it to the later tests too.
 
 A test cannot declare a `global`, a `type`, a `memory` or an `export` (a syntax error), a generic function or a generic type ([8. Generics](#8-generics)). A function or an import declared in a test cannot take the name of a global, `def`, `data` block or import of the module, nor a name that several functions of the module share ([Functions That Share a Name](#functions-that-share-a-name)):
@@ -9280,9 +9222,9 @@ Tests run without the program's host. `encantis test` gives each import of the m
 - Any other imported function throws when it is called, which fails the test that called it. The functions that do not reach it are tested as usual.
 - An imported global is the zero of its type: 0 for a number, none for an optional host reference. One of a plain host type, which is never null, is a stand-in object ([2.13](#213-host-references)).
 
-In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a compiler bug): give each test a name of its own.
+In the test build each test is a function exported as `test_` followed by its name, the names of a group and its tests joined by `__`, and each character that is not a letter, a digit or `_` replaced by `_`. Two tests whose names are the same, or become the same this way, make a module that does not assemble (a known bug): give each test a name of its own.
 
-A test that holds no statements, `test "todo" {}`, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are compiler bugs.
+A test that holds no statements, `test "todo" {}`, fails (`fn is not a function`), and a test that fails by a trap is reported as `FAIL:` with no reason, which only `--json` gives: both are known bugs.
 
 ---
 
@@ -9342,7 +9284,7 @@ test "the median of three numbers" {
 
 Each import names the module by its path from the importing file, without `.ents`, and lists what it uses: the name the module exports, in quotes, then the declaration. A generic function is imported with its comptime parameters, and a generic type as the function it is (`func Vec(comptime T: type) -> type`, [8.8](#88-generics-across-modules)). Each of the library's generics is compiled once for each type it is used with: `vec(u64, 16)` and `xs.push(value)` are a `vec` and a `push` for `u64`, and `sorted.sort(ascending)` a `sort` that calls `ascending` directly. `let scope = mark()` and `defer reset(scope)` free what the function allocates on the stack, on every way out of it.
 
-What a program gets of a library module: a generic is in the program only for the types it is used with, so a container costs what the same code written for one type would. The ordinary functions and the data of an imported module are in the program whether it uses them or not, as for any module: `stack.ents` brings its 256 KiB stack (zeros, which take no bytes in the `.wasm` file, [Data](#data--data-section-embedding)) and five functions, which `vec.ents`, `set.ents`, `map.ents` and `sort.ents` all import; `set.ents` brings its twelve `hash` and `eq` functions, and `map.ents` those too. `fixedvec.ents`, `ring.ents` and `bits.ents` hold generics only and import nothing. A module's tests are never part of a program that imports it.
+What a program gets of a library module: a generic is in the program only for the types it is used with, so a container costs what the same code written for one type would. The ordinary functions and the data of an imported module are in the program whether it uses them or not, as for any module: `stack.ents` brings its 256 KiB stack (zeros, which take no bytes in the `.wasm` file, [9.0](#90-data-layout)) and five functions, which `vec.ents`, `set.ents`, `map.ents` and `sort.ents` all import; `set.ents` brings its twelve `hash` and `eq` functions, and `map.ents` those too. `fixedvec.ents`, `ring.ents` and `bits.ents` hold generics only and import nothing. A module's tests are never part of a program that imports it.
 
 ### `io`: Input and Output over WASI
 
@@ -9856,12 +9798,12 @@ counter()  // 1
 counter()  // 2
 ```
 
-**Implementation approach:**
+**A possible implementation:**
 
-- Non-capturing functions remain raw table indices (zero overhead)
-- Capturing functions become "fat": a struct with function pointer + environment pointer
-- Compiler automatically generates environment structs for captured variables
-- Callee receives an implicit environment parameter
+- A function that captures nothing would be a plain table index, at no cost.
+- A function that captures would be "fat": a struct of a function pointer and an environment pointer.
+- The compiler would generate an environment struct for the captured variables.
+- The callee would receive the environment as an implicit parameter.
 
 **Design questions:**
 
