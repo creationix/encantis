@@ -1,7 +1,8 @@
-// Encantis language server, desktop (Node) entry point.
+// Encantis language server, entry point of VS Code's desktop extension. (An
+// editor or an agent that starts it as a command runs `encantis lsp`.)
 import { readFile } from 'node:fs/promises';
 import { createConnection, ProposedFeatures } from 'vscode-languageserver/node';
-import { startServer } from './serve';
+import { startServer } from '@encantis/lsp/src/serve';
 
 // A document's imports are read from disk where they are not open. The
 // workspace's files are found by the editor (encantis/findFiles).

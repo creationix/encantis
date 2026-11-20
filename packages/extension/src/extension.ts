@@ -24,7 +24,7 @@ export function activate(context: ExtensionContext): void {
   // Language Server
   // -------------------------------------------------------------------------
 
-  const serverModule = context.asAbsolutePath(path.join('dist', 'node', 'server', 'lsp.js'));
+  const serverModule = context.asAbsolutePath(path.join('dist', 'node', 'server.js'));
   const serverOptions: ServerOptions = {
     run: {
       module: serverModule,

@@ -147,5 +147,6 @@ import "./sha512" (
 | `signature <file>:<line>:<name>` | Function signature |
 | `fmt <files...> [--check]` | Auto-format |
 | `ast <file> [-o out]` | Dump AST as JSON |
+| `lsp` | Language server on stdin and stdout (for an editor or an agent's LSP client) |
 
 All query commands support `--json` for structured output.

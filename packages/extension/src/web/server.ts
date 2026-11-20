@@ -1,6 +1,6 @@
 // Encantis language server, web (worker) entry point.
 import { BrowserMessageReader, BrowserMessageWriter, createConnection } from 'vscode-languageserver/browser';
-import { startServer } from '../server/serve';
+import { startServer } from '@encantis/lsp/src/serve';
 
 declare const self: DedicatedWorkerGlobalScope;
 

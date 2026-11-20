@@ -281,9 +281,11 @@ export interface ServerOptions {
   // Reads a file of another file system by its URI (a web editor's,
   // vscode-vfs:), where readFile reads none: the web server asks the editor.
   readUri?: (uri: string) => Promise<string | null>;
-  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace:
-  // the editor finds them (the extensions answer encantis/findFiles).
-  findFiles?: () => Promise<string[]>;
+  // The URIs of the workspace's .ents files, for Go to Symbol in Workspace,
+  // in the folders the client named when it started (their URIs): VS Code
+  // finds them (the extensions answer encantis/findFiles), `encantis lsp`
+  // reads the folders.
+  findFiles?: (folders: string[]) => Promise<string[]>;
 }
 
 // The path the loader names a document's file by: a file's path (pathOf),
@@ -447,7 +449,13 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   // Initialization
   // -----------------------------------------------------------------------------
 
-  connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  // The workspace's folders, as the client names them when it starts
+  let folders: string[] = [];
+
+  connection.onInitialize((params: InitializeParams): InitializeResult => {
+    if (params.workspaceFolders?.length) folders = params.workspaceFolders.map((folder) => folder.uri);
+    else if (params.rootUri) folders = [params.rootUri];
+    else if (params.rootPath) folders = [uriOf(params.rootPath)];
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -1027,7 +1035,7 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   async function workspaceFiles(): Promise<string[]> {
     if (!options.findFiles) return [];
     if (!listed || Date.now() - listed.at > 5000) {
-      listed = { at: Date.now(), uris: await options.findFiles().catch(() => []) };
+      listed = { at: Date.now(), uris: await options.findFiles(folders).catch(() => []) };
     }
     return listed.uris;
   }
@@ -1061,7 +1069,11 @@ export function startServer(connection: Connection, options: ServerOptions = {})
   }
 
   connection.onWorkspaceSymbol(async (params: WorkspaceSymbolParams): Promise<SymbolInformation[]> => {
-    const uris = new Set([...documents.all().map((d) => d.uri), ...(await workspaceFiles())]);
+    // An open document is read as it is open, also where the files found
+    // write its URI another way
+    const open = documents.all().map((d) => d.uri);
+    const opened = new Set(open.map((uri) => pathFor(uri) ?? uri));
+    const uris = [...open, ...(await workspaceFiles()).filter((uri) => !opened.has(pathFor(uri) ?? uri))];
     // The letters of the query, in order, in the name (as the editor matches)
     const query = params.query.toLowerCase();
     const matches = (name: string) => {

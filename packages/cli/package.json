@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@encantis/compiler": "workspace:*",
+    "@encantis/lsp": "workspace:*",
     "binaryen": "129.0.0"
   },
   "devDependencies": {

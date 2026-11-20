@@ -19,6 +19,7 @@
       },
       "dependencies": {
         "@encantis/compiler": "workspace:*",
+        "@encantis/lsp": "workspace:*",
         "binaryen": "129.0.0",
       },
       "devDependencies": {
@@ -44,10 +45,10 @@
       "dependencies": {
         "@encantis/cli": "workspace:*",
         "@encantis/compiler": "workspace:*",
+        "@encantis/lsp": "workspace:*",
         "binaryen": "129.0.0",
         "vscode-languageclient": "^9.0.1",
         "vscode-languageserver": "^9.0.1",
-        "vscode-languageserver-textdocument": "^1.0.11",
         "wabt": "^1.0.36",
       },
       "devDependencies": {
@@ -58,6 +59,20 @@
         "@vscode/test-web": "0.0.81",
         "@vscode/vsce": "^3.0.0",
         "playwright": "1.63.0",
+        "typescript": "^5.0.0",
+      },
+    },
+    "packages/lsp": {
+      "name": "@encantis/lsp",
+      "version": "0.3.1",
+      "dependencies": {
+        "@encantis/compiler": "workspace:*",
+        "vscode-languageserver": "^9.0.1",
+        "vscode-languageserver-textdocument": "^1.0.11",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.6",
+        "@types/node": "^20.0.0",
         "typescript": "^5.0.0",
       },
     },
@@ -116,6 +131,8 @@
     "@encantis/cli": ["@encantis/cli@workspace:packages/cli"],
 
     "@encantis/compiler": ["@encantis/compiler@workspace:packages/compiler"],
+
+    "@encantis/lsp": ["@encantis/lsp@workspace:packages/lsp"],
 
     "@isaacs/balanced-match": ["@isaacs/balanced-match@4.0.1", "", {}, "sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ=="],
 

@@ -42,7 +42,7 @@
     "bundle:node": "bun scripts/bundle.ts node",
     "bundle:web": "bun scripts/bundle.ts web",
     "watch": "tsc -watch -p ./",
-    "watch:node": "bun scripts/bundle.ts node && bun build src/extension.ts src/server/lsp.ts --root src --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --external binaryen --watch",
+    "watch:node": "bun scripts/bundle.ts node && bun build src/extension.ts src/server.ts --root src --outdir dist/node --target node --format cjs --sourcemap=inline --external vscode --external binaryen --watch",
     "watch:web": "bun scripts/bundle.ts web && bun build src/web/extension.ts --outdir dist/web --target browser --format cjs --sourcemap=inline --external vscode --watch",
     "typecheck": "tsc -p ./ --noEmit",
     "package": "bun vsce package --no-dependencies",
@@ -51,10 +51,10 @@
   "dependencies": {
     "@encantis/cli": "workspace:*",
     "@encantis/compiler": "workspace:*",
+    "@encantis/lsp": "workspace:*",
     "binaryen": "129.0.0",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
-    "vscode-languageserver-textdocument": "^1.0.11",
     "wabt": "^1.0.36"
   },
   "devDependencies": {

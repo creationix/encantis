@@ -54,6 +54,7 @@ encantis wasm <file> --release     Compile to the smallest wasm binary, or fail
 encantis test <file>               Run inline tests
 encantis run <file> [args...]      Compile and run with WASI
 encantis fmt <file...>             Format source files in place
+encantis lsp                       Language server on stdin and stdout, for editors and agents
 encantis --help                    All commands, including editor queries
 encantis --version
 ```
