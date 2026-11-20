@@ -6,20 +6,26 @@ global top: u32 = 0
 data trace = mut [0:u8; 256]
 global traced: u32 = 0
 
+// What alloc gives when the bytes asked for do not fit.
+def no_room = 0xFFFFFFFF:u32
+
+// The top of the stack, as an offset into space.
 export func mark() -> u32 => top
 
+// Frees everything allocated since the mark m was taken.
 export func reset(m: u32) {
   top = m
 }
 
-// n bytes, 8-byte aligned, or 0xFFFFFFFF when they don't fit in what's left of
-// space (0 is a valid address: space is at the start of memory).
-export func alloc(n: u32) -> (p: u32) {
-  p = 0xFFFFFFFF
-  let size = (n + 7) & 0xFFFFFFF8
-  return when n > 65536 || size > 65536 - top
-  p = (space as u32) + top
+// The address of n bytes, or no_room when they do not fit in what is left of
+// space. top stays a multiple of 8, and space is the first data, at address 8,
+// so the address is a multiple of 8 too.
+export func alloc(n: u32) -> u32 {
+  let size = (n + 7) & ~7          // wraps only for an n past space.len
+  return no_room when n > space.len || size > space.len - top
+  let p = (space as u32) + top
   top += size
+  return p
 }
 
 func note(n: u32) {
@@ -27,38 +33,38 @@ func note(n: u32) {
   traced += 1
 }
 
-// Sums 0..n through a scratch array; nothing outlives the call.
+// The sum of 0 to n - 1, through a scratch array on the stack: nothing
+// outlives the call.
 export func sum_scratch(n: u32) -> u32 {
   let m = mark()
   defer reset(m)
   return 0 when n == 0
-  return 0 when n > 16384
-  let p = alloc(n * 4)
-  return 0 when p == 0xFFFFFFFF
+  return 0 when n > space.len / sizeof(u32)
+  let p = alloc(n * sizeof(u32))
+  return 0 when p == no_room
   let a = p as [*]mut u32
   for i in n {
     a[i] = i
   }
   let s: u32 = 0
-  for j in n {
-    s += a[j]
+  for i in n {
+    s += a[i]
   }
   return s
 }
 
-// Records the order deferred expressions run in.
+// Records the order deferred expressions run in: on every way out of a block,
+// newest first.
 export func order(x: u32) -> u32 {
   note(1)
   defer note(100)
   return 7 when x == 0
   defer note(200)
-  let i: u32 = 0
-  while i < 3 {
-    defer note(10 + i)
-    i += 1
-    continue when i == 1
-    break when i == 3
-    note(20 + i)
+  for i in 4 {
+    defer note(11 + i)
+    continue when i == 0
+    break when i == 2
+    note(21 + i)
   }
   loop {
     defer note(300)
@@ -68,16 +74,12 @@ export func order(x: u32) -> u32 {
   return x * 2
 }
 
-func traced_equals(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, count: u32) -> bool {
-  return false when traced != count
-  return false when count > 0 && trace.u32[0] != a
-  return false when count > 1 && trace.u32[1] != b
-  return false when count > 2 && trace.u32[2] != c
-  return false when count > 3 && trace.u32[3] != d
-  return false when count > 4 && trace.u32[4] != e
-  return false when count > 5 && trace.u32[5] != f
-  return false when count > 6 && trace.u32[6] != g
-  return false when count > 7 && trace.u32[7] != h
+// Whether the notes since traced was set to 0 are these, in this order.
+func traced_is(expected: []u32) -> bool {
+  return false when traced != expected.len
+  for i, n in expected {
+    return false when trace.u32[i] != n
+  }
   return true
 }
 
@@ -92,24 +94,24 @@ test "a scope frees what it allocated on every return" {
 test "an early return runs only the defers reached" {
   traced = 0
   assert order(0) == 7
-  assert traced_equals(1, 100, 0, 0, 0, 0, 0, 0, 2)
+  assert traced_is([1, 100])
 }
 
 test "break, continue and return run the blocks they leave, newest first" {
   traced = 0
   assert order(5) == 10
-  assert traced_equals(1, 11, 22, 12, 13, 300, 200, 100, 8)
+  assert traced_is([1, 11, 22, 12, 13, 300, 200, 100])
   traced = 0
   assert order(9) == 9
-  assert traced_equals(1, 11, 22, 12, 13, 300, 200, 100, 8)
+  assert traced_is([1, 11, 22, 12, 13, 300, 200, 100])
 }
 
 test "alloc refuses requests that overflow the space" {
   let m = mark()
-  assert alloc(65537) == 0xFFFFFFFF
-  assert alloc(65536) != 0xFFFFFFFF
-  assert alloc(1) == 0xFFFFFFFF
+  assert alloc(space.len + 1) == no_room
+  assert alloc(space.len) != no_room
+  assert alloc(1) == no_room
   reset(m)
-  assert sum_scratch(16385) == 0
+  assert sum_scratch(space.len / sizeof(u32) + 1) == 0
   assert mark() == m
 }
