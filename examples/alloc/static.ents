@@ -11,9 +11,10 @@ def no_room = 0xFFFFFFFF:u32
 
 global cursor: u32 = 0
 
-// Reserves size bytes: their offset into buf, or no_room.
+// Reserves size bytes: their offset into buf, or no_room. cursor is never
+// past buf.len, so buf.len - cursor does not wrap, where cursor + size can.
 export func reserve(size: u32) -> (offset: u32) {
-  return no_room when cursor + size > buf.len
+  return no_room when size > buf.len - cursor
   offset = cursor
   cursor += size
 }
@@ -26,13 +27,14 @@ export func reset() {
 // How many bytes are reserved.
 export func used() -> u32 => cursor
 
-// Writes a byte at an offset into buf.
+// Writes a byte at an offset into buf; an offset past its end writes nothing.
 export func write(offset: u32, value: u8) {
-  buf.u8[offset] = value
+  return when offset >= buf.len
+  buf[offset] = value
 }
 
-// The byte at an offset into buf.
-export func read(offset: u32) -> u8 => buf.u8[offset]
+// The byte at an offset into buf, or 0 past its end.
+export func read(offset: u32) -> u8 => buf[offset] ?? 0
 
 test "reserve and read write" {
   assert used() == 0
@@ -56,4 +58,18 @@ test "overflow" {
   assert used() == 4000
   assert reserve(96) == 4000
   assert used() == buf.len
+}
+
+test "a size that would wrap the cursor does not fit" {
+  reset()
+  reserve(16)
+  assert reserve(0xFFFFFFF0) == no_room
+  assert used() == 16
+}
+
+test "nothing is read or written past the buffer" {
+  write(buf.len, 7)
+  assert read(buf.len) == 0
+  write(buf.len - 1, 7)
+  assert read(buf.len - 1) == 7
 }
