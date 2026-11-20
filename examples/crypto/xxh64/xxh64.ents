@@ -1,115 +1,113 @@
-// xxHash64 implementation
-// Based on the xxHash specification by Yann Collet
+// xxHash64, from the xxHash specification by Yann Collet: a fast 64-bit
+// hash of bytes, not a cryptographic one.
 
 export "mem" memory
 
 def prime64-1 = 11400714785074694791:u64
 def prime64-2 = 14029467366897019727:u64
-def prime64-3 =  1609587929392839161:u64
-def prime64-4 =  9650029242287828579:u64
-def prime64-5 =  2870177450012600261:u64
+def prime64-3 = 1609587929392839161:u64
+def prime64-4 = 9650029242287828579:u64
+def prime64-5 = 2870177450012600261:u64
 
-inline func round64(acc:u64, value:u64) -> (acc:u64) {
-  acc += value * prime64-2
+// Mixes one 64-bit lane of input into an accumulator
+func round64(acc: u64, lane: u64) -> (acc: u64) {
+  acc += lane * prime64-2
   acc <<<= 31
   acc *= prime64-1
 }
 
-inline func merge-round64(acc:u64, value:u64) -> (acc:u64) {
+// Folds a finished accumulator into the hash
+func merge-round64(acc: u64, value: u64) -> (acc: u64) {
   acc ^= round64(0, value)
-  acc = (acc * prime64-1) + prime64-4
+  acc = acc * prime64-1 + prime64-4
 }
 
-test "xxh64" {
-  data tv_abc = "abc"
-  data tv_hello = "hello"
-  data tv_foobar = "foobar"
-
-  test "abc" {
-    assert xxh64(tv_abc, 0) == 0x44bc2cf5ad770999
-  }
-
-  test "hello" {
-    assert xxh64(tv_hello, 0) == 0x26c7827d889f6da3
-  }
-
-  test "foobar" {
-    assert xxh64(tv_foobar, 0) == 0xa2aa05ed9085aaf9
-  }
-
-  test "seeded" {
-    assert xxh64(tv_abc, 42) == 0x13c1d910702770e6
-  }
-}
-
-export func xxh64(input:[]u8, seed:u64) -> (h64:u64) {
+export func xxh64(input: []u8, seed: u64) -> (h64: u64) {
   let ptr = input.ptr
-  let len = input.len
-  let last:*u8 = ptr + len
+  let end = ptr + input.len
 
-  if len >= 32 {
-    let limit:*u8 = last - 32
-    let v1:u64 = seed + prime64-1 + prime64-2
-    let v2:u64 = seed + prime64-2
-    let v3:u64 = seed + 0
-    let v4:u64 = seed - prime64-1
+  if input.len >= 32 {
+    let v1 = seed + prime64-1 + prime64-2
+    let v2 = seed + prime64-2
+    let v3 = seed
+    let v4 = seed - prime64-1
 
-    // For every chunk of 4 words, so 4 * 64bits = 32 bytes
+    // Each 32-byte stripe gives each of the four accumulators one 64-bit
+    // word; limit is the last place a whole stripe can start
+    let limit = end - 32
     loop {
       v1 = round64(v1, ptr.u64[0])
-      ptr += 8
-      v2 = round64(v2, ptr.u64[0])
-      ptr += 8
-      v3 = round64(v3, ptr.u64[0])
-      ptr += 8
-      v4 = round64(v4, ptr.u64[0])
-      ptr += 8
+      v2 = round64(v2, ptr.u64[1])
+      v3 = round64(v3, ptr.u64[2])
+      v4 = round64(v4, ptr.u64[3])
+      ptr += 32
       break when ptr > limit
     }
 
-    h64 = (v1 <<< 1)
-        + (v2 <<< 7)
-        + (v3 <<< 12)
-        + (v4 <<< 18)
-
+    h64 = (v1 <<< 1) + (v2 <<< 7) + (v3 <<< 12) + (v4 <<< 18)
     h64 = merge-round64(h64, v1)
     h64 = merge-round64(h64, v2)
     h64 = merge-round64(h64, v3)
     h64 = merge-round64(h64, v4)
-
   } else {
-    // When input is smaller than 32 bytes
     h64 = seed + prime64-5
   }
 
-  h64 += len
+  h64 += input.len
 
-  // For the remaining words not covered above, either 0, 1, 2 or 3
-  while ptr + 8 <= last {
+  // The 0 to 3 whole words left after the stripes
+  while ptr + 8 <= end {
     h64 ^= round64(0, ptr.u64[0])
     h64 = (h64 <<< 27) * prime64-1 + prime64-4
     ptr += 8
   }
 
-  // For the remaining half word (when there are more than 32 bits remaining)
-  if ptr + 4 <= last {
+  // A half word, when 4 or more bytes are left
+  if ptr + 4 <= end {
     h64 ^= ptr.u32[0] * prime64-1
     h64 = (h64 <<< 23) * prime64-2 + prime64-3
     ptr += 4
   }
 
-  // For the remaining bytes that didn't make a half word,
-  // either 0, 1, 2 or 3 bytes
-  while ptr < last {
+  // The 0 to 3 bytes left after them
+  while ptr < end {
     h64 ^= ptr[0] * prime64-5
     h64 = (h64 <<< 11) * prime64-1
     ptr += 1
   }
 
-  // Finalize
+  // Avalanche: every input bit reaches every output bit
   h64 ^= h64 >> 33
   h64 *= prime64-2
   h64 ^= h64 >> 29
   h64 *= prime64-3
   h64 ^= h64 >> 32
+}
+
+test "xxh64" {
+  test "abc" {
+    assert xxh64("abc", 0) == 0x44bc2cf5ad770999
+  }
+
+  test "hello" {
+    assert xxh64("hello", 0) == 0x26c7827d889f6da3
+  }
+
+  test "foobar" {
+    assert xxh64("foobar", 0) == 0xa2aa05ed9085aaf9
+  }
+
+  test "seeded" {
+    assert xxh64("abc", 42) == 0x13c1d910702770e6
+  }
+
+  test "empty" {
+    assert xxh64("", 0) == 0xef46db3751d8e999
+  }
+
+  // 39 bytes: one whole stripe, then no word, a half word and 3 bytes
+  test "stripes" {
+    assert xxh64("Nobody inspects the spammish repetition", 0) == 0xfbcea83c8a378bf1
+    assert xxh64("Nobody inspects the spammish repetition", 42) == 0x44582824ca1018b5
+  }
 }
