@@ -21,7 +21,7 @@
   "examples/crypto/sha256/sha256.ents": "4a41e783e48486a023f4ae12bd8fa82ff86a0b78ee450bda5367029dc2f48148",
   "examples/crypto/sha512/sha512-256.ents": "709c58f7abc4108ab8e1354f3bd2364db4b9b7fdd4fa8875a422e6ac72cc619f",
   "examples/crypto/sha512/sha512.ents": "b24dcd3f802dfd86a3e4281059b5df72890fddb484aa89a357ba45d4ea7799ad",
-  "examples/crypto/xoroshiro128+.ents": "5389890f984989659e84a0295d969228011269ecdda4d5b33d4fb508e94df776",
+  "examples/crypto/xoroshiro128+.ents": "09397c55317b902b43514fe754005a5c1a1b37c069cf9ed106fb9202109d1c0d",
   "examples/crypto/xxh32/xxh32.ents": "761c37be102741cfcfe783ccf00b87af23d628d0cd6ffbd4ac2aa4ae5412c542",
   "examples/crypto/xxh64/xxh64.ents": "bb661323929b407ba77c2db20cc3baeee0fec0b637070b5c110a9ac7348a7d36",
   "examples/data/crit-bit/crit-bit.ents": "47b7a0e02291c6556a89fa2232359ce8bdfc087b8bff062513963a73883ad475",
