@@ -588,3 +588,24 @@ describe('the language server on the command line', () => {
     }
   }, 30000)
 })
+
+// The Claude Code plugin (plugins/encantis) starts the server as `encantis
+// lsp`, for the files the VS Code extension takes as Encantis, under the
+// same language id.
+test('the Claude Code plugin runs `encantis lsp` for .ents files', () => {
+  const root = join(import.meta.dir, '..', '..', '..')
+  const read = (path: string) => JSON.parse(readFileSync(join(root, path), 'utf8'))
+  const plugin = read('plugins/encantis/.claude-plugin/plugin.json')
+  const servers = Object.values(plugin.lspServers) as { command: string; args: string[]; extensionToLanguage: Record<string, string> }[]
+  expect(servers).toHaveLength(1)
+  const [server] = servers
+  expect(server.command).toBe(Object.keys(read('packages/cli/package.json').bin)[0])
+  expect(server.args).toEqual(['lsp'])
+  const languages = read('packages/extension/package.json').contributes.languages as { id: string; extensions?: string[] }[]
+  const encantis = languages.find((l) => l.extensions?.includes('.ents'))
+  expect(encantis).toBeDefined()
+  expect(server.extensionToLanguage).toEqual({ '.ents': encantis?.id ?? '' })
+  // The marketplace lists it where it is
+  const listed = read('.claude-plugin/marketplace.json').plugins.find((p: { name: string }) => p.name === plugin.name)
+  expect(listed?.source).toBe('./plugins/encantis')
+})

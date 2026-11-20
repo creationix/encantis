@@ -37,6 +37,8 @@ This is a bun workspace with four packages:
   - Runs `@encantis/lsp`'s server, bundled with it; the editor finds the workspace's files for it (`encantis/findFiles`)
   - Depends on `@encantis/compiler`, `@encantis/lsp` and `@encantis/cli` (`src/wasm.ts`, for the WAT preview) via workspace
 
+- **`plugins/encantis/`** - Claude Code plugin: gives Claude Code's LSP tool `encantis lsp` for `.ents` files (`lspServers` in `.claude-plugin/plugin.json`). The repo is its marketplace (`.claude-plugin/marketplace.json`). Check both with `claude plugin validate ./` and `claude plugin validate ./plugins/encantis`.
+
 - **`examples/`** - Example programs
 - **`docs/`** - Language documentation
 
