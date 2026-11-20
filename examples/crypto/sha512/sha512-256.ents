@@ -15,6 +15,7 @@ data iv256 = [
 
 data full-hash = mut [0:u8; 64]
 
+// Writes the SHA-512/256 hash of input to output
 export func sha512-256(input: []u8, output: *mut [32]u8) {
   sha512-with-iv(iv256, input, full-hash)
   output[..] = full-hash[..32]

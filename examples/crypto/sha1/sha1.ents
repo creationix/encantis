@@ -1,4 +1,5 @@
-// SHA-1 (FIPS 180-4): the 20-byte (160-bit) hash of a message.
+// SHA-1 (FIPS 180-4): the 20-byte (160-bit) hash of a message. SHA-1 no
+// longer resists collisions: use it only where a format asks for it.
 
 def block-size = 64
 
@@ -41,7 +42,7 @@ func compress(block: *[block-size]u8) {
   let d = state[3]
   let e = state[4]
 
-  for t in 80 {
+  for t in w.len {
     let (f, k): (u32, u32) = if t < 20 {
       ((b & c) | (~b & d), 0x5A827999)
     } elif t < 40 {
@@ -61,6 +62,7 @@ func compress(block: *[block-size]u8) {
   state[4] += e
 }
 
+// Writes the SHA-1 hash of input to output
 export func sha1(input: []u8, output: *mut [20]u8) {
   state[..] = iv
 
@@ -86,7 +88,7 @@ export func sha1(input: []u8, output: *mut [20]u8) {
   store-be32(pad-block as [*]mut u8, block-size - 4, bits as u32)
   compress(pad-block)
 
-  for i in 5 {
+  for i in state.len {
     store-be32(output as [*]mut u8, i * 4, state[i])
   }
 }

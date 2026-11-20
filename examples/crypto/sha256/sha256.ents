@@ -32,6 +32,7 @@ data state = mut [0:u32; 8]
 data w = mut [0:u32; 64]
 data pad-block = mut [0:u8; block-size]
 
+// The functions of FIPS 180-4 4.1.2
 func ch(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (~x & z)
 func maj(x: u32, y: u32, z: u32) -> u32 => (x & y) ^ (x & z) ^ (y & z)
 func big-sigma0(x: u32) -> u32 => (x >>> 2) ^ (x >>> 13) ^ (x >>> 22)
@@ -73,7 +74,7 @@ func compress(block: *[block-size]u8) {
   let g = state[6]
   let h = state[7]
 
-  for t in 64 {
+  for t in k.len {
     let t1 = h + big-sigma1(e) + ch(e, f, g) + k[t] + w[t]
     let t2 = big-sigma0(a) + maj(a, b, c)
     set a, b, c, d, e, f, g, h = (t1 + t2, a, b, c, d + t1, e, f, g)
@@ -89,6 +90,7 @@ func compress(block: *[block-size]u8) {
   state[7] += h
 }
 
+// Writes the SHA-256 hash of input to output
 export func sha256(input: []u8, output: *mut [32]u8) {
   state[..] = iv
 
@@ -114,7 +116,7 @@ export func sha256(input: []u8, output: *mut [32]u8) {
   store-be32(pad-block as [*]mut u8, block-size - 4, bits as u32)
   compress(pad-block)
 
-  for i in 8 {
+  for i in state.len {
     store-be32(output as [*]mut u8, i * 4, state[i])
   }
 }
